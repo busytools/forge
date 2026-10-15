@@ -425,9 +425,13 @@ pub struct SessionStateWire {
 /// A client attaching to a running session cannot reconstruct any of it: the
 /// stream announces a compaction and a sign-in once each and retains nothing.
 ///
-/// **No take and no notice**: a take belongs to the connection that started
-/// it, whose own updates carry its meter, its phases and its words, so the
-/// shared record says nothing about one and no other subscriber draws it.
+/// **No take, and the notice only when it is unsent**: a take belongs to the
+/// connection that started it, whose own updates carry its meter, its phases
+/// and its words, so the shared record says nothing about one and no other
+/// subscriber draws it. A LANDED take's words, though, are the seat's until a
+/// prompt carries them away - a page that reloads between the landing and the
+/// send reads them back here (#1360) - and they are marked `carried` so a
+/// page reads a re-hand as the seat's words rather than a landing of its own.
 ///
 /// The ASKS the composer is answering ride `pending_asks` on this same record
 /// rather than appearing here, because that is the same thing the session's own
@@ -446,6 +450,9 @@ pub struct ComposerWire {
     /// different chord on every install that moved it.
     pub bind: String,
     pub mode: String,
+    /// The landed dictation nobody has sent yet, in the same shape the
+    /// `dictate_ended` update carries, plus `carried: true`.
+    pub notice: Option<serde_json::Value>,
 }
 
 /// The session's header facts, including the two a client cannot otherwise
@@ -1496,6 +1503,15 @@ async fn session(
                 sign_in: composer.sign_in(slot).cloned(),
                 bind: surface.dictate_bind().label().to_owned(),
                 mode: surface.dictate_mode().label().to_owned(),
+                notice: composer.landed(slot).map(|landed| {
+                    serde_json::json!({
+                        "kind": "landed",
+                        "text": landed.text,
+                        "truncated": landed.truncated,
+                        "generation": landed.generation,
+                        "carried": true,
+                    })
+                }),
             }
         },
         work,
@@ -3088,6 +3104,79 @@ mode = \"toggle\"
         assert_eq!(
             session["composer"]["mode"], "toggle",
             "and how a press maps onto a take, not a default either: {session}",
+        );
+    }
+
+    /// **A landed take nobody has sent is re-handed by the record** (#1360).
+    ///
+    /// The landing reaches its dictating connection live, and nothing
+    /// retained it: a page that reloaded between the landing and the send
+    /// lost the words. The seat holds them now, and the record says they are
+    /// the seat's - `carried` - so any page may place them without reading
+    /// them as a landing of its own.
+    #[tokio::test]
+    async fn the_composer_re_hands_a_landing_nobody_has_sent() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+        let seat = fixture_seat();
+        let landing = crate::SessionUpdate::DictateEnded {
+            key: seat.clone(),
+            outcome: crate::surface::DictateOutcome::Landed {
+                text: "the unsent words".to_owned(),
+                truncated: true,
+            },
+            generation: 7,
+            initiator: None,
+        };
+
+        let session =
+            encode_subject(&state, &Subject::Session(seat.clone())).await.expect("encode");
+        assert!(session["composer"]["notice"].is_null(), "nothing landed yet: {session}");
+
+        crate::live::Live::lock(&state.live).apply(&landing);
+        let session =
+            encode_subject(&state, &Subject::Session(seat.clone())).await.expect("encode");
+        assert_eq!(
+            session["composer"]["notice"]["text"], "the unsent words",
+            "the unsent landing is on the record: {session}",
+        );
+        assert_eq!(
+            session["composer"]["notice"]["generation"], 7,
+            "with the take's own number, the landing memory's discriminator",
+        );
+        assert_eq!(
+            session["composer"]["notice"]["truncated"], true,
+            "and whether the take was partial, which the client draws a warn line from",
+        );
+        assert_eq!(
+            session["composer"]["notice"]["carried"], true,
+            "and marked as the seat's re-hand rather than a landing of this page's own",
+        );
+
+        let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "session_id": "s1",
+            "message": {"role": "user", "content": "about to be sent"},
+        }))
+        .expect("a user frame");
+        crate::live::Live::lock(&state.live).apply(&crate::SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            msg,
+            origin: Some(forge_workspace::PromptOrigin::View),
+            source: Some(forge_workspace::PromptSource::You),
+        });
+        let session = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
+        assert!(
+            session["composer"]["notice"].is_null(),
+            "and a prompt takes the words with it, so sent words are never handed back: {session}",
         );
     }
 

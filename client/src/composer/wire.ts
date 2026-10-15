@@ -39,7 +39,7 @@ export interface Take {
  * words again (the landing memory's own discriminator, `landing.ts`).
  */
 export type Notice =
-  | { kind: 'landed'; text: string; truncated: boolean; generation?: number }
+  | { kind: 'landed'; text: string; truncated: boolean; generation?: number; carried?: true }
   | { kind: 'line'; tone: string; text: string; generation?: number };
 
 /** The sign-in a seat is waiting on, which makes the hint say which account. */
@@ -207,7 +207,17 @@ function noticeFrom(value: unknown): Notice | null {
   const generation = number(held['generation']);
   const kept = generation === null ? {} : { generation };
   if (held['kind'] === 'landed') {
-    return { kind: 'landed', text: text_, truncated: held['truncated'] === true, ...kept };
+    // `carried` marks the record's own re-hand of a landing nobody has sent
+    // (#1360): the same words a live landing carries, but any page may place
+    // them, because the page that dictated is not necessarily this one.
+    const carried = held['carried'] === true ? ({ carried: true } as const) : {};
+    return {
+      kind: 'landed',
+      text: text_,
+      truncated: held['truncated'] === true,
+      ...kept,
+      ...carried,
+    };
   }
   return { kind: 'line', tone: text(held['tone']) ?? 'q', text: text_, ...kept };
 }

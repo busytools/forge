@@ -43,6 +43,7 @@ vi.mock('../composer/mic', () => ({
 
 import { currentRoute } from '../routes';
 import { addDraft, clearDrafts, docScope, draftsFor } from './comments';
+import { TRUNCATED } from '../composer/view';
 import { fakeDoc, SLOT, type DocAnswer } from './testing';
 import Document from './Document.svelte';
 import { violationsOf } from '../testing/axe';
@@ -912,6 +913,61 @@ describe("the block's own take", () => {
       document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value,
       'the words, at the end of the box that was open',
     ).toBe('the second line reads well');
+  });
+
+  /**
+   * **The seat's carried words are the composer's to place, not this page's**
+   * (#1360), even after this page has had a take of its own: the guard reads
+   * whether a take is in flight, not the last box the page began - a stale
+   * box must not be re-opened for words that are the composer's, nor draw the
+   * truncated warn row about them.
+   */
+  it('draws nothing for a carried notice after this page has had a take', async () => {
+    drawWithDictation();
+    push(seatRecord(IDLE));
+    blockTarget('line two').click();
+    flushSync();
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.doc-compose .takeline'), "the take's bar").not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    push(seatRecord(TAKE));
+    flushSync();
+    push(seatRecord(LANDED));
+    flushSync();
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.doc-compose .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    push(
+      seatRecord({
+        ...IDLE,
+        notice: {
+          kind: 'landed',
+          text: 'the unsent words',
+          truncated: true,
+          carried: true,
+          generation: 4,
+        },
+      }),
+    );
+    flushSync();
+
+    expect(
+      document.body.textContent,
+      'no warn row about words this page cannot hold',
+    ).not.toContain(TRUNCATED);
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value ?? '',
+      'and the stale box was not opened with words the composer owns',
+    ).not.toContain('the unsent words');
   });
 
   /**

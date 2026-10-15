@@ -562,6 +562,10 @@
         words,
       );
       dockLanded = words;
+      // **The memory is marked where the words went** (#1360): the dock's
+      // row holds them now, so a carried re-hand on a later read must not
+      // append them a second time.
+      box.landing.placed(held);
     } else {
       // The words THIS DRAFT took, which is what its cut row reads: the dock's
       // take left them in the dock, and a memory set for it here would put a

@@ -5551,6 +5551,61 @@ describe('the dock', () => {
     }
   });
 
+  /**
+   * **The dock's words are marked taken, so a re-hand appends them once**
+   * (#1360). The dock path was the one placement that never marked the
+   * memory: a whole-record read re-handing the same notice appended the
+   * words the dock already held, and submitting sent them doubled.
+   */
+  it('marks the words the dock took, so a carried re-hand appends nothing', async () => {
+    const held = questionAsk();
+    const harness = open({ record: record({ pending_asks: [held] }), dictation: true });
+    await micPress();
+    await micPress();
+    harness.page.record = record({
+      pending_asks: [held],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [held],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the dictated answer', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+    const field = document.querySelector('.dock textarea.notes');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the dock drew no notes');
+    expect(field.value, 'the live landing reached the dock').toBe('the dictated answer');
+
+    // The seat re-hands the same words as carried ones on a whole-record read.
+    harness.page.record = record({
+      pending_asks: [held],
+      composer: {
+        take: null,
+        notice: {
+          kind: 'landed',
+          text: 'the dictated answer',
+          truncated: false,
+          carried: true,
+        },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+    expect(field.value, 'and the re-hand appends nothing: the dock already took these words').toBe(
+      'the dictated answer',
+    );
+
+    if (app !== null) void unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+  });
+
   it('refuses a mic press on a seat whose take belongs to another', async () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }), dictation: true });
     await micPress();

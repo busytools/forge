@@ -195,12 +195,13 @@ export interface Conversation {
 /**
  * What the seat's composer is doing.
  *
- * `take` and `notice` are this client's own: a take belongs to the
- * connection that started it, so the record carries neither of them - they
- * open empty and only the take's own updates, which this connection alone
- * receives, fill them. `compacting` is narrowed because the composer draws
- * a line for it; `sign_in` is left as it came, for the component that owns
- * it rather than for every reader to re-narrow.
+ * `take` is this client's own: a take belongs to the connection that started
+ * it, so the record never carries one and only the take's own updates, which
+ * this connection alone receives, fill it. `notice` IS on the record when the
+ * words are the seat's - a landed take nobody has sent, re-handed so a page
+ * that reloaded reads it back (#1360) - and is carried through as it came,
+ * like `sign_in`, for the component that owns it. `compacting` is narrowed
+ * because the composer draws a line for it.
  */
 export interface ComposerState {
   take: unknown;
@@ -794,10 +795,12 @@ export function backgroundTaskFrom(value: unknown): BackgroundTask[] {
 function composerFrom(value: unknown): ComposerState {
   const held = record(value);
   return {
-    // A take and its notice are this client's own, built from the take's
-    // updates and never read off a snapshot: the record carries neither.
+    // A take is this client's own, built from the take's updates and never
+    // read off a snapshot. **The notice is** (#1360): the landed words
+    // nobody has sent are re-handed by the record, which is what brings
+    // them back to a page that reloaded in between.
     take: null,
-    notice: null,
+    notice: held['notice'] ?? null,
     compacting: held['compacting'] === true,
     sign_in: held['sign_in'] ?? null,
   };

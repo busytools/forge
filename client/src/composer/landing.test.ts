@@ -90,6 +90,98 @@ describe('a landing', () => {
     expect(landing.holds(words), 'and it holds none of the words').toBe(false);
   });
 
+  /**
+   * **The seat's carried words are any page's to place** (#1360). A landing
+   * nobody has sent is re-handed by the record with `carried`, so a page that
+   * reloaded between the landing and the send places the same words it would
+   * have placed live - once, by identity, like any other landing.
+   */
+  it("places the seat's carried words without an arm of its own", () => {
+    const carried: Notice = {
+      kind: 'landed',
+      text: 'this read is the whole input',
+      truncated: false,
+      generation: 1,
+      carried: true,
+    };
+    const landing = new Landing();
+    expect(
+      landing.place(SEAT, carried),
+      "a reloaded page never armed, and the seat's unsent words are still its to place",
+    ).toBe('this read is the whole input');
+    landing.placed(carried);
+    expect(
+      landing.place(SEAT, carried),
+      'and the re-hand places once, like any landing',
+    ).toBeNull();
+    expect(landing.holds(carried), 'the cut row still finds the words it took').toBe(true);
+  });
+
+  /**
+   * **A re-handed notice the arm was set under is still skipped** (#1360). A
+   * whole-record read can bring the seat's unsent words back after the take's
+   * start cleared them; the arm belongs to the take, so the old words must
+   * not be placed over the landing that is coming.
+   */
+  it('skips the under notice when a read re-hands it mid-take', () => {
+    const carried: Notice = {
+      kind: 'landed',
+      text: 'old unsent',
+      truncated: false,
+      generation: 1,
+      carried: true,
+    };
+    const spoken: Notice = {
+      kind: 'landed',
+      text: 'new spoken',
+      truncated: false,
+      generation: 2,
+    };
+    const landing = new Landing();
+    landing.arm(SEAT, carried);
+    expect(landing.place(SEAT, null), 'the take start clears the record').toBeNull();
+    expect(landing.place(SEAT, carried), 'a read re-handing them places nothing').toBeNull();
+    expect(landing.place(SEAT, spoken), "and the take's own landing still places").toBe(
+      'new spoken',
+    );
+  });
+
+  /**
+   * **A carried re-hand is skipped whatever the arm was set under** (#1360).
+   * An intervening failed take moves `under` off the seat's unsent words, so
+   * the identity rule alone would let a mid-take read place them again and
+   * spend the arm - swallowing the take's own landing. The flag is the
+   * discriminator, not the identity.
+   */
+  it('skips a carried re-hand whatever the arm was set under', () => {
+    const carried: Notice = {
+      kind: 'landed',
+      text: 'old unsent',
+      truncated: false,
+      generation: 1,
+      carried: true,
+    };
+    const line: Notice = {
+      kind: 'line',
+      tone: 'q',
+      text: 'nothing above the floor',
+      generation: 2,
+    };
+    const spoken: Notice = {
+      kind: 'landed',
+      text: 'new spoken',
+      truncated: false,
+      generation: 3,
+    };
+    const landing = new Landing();
+    landing.arm(SEAT, line);
+    expect(landing.place(SEAT, carried), "the older unsent words are not this take's").toBeNull();
+    expect(
+      landing.place(SEAT, spoken),
+      "and the take's own landing still places: the arm was not spent",
+    ).toBe('new spoken');
+  });
+
   it('places only for the seat its arm was set on, and keeps that arm', () => {
     // The arm is the seat's, as a page's boxes are: a take that outlives a
     // visit elsewhere still lands on the seat it began on.
@@ -131,18 +223,22 @@ describe('a landing', () => {
     expect(landing.place(SEAT, { ...older }), 'the re-handed notice places nothing').toBeNull();
   });
 
-  it('a take starting clears the placed memory with it', () => {
+  it('a take starting keeps the placed memory: the words are still in the box', () => {
     const landing = new Landing();
     landing.arm(SEAT, null);
     expect(landing.place(SEAT, words)).toBe('this read is the whole input');
     landing.placed(words);
     // The record's notice goes null when the next take starts, before any
-    // landing: the placed memory clears with it, which is what lets the same
-    // words land a second time.
+    // landing - and a whole-record read can re-hand it afterwards. The words
+    // have not moved, so the re-hand places nothing (#1360's duplicate).
     expect(landing.place(SEAT, null), 'a take starting places nothing').toBeNull();
-    expect(landing.holds(words), 'and the placed memory is gone with it').toBe(false);
+    expect(landing.holds(words), 'and the memory still holds the words in the box').toBe(true);
     landing.arm(SEAT, null);
-    expect(landing.place(SEAT, words), 'so the same words land again').toBe(
+    expect(landing.place(SEAT, words), 'the same notice re-handed places nothing').toBeNull();
+    // **The same words into a new take are a new number**, which is what
+    // lets the reader dictate them twice.
+    landing.arm(SEAT, null);
+    expect(landing.place(SEAT, again), 'so the second take lands its own words').toBe(
       'this read is the whole input',
     );
   });

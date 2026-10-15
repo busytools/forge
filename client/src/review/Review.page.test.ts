@@ -61,6 +61,7 @@ function push(read: unknown): void {
 
 import { installResizeObserver } from '../chat/testing/viewport';
 import { TAP_MS } from '../composer/dictate-key';
+import { TRUNCATED } from '../composer/view';
 import type { Connection } from '../socket';
 import type { SessionRecord } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
@@ -443,6 +444,45 @@ describe('a landing', () => {
       document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
       'the words of a take the record never showed',
     ).toBe('this read is the whole input');
+  });
+
+  /**
+   * **The seat's carried words are the composer's to place, not this page's**
+   * (#1360), even after this page has had a take of its own: the guard reads
+   * whether a take is in flight, not the last box the page began - a stale
+   * box must not be re-opened for words that are the composer's, nor draw the
+   * truncated warn row about them.
+   */
+  it('draws nothing for a carried notice after this page has had a take', async () => {
+    await draw();
+    await openComment();
+    await dictateInto('.rv-thread.comment');
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+
+    push({
+      wire: record({
+        ...IDLE,
+        notice: {
+          kind: 'landed',
+          text: 'the unsent words',
+          truncated: true,
+          carried: true,
+          generation: 4,
+        },
+      }),
+      refused: null,
+    });
+    flushSync();
+
+    expect(
+      document.body.textContent,
+      'no warn row about words this page cannot hold',
+    ).not.toContain(TRUNCATED);
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value ?? '',
+      'and the stale box was not opened with words the composer owns',
+    ).not.toContain('the unsent words');
   });
 
   /**
