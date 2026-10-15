@@ -508,7 +508,10 @@ impl Tool for Delete {
     fn description(&self) -> &'static str {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
-         that is over; nothing is archived. The task is named by its full id or any unique \
+         that is over; nothing is archived. A row waiting on the user's own look is not a \
+         delete's to take - the board's approve completes it, and deleting it (or a tree holding \
+         it) is refused rather than taken as a way around the look. The task is named by its \
+         full id or any unique \
          prefix of one; an exact id wins over any longer id that starts with it, and a prefix \
          matching more than one row is refused with the matching rows named. An unknown id is an \
          error, not a no-op. Returns the removed task and how many descendants went with it. Any \

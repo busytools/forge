@@ -377,7 +377,9 @@ impl TasksFacade for ProdTasksFacade {
                 return Err(TasksError::Refused(error.to_string()));
             }
         };
-        let removed = ws.remove_task_tree(&cx.project_name, &id);
+        let removed = ws
+            .remove_task_tree(&cx.project_name, &id)
+            .map_err(|refused| TasksError::Refused(refused.to_string()))?;
         let Some(task) = removed.iter().find(|t| t.id == id).cloned() else {
             return Ok(None);
         };
@@ -902,6 +904,46 @@ mod prod_facade_tests {
             facade.list_tasks(&lead, None, None, None, None).len(),
             1,
             "and left the other row alone",
+        );
+    }
+
+    /// The look gate reaches the delete door (#2251): a tree holding a row
+    /// parked on the user's look is refused by name, the row survives, and
+    /// the refusal is the error the caller reads - never an "ok, nothing
+    /// removed" that would read as the cascade having worked.
+    #[test]
+    fn delete_refuses_a_row_waiting_on_the_look() {
+        let (_ws, facade, lead, _worker) = fixture();
+        let gated = facade.create_task(&lead, draft("gated", None, None)).expect("gated");
+        facade
+            .update_task(
+                &lead,
+                &gated.id,
+                TaskPatch {
+                    verify: Some(forge_primitives::tasks::Verify::User),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("arm the gate")
+            .expect("the row is there");
+        facade
+            .update_task(
+                &lead,
+                &gated.id,
+                TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
+            )
+            .expect("the completion lands on the look")
+            .expect("the row is there");
+
+        let said = match facade.delete_task(&lead, &gated.id) {
+            Err(TasksError::Refused(said)) => said,
+            other => panic!("a refusal naming the row, got {other:?}"),
+        };
+        assert!(said.contains("gated"), "the refusal names the row: {said}");
+        assert_eq!(
+            facade.list_tasks(&lead, None, None, None, None).len(),
+            1,
+            "and the row is still there to be looked at",
         );
     }
 

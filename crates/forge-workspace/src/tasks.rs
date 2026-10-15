@@ -56,6 +56,10 @@ pub(crate) enum MoveError {
     /// A patch would clear the look gate a row is bound by: the user's
     /// own approve is what clears it.
     ClearingLookGate,
+    /// A delete would remove a row parked on the user's look: the look is
+    /// what is pending, not the row's life, and the board's approve is what
+    /// settles it. The row's SUBJECT rides it so the refusal says which look.
+    DeletingLook(String),
 }
 
 /// Append the user's words to a row's detail, keeping what was there.
@@ -113,6 +117,11 @@ impl std::fmt::Display for MoveError {
                 f,
                 "this row's completion waits on the user's look; an update cannot take that away, \
                  and the board's approve completes it"
+            ),
+            Self::DeletingLook(subject) => write!(
+                f,
+                "\"{subject}\" is waiting on the user's look; the board's approve completes it, \
+                 and deleting the row cannot take the look away"
             ),
         }
     }
@@ -827,7 +836,16 @@ impl Workspace {
     /// nothing was). Backs `tasks__delete`. The cascade happens here
     /// rather than at the call site so a parent can never be deleted out
     /// from under children that would then have nobody to close them.
-    pub(crate) fn remove_task_tree(&self, project_name: &str, id: &TaskId) -> Vec<Task> {
+    ///
+    /// A tree holding a row parked on the user's look is refused by name
+    /// (#2251): removal would settle that row by deletion, the same look
+    /// the update path refuses to clear. The check walks the whole cascade,
+    /// so deleting the epic above the row is no way around it.
+    pub(crate) fn remove_task_tree(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+    ) -> Result<Vec<Task>, MoveError> {
         let removed = self.with_tasks_mut(|tasks| {
             let mut doomed = vec![id.clone()];
             let mut cursor = 0;
@@ -843,6 +861,13 @@ impl Workspace {
                     }
                 }
             }
+            if let Some(task) = tasks.iter().find(|task| {
+                task.project_name == project_name
+                    && doomed.contains(&task.id)
+                    && task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+            }) {
+                return Err(MoveError::DeletingLook(task.subject.clone()));
+            }
             let mut removed = Vec::new();
             tasks.retain(|t| {
                 let taking = t.project_name == project_name && doomed.contains(&t.id);
@@ -854,8 +879,8 @@ impl Workspace {
             for task in &removed {
                 self.delete_stored_task(project_name, &task.id);
             }
-            removed
-        });
+            Ok(removed)
+        })?;
         if !removed.is_empty() {
             // A removed row can never end, so its waiters are released
             // here - the other half of "any terminal end clears the wait".
@@ -864,7 +889,7 @@ impl Workspace {
             }
             self.announce_tasks_changed(project_name);
         }
-        removed
+        Ok(removed)
     }
 
     /// Tell every view to re-read its board: the set is unchanged, but
@@ -1088,7 +1113,9 @@ mod tests {
         ws.push_task(sample_task("epic", "elsewhere"));
         ws.push_task(sample_task_with_parent("sibling", Some("epic"), "elsewhere"));
         assert_eq!(
-            ws.remove_task_tree("forge", &TaskId::from("epic")).len(),
+            ws.remove_task_tree("forge", &TaskId::from("epic"))
+                .expect("nothing in the tree waits on a look")
+                .len(),
             3,
             "the tree is removed: the epic and its two descendants",
         );
@@ -1199,7 +1226,9 @@ mod tests {
         still_seeded("a rank naming no loaded row");
 
         assert!(
-            ws.remove_task_tree("proj", &TaskId::from("seed-1")).is_empty(),
+            ws.remove_task_tree("proj", &TaskId::from("seed-1"))
+                .expect("nothing in the tree waits on a look")
+                .is_empty(),
             "precondition: the empty in-memory set holds no such tree",
         );
         still_seeded("a delete that took nothing");
@@ -1274,7 +1303,9 @@ mod tests {
         ws.push_task(sample_task_with_parent("tree-root", None, "proj"));
         ws.push_task(sample_task_with_parent("tree-child", Some("tree-root"), "proj"));
         assert_eq!(
-            ws.remove_task_tree("proj", &TaskId::from("tree-root")).len(),
+            ws.remove_task_tree("proj", &TaskId::from("tree-root"))
+                .expect("nothing in the tree waits on a look")
+                .len(),
             2,
             "precondition: both loaded rows are removed",
         );
@@ -1322,7 +1353,11 @@ mod tests {
         assert_eq!(tasks.len(), 1, "and announces the whole set");
         assert_eq!(tasks[0].status, TaskStatus::Completed, "the write's own change included");
 
-        assert!(!ws.remove_task_tree("proj", &TaskId::from("t-1")).is_empty());
+        assert!(
+            !ws.remove_task_tree("proj", &TaskId::from("t-1"))
+                .expect("nothing in the tree waits on a look")
+                .is_empty()
+        );
         let (_, tasks) = next_tasks_changed(&mut rx);
         assert!(tasks.is_empty(), "a delete announces the set it left behind");
     }
@@ -1353,7 +1388,9 @@ mod tests {
             "precondition: no task carries the id, so the update is refused",
         );
         assert!(
-            ws.remove_task_tree("proj", &TaskId::from("ghost")).is_empty(),
+            ws.remove_task_tree("proj", &TaskId::from("ghost"))
+                .expect("nothing in the tree waits on a look")
+                .is_empty(),
             "precondition: nothing holds the id, so the delete is refused",
         );
 
@@ -2055,6 +2092,87 @@ mod tests {
         })
         .expect("no refusal")
         .expect("a row carrying its own gate may move anywhere");
+    }
+
+    /// The third door around the look gate (#2251): the update path refuses
+    /// to clear the gate and the board's approve is what completes a row
+    /// parked on it, so a delete must not settle the row by removal either.
+    /// The guard rides the removal itself, which is what stops the cascade
+    /// from stepping around it through the epic above.
+    #[test]
+    fn a_delete_cannot_take_a_row_waiting_on_the_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-delete-look");
+        ws.push_task(sample_task("epic", "proj"));
+        ws.push_task(Task {
+            parent: Some(TaskId::from("epic")),
+            verify: Some(Verify::User),
+            ..sample_task("t-1", "proj")
+        });
+        ws.update_task("proj", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        let refused = ws
+            .remove_task_tree("proj", &TaskId::from("epic"))
+            .expect_err("the look a child is parked on is not a delete's to take");
+        assert_eq!(
+            refused,
+            MoveError::DeletingLook("subject t-1".to_owned()),
+            "the refusal names the row whose look is pending",
+        );
+        assert_eq!(
+            subjects(&ws.tasks_for_project("proj")),
+            ["subject epic".to_owned(), "subject t-1".to_owned()],
+            "and nothing went: the epic above the row is not a way around",
+        );
+    }
+
+    /// The gate protects the look, not the row's life: once the approve has
+    /// settled it, the epics and rows around it are the caller's to clear,
+    /// the same as any finished work.
+    #[test]
+    fn a_delete_lands_once_the_look_is_given() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-delete-approved");
+        ws.push_task(sample_task("epic", "proj"));
+        ws.push_task(Task {
+            parent: Some(TaskId::from("epic")),
+            verify: Some(Verify::User),
+            ..sample_task("t-1", "proj")
+        });
+        ws.update_task("proj", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        ws.approve_task("proj", &TaskId::from("t-1")).expect("no refusal").expect("the row");
+
+        let removed = ws
+            .remove_task_tree("proj", &TaskId::from("epic"))
+            .expect("the look landed; the tree is the caller's to clear");
+        assert_eq!(subjects(&removed).len(), 2, "the epic and its approved child");
+    }
+
+    /// A row merely BOUND by the user's verify - never parked on the look,
+    /// because nothing ever tried to complete it - is still work the caller
+    /// may abandon: the gate fires on the transition into completed, so an
+    /// unstarted row's delete skips no look.
+    #[test]
+    fn a_delete_lands_on_a_user_bound_row_that_never_reached_the_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-delete-pending");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("t-1", "proj") });
+
+        let removed = ws
+            .remove_task_tree("proj", &TaskId::from("t-1"))
+            .expect("no look is pending on an unstarted row");
+        assert_eq!(removed.len(), 1, "the row went");
     }
 
     #[test]
