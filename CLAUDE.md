@@ -380,9 +380,12 @@ inspected.
    pedantic lints are exempted and why.
 8. **`cargo nextest run`, not `cargo test`.** `just check` runs fmt,
    the unicode-punctuation gate, clippy, nextest and docs in one shot,
-   ending on a verdict line that names the first failing step; it must
-   be green before a PR. Read that line, not a pipeline's exit status -
-   `just check | tail` reports tail's.
+   ending on a verdict line that names the first failing step. It must
+   be green before a PR, and so must `just check-feature-configs`, which
+   compiles the configuration `install.sh` builds: `just check` runs
+   with `--all-features`, so it turns every feature on regardless and
+   never exercises which configuration enables what. Read that line, not
+   a pipeline's exit status - `just check | tail` reports tail's.
 9. **Wire-conformance harness is mandatory for new wire surface.** New
    control_request subtypes, message types, hook events and tool
    integrations ship with: (a) a live-capture scenario, (b) the captured

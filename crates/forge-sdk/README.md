@@ -89,6 +89,7 @@ Full gate (tests + clippy + fmt + docs) via:
 
 ```bash
 just check
+just check-feature-configs
 ```
 
 ## Licence
