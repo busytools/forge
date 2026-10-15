@@ -5,7 +5,7 @@
 //! table migration. Machine-local, like the crons beside it.
 
 use anyhow::Context;
-use forge_primitives::tasks::{Estimate, LinkKind, Task, TaskLink, TaskStatus, Waiting};
+use forge_primitives::tasks::{Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, Waiting};
 use redb::{ReadableTable, TableDefinition};
 
 use super::Db;
@@ -130,10 +130,15 @@ impl TaskRecord {
     }
 }
 
-/// The row key for `task`: its project as well as its id, separated by a
+/// The row key for a task: its project as well as its id, separated by a
 /// NUL a project name cannot carry.
 fn row_key(task: &Task) -> String {
-    format!("{}\u{0}{}", task.project_name, task.id.as_str())
+    row_key_for(&task.project_name, &task.id)
+}
+
+/// The row key for a project and id, the pair [`row_key`] joins.
+fn row_key_for(project_name: &str, id: &TaskId) -> String {
+    format!("{project_name}\u{0}{}", id.as_str())
 }
 
 /// Every persisted task.
@@ -164,27 +169,29 @@ pub fn list(db: &Db) -> anyhow::Result<Vec<Task>> {
     Ok(out)
 }
 
-/// Overwrite the table with `tasks`: clear every existing row then insert
-/// the full set in one write txn. Backs every workspace
-/// persist-after-mutation.
-pub fn replace_all(db: &Db, tasks: &[Task]) -> anyhow::Result<()> {
+/// Persist one task, replacing any prior record for its project and id.
+/// One write txn per row, so a write can only touch the row it names.
+pub fn upsert(db: &Db, task: &Task) -> anyhow::Result<()> {
+    let value = serde_json::to_vec(task).context("serialize task")?;
     let txn = db.database().begin_write()?;
     {
         let mut table = txn.open_table(TASKS)?;
-        let existing: Vec<String> = table
-            .iter()?
-            .map(|entry| entry.map(|(k, _)| k.value().to_owned()))
-            .collect::<Result<_, _>>()?;
-        for key in existing {
-            table.remove(key.as_str())?;
-        }
-        for task in tasks {
-            let value = serde_json::to_vec(task).context("serialize task")?;
-            table.insert(row_key(task).as_str(), value.as_slice())?;
-        }
+        table.insert(row_key(task).as_str(), value.as_slice())?;
     }
     txn.commit()?;
     Ok(())
+}
+
+/// Delete a task by project and id. Returns whether a record existed.
+pub fn delete(db: &Db, project_name: &str, id: &TaskId) -> anyhow::Result<bool> {
+    let key = row_key_for(project_name, id);
+    let txn = db.database().begin_write()?;
+    let existed = {
+        let mut table = txn.open_table(TASKS)?;
+        table.remove(key.as_str())?.is_some()
+    };
+    txn.commit()?;
+    Ok(existed)
 }
 
 #[cfg(test)]
@@ -227,7 +234,8 @@ mod tests {
         let db = open_db(dir.path());
         let forge_task = sample_task("t-1", "forge");
         let other_task = sample_task("t-2", "other");
-        replace_all(&db, &[forge_task.clone(), other_task]).expect("write");
+        upsert(&db, &forge_task).expect("write forge's");
+        upsert(&db, &other_task).expect("write the other project's");
         let read = list(&db).expect("list");
         assert_eq!(read.len(), 2, "both projects' tasks are stored");
         assert!(
@@ -240,25 +248,39 @@ mod tests {
     fn the_same_id_in_two_projects_stores_two_rows() {
         let dir = tempdir().expect("tempdir");
         let db = open_db(dir.path());
-        replace_all(&db, &[sample_task("t-1", "forge"), sample_task("t-1", "other")])
-            .expect("write");
+        upsert(&db, &sample_task("t-1", "forge")).expect("write forge's");
+        upsert(&db, &sample_task("t-1", "other")).expect("write the other project's");
         let read = list(&db).expect("list");
         assert_eq!(read.len(), 2, "one project's row cannot overwrite another's on a shared id");
     }
 
-    /// A second write replaces the set rather than merging into it. The
-    /// row the new set omits is the row a delete or a cascade just removed,
-    /// and leaving it in redb brings that task back on the next boot.
+    /// A delete removes the row it names and nothing else: the project is
+    /// half the key, so the same id under another project is a different
+    /// row, and the named one is gone from the store rather than only from
+    /// memory - a row left in redb comes back on the next boot.
     #[test]
-    fn a_second_write_drops_the_rows_it_omits() {
+    fn a_delete_drops_only_the_named_row() {
         let dir = tempdir().expect("tempdir");
         let db = open_db(dir.path());
-        replace_all(&db, &[sample_task("t-1", "forge"), sample_task("t-2", "forge")])
-            .expect("seed");
-        replace_all(&db, &[sample_task("t-2", "forge")]).expect("replace");
+        upsert(&db, &sample_task("t-1", "forge")).expect("seed t-1");
+        upsert(&db, &sample_task("t-2", "forge")).expect("seed t-2");
+        upsert(&db, &sample_task("t-1", "other")).expect("seed the other project's t-1");
+
+        assert!(delete(&db, "forge", &TaskId::from("t-1")).expect("delete"));
+        assert!(
+            !delete(&db, "forge", &TaskId::from("t-1")).expect("delete again"),
+            "a row that is not there deletes to false",
+        );
         let read = list(&db).expect("list");
-        assert_eq!(read.len(), 1, "the omitted task is gone from the store, not just from memory");
-        assert_eq!(read[0].id, TaskId::from("t-2"), "the surviving task is the one written");
+        assert_eq!(read.len(), 2, "one row left per project: {read:?}");
+        assert!(
+            read.iter().any(|t| t.project_name == "forge" && t.id == TaskId::from("t-2")),
+            "the deleted row is gone from the store, not just from memory: {read:?}",
+        );
+        assert!(
+            read.iter().any(|t| t.project_name == "other" && t.id == TaskId::from("t-1")),
+            "and a same-named row under another project is its own row: {read:?}",
+        );
     }
 
     #[test]
@@ -351,7 +373,7 @@ mod tests {
             state: Some("open".to_owned()),
             added_at: std::time::SystemTime::UNIX_EPOCH,
         });
-        replace_all(&db, std::slice::from_ref(&task)).expect("write");
+        upsert(&db, &task).expect("write");
         assert_eq!(list(&db).expect("list"), vec![task], "no migration touches a current row");
     }
 }
