@@ -1287,6 +1287,18 @@ describe('the lines a diff left out', () => {
     ).toEqual(['src/a.rs', 'src/a.rs']);
   });
 
+  /** An added file's one hunk is its whole content: no lines are left out,
+   *  so there is no control to earn and no read worth asking for. */
+  it('asks nothing for a file with no gap to fill', async () => {
+    await draw([], [], true, {
+      state: 'populated',
+      files: [{ ...TWO_HUNKS.files[0], status: 'added' }],
+    });
+    await settle(() => document.querySelector('.rv-frow') !== null);
+
+    expect(asked, 'no read for a file whose hunks carry all of it').toEqual([]);
+  });
+
   /** A read that refused earns no control: the page draws no door onto a
    *  read the server answers with a refusal. */
   it('draws no control for a file whose read refused', async () => {

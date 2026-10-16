@@ -3617,11 +3617,17 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   .review .rv-expand { padding-top: 10px; padding-bottom: 10px; }
   /* The scope row's controls, top to bottom: the scope button and its
      stepper arrows (both steppers' - the scope's and the comments'), the
-     picker's rows behind the button, and the mode pair. */
-  .review .rv-scope-btn { min-height: 44px; }
-  .review .rv-step-btn { min-height: 44px; min-width: 44px; padding: 0 14px; }
-  .review .rv-menu-it { min-height: 44px; }
-  .review .rv-mode button { min-height: 44px; padding: 0 14px; }
+     picker's rows behind the button, and the mode pair. The rows that lay
+     their content out on a baseline take `center` here, or a minimum
+     height leaves the words hugging the top of the target. */
+  .review .rv-scope-btn { min-height: 44px; align-items: center; }
+  .review .rv-step-btn { min-height: 44px; min-width: 44px; }
+  .review .rv-menu-it { min-height: 44px; align-items: center; }
+  .review .rv-mode button { min-height: 44px; }
+  /* The page's other finger-reachable controls, pre-existing and no
+     smaller for it: the tab line and a file's fold chevron. */
+  .review .rv-tabs > button { min-height: 44px; display: inline-flex; align-items: center; }
+  .review .rv-fold { min-width: 44px; min-height: 44px; justify-content: center; }
   .review .rv-frow, .review .rv-dir { padding-top: 10px; padding-bottom: 10px; }
   /* No pointer to arrive with: the line's `+` rests visible so a tap can
      find it. */

@@ -315,10 +315,13 @@
     const held = built.find((file) => file.path === path);
     if (held === undefined) return;
     // A file that can never yield a control is not asked about: no new side
-    // to read (a deleted file, a binary, a submodule), no hunks to leave a
-    // gap between, or hunks the record itself cut - which `gapsOf` refuses
-    // for the same reason, and each of them would cost a subprocess.
+    // to read (a deleted file, a binary, a submodule), no gaps to fill - an
+    // added file's one hunk is its whole content, so nothing is left out -
+    // no hunks at all, or hunks the record itself cut. `gapsOf` refuses the
+    // last two for the same reason, and every one of them would cost a
+    // subprocess for an answer no control can use.
     if (held.file.binary || held.file.submodule || held.file.status === 'deleted') return;
+    if (held.file.status === 'added') return;
     if (held.file.truncated || held.file.hunks.length === 0) return;
     const key = contentKeyOf(path);
     if (contents.has(key) || askedFrom.has(key)) return;
