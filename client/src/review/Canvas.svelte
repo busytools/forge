@@ -39,6 +39,9 @@
     doorSpot,
     filesOf,
     findLine,
+    GAP_SMALL,
+    GAP_STEP,
+    gapRemaining,
     gapsOf,
     insertRow,
     lineCounts,
@@ -47,6 +50,7 @@
     treeRows,
     type FileLines,
     type Gap,
+    type GapReveal,
   } from './diff';
   import { canvasLine, statusName, threadsInScope } from './view';
   import { captureContext, type ComposedComment, type ReviewSpot } from './write';
@@ -55,6 +59,9 @@
   import WordsBox from './WordsBox.svelte';
 
   type DiffFile = NonNullable<ComponentProps<typeof DiffView>['diffFile']>;
+
+  /** Which way a gap's strip opens it: the two ends, or the whole remainder. */
+  type GapWay = 'all' | 'down' | 'up';
 
   let {
     connection,
@@ -279,7 +286,7 @@
   const contents = new SvelteMap<string, FileContentRecord>();
   /** The reads already asked for, so a redraw does not ask twice. */
   const askedFrom = new SvelteSet<string>();
-  const opened = new SvelteMap<string, SvelteSet<number>>();
+  const opened = new SvelteMap<string, SvelteMap<number, GapReveal>>();
 
   const contentKeyOf = (path: string): string => `${scopeCommit ?? 'all'}|${path}`;
 
@@ -291,12 +298,12 @@
     return { lines: held.lines, truncated: held.truncated };
   }
 
-  /** The gaps the reader has opened on a file. */
-  function openedFor(path: string): SvelteSet<number> {
+  /** What the reader has opened on a file, by the hunk each gap follows. */
+  function openedFor(path: string): SvelteMap<number, GapReveal> {
     const key = contentKeyOf(path);
     let held = opened.get(key);
     if (held === undefined) {
-      held = new SvelteSet<number>();
+      held = new SvelteMap<number, GapReveal>();
       opened.set(key, held);
     }
     return held;
@@ -695,24 +702,12 @@
             build: (at: HTMLTableRowElement) => composerRow(at, spot),
           });
         }
-        // One control per gap the read in hand can fill and the reader has
-        // not opened: the lines the diff left out, drawn between the hunks
-        // that left them.
+        // The gap controls ride the hunk headers' own gutter cells, and the
+        // below-the-last-hunk one rides a row of its own: one strip per gap
+        // the read in hand can fill and the reader has not opened.
         const file = built.find((held) => held.path === path)?.file;
-        const openedHere = opened.get(contentKeyOf(path));
         if (file !== undefined) {
-          for (const gap of gapsOf(file, contentFor(path))) {
-            if (openedHere?.has(gap.after) === true) continue;
-            const anchor = gapAnchor(file, gap);
-            if (anchor === null) continue;
-            want.push({
-              key: `g:${gap.after}`,
-              side: anchor.side,
-              line: anchor.line,
-              before: anchor.before,
-              build: (at: HTMLTableRowElement) => gapRow(at, file.path, gap, anchor.side),
-            });
-          }
+          decorateGaps(el, path, file, opened.get(contentKeyOf(path)), contentFor(path));
         }
       }
       want.sort((a, b) => a.line - b.line || a.key.localeCompare(b.key));
@@ -953,116 +948,217 @@
     return insertRow(at, side, mode, wrap);
   }
 
-  /**
-   * The row a gap's control hangs off: the last line of the hunk it follows,
-   * or the first line of the hunk it precedes - the gap above the first, the
-   * one place the diff leaves before any line.
-   */
-  function gapAnchor(
-    file: DiffFileRecord,
-    gap: Gap,
-  ): { side: 'old' | 'new'; line: number; before: boolean } | null {
-    const line =
-      gap.after === -1
-        ? file.hunks[0]?.lines[0]
-        : (() => {
-            const hunk = file.hunks[gap.after];
-            return hunk?.lines[hunk.lines.length - 1];
-          })();
-    if (line === undefined) return null;
-    const side = line.kind === 'removed' ? 'old' : 'new';
-    const at = side === 'old' ? line.oldLine : line.newLine;
-    if (at === null) return null;
-    return { side, line: at, before: gap.after === -1 };
+  /** The hunk header row the line at `at` sits under. */
+  function headerRow(at: HTMLTableRowElement): HTMLTableRowElement | null {
+    let row: Element | null = at.previousElementSibling;
+    while (row !== null) {
+      if (
+        row instanceof HTMLTableRowElement &&
+        row.querySelector('td[class*="hunk-action"]') !== null
+      ) {
+        return row;
+      }
+      row = row.previousElementSibling;
+    }
+    return null;
   }
 
   /**
-   * One gap's control, drawn where the line numbers are - the shape GitHub
-   * uses for the same job (Ved, 2026-10-16, from the look): the row is a
-   * thin strip whose NUMBER cell carries the count of hidden lines, right
-   * where the line numbers would sit, and whose code lane stays empty
-   * because there is no code there.
-   *
-   * **The whole strip is the target, the gutter is the door.** A pointer
-   * gets the row's own highlight across its length; the button in the
-   * number cell is what a keyboard and a finger reach.
+   * One gap's strip, drawn where GitHub draws it (Ved, 2026-10-16, from the
+   * look): **a gutter-cell control with GitHub's own glyph and nothing
+   * else** - no count, no word of this page's own on screen, and GitHub's
+   * own wording as the tooltip. The accessible name still says what the
+   * press would do and to which file, which the glyph alone cannot.
    */
-  function gapRow(
-    at: HTMLTableRowElement,
-    path: string,
-    gap: Gap,
-    side: 'old' | 'new',
-  ): HTMLTableRowElement {
-    const row = document.createElement('tr');
-    row.className = 'rv-insert rv-gap';
-    const label = `show the ${gap.count} ${gap.count === 1 ? 'line' : 'lines'} between the hunks of ${path}`;
-    const open = (): void => void expand(path, gap.after);
+  function gapButton(path: string, gap: Gap, way: GapWay, remaining: number): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'rv-expand';
-    button.title = label;
-    button.setAttribute('aria-label', label);
-    button.append(span('rv-expand-more', '⋯'));
-    button.append(span('rv-expand-n', String(gap.count)));
-    button.addEventListener('click', open);
+    button.className = 'rv-gapbtn';
+    button.title = way === 'all' ? 'Expand All' : way === 'down' ? 'Expand Down' : 'Expand Up';
+    const step = Math.min(GAP_STEP, remaining);
+    const opens =
+      way === 'all'
+        ? `all ${remaining} hidden`
+        : way === 'down'
+          ? `the next ${step} hidden`
+          : `the previous ${step} hidden`;
+    button.setAttribute('aria-label', `show ${opens} lines of ${path}`);
+    const glyph = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    glyph.setAttribute('class', 'ic');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute(
+      'href',
+      way === 'all' ? '#i-unfold' : way === 'down' ? '#i-fold-down' : '#i-fold-up',
+    );
+    glyph.append(use);
+    button.append(glyph);
+    button.addEventListener('click', () => void expand(path, gap.after, way));
+    return button;
+  }
 
-    const shaped = [...at.children].map((cell) => {
-      const el = cell as HTMLElement;
-      const own =
-        el.dataset['side'] ??
-        (el.className.includes('old') ? 'old' : el.className.includes('new') ? 'new' : null);
-      return {
-        own,
-        isNum: el.className.includes('num'),
-        colspan: Number(el.getAttribute('colspan') ?? 1),
-      };
-    });
-    if (!shaped.some((cell) => cell.own !== null)) {
-      // Unified: the one number cell and the one lane.
-      const num = document.createElement('td');
-      num.className = 'rv-gap-num';
-      num.append(button);
-      const lane = document.createElement('td');
-      lane.className = 'rv-gap-lane';
-      lane.colSpan = shaped.reduce((n, cell) => n + cell.colspan, 0) - 1 || 1;
-      lane.addEventListener('click', open);
-      row.append(num, lane);
-      return row;
-    }
-    for (const cell of shaped) {
-      const td = document.createElement('td');
-      if (cell.isNum) {
-        td.className = 'rv-gap-num';
-        if (cell.own === side) td.append(button);
-      } else {
-        // A padded half (one spanning placeholder cell) stays a lane, so the
-        // row keeps the anchor's own width.
-        td.className = 'rv-gap-lane';
-        td.colSpan = cell.colspan;
-        td.addEventListener('click', open);
+  /** A row shaped after a hunk header row: every cell it has, empty. */
+  function gapRow(shape: HTMLTableRowElement): HTMLTableRowElement {
+    const row = document.createElement('tr');
+    row.className = 'rv-gaprow';
+    for (const cell of shape.children) {
+      const copy = cell.cloneNode(false);
+      if (copy instanceof HTMLTableCellElement) {
+        copy.textContent = '';
+        row.append(copy);
       }
-      row.append(td);
     }
     return row;
   }
 
   /**
-   * Open one gap: the file's own diff text is re-synthesized with the gap's
-   * lines drawn as context inside the hunk it follows, and that one table
+   * The gap controls of one drawn file, checked into the hunk headers - and
+   * the one gap below the last hunk into a row of its own.
+   *
+   * **GitHub's own placement, taken from its page** (Ved, 2026-10-16, from
+   * the look): the gap above the first hunk and the gap between two hunks
+   * ride the following hunk's header, in its gutter cell; the gap below the
+   * last hunk has no header after it, so it gets a row after the last line,
+   * empty but for the strip. A gap with no more than [`GAP_SMALL`] lines
+   * left opens in one press and takes the two-way glyph; a longer one takes
+   * a strip per end it can be opened from - a pair between hunks, one
+   * direction at the file's edges.
+   *
+   * **A reconciling pass, like the row one**: a strip already in its own
+   * place is left alone, one whose gap is closed or whose row the viewer has
+   * not drawn is removed or skipped, so the pass reaches a quiet steady
+   * state instead of re-arming the mutations that call it.
+   */
+  function decorateGaps(
+    el: HTMLDivElement,
+    path: string,
+    file: DiffFileRecord,
+    reveals: SvelteMap<number, GapReveal> | undefined,
+    content: FileLines | null,
+  ): void {
+    const last = file.hunks.length - 1;
+    const wanted = new SvelteMap<string, { gap: Gap; way: GapWay; hunk: number | null }>();
+    for (const gap of gapsOf(file, content)) {
+      const remaining = gapRemaining(gap, reveals?.get(gap.after));
+      if (remaining === 0) continue;
+      const ways: GapWay[] =
+        remaining <= GAP_SMALL
+          ? ['all']
+          : gap.after === -1
+            ? ['up']
+            : gap.after === last
+              ? ['down']
+              : ['down', 'up'];
+      for (const way of ways) {
+        wanted.set(`g:${gap.after}:${way}`, {
+          gap,
+          way,
+          hunk: gap.after === last ? null : gap.after + 1,
+        });
+      }
+    }
+    for (const button of [...el.querySelectorAll('button.rv-gapbtn')]) {
+      const key = button instanceof HTMLElement ? button.dataset['for'] : undefined;
+      if (key === undefined || !wanted.has(key)) button.remove();
+    }
+    // The gap below the last hunk lives in a row of its own, shaped after the
+    // hunk header rows so its columns line up with theirs.
+    const rows = new SvelteSet<string>();
+    for (const [key, want] of wanted) {
+      if (want.hunk !== null) continue;
+      const rowKey = `r:${want.gap.after}`;
+      rows.add(rowKey);
+      let row = el.querySelector<HTMLTableRowElement>(`tr.rv-gaprow[data-for="${rowKey}"]`);
+      if (row === null) {
+        const lines = file.hunks[last]?.lines ?? [];
+        const tail = lines[lines.length - 1];
+        const side = tail?.kind === 'removed' ? 'old' : 'new';
+        const line = tail === undefined ? null : side === 'old' ? tail.oldLine : tail.newLine;
+        const at = line === null ? null : anchorRow(el, side, line, mode);
+        const shape = at === null ? null : headerRow(at);
+        if (at !== null && shape !== null) {
+          row = gapRow(shape);
+          row.dataset['for'] = rowKey;
+          at.after(row);
+        }
+      }
+      if (row === null) continue;
+      const cell = row.querySelector('td[class*="hunk-action"]');
+      if (!(cell instanceof HTMLElement)) continue;
+      cell.classList.add('rv-hunkcell');
+      if (row.querySelector(`button.rv-gapbtn[data-for="${key}"]`) === null) {
+        const button = gapButton(
+          path,
+          want.gap,
+          want.way,
+          gapRemaining(want.gap, reveals?.get(want.gap.after)),
+        );
+        button.dataset['for'] = key;
+        cell.append(button);
+      }
+    }
+    for (const row of [...el.querySelectorAll('tr.rv-gaprow')]) {
+      const held = row instanceof HTMLElement ? row.dataset['for'] : undefined;
+      if (held === undefined || !rows.has(held)) row.remove();
+    }
+    for (const [key, want] of wanted) {
+      if (want.hunk === null) continue;
+      if (el.querySelector(`button.rv-gapbtn[data-for="${key}"]`) !== null) continue;
+      const first = file.hunks[want.hunk]?.lines[0];
+      if (first === undefined) continue;
+      const side = first.kind === 'removed' ? 'old' : 'new';
+      const line = side === 'old' ? first.oldLine : first.newLine;
+      if (line === null) continue;
+      const at = anchorRow(el, side, line, mode);
+      const header = at === null ? null : headerRow(at);
+      const cell = header?.querySelector('td[class*="hunk-action"]');
+      if (!(cell instanceof HTMLElement)) continue;
+      cell.classList.add('rv-hunkcell');
+      const button = gapButton(
+        path,
+        want.gap,
+        want.way,
+        gapRemaining(want.gap, reveals?.get(want.gap.after)),
+      );
+      button.dataset['for'] = key;
+      cell.append(button);
+    }
+  }
+
+  /**
+   * Open one gap, one press at a time: the file's own diff text is
+   * re-synthesized with what the reader has now revealed, and that one table
    * re-renders.
    *
-   * The text is re-emitted rather than rows spliced in, because the viewer
-   * parses diff text and computes each row's line numbers from the heading -
-   * rows inserted by hand would draw a numbering the viewer never agreed to.
+   * **A press moves one end, by [`GAP_STEP`] lines** (GitHub's own step,
+   * taken from its page): the down strip opens the lines the previous hunk
+   * left off at, the up strip the lines just above the next hunk, and the
+   * one-way strip a short gap has opens the rest in a single press. The text
+   * is re-emitted rather than rows spliced in, because the viewer parses
+   * diff text and computes each row's line numbers from the heading - rows
+   * inserted by hand would draw a numbering the viewer never agreed to.
    */
-  async function expand(path: string, after: number): Promise<void> {
+  async function expand(path: string, after: number, way: GapWay): Promise<void> {
     const held = built.find((file) => file.path === path);
     const content = contentFor(path);
     if (held === undefined || content === null) return;
+    const gap = gapsOf(held.file, content).find((g) => g.after === after);
+    if (gap === undefined) return;
     const key = scopeCommit ?? 'all';
     const openedHere = openedFor(path);
-    if (openedHere.has(after)) return;
-    openedHere.add(after);
+    const reveal = openedHere.get(after) ?? { down: 0, up: 0 };
+    const remaining = gapRemaining(gap, reveal);
+    if (remaining === 0) return;
+    const step = Math.min(GAP_STEP, remaining);
+    // "all" takes the whole gap; which end it lands in only decides which
+    // hunk carries the lines, and the top gap has no hunk before it.
+    openedHere.set(
+      after,
+      way === 'down'
+        ? { down: reveal.down + step, up: reveal.up }
+        : way === 'up'
+          ? { down: reveal.down, up: reveal.up + step }
+          : { down: after === -1 ? 0 : gap.count, up: after === -1 ? gap.count : 0 },
+    );
     const { DiffFile } = await import('@git-diff-view/core');
     // A build that lands after the scope moved on is the old scope's.
     if ((scopeCommit ?? 'all') !== key) return;

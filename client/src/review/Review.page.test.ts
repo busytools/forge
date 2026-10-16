@@ -138,6 +138,42 @@ const TWO_HUNKS = {
 /** The file's whole content, as the read would answer it. */
 const LINES = ['one', 'two', 'three', 'four'];
 
+/** Two hunks far apart, at the stood-in viewer's first and last rows: the gap
+ *  between them (lines 2..29) is longer than one press fills, and the file
+ *  goes on past the last hunk (31..40), which is the row-of-its-own gap. */
+const BIG_GAP = {
+  state: 'populated',
+  files: [
+    {
+      path: 'src/a.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'l1', oldLine: 1, newLine: 1 }],
+        },
+        {
+          oldStart: 30,
+          oldCount: 1,
+          newStart: 30,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'l30', oldLine: 30, newLine: 30 }],
+        },
+      ],
+    },
+  ],
+};
+
+/** That file's whole content: forty lines, ten past its last hunk. */
+const BIG_LINES = Array.from({ length: 40 }, (_, i) => `l${i + 1}`);
+
 let app: Record<string, unknown> | null = null;
 let frames: FrameRequestCallback[] = [];
 /** The scrolls the page asked for, as the element and the options it named.
@@ -1012,9 +1048,9 @@ describe('the steppers', () => {
       sha: null,
       content: { state: 'read', lines: LINES, truncated: false },
     });
-    await settle(() => document.querySelector('.rv-expand') !== null);
-    document.querySelector<HTMLButtonElement>('.rv-expand')?.click();
-    await settle(() => document.querySelector('.rv-expand') === null);
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+    document.querySelector<HTMLButtonElement>('.rv-gapbtn')?.click();
+    await settle(() => document.querySelector('.rv-gapbtn') === null);
     paint();
 
     expect(
@@ -1186,7 +1222,7 @@ describe('the lines a diff left out', () => {
     ).toEqual(['src/a.rs']);
     expect(asked[0]?.sha, 'in the all-changes scope, against the branch tip').toBeNull();
     expect(
-      document.querySelector('.rv-expand'),
+      document.querySelector('.rv-gapbtn'),
       'no control before the read landed: a door nothing could fill yet',
     ).toBeNull();
 
@@ -1197,38 +1233,49 @@ describe('the lines a diff left out', () => {
       sha: null,
       content: { state: 'read', lines: LINES, truncated: false },
     });
-    await settle(() => document.querySelector('.rv-expand') !== null);
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
 
-    const control = document.querySelector('.rv-expand');
-    expect(control?.getAttribute('aria-label'), 'the control names how much it hides').toBe(
-      'show the 2 lines between the hunks of src/a.rs',
-    );
+    const control = document.querySelector('.rv-gapbtn');
     expect(
-      control?.closest('tr.rv-insert'),
-      'and it sits in a row of its own, after the first hunk',
-    ).not.toBeNull();
-    // **The gutter is the control's place** (Ved, 2026-10-16, from the
-    // look): the count sits in the line-number column, the shape GitHub
-    // draws, and the code lane beside it is the pointer's strip.
+      control?.getAttribute('aria-label'),
+      'the accessible name carries what the glyph cannot',
+    ).toBe('show all 2 hidden lines of src/a.rs');
+    expect(control?.getAttribute('title'), "and the tooltip is GitHub's own word").toBe(
+      'Expand All',
+    );
+    // **The hunk header's own gutter cell is the control's place** (Ved,
+    // 2026-10-16, from the look): a strip in the line-number column of a row
+    // the diff already draws, the way GitHub puts it, rather than a strip
+    // row of its own.
     expect(
       control?.closest('td')?.className,
-      'the control is drawn in the numbers column, not across the row',
-    ).toContain('rv-gap-num');
+      'the control is drawn in the hunk header, in the numbers column',
+    ).toContain('hunk-action');
     expect(
-      document.querySelector('tr.rv-insert .rv-gap-lane'),
-      'with the empty lane beside it',
-    ).not.toBeNull();
+      control?.closest('tr')?.className,
+      "and on a row of the viewer's own table rather than an inserted strip",
+    ).not.toContain('rv-insert');
+    // A gap this small opens in one press, so the strip is the two-way
+    // glyph - GitHub's own choice for a gap one fetch fills.
+    expect(control?.querySelector('use')?.getAttribute('href'), 'the two-way glyph').toBe(
+      '#i-unfold',
+    );
 
     // **The press re-emits the file's diff text with the gap drawn as
     // context**, which is the only way the viewer can number those rows: a
     // heading that kept its old counts would number every hunk below wrong.
+    // The gap closed, the two hunks now run together under one heading.
     control?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await settle(() => document.querySelector('.rv-expand') === null);
+    await settle(() => document.querySelector('.rv-gapbtn') === null);
 
     const text = viewer.built.at(-1) ?? '';
-    expect(text, 'the gap is drawn in the hunk it follows').toContain(
-      '@@ -1,3 +1,3 @@\n one\n two\n three\n@@ -4,1 +4,1 @@\n four\n',
+    expect(text, 'the closed gap joins the hunks into one block').toContain(
+      '@@ -1,4 +1,4 @@\n one\n two\n three\n four\n',
     );
+    expect(
+      text.split('\n').filter((held) => held.startsWith('@@')),
+      'and the second heading is gone',
+    ).toEqual(['@@ -1,4 +1,4 @@']);
   });
 
   /**
@@ -1259,22 +1306,103 @@ describe('the lines a diff left out', () => {
     flushSync();
     paint();
     expect(
-      document.querySelector('.rv-expand'),
+      document.querySelector('.rv-gapbtn'),
       'and the answer draws nothing for the scope on screen',
     ).toBeNull();
 
     // Back: the control is drawn from the answer that landed, with no second
     // ask for a scope whose content is already in hand.
     press('next scope');
-    await settle(() => document.querySelector('.rv-expand') !== null);
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
     expect(
-      document.querySelector('.rv-expand')?.getAttribute('aria-label'),
+      document.querySelector('.rv-gapbtn')?.getAttribute('aria-label'),
       'the control the late answer earned',
-    ).toBe('show the 2 lines between the hunks of src/a.rs');
+    ).toBe('show all 2 hidden lines of src/a.rs');
     expect(
       asked.map((held) => held.sha),
       'and no ask was repeated',
     ).toEqual([null]);
+  });
+
+  /**
+   * **A long gap wears GitHub's own pair of strips, one per end, and steps
+   * open a screenful a press.** Ved, 2026-10-16, from the look: between two
+   * hunks GitHub draws the down strip at the top of the header's gutter and
+   * the up strip under it, the gap below the last hunk gets a row of its own
+   * after the file's last line, and a press moves twenty lines from the end
+   * it names. The plausible regression is a press opening the whole gap at
+   * once - a jump of hundreds of lines where the reader asked for the next
+   * screenful - the strips stacked in the other order, or the
+   * below-the-last-hunk control riding a hunk header it has no business on.
+   */
+  it('draws the pair of strips on a long gap, and steps it a screenful a press', async () => {
+    await draw([], [], true, BIG_GAP);
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: BIG_LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+
+    // The gap between the hunks (lines 2..29) is longer than one press
+    // fills: two strips in the header's gutter cell, the down one first.
+    const headerStrips = (): HTMLButtonElement[] => [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        'tr:not(.rv-gaprow) td[class*="hunk-action"] button.rv-gapbtn',
+      ),
+    ];
+    expect(headerStrips().length, 'one strip per end of the gap between the hunks').toBe(2);
+    expect(headerStrips().map((held) => held.title)).toEqual(['Expand Down', 'Expand Up']);
+    expect(headerStrips().map((held) => held.getAttribute('aria-label'))).toEqual([
+      'show the next 20 hidden lines of src/a.rs',
+      'show the previous 20 hidden lines of src/a.rs',
+    ]);
+    expect(headerStrips().map((held) => held.querySelector('use')?.getAttribute('href'))).toEqual([
+      '#i-fold-down',
+      '#i-fold-up',
+    ]);
+    expect(
+      headerStrips()[0]?.closest('tr')?.querySelector('td[class*="hunk-content"]')?.textContent,
+      "both ride the following hunk's own header",
+    ).toContain('@@ -30,1 +30,1 @@');
+
+    // The gap below the last hunk gets a row of its own, right after the
+    // file's last drawn line and empty but for its strip.
+    const bottomRow = document.querySelector('tr.rv-gaprow');
+    expect(bottomRow, 'a row after the last line, holding the control').not.toBeNull();
+    expect(
+      bottomRow?.previousElementSibling?.querySelector('span[data-line-new-num]')?.textContent,
+      "drawn under the file's last drawn line",
+    ).toBe('30');
+    const bottom = bottomRow?.querySelector('button.rv-gapbtn');
+    expect(bottom?.getAttribute('title'), 'the rest of the file fits one press').toBe('Expand All');
+    expect(bottom?.querySelector('use')?.getAttribute('href')).toBe('#i-unfold');
+
+    // A press opens exactly one screenful, and no more.
+    headerStrips()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await settle(() => headerStrips().length === 1 && headerStrips()[0]?.title === 'Expand All');
+
+    const text = viewer.built.at(-1) ?? '';
+    expect(text, 'the down press drew the twenty lines below the first hunk').toContain(
+      '@@ -1,21 +1,21 @@',
+    );
+    expect(text, 'and stopped there').not.toContain(' l22\n');
+    expect(
+      headerStrips().length,
+      'the remainder now fits one press, so the pair collapses to the one control',
+    ).toBe(1);
+
+    // The last press closes the gap, and the hunks run together.
+    headerStrips()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await settle(() => headerStrips().length === 0);
+
+    const joined = viewer.built.at(-1) ?? '';
+    expect(
+      joined.split('\n').filter((held) => held.startsWith('@@')),
+      'one heading for the whole run, the second header gone',
+    ).toEqual(['@@ -1,30 +1,30 @@']);
   });
 
   /**
@@ -1326,7 +1454,7 @@ describe('the lines a diff left out', () => {
     });
     await settle(() => asked.length > 0);
 
-    expect(document.querySelector('.rv-expand'), 'no door onto a refused read').toBeNull();
+    expect(document.querySelector('.rv-gapbtn'), 'no door onto a refused read').toBeNull();
   });
 
   /**

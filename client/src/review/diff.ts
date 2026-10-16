@@ -150,11 +150,36 @@ export function gapsOf(file: DiffFileRecord, content: FileLines | null): Gap[] {
   return gaps.filter((gap) => gap.start + gap.count - 1 <= carried);
 }
 
-/** What an expansion draws: the file's whole carried lines, and which gaps
- *  the reader opened, by the hunk each follows. */
+/**
+ * One gap's reveal: how many of its hidden lines each end has opened. The
+ * two ends are the gap's two controls - `down` the lines the hunk it follows
+ * left off at, `up` the lines just above the hunk after it - so a press adds
+ * to one end without touching the other.
+ */
+export interface GapReveal {
+  down: number;
+  up: number;
+}
+
+/** Lines one directional press reveals (GitHub's own step). */
+export const GAP_STEP = 20;
+
+/** At or below this many remaining lines, one press opens the rest and the
+ *  control reads "expand all" rather than a direction - GitHub's own rule,
+ *  taken from its page: a gap that small fits one fetch. */
+export const GAP_SMALL = 20;
+
+/** The hidden lines a gap still holds, given what the reader opened. */
+export function gapRemaining(gap: Gap, reveal: GapReveal | undefined): number {
+  const opened = (reveal?.down ?? 0) + (reveal?.up ?? 0);
+  return Math.max(0, gap.count - opened);
+}
+
+/** What an expansion draws: the file's whole carried lines, and what the
+ *  reader opened per gap, by the hunk each gap follows. */
 export interface Expansion {
   content: FileLines;
-  expanded: ReadonlySet<number>;
+  expanded: ReadonlyMap<number, GapReveal>;
 }
 
 /**
@@ -166,12 +191,16 @@ export interface Expansion {
  * The rebuild is lossless for display: it copies what the crate's parser
  * kept, and the crate's parser kept everything the text carried.
  *
- * **An opened gap is drawn as context lines inside the hunk it follows** -
- * the same lines the diff left out, carrying the markers a context line
- * does - so the viewer computes their two side's numbers from the heading
- * exactly as it does every other line's. The heading takes the added lines
- * into its own counts: a block that grew by them but kept its old count
- * would number every hunk below it wrong.
+ * **A revealed gap is drawn as context lines around the hunks it sits
+ * between** - the same lines the diff left out, carrying the markers a
+ * context line does - so the viewer computes their two side's numbers from
+ * the heading exactly as it does every other line's. Each heading takes the
+ * added lines into its own counts: a block that grew by them but kept its
+ * old count would number every hunk below it wrong.
+ *
+ * **A gap the reader has fully revealed joins the two hunks into one
+ * block**: the second heading goes, and the lines run continuously the way
+ * GitHub draws a closed gap.
  */
 export function synthesizeFileDiff(
   file: DiffFileRecord,
@@ -182,40 +211,72 @@ export function synthesizeFileDiff(
     `--- a/${file.oldPath ?? file.path}`,
     `+++ b/${file.path}`,
   ];
+  const hunks = file.hunks;
   const gaps = expansion === null ? [] : gapsOf(file, expansion.content);
-  /** The gap's own lines, when the reader opened it; nothing otherwise. */
-  const opened = (after: number): string[] => {
-    if (expansion === null || !expansion.expanded.has(after)) return [];
-    const gap = gaps.find((held) => held.after === after);
-    if (gap === undefined) return [];
-    return expansion.content.lines.slice(gap.start - 1, gap.start - 1 + gap.count);
-  };
-  file.hunks.forEach((hunk, i) => {
-    let { oldStart, newStart, oldCount, newCount } = hunk;
+  const revealOf = (after: number): GapReveal =>
+    expansion?.expanded.get(after) ?? { down: 0, up: 0 };
+  const gapAfter = (after: number): Gap | undefined => gaps.find((held) => held.after === after);
+  /** A run of the gap's own lines, from `at` on, as context rows. */
+  const runOf = (at: number, count: number): string[] =>
+    expansion === null
+      ? []
+      : expansion.content.lines.slice(at - 1, at - 1 + count).map((text) => ` ${text}`);
+  const rowOf = (line: DiffHunkRecord['lines'][number]): string =>
+    (line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ') + line.text;
+  let i = 0;
+  while (i < hunks.length) {
+    const hunk = hunks[i];
+    if (hunk === undefined) break;
+    let oldStart = hunk.oldStart;
+    let newStart = hunk.newStart;
+    let oldCount = hunk.oldCount;
+    let newCount = hunk.newCount;
     const body: string[] = [];
-    // The gap above the first hunk takes that hunk's own heading: the lines
-    // sit before its first line, so both ranges start earlier by them.
-    const above = opened(-1);
-    if (i === 0 && above.length > 0) {
-      body.push(...above.map((text) => ` ${text}`));
-      oldStart -= above.length;
-      newStart -= above.length;
-      oldCount += above.length;
-      newCount += above.length;
+    // The bottom of the gap above this block takes the block's own heading:
+    // the lines sit before its first line, so both ranges start earlier.
+    const above = gapAfter(i === 0 ? -1 : i - 1);
+    if (above !== undefined) {
+      const head = runOf(
+        above.start + above.count - revealOf(above.after).up,
+        revealOf(above.after).up,
+      );
+      body.push(...head);
+      oldStart -= head.length;
+      newStart -= head.length;
+      oldCount += head.length;
+      newCount += head.length;
     }
-    for (const line of hunk.lines) {
-      const marker = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
-      body.push(marker + line.text);
-    }
-    // A gap after a hunk is that hunk's own tail: only the counts grow.
-    const below = opened(i);
-    if (below.length > 0) {
-      body.push(...below.map((text) => ` ${text}`));
-      oldCount += below.length;
-      newCount += below.length;
+    body.push(...hunk.lines.map(rowOf));
+    // Gaps below this block: the tail the reader opened, and the following
+    // hunk itself once the whole gap is open.
+    let j = i;
+    for (;;) {
+      const gap = gapAfter(j);
+      if (gap === undefined) break;
+      const reveal = revealOf(gap.after);
+      const remaining = gapRemaining(gap, reveal);
+      if (reveal.down + reveal.up === 0) break;
+      if (remaining > 0) {
+        const tail = runOf(gap.start, reveal.down);
+        body.push(...tail);
+        oldCount += tail.length;
+        newCount += tail.length;
+        break;
+      }
+      const all = runOf(gap.start, gap.count);
+      body.push(...all);
+      oldCount += all.length;
+      newCount += all.length;
+      const next = hunks[j + 1];
+      if (next === undefined) break;
+      body.push(...next.lines.map(rowOf));
+      oldCount += next.oldCount;
+      newCount += next.newCount;
+      j += 1;
     }
     out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...body);
-  });
+    i = j + 1;
+  }
   return out.join('\n') + '\n';
 }
 

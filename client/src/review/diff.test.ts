@@ -5,6 +5,8 @@ import {
   currentFileAt,
   filesOf,
   findLine,
+  GAP_STEP,
+  gapRemaining,
   gapsOf,
   lineCounts,
   synthesizeFileDiff,
@@ -184,10 +186,12 @@ describe('the canvas derivations', () => {
       ],
     });
     const lines = Array.from({ length: 30 }, (_, i) => `l${i + 1}`);
-    // The gap between the hunks: new lines 6..21.
+    // The gap between the hunks: new lines 6..21. A press of "expand all" on a
+    // gap this size opens the whole of it, and the hunks then run together -
+    // one heading, no second header.
     const text = synthesizeFileDiff(two, {
       content: { lines, truncated: false },
-      expanded: new Set([0]),
+      expanded: new Map([[0, { down: 16, up: 0 }]]),
     });
 
     expect(text).toBe(
@@ -195,12 +199,11 @@ describe('the canvas derivations', () => {
         'diff --git a/src/a.rs b/src/a.rs',
         '--- a/src/a.rs',
         '+++ b/src/a.rs',
-        // The heading takes the gap into its own counts: 1 line + 16 context
-        // lines, and the second hunk's own range is untouched.
-        '@@ -5,17 +5,17 @@',
+        // The heading takes the gap into its own counts: the first hunk's
+        // line, 16 context lines, then the second hunk's own line.
+        '@@ -5,18 +5,18 @@',
         ' e',
         ...lines.slice(5, 21).map((held) => ` ${held}`),
-        '@@ -20,1 +22,1 @@',
         ' u',
         '',
       ].join('\n'),
@@ -210,10 +213,84 @@ describe('the canvas derivations', () => {
     // before its first line, so both ranges start earlier by them.
     const above = synthesizeFileDiff(two, {
       content: { lines, truncated: false },
-      expanded: new Set([-1]),
+      expanded: new Map([[-1, { down: 0, up: 4 }]]),
     });
     expect(above).toContain('@@ -1,5 +1,5 @@');
     expect(above).toContain(' l1\n l2\n l3\n l4\n e');
+  });
+
+  it('steps a gap open a fixed run a press, from either end', () => {
+    // Twenty lines a press is GitHub's own step, and the two ends of the gap
+    // are its two controls: down opens the lines the previous hunk left off
+    // at, up opens the lines just above the next hunk. The plausible
+    // regression is one press opening the whole gap - a 300-line jump where
+    // the reader asked for the next screenful - or the two ends overlapping
+    // and double-drawing a line.
+    const two = file({
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'a', oldLine: 1, newLine: 1 }],
+        },
+        {
+          oldStart: 42,
+          oldCount: 1,
+          newStart: 42,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'z', oldLine: 42, newLine: 42 }],
+        },
+      ],
+    });
+    const lines = Array.from({ length: 50 }, (_, i) => `l${i + 1}`);
+    // The gap is new lines 2..41: forty lines, so two presses from one end.
+    const content = { lines, truncated: false };
+    const down = synthesizeFileDiff(two, {
+      content,
+      expanded: new Map([[0, { down: GAP_STEP, up: 0 }]]),
+    });
+    expect(down).toContain(
+      ` a\n${lines
+        .slice(1, 21)
+        .map((held) => ` ${held}`)
+        .join('\n')}`,
+    );
+    expect(down.split('\n')).not.toContain(' l22');
+
+    const both = synthesizeFileDiff(two, {
+      content,
+      expanded: new Map([[0, { down: 20, up: 5 }]]),
+    });
+    // Down's twenty and up's five are distinct lines: 2..21 then 37..41.
+    expect(both).toContain(
+      ` a\n${lines
+        .slice(1, 21)
+        .map((held) => ` ${held}`)
+        .join('\n')}`,
+    );
+    // The next hunk's heading starts five lines earlier, carrying up's five.
+    expect(both).toContain('@@ -37,6 +37,6 @@');
+    expect(both.split('\n')).not.toContain(' l22');
+
+    // A press that closes the gap joins the hunks into one block: one heading
+    // for the whole run, and the former second header gone.
+    const joined = synthesizeFileDiff(two, {
+      content,
+      expanded: new Map([[0, { down: 20, up: 20 }]]),
+    });
+    expect(joined.split('\n').filter((held) => held.startsWith('@@'))).toEqual([
+      '@@ -1,42 +1,42 @@',
+    ]);
+    expect(joined).toContain(' l41\n z');
+  });
+
+  it('names the rest of a gap, so a control knows what it would open', () => {
+    const gap = { after: 0, start: 7, count: 14 };
+    expect(gapRemaining(gap, undefined), 'nothing pressed: the whole gap').toBe(14);
+    expect(gapRemaining(gap, { down: 5, up: 4 })).toBe(5);
+    expect(gapRemaining(gap, { down: 20, up: 4 }), 'never negative').toBe(0);
   });
 
   it('finds the line a composer click landed on, by side', () => {

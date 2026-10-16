@@ -3459,20 +3459,18 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review .rv-insert-cell { padding: 0 !important; background: var(--s1); }
 .review .rv-inline { padding: 3px 10px 6px; }
 
-/* The between-hunk control, in the numbers' own column: a thin strip whose
-   gutter carries the count of hidden lines, the shape GitHub uses. The
-   whole strip is a pointer's target; the button in the gutter is the
-   keyboard's and the finger's. */
-.review .rv-gap td { background: var(--s1); }
-.review .rv-gap:hover td { background: var(--s2); }
-.review .rv-gap-num { padding: 1px 8px; text-align: right; }
-.review .rv-gap-lane { padding: 1px 8px; cursor: pointer; }
-.review .rv-expand { display: inline-flex; align-items: center; gap: 5px;
-  background: none; border: 0; padding: 0 2px; cursor: pointer;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.review .rv-expand:hover { color: var(--text); }
-.review .rv-expand-more { letter-spacing: 1px; }
-.review .rv-expand-n { font-variant-numeric: tabular-nums; }
+/* The gap control, shaped the way GitHub shapes it (Ved, 2026-10-16, from
+   the look): a strip across the hunk header's own gutter cell - the column
+   the line numbers sit in - whose whole box lights up under the pointer. A
+   hunk between two others carries two strips, one per end of the gap it
+   sits under, so the cell stacks them. */
+.review .rv-hunkcell { display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 0; }
+.review .rv-gapbtn { display: flex; align-items: center; justify-content: center;
+  width: 100%; min-height: 20px; background: none; border: 0; padding: 0;
+  cursor: pointer; color: var(--dim); }
+.review .rv-gapbtn:hover, .review .rv-gapbtn:focus-visible {
+  background: var(--s3); color: var(--text); outline: none; }
 
 /* The thread card. */
 .review .rv-thread { border: 1px solid var(--line); border-radius: var(--r);
@@ -3620,8 +3618,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
      the canvas's doors and buttons alike. */
   .review .back { min-height: 44px; display: inline-flex; align-items: center; }
   .review .rv-a { min-height: 44px; padding: 0 14px; }
-  .review .rv-finish, .review .rv-expand { min-height: 44px; }
-  .review .rv-expand { padding-top: 10px; padding-bottom: 10px; }
+  .review .rv-finish, .review .rv-gapbtn { min-height: 44px; }
   /* The scope row's controls, top to bottom: the scope button and its
      stepper arrows (both steppers' - the scope's and the comments'), the
      picker's rows behind the button, and the mode pair. The rows that lay

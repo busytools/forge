@@ -27,7 +27,7 @@ file tree, and the diff with the threads on their lines.
 | Tabs          | `Conversation` and `Files changed`, with the commit count                                                                                                                                                                                                                       | the record's git chain                                             |
 | Scope         | the scope on screen, a stepper, the keys, the unified/split picker, and the comments' stepper with its `N/M` count                                                                                                                                                              | the record's git chain (the commit list), and the scope's own threads |
 | Tree          | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth; a directory carries the files beneath it, and the file whose region the reader is inside is marked as the current one                                    | the scope's diff, the threads in that scope, and the canvas's own scroll |
-| Canvas        | the scope's files as diffs, with each thread inserted under its own line, the composer under the line a comment is being written on, and a control between two hunks (and above the first, below the last) that draws the lines the diff left out                              | the scope's diff, the threads, the server's landing per thread, and the file's whole content read |
+| Canvas        | the scope's files as diffs, with each thread inserted under its own line, the composer under the line a comment is being written on, and GitHub's own gap strips between two hunks (above the first, below the last) that draw the lines the diff left out, a press at a time      | the scope's diff, the threads, the server's landing per thread, and the file's whole content read |
 | Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
 | Rounds        | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                                                                                                              | the rounds half                                                    |
 | Finish        | the summary field, its mic, and `finish review`, live once a comment is drafted - the conversation half's own section, and, on the diff half, a `finish review` control under the canvas that opens the same row in place and collapses again once the round seals                | the page's own drafts                                              |
@@ -101,15 +101,21 @@ file the list has not drawn yet.
 
 **A diff's hunks leave lines out, and the page can draw them.** The record
 carries bounded hunks, so the lines between them - and above the first,
-below the last - are exactly what it does not carry. The gap draws as a
-thin strip whose line-number column carries the count of hidden lines
-(`⋯ 354`), the shape GitHub uses for the same job, with the code lane
-beside it empty; the strip is the pointer's target and the control in the
-gutter is the keyboard's and the finger's. On a press the hidden lines draw
-as context inside the hunk they follow: the diff text is re-emitted with
-the hunk's heading grown by them, because the viewer numbers every row from
-that heading and rows spliced in by hand would draw a numbering it never
-agreed to. The lines come from the file's whole content read at the scope's own
+below the last - are exactly what it does not carry. The controls are
+GitHub's own, down to the glyph and the placement: a strip in the hunk
+header's line-number column, on the row the diff already draws, with the
+gap below the last hunk getting a row of its own under the file's last line;
+hovering lights the strip. A gap with no more than twenty lines left opens
+in one press and takes the two-way unfold mark with GitHub's `Expand All`;
+a longer one takes a strip per end it can be opened from - the fold-down
+mark above the fold-up one between two hunks, and a single direction at the
+file's edges - each press drawing twenty lines from the end it names. On a
+press the hidden lines draw as context around the hunk they sit with: the
+diff text is re-emitted with the heading grown by them, because the viewer
+numbers every row from that heading and rows spliced in by hand would draw a
+numbering it never agreed to, and a gap opened all the way joins the two
+hunks into one block with the second heading gone, the way GitHub closes one.
+The lines come from the file's whole content read at the scope's own
 revision - a commit's tree for a commit's scope, the branch tip for all
 changes - bounded by the same ceiling a document read is, and answered as a
 flagged short read at that ceiling rather than as a refusal, its lines
