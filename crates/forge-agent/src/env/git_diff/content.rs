@@ -123,7 +123,11 @@ pub async fn scan_commit(cwd: &Path, sha: &str) -> CommitContent {
 /// bound on the machine, not on the read**, spent starting each child the
 /// read spawns.
 pub async fn scan_commit_within(cwd: &Path, sha: &str, budget: Duration) -> CommitContent {
-    let ref_spec = super::hunks::commit_ref_spec(cwd, sha, budget).await;
+    let Some(ref_spec) = super::hunks::commit_ref_spec(cwd, sha, budget).await else {
+        // A sha that names no commit is the scan's own failure, the state a
+        // sha git cannot read answers everywhere else.
+        return CommitContent { files: LayerState::ScanFailed, truncated: false };
+    };
     let mut caps = Caps::default();
     let files = scan_layer(cwd, &ref_spec, &mut caps, budget).await;
     CommitContent { files, truncated: caps.withheld }

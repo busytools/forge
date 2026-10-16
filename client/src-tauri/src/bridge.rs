@@ -355,6 +355,20 @@ impl Bridge {
         true
     }
 
+    /// One file's whole content at a revision, for the review page's
+    /// between-hunk expansion. False means no socket is open and no answer
+    /// is coming; the answer lands on the page's own `onMessage`.
+    pub fn file_content(&self, session: &Value, path: String, sha: Option<String>) -> bool {
+        let state = self.lock();
+        if state.status != "open" {
+            return false;
+        }
+        if let Some(socket) = &state.socket {
+            socket.file_content(session.clone(), path, sha);
+        }
+        true
+    }
+
     /// One document read for a viewer's route. False means no socket is
     /// open and no answer is coming; the answer lands in the page's own
     /// frame stream, where the route reads it.

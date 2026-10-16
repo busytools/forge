@@ -90,6 +90,10 @@
     padding: 3px 11px; }
   .rv-mode span + span { border-left: 1px solid var(--line); }
   .rv-mode span.on { color: var(--text); background: var(--s2); }
+  /* The comments' stepper, beside the scope's: the arrows and the N/M count
+     between them. */
+  .rv-cstep-n { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+    border: 1px solid var(--line); border-left: 0; padding: 3px 8px; white-space: nowrap; }
 
   /* ---------- the diff half: the tree, then the canvas ---------- */
   .rv-body { display: grid; grid-template-columns: 296px minmax(0, 1fr); gap: 18px; }
@@ -140,6 +144,18 @@
 
   .rv-insert td { padding: 0; background: var(--s1); }
   .rv-inline { padding: 3px 10px 6px; }
+  /* The gap controls, in the hunk header's own gutter cell: GitHub's own
+     strips, one per end of the gap and each taking half the row, so the
+     down strip runs along the row's top and the up strip along its bottom -
+     the two-way glyph alone when the rest of the gap fits one press.
+     Hovering lights the whole strip. */
+  .rv-hunkcell { width: 46px; padding: 0; vertical-align: middle; display: flex;
+    flex-direction: column; }
+  .rv-gapbtn { display: flex; align-items: center; justify-content: center;
+    width: 100%; flex: 1 1 0; min-height: 20px; color: var(--dim); }
+  .rv-hunkcell > .rv-gapbtn:only-of-type { min-height: 28px; }
+  .rv-gapbtn:hover { background: var(--s3); color: var(--text); }
+  .rv-gapbtn .ic { width: 15px; height: 15px; }
   .rv-thread { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2);
     padding: 8px 10px 9px; }
   .rv-tops { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
@@ -231,6 +247,10 @@
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
 
   .rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
+  /* The diff half's finish, under its canvas: the collapsed control at the
+     row's end, and the page's own finish row filling it once it opens. */
+  .rv-finishbar { display: flex; align-items: center; justify-content: flex-end;
+    gap: 9px; padding-top: 4px; }
   .rv-finishrow { display: flex; gap: 9px; align-items: center; }
   .rv-summary { flex: 1; background: var(--s1); color: var(--dim); border: 1px solid var(--line);
     border-radius: 8px; font-family: var(--ui); font-size: var(--fs-base); padding: 6px 9px; }
@@ -263,7 +283,7 @@
     <span class="loop">1 reply to read<span class="sep">&#183;</span>1 open</span>
   </header>
 
-  <div class="fig">the Files changed half, all changes: the tree, the diff, a thread on its line, the composer</div>
+  <div class="fig">the Files changed half, all changes: the tree with the file being read marked, the comments' stepper, the diff, a thread on its line, the composer, a between-hunk control, and the half's own finish</div>
 
   <nav class="rv-tabs" aria-label="review sections">
     <span class="tab">Conversation</span>
@@ -277,6 +297,9 @@
       <span class="rv-step"><span>&#8249;</span><span>&#8250;</span></span>
     </span>
     <span class="rv-mode"><span>unified</span><span class="on">split</span></span>
+    <span class="rv-step">
+      <span>&#8249;</span><span class="rv-cstep-n">2/5</span><span>&#8250;</span>
+    </span>
   </nav>
 
   <!-- The keys, where they act: the arrows a hand reaches for, and the one
@@ -284,6 +307,8 @@
        accepts are not advertised beside them. -->
   <p class="rv-hint">
     <kbd>&#8592;</kbd><kbd>&#8594;</kbd> step commits
+    <span class="sep">&#183;</span>
+    <kbd>shift</kbd><kbd>&#8592;</kbd><kbd>&#8594;</kbd> step comments
     <span class="sep">&#183;</span>
     <kbd>a</kbd> all changes
     <span class="sep">&#183;</span>
@@ -447,10 +472,51 @@
                 </div>
               </td>
             </tr>
+            <!-- The lines the diff left out, one press away: GitHub's own
+                 strips in the numbers column of the hunk header the gap sits
+                 above - the fold-down mark over the fold-up one, twenty
+                 lines each press - and, below the file's last line, the row
+                 that one-way gap draws its strip on. -->
+            <tr>
+              <td class="rv-hunkcell"
+                ><span class="rv-gapbtn" title="Expand Down"
+                  ><svg class="ic" viewBox="0 0 16 16"
+                    ><path fill="currentColor" d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/></svg
+                ></span
+              ><span class="rv-gapbtn" title="Expand Up"
+                ><svg class="ic" viewBox="0 0 16 16"
+                    ><path fill="currentColor" d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/></svg
+                ></span
+              ></td>
+              <td class="hunk" colspan="3">@@ -240,5 +242,5 @@</td>
+            </tr>
+            <tr>
+              <td class="num">242</td><td>  const held = read.wire;</td>
+              <td class="num">242</td><td>  const held = read.wire;</td>
+            </tr>
+            <tr>
+              <td class="num">&nbsp;</td><td class="gap">&nbsp;</td>
+              <td class="num">243</td><td>  const reviews = held.reviews;</td>
+            </tr>
+            <tr class="rv-gaprow">
+              <td class="rv-hunkcell"
+                ><span class="rv-gapbtn" title="Expand All"
+                  ><svg class="ic" viewBox="0 0 16 16"
+                    ><path fill="currentColor" d="m8.177.677 2.896 2.896a.25.25 0 0 1-.177.427H8.75v1.25a.75.75 0 0 1-1.5 0V4H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0ZM7.25 10.75a.75.75 0 0 1 1.5 0V12h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896A.25.25 0 0 1 5.104 12H7.25v-1.25Zm-5-2a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 6 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 12 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/></svg
+                ></span
+              ></td>
+              <td class="hunk" colspan="3">&nbsp;</td>
+            </tr>
           </tbody>
         </table>
       </section>
     </main>
+  </div>
+
+  <!-- The diff half's own way to finish: collapsed to its control until a
+       press opens the page's finish row in place. -->
+  <div class="rv-finishbar">
+    <span class="rv-finish">finish review (1)</span>
   </div>
 
   <div class="fig">the Conversation half: what cannot be placed, the rounds, and the finish</div>

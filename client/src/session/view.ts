@@ -31,7 +31,14 @@ import type { Row, RowState } from '../home/view';
 import { FORGE_COMMANDS } from '../composer/forge-commands';
 import type { ComposerRecord } from '../composer/view';
 import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
-import { awaitsReviewer } from '../review/view';
+import {
+  ageOf,
+  authorName,
+  awaitsReviewer,
+  canvasLine,
+  roundTally,
+  threadsInRound,
+} from '../review/view';
 import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
 import type {
@@ -48,6 +55,7 @@ import type {
   FileStatusWire,
   McpServer,
   MonitorRecord,
+  ReviewThreadRecord,
   SessionHeader,
   SessionRecord,
 } from './wire';
@@ -1664,6 +1672,162 @@ export function reviewRows(record: SessionRecord | null): ReviewStripRow[] | nul
   });
   // Waiting rows first; the sort is stable, so the rest keep their order.
   return [...rows].sort((a, b) => Number(b.waiting) - Number(a.waiting));
+}
+
+/** One thread inside a review set, with the code it was written against. */
+export interface ReviewSetThread {
+  id: string;
+  state: string;
+  where: string;
+  /** Every turn of the thread in order, as the page draws them: the
+   *  reviewer's own words, then the agent's answer, then whatever followed. */
+  turns: { author: string; text: string }[];
+  /** The borrowed lines: the branch diff around the anchor where it still
+   *  holds the spot, else the context captured when the comment was written -
+   *  the same borrow the review page's parked section makes. */
+  code: string[];
+  /** Whether `code` is the current diff's (`false`: the captured lines, so
+   *  the anchored spot has moved or cannot be drawn). */
+  inDiff: boolean;
+}
+
+/** One filed round, as the strip's panel draws it. */
+export interface ReviewSetView {
+  id: string;
+  number: number;
+  summary: string | null;
+  age: string;
+  chips: { state: string; count: number }[];
+  threads: ReviewSetThread[];
+}
+
+/**
+ * The seat's review SETS, as the strip's panel draws them: each filed round,
+ * oldest first - the conversation's own direction - with its threads' code
+ * and states, so a reader meets the round as the review it was rather than
+ * as loose comments (Ved, 2026-10-15).
+ */
+export function reviewSets(record: SessionRecord | null, now: number): ReviewSetView[] | null {
+  if (record === null || !treeShows(record)) return null;
+  const held = record.reviews;
+  if (held.threads.outcome !== 'read' || held.reviews.outcome !== 'read') {
+    // A read that did not land draws as itself rather than as no sets - the
+    // same rule the strip's rows keep.
+    const failed = held.reviews.outcome !== 'read' ? held.reviews : held.threads;
+    return [
+      {
+        id: 'sets-read',
+        number: 0,
+        summary: null,
+        age: '',
+        chips: [],
+        threads: [
+          {
+            id: 'sets-read',
+            state: failed.outcome,
+            where: 'the sets read',
+            turns: [
+              {
+                author: '',
+                text: failed.outcome === 'failed' ? failed.value.trim() : String(failed.value),
+              },
+            ],
+            code: [],
+            inDiff: false,
+          },
+        ],
+      },
+    ];
+  }
+  const threads = held.threads.value;
+  return [...held.reviews.value]
+    .sort((a, b) => a.number - b.number)
+    .map((round) => {
+      // The review page's own chips, mirrored: only the states with work.
+      const tally = roundTally(threads, round);
+      const chips = (
+        [
+          ['open', tally.open],
+          ['addressed', tally.addressed],
+          ['resolved', tally.resolved],
+          ['outdated', tally.outdated],
+        ] as [string, number][]
+      )
+        .filter(([, count]) => count > 0)
+        .map(([state, count]) => ({ state, count }));
+      return {
+        id: round.id,
+        number: round.number,
+        summary: round.summary,
+        age: ageOf(round.created_at, now),
+        chips,
+        threads: threadsInRound(threads, round.id).map((thread) => {
+          const placed = thread.commit === null ? canvasLine(thread, null) : null;
+          const excerpt = codeAround(record, thread, placed);
+          return {
+            id: thread.id,
+            state: typeof thread.status === 'string' ? thread.status : thread.status.unknown,
+            where: whereOf(thread, placed),
+            turns: thread.comments.map((turn) => ({
+              author: authorName(turn.author),
+              text: turn.text,
+            })),
+            code: excerpt.code,
+            inDiff: excerpt.inDiff,
+          };
+        }),
+      };
+    });
+}
+
+/** Lines kept either side of an anchored one. */
+const CODE_AROUND = 2;
+
+/** Where a thread sits, as the resolution places it; `null` when it cannot
+ *  be placed (a commit-scoped thread keeps its own recorded numbering). */
+type Placed = { line: number; movedFrom: number | null } | null;
+
+/**
+ * Where the row points: the resolution's own line, with the move named the
+ * way the page's canvas names it - the recorded number is the fallback of a
+ * thread with no placement, never a second claim beside one.
+ */
+function whereOf(thread: ReviewThreadRecord, placed: Placed): string {
+  const file = thread.anchor.path.split('/').pop() ?? thread.anchor.path;
+  if (placed === null) return `${file} \u{b7} line ${thread.anchor.line}`;
+  return placed.movedFrom === null
+    ? `${file} \u{b7} line ${placed.line}`
+    : `${file} \u{b7} line ${placed.line} \u{b7} moved from ${placed.movedFrom}`;
+}
+
+/**
+ * The lines a comment was written against, and which source they are.
+ *
+ * The spot is the resolution's own line where one landed - where the page's
+ * canvas draws the thread - never the recorded number a moved branch has left
+ * behind. A commit-scoped thread (whose numbering this diff does not carry)
+ * or an unplaced one falls to the captured context.
+ */
+function codeAround(
+  record: SessionRecord,
+  thread: ReviewThreadRecord,
+  placed: Placed,
+): { code: string[]; inDiff: boolean } {
+  if (placed !== null && record.diff.branchAhead.state === 'populated') {
+    const file = record.diff.branchAhead.files.find((held) => held.path === thread.anchor.path);
+    const side = thread.anchor.side === 'old' ? 'old' : 'new';
+    for (const hunk of file?.hunks ?? []) {
+      const at = hunk.lines.findIndex((line) =>
+        side === 'old' ? line.oldLine === placed.line : line.newLine === placed.line,
+      );
+      if (at >= 0) {
+        const from = Math.max(0, at - CODE_AROUND);
+        const to = Math.min(hunk.lines.length, at + CODE_AROUND + 1);
+        return { code: hunk.lines.slice(from, to).map((line) => line.text), inDiff: true };
+      }
+    }
+  }
+  return { code: thread.anchor.context, inDiff: false };
 }
 
 /** The session's monitors, as the strip's row draws them. */

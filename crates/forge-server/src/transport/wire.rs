@@ -547,6 +547,21 @@ pub struct ReviewsWire {
     pub reviews: ReadWire<Vec<ReviewSet>>,
 }
 
+/// One file's content at a revision, as the `file_content` answer carries
+/// it: the lines a review page's between-hunk expansion draws.
+///
+/// A read that answered something is never folded into one that failed -
+/// the same distinction the diff reader keeps - so a refusal crosses as its
+/// own arm with its own words rather than as an empty read.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum FileContentWire {
+    /// The lines the read carried, and whether its ceiling cut them short.
+    Read { lines: Vec<String>, truncated: bool },
+    /// The read could not run, in its own sentence.
+    Failed { why: String },
+}
+
 /// One review thread as a record carries it: the stored thread, and where
 /// its anchor sits in the content the record ships beside it.
 ///
@@ -556,11 +571,16 @@ pub struct ReviewsWire {
 /// whether an anchor still lands, so the record carries that answer
 /// rather than a second implementation deriving one a language away.
 ///
+/// **A thread written inside a commit lands too, when the content
+/// carries it.** Its own commit's view draws it at its recorded line
+/// without any of this; the landing is what lets the all-changes view
+/// draw it beside the same code in the branch's numbering - earned by
+/// content and neighbours, never by the commit-numbered line, which
+/// addresses unrelated code here.
+///
 /// `resolution` is `None` when this read has no landing to report: a
-/// thread anchored to a commit's own scope (a commit's diff is immutable,
-/// so its recorded line is settled by construction, and the record's
-/// content is not the numbering that line was written in), or one whose
-/// branch layer the scan could not read.
+/// thread whose branch layer the scan could not read, or one
+/// numbered against another base.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ReviewedThreadWire {
@@ -613,7 +633,16 @@ fn reviewed_threads(
         .map(|thread| {
             let home_base = default_branch == Some(thread.anchor.base_ref.as_str());
             let resolution = match (&thread.commit, files) {
-                (None, Some(files)) if home_base => Some(resolution_wire(&thread.anchor, files)),
+                (_, Some(files)) if home_base => {
+                    // **A commit-scoped anchor's line counts in its own
+                    // commit's numbering**, so the in-place shortcut is off
+                    // for it: the landing has to be earned by content and
+                    // neighbours (the resolver's own `trust_line_number`),
+                    // which is what keeps the line from anchoring onto
+                    // unrelated code here.
+                    let trusted = thread.commit.is_none();
+                    Some(resolution_wire(&thread.anchor, files, trusted))
+                }
                 _ => None,
             };
             ReviewedThreadWire { thread, resolution }
@@ -621,15 +650,25 @@ fn reviewed_threads(
         .collect()
 }
 
-/// One anchor placed against the bounded content the record carries. The
-/// line number is trusted: the branch-ahead layer is the numbering an
-/// all-changes comment was written in, the same trust a view's
-/// overlay extends to its own home scope.
-fn resolution_wire(anchor: &ReviewAnchor, files: &[FileContent]) -> ThreadResolutionWire {
-    match place_anchor_in_content(anchor, files, true) {
-        AnchorPlacement::Placed { line, moved_from } => {
-            ThreadResolutionWire::Placed { line, moved_from }
-        }
+/// One anchor placed against the bounded content the record carries. With
+/// `trusted` the line number is evidence too, because the branch-ahead
+/// layer is the numbering the anchor was written in - the same trust a
+/// view's overlay extends to its own home scope. Untrusted, the placement
+/// is earned by content and neighbours alone.
+fn resolution_wire(
+    anchor: &ReviewAnchor,
+    files: &[FileContent],
+    trusted: bool,
+) -> ThreadResolutionWire {
+    match place_anchor_in_content(anchor, files, trusted) {
+        AnchorPlacement::Placed { line, moved_from } => ThreadResolutionWire::Placed {
+            line,
+            // **A cross-scope landing names no `moved_from`**: the recorded
+            // number counts in another scope's numbering, and naming it
+            // beside a line of this one would be a number the reader cannot
+            // place.
+            moved_from: if trusted { moved_from } else { None },
+        },
         AnchorPlacement::Outdated(reason) => ThreadResolutionWire::Outdated {
             reason: match reason {
                 OutdatedReason::Gone => OutdatedReasonWire::Gone,
@@ -2013,7 +2052,11 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-qm", "base"]);
         git(&["checkout", "-q", "-b", "worktree-pr"]);
-        std::fs::write(path.join("branch.txt"), "committed on the branch\n").expect("write");
+        std::fs::write(
+            path.join("branch.txt"),
+            "committed on the branch\nsecond line\nthird line\n",
+        )
+        .expect("write");
         git(&["add", "-A"]);
         git(&["commit", "-qm", "branch"]);
         // Uncommitted: a modification, and an addition staged so it is a
@@ -2604,8 +2647,14 @@ mod tests {
     /// ships, and leaves a commit-scoped thread unresolved.
     ///
     /// The landing rides the read because a client has no working tree to
-    /// re-scan; a commit's diff is immutable, so a thread anchored to one
-    /// is settled by construction and this content is not its numbering.
+    /// re-scan.
+    ///
+    /// **A commit-scoped thread is placed here too, when the branch's
+    /// content still carries it** - the all-changes view draws it beside
+    /// the same code, and the recorded line is never the evidence: it
+    /// counts in the commit's numbering. A thread the branch no longer
+    /// carries answers outdated, and a cross-scope landing carries no
+    /// `moved_from`, whose number belongs to the other scope.
     ///
     /// **A thread written against another base is refused the landing too**:
     /// its line numbers belong to a diff this record does not carry, and a
@@ -2634,18 +2683,21 @@ mod tests {
             },
         );
         let thread = |id: &str,
+                      path: &str,
                       text: &str,
+                      line: u32,
+                      context: &[&str],
                       commit: Option<&str>,
                       base: &str|
          -> forge_primitives::review::ReviewThread {
             forge_primitives::review::ReviewThread {
                 id: id.to_owned(),
                 anchor: forge_primitives::review::ReviewAnchor {
-                    path: "branch.txt".to_owned(),
+                    path: path.to_owned(),
                     side: forge_primitives::review::ReviewSide::New,
-                    line: 1,
+                    line,
                     content_hash: forge_workspace::env::git_diff::resolver::anchor_hash(text),
-                    context: Vec::new(),
+                    context: context.iter().map(|held| (*held).to_owned()).collect(),
                     base_ref: base.to_owned(),
                 },
                 comments: vec![forge_primitives::review::ReviewComment {
@@ -2660,17 +2712,26 @@ mod tests {
                 commit: commit.map(str::to_owned),
             }
         };
-        for (id, text, commit, base) in [
-            ("placed", "committed on the branch", None, "main"),
-            ("gone", "a line the branch does not carry", None, "main"),
-            ("scoped", "committed on the branch", Some("abc123"), "main"),
-            ("other-base", "committed on the branch", None, "HEAD"),
+        for (id, text, line, context, commit, base) in [
+            ("placed", "committed on the branch", 1, &[][..], None, "main"),
+            ("gone", "a line the branch does not carry", 1, &[][..], None, "main"),
+            (
+                "scoped",
+                "second line",
+                2,
+                &["committed on the branch", "third line"][..],
+                Some("abc123"),
+                "main",
+            ),
+            ("scoped-moved", "third line", 1, &["second line"][..], Some("abc123"), "main"),
+            ("scoped-gone", "not on the branch at all", 1, &[][..], Some("abc123"), "main"),
+            ("other-base", "committed on the branch", 1, &[][..], None, "HEAD"),
         ] {
             assert!(
                 fleet.workspace().upsert_review_thread(
                     "proj",
                     "worktree-pr",
-                    thread(id, text, commit, base),
+                    thread(id, "branch.txt", text, line, context, commit, base),
                 ),
                 "the {id} thread stores",
             );
@@ -2701,8 +2762,18 @@ mod tests {
         );
         assert_eq!(
             of("scoped")["resolution"],
-            serde_json::Value::Null,
-            "a commit-scoped thread has no landing against the record's content",
+            serde_json::json!({"state": "placed", "line": 2, "moved_from": null}),
+            "a commit-scoped thread the branch still carries lands there, by content: {encoded}",
+        );
+        assert_eq!(
+            of("scoped-moved")["resolution"],
+            serde_json::json!({"state": "placed", "line": 3, "moved_from": null}),
+            "and the recorded line is not named beside this scope's: it counts in the commit's",
+        );
+        assert_eq!(
+            of("scoped-gone")["resolution"],
+            serde_json::json!({"state": "outdated", "reason": "gone"}),
+            "a commit-scoped thread the branch no longer carries is outdated there",
         );
         assert_eq!(
             of("other-base")["resolution"],

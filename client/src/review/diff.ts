@@ -93,6 +93,95 @@ export function treeRows(files: DiffFileRecord[], closed: ReadonlySet<string>): 
   return rows;
 }
 
+/** One file's whole content, as the read answered it. */
+export interface FileLines {
+  lines: string[];
+  truncated: boolean;
+}
+
+/**
+ * One gap the drawn hunks leave: the lines between two hunks, above the
+ * first or below the last, that the record's bounded content does not
+ * carry.
+ */
+export interface Gap {
+  /** The hunk the gap follows; -1 is the gap above the first hunk. */
+  after: number;
+  /** The first new-side line the gap hides. */
+  start: number;
+  /** How many lines it hides. */
+  count: number;
+}
+
+/**
+ * The gaps a file's hunks leave, as far as the read in hand can fill them.
+ *
+ * **A gap is offered exactly where the read can supply it**, so a file
+ * nothing has read - or one whose read refused - offers none, and a door
+ * that would open on a failed read is never drawn. A read cut at the
+ * ceiling offers the gaps its carried lines reach; the gap below the last
+ * hunk exists only in a complete read, because a cut one cannot say where
+ * the file ends - and a file whose hunks the record itself cut (`truncated`)
+ * offers none either: the hunk after the cut is missing, so the lines the
+ * gap would draw as context may be code the diff changed.
+ */
+export function gapsOf(file: DiffFileRecord, content: FileLines | null): Gap[] {
+  if (content === null || file.truncated) return [];
+  const hunks = file.hunks;
+  const first = hunks[0];
+  if (first === undefined) return [];
+  const carried = content.lines.length;
+  const gaps: Gap[] = [];
+  if (first.newStart > 1) gaps.push({ after: -1, start: 1, count: first.newStart - 1 });
+  for (let i = 0; i + 1 < hunks.length; i += 1) {
+    const held = hunks[i];
+    const next = hunks[i + 1];
+    if (held === undefined || next === undefined) continue;
+    const start = held.newStart + held.newCount;
+    const count = next.newStart - start;
+    if (count > 0) gaps.push({ after: i, start, count });
+  }
+  const last = hunks[hunks.length - 1];
+  if (last !== undefined && !content.truncated) {
+    const start = last.newStart + last.newCount;
+    const count = carried - start + 1;
+    if (count > 0) gaps.push({ after: hunks.length - 1, start, count });
+  }
+  return gaps.filter((gap) => gap.start + gap.count - 1 <= carried);
+}
+
+/**
+ * One gap's reveal: how many of its hidden lines each end has opened. The
+ * two ends are the gap's two controls - `down` the lines the hunk it follows
+ * left off at, `up` the lines just above the hunk after it - so a press adds
+ * to one end without touching the other.
+ */
+export interface GapReveal {
+  down: number;
+  up: number;
+}
+
+/** Lines one directional press reveals (GitHub's own step). */
+export const GAP_STEP = 20;
+
+/** At or below this many remaining lines, one press opens the rest and the
+ *  control reads "expand all" rather than a direction - GitHub's own rule,
+ *  taken from its page: a gap that small fits one fetch. */
+export const GAP_SMALL = 20;
+
+/** The hidden lines a gap still holds, given what the reader opened. */
+export function gapRemaining(gap: Gap, reveal: GapReveal | undefined): number {
+  const opened = (reveal?.down ?? 0) + (reveal?.up ?? 0);
+  return Math.max(0, gap.count - opened);
+}
+
+/** What an expansion draws: the file's whole carried lines, and what the
+ *  reader opened per gap, by the hunk each gap follows. */
+export interface Expansion {
+  content: FileLines;
+  expanded: ReadonlyMap<number, GapReveal>;
+}
+
 /**
  * The wire's bounded hunks re-emitted as one unified diff text per file.
  *
@@ -101,19 +190,92 @@ export function treeRows(files: DiffFileRecord[], closed: ReadonlySet<string>): 
  * (headers from the two ranges, one marker per line) rather than fetched.
  * The rebuild is lossless for display: it copies what the crate's parser
  * kept, and the crate's parser kept everything the text carried.
+ *
+ * **A revealed gap is drawn as context lines around the hunks it sits
+ * between** - the same lines the diff left out, carrying the markers a
+ * context line does - so the viewer computes their two side's numbers from
+ * the heading exactly as it does every other line's. Each heading takes the
+ * added lines into its own counts: a block that grew by them but kept its
+ * old count would number every hunk below it wrong.
+ *
+ * **A gap the reader has fully revealed joins the two hunks into one
+ * block**: the second heading goes, and the lines run continuously the way
+ * GitHub draws a closed gap.
  */
-export function synthesizeFileDiff(file: DiffFileRecord): string {
+export function synthesizeFileDiff(
+  file: DiffFileRecord,
+  expansion: Expansion | null = null,
+): string {
   const out = [
     `diff --git a/${file.oldPath ?? file.path} b/${file.path}`,
     `--- a/${file.oldPath ?? file.path}`,
     `+++ b/${file.path}`,
   ];
-  for (const hunk of file.hunks) {
-    out.push(`@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`);
-    for (const line of hunk.lines) {
-      const marker = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
-      out.push(marker + line.text);
+  const hunks = file.hunks;
+  const gaps = expansion === null ? [] : gapsOf(file, expansion.content);
+  const revealOf = (after: number): GapReveal =>
+    expansion?.expanded.get(after) ?? { down: 0, up: 0 };
+  const gapAfter = (after: number): Gap | undefined => gaps.find((held) => held.after === after);
+  /** A run of the gap's own lines, from `at` on, as context rows. */
+  const runOf = (at: number, count: number): string[] =>
+    expansion === null
+      ? []
+      : expansion.content.lines.slice(at - 1, at - 1 + count).map((text) => ` ${text}`);
+  const rowOf = (line: DiffHunkRecord['lines'][number]): string =>
+    (line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ') + line.text;
+  let i = 0;
+  while (i < hunks.length) {
+    const hunk = hunks[i];
+    if (hunk === undefined) break;
+    let oldStart = hunk.oldStart;
+    let newStart = hunk.newStart;
+    let oldCount = hunk.oldCount;
+    let newCount = hunk.newCount;
+    const body: string[] = [];
+    // The bottom of the gap above this block takes the block's own heading:
+    // the lines sit before its first line, so both ranges start earlier.
+    const above = gapAfter(i === 0 ? -1 : i - 1);
+    if (above !== undefined) {
+      const head = runOf(
+        above.start + above.count - revealOf(above.after).up,
+        revealOf(above.after).up,
+      );
+      body.push(...head);
+      oldStart -= head.length;
+      newStart -= head.length;
+      oldCount += head.length;
+      newCount += head.length;
     }
+    body.push(...hunk.lines.map(rowOf));
+    // Gaps below this block: the tail the reader opened, and the following
+    // hunk itself once the whole gap is open.
+    let j = i;
+    for (;;) {
+      const gap = gapAfter(j);
+      if (gap === undefined) break;
+      const reveal = revealOf(gap.after);
+      const remaining = gapRemaining(gap, reveal);
+      if (reveal.down + reveal.up === 0) break;
+      if (remaining > 0) {
+        const tail = runOf(gap.start, reveal.down);
+        body.push(...tail);
+        oldCount += tail.length;
+        newCount += tail.length;
+        break;
+      }
+      const all = runOf(gap.start, gap.count);
+      body.push(...all);
+      oldCount += all.length;
+      newCount += all.length;
+      const next = hunks[j + 1];
+      if (next === undefined) break;
+      body.push(...next.lines.map(rowOf));
+      oldCount += next.oldCount;
+      newCount += next.newCount;
+      j += 1;
+    }
+    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...body);
+    i = j + 1;
   }
   return out.join('\n') + '\n';
 }
@@ -143,6 +305,32 @@ export function findLine(
 interface RowSide {
   side: 'old' | 'new';
   line: number;
+}
+
+/** One drawn file's own box, as the reading edge reads the canvas. */
+interface SectionBox {
+  path: string;
+  top: number;
+  bottom: number;
+}
+
+/**
+ * The file the reader is inside: the drawn section whose region holds the
+ * reading edge - the last one whose top has passed it - or `null` when the
+ * edge sits above every drawn section.
+ *
+ * The boxes are the sections the canvas has actually drawn (the list is
+ * virtualised, so a section the reader has scrolled past is gone, and the
+ * one at the edge is by definition among those drawn). Order-independent:
+ * the box with the greatest top at or above the edge wins.
+ */
+export function currentFileAt(sections: SectionBox[], edge: number): string | null {
+  let best: SectionBox | null = null;
+  for (const section of sections) {
+    if (section.top > edge + 1) continue;
+    if (best === null || section.top > best.top) best = section;
+  }
+  return best === null ? null : best.path;
 }
 
 /**

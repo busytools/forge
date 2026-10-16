@@ -353,6 +353,14 @@ class RustConnection implements Connection {
     return true;
   }
 
+  fileContent(session: SessionSlot, path: string, sha: string | null): boolean {
+    if (this.state !== 'open') return false;
+    void invoke('client_file_content', { session, path, sha }).catch((why: unknown) => {
+      report("an ask for a file's content could not reach the shell", why);
+    });
+    return true;
+  }
+
   readDocument(session: SessionSlot, path: string, reviewable: boolean): boolean {
     if (this.state !== 'open') return false;
     void invoke('client_read_document', { session, path, reviewable }).catch((why: unknown) => {

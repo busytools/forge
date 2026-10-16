@@ -25,35 +25,51 @@ file tree, and the diff with the threads on their lines.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | Header        | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open`                                                                                               | the record's `work.branch`, and the two review halves              |
 | Tabs          | `Conversation` and `Files changed`, with the commit count                                                                                                                                                                                                                       | the record's git chain                                             |
-| Scope         | the scope on screen, a stepper, the keys, and the unified/split picker                                                                                                                                                                                                          | the record's git chain (the commit list)                           |
-| Tree          | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth; a directory carries the files beneath it                                                                                                                  | the scope's diff, and the threads in that scope                    |
-| Canvas        | the scope's files as diffs, with each thread inserted under its own line and the composer under the line a comment is being written on                                                                                                                                          | the scope's diff, the threads, and the server's landing per thread |
+| Scope         | the scope on screen, a stepper, the keys, the unified/split picker, and the comments' stepper with its `N/M` count                                                                                                                                                              | the record's git chain (the commit list), and the scope's own threads |
+| Tree          | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth; a directory carries the files beneath it, and the file whose region the reader is inside is marked as the current one                                    | the scope's diff, the threads in that scope, and the canvas's own scroll |
+| Canvas        | the scope's files as diffs, with each thread inserted under its own line, the composer under the line a comment is being written on, and GitHub's own gap strips between two hunks (above the first, below the last) that draw the lines the diff left out, a press at a time      | the scope's diff, the threads, the server's landing per thread, and the file's whole content read |
 | Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
 | Rounds        | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                                                                                                              | the rounds half                                                    |
-| Finish        | the summary field, its mic, and `finish review`, live once a comment is drafted                                                                                                                                                                                                 | the page's own drafts                                              |
+| Finish        | the summary field, its mic, and `finish review`, live once a comment is drafted - the conversation half's own section, and, on the diff half, a `finish review` control under the canvas that opens the same row in place and collapses again once the round seals                | the page's own drafts                                              |
 | The chat line | the lines the view this client replaced sent, pushed into the reviewed seat's own chat: `Review #N ready - address it via the review MCP (review__list)` when a round seals, `Reopened a comment in review #N - take another look via the review MCP (review__get)` on a reopen | the page's own dispatch after the write                            |
 
 ## A scope, and where a thread draws
 
-**A scope is All changes or one commit.** A thread is drawn only in the
-scope it was written in, because the numbering its anchor records is that
-scope's:
+**A scope is All changes or one commit.** A thread draws in the scope it was
+written in, and in all changes whenever the content that scope records still
+carries its line:
 
-- A commit-scoped thread sits at its recorded line. A commit's diff is
-  immutable, so that line is settled by construction - there is nothing to
-  re-resolve.
+- A commit-scoped thread sits at its recorded line in its own commit's view.
+  A commit's diff is immutable, so that line is settled by construction -
+  there is nothing to re-resolve. In the all-changes view it draws where the
+  server's landing puts it: the record resolves a commit-scoped anchor
+  against the branch's content too, by content and neighbours alone (its
+  recorded number counts in the commit's numbering, so it is never the
+  evidence), and one the branch no longer carries parks as outdated there -
+  its own commit's view still draws it where it was written.
 - An all-changes thread sits where the server's landing puts it. The record
   carries, per thread, the resolver's own answer against the content it
   ships - placed at a line (with the line it moved from, when it moved), or
   outdated with the resolver's reason. A thread with no landing carried -
   a read that answered none - is parked rather than guessed onto its
   recorded line.
+- **A commit's view draws only its own threads.** An all-changes thread's
+  numbering is the branch's and the record carries no landing for it against
+  a commit's diff, so placing it there would be a guess the resolver refuses
+  to make.
 
 The keys, as the keycap row under the tabs states them: `←` and `→` step one
-scope, `a` flips between all changes and the commit you were on, and `j`
-opens the picker (arrows and Enter; Escape closes). The brackets do the same
-stepping and are not advertised beside the arrows. They are live only while
-the diff half is on screen, and a keypress in a text field is the field's.
+scope and `shift`+`←`/`→` step one comment, both **cycling** - the last
+steps round to the first, so a held arrow walks the branch rather than
+hitting a wall - `a` flips between all changes and the commit you were on,
+and `j` opens the picker (arrows and Enter; Escape closes). The brackets do
+the same stepping as the arrows and are not advertised beside them. The
+comments are walked in the order the canvas draws them, by path and then by
+line, and each step brings its card into view. Both walks have buttons in
+the tabs row - the scope's stepper and, beside it, the comments' stepper
+with its `N/M` count - because a key alone is no door on a touch screen. The
+keys are live only while the diff half is on screen, and a keypress in a
+text field is the field's.
 
 The commit list is the record's own; a commit's diff is fetched when its
 scope is first shown, and not carried on the record - a branch can hold
@@ -69,6 +85,12 @@ which is what its collapsed row hides. A file states a side of its change
 only where it has one, so a file with no removals carries no `-0`, and
 each file row carries its full path as its hover title.
 
+**The tree also says where the reader is.** The file whose region holds the
+canvas's reading edge - its own top at the wide width, the window's where
+the page is the scroller - is marked as current, and the mark moves as the
+scroll moves, one mark a frame. A reader three files into a long branch does
+not have to hunt for their place in the list.
+
 **The canvas draws what is on screen.** The sections are virtualised over
 files - the browser holds the two or three a reader can see and the rest
 stays data - which is what makes the unified/split switch fluid: the mode
@@ -76,6 +98,40 @@ change re-renders the tables on screen, not every table on the branch
 (measured at about ninety milliseconds after the change, against
 three-quarters of a second for the whole branch). The tree's rows jump to a
 file the list has not drawn yet.
+
+**A diff's hunks leave lines out, and the page can draw them.** The record
+carries bounded hunks, so the lines between them - and above the first,
+below the last - are exactly what it does not carry. The controls are
+GitHub's own, down to the glyph and the placement: a strip in the hunk
+header's line-number column, on the row the diff already draws, with the
+gap below the last hunk getting a row of its own under the file's last line;
+hovering lights the strip. A gap with no more than twenty lines left opens
+in one press and takes the two-way unfold mark with GitHub's `Expand All`;
+a longer one takes a strip per end it can be opened from - the fold-down
+mark above the fold-up one between two hunks, and a single direction at the
+file's edges - each press drawing twenty lines from the end it names. On a
+press the hidden lines draw as context around the hunk they sit with: the
+diff text is re-emitted with the heading grown by them, because the viewer
+numbers every row from that heading and rows spliced in by hand would draw a
+numbering it never agreed to, and a gap opened all the way joins the two
+hunks into one block with the second heading gone, the way GitHub closes one.
+The lines come from the file's whole content read at the scope's own
+revision - a commit's tree for a commit's scope, the branch tip for all
+changes - bounded by the same ceiling a document read is, and answered as a
+flagged short read at that ceiling rather than as a refusal, its lines
+capped at ten thousand besides. **The page asks for that read when it draws
+a file that can have a gap** - not a deleted file, a binary, a submodule, an
+added one whose single hunk is its whole content, or one whose hunks the
+record itself cut, none of which a control can ever fill - because the
+answer decides which controls exist: a read that could not run, or one cut
+before the gap it would fill, earns none rather than a door that opens on
+nothing.
+
+An expanded line takes no comment door and no click to comment. The record
+does not carry it - the file read does - and a thread's anchor is resolved
+against the content the record ships, so a comment written there would park
+as outdated the moment it was filed. The door is offered only on the lines
+the hunks carry.
 
 ## A thread
 
@@ -134,6 +190,19 @@ reopen a `set_review_thread_status`, and `finish review` a `submit_review`
 sealing every thread this sitting has drafted or replied on. The summary
 field is the round's own.
 
+**A comment opens with the caret already in it.** Clicking a line's door -
+or anywhere on the line - is a reader asking to write there, so the box's
+field takes the focus as the row mounts; a click on the line the box already
+sits on puts the caret back in it.
+
+**The diff half can finish the round where the reader is.** The row under
+the canvas carries a `finish review (N)` control while the round is open;
+a press opens the page's own finish row in place - the same summary field,
+the same seal, one snippet drawn by both halves - the field takes the
+caret, and Enter (or the button) seals the round and collapses the row
+again. A reader never has to leave the diff to close a round, and the write
+path is the conversation half's own either way.
+
 **The finish nudges the seat the review belongs to.** A round that sealed
 also sends a `prompt_under` into the reviewed seat's own chat - one line,
 never the comments, which are what the review MCP is for: `Review #N ready -
@@ -181,7 +250,9 @@ comment box, the reply box in either half and the round's summary field each
 wear the composer's own mic control - a press starts a take, a hold opens
 what dictation is set to - over the page's own take, so a take begun here is
 addressed to the seat this review belongs to and the server sees an ordinary
-take on that seat.
+take on that seat. The summary's own row is drawn by whichever half is up,
+and it goes with that half: a take begun in the diff half's finish row ends
+when the row does.
 
 **The visible take bar takes the line of the box that began the take**,
 exactly as the composer's bar takes the draft's own line: the row the words
@@ -202,7 +273,9 @@ registration per box would fire the key once per open box. It begins its
 take in the box the reader is in, else the one open, else the summary - the
 same press and release the composer's box reads - and it is offered only
 where a take has somewhere to land, since a take whose words no box can take
-is a take the reader loses.
+is a take the reader loses. Every box on the page is covered: the comment box
+on a diff line, the reply box under a thread, and the round's summary,
+wherever it is drawn.
 
 **The write's outcome is read.** The two commands that answer through a
 reply carry the server's own answer back - the store's yes, or the word a
@@ -234,6 +307,10 @@ reviewed on this branch yet.`; threads drafted with no round filed says how
   failed says that; and an unnamed layer state draws its own word.
 - **A commit being fetched**: `Reading the commit...` until its answer
   lands.
+- **A file's content being read**: no between-hunk control is drawn until
+  the read lands, and a read that failed, refused or was cut before a gap
+  draws none for it - the controls are only ever doors onto lines the read
+  actually carries.
 - **A take running**: the take's bar in the line of the box that began it -
   the composer's own reading, `ready`, `recording` and `transcribing` - and
   the mic beside it says `stop dictating`; the words land in that box when

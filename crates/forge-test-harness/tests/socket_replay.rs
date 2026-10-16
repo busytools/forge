@@ -249,7 +249,7 @@ census!(ServerMessage,
     [
         Greeting struct, Snapshot struct, Update struct, Page struct,
         SeatFrames struct,
-        CommitDiff struct, Reply struct, BrowserRole struct, Error struct,
+        CommitDiff struct, FileContent struct, Reply struct, BrowserRole struct, Error struct,
         BrowserAsk struct,
         DocumentRead struct,
         BrowserSeats struct,
@@ -333,6 +333,7 @@ census!(ClientMessage,
         BrowserAnswer struct,
         BrowserTakeRole struct,
         DocumentRead struct,
+        FileContent struct,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
@@ -1000,6 +1001,22 @@ fn frames_record() -> Value {
             truncated: false,
         }),
     );
+    // The file-content answer's own fields: the review page keys its reads
+    // by the three names carried back here, and the lines it draws come out
+    // of `lines`. A rename among them leaves a page waiting on an answer it
+    // cannot route, with nothing failing.
+    payload_sampled.insert(
+        "FileContent".to_owned(),
+        shape_of(&ServerMessage::FileContent {
+            session: SessionSlot::lead("TestOrg", "proj"),
+            path: "src/a.rs".to_owned(),
+            sha: Some("abc123".to_owned()),
+            content: forge_server::transport::wire::FileContentWire::Read {
+                lines: vec!["one".to_owned(), "two".to_owned()],
+                truncated: false,
+            },
+        }),
+    );
     // **The hand-off's own fields, where a rename proved invisible to the
     // census.** `context` became `profile` in v7 - the field crosses in this
     // update and in the snapshot's pending asks alike, and a one-sided rename
@@ -1497,6 +1514,16 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
             session: SessionSlot::lead("TestOrg", "proj"),
             path: "docs/readme.md".to_owned(),
             reviewable: true,
+        }),
+    );
+    // The file-content ask, for the same reason: the page writes these
+    // fields by hand, and a rename here is a read nothing answers.
+    sampled.insert(
+        "FileContent".to_owned(),
+        sample(ClientMessage::FileContent {
+            session: SessionSlot::lead("TestOrg", "proj"),
+            path: "src/a.rs".to_owned(),
+            sha: None,
         }),
     );
     sampled

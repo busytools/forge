@@ -84,6 +84,44 @@ const thread: ReviewThreadRecord = {
   resolution: { state: 'placed', line: 1, moved_from: null },
 };
 
+/** A thread the resolver placed at line 4, written at 7: the shape the
+ *  server's Moved arm produces (moved_from is the recorded line). */
+const moved: ReviewThreadRecord = {
+  ...thread,
+  anchor: { ...thread.anchor, line: 7 },
+  resolution: { state: 'placed', line: 4, moved_from: 7 },
+};
+
+/** The same file with every line the moved card needs drawn. */
+const taller: DiffLayerRecord = {
+  state: 'populated',
+  files: [
+    {
+      path: 'src/a.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 5,
+          newStart: 1,
+          newCount: 5,
+          lines: [
+            { kind: 'context', text: 'one', oldLine: 1, newLine: 1 },
+            { kind: 'context', text: 'two', oldLine: 2, newLine: 2 },
+            { kind: 'context', text: 'three', oldLine: 3, newLine: 3 },
+            { kind: 'context', text: 'four', oldLine: 4, newLine: 4 },
+            { kind: 'context', text: 'five', oldLine: 5, newLine: 5 },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 let app: Record<string, unknown> | null = null;
 /** The frames the page asked for, run by [`paint`]. */
 let frames: FrameRequestCallback[] = [];
@@ -137,7 +175,7 @@ async function settle(): Promise<void> {
 }
 
 /** The canvas over the thread, as the page mounts it. */
-function draw(): void {
+function draw(held: ReviewThreadRecord = thread, at: DiffLayerRecord = layer): void {
   vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
   vi.setSystemTime(new Date(T0));
   const shared = fakeWire();
@@ -192,11 +230,12 @@ function draw(): void {
       slot: SEAT,
       scopeCommit: null,
       mode: 'unified',
-      layer,
-      threads: [thread],
+      layer: at,
+      threads: [held],
       reviews: [],
       busy: false,
       dictate,
+      focusComment: null,
       onpress: () => undefined,
       onhold: () => undefined,
       onelement: () => undefined,
@@ -213,6 +252,92 @@ function chip(): string | null {
   return document.querySelector('.rv-insert .rv-at')?.textContent ?? null;
 }
 
+/** Two files, so the tree can carry a reading mark on one of them. */
+const twoFiles: DiffLayerRecord = {
+  state: 'populated',
+  files: [
+    {
+      path: 'src/a.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'one', oldLine: 1, newLine: 1 }],
+        },
+      ],
+    },
+    {
+      path: 'src/b.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'one', oldLine: 1, newLine: 1 }],
+        },
+      ],
+    },
+  ],
+};
+
+/** The tree rows the reading mark is on, by basename. */
+function marked(): string[] {
+  return [...document.querySelectorAll('.rv-frow.here')].map(
+    (row) => row.querySelector('.rv-fpath')?.textContent ?? '',
+  );
+}
+
+describe('the file the reader is inside', () => {
+  /**
+   * **The mark follows the scroll.** The tree names the file whose region
+   * holds the reading edge, and a mark that only moved on a click (or never
+   * moved at all) would leave the reader's place in the list lying about
+   * where they are.
+   */
+  it('marks the file the reading edge sits in, and moves the mark with the scroll', async () => {
+    // The sections' own geometry, which jsdom does not lay out: file A's
+    // region runs past the reading edge (the window's top at the narrow
+    // width this harness mounts), file B's begins below it.
+    let aTop = -200;
+    let bTop = 100;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const top = this.id === 'src/b.rs' ? bTop : aTop;
+      return { top, bottom: top + 100, height: 100 } as DOMRect;
+    });
+
+    draw(thread, twoFiles);
+    await settle();
+    expect(marked(), 'the edge sits inside a').toEqual(['a.rs']);
+
+    // The scroll: a's region is now above the edge and b's holds it.
+    aTop = -300;
+    bTop = -20;
+    window.dispatchEvent(new Event('scroll'));
+    paint();
+
+    expect(marked(), 'the mark moved to the file the reader scrolled into').toEqual(['b.rs']);
+    expect(
+      document.querySelector('.rv-frow.here')?.getAttribute('aria-current'),
+      'and it is a current-row mark, not only a class',
+    ).toBe('true');
+  });
+});
+
 describe('the clock a mounted row draws', () => {
   it('moves the age chip on the tick, as the conversation half does', async () => {
     draw();
@@ -225,5 +350,22 @@ describe('the clock a mounted row draws', () => {
     flushSync();
 
     expect(chip(), 'the age the tick moved').toBe('30m');
+  });
+
+  /**
+   * **A moved card names the line it sits on, and where the words were
+   * written.** The card is inserted at the resolution's line, so `line N`
+   * is that one - the recorded number reads as the move's origin, never
+   * beside it as a second claim (the shape `line 7 · moved from 7` the
+   * badge used to draw).
+   */
+  it('names the moved line the card sits on, and the line it was written at', async () => {
+    draw(moved, taller);
+    await settle();
+
+    const where = document.querySelector('.rv-insert .rv-where')?.textContent ?? '';
+    expect(where, 'the card names the row it sits on').toContain('line 4');
+    const origin = document.querySelector('.rv-insert .rv-moved')?.textContent ?? '';
+    expect(origin, 'and where it was written').toBe('moved from 7');
   });
 });

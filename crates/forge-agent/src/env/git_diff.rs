@@ -42,6 +42,7 @@ use serde::Deserialize;
 use tokio::time::timeout;
 
 pub mod content;
+pub mod file;
 pub mod hunks;
 pub mod resolver;
 

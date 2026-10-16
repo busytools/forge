@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { review } from './review.svelte';
   import { panelStyle, portal } from './strip-panel';
 
@@ -37,6 +38,16 @@
   const rows = $derived(review.rows());
   /** The threads the branch has: the read's own row is not one of them. */
   const count = $derived(rows.filter((row) => !row.synthetic).length);
+
+  /** The filed rounds, oldest first - the conversation's own direction. */
+  const sets = $derived(review.sets());
+  /** Which threads the reader has opened, by id: the panel's own visit. */
+  const opened = new SvelteSet<string>();
+
+  function toggleThread(id: string): void {
+    if (opened.has(id)) opened.delete(id);
+    else opened.add(id);
+  }
 
   /** The toggle's own words: what waits, else what is open, else the noun. */
   const label = $derived(
@@ -171,18 +182,55 @@
                rows so it is never taken for one of them. -->
           <a class="sg-open" {href} onclick={() => (open = false)}>open review {'\u{2192}'}</a>
         {/if}
-        {#if rows.length === 0}
+        {#if sets.length === 0}
           <div class="sg-head">nothing under review on this branch yet</div>
         {/if}
-        {#each rows as row (row.id)}
+        {#each sets as set (set.id)}
+          {@const unread = set.number === 0}
           <div class="sg-grp" role="presentation">
             <div class="sg-it">
-              {#if row.waiting}<span class="wait"></span>{/if}
-              <span class="nm lead">{row.where}</span>
-              <span class="n" class:needs={row.waiting}>{row.state}</span>
+              <span class="nm lead">{unread ? 'not read' : `R${set.number}`}</span>
+              {#if set.age !== ''}<span class="n">{set.age}</span>{/if}
             </div>
-            {#if row.words !== ''}
-              <div class="sg-sub">{row.words}</div>
+            {#if set.summary !== null && set.summary !== ''}
+              <div class="sg-sub">{set.summary}</div>
+            {/if}
+            {#if set.chips.length > 0}
+              <div class="sg-chips">
+                {#each set.chips as chip (chip.state)}
+                  <span class="chip {chip.state}">{chip.count} {chip.state}</span>
+                {/each}
+              </div>
+            {/if}
+            {#if unread}
+              <!-- A read that did not land draws as itself, its reason at
+                   rest: there are no rounds to expand. -->
+              <div class="sg-sub">{set.threads[0]?.turns[0]?.text ?? ''}</div>
+            {:else}
+              {#each set.threads as thread (thread.id)}
+                <button
+                  type="button"
+                  class="sg-thread"
+                  aria-expanded={opened.has(thread.id)}
+                  onclick={() => toggleThread(thread.id)}
+                >
+                  <span class="nm">{thread.where}</span>
+                  <span class="n {thread.state}">{thread.state}</span>
+                </button>
+                {#if opened.has(thread.id)}
+                  {#if thread.code.length > 0}
+                    <pre class="sg-code" class:captured={!thread.inDiff}>{thread.code.join(
+                        '\n',
+                      )}</pre>
+                  {/if}
+                  {#each thread.turns as turn, i (i)}
+                    <div class="sg-turn">
+                      {#if turn.author !== ''}<span class="who">{turn.author}</span>{/if}
+                      <div class="sg-sub">{turn.text}</div>
+                    </div>
+                  {/each}
+                {/if}
+              {/each}
             {/if}
           </div>
         {/each}

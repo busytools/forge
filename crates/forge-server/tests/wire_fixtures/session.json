@@ -297,30 +297,30 @@
         "files": [
           {
             "path": "branch.txt",
-            "added": 1,
+            "added": 3,
             "removed": 0,
             "status": "added"
           }
         ],
         "total_files": 1,
-        "total_added": 1,
+        "total_added": 3,
         "total_removed": 0
       },
       "commits": [
         {
-          "sha": "31ac1b5",
+          "sha": "7360d32",
           "subject": "branch",
           "stats": {
             "files": [
               {
                 "path": "branch.txt",
-                "added": 1,
+                "added": 3,
                 "removed": 0,
                 "status": "added"
               }
             ],
             "total_files": 1,
-            "total_added": 1,
+            "total_added": 3,
             "total_removed": 0
           },
           "time": 1767225600
@@ -418,13 +418,25 @@
               "old_start": 0,
               "old_count": 0,
               "new_start": 1,
-              "new_count": 1,
+              "new_count": 3,
               "lines": [
                 {
                   "kind": "added",
                   "text": "committed on the branch",
                   "old_line": null,
                   "new_line": 1
+                },
+                {
+                  "kind": "added",
+                  "text": "second line",
+                  "old_line": null,
+                  "new_line": 2
+                },
+                {
+                  "kind": "added",
+                  "text": "third line",
+                  "old_line": null,
+                  "new_line": 3
                 }
               ]
             }
