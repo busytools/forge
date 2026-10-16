@@ -772,6 +772,23 @@ describe('the tree the strip draws', () => {
       { ...LEAD, label: 'builder' },
     );
     expect(worker?.head, "a worker's own path is still the worker's").toBe("a worker's tree");
+
+    // A worker a lead pointed at a tree of its own carries that tree's
+    // name - the server shortens it the way a project's `display_path` is
+    // spelled - so it reads as that tree beside its project's siblings.
+    const moved = gitStrip(
+      withGit(
+        {},
+        {
+          work: { branch: 'worktree-nazar-hand', changed: 0, gate: 'in_repo' },
+          pr: null,
+          closes: [],
+        },
+      ),
+      { ...LEAD, label: 'nazar-hand' },
+      '~/Projects/nazar',
+    );
+    expect(moved?.head, "a worker's own tree is named, not described").toBe('~/Projects/nazar');
   });
 
   it('reads a commit count of one in the singular', () => {
@@ -975,6 +992,7 @@ describe('the projects chip', () => {
     reason: null,
     failed_turn: null,
     died: false,
+    tree: null,
     work: null,
     ...over,
   });
@@ -1043,6 +1061,7 @@ describe("the palette's rows", () => {
     reason: null,
     failed_turn: null,
     died: false,
+    tree: null,
     work: null,
     ...over,
   });

@@ -1101,6 +1101,30 @@ pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usiz
     )
 }
 
+/// The refusal for a spawn whose tree resolves to a project `forge.toml`
+/// declares (D3). One source: the facade refuses with it before it
+/// ensures anything, and the handler refuses with it as the shared core
+/// both dispatch sources pass through.
+///
+/// The sentence holds no word the worktree-creation classifier routes
+/// on, and the phrase it IS recognised by ("which forge.toml declares")
+/// sits before the project name, so no project's own spelling can turn
+/// the refusal into another failure.
+pub(crate) fn known_project_refusal(known: &str, own: &str) -> String {
+    if known == own {
+        format!(
+            "this worker's tree is inside '{known}', which forge.toml declares - your own \
+             project, which a worker of it already runs in by default; omit `cwd`"
+        )
+    } else {
+        format!(
+            "this worker's tree is inside the project '{known}', which forge.toml declares; a \
+             declared project is driven by its own agent - message that project's agent \
+             instead of pointing a worker at its tree"
+        )
+    }
+}
+
 /// The per-worker half of a spawn request, bundled so a caller cannot
 /// transpose `kick` with `resume_kick` - both are `Option<String>` and
 /// the mistake is silent.
@@ -1212,11 +1236,7 @@ pub(crate) fn handle_spawn_worker(
     if cwd.is_some()
         && let Some(known) = workspace.project_name_for_resolved_path(&root.to_string_lossy())
     {
-        let reason = format!(
-            "this worker's tree is inside the project '{known}', which forge.toml declares; \
-             a declared project is driven by its own agent - message that project's agent \
-             instead of pointing a worker at its tree"
-        );
+        let reason = known_project_refusal(&known, &view.name);
         tracing::warn!(
             target: "forge_workspace::spawn",
             event_name = "worker_spawn_refused_known_project",
@@ -2116,7 +2136,6 @@ impl DespawnCleanup {
                 branch_cleanup_warning = reap_branch_and_reviews(
                     &workspace,
                     worktree_root.as_deref(),
-                    project_view.as_ref(),
                     review_key.as_ref(),
                     label,
                 );
@@ -2223,7 +2242,6 @@ impl DespawnCleanup {
                         branch_cleanup_warning = reap_branch_and_reviews(
                             &workspace,
                             worktree_root.as_deref(),
-                            project_view.as_ref(),
                             review_key.as_ref(),
                             label,
                         );
@@ -2286,7 +2304,6 @@ impl DespawnCleanup {
 fn reap_branch_and_reviews(
     workspace: &Arc<Workspace>,
     repo: Option<&std::path::Path>,
-    project_view: Option<&crate::views::ProjectView>,
     review_key: Option<&(String, String)>,
     label: &str,
 ) -> Option<String> {
@@ -2302,7 +2319,6 @@ fn reap_branch_and_reviews(
     {
         workspace.delete_branch_review_state(project, branch);
     }
-    let _ = project_view;
     warning
 }
 
@@ -2442,18 +2458,26 @@ pub(crate) fn handle_deliver_worker_prompt(
     if entry.needs_tag
         && let Some(session_id) = entry.session_id.clone()
     {
-        let cwd = workspace
-            .list_projects()
-            .into_iter()
-            .find(|view| view.key == *project_key)
-            .map(|view| view.path.to_string_lossy().into_owned());
-        if let Some(cwd) = cwd {
+        // The retry composes the tag directory from the worker's OWN
+        // tree - the same rule every read-back follows - with the
+        // project's path as the fallback for a worker that has none: a
+        // worker the spawn pointed at another repository keeps its JSONL
+        // under that repository's worktree, so a retry aimed at the
+        // project's path never finds it and the worker stays untagged.
+        let root = entry.cwd.clone().or_else(|| {
+            workspace
+                .list_projects()
+                .into_iter()
+                .find(|view| view.key == *project_key)
+                .map(|view| view.path)
+        });
+        if let Some(root) = root {
             workspace.retry_worker_tag_opportunistic(
                 project_key,
                 &target_key,
                 session_id.as_str(),
                 target_label,
-                &cwd,
+                &root.to_string_lossy(),
                 entry.is_git_repo_at_spawn,
             );
         } else {
@@ -3327,7 +3351,15 @@ provider = "anthropic"
         );
 
         let error = rx.await.expect("reply").expect_err("a declared project's tree is refused");
-        assert!(error.contains("notes"), "the refusal names the project as the door: {error}");
+        assert!(
+            error.contains("'notes'") && error.contains("which forge.toml declares"),
+            "the refusal names the project and the reason, not merely a path the fixture \
+             happens to spell: {error}",
+        );
+        assert!(
+            error.contains("message that project's agent"),
+            "and points at the door - a different project's agent: {error}",
+        );
         assert!(
             !error.contains("worktree"),
             "the word routes the spawn failure classifier to a worktree-creation failure, \
@@ -3352,8 +3384,7 @@ provider = "anthropic"
     /// the worker's own root instead.
     #[tokio::test]
     async fn a_despawn_reads_the_tree_the_row_records() {
-        let (workspace, project_key, _project_wt, _repo, _config) =
-            git_despawn_fixture("traveller");
+        let (workspace, project_key, project_wt, repo, _config) = git_despawn_fixture("traveller");
         let dir = tempfile::tempdir().expect("store dir");
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
@@ -3432,6 +3463,31 @@ provider = "anthropic"
             "a clean despawn lands: {result:?}",
         );
         assert!(!worker_wt.exists(), "the worker's own worktree is the one removed");
+        let reaped = std::process::Command::new("git")
+            .args(["branch", "--list", "worktree-traveller"])
+            .current_dir(&sibling_root)
+            .output()
+            .expect("git branch");
+        assert!(
+            String::from_utf8_lossy(&reaped.stdout).trim().is_empty(),
+            "the worker's own tree is where the branch reap aimed: {:?}",
+            String::from_utf8_lossy(&reaped.stdout),
+        );
+        let decoy = std::process::Command::new("git")
+            .args(["branch", "--list", "worktree-traveller"])
+            .current_dir(repo.path())
+            .output()
+            .expect("git branch");
+        assert!(
+            String::from_utf8_lossy(&decoy.stdout).contains("worktree-traveller"),
+            "and the project's same-named branch is untouched: {:?}",
+            String::from_utf8_lossy(&decoy.stdout),
+        );
+        assert!(
+            project_wt.exists(),
+            "as is the worktree the project forked for its own worker of that name: the \
+             despawn acted on the worker's tree, not the project's",
+        );
     }
 
     /// The boot wave carries a persisted row's tree into the spawn it
@@ -3531,6 +3587,106 @@ provider = "anthropic"
             stored.mcp_families, None,
             "the row cannot keep a selection the running surface does not have; a restart \
              would silently narrow the worker",
+        );
+    }
+
+    /// A spawn that states a tree writes it to the row AND the live
+    /// entry. The row is the durable handle every read-back composes
+    /// from - resume, the boot wave, the launchpad, the cron wake and
+    /// the despawn - and the entry is what a seat read answers from, so
+    /// a regression writing `None` (or carrying a stale tree forward,
+    /// the way the row's kick and family fields deliberately do) leaves
+    /// the feature half-working with the suite green.
+    #[tokio::test]
+    async fn a_stated_cwd_is_recorded_on_the_row_and_the_entry() {
+        let (ws, key, _dir) = spawn_scaffold();
+        let tree = tempdir().expect("worker tree");
+        let root = std::fs::canonicalize(tree.path()).expect("canonical tree");
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "traveller".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+                cwd: Some(root.to_string_lossy().into_owned()),
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the spawn succeeds: {reply:?}");
+
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "traveller")
+            .expect("the row the spawn wrote");
+        assert_eq!(
+            stored.cwd.as_deref(),
+            Some(root.to_string_lossy().as_ref()),
+            "the row records the tree the spawn resolved",
+        );
+        let entry = ws
+            .list_live_workers(&key)
+            .into_iter()
+            .find(|entry| entry.label == "traveller")
+            .expect("the live entry the spawn inserted");
+        assert_eq!(
+            entry.cwd.as_deref(),
+            Some(root.as_path()),
+            "and the live entry carries it, which is what a seat read answers from",
+        );
+    }
+
+    /// A fresh spawn that states no tree clears one an older row
+    /// recorded: a fresh spawn runs in the project's own path, and the
+    /// row's other re-spawn fields carry forward only where the contract
+    /// says so.
+    #[tokio::test]
+    async fn a_fresh_spawn_without_a_cwd_clears_a_stale_tree() {
+        let (ws, key, _dir) = spawn_scaffold();
+        let tree = tempdir().expect("worker tree");
+        let root = std::fs::canonicalize(tree.path()).expect("canonical tree");
+        ws.seed_test_worker_row_at(&key, "tester", &root.to_string_lossy(), true);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+                cwd: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the fresh spawn succeeds: {reply:?}");
+
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "tester")
+            .expect("the row the spawn wrote");
+        assert_eq!(
+            stored.cwd, None,
+            "a spawn that states no tree records none; carrying the old one forward would \
+             run the worker somewhere the caller never asked for",
         );
     }
 
@@ -5239,6 +5395,62 @@ provider = "anthropic"
         entry
     }
 
+    /// The wave asks about the ROW's tree, not the project's: a worker
+    /// pointed at another repository whose own worktree is gone is
+    /// skipped, even though the project's own worktree stands - a wave
+    /// composing the project path sees a directory and dispatches a
+    /// re-spawn that has nowhere to start.
+    #[test]
+    fn the_boot_wave_reads_a_cwd_rows_own_tree() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let repo = tempfile::tempdir().expect("git project dir");
+        run_git(repo.path(), &["init", "-q"]);
+        workspace.seed_test_project("proj-x", repo.path().to_str().expect("utf8 repo path"));
+        let proj_x = workspace.project_key_for_name("proj-x").expect("seeded project");
+        // The project's own worktree stands.
+        std::fs::create_dir_all(repo.path().join(".claude").join("worktrees").join("moved"))
+            .expect("project worktree");
+        // The row's own tree has none.
+        let sibling = tempfile::tempdir().expect("sibling repo");
+        run_git(sibling.path(), &["init", "-q"]);
+        let root = std::fs::canonicalize(sibling.path()).expect("canonical sibling");
+        workspace.seed_test_worker_row_at(&proj_x, "moved", &root.to_string_lossy(), true);
+        // A control: a project-root worker in the same wave, so a wave
+        // that skipped everything would fail this test too.
+        workspace.seed_test_worker_row(&proj_x, "at-home");
+
+        let rows = workspace.worker_rows_for_project(&proj_x);
+        workspace.dispatch_worker_respawns(
+            &SessionSlot::lead("TestOrg", "proj-x"),
+            &proj_x,
+            &rows,
+            false,
+        );
+
+        let spawned: Vec<String> = workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .map(|cmd| match cmd {
+                Command::SpawnWorker { label, .. } => label,
+                other => panic!("expected SpawnWorker, got {other:?}"),
+            })
+            .collect();
+        assert!(
+            !spawned.contains(&"moved".to_owned()),
+            "a cwd worker whose own tree has no worktree must not be re-spawned; \
+             spawned {spawned:?}",
+        );
+        assert!(
+            spawned.contains(&"at-home".to_owned()),
+            "and the project's own worker still re-spawns; spawned {spawned:?}",
+        );
+    }
+
     /// A non-git worker despawns cleanly with no worktree step (the
     /// teardown runs, nothing touches a worktree).
     #[tokio::test]
@@ -5754,6 +5966,83 @@ provider = "anthropic"
             !branch_exists(repo.path(), "worktree-leftover"),
             "the branch behind it is reaped as usual"
         );
+    }
+
+    /// The leftover fallback anchors on the WORKER's own tree: a
+    /// deregistered worktree under a sibling repository is removed from
+    /// there, where a fallback composing the project's path would refuse
+    /// the directory (it is not under the project's worktrees root) and
+    /// leave it behind with a warning - the outcome the fallback exists
+    /// to prevent.
+    #[tokio::test]
+    async fn despawn_removes_a_cwd_workers_deregistered_leftover() {
+        let (workspace, project_key, _project_wt, _repo, _config) =
+            git_despawn_fixture("traveller");
+        let dir = tempfile::tempdir().expect("store dir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        // The worker's own tree, with the worktree claude would fork.
+        let sibling = tempfile::tempdir().expect("sibling repo");
+        run_git(sibling.path(), &["init", "-q"]);
+        run_git(sibling.path(), &["config", "commit.gpgsign", "false"]);
+        std::fs::write(sibling.path().join("README.md"), "seed").expect("write seed");
+        run_git(sibling.path(), &["add", "."]);
+        run_git(
+            sibling.path(),
+            &[
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-q",
+                "-m",
+                "init",
+            ],
+        );
+        let root = std::fs::canonicalize(sibling.path()).expect("canonical sibling");
+        let wt = root.join(".claude").join("worktrees").join("traveller");
+        std::fs::create_dir_all(wt.parent().expect("wt parent")).expect("mkdir worktrees");
+        run_git(
+            &root,
+            &["worktree", "add", "-q", "-b", "worktree-traveller", wt.to_str().expect("utf8")],
+        );
+        // The state a failed delete leaves: deregistered, directory on
+        // disk. Asserted rather than assumed, so a git that stops
+        // refusing fails here instead of passing without the fallback.
+        std::fs::remove_dir_all(root.join(".git").join("worktrees").join("traveller"))
+            .expect("deregister the worktree");
+        let refused = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force", wt.to_str().expect("utf8 path")])
+            .current_dir(wt.parent().expect("wt parent"))
+            .output()
+            .expect("spawn git");
+        assert!(
+            !refused.status.success(),
+            "fixture precondition: git refuses the deregistered leftover outright"
+        );
+        assert!(wt.exists(), "and the refusal leaves it on disk");
+
+        // The row and the live entry both name the sibling tree.
+        workspace.seed_test_worker_row_at(&project_key, "traveller", &root.to_string_lossy(), true);
+        workspace.remove_latest_worker(&project_key, "traveller");
+        let mut entry = fake_git_worker_entry("traveller", "worker-1");
+        entry.cwd = Some(root.clone());
+        workspace.insert_live_worker(&project_key, entry);
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "traveller", true, tx);
+        let result = resp_rx.await.expect("result");
+
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned { worktree_cleanup_warning: None, .. }
+            ),
+            "the leftover is removed from the worker's own tree: {result:?}"
+        );
+        assert!(!wt.exists(), "the leftover directory is gone, not orphaned");
     }
 
     /// A despawn hands back with the worktree still on disk: its cleanup
@@ -6857,6 +7146,117 @@ provider = "anthropic"
 
         // Clean up the shared stub config_dir entries we created so
         // subsequent parallel runs aren't polluted.
+        let _ = fs::remove_file(&jsonl_path);
+    }
+
+    /// The opportunistic tag retry composes the tree from the worker's
+    /// OWN tree, not the project's: a worker the spawn pointed at another
+    /// repository keeps its JSONL under that repository's worktree, so a
+    /// retry aimed at the project path never finds it and the worker
+    /// stays untagged - which is what the resume-by-tag path reads.
+    #[tokio::test]
+    async fn deliver_prompt_kicks_the_tag_retry_at_the_workers_own_tree() {
+        let toml_dir = tempdir().expect("toml dir");
+        let project_root = tempdir().expect("project root");
+        let project_path = project_root.path().to_string_lossy().into_owned();
+        fs::write(
+            forge_toml_path(toml_dir.path()),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "{project_path}"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace = Arc::new(Workspace::new_for_test(toml_dir.path().to_owned()).expect("new"));
+        let project_view = workspace
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == "forge")
+            .expect("forge project");
+        let project_key = project_view.key.clone();
+
+        // The worker's own tree: a sibling repository the spawn pointed
+        // it at, with the worktree claude's `--worktree` would have
+        // forked there.
+        let sibling = tempdir().expect("sibling repo");
+        let sibling_root = std::fs::canonicalize(sibling.path()).expect("canonical sibling");
+        let worker_wt = sibling_root.join(".claude").join("worktrees").join("idle");
+
+        let session_id = uuid::Uuid::new_v4().hyphenated().to_string();
+        let session_key = SessionSlot::worker(&project_view.org, &project_view.name, "idle");
+        let _agent_rx = workspace.install_testing_stub(&session_key);
+        if let Some(domain) = workspace.domain_session_for(&session_key) {
+            domain.lock().session_id = Some(forge_primitives::SessionId::new(&session_id));
+        }
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "idle".into(),
+                charter: "c".into(),
+                slot: session_key.clone(),
+                session_id: Some(forge_primitives::SessionId::new(&session_id)),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead(&project_view.org, &project_view.name),
+                needs_tag: true,
+                is_git_repo_at_spawn: true,
+                cwd: Some(sibling_root.clone()),
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        // The JSONL sits where the worker's own tree puts it.
+        let stub_config_dir = std::path::PathBuf::from("/tmp/forge-testing-stub");
+        std::fs::create_dir_all(&worker_wt).expect("worker worktree dir");
+        let sanitized = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &worker_wt.to_string_lossy(),
+        ));
+        let projects_dir = forge_sdk::projects_dir_for(&stub_config_dir).join(&sanitized);
+        fs::create_dir_all(&projects_dir).expect("project dir");
+        let jsonl_path = projects_dir.join(format!("{session_id}.jsonl"));
+        fs::write(&jsonl_path, "").expect("seed jsonl");
+
+        let caller = SessionSlot::from_str_for_test("caller-1");
+        handle_deliver_worker_prompt(&workspace, &caller, &project_key, "idle", fixture_wrapped());
+
+        let cleared = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let entries = workspace.list_live_workers(&project_key);
+                let tagged = entries
+                    .iter()
+                    .find(|e| e.slot == session_key)
+                    .is_some_and(|entry| !entry.needs_tag);
+                if tagged {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("needs_tag must clear within budget");
+        assert!(cleared);
+
+        let body = fs::read_to_string(&jsonl_path).expect("read jsonl");
+        assert!(
+            body.contains("\"tag\":\"forge:worker:idle\""),
+            "the tag lands in the worker's own tree: {body:?}",
+        );
+
         let _ = fs::remove_file(&jsonl_path);
     }
 

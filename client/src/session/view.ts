@@ -30,7 +30,7 @@ import {
 import type { Row, RowState } from '../home/view';
 import { FORGE_COMMANDS } from '../composer/forge-commands';
 import type { ComposerRecord } from '../composer/view';
-import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
+import { CLIENT_VERSION, PROTOCOL_VERSION, subjectKey } from '../protocol';
 import { awaitsReviewer } from '../review/view';
 import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
@@ -911,7 +911,11 @@ export function treeShows(record: SessionRecord): boolean {
  * their lines is not on this record, so the row states what the record holds
  * rather than drawing an empty list under it.
  */
-export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | null {
+export function gitStrip(
+  record: SessionRecord,
+  slot: SessionSlot,
+  tree: string | null = null,
+): GitStrip | null {
   if (!treeShows(record)) return null;
   const { branch } = placeOf(record.work);
   const gate = gateLine(record.work.gate);
@@ -933,7 +937,7 @@ export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | n
     .join(' \u{b7} ');
   return {
     label: label === '' ? 'no branch' : label,
-    head: headOf(record.state.scan_cwd, slot),
+    head: headOf(record.state.scan_cwd, slot, tree),
     ahead:
       view.ahead === null
         ? null
@@ -958,11 +962,14 @@ export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | n
 }
 
 /**
- * What the tree IS: a worker's worktree names itself off the path the
- * worktrees live under, and everything else is the seat's own tree - the
- * project's when the seat is the lead, a worker's otherwise.
+ * What the tree IS: a worker a lead pointed at another tree carries that
+ * tree's own name, so it reads as its tree beside its project's siblings;
+ * a worker's worktree names itself off the path the worktrees live under;
+ * everything else is the seat's own tree - the project's when the seat is
+ * the lead, a worker's otherwise.
  */
-function headOf(scanCwd: string, slot: SessionSlot): string {
+function headOf(scanCwd: string, slot: SessionSlot, tree: string | null): string {
+  if (tree !== null) return tree;
   const marker = '/.claude/worktrees/';
   const at = scanCwd.indexOf(marker);
   if (at !== -1) {
@@ -970,6 +977,17 @@ function headOf(scanCwd: string, slot: SessionSlot): string {
     return name === '' ? 'a worktree' : `worktree \u{b7} ${name}`;
   }
   return slot.label === 'lead' ? "the project's tree" : "a worker's tree";
+}
+
+/**
+ * The seat's own tree on the home's snapshot, when the worker runs in one
+ * of its own: the name a row draws where it has to say where the seat is.
+ * `null` for a lead, for a worker in its project's tree, and for a seat the
+ * server cannot place.
+ */
+export function seatTree(home: HomeWire, slot: SessionSlot): string | null {
+  const key = subjectKey({ session: slot });
+  return home.agents.find((agent) => subjectKey({ session: agent.slot }) === key)?.tree ?? null;
 }
 
 /** The project this seat belongs to on the home's snapshot. */

@@ -6455,25 +6455,6 @@ impl Workspace {
         Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.is_git_repo))
     }
 
-    /// The tree the worker's row records, or `Ok(None)` when there is no
-    /// row or its row names none (which is the project's own directory).
-    /// Same failure contract as [`Self::recorded_worker_is_git_repo`]: an
-    /// unreadable row is an `Err`, not an absence.
-    pub(crate) fn recorded_worker_cwd(
-        &self,
-        project_key: &ProjectKey,
-        label: &str,
-    ) -> anyhow::Result<Option<String>> {
-        let Some((org, project)) = self.project_identity_for_key(project_key) else {
-            return Ok(None);
-        };
-        let guard = self.db.lock();
-        let Some(db) = guard.as_ref() else {
-            anyhow::bail!("the session store is unavailable this session");
-        };
-        Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.cwd))
-    }
-
     /// The MCP-family selection the worker's row records, or `Ok(None)`
     /// when there is no row or its row names none (which resolves to
     /// every family). Same failure contract as
@@ -7131,6 +7112,25 @@ impl Workspace {
         None
     }
 
+    /// The tree a live worker runs in when that is NOT its project's own
+    /// directory: the root its spawn resolved. `None` for a lead, for a
+    /// worker in its project's directory, and for a worker this cannot
+    /// place - so a caller that gets one has a tree to name.
+    pub fn worker_tree_for_session(&self, session_key: &SessionSlot) -> Option<std::path::PathBuf> {
+        let (project_key, _label, _is_git, _needs_tag, cwd) =
+            self.worker_lookup_for_session(session_key)?;
+        let root = self.live_worker_root(&project_key, cwd.as_deref())?;
+        let project = self.project_root_for_key(&project_key)?;
+        // Both sides resolve before they compare: a recorded root is
+        // canonical, while a declared path may reach the same directory
+        // through an alias.
+        let same = match (std::fs::canonicalize(&root), std::fs::canonicalize(&project)) {
+            (Ok(root), Ok(project)) => root == project,
+            _ => root == project,
+        };
+        (!same).then_some(root)
+    }
+
     /// The tree a live worker's directory composes against: the one its
     /// spawn resolved, or the project's own `forge.toml` path when the
     /// spawn stated none. `None` when the session is not a live worker,
@@ -7153,10 +7153,11 @@ impl Workspace {
     ///    handler skips the catalog mirror for workers, so a worker
     ///    never has a row to read.
     /// 2. The worker registry (`live_workers` via
-    ///    `worker_lookup_for_session`), composed against the project's
-    ///    `forge.toml` path by `worker_tag_dir` - the worktree for a
-    ///    git worker, the project root otherwise. This is the
-    ///    authoritative source for every worker.
+    ///    `worker_lookup_for_session`), composed by `worker_tag_dir`
+    ///    against the tree the worker's spawn resolved - its own root
+    ///    when it has one, the project's `forge.toml` path otherwise -
+    ///    the worktree for a git worker, that root itself otherwise.
+    ///    This is the authoritative source for every worker.
     ///
     /// `None` leaves the caller to decide what an unknown cwd means:
     /// `resume_cwd_for_slot` hands claude an empty cwd, while the
@@ -7277,14 +7278,16 @@ impl Workspace {
     }
 
     /// Resolve the cwd a git-diff scan should run against for the
-    /// session at `session_key`. Workers spawned in a git repo run
+    /// session at `session_key`. Workers spawned in a git tree run
     /// inside claude's `--worktree <label>` fork at
-    /// `<project_root>/.claude/worktrees/<label>/`, and the worker's
-    /// `cwd_raw` carries different values depending on lifecycle:
-    /// - fresh spawn -> `cwd_raw = <project_root>` (the value claude
+    /// `<root>/.claude/worktrees/<label>/` (`root` being the tree the
+    /// worker's spawn resolved - its own when it has one, the project's
+    /// `forge.toml` path otherwise), and the worker's `cwd_raw` carries
+    /// different values depending on lifecycle:
+    /// - fresh spawn -> `cwd_raw = <root>` (the value claude
     ///   sends in `AgentEvent::Connected.cwd` before it chdirs into
     ///   the worktree),
-    /// - resumed session -> `cwd_raw = <project_root>/.claude/worktrees/<label>`
+    /// - resumed session -> `cwd_raw = <root>/.claude/worktrees/<label>`
     ///   (claude chdirs before writing the first catalog row, so the
     ///   resume path reads the worktree path back as `cwd`).
     ///
@@ -16796,6 +16799,95 @@ provider = "anthropic"
             "the resume carries the row's tree, not the project's",
         );
         spawner.abort();
+    }
+
+    /// A resume that states a DIFFERENT tree than the row's is refused
+    /// rather than started: claude finds a conversation by the project
+    /// key derived from the directory it runs in, so a moved resume dies
+    /// "No conversation found" - the history is keyed to its tree, and a
+    /// worker moves trees only by being despawned and spawned fresh.
+    #[tokio::test]
+    async fn a_resume_stating_a_different_tree_is_refused() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        run_git_in(project.path(), &["init", "-q"]);
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "demo"
+path = "{}"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                project.path().to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("write forge.toml");
+
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let view = ws.list_projects().into_iter().find(|v| v.name == "demo").expect("project");
+        let _store = seed_stored_session(&ws, "steward", "550e8400-e29b-41d4-a716-446655440099");
+        // The row the history lives under: its own repository.
+        let home_tree = tempfile::tempdir().expect("worker tree");
+        run_git_in(home_tree.path(), &["init", "-q"]);
+        let home_root = std::fs::canonicalize(home_tree.path()).expect("canonical home");
+        ws.seed_test_worker_row_at(&view.key, "steward", &home_root.to_string_lossy(), true);
+        // A different tree the caller asks the resume to move to.
+        let other = tempfile::tempdir().expect("other tree");
+        run_git_in(other.path(), &["init", "-q"]);
+        let other_root = std::fs::canonicalize(other.path()).expect("canonical other");
+        ws.enable_test_dispatch_intercept();
+
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+        // The timeout is the assertion for the other direction: a
+        // resume that dispatched instead of refusing would sit here
+        // waiting on a reply nobody sends, which times out the test
+        // rather than failing it with this message.
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            facade.spawn_worker(
+                &lead_slot(),
+                "steward".to_owned(),
+                "charter".to_owned(),
+                None,
+                None,
+                false,
+                true,
+                None,
+                Some(other_root.to_string_lossy().into_owned()),
+            ),
+        )
+        .await
+        .expect("the refusal answers without dispatching")
+        .expect_err("a resume cannot move the worker's tree");
+
+        let crate::mcp::workers::facade::WorkerSpawnError::DispatchFailed { message } = error
+        else {
+            panic!("the refusal is a dispatch failure");
+        };
+        assert!(
+            message.contains("history"),
+            "the refusal says why the tree cannot move: {message}",
+        );
+        assert!(
+            !message.contains("worktree"),
+            "and never the word the failure classifier routes on: {message}",
+        );
+        assert!(
+            ws.drain_test_dispatch_buffer().is_empty(),
+            "nothing was dispatched for a refused resume",
+        );
     }
 
     /// `--new`: the same fixture comes up fresh, so the worker that

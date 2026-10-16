@@ -12,19 +12,20 @@ use crate::SessionSlot;
 
 /// Cwd a worker's tag-write should land at. For git-repo workers,
 /// claude's `--worktree <label>` flag forks the subprocess into
-/// `<project_root>/.claude/worktrees/<label>/` and writes the session
-/// JSONL under THAT sanitised path, not the project root. The
-/// tag-write must follow.
+/// `<root>/.claude/worktrees/<label>/` and writes the session JSONL under
+/// THAT sanitised path, not the tree's root. The tag-write must follow.
 ///
-/// `project_root` is whatever forge sources from `forge.toml`
-/// (`forge-workspace::list_projects().path`); `label` is the worker's
-/// charter label; `is_git_repo_at_spawn` is the cached flag on
-/// `WorkerEntry`. Non-git workers run in the project root unmodified.
-pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bool) -> PathBuf {
+/// `root` is the tree the worker's spawn resolved: its own when the spawn
+/// pointed it somewhere other than the project's directory, else the
+/// project's `forge.toml` path (`forge-workspace::list_projects().path`).
+/// `label` is the worker's charter label; `is_git_repo_at_spawn` is the
+/// cached flag on `WorkerEntry`. Non-git workers run in that root
+/// unmodified.
+pub fn worker_tag_dir(root: &Path, label: &str, is_git_repo_at_spawn: bool) -> PathBuf {
     if is_git_repo_at_spawn {
-        project_root.join(".claude/worktrees").join(label)
+        root.join(".claude/worktrees").join(label)
     } else {
-        project_root.to_path_buf()
+        root.to_path_buf()
     }
 }
 
@@ -88,25 +89,27 @@ pub(crate) fn resolve_spawn_cwd(raw: &str) -> Result<PathBuf, String> {
     Ok(expanded)
 }
 
-/// The tree a spawned worker runs in, and whether that tree is a git
-/// repo: the project's own path when the spawn states no `cwd` (today's
-/// behaviour, unchanged), else the stated path resolved to its repo root,
-/// so the record, every read-back and the claude CLI's `--worktree` fork
-/// all name the same directory.
+/// The tree a spawned worker runs in, and - when the spawn stated one -
+/// whether that tree is a git repo: the project's own path when the spawn
+/// states no `cwd` (today's behaviour, unchanged), else the stated path
+/// resolved to its repo root, so the record, every read-back and the
+/// claude CLI's `--worktree` fork all name the same directory.
+///
+/// The gitness is `None` for a spawn that states no tree: that answer
+/// comes from the worker's row or a probe of the project the caller
+/// already has, and probing here would pay a filesystem walk for a value
+/// the caller discards.
 pub(crate) fn worker_root_and_git(
     project_root: &Path,
     spawn_cwd: Option<&str>,
-) -> Result<(PathBuf, bool), String> {
+) -> Result<(PathBuf, Option<bool>), String> {
     let Some(raw) = spawn_cwd else {
-        return Ok((
-            project_root.to_path_buf(),
-            forge_agent::env::worktree::is_git_repo(project_root),
-        ));
+        return Ok((project_root.to_path_buf(), None));
     };
     let named = resolve_spawn_cwd(raw)?;
     let root = forge_agent::env::worktree::worker_root(&named)?;
     let is_git = forge_agent::env::worktree::is_git_repo(&root);
-    Ok((root, is_git))
+    Ok((root, Some(is_git)))
 }
 
 /// The tree a worker's row records, as one value: whether that tree is a
@@ -335,12 +338,16 @@ mod spawn_cwd_tests {
     fn resolve_spawn_cwd_refuses_an_empty_or_blank_argument() {
         for raw in ["", "   "] {
             let error = resolve_spawn_cwd(raw).expect_err("blank is refused");
-            assert!(!error.contains("worktree"), "never the classifier's word: {error}");
+            assert!(
+                error.contains("non-empty"),
+                "the refusal says what is wrong with a blank path: {error}",
+            );
         }
     }
 
     /// D9: a spawn that states no tree keeps today's behaviour exactly -
-    /// the project's own path, probed for gitness the way it always was.
+    /// the project's own path, and no gitness answer: that one comes from
+    /// the worker's row or the caller's own probe.
     #[test]
     fn worker_root_and_git_without_a_cwd_keeps_the_project_root() {
         let dir = tempdir().expect("tempdir");
@@ -348,7 +355,7 @@ mod spawn_cwd_tests {
         let (root, is_git) = worker_root_and_git(dir.path(), None).expect("resolves");
 
         assert_eq!(root, dir.path(), "no cwd leaves the project root where it was");
-        assert!(!is_git, "an empty directory is not a git repo");
+        assert_eq!(is_git, None, "and this helper answers no gitness for it");
     }
 
     /// D5: a subdirectory of a repo resolves to the repo root at spawn, so
@@ -370,7 +377,11 @@ mod spawn_cwd_tests {
             std::fs::canonicalize(repo.path()).expect("canonical repo"),
             "the stated subdirectory resolves to the repo root, not itself",
         );
-        assert!(is_git, "and the tree is read as a git repo, which is what forks a worktree");
+        assert_eq!(
+            is_git,
+            Some(true),
+            "and the tree is read as a git repo, which is what forks a worktree",
+        );
     }
 
     #[test]

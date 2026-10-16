@@ -263,6 +263,7 @@ function agent(
     reason: null,
     failed_turn: failedTurn,
     died,
+    tree: null,
     work,
   };
 }

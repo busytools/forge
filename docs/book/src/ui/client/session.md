@@ -103,8 +103,10 @@ seat's own set - a cron names the seat that created it - and its
 countdowns re-derive against the page's own clock, as the monitors' ages
 do; the tasks row reads the project's slice of the home; the tree row is
 the seat's own working tree, the worktree for a worker and the project's
-directory for a lead, and a tree that could not be read says so rather
-than drawing a blank. The account a row chips is on the rail's footer
+directory for a lead, and a worker a lead pointed at a tree of its own is
+named by that tree - `~/Projects/nazar` beside its project's siblings -
+rather than described. A tree that could not be read says so rather than
+drawing a blank. The account a row chips is on the rail's footer
 beside what it is costing, not on the strip.
 
 ## The states the page can be in

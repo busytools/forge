@@ -398,9 +398,8 @@ pub fn update(db: &Db, fields: &SessionRecord) -> anyhow::Result<bool> {
     if let Some(families) = &fields.mcp_families {
         row.mcp_families = if families.is_empty() { None } else { Some(families.clone()) };
     }
-    if fields.cwd.is_some() {
-        row.cwd.clone_from(&fields.cwd);
-    }
+    // `cwd` has no arm on purpose: a worker's tree is fixed at spawn, so
+    // nothing that merges onto a row moves it.
     put(db, &row)?;
     Ok(true)
 }

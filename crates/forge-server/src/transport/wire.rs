@@ -223,6 +223,10 @@ pub struct AgentWire {
     /// since: the row's failure is the durable trace of a crash nobody
     /// watched.
     pub died: bool,
+    /// The seat's own tree, home-shortened, when the worker runs somewhere
+    /// other than its project's directory: the fact the row's where cell
+    /// names.
+    pub tree: Option<String>,
     /// The seat's own tree, `None` for a seat forge holds no directory for.
     ///
     /// Read through the same shared cache the project rows use, so a lead's
@@ -243,6 +247,7 @@ impl From<&AgentRow> for AgentWire {
             reason: row.reason.clone(),
             failed_turn: row.failed_turn,
             died: row.died,
+            tree: row.tree.clone(),
             work: None,
         }
     }

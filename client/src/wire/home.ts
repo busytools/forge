@@ -251,6 +251,14 @@ export interface AgentRow {
    */
   died: boolean;
   /**
+   * The seat's own tree, home-shortened ("~/Projects/nazar"), when the
+   * worker runs somewhere other than its project's directory - a worker a
+   * lead pointed at a sibling repo. `null` for a lead, for a worker in its
+   * project's own tree, and for one the server cannot place, so a row
+   * carrying one is naming a tree its project's siblings do not share.
+   */
+  tree: string | null;
+  /**
    * The seat's OWN working tree, which is not the project's.
    *
    * A worker's is its worktree and the lead's is the project's path, so a
@@ -607,6 +615,8 @@ export function homeFrom(data: HomeWire): HomeWire {
       // Same shape: a server that never states the death must read as no
       // death, not as one nobody has been shown.
       died: agent.died === true,
+      // And the tree: unstated or blank reads as no tree, never as a name.
+      tree: typeof agent.tree === 'string' && agent.tree !== '' ? agent.tree : null,
       // The gate inside the seat's tree, which is the one member of it that is
       // a union of literals: `WorkState` is a struct, so there is nothing else
       // in it to narrow and a shape test over the object would discriminate
