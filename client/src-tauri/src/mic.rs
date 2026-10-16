@@ -386,8 +386,10 @@ impl Mic {
     /// `limit` is reported as the microphone not coming up rather than waited
     /// on, which is the line the page draws for a device layer that is wedged
     /// - a permission whose prompt never surfaced, a device another process
-    /// holds. The open is left to answer on its own thread, and a late
-    /// success ends the take nobody owns rather than leaving it recording.
+    ///   holds.
+    ///
+    /// The open is left to answer on its own thread, and a late success ends
+    /// the take nobody owns rather than leaving it recording.
     pub async fn start_within(
         self: &Arc<Self>,
         bridge: &Arc<Bridge>,
