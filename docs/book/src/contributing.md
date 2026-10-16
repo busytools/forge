@@ -23,7 +23,8 @@ clippy with warnings denied, `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features`, and `cargo doc`. CI's set
 minus its `cargo check --release` job, and plus the
 android warnings check CI cannot run yet (`client-android-warnings`; its
-vendoring refuses non-macOS hosts - #1959).
+vendoring refuses non-macOS hosts - #1959, closed as an enhancement and
+tracked in #2258).
 
 The gate is two commands: `just check`, and `just check-feature-configs`,
 which compiles the configuration `install.sh` builds. Both green before

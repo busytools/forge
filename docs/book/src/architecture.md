@@ -321,13 +321,13 @@ so one command decides both stacks and its verdict line names the first
 failing step whichever side it is on.
 
 The shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s workspace-side steps never reach it; CI compiles it only in
-the `client-tauri` job (its clippy and tests) and in the rustfmt check the
-`cargo fmt --check` job runs against its manifest.
+`just check`'s workspace-side steps never reach it; CI compiles it in the
+`client-tauri` job (its clippy and tests), and the `cargo fmt --check`
+job's second invocation carries its rustfmt check.
 `client-tauri-fmt`, `client-tauri-clippy`, `client-tauri-test`
 and `client-android-warnings` are the steps of `just check` that do, and
-the macOS build is still outside the gate. The Unicode punctuation gate,
-which CI runs too, and the client's Prettier step do.
+the shipping build is still outside both gates. The Unicode punctuation
+gate, which CI runs too, and the client's Prettier step do.
 `just client-tauri-check` builds the shell in the shipping configuration
 and `just client-tauri-bundle` adds the bundles, and the first is the one
 to run before handing over a change there.

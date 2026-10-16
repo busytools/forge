@@ -99,7 +99,8 @@ The gate is two commands: run this one before opening a pull request, and
 this is CI's set with two differences: CI also runs
 `cargo check --release`, while `client-android-warnings` (the shell's
 android step) is in `just check` alone - the vendoring its build needs
-refuses non-macOS hosts, so CI runs no such job yet (issue #1959). The
+refuses non-macOS hosts, so CI runs no such job yet (issue #1959, closed
+as an enhancement and tracked in #2258). The
 client's steps are in here too, so the client and the server are not
 separate commands, and a failure on either side lands on the same verdict
 line.

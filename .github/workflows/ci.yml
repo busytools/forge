@@ -155,7 +155,8 @@ jobs:
   # steps are `just check`'s frontend client recipes, in its order, plus the
   # build. The shell's own Rust steps live in the `client-tauri` job below
   # and in the `fmt` job above; the android warnings step has no job, because
-  # its vendoring refuses non-macOS hosts (the CI side is issue #1959).
+  # its vendoring refuses non-macOS hosts (#1959, closed as an enhancement
+  # and tracked in #2258).
   client:
     name: client format, lint, build, typecheck and tests
     runs-on: ubuntu-latest

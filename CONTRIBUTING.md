@@ -37,7 +37,8 @@ the jobs a checkout cannot carry - CI runs `cargo check --release` and the
 image workflow, which builds and exercises
 the web image on the commits that touch it - and plus the android warnings
 check CI cannot run yet (`client-android-warnings`; the vendoring its build
-needs refuses non-macOS hosts, so the CI side is #1959). The piecewise
+needs refuses non-macOS hosts, so the CI side is #1959, closed as an
+enhancement and tracked in #2258). The piecewise
 client gates
 are `just client-tauri-check`, `just client-android-check` and `just
 web-image-check`.

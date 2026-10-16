@@ -710,9 +710,9 @@ inspected.
     Android) - so one command decides both stacks and its
     verdict line names the first failing step. **The shell under
     `client/src-tauri/` is its own workspace root**, so the workspace's
-    cargo steps never reach it; CI compiles it only in the `client-tauri`
-    job (its clippy and tests) and in the rustfmt check the `cargo fmt
-    --check` job runs against its manifest. `just check`'s
+    cargo steps never reach it; CI compiles it in the `client-tauri` job
+    (its clippy and tests), and the `cargo fmt --check` job's second
+    invocation carries its rustfmt check. `just check`'s
     `client-tauri-fmt`, `client-tauri-clippy`, `client-tauri-test` and
     `client-android-warnings` reach it, and the Unicode punctuation gate
     and the client's Prettier step reach it too.
