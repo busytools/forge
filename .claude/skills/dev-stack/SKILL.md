@@ -210,14 +210,14 @@ history is the record.
    era, pre-`[server]`, and the stack then refused its own config). Before
    booting, `git rev-parse HEAD` against the branch's base; if it lags,
    fast-forward the worktree to origin/main (non-destructive).
-2. **The build stamp goes stale in a linked worktree** (measured): `build.rs`
-   watches `../../.git/HEAD` and friends, but a worktree's `.git` is a FILE,
-   so the watches never arm and the binary can report the wrong commit while
-   running another. Until the forge-side fix (#1829) lands, `touch`
-   `crates/forge-server/build.rs` (mtime only - the Rust workspace's one
-   build script; a bare `touch` on any other `build.rs` path creates an
-   empty file and the build dies on it) before a rebuild in a worktree, and
-   read the boot log's stamp with that in mind.
+2. **The build stamp follows a worktree's HEAD now** (#1829): `build.rs`
+   resolves its watch paths through `git rev-parse --git-path`, so the stale
+   stamp this entry used to warn about (a worktree's file-shaped `.git`
+   keeping the watches from arming) is gone on current main; only a checkout
+   predating the fix still needs the `touch` on
+   `crates/forge-server/build.rs` (mtime only) before a rebuild in a
+   worktree. Either way, never bare-touch any other `build.rs` path: the
+   Rust workspace has exactly one, and an empty file breaks the build.
 3. The store follows HOME, not the config dir - see the mandatory redirect
    above and #1826.
 4. Both default ports are the live forge's (8790/8787). A taken gateway port

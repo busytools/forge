@@ -11,6 +11,7 @@
 //! Tolerant of missing `.git` (e.g. `cargo install` from crates.io)
 //! and any other git failure - emits empty suffixes in that case.
 
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
@@ -29,14 +30,17 @@ fn main() {
     // FORGE_BUILD_SUFFIX_SHORT - the embedded version stamp goes
     // stale and the binary reports an older commit hash than it
     // was built from.
-    if std::path::Path::new("../../.git/HEAD").exists() {
-        println!("cargo:rerun-if-changed=../../.git/HEAD");
-    }
-    if std::path::Path::new("../../.git/refs/heads").exists() {
-        println!("cargo:rerun-if-changed=../../.git/refs/heads");
-    }
-    if std::path::Path::new("../../.git/logs/HEAD").exists() {
-        println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
+    //
+    // Resolved through git rather than spelled `../../.git/...`: in a
+    // linked worktree `.git` is a FILE redirecting to the worktree's
+    // gitdir, where HEAD and its reflog live while `refs/heads` stays
+    // in the common dir. The literal paths exist in neither place, so
+    // no watch armed and a rebuild after a checkout kept the previous
+    // stamp.
+    for name in ["HEAD", "refs/heads", "logs/HEAD"] {
+        if let Some(path) = watch_path(name) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
     }
 
     let (short, full) = compute_suffixes();
@@ -96,6 +100,18 @@ fn compute_suffixes() -> (String, String) {
         _ => format!(" · {sha} ({branch})"),
     };
     (short, full)
+}
+
+/// Absolute path behind `--git-path <name>`, as git resolves it:
+/// `--path-format=absolute` because the plain-checkout answer is
+/// otherwise relative to the repo root, not to this script's cwd.
+/// Falls back to the literal `../../.git/...` when git cannot answer;
+/// `None` when the path is missing, so no watch is emitted.
+fn watch_path(name: &str) -> Option<PathBuf> {
+    let resolved = run_git(&["rev-parse", "--path-format=absolute", "--git-path", name])
+        .unwrap_or_else(|| format!("../../.git/{name}"));
+    let path = PathBuf::from(resolved);
+    path.exists().then_some(path)
 }
 
 fn run_git(args: &[&str]) -> Option<String> {
