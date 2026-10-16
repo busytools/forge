@@ -3,6 +3,8 @@ use anyhow::Context as _;
 use std::fs::{File, OpenOptions, create_dir_all, metadata, remove_file, rename};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr as _;
+use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
 
 pub mod targets {
@@ -111,15 +113,59 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
 
+/// The preset's directives with the default set composed in, so a preset
+/// extends the always-on coverage rather than replacing it: a target that
+/// only the defaults name stays readable under every preset.
+fn preset_extending_defaults(preset: &DiagnosticsPreset) -> String {
+    compose_filter_directives(preset.filter_directives(), DEFAULT_LOG_DIRECTIVES)
+}
+
+/// No target can be empty, so this key collides with no real slot: every
+/// bare level token shares it, because the parser resolves them all to the
+/// filter's one global directive and the level is not part of that slot's
+/// identity.
+const GLOBAL_SLOT_KEY: &str = "";
+
+/// A directive's slot in the filter, the part two directives naming the
+/// same slot collide on. A bare level token (`info`, `4`, a case variant)
+/// is the global directive, which every bare level shares. Anything else
+/// keys by its target, cut at the `=` the parser would use: the first one
+/// outside a brace shape.
+fn directive_key(directive: &str) -> &str {
+    if LevelFilter::from_str(directive).is_ok() {
+        return GLOBAL_SLOT_KEY;
+    }
+    let mut depth = 0usize;
+    for (index, ch) in directive.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '=' if depth == 0 => return &directive[..index],
+            _ => {}
+        }
+    }
+    directive
+}
+
+/// The two directive lists composed into one, a directive both name kept
+/// once - the preset's copy, whatever level it sets - so a default never
+/// overrides a slot the preset names. The preset's own order leads; the
+/// defaults' directives it did not name follow.
+fn compose_filter_directives(preset_directives: &str, default_directives: &str) -> String {
+    let mut directives: Vec<&str> = Vec::new();
+    for directive in preset_directives.split(',').chain(default_directives.split(',')) {
+        let key = directive_key(directive);
+        if !directives.iter().any(|kept| directive_key(kept) == key) {
+            directives.push(directive);
+        }
+    }
+    directives.join(",")
+}
+
 fn build_filter_directives(cli: &Cli) -> String {
     cli.log_filter
         .clone()
-        .or_else(|| {
-            cli.diagnostics_preset
-                .as_ref()
-                .map(DiagnosticsPreset::filter_directives)
-                .map(str::to_owned)
-        })
+        .or_else(|| cli.diagnostics_preset.as_ref().map(preset_extending_defaults))
         .or_else(|| std::env::var("RUST_LOG").ok())
         .unwrap_or_else(|| DEFAULT_LOG_DIRECTIVES.to_owned())
 }
@@ -331,8 +377,8 @@ fn rotated_log_path(base_path: &Path, index: usize) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_LOG_DIRECTIVES, RollingFileWriter, clear_rotated_files, resolve_log_path,
-        rotated_log_path,
+        DEFAULT_LOG_DIRECTIVES, RollingFileWriter, build_filter_directives, clear_rotated_files,
+        compose_filter_directives, directive_key, resolve_log_path, rotated_log_path,
     };
     use crate::cli::{Cli, DiagnosticsPreset};
     use std::fs;
@@ -387,6 +433,16 @@ mod tests {
         // WARN; dropping it from this set would silence the git probe miss
         // entirely, which is the state the levels moved away from.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
+        // `forge_server` pins the whole server crate at `debug`, so the
+        // transport, surface and boot records ride it alongside the session
+        // reads. Without the directive those records land nowhere at all.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_server=debug"));
+        // `forge_agent::userdata::catalog::scan` carries the scan's
+        // module-path records at `debug`: an unparseable transcript line, a
+        // session with no on-disk file, an anchor no row names. Each is one
+        // session's own data rather than forge's health, and without the
+        // directive the records land nowhere at all.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_agent::userdata::catalog::scan=debug"));
         // `forge_workspace::output_tail` carries the tail read's
         // unreadable-line record, demoted there for the same reason: a line
         // the watched command wrote that cannot be decoded is that command's
@@ -397,6 +453,11 @@ mod tests {
         // the only record of a seat whose tree is silently not being read, so
         // the target needs the directive or the silence has no explanation.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::work=debug"));
+        // `forge_workspace::browser` records the browser calls a session
+        // made - what ran, for whom, how it ended - at `debug` because a
+        // call is the session's own work. Without the directive the call
+        // record lands nowhere at all.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::browser=debug"));
         // Dictation's own records were demoted out of WARN for the same
         // reason: a take reaching its capture cap, a normalizer hitting
         // its token budget and a take whose recognition failed are one
@@ -415,6 +476,10 @@ mod tests {
         // Pinning to `error` rejects it at the filter before
         // serialisation.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("llama_cpp_2=error"));
+        // The engine reaches tracing under both spellings of its target
+        // (module path and hyphenated), so the pin has to ride both or the
+        // chatter arrives under the one left out.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("llama-cpp-2=error"));
         // A directive the parser rejects takes the whole filter with it
         // and leaves forge logging nothing, so the default set is
         // checked by parsing it rather than by reading it.
@@ -461,6 +526,19 @@ mod tests {
         emitted_under(DEFAULT_LOG_DIRECTIVES, emit)
     }
 
+    /// The directive string boot builds for a preset, through the same
+    /// `Cli` shape the binary passes.
+    fn directives_under_preset(preset: &DiagnosticsPreset) -> String {
+        build_filter_directives(&Cli {
+            project: None,
+            new: false,
+            generate_completion: None,
+            diagnostics_preset: Some(preset.clone()),
+            log_file: None,
+            log_filter: None,
+        })
+    }
+
     /// Driven through the site rather than through a target written here:
     /// a directive matches by prefix, so a record labelled by the test would
     /// prove only that the label matches. The reader's unreadable-line arm
@@ -483,39 +561,123 @@ mod tests {
         );
     }
 
-    /// A preset REPLACES the default directives, so a target only the
-    /// defaults name lands nowhere under one. The presets that carry a
-    /// session's own records have to carry the crate those records live in
-    /// with them, or the demotion silences them for anyone running under
-    /// that preset.
+    /// The resolver composes a preset with the default set rather than
+    /// letting the preset replace it: every default slot rides along under
+    /// every preset, so a target that only the defaults name stays readable.
+    /// `agent.env_git` is the sharp case - its records were demoted out of
+    /// WARN, so without the directive they land nowhere at all - and it is
+    /// in no preset's own list.
     #[test]
-    fn the_presets_carrying_session_records_carry_the_crate_they_live_in() {
-        let carrying =
-            [DiagnosticsPreset::Runtime, DiagnosticsPreset::Session, DiagnosticsPreset::Full];
+    fn a_preset_carries_the_default_set_rather_than_replacing_it() {
+        let presets = [
+            DiagnosticsPreset::Runtime,
+            DiagnosticsPreset::Session,
+            DiagnosticsPreset::Bridge,
+            DiagnosticsPreset::Full,
+        ];
 
-        for preset in carrying {
-            let directives = preset.filter_directives();
-            // Every crate whose demoted records this preset would otherwise
-            // drop: the tail read's home, the server's own session reads,
-            // and dictation's two.
-            for target in [
-                "forge_server",
-                "forge_workspace::output_tail",
-                "forge_workspace::dictate",
-                "forge_dictate",
-            ] {
+        for preset in presets {
+            let directives = directives_under_preset(&preset);
+            for directive in DEFAULT_LOG_DIRECTIVES.split(',') {
+                let key = directive_key(directive);
                 assert!(
-                    directives.contains(&format!("{target}=debug")),
-                    "{preset:?} carries a session's own records, so it must carry {target}, \
-                     which is where the demoted ones live: {directives}",
+                    directives.split(',').any(|d| directive_key(d) == key),
+                    "{preset:?} drops the default slot {directive}: {directives}",
                 );
             }
+
+            let caught = emitted_under(&directives, || {
+                tracing::debug!(
+                    target: "agent.env_git",
+                    event_name = "preset_default_check",
+                    "a record",
+                );
+            });
+            assert!(
+                caught.contains("preset_default_check"),
+                "{preset:?} must keep a default-only target readable: {caught}",
+            );
         }
     }
 
-    /// The control for the assertion above: a crate the defaults say
-    /// nothing about emits nothing under them, so the record landing is
-    /// the directive's doing rather than the subscriber's.
+    /// The control for the composition: a preset's own directives still
+    /// apply. `bridge.sdk` is the Bridge preset's to name - the defaults
+    /// say nothing about it - so the record landing is the preset's doing.
+    #[test]
+    fn a_presets_own_directives_still_apply() {
+        let directives = directives_under_preset(&DiagnosticsPreset::Bridge);
+
+        let caught = emitted_under(&directives, || {
+            tracing::debug!(
+                target: "bridge.sdk",
+                event_name = "preset_own_check",
+                "a record",
+            );
+        });
+
+        assert!(
+            caught.contains("preset_own_check"),
+            "the preset's own directives must survive the composition: {directives}",
+        );
+    }
+
+    /// A slot both sides name keeps the preset's directive: no preset can be
+    /// silently overridden by a default naming the same slot at a different
+    /// level. Every overlap in the shipped sets is byte-identical, so the
+    /// pairs here are synthetic - a divergent level is the case the rule
+    /// exists for.
+    #[test]
+    fn a_preset_directive_wins_an_overlap_with_the_defaults() {
+        // The target slot: the defaults name the same target at a lower level.
+        let composed =
+            compose_filter_directives("info,forge_server=trace", "info,forge_server=debug");
+
+        let caught = emitted_under(&composed, || {
+            tracing::trace!(
+                target: "forge_server",
+                event_name = "overlap_check",
+                "a record",
+            );
+        });
+        assert!(
+            caught.contains("overlap_check"),
+            "the preset's level must survive the target overlap: {composed}",
+        );
+
+        // The global slot: the parser resolves every bare level token to the
+        // one global directive, so the defaults' trailing `info` would replace
+        // the preset's `debug` if both rode the string.
+        let composed = compose_filter_directives("debug,bridge.sdk=trace", "info,bridge.sdk=debug");
+
+        let caught = emitted_under(&composed, || {
+            tracing::debug!(
+                target: "a_crate_forge_does_not_name::module",
+                event_name = "global_overlap_check",
+                "a record",
+            );
+        });
+        assert!(
+            caught.contains("global_overlap_check"),
+            "the preset's baseline must survive the global overlap: {composed}",
+        );
+    }
+
+    /// The key cuts at the `=` the parser would: one inside a brace shape
+    /// (`[take{kind=open}]`) belongs to the shape, not to the directive, so
+    /// an `open` shape and a `stop` shape key apart.
+    #[test]
+    fn a_directive_key_keeps_a_brace_shape_whole() {
+        assert_eq!(directive_key("browser[take{kind=open}]=trace"), "browser[take{kind=open}]",);
+        assert_ne!(
+            directive_key("browser[take{kind=open}]=trace"),
+            directive_key("browser[take{kind=stop}]=debug"),
+        );
+    }
+
+    /// The control for `a_demoted_site_emits_under_the_default_directives`:
+    /// a crate the defaults say nothing about emits nothing under them, so
+    /// the record landing is the directive's doing rather than the
+    /// subscriber's.
     #[test]
     fn a_target_the_defaults_say_nothing_about_stays_out() {
         let absent = emitted_under_defaults(|| {
@@ -544,11 +706,11 @@ mod tests {
             DiagnosticsPreset::Bridge,
             DiagnosticsPreset::Full,
         ];
-        let sets = std::iter::once(("defaults".to_owned(), DEFAULT_LOG_DIRECTIVES))
-            .chain(presets.into_iter().map(|p| (format!("{p:?}"), p.filter_directives())));
+        let sets = std::iter::once(("defaults".to_owned(), DEFAULT_LOG_DIRECTIVES.to_owned()))
+            .chain(presets.into_iter().map(|p| (format!("{p:?}"), directives_under_preset(&p))));
 
         for (label, directives) in sets {
-            let caught = emitted_under(directives, || {
+            let caught = emitted_under(&directives, || {
                 tracing::info!(
                     target: "a_web_view::nowhere",
                     event_name = "baseline_check",
