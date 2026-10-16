@@ -63,6 +63,7 @@
     reviews,
     busy,
     dictate,
+    focusComment,
     box = $bindable(),
     reply = $bindable(),
     voice,
@@ -86,6 +87,10 @@
     busy: boolean;
     /** The take this page owns, which every box's mic drives. */
     dictate: Dictation;
+    /** The comment the stepper moved to, and the step's own number: the
+     *  canvas brings that card into view, a repeat of the same target
+     *  included. */
+    focusComment: { path: string; side: 'old' | 'new'; line: number; seq: number } | null;
     /** The comment box this canvas draws: the spot, the words, the write in
      *  flight, the take's line, and where its take is. The page holds it,
      *  because the words and the take outlive the row the canvas builds. */
@@ -425,6 +430,33 @@
     void built;
     void narrow;
     scheduleMark();
+  });
+
+  /**
+   * Bring one comment's card into view: its file first - the list may not
+   * have drawn it at all - and then the anchored row, once that section is
+   * up. The row is looked for over a few frames, because a virtualised
+   * section the jump has just scrolled to is rendered a frame later.
+   */
+  $effect(() => {
+    const ask = focusComment;
+    if (ask === null) return;
+    void ask.seq;
+    jumpTo(ask.path);
+    let tries = 0;
+    const look = (): void => {
+      const el = canvases[ask.path];
+      const at = el === undefined ? null : anchorRow(el, ask.side, ask.line, mode);
+      if (at !== null) {
+        at.scrollIntoView({ block: 'center' });
+        return;
+      }
+      if (tries < 8) {
+        tries += 1;
+        requestAnimationFrame(look);
+      }
+    };
+    requestAnimationFrame(look);
   });
 
   /** One drawn section, tracked for the reading mark. */

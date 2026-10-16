@@ -30,6 +30,7 @@
   import WordsBox from './WordsBox.svelte';
   import {
     ageOf,
+    commentsInScope,
     latestRound,
     loopState,
     outdatedThreads,
@@ -692,12 +693,53 @@
     scopeIdx = idx;
     if (idx > 0) lastCommit = idx;
     pickerOpen = false;
+    // The stepper's place is not the new scope's: its comments are others.
+    commentAt = -1;
   }
 
+  /**
+   * One scope along, CYCLING: the last commit steps on to all changes, and
+   * all changes back to the last commit, so a reader holding an arrow walks
+   * the branch round rather than hitting a wall.
+   */
   function stepScope(delta: number): void {
     const next = scopeIdx + delta;
-    if (next < 0 || next >= choices.length) return;
-    choose(next);
+    if (next < 0) choose(choices.length - 1);
+    else if (next >= choices.length) choose(0);
+    else choose(next);
+  }
+
+  /** The comments this scope draws, in the order the canvas draws them. */
+  const comments = $derived(commentsInScope(threads, scopeCommit));
+  /** Which of them the stepper is on, -1 for none. */
+  let commentAt = $state(-1);
+  /**
+   * The comment the stepper last moved to, and the step's own number - a
+   * repeat of the same target is a step all the same, and the canvas has to
+   * hear it.
+   */
+  let focusComment = $state<{
+    path: string;
+    side: 'old' | 'new';
+    line: number;
+    seq: number;
+  } | null>(null);
+  let stepSeq = 0;
+
+  /** One comment along, cycling both ways. */
+  function stepComment(delta: number): void {
+    if (comments.length === 0) return;
+    const next = commentAt + delta;
+    commentAt = next < 0 ? comments.length - 1 : next >= comments.length ? 0 : next;
+    const held = comments[commentAt];
+    if (held === undefined) return;
+    stepSeq += 1;
+    focusComment = {
+      path: held.thread.anchor.path,
+      side: held.thread.anchor.side === 'old' ? 'old' : 'new',
+      line: held.line,
+      seq: stepSeq,
+    };
   }
 
   function toggleAll(): void {
@@ -705,9 +747,10 @@
   }
 
   /**
-   * The scope keys, live only while the diff half is on screen: `[` and `]`
-   * step, `a` flips between all changes and the commit you were on, `j` opens
-   * the picker. A keypress in a text field is the field's.
+   * The diff half's keys, live only while it is on screen: the arrows (and
+   * `[` / `]`) step one scope, cycling, shift+arrows step one comment,
+   * cycling, `a` flips between all changes and the commit you were on, `j`
+   * opens the picker. A keypress in a text field is the field's.
    */
   function onKey(event: KeyboardEvent): void {
     if (tab !== 'files') return;
@@ -724,9 +767,15 @@
       event.preventDefault();
       return;
     }
-    if (event.key === '[' || event.key === 'ArrowLeft') stepScope(-1);
-    else if (event.key === ']' || event.key === 'ArrowRight') stepScope(1);
-    else if (event.key === 'a') toggleAll();
+    // The arrows step commits and shift+arrows step comments - the pair the
+    // keycap row under the tabs states.
+    if (event.key === '[' || event.key === 'ArrowLeft') {
+      if (event.shiftKey) stepComment(-1);
+      else stepScope(-1);
+    } else if (event.key === ']' || event.key === 'ArrowRight') {
+      if (event.shiftKey) stepComment(1);
+      else stepScope(1);
+    } else if (event.key === 'a') toggleAll();
     else if (event.key === 'j') {
       pickerHi = scopeIdx;
       pickerOpen = true;
@@ -930,14 +979,14 @@
               type="button"
               class="rv-step-btn"
               aria-label="previous scope"
-              disabled={scopeIdx === 0}
+              disabled={choices.length <= 1}
               onclick={() => stepScope(-1)}>&#8249;</button
             >
             <button
               type="button"
               class="rv-step-btn"
               aria-label="next scope"
-              disabled={scopeIdx >= choices.length - 1}
+              disabled={choices.length <= 1}
               onclick={() => stepScope(1)}>&#8250;</button
             >
           </span>
@@ -968,6 +1017,28 @@
             split
           </button>
         </span>
+        <!-- The comments' own stepper, beside the scope's: the two things a
+             reader walks in a diff, each with a button a finger can press -
+             a key alone is no door on a touch screen (rule 22). -->
+        <span class="rv-step rv-cstep">
+          <button
+            type="button"
+            class="rv-step-btn"
+            aria-label="previous comment"
+            disabled={comments.length === 0}
+            onclick={() => stepComment(-1)}>&#8249;</button
+          >
+          <span class="rv-cstep-n" aria-live="polite">
+            {commentAt < 0 ? 0 : commentAt + 1}/{comments.length}
+          </span>
+          <button
+            type="button"
+            class="rv-step-btn"
+            aria-label="next comment"
+            disabled={comments.length === 0}
+            onclick={() => stepComment(1)}>&#8250;</button
+          >
+        </span>
       {/if}
     </nav>
 
@@ -977,6 +1048,8 @@
            also accepts are not worth advertising beside them. -->
       <p class="rv-hint">
         <kbd>&#8592;</kbd><kbd>&#8594;</kbd> step commits
+        <span class="sep">&#183;</span>
+        <kbd>shift</kbd><kbd>&#8592;</kbd><kbd>&#8594;</kbd> step comments
         <span class="sep">&#183;</span>
         <kbd>a</kbd> all changes
         <span class="sep">&#183;</span>
@@ -1162,6 +1235,7 @@
           reviews={reviews.reviews.outcome === 'read' ? reviews.reviews.value : []}
           {busy}
           {dictate}
+          {focusComment}
           bind:box
           bind:reply
           {voice}
@@ -1326,11 +1400,25 @@
   .rv-hint {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 7px;
     padding: 2px 2px 10px;
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--dim);
+  }
+  /* The comment stepper's own count, the cell between its arrows. */
+  .rv-cstep-n {
+    font-family: var(--mono);
+    font-size: var(--fs-data);
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-left: 0;
+    padding: 3px 8px;
+    white-space: nowrap;
+  }
+  .rv-cstep {
+    flex: none;
   }
   .rv-hint .sep {
     color: var(--line);

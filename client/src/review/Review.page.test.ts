@@ -117,6 +117,13 @@ afterEach(async () => {
 
 beforeEach(() => {
   installResizeObserver();
+  // jsdom performs no layout: scrollIntoView is a browser call the jump and
+  // the comment stepper make, so it is stood in for the way the board and
+  // the chat's own reveal stand it in.
+  Object.defineProperty(Element.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: () => {},
+  });
   (globalThis as { matchMedia?: unknown }).matchMedia = () => ({
     matches: true,
     addEventListener: () => {},
@@ -175,12 +182,16 @@ function record(
   threads: unknown[] = [],
   reviews: unknown[] = [],
   diff: unknown = DIFF,
+  commits: { sha: string; subject: string }[] = [],
 ): SessionRecord {
   return {
     slot: SLOT,
     composer,
     work: { branch: 'b', dirt: 'clean' },
-    git: { defaultBranch: 'main', ahead: null },
+    git: {
+      defaultBranch: 'main',
+      ahead: commits.length === 0 ? null : { commit_count: commits.length, commits, stats: null },
+    },
     diff: { branchAhead: diff },
     reviews: {
       threads: { outcome: 'read', value: threads },
@@ -287,6 +298,7 @@ async function draw(
   reviews: unknown[] = [],
   dictation = true,
   diff: unknown = DIFF,
+  commits: { sha: string; subject: string }[] = [],
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -297,7 +309,7 @@ async function draw(
     props: { connection: connection(), slot: SLOT, dictation },
   });
   flushSync();
-  push({ wire: record(IDLE, threads, reviews, diff), refused: null });
+  push({ wire: record(IDLE, threads, reviews, diff, commits), refused: null });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
   await settle(() => {
@@ -802,6 +814,92 @@ describe('a comment box opens', () => {
 
     expect(document.activeElement, 'the caret is in the box the click opened').toBe(
       document.querySelector('.rv-thread.comment .rv-txarea'),
+    );
+  });
+});
+
+describe('the steppers', () => {
+  const SECOND_COMMIT = { sha: 'def456', subject: 'the second commit' };
+
+  /** The readout the comment stepper draws, or null when it drew none. */
+  function readout(): string | null {
+    return document.querySelector('.rv-cstep-n')?.textContent?.trim() ?? null;
+  }
+
+  function press(where: 'previous comment' | 'next comment' | 'next scope'): void {
+    const button = document.querySelector<HTMLButtonElement>(`.rv-step-btn[aria-label="${where}"]`);
+    if (button === null) throw new Error(`the page drew no ${where} button`);
+    button.click();
+    flushSync();
+  }
+
+  /**
+   * **Both steppers cycle, with buttons a finger can press** (Ved,
+   * 2026-10-16): the comments of the scope, and the scopes themselves - the
+   * last steps round to the first rather than stopping at a wall, and the
+   * pair is on screen so a touch reader has a door the keys are not.
+   */
+  it('walks the scope comments with wrap-around, from its own buttons', async () => {
+    await draw([
+      THREAD,
+      {
+        ...THREAD,
+        id: 't4',
+        resolution: { state: 'placed', line: 4, moved_from: null },
+        anchor: { ...THREAD.anchor, line: 4 },
+      },
+    ]);
+
+    expect(readout(), 'nothing stepped to yet').toBe('0/2');
+    press('next comment');
+    expect(readout()).toBe('1/2');
+    press('next comment');
+    expect(readout()).toBe('2/2');
+    press('next comment');
+    expect(readout(), 'the last comment steps round to the first').toBe('1/2');
+    press('previous comment');
+    expect(readout(), 'and the first steps back round to the last').toBe('2/2');
+  });
+
+  it('steps the scopes with wrap-around, from its own buttons', async () => {
+    await draw([], [], true, DIFF, [{ sha: 'abc123', subject: 'the first commit' }, SECOND_COMMIT]);
+
+    const scope = (): string | null =>
+      document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
+    expect(scope()).toBe('All changes');
+    press('next scope');
+    expect(scope()).toBe('abc123');
+    press('next scope');
+    expect(scope()).toBe('def456');
+    press('next scope');
+    expect(scope(), 'the last commit steps round to all changes').toBe('All changes');
+  });
+
+  /**
+   * **The keys are the pair the hint names**: arrows step commits, and
+   * shift+arrows step comments - the same walks the buttons make.
+   */
+  it('steps comments on shift+arrows and commits on the arrows', async () => {
+    const key = (init: KeyboardEventInit): void => {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }),
+      );
+      flushSync();
+    };
+    await draw([THREAD], [], true, DIFF, [SECOND_COMMIT]);
+
+    key({ key: 'ArrowRight', shiftKey: true });
+    expect(readout(), 'shift+right steps a comment').toBe('1/1');
+    key({ key: 'ArrowLeft', shiftKey: true });
+    expect(readout(), 'and shift+left steps back round').toBe('1/1');
+
+    const scope = (): string | null =>
+      document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
+    key({ key: 'ArrowRight' });
+    expect(scope(), 'a bare right still steps the scope').toBe('def456');
+
+    expect(document.querySelector('.rv-hint')?.textContent, 'and the hint row says both').toContain(
+      'shift',
     );
   });
 });

@@ -235,6 +235,7 @@ function draw(held: ReviewThreadRecord = thread, at: DiffLayerRecord = layer): v
       reviews: [],
       busy: false,
       dictate,
+      focusComment: null,
       onpress: () => undefined,
       onhold: () => undefined,
       onelement: () => undefined,

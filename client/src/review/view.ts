@@ -200,6 +200,39 @@ export function threadsInScope(
   return threads.filter((thread) => canvasLine(thread, commit) !== null);
 }
 
+/** One comment as the stepper walks it: its thread, and the line it sits on. */
+export interface CommentStep {
+  thread: ReviewThreadRecord;
+  line: number;
+}
+
+/**
+ * The comments one scope's canvas draws, in the order it draws them: by
+ * path, then by the line each sits on - the order the reader reads the
+ * diff in, and so the order `prev` and `next` walk it in.
+ *
+ * A thread the scope cannot place is not drawn and not stepped to: the
+ * stepper's count and the canvas agree about what is there.
+ */
+export function commentsInScope(
+  threads: ReviewThreadRecord[],
+  commit: string | null,
+): CommentStep[] {
+  const steps: CommentStep[] = [];
+  for (const thread of threads) {
+    const placed = canvasLine(thread, commit);
+    if (placed === null) continue;
+    steps.push({ thread, line: placed.line });
+  }
+  steps.sort((a, b) => {
+    const path = a.thread.anchor.path;
+    const other = b.thread.anchor.path;
+    if (path !== other) return path < other ? -1 : 1;
+    return a.line - b.line;
+  });
+  return steps;
+}
+
 /**
  * The threads the parked section lists: code the all-changes canvas cannot
  * place and that is not resolved.

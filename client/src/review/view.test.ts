@@ -6,6 +6,7 @@ import {
   authorName,
   awaitsReviewer,
   canvasLine,
+  commentsInScope,
   latestRound,
   loopState,
   outdatedThreads,
@@ -332,6 +333,65 @@ describe('where a thread draws on the canvas', () => {
       ]),
       'code that came back un-parks: the fresh landing wins over the store',
     ).toEqual([]);
+  });
+});
+
+describe('the comments the stepper walks', () => {
+  it('walks the scope by path then line, and never onto what the canvas cannot draw', () => {
+    // The plausible regression is stepping by record order: the canvas draws
+    // by path, so a stepper on another order would jump backwards and
+    // forwards through the diff, and one counting an unplaced thread would
+    // step to a card that is not on screen.
+    const later = thread('later', 'open', [{ author: 'you', review_id: null }], {
+      anchor: {
+        path: 'src/b.rs',
+        side: 'new',
+        line: 10,
+        content_hash: '1',
+        context: [],
+        base_ref: 'main',
+      },
+      resolution: { state: 'placed', line: 10, moved_from: null },
+    });
+    const early = thread('early', 'open', [{ author: 'you', review_id: null }], {
+      anchor: {
+        path: 'src/a.rs',
+        side: 'new',
+        line: 12,
+        content_hash: '1',
+        context: [],
+        base_ref: 'main',
+      },
+      resolution: { state: 'placed', line: 20, moved_from: 12 },
+    });
+    const first = thread('first', 'open', [{ author: 'you', review_id: null }], {
+      anchor: {
+        path: 'src/a.rs',
+        side: 'new',
+        line: 3,
+        content_hash: '1',
+        context: [],
+        base_ref: 'main',
+      },
+      resolution: { state: 'placed', line: 4, moved_from: null },
+    });
+    const gone = thread('gone', 'open', [{ author: 'you', review_id: null }], {
+      resolution: { state: 'outdated', reason: 'gone' },
+    });
+    const other = thread('other', 'open', [{ author: 'you', review_id: null }], {
+      commit: 'abc123',
+    });
+
+    const steps = commentsInScope([later, early, first, gone, other], null);
+    expect(steps.map((held) => held.thread.id)).toEqual(['first', 'early', 'later']);
+    expect(
+      steps.map((held) => held.line),
+      'the stepper names the line it lands on',
+    ).toEqual([4, 20, 10]);
+    expect(
+      commentsInScope([later, early, first, gone, other], 'abc123').map((held) => held.thread.id),
+      "a commit's scope holds its own thread only",
+    ).toEqual(['other']);
   });
 });
 
