@@ -15,8 +15,10 @@
  * pair at all. Which token a rule NAMES is this file's claim, the same split
  * `connect/controls.test.ts` makes for the connect screen's two controls.
  *
- * It reads the app's own sheet and the drawing's copy of the rule, because the
- * drawing is what the page is held against and the two are edited apart.
+ * It reads the app's own sheet and both drawings' copies of the rule - the
+ * composer page names the marked row `.ac .it.sel`, the session page `.mai.sel`
+ * in its own popover copy - because each drawing is what its page is held
+ * against and the three are edited apart.
  */
 
 import { readFileSync } from 'node:fs';
@@ -25,8 +27,7 @@ import { describe, expect, it } from 'vitest';
 
 import { repoPath } from '../repo';
 
-/** The rule this file pins, and the ground it has to name. */
-const SELECTOR = '.ac .it.sel';
+/** The ground every copy of the marked row has to name. */
 const GROUND = '--sel';
 
 /**
@@ -76,10 +77,18 @@ const SHEET = sheetText(readFileSync(new URL('../assets/web.css', import.meta.ur
 const DRAWING = sheetOf(
   readFileSync(repoPath('docs/book/src/ui/client/web-composer.html'), 'utf8'),
 );
+const SESSION = sheetOf(readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8'));
 
-const SHEETS: [string, string][] = [
-  ['assets/web.css', SHEET],
-  ['the composer drawing', DRAWING],
+/**
+ * Every copy of the marked row: the sheet or drawing it is drawn in, and the
+ * selector that copy names it by. The session page carries its own popover of
+ * the same `/model` row under its own class names, so its copy drifted from
+ * the app's the moment the tint moved anywhere but here.
+ */
+const SHEETS: [where: string, sheet: string, selector: string][] = [
+  ['assets/web.css', SHEET, '.ac .it.sel'],
+  ['the composer drawing', DRAWING, '.ac .it.sel'],
+  ['the session drawing', SESSION, '.mai.sel'],
 ];
 
 describe("the autocomplete's selected row", () => {
@@ -111,15 +120,13 @@ describe("the autocomplete's selected row", () => {
   });
 
   /**
-   * One assertion per sheet, because the two are edited apart: a rule corrected
-   * in the app's sheet and left in the drawing is a page that drew the defect
-   * after the app stopped.
+   * One assertion per copy, because the three are edited apart: a rule
+   * corrected in the app's sheet and left in a drawing is a page that drew the
+   * defect after the app stopped.
    */
   it('grounds the row in the token its detail text is measured against', () => {
-    for (const [where, sheet] of SHEETS) {
-      expect(groundIn(sheet, SELECTOR), `${where}: the selected row's ground`).toBe(
-        `var(${GROUND})`,
-      );
+    for (const [where, sheet, selector] of SHEETS) {
+      expect(groundIn(sheet, selector), `${where}: the marked row's ground`).toBe(`var(${GROUND})`);
     }
   });
 
@@ -131,7 +138,7 @@ describe("the autocomplete's selected row", () => {
    */
   it('reports a row grounded in a literal', () => {
     expect(
-      groundIn(`${SELECTOR} { background: rgba(244,118,0,.09); }`, SELECTOR),
+      groundIn('.ac .it.sel { background: rgba(244,118,0,.09); }', '.ac .it.sel'),
       'the tint this row drew before the fix',
     ).toBe('rgba(244,118,0,.09)');
   });
