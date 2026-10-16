@@ -3,6 +3,7 @@
 
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
+  import Ansi from './Ansi.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
   import Forge from './Forge.svelte';
@@ -116,6 +117,18 @@
 
   /** A piece the patch box does not draw: a run of text, or a picture. */
   type RunPiece = Exclude<CallBody, { kind: 'diff' } | { kind: 'hunk' }>;
+
+  /**
+   * The text of a piece that draws as text.
+   *
+   * Every branch below the image and error arms draws a text piece - the arms
+   * above them take the rest - so this is the narrowing the template needs to
+   * hand a string on, rather than a cast that would hide a piece arriving in a
+   * shape no arm claims.
+   */
+  function textOf(piece: RunPiece): string {
+    return piece.kind === 'text' ? piece.text : '';
+  }
 
   /**
    * Which box a backgrounded call's notice goes at the end of: the last one
@@ -333,7 +346,7 @@
     const error = body.find((piece) => piece.kind === 'error');
     if (error !== undefined) return error.message;
     const text = body.find((piece) => piece.kind === 'text');
-    return text === undefined ? null : firstLine(text.text);
+    return text === undefined ? null : firstLine(stripEscapes(text.text));
   }
 
   /** The row's mark: the card's own where it named one, else its family's. */
@@ -643,7 +656,7 @@
                    alike. -->
               <div class="outlive">live</div>
             {/if}
-            <div class="term">{stripEscapes(readback.lines.join('\n'))}</div>
+            <div class="term"><Ansi text={readback.lines.join('\n')} /></div>
           {:else if readback.kind === 'lines'}
             {#if liveTail}
               <!-- An empty file while the call runs is the same fact as none
@@ -709,7 +722,7 @@
         {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
     {:else if asProse}
-      <Prose text={piece.text} preserveLines />
+      <Prose text={stripEscapes(textOf(piece))} preserveLines />
     {:else if mcpParts(call.name) !== null || isBrowserTool(call.name)}
       <!-- **An MCP result is markdown, one style for every call, the peer
            card's own.** What a server wrote arrives as markdown - headings,
@@ -720,9 +733,9 @@
            the lane a peer message's body sits in). Soft breaks flow; a fence
            is where literal lines live. A local command's OUTPUT is not prose
            and stays the terminal box below. -->
-      <div class="pbody"><Prose text={piece.text} /></div>
+      <div class="pbody"><Prose text={stripEscapes(textOf(piece))} /></div>
     {:else if asCode(piece) !== null}
-      <Code path={call.title} text={piece.text} />
+      <Code path={call.title} text={stripEscapes(textOf(piece))} />
     {:else}
       <!-- The command a call ran leads its own output: a call given a
            description shows that as its title, and the command would
@@ -731,8 +744,10 @@
            whitespace rule turns out to be. -->
       <div class="term">
         {#if call.command !== null}<span class="pfx">$</span>
-          {call.command}<br />{/if}{piece.text}{#if at === tail && call.note !== null}<br /><span
-            class={call.note.tone ?? undefined}>{call.note.text}</span
+          {call.command}<br />{/if}<Ansi
+          text={textOf(piece)}
+        />{#if at === tail && call.note !== null}<br /><span class={call.note.tone ?? undefined}
+            >{call.note.text}</span
           >{/if}
       </div>
     {/if}

@@ -297,21 +297,29 @@ function toolUseError(text: string): { message: string; detail: string } | null 
  * box. `failed` is the call's own settle: only there is the CLI's error
  * envelope read off (see `toolUseError`), and a completed result draws
  * verbatim, tags and all.
+ *
+ * **Escapes stay on the text.** The terminal box that draws a command's output
+ * reads them into the page's own colours (`Ansi.svelte`), so stripping them
+ * here would throw the colour away before the one renderer that can use it
+ * ever saw it. Every other consumer of a body - a failure's reason, a card's
+ * prose, a source file - strips at its own draw, where plain text is what it
+ * wants.
  */
 export function bodyOf(content: unknown, failed = false): CallBody[] {
   if (typeof content === 'string') {
-    const text = stripEscapes(content);
-    if (text.trim() === '') return [];
-    const said = failed ? toolUseError(text) : null;
-    return [said === null ? { kind: 'text', text } : { kind: 'error', ...said }];
+    // Emptiness is read off the STRIPPED text: a result that is only escape
+    // sequences is a result that said nothing, and drawing it would leave a
+    // row that expands to an empty box.
+    if (stripEscapes(content).trim() === '') return [];
+    const said = failed ? toolUseError(content) : null;
+    return [said === null ? { kind: 'text', text: content } : { kind: 'error', ...said }];
   }
   const out: CallBody[] = [];
   for (const block of blocksOf(content)) {
     if (block.type === 'text' && typeof block.text === 'string') {
-      const text = stripEscapes(block.text);
-      if (text.trim() !== '') {
-        const said = failed ? toolUseError(text) : null;
-        out.push(said === null ? { kind: 'text', text } : { kind: 'error', ...said });
+      if (stripEscapes(block.text).trim() !== '') {
+        const said = failed ? toolUseError(block.text) : null;
+        out.push(said === null ? { kind: 'text', text: block.text } : { kind: 'error', ...said });
       }
     }
     if (block.type === 'image') {

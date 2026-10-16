@@ -55,6 +55,43 @@ describe('what a call body draws', () => {
     expect(JSON.stringify(leaf.body), 'and the row still says so in words').toContain('no result');
   });
 
+  /**
+   * **The fold keeps the command's escapes on the body**, because the terminal
+   * box is the one renderer that can use them (`Ansi.svelte`): a strip here
+   * would throw the colour away before any box saw it. The consumers that want
+   * plain text strip at their own draw.
+   */
+  it("keeps a command's own escapes on the body for the box to draw", () => {
+    const leaf = leafOf(
+      't1',
+      'Bash',
+      { command: 'cargo build' },
+      {
+        type: 'tool_result',
+        content: '\u001b[32mCompiling\u001b[0m forge-server',
+      },
+    );
+
+    expect(leaf.body).toEqual([
+      { kind: 'text', text: '\u001b[32mCompiling\u001b[0m forge-server' },
+    ]);
+  });
+
+  /** A result that is only escapes said nothing, and draws as the words for it. */
+  it('reads a result that is only escapes as nothing said', () => {
+    const leaf = leafOf(
+      't1',
+      'Bash',
+      { command: 'true' },
+      {
+        type: 'tool_result',
+        content: '\u001b[0m\n',
+      },
+    );
+
+    expect(JSON.stringify(leaf.body), 'the row says so in words').toContain('no result');
+  });
+
   it("draws the CLI's own hunk where the result carries one, marks included", () => {
     // What the wire says about the change: the range it covers, and the lines
     // with a space for context, `-` for removed, `+` for added. Without it the

@@ -909,6 +909,56 @@ describe('the output a backgrounded row reads back', () => {
     expect(open, 'and the escapes came off at the drawing').not.toContain('\u001b[32m');
   });
 
+  /**
+   * **The box draws the command's colours.** The read hands over what the
+   * command wrote, escapes and all; the box reads them into the sheet's
+   * palette so a coloured tail looks like the terminal's, and no escape
+   * survives onto the page.
+   */
+  it("draws the command's own colours, in the sheet's palette", () => {
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', {
+      kind: 'lines',
+      lines: ['\u001b[32mCompiling\u001b[0m forge-server', '\u001b[1;91merror\u001b[0m: boom'],
+    });
+
+    const open = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(open, 'the colour is a class the sheet styles').toContain('class="ansi-green"');
+    expect(open, 'a bright colour and bold together too').toContain('ansi-bright-red ansi-bold');
+    expect(open, 'and the words are still there').toContain('Compiling');
+    expect(open, 'with no raw escape left on the page').not.toContain('\u001b');
+  });
+
+  /**
+   * And the same renderer draws a FOREGROUND call's result: the fold keeps the
+   * escapes on the body for the box, so the two boxes cannot draw the same
+   * bytes two ways.
+   */
+  it('draws a foreground result in the same colours', () => {
+    const leaf: ToolLeaf = {
+      ...backgrounded(null),
+      backgrounded: false,
+      body: [{ kind: 'text', text: '\u001b[33mwarn\u001b[0m: one step skipped' }],
+    };
+
+    const open = render(Call, { props: { k: 'f1', call: leaf, open: true } }).body;
+    expect(open, 'the result box draws the colour').toContain('class="ansi-yellow"');
+    expect(open, 'with the words kept').toContain('one step skipped');
+    expect(open, 'and no raw escape').not.toContain('\u001b');
+  });
+
+  /** A sequence the page cannot draw is dropped, never printed as residue. */
+  it('drops a sequence it cannot draw rather than printing it', () => {
+    const leaf: ToolLeaf = {
+      ...backgrounded(null),
+      backgrounded: false,
+      body: [{ kind: 'text', text: 'before\u001b[2Jafter' }],
+    };
+
+    const open = render(Call, { props: { k: 'f1', call: leaf, open: true } }).body;
+    expect(open, 'the text around it stays').toContain('beforeafter');
+    expect(open, 'and the erase is nowhere on the page').not.toContain('\u001b');
+  });
+
   /** The read never answers blank: a reason is drawn in words. */
   it('names a reason where there is no tail, never a blank', () => {
     outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'file_gone' });

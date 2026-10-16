@@ -73,6 +73,12 @@ read as one system.
   written when the command first writes, and the settled wording about a
   call that never recorded one would be a claim the row cannot make yet.
   Once the call settles the mark goes and the tail is the finished output.
+  **The box draws the command's own colours**: every terminal box reads the
+  escape sequences a command wrote - colour, bold, dim, italic, underline -
+  into the theme's palette, so a coloured compile looks like the terminal's.
+  A sequence the page cannot draw (a cursor move, an erase, the extended
+  colour forms) is dropped rather than printed, and a command that wrote no
+  colour draws in the box's own tone.
 - **A settled failure with nothing to open onto** says so in words rather
   than drawing an empty body.
 
