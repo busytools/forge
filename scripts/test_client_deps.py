@@ -162,7 +162,11 @@ class ClientDepsTest(unittest.TestCase):
         result = self.step("client-release-deps")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--prefix client ci", self.calls())
+        self.assertIn(
+            "--prefix client ci",
+            self.calls(),
+            "the release install was skipped on a tree the mtime key reads as current",
+        )
 
 
 if __name__ == "__main__":
