@@ -144,11 +144,16 @@
 
   .rv-insert td { padding: 0; background: var(--s1); }
   .rv-inline { padding: 3px 10px 6px; }
-  /* The between-hunk control: the lines the diff left out, one press away. */
-  .rv-expand { display: block; width: 100%; text-align: center;
-    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-    background: var(--s2); border: 1px solid var(--line); border-radius: 6px;
-    padding: 2px 8px; }
+  /* The between-hunk control, in the numbers' own column: a thin strip whose
+     gutter carries the count of hidden lines, the shape GitHub uses. */
+  .rv-gap td { background: var(--s1); }
+  .rv-gap:hover td { background: var(--s2); }
+  .rv-gap-num { padding: 1px 8px; text-align: right; }
+  .rv-gap-lane { padding: 1px 8px; }
+  .rv-expand { display: inline-flex; align-items: center; gap: 5px;
+    background: none; border: 0; padding: 0 2px;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .rv-expand-more { letter-spacing: 1px; }
   .rv-thread { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2);
     padding: 8px 10px 9px; }
   .rv-tops { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
@@ -465,14 +470,13 @@
                 </div>
               </td>
             </tr>
-            <!-- The lines the diff left out, one press away - and, below it,
-                 the second hunk the gap sat between. -->
-            <tr class="rv-insert">
-              <td colspan="4">
-                <div class="rv-inline">
-                  <button type="button" class="rv-expand">show 14 lines</button>
-                </div>
-              </td>
+            <!-- The lines the diff left out, one press away: a thin strip
+                 whose number column carries the count, the shape GitHub
+                 uses - and, below it, the second hunk the gap sat between. -->
+            <tr class="rv-insert rv-gap">
+              <td class="rv-gap-num">&nbsp;</td><td class="rv-gap-lane"></td>
+              <td class="rv-gap-num"><button type="button" class="rv-expand">&#8943;&#8201;14</button></td
+              ><td class="rv-gap-lane"></td>
             </tr>
             <tr><td class="hunk" colspan="4">@@ -240,5 +242,5 @@</td></tr>
             <tr>

@@ -101,12 +101,15 @@ file the list has not drawn yet.
 
 **A diff's hunks leave lines out, and the page can draw them.** The record
 carries bounded hunks, so the lines between them - and above the first,
-below the last - are exactly what it does not carry. A control between two
-hunks names how many lines it hides and, on a press, draws them as context
-inside the hunk they follow: the diff text is re-emitted with the hunk's
-heading grown by them, because the viewer numbers every row from that
-heading and rows spliced in by hand would draw a numbering it never agreed
-to. The lines come from the file's whole content read at the scope's own
+below the last - are exactly what it does not carry. The gap draws as a
+thin strip whose line-number column carries the count of hidden lines
+(`⋯ 354`), the shape GitHub uses for the same job, with the code lane
+beside it empty; the strip is the pointer's target and the control in the
+gutter is the keyboard's and the finger's. On a press the hidden lines draw
+as context inside the hunk they follow: the diff text is re-emitted with
+the hunk's heading grown by them, because the viewer numbers every row from
+that heading and rows spliced in by hand would draw a numbering it never
+agreed to. The lines come from the file's whole content read at the scope's own
 revision - a commit's tree for a commit's scope, the branch tip for all
 changes - bounded by the same ceiling a document read is, and answered as a
 flagged short read at that ceiling rather than as a refusal, its lines

@@ -977,10 +977,15 @@
   }
 
   /**
-   * One between-hunk control: the lines the diff left out, on a press.
+   * One gap's control, drawn where the line numbers are - the shape GitHub
+   * uses for the same job (Ved, 2026-10-16, from the look): the row is a
+   * thin strip whose NUMBER cell carries the count of hidden lines, right
+   * where the line numbers would sit, and whose code lane stays empty
+   * because there is no code there.
    *
-   * A real button in a row of its own, so a keyboard and a finger both
-   * reach it - the same door rule every other control on this page keeps.
+   * **The whole strip is the target, the gutter is the door.** A pointer
+   * gets the row's own highlight across its length; the button in the
+   * number cell is what a keyboard and a finger reach.
    */
   function gapRow(
     at: HTMLTableRowElement,
@@ -988,19 +993,57 @@
     gap: Gap,
     side: 'old' | 'new',
   ): HTMLTableRowElement {
-    const wrap = document.createElement('div');
-    wrap.className = 'rv-inline';
+    const row = document.createElement('tr');
+    row.className = 'rv-insert rv-gap';
+    const label = `show the ${gap.count} ${gap.count === 1 ? 'line' : 'lines'} between the hunks of ${path}`;
+    const open = (): void => void expand(path, gap.after);
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'rv-expand';
-    button.textContent = `show ${gap.count} ${gap.count === 1 ? 'line' : 'lines'}`;
-    button.setAttribute(
-      'aria-label',
-      `show the ${gap.count} ${gap.count === 1 ? 'line' : 'lines'} between the hunks of ${path}`,
-    );
-    button.addEventListener('click', () => void expand(path, gap.after));
-    wrap.append(button);
-    return insertRow(at, side, mode, wrap);
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.append(span('rv-expand-more', '⋯'));
+    button.append(span('rv-expand-n', String(gap.count)));
+    button.addEventListener('click', open);
+
+    const shaped = [...at.children].map((cell) => {
+      const el = cell as HTMLElement;
+      const own =
+        el.dataset['side'] ??
+        (el.className.includes('old') ? 'old' : el.className.includes('new') ? 'new' : null);
+      return {
+        own,
+        isNum: el.className.includes('num'),
+        colspan: Number(el.getAttribute('colspan') ?? 1),
+      };
+    });
+    if (!shaped.some((cell) => cell.own !== null)) {
+      // Unified: the one number cell and the one lane.
+      const num = document.createElement('td');
+      num.className = 'rv-gap-num';
+      num.append(button);
+      const lane = document.createElement('td');
+      lane.className = 'rv-gap-lane';
+      lane.colSpan = shaped.reduce((n, cell) => n + cell.colspan, 0) - 1 || 1;
+      lane.addEventListener('click', open);
+      row.append(num, lane);
+      return row;
+    }
+    for (const cell of shaped) {
+      const td = document.createElement('td');
+      if (cell.isNum) {
+        td.className = 'rv-gap-num';
+        if (cell.own === side) td.append(button);
+      } else {
+        // A padded half (one spanning placeholder cell) stays a lane, so the
+        // row keeps the anchor's own width.
+        td.className = 'rv-gap-lane';
+        td.colSpan = cell.colspan;
+        td.addEventListener('click', open);
+      }
+      row.append(td);
+    }
+    return row;
   }
 
   /**

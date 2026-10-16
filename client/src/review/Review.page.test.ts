@@ -1200,10 +1200,23 @@ describe('the lines a diff left out', () => {
     await settle(() => document.querySelector('.rv-expand') !== null);
 
     const control = document.querySelector('.rv-expand');
-    expect(control?.textContent, 'the control names how much it hides').toBe('show 2 lines');
+    expect(control?.getAttribute('aria-label'), 'the control names how much it hides').toBe(
+      'show the 2 lines between the hunks of src/a.rs',
+    );
     expect(
-      document.querySelector('.rv-expand')?.closest('tr.rv-insert'),
+      control?.closest('tr.rv-insert'),
       'and it sits in a row of its own, after the first hunk',
+    ).not.toBeNull();
+    // **The gutter is the control's place** (Ved, 2026-10-16, from the
+    // look): the count sits in the line-number column, the shape GitHub
+    // draws, and the code lane beside it is the pointer's strip.
+    expect(
+      control?.closest('td')?.className,
+      'the control is drawn in the numbers column, not across the row',
+    ).toContain('rv-gap-num');
+    expect(
+      document.querySelector('tr.rv-insert .rv-gap-lane'),
+      'with the empty lane beside it',
     ).not.toBeNull();
 
     // **The press re-emits the file's diff text with the gap drawn as
@@ -1255,9 +1268,9 @@ describe('the lines a diff left out', () => {
     press('next scope');
     await settle(() => document.querySelector('.rv-expand') !== null);
     expect(
-      document.querySelector('.rv-expand')?.textContent,
+      document.querySelector('.rv-expand')?.getAttribute('aria-label'),
       'the control the late answer earned',
-    ).toBe('show 2 lines');
+    ).toBe('show the 2 lines between the hunks of src/a.rs');
     expect(
       asked.map((held) => held.sha),
       'and no ask was repeated',
