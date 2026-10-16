@@ -4167,6 +4167,11 @@ mod tests {
         assert_eq!(outcome.delivered, 1, "the correction is delivered");
         assert_eq!(host.delivered()[0].text, "deploy is RED", "with its new text");
         assert_eq!(
+            host.delivered()[0].edited.as_deref(),
+            Some("150.0"),
+            "and it carries the edit ts the delivery memory keys on",
+        );
+        assert_eq!(
             host.watermark("acme", "D1"),
             Ok(Some("150.0".to_owned())),
             "the cursor clears the edit, so the next sweep does not re-offer it",
@@ -4315,15 +4320,19 @@ mod tests {
             "and the walk has read his own reply, so the cursor is past it",
         );
 
-        // The reply arrives afterwards. History has nothing new; only the
-        // followed thread's own walk can reach it.
+        // The reply arrives afterwards, already carrying an edit: a
+        // correction made before the sweep ever read the reply. History
+        // has nothing new; only the followed thread's own walk can reach
+        // it.
+        let mut arriving = history_message("150.0", "U8", "the reply");
+        arriving.edited = Some("160.0".to_owned());
         host.seed_replies(
             "C1",
             "100.0",
             vec![
                 parent,
                 history_message("105.0", "U1", "the user's own reply"),
-                history_message("150.0", "U8", "the reply"),
+                arriving,
             ],
         );
         sweep(&host, &host, "acme").await.expect("follow-up sweep");
@@ -4333,6 +4342,11 @@ mod tests {
             delivered.iter().filter(|message| message.ts == "150.0").collect();
         assert_eq!(replies.len(), 1, "the reply is delivered once");
         assert_eq!(replies[0].thread_ts.as_deref(), Some("100.0"), "as a reply of its thread");
+        assert_eq!(
+            replies[0].edited.as_deref(),
+            Some("160.0"),
+            "and the walk's delivery carries the edit ts",
+        );
         assert_eq!(
             host.delivered_owners().last().map(|owner| owner.team_role.clone()),
             Some(Some("tester".to_owned())),
