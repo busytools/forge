@@ -3211,6 +3211,7 @@ mod tests {
                 text: "the buffered text".to_owned(),
                 parent_user_id: None,
                 latest_reply: None,
+                edited: None,
                 files: Vec::new(),
             }],
         );
@@ -5834,6 +5835,7 @@ provider = "anthropic"
             text: text.to_owned(),
             parent_user_id: None,
             latest_reply: None,
+            edited: None,
             files: Vec::new(),
         }
     }
