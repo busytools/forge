@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import Call from './Call.svelte';
 import type { ToolLeaf } from './leaves';
 import { outputs } from './outputs.svelte';
 import Refold from './testing/call-refold.svelte';
+
+/** The live tail's cadence, pinned here as its value so a change to it is a red test. */
+const TICK_MS = 1000;
 
 /** A backgrounded call that has ended, as the fold hands it to the row. */
 const backgrounded: ToolLeaf = {
@@ -33,10 +36,9 @@ describe('the call row, mounted', () => {
   });
 
   /**
-   * The on-open read is the row's own ask, fired once per open: opening a
-   * backgrounded call that has settled is the only moment the file it wrote
-   * is worth reading, and the ask goes over the column's connection, which
-   * the callback is.
+   * The on-open read is the row's own ask: a settled backgrounded call reads
+   * once per open, and the ask goes over the column's connection, which the
+   * callback is.
    */
   it("asks for the call's own output when the reader opens it, once", () => {
     const asked: string[] = [];
@@ -116,27 +118,139 @@ describe('the call row, mounted', () => {
   });
 
   /**
-   * A call still running has no file to read yet; the settle is the one
-   * transition that turns a held row into a readable one, and it is what the
-   * ask waits for.
+   * **A running row reads on a tick.** The file the CLI streams a backgrounded
+   * call's output to is there from launch - its path is composed from the task
+   * id the launch frame carries - so while the row is open and the call still
+   * runs the ask repeats, and the box follows the command as it writes.
+   *
+   * The settle ends the tick, and asks once more for the tail's final state:
+   * the last tick's answer is the file as it stood a moment before the end.
    */
-  it('asks when a row opened mid-run settles, and the run alone does not', () => {
-    const asked: string[] = [];
-    const app = mount(Refold, {
-      target: document.body,
-      props: {
-        call: { ...backgrounded, status: 'in_progress' as const },
-        onreadoutput: (id: string) => asked.push(id),
-      },
-    }) as unknown as { settle: () => void };
+  it('asks on a tick while the row is open and the call still runs', () => {
+    vi.useFakeTimers();
     try {
-      flushSync();
-      expect(asked, 'a running call has no file to read yet').toEqual([]);
-      app.settle();
-      flushSync();
-      expect(asked, 'the settle is what makes it readable').toEqual(['toolu_bgwatch']);
+      const asked: string[] = [];
+      const app = mount(Refold, {
+        target: document.body,
+        props: {
+          call: { ...backgrounded, status: 'in_progress' as const },
+          onreadoutput: (id: string) => asked.push(id),
+        },
+      }) as unknown as { settle: () => void };
+      try {
+        flushSync();
+        expect(asked, 'the open asks at once, with no wait for the first tick').toEqual([
+          'toolu_bgwatch',
+        ]);
+        vi.advanceTimersByTime(TICK_MS * 3);
+        expect(asked.length, 'and the tick keeps asking while the call runs').toBe(4);
+
+        app.settle();
+        flushSync();
+        expect(asked.length, 'the settle asks once more, for the ending tail').toBe(5);
+        vi.advanceTimersByTime(TICK_MS * 5);
+        expect(asked.length, 'and the tick is over - a settled row reads once').toBe(5);
+      } finally {
+        void unmount(app);
+      }
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A run in flight is the case the fold's re-handing would storm.** The
+   * row receives a NEW object on every frame its streaming turn appends, and
+   * the settle guard does not cover the running path - so a running row that
+   * re-asked per fold would send an ask per frame and re-arm the tick's
+   * phase with it. The tick is armed by the running transition alone.
+   */
+  it('asks nothing extra when the fold re-hands a running call', () => {
+    vi.useFakeTimers();
+    try {
+      const asked: string[] = [];
+      const app = mount(Refold, {
+        target: document.body,
+        props: {
+          call: { ...backgrounded, status: 'in_progress' as const },
+          onreadoutput: (id: string) => asked.push(id),
+        },
+      }) as unknown as { refold: () => void };
+      try {
+        flushSync();
+        expect(asked.length, 'the open asks at once').toBe(1);
+        app.refold();
+        app.refold();
+        flushSync();
+        expect(asked.length, 'value-identical re-folds ask nothing').toBe(1);
+        vi.advanceTimersByTime(TICK_MS);
+        expect(asked.length, 'and the tick keeps its own phase').toBe(2);
+      } finally {
+        void unmount(app);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** A running call the reader closes reads nothing: no tick outlives the open. */
+  it('stops the tick when the row closes', () => {
+    vi.useFakeTimers();
+    try {
+      const asked: string[] = [];
+      const app = mount(Call, {
+        target: document.body,
+        props: {
+          k: 'f6',
+          call: { ...backgrounded, status: 'in_progress' as const },
+          onreadoutput: (id: string) => asked.push(id),
+        },
+      });
+      try {
+        flushSync();
+        const row = document.querySelector('details');
+        if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
+        row.open = true;
+        row.dispatchEvent(new Event('toggle'));
+        flushSync();
+        expect(asked.length, 'the open asks at once').toBe(1);
+
+        row.open = false;
+        row.dispatchEvent(new Event('toggle'));
+        flushSync();
+        vi.advanceTimersByTime(TICK_MS * 5);
+        expect(asked.length, 'a closed row ticks nothing').toBe(1);
+      } finally {
+        void unmount(app);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** And an unmounted row takes its tick with it - no timer outlives the row. */
+  it('stops the tick when the row unmounts', () => {
+    vi.useFakeTimers();
+    try {
+      const asked: string[] = [];
+      const app = mount(Call, {
+        target: document.body,
+        props: {
+          k: 'f7',
+          call: { ...backgrounded, status: 'in_progress' as const },
+          open: true,
+          onreadoutput: (id: string) => asked.push(id),
+        },
+      });
+      flushSync();
+      vi.advanceTimersByTime(TICK_MS);
+      const askedWhileMounted = asked.length;
+      expect(askedWhileMounted, 'the open ask and the first tick both landed').toBe(2);
       void unmount(app);
+      vi.advanceTimersByTime(TICK_MS * 5);
+      expect(asked.length, 'nothing ticks after the row is gone').toBe(askedWhileMounted);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

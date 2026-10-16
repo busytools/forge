@@ -948,8 +948,11 @@ function resultJson(result: Block | undefined): unknown {
   if (result === undefined) return null;
   for (const part of bodyOf(result.content)) {
     if (part.kind !== 'text') continue;
+    // The body keeps the command's escapes for the terminal box to draw; JSON
+    // is read off the plain text, where a stray sequence would fail the parse
+    // and read as "not JSON".
     try {
-      return JSON.parse(part.text) as unknown;
+      return JSON.parse(stripEscapes(part.text)) as unknown;
     } catch {
       return null;
     }
@@ -969,8 +972,14 @@ function resultJson(result: Block | undefined): unknown {
 function resultText(result: Block | undefined, failed: boolean): string | null {
   if (result === undefined) return null;
   for (const part of bodyOf(result.content, failed)) {
+    // A row's tail is one plain line, so the escapes the body keeps for the
+    // terminal box come off here.
     const text =
-      part.kind === 'error' ? part.message : part.kind === 'text' ? part.text.trim() : '';
+      part.kind === 'error'
+        ? part.message
+        : part.kind === 'text'
+          ? stripEscapes(part.text).trim()
+          : '';
     if (text !== '') return text;
   }
   return null;

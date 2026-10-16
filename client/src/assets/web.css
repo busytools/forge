@@ -1699,6 +1699,50 @@ details.leaf.running > summary { color: var(--text); }
 .term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
   white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The live mark a running call's own output draws: the row's ring says the
+   call is still out, this says the box under it is still being written -
+   without it a tail that stopped moving and a finished one read alike. */
+.outlive { display: flex; align-items: center; gap: 5px; margin: 4px 0 0 13px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--hot); }
+.outlive::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--hot); animation: b-breath 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .outlive::before { animation: none; opacity: 1; } }
+/* A command's own colours, as its escapes are read into the page's palette
+   (chat/ansi.ts): the sixteen every terminal has, mapped to tokens this theme
+   already owns, so a coloured row belongs to the same palette as the rest of
+   the page. The normal weight is the token itself - every one of the eight
+   clears AA on the box's ground - and the bright weight is that token lifted
+   toward the page's prose tone, which is how a terminal's two weights read.
+   The lift is small where the token already sits near that tone (green +0.79,
+   cyan +0.62, yellow +1.14, and the two weights read the same), which is the
+   theme's own answer rather than a missing weight.
+   `.ansi-dim` is the one attribute the box draws as itself: `\e[2m` asked for
+   de-emphasis, so the composites sit at their measured values - five of the
+   eight coloured ones under the text floor, three above it, and bare `\e[2m`
+   on the box's own tone at 3.85. Those nine are measured in
+   contrast.test.ts; a colour that is both bright and dim is not. */
+.ansi-black { color: var(--dim); }
+.ansi-bright-black { color: color-mix(in srgb, var(--dim) 70%, var(--text)); }
+.ansi-red { color: var(--bad); }
+.ansi-bright-red { color: color-mix(in srgb, var(--bad) 70%, var(--text)); }
+.ansi-green { color: var(--ok); }
+.ansi-bright-green { color: color-mix(in srgb, var(--ok) 70%, var(--text)); }
+.ansi-yellow { color: var(--warn); }
+.ansi-bright-yellow { color: color-mix(in srgb, var(--warn) 70%, var(--text)); }
+.ansi-blue { color: var(--blue); }
+.ansi-bright-blue { color: color-mix(in srgb, var(--blue) 70%, var(--text)); }
+.ansi-magenta { color: var(--violet); }
+.ansi-bright-magenta { color: color-mix(in srgb, var(--violet) 70%, var(--text)); }
+.ansi-cyan { color: var(--teal); }
+.ansi-bright-cyan { color: color-mix(in srgb, var(--teal) 70%, var(--text)); }
+/* White's bright weight is the same token: the theme's white is already the
+   page's brightest tone, so there is no lift left to take. */
+.ansi-white { color: var(--text); }
+.ansi-bright-white { color: var(--text); }
+.ansi-bold { font-weight: 640; }
+.ansi-dim { opacity: .7; }
+.ansi-italic { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
 .term .pfx { color: var(--dim); }
 /* A line a command reported as its own result: the book's drawing has the
    summary half, and a task that ended badly is the same line in the bad tone. */

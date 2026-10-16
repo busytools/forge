@@ -18,6 +18,8 @@
  * check.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { rootTokens } from './theme';
@@ -71,6 +73,58 @@ function contrast(a: string, b: string): number {
 /** The only value shape `luminance` reads. */
 const OPAQUE = /^#[0-9a-f]{6}$/i;
 
+/** The sheet's spelling of a token, which is what a pair's entry names. */
+const TOKEN = /^--[a-z0-9-]+$/;
+
+/** And its spelling of a two-token lift: `color-mix(in srgb, var(--a) p%, var(--b))`. */
+const MIX = /^color-mix\(in srgb, var\((--[a-z0-9-]+)\) (\d+)%, var\((--[a-z0-9-]+)\)\)$/;
+
+/** An entry resolved to a `#rrggbb` value, or the reason it could not be. */
+type Resolved = { ink: string } | { why: string };
+
+/**
+ * The colour an entry names: a token, or one of the two-token `color-mix`
+ * expressions the sheet writes.
+ *
+ * **Reading the mix is what keeps the floor over a derived colour.** A pair
+ * naming `color-mix(...)` used to arrive here as a value the arithmetic could
+ * not run on, and `NaN` compares false, so it passed vacuously; resolving it
+ * the way the browser does is what makes the command box's bright colours a
+ * guarded pair rather than a comment.
+ */
+function inkOf(entry: string, palette: Readonly<Record<string, string>>): Resolved {
+  if (TOKEN.test(entry)) {
+    const value = palette[entry];
+    return value === undefined ? { why: 'the palette resolves no such token' } : { ink: value };
+  }
+  const mix = MIX.exec(entry);
+  if (mix === null) return { why: 'not a pair of #rrggbb values' };
+  const [, left = '', percent = '0', right = ''] = mix;
+  const a = palette[left];
+  const b = palette[right];
+  if (a === undefined || b === undefined) return { why: 'the palette resolves no such token' };
+  const mixed = blend(a, b, Number(percent));
+  return mixed === null ? { why: 'not a pair of #rrggbb values' } : { ink: mixed };
+}
+
+/**
+ * `color-mix(in srgb, a percent%, b)` as a hex, or `null` when either side is
+ * not a value this file can blend - plain sRGB interpolation, which is what
+ * the browser does with two opaque colours.
+ */
+function blend(a: string, b: string, percent: number): string | null {
+  if (!OPAQUE.test(a) || !OPAQUE.test(b)) return null;
+  const p = percent / 100;
+  const part = (at: number): string => {
+    const left = Number.parseInt(a.slice(at, at + 2), 16);
+    const right = Number.parseInt(b.slice(at, at + 2), 16);
+    return Math.round(left * p + right * (1 - p))
+      .toString(16)
+      .padStart(2, '0');
+  };
+  return `#${part(1)}${part(3)}${part(5)}`;
+}
+
 /**
  * What a failure should say: the two tokens and both ratios.
  *
@@ -86,17 +140,21 @@ const OPAQUE = /^#[0-9a-f]{6}$/i;
 function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, string>>): string[] {
   const outside: string[] = [];
   for (const [foreground, ground, floor, ceiling] of pairs) {
-    const fg = palette[foreground];
-    const bg = palette[ground];
-    if (fg === undefined || bg === undefined) {
-      outside.push(`${foreground} on ${ground}: the palette resolves no such token`);
+    const fg = inkOf(foreground, palette);
+    const bg = inkOf(ground, palette);
+    if ('why' in fg) {
+      outside.push(`${foreground} on ${ground}: ${fg.why}`);
       continue;
     }
-    if (!OPAQUE.test(fg) || !OPAQUE.test(bg)) {
+    if ('why' in bg) {
+      outside.push(`${foreground} on ${ground}: ${bg.why}`);
+      continue;
+    }
+    if (!OPAQUE.test(fg.ink) || !OPAQUE.test(bg.ink)) {
       outside.push(`${foreground} on ${ground}: not a pair of #rrggbb values`);
       continue;
     }
-    const measured = contrast(fg, bg);
+    const measured = contrast(fg.ink, bg.ink);
     if (measured < floor) {
       outside.push(
         `${foreground} on ${ground} measures ${measured.toFixed(2)}:1, below the ${floor}:1 floor`,
@@ -146,7 +204,27 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * The one ceiling is on the row the prose is read from: every other row that
  * draws `--text` is the same token on a raised ground, and always measures
  * below it.
+ *
+ * The command box's dim composites are the rows that do not follow the two
+ * floors above: they are words, and they take the values `\e[2m` costs rather
+ * than AA - which is what de-emphasis asked for - so their floors are minima
+ * measured off those values rather than `TEXT`.
  */
+/**
+ * The bright weight of an ANSI colour, as the sheet writes it: the token
+ * lifted toward the page's prose tone. Held as the expression rather than a
+ * number, so a lift that moves in the sheet is measured where it moved.
+ */
+const LIFTED = (token: string): string => `color-mix(in srgb, var(${token}) 70%, var(--text))`;
+
+/**
+ * The composite `.ansi-dim` paints: the token at the sheet's own opacity over
+ * the box's ground. `opacity: .7` on text composites the glyph over what is
+ * behind it, which is exactly this mix - so the values the attribute costs are
+ * the ones the rows below measure.
+ */
+const DIMMED = (token: string): string => `color-mix(in srgb, var(${token}) 70%, var(--bg))`;
+
 const DRAWN: readonly Pair[] = [
   ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
   ['--text', '--s1', TEXT],
@@ -187,6 +265,41 @@ const DRAWN: readonly Pair[] = [
   // The pile card's own source chip: `.m .src.forge`, on the card's ground.
   ['--violet', '--s2', TEXT],
   ['--hot', '--bg', TEXT],
+  // The command output box's own colours (`.ansi-*` in `web.css`, read off the
+  // escapes a command wrote by `chat/ansi.ts`), on the ground the box draws on.
+  // The normal weight is the token itself - the eight rows above already carry
+  // most of them - and the bright weight is the token lifted toward the page's
+  // prose tone, written here exactly as the sheet writes it so the lift is
+  // measured rather than trusted.
+  ['--violet', '--bg', TEXT],
+  [LIFTED('--dim'), '--bg', TEXT],
+  [LIFTED('--bad'), '--bg', TEXT],
+  [LIFTED('--ok'), '--bg', TEXT],
+  [LIFTED('--warn'), '--bg', TEXT],
+  [LIFTED('--blue'), '--bg', TEXT],
+  [LIFTED('--violet'), '--bg', TEXT],
+  [LIFTED('--teal'), '--bg', TEXT],
+  // **`\e[2m` is the command's own attribute and draws dim.** A command that
+  // asked for de-emphasis gets it, so these nine composites sit at their
+  // measured values - five of the eight coloured ones under the text floor
+  // (dim 3.03, red 3.37, blue 4.04, yellow 4.45, magenta 4.49) and three above
+  // it (green 5.21, cyan 5.28, white 6.65), with bare `\e[2m` - no colour
+  // class at all, so the box's own tone - at 3.85.
+  //
+  // The floors are those values rounded down a tenth, so they are MINIMA: a
+  // lighter opacity is what they catch. A heavier one is caught by the
+  // sheet-parity assertion below, which reads the verbatim `.7` out of the
+  // sheet - the two together are what makes either direction of drift red.
+  [DIMMED('--dim'), '--bg', 3.0],
+  [DIMMED('--bad'), '--bg', 3.3],
+  [DIMMED('--blue'), '--bg', 4.0],
+  [DIMMED('--warn'), '--bg', 4.4],
+  [DIMMED('--violet'), '--bg', 4.4],
+  [DIMMED('--ok'), '--bg', 5.2],
+  [DIMMED('--teal'), '--bg', 5.2],
+  [DIMMED('--text'), '--bg', 6.6],
+  // Bare `\e[2m`: the box's own tone, `.term { color: var(--muted) }`.
+  [DIMMED('--muted'), '--bg', 3.8],
 ];
 
 /**
@@ -249,6 +362,44 @@ describe('the palette', () => {
       }),
       'a grey above AA and under the prose floor',
     ).toHaveLength(1);
+  });
+
+  /**
+   * **The mix path's own control**, separate from the token one: a lift that
+   * lands too close to its ground must be reported exactly as a token is.
+   * Without this, the new entry form could resolve to something that never
+   * reaches `contrast` and every bright row would pass vacuously.
+   */
+  it('finds a lifted pair too close to its ground', () => {
+    expect(
+      outOfBand(
+        [[`color-mix(in srgb, var(--bad) 20%, var(--bg))`, '--bg', TEXT]],
+        rootTokens(null),
+      ),
+      'a colour lifted the wrong way on the box ground',
+    ).toHaveLength(1);
+  });
+
+  /**
+   * **The table's derived rows are the sheet's own text.** A lift copied here
+   * would keep measuring an expression the sheet had stopped drawing - a
+   * percentage changed in `web.css` would leave the guard green over a colour
+   * nobody draws - so every derived row is asserted against the sheet
+   * verbatim, and the dim composites against the opacity the sheet sets.
+   */
+  it('measures the lifts and the dim opacity the sheet actually draws', () => {
+    const sheet = readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8');
+    for (const token of ['--dim', '--bad', '--ok', '--warn', '--blue', '--violet', '--teal']) {
+      expect(sheet, `the sheet draws the bright weight for ${token}`).toContain(
+        `color: ${LIFTED(token)}`,
+      );
+    }
+    expect(sheet, 'and the dim composites are that sheet value').toContain(
+      '.ansi-dim { opacity: .7; }',
+    );
+    expect(sheet, "bare dim draws the box's own tone").toContain(
+      '.term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',
+    );
   });
 
   /** A pair naming a token the palette does not resolve is a stale pair. */

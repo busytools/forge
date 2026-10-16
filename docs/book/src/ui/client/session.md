@@ -65,7 +65,21 @@ read as one system.
   marks that say how each line moved.
 - **A backgrounded call** is held open by its task fact, its result
   saying the command started, and the ending landing later as a frame of
-  its own.
+  its own. **Its output box follows a call that is still out**: while the
+  row stays open and the call runs, the row re-reads the command's own
+  output file on a one-second tick, and the tail it draws carries a `live`
+  mark saying the box is still being written. A read that found nothing
+  while the call runs says the output has not appeared yet: the file is
+  there from launch and reads as empty until the command's first line
+  lands, so the settled wording about a call that never recorded one would
+  be a claim the row cannot make yet. Once the call settles the mark goes
+  and the tail is the finished output.
+  **The box draws the command's own colours**: every terminal box reads the
+  escape sequences a command wrote - colour, bold, dim, italic, underline -
+  into the theme's palette, so a coloured compile looks like the terminal's.
+  A sequence the page cannot draw (a cursor move, an erase, the extended
+  colour forms) is dropped rather than printed, and a command that wrote no
+  colour draws in the box's own tone.
 - **A settled failure with nothing to open onto** says so in words rather
   than drawing an empty body.
 

@@ -399,6 +399,19 @@ what the four are for. A command that is _not_ one of the four refuses as
 an `error` like anything else the core declines, whether or not a reply
 was asked for.
 
+**`read_call_output` answers a call's own output**: the newest lines of
+the file the CLI streamed the task's output to, or a named reason there is
+none. **It answers while the task still runs as well as after it ends.**
+Until the ending frame arrives the path is composed from the task id the
+launch frame carries - `<base>/claude-<uid>/<slug>/<session-id>/tasks/<task-id>.output`,
+where `base` is the same `CLAUDE_CODE_TMPDIR` the child runs with and the
+slug is a wildcard. The file itself is there from launch, so a read taken
+between the launch and the command's first line comes back as an empty
+tail rather than as a path the read could not find; a path that resolves
+to nothing at all answers no-path. Once the task ends, the path its
+`task_notification` names is the one the read uses. Nothing is parsed out
+of prose on either side.
+
 ## What a client receives
 
 - **`snapshot {subject, data}`** - a subject in full, in answer to a
@@ -665,13 +678,6 @@ one on screen.
   highlighting - and the heavier reads a review surface may want beyond
   those two layers, like a per-commit history or a diff against an
   arbitrary base.
-- **A monitor's tail as it runs.** `read_call_output` answers a call's own
-  output - the newest lines of the file the task wrote to, or a named
-  reason there is none - and a Monitor's file is the same read, so the
-  finished tail is reachable. The file is named only by the frame that
-  ENDS the task, though, so a command still running answers no-path: what
-  this carries is the tail of work that has ended. Filed as its own piece
-  of work.
 - **The rest of the extensions surface.** The inventory, the PATH checks,
   the last run and six actions cross (`extensions`, above: install, one
   update, update-all, a check, marketplace add and marketplace repair).

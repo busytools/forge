@@ -3,6 +3,7 @@
 
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
+  import Ansi from './Ansi.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
   import Forge from './Forge.svelte';
@@ -105,7 +106,14 @@
     // A failed search carries no hits: its reason must draw through the
     // pieces, not be swallowed by a hits path that has nothing to list.
     SEARCHES.has(call.name) && !call.body.some((piece) => piece.kind === 'error')
-      ? searchHits(call.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join('\n'))
+      ? searchHits(
+          // A hit is a location and a line of text, and the escapes a body
+          // keeps for the terminal box are not part of either - left on, a
+          // coloured Grep line stops reading as a hit at all.
+          stripEscapes(
+            call.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join('\n'),
+          ),
+        )
       : null,
   );
 
@@ -116,6 +124,24 @@
 
   /** A piece the patch box does not draw: a run of text, or a picture. */
   type RunPiece = Exclude<CallBody, { kind: 'diff' } | { kind: 'hunk' }>;
+
+  /**
+   * The words a piece draws with.
+   *
+   * Every branch below the image and error arms draws a text piece - the arms
+   * above them take the rest - so this is the narrowing the template needs to
+   * hand a string on, rather than a cast that would hide a piece arriving in a
+   * shape no arm claims. **The other kinds answer their own words rather than
+   * a blank**: unreachable today, but a piece no arm claimed must draw as
+   * itself rather than as nothing (rule 25).
+   */
+  function textOf(piece: RunPiece): string {
+    if (piece.kind === 'text') return piece.text;
+    if (piece.kind === 'error') return piece.message;
+    // Truthy rather than non-null, matching the image arm's own drawing: a
+    // mime the wire sent as an empty string draws no separator after it.
+    return piece.mime ? `image \u{b7} ${piece.mime}` : 'image';
+  }
 
   /**
    * Which box a backgrounded call's notice goes at the end of: the last one
@@ -221,22 +247,50 @@
   );
 
   /**
-   * Ask for the call's own output when the row opens - ONCE per open.
+   * Whether the call carries a task, read as a VALUE like `running` above.
    *
-   * **Only a backgrounded call has one to ask about, and only once it has
-   * settled**: the file is named by the task's own ending frames, so a row
-   * that asked while the command still ran would be answered with no path
-   * about a file that is being written. `running` is read through the
-   * derived, so a row opened mid-run asks the moment the call settles - the
-   * one transition that turns a held row into a readable one.
+   * **The property could not be read straight in the ask's effect**: the fold
+   * hands the row a new object on every frame, and a read off it would re-run
+   * the effect per frame - which on the running path asks again and re-arms
+   * the tick's phase with it. A derived boolean notifies only when it moves.
+   */
+  const backgrounded = $derived(call.backgrounded);
+
+  /**
+   * Whether the row's output box follows a run in flight.
+   *
+   * It is what the live mark draws from and what makes a read that found
+   * nothing read as "not appeared yet" rather than as a file that is gone -
+   * both facts a settled row cannot have.
+   */
+  const liveTail = $derived(backgrounded && running);
+
+  /**
+   * How often a running call's open row re-reads its output, in
+   * milliseconds: a tick, not a stream - the file is on disk and the row is
+   * the only thing asking for it.
+   */
+  const LIVE_TAIL_MS = 1000;
+
+  /**
+   * Ask for the call's own output while the row is open: on the tick while
+   * the call still runs, and once when it settles.
+   *
+   * **A running call's file is there from launch** - the CLI streams the
+   * command's output to it and the path composes from the task id the launch
+   * frame carries, no prose read - so a row open on a run in flight follows
+   * the command as it writes. The settle ends the tick and asks once more,
+   * for the tail's final state: the tick's last answer is the file as it
+   * stood a moment before the end.
    *
    * **Not once per re-fold.** The fold hands this row a NEW object on every
    * frame its turn appends, so an effect that depended on the call would ask
    * per frame of the row's own streaming turn - a dispatch, a file read and
-   * an answer each. The id asked in this open is remembered instead and the
-   * ask armed once: the effect may re-run freely (a fold, a settle) and the
-   * memory is what decides. Closing the row forgets it, so a re-open asks
-   * again, which is what heals a file that went away between visits.
+   * an answer each. `running` and `backgrounded` are read as values, so the
+   * tick is armed by the transitions and never re-armed by the fold, and the
+   * id asked in this open is remembered for the settled ask. Closing the row
+   * forgets it, so a re-open asks again, which is what heals a file that went
+   * away between visits.
    */
   let asked: string | null = null;
 
@@ -245,11 +299,17 @@
       asked = null;
       return;
     }
-    if (!call.backgrounded || running || onreadoutput === null) return;
+    if (!backgrounded || onreadoutput === null) return;
     const id = untrack(() => call.id);
-    if (asked === id) return;
-    asked = id;
+    if (!running) {
+      if (asked === id) return;
+      asked = id;
+      onreadoutput(id);
+      return;
+    }
     onreadoutput(id);
+    const tick = setInterval(() => onreadoutput(id), LIVE_TAIL_MS);
+    return () => clearInterval(tick);
   });
 
   /** The output the read answered with, read only while the row is open. */
@@ -299,7 +359,7 @@
     const error = body.find((piece) => piece.kind === 'error');
     if (error !== undefined) return error.message;
     const text = body.find((piece) => piece.kind === 'text');
-    return text === undefined ? null : firstLine(text.text);
+    return text === undefined ? null : firstLine(stripEscapes(text.text));
   }
 
   /** The row's mark: the card's own where it named one, else its family's. */
@@ -598,21 +658,41 @@
         {/if}
         {@render pieces(rest)}
         {#if readback !== null}
-          <!-- The command's own output, asked for on the open: the tail the
-               task read back, or a named reason there is none - never a
-               blank. The escapes come off HERE, which is the page's job: the
-               read hands over what the command wrote. -->
+          <!-- The command's own output, asked for on the open and on the tick
+               while it runs: the tail the task read back, or a named reason
+               there is none - never a blank. The escapes come off HERE, which
+               is the page's job: the read hands over what the command wrote. -->
           {#if readback.kind === 'lines' && readback.lines.length > 0}
-            <div class="term">{stripEscapes(readback.lines.join('\n'))}</div>
+            {#if liveTail}
+              <!-- The mark that says the box is still being written: a tail
+                   that stopped moving and a finished one must not read
+                   alike. -->
+              <div class="outlive">live</div>
+            {/if}
+            <div class="term"><Ansi text={readback.lines.join('\n')} /></div>
           {:else if readback.kind === 'lines'}
-            <!-- An empty tail is not nothing said: the file was read and it
-                 holds no lines, and an empty box would be the blank the
-                 contract forbids. -->
-            <div class="sg-pr">the command wrote nothing</div>
+            {#if liveTail}
+              <!-- An empty file while the call runs is the same fact as none
+                   yet: the command has not written anything so far. -->
+              <div class="sg-pr">the output has not appeared yet</div>
+            {:else}
+              <!-- An empty tail is not nothing said: the file was read and it
+                   holds no lines, and an empty box would be the blank the
+                   contract forbids. -->
+              <div class="sg-pr">the command wrote nothing</div>
+            {/if}
           {:else if readback.kind === 'file_gone'}
             <div class="sg-pr">the output file is gone</div>
           {:else if readback.kind === 'no_path'}
-            <div class="sg-pr">no output file was recorded for this call</div>
+            {#if liveTail}
+              <!-- The path composes from the task id, so while the call runs
+                   an answer with nothing on it is a file the composition has
+                   not found yet - and the settled wording, no file was ever
+                   recorded, is a claim the row cannot make. -->
+              <div class="sg-pr">the output has not appeared yet</div>
+            {:else}
+              <div class="sg-pr">no output file was recorded for this call</div>
+            {/if}
           {:else}
             <div class="sg-pr">the output arrived in a shape this build does not draw</div>
           {/if}
@@ -655,7 +735,7 @@
         {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
     {:else if asProse}
-      <Prose text={piece.text} preserveLines />
+      <Prose text={stripEscapes(textOf(piece))} preserveLines />
     {:else if mcpParts(call.name) !== null || isBrowserTool(call.name)}
       <!-- **An MCP result is markdown, one style for every call, the peer
            card's own.** What a server wrote arrives as markdown - headings,
@@ -666,9 +746,9 @@
            the lane a peer message's body sits in). Soft breaks flow; a fence
            is where literal lines live. A local command's OUTPUT is not prose
            and stays the terminal box below. -->
-      <div class="pbody"><Prose text={piece.text} /></div>
+      <div class="pbody"><Prose text={stripEscapes(textOf(piece))} /></div>
     {:else if asCode(piece) !== null}
-      <Code path={call.title} text={piece.text} />
+      <Code path={call.title} text={stripEscapes(textOf(piece))} />
     {:else}
       <!-- The command a call ran leads its own output: a call given a
            description shows that as its title, and the command would
@@ -677,8 +757,10 @@
            whitespace rule turns out to be. -->
       <div class="term">
         {#if call.command !== null}<span class="pfx">$</span>
-          {call.command}<br />{/if}{piece.text}{#if at === tail && call.note !== null}<br /><span
-            class={call.note.tone ?? undefined}>{call.note.text}</span
+          {call.command}<br />{/if}<Ansi
+          text={textOf(piece)}
+        />{#if at === tail && call.note !== null}<br /><span class={call.note.tone ?? undefined}
+            >{call.note.text}</span
           >{/if}
       </div>
     {/if}

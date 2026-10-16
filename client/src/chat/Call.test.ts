@@ -909,6 +909,82 @@ describe('the output a backgrounded row reads back', () => {
     expect(open, 'and the escapes came off at the drawing').not.toContain('\u001b[32m');
   });
 
+  /**
+   * **The box draws the command's colours.** The read hands over what the
+   * command wrote, escapes and all; the box reads them into the sheet's
+   * palette so a coloured tail looks like the terminal's, and no escape
+   * survives onto the page.
+   */
+  it("draws the command's own colours, in the sheet's palette", () => {
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', {
+      kind: 'lines',
+      lines: ['\u001b[32mCompiling\u001b[0m forge-server', '\u001b[1;91merror\u001b[0m: boom'],
+    });
+
+    const open = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(open, 'the colour is a class the sheet styles').toContain('class="ansi-green"');
+    expect(open, 'a bright colour and bold together too').toContain('ansi-bright-red ansi-bold');
+    expect(open, 'and the words are still there').toContain('Compiling');
+    expect(open, 'with no raw escape left on the page').not.toContain('\u001b');
+  });
+
+  /**
+   * And the same renderer draws a FOREGROUND call's result: the fold keeps the
+   * escapes on the body for the box, so the two boxes cannot draw the same
+   * bytes two ways.
+   */
+  it('draws a foreground result in the same colours', () => {
+    const leaf: ToolLeaf = {
+      ...backgrounded(null),
+      backgrounded: false,
+      body: [{ kind: 'text', text: '\u001b[33mwarn\u001b[0m: one step skipped' }],
+    };
+
+    const open = render(Call, { props: { k: 'f1', call: leaf, open: true } }).body;
+    expect(open, 'the result box draws the colour').toContain('class="ansi-yellow"');
+    expect(open, 'with the words kept').toContain('one step skipped');
+    expect(open, 'and no raw escape').not.toContain('\u001b');
+  });
+
+  /** A sequence the page cannot draw is dropped, never printed as residue. */
+  it('drops a sequence it cannot draw rather than printing it', () => {
+    const leaf: ToolLeaf = {
+      ...backgrounded(null),
+      backgrounded: false,
+      body: [{ kind: 'text', text: 'before\u001b[2Jafter' }],
+    };
+
+    const open = render(Call, { props: { k: 'f1', call: leaf, open: true } }).body;
+    expect(open, 'the text around it stays').toContain('beforeafter');
+    expect(open, 'and the erase is nowhere on the page').not.toContain('\u001b');
+  });
+
+  /**
+   * A search's hits are read off the plain text: the escapes a body keeps for
+   * the terminal box are not part of a location or a line, and left on, the
+   * residue draws ON them. The teeth are the last assertion - no sequence
+   * reaches the page for a hit to carry.
+   */
+  it('reads a search its hits even when the command coloured them', () => {
+    const leaf: ToolLeaf = {
+      ...backgrounded(null),
+      backgrounded: false,
+      name: 'Grep',
+      title: 'pattern',
+      body: [
+        {
+          kind: 'text',
+          text: '\u001b[35msrc/a.rs\u001b[0m:12:\u001b[32mconst x = 1;\u001b[0m',
+        },
+      ],
+    };
+
+    const open = render(Call, { props: { k: 'f1', call: leaf, open: true } }).body;
+    expect(open, 'the location draws as a hit').toContain('src/a.rs');
+    expect(open, 'with its line').toContain('const x = 1;');
+    expect(open, 'and no escape on the page').not.toContain('\u001b');
+  });
+
   /** The read never answers blank: a reason is drawn in words. */
   it('names a reason where there is no tail, never a blank', () => {
     outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'file_gone' });
@@ -919,6 +995,50 @@ describe('the output a backgrounded row reads back', () => {
     outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'no_path' });
     const bare = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
     expect(bare, 'so is the no-path reason').toContain('no output file was recorded for this call');
+  });
+
+  /**
+   * **While the call runs, a read that found nothing is "not yet", not a
+   * missing file**: the path composes from the task id, so a read that has not
+   * found the file yet is not a call that never recorded one - the settled
+   * wording would be a claim the row cannot make while it runs.
+   */
+  it('says the output has not appeared yet while the call still runs', () => {
+    const running: ToolLeaf = { ...backgrounded(null), status: 'in_progress' };
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'no_path' });
+
+    const open = render(Call, { props: { k: 'f1', call: running, open: true } }).body;
+    expect(open, 'a running call with nothing to read says so').toContain(
+      'the output has not appeared yet',
+    );
+    expect(open, 'and not the settled wording about a call that never had a file').not.toContain(
+      'no output file was recorded for this call',
+    );
+
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'lines', lines: [] });
+    const empty = render(Call, { props: { k: 'f1', call: running, open: true } }).body;
+    expect(empty, 'an empty file while it runs is the same not-yet').toContain(
+      'the output has not appeared yet',
+    );
+  });
+
+  /**
+   * The live mark rides the tail only while the call runs: a settled row's
+   * tail is the finished output, and a mark saying it is still being written
+   * would be false.
+   */
+  it('marks the tail live while the call runs, and not once it has settled', () => {
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', {
+      kind: 'lines',
+      lines: ['building...'],
+    });
+
+    const running: ToolLeaf = { ...backgrounded(null), status: 'in_progress' };
+    const open = render(Call, { props: { k: 'f1', call: running, open: true } }).body;
+    expect(open, 'a running tail draws its live mark').toContain('>live<');
+
+    const settled = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(settled, 'and a settled tail draws none').not.toContain('>live<');
   });
 
   /**
