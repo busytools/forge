@@ -30,6 +30,7 @@
   import WordsBox from './WordsBox.svelte';
   import {
     ageOf,
+    commentsInScope,
     latestRound,
     loopState,
     outdatedThreads,
@@ -129,6 +130,18 @@
   const drafts = new SvelteSet<string>();
   let busy = $state(false);
   let summary = $state('');
+  /**
+   * Whether the FILES half's finish row is open.
+   *
+   * **The files half draws the finish collapsed** (Ved, 2026-10-16): a
+   * reader still in the diff gets one control - `finish review (N)` - a
+   * press opens the page's own finish row where they are reading, and a
+   * sealed round collapses it again. The conversation half always draws the
+   * row, so this is only about the half that draws the diff.
+   */
+  let finishOpen = $state(false);
+  /** A press opened the row, so the summary field owes the reader the caret. */
+  let summaryFocus = false;
   /** The last write's refusal, drawn where the reader acted; cleared by the
    *  next write that lands. */
   let refusal = $state<string | null>(null);
@@ -422,7 +435,7 @@
     if (takeIn === null) return;
     const gone =
       takeIn === 'summary'
-        ? tab !== 'conversation'
+        ? !summaryDrawn()
         : takeIn === 'comment'
           ? box.spot === null || !sameSpot(box.spot, takeSpot) || tab !== 'files'
           : !replyDrawn() || reply.thread !== takeThread;
@@ -448,6 +461,15 @@
       at.side === held.side &&
       at.line === held.line
     );
+  }
+
+  /**
+   * Whether the round's summary box is drawn by the half that is up: always
+   * on the conversation half, and on the files half only while its own
+   * finish row is open - the box a take goes with.
+   */
+  function summaryDrawn(): boolean {
+    return tab === 'conversation' || (tab === 'files' && finishOpen);
   }
 
   /**
@@ -482,7 +504,7 @@
     }
     if (tab === 'files' && box.spot !== null) return 'comment';
     if (replyDrawn()) return 'reply';
-    return tab === 'conversation' ? 'summary' : null;
+    return summaryDrawn() ? 'summary' : null;
   }
 
   // The push-to-talk key, once for the page: the microphone is the client's
@@ -615,6 +637,12 @@
     );
   }
 
+  /** The files half's own finish: the row opens, the field takes the caret. */
+  function openFinish(): void {
+    finishOpen = true;
+    summaryFocus = true;
+  }
+
   async function finish(): Promise<void> {
     if (drafts.size === 0) return;
     const sealed = await finishRound(
@@ -630,6 +658,24 @@
     if (sealed) {
       drafts.clear();
       summary = '';
+      // The files half's row collapses with the round: the reader is back to
+      // the diff with nothing of the round open.
+      finishOpen = false;
+      summaryFocus = false;
+      // **Done closes the round** (Ved, 2026-10-15): the boxes, the summary's
+      // panel and any take line go with it, so the page is back to the diff
+      // with nothing of the round left open.
+      box.spot = null;
+      box.line = null;
+      box.draft = '';
+      reply.thread = null;
+      reply.line = null;
+      reply.draft = '';
+      dictateLine = null;
+      lineIn = null;
+      pressedIn = null;
+      panelIn = null;
+      dictate.panel = false;
     }
   }
 
@@ -647,12 +693,58 @@
     scopeIdx = idx;
     if (idx > 0) lastCommit = idx;
     pickerOpen = false;
+    // The stepper's place is not the new scope's: its comments are others.
+    commentAt = -1;
   }
 
+  /**
+   * One scope along, CYCLING: the last commit steps on to all changes, and
+   * all changes back to the last commit, so a reader holding an arrow walks
+   * the branch round rather than hitting a wall.
+   */
   function stepScope(delta: number): void {
     const next = scopeIdx + delta;
-    if (next < 0 || next >= choices.length) return;
-    choose(next);
+    if (next < 0) choose(choices.length - 1);
+    else if (next >= choices.length) choose(0);
+    else choose(next);
+  }
+
+  /** The comments this scope draws, in the order the canvas draws them. */
+  const comments = $derived(commentsInScope(threads, scopeCommit));
+  /** Which of them the stepper is on, -1 for none. */
+  let commentAt = $state(-1);
+  /** The place the readout names: never past the end of a list that shrank
+   *  under it - a re-read can drop the comment the reader was on. */
+  const commentAtShown = $derived(
+    commentAt < 0 || comments.length === 0 ? 0 : Math.min(commentAt, comments.length - 1) + 1,
+  );
+  /**
+   * The comment the stepper last moved to, and the step's own number - a
+   * repeat of the same target is a step all the same, and the canvas has to
+   * hear it.
+   */
+  let focusComment = $state<{
+    path: string;
+    side: 'old' | 'new';
+    line: number;
+    seq: number;
+  } | null>(null);
+  let stepSeq = 0;
+
+  /** One comment along, cycling both ways. */
+  function stepComment(delta: number): void {
+    if (comments.length === 0) return;
+    const next = commentAt + delta;
+    commentAt = next < 0 ? comments.length - 1 : next >= comments.length ? 0 : next;
+    const held = comments[commentAt];
+    if (held === undefined) return;
+    stepSeq += 1;
+    focusComment = {
+      path: held.thread.anchor.path,
+      side: held.thread.anchor.side === 'old' ? 'old' : 'new',
+      line: held.line,
+      seq: stepSeq,
+    };
   }
 
   function toggleAll(): void {
@@ -660,9 +752,10 @@
   }
 
   /**
-   * The scope keys, live only while the diff half is on screen: `[` and `]`
-   * step, `a` flips between all changes and the commit you were on, `j` opens
-   * the picker. A keypress in a text field is the field's.
+   * The diff half's keys, live only while it is on screen: the arrows (and
+   * `[` / `]`) step one scope, cycling, shift+arrows step one comment,
+   * cycling, `a` flips between all changes and the commit you were on, `j`
+   * opens the picker. A keypress in a text field is the field's.
    */
   function onKey(event: KeyboardEvent): void {
     if (tab !== 'files') return;
@@ -679,9 +772,15 @@
       event.preventDefault();
       return;
     }
-    if (event.key === '[' || event.key === 'ArrowLeft') stepScope(-1);
-    else if (event.key === ']' || event.key === 'ArrowRight') stepScope(1);
-    else if (event.key === 'a') toggleAll();
+    // The arrows step commits and shift+arrows step comments - the pair the
+    // keycap row under the tabs states.
+    if (event.key === '[' || event.key === 'ArrowLeft') {
+      if (event.shiftKey) stepComment(-1);
+      else stepScope(-1);
+    } else if (event.key === ']' || event.key === 'ArrowRight') {
+      if (event.shiftKey) stepComment(1);
+      else stepScope(1);
+    } else if (event.key === 'a') toggleAll();
     else if (event.key === 'j') {
       pickerHi = scopeIdx;
       pickerOpen = true;
@@ -711,6 +810,95 @@
     return rows.filter(([, count]) => count > 0);
   }
 </script>
+
+<!-- The round's finish, drawn by both halves: the conversation half's Finish
+     section, and the files half's own row, where it opens on a press and
+     collapses again once the round is sealed. One snippet, because the round,
+     the field and the write are the page's own either way. -->
+{#snippet roundFinish()}
+  <div class="rv-finishrow">
+    <!-- The round's own words take a take the way every box does: the bar in
+         the field's place while it runs, and the words at the end of what is
+         written. -->
+    <div class="rv-wordline line" class:takeline={phaseIn('summary') !== null}>
+      {#if phaseIn('summary') !== null}
+        <TakeCard
+          take={composer.take}
+          wire={rowWire}
+          phase={phaseIn('summary') ?? 'recording'}
+          oncancel={() => {
+            landing.drop();
+            dictate.act('cancel');
+          }}
+          spread
+        />
+      {:else}
+        <Field
+          element="input"
+          editor="nowhere"
+          class="rv-summary"
+          placeholder="summary (optional)"
+          aria={{ label: 'the round summary' }}
+          bind:value={summary}
+          onkeydown={(event: KeyboardEvent) => {
+            // **Enter finishes the review**, as its own button does: the same
+            // key sends everywhere, and the same guard keeps a round with
+            // nothing filed from sealing (Ved, 2026-10-15).
+            if (event.key !== 'Enter' || event.shiftKey) return;
+            event.preventDefault();
+            if (!busy && drafts.size > 0) void finish();
+          }}
+          field={(el: HTMLElement | null) => {
+            elements.summary = el;
+            // A finish row a press opened owes the field the caret, the same
+            // way a comment box a click opened does.
+            if (el !== null && summaryFocus) {
+              summaryFocus = false;
+              el.focus();
+            }
+          }}
+        />
+      {/if}
+    </div>
+    <button
+      type="button"
+      class="rv-finish"
+      disabled={busy || drafts.size === 0}
+      onclick={() => void finish()}
+    >
+      finish review
+      {#if drafts.size > 0}({drafts.size}){/if}
+    </button>
+    {#if dictation}
+      <DictateControl
+        {dictate}
+        onpress={() => (pressedIn = 'summary')}
+        onhold={() => (panelIn = 'summary')}
+      />
+    {/if}
+    {#if dictate.panel && panelIn === 'summary'}
+      <div>
+        <DictationPanel
+          connection={voice.connection}
+          axes={voice.axes}
+          defaults={voice.defaults}
+          bind={voice.bind}
+          mode={voice.mode}
+          device={voice.device}
+          onaxes={voice.onaxes}
+          ondevice={voice.ondevice}
+          onclose={() => {
+            dictate.panel = false;
+            elements.summary?.focus();
+          }}
+        />
+      </div>
+    {/if}
+  </div>
+  {#if summaryLine !== null}
+    <div class="rv-dictateline {summaryLine.tone}">{summaryLine.text}</div>
+  {/if}
+{/snippet}
 
 <main class="wrap review">
   <header class="top">
@@ -796,14 +984,14 @@
               type="button"
               class="rv-step-btn"
               aria-label="previous scope"
-              disabled={scopeIdx === 0}
+              disabled={choices.length <= 1}
               onclick={() => stepScope(-1)}>&#8249;</button
             >
             <button
               type="button"
               class="rv-step-btn"
               aria-label="next scope"
-              disabled={scopeIdx >= choices.length - 1}
+              disabled={choices.length <= 1}
               onclick={() => stepScope(1)}>&#8250;</button
             >
           </span>
@@ -834,6 +1022,26 @@
             split
           </button>
         </span>
+        <!-- The comments' own stepper, beside the scope's: the two things a
+             reader walks in a diff, each with a button a finger can press -
+             a key alone is no door on a touch screen (rule 22). -->
+        <span class="rv-step rv-cstep">
+          <button
+            type="button"
+            class="rv-step-btn"
+            aria-label="previous comment"
+            disabled={comments.length === 0}
+            onclick={() => stepComment(-1)}>&#8249;</button
+          >
+          <span class="rv-cstep-n" aria-live="polite">{commentAtShown}/{comments.length}</span>
+          <button
+            type="button"
+            class="rv-step-btn"
+            aria-label="next comment"
+            disabled={comments.length === 0}
+            onclick={() => stepComment(1)}>&#8250;</button
+          >
+        </span>
       {/if}
     </nav>
 
@@ -843,6 +1051,8 @@
            also accepts are not worth advertising beside them. -->
       <p class="rv-hint">
         <kbd>&#8592;</kbd><kbd>&#8594;</kbd> step commits
+        <span class="sep">&#183;</span>
+        <kbd>shift</kbd><kbd>&#8592;</kbd><kbd>&#8594;</kbd> step comments
         <span class="sep">&#183;</span>
         <kbd>a</kbd> all changes
         <span class="sep">&#183;</span>
@@ -862,6 +1072,9 @@
           <section class="group">
             <h2>Outdated <span class="n">{outdated.length}</span></h2>
             {#each outdated as thread (thread.id)}
+              {@const inRound = rounds.some((round) =>
+                threadsInRound(threads, round.id).some((held) => held.id === thread.id),
+              )}
               <article class="thread parked">
                 <div class="heads">
                   <span class="rv-state outdated">outdated</span>
@@ -877,6 +1090,28 @@
                 {#each thread.comments as turn, i (i)}
                   <ThreadTurn {turn} {rounds} {now} index={i} />
                 {/each}
+                <div class="acts">
+                  {#if inRound}
+                    <!-- Only a thread a round holds draws a reply box on this
+                         half, so the door is offered only where the box is. -->
+                    <button
+                      type="button"
+                      class="rv-a"
+                      disabled={busy}
+                      onclick={() => {
+                        reply.thread = reply.thread === thread.id ? null : thread.id;
+                        reply.draft = '';
+                      }}>respond</button
+                    >
+                  {/if}
+                  <button
+                    type="button"
+                    class="rv-a"
+                    disabled={busy}
+                    onclick={() => void resolved(thread)}>resolve</button
+                  >
+                  {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
+                </div>
               </article>
             {/each}
           </section>
@@ -988,82 +1223,7 @@
           <p class="rv-quiet">
             Comments written on the diff file into the next round when you finish the review.
           </p>
-          <div class="rv-finishrow">
-            <!-- The round's own words take a take the way every box does: the
-                 bar in the field's place while it runs, and the words at the
-                 end of what is written. -->
-            <div class="rv-wordline line" class:takeline={phaseIn('summary') !== null}>
-              {#if phaseIn('summary') !== null}
-                <TakeCard
-                  take={composer.take}
-                  wire={rowWire}
-                  phase={phaseIn('summary') ?? 'recording'}
-                  oncancel={() => {
-                    landing.drop();
-                    dictate.act('cancel');
-                  }}
-                  spread
-                />
-              {:else}
-                <Field
-                  element="input"
-                  editor="nowhere"
-                  class="rv-summary"
-                  placeholder="summary (optional)"
-                  aria={{ label: 'the round summary' }}
-                  bind:value={summary}
-                  onkeydown={(event: KeyboardEvent) => {
-                    // **Enter finishes the review**, as its own button does:
-                    // the same key sends everywhere, and the same guard keeps
-                    // a round with nothing filed from sealing (Ved, 2026-10-15).
-                    if (event.key !== 'Enter' || event.shiftKey) return;
-                    event.preventDefault();
-                    if (!busy && drafts.size > 0) void finish();
-                  }}
-                  field={(el: HTMLElement | null) => {
-                    elements.summary = el;
-                  }}
-                />
-              {/if}
-            </div>
-            <button
-              type="button"
-              class="rv-finish"
-              disabled={busy || drafts.size === 0}
-              onclick={() => void finish()}
-            >
-              finish review
-              {#if drafts.size > 0}({drafts.size}){/if}
-            </button>
-            {#if dictation}
-              <DictateControl
-                {dictate}
-                onpress={() => (pressedIn = 'summary')}
-                onhold={() => (panelIn = 'summary')}
-              />
-            {/if}
-            {#if dictate.panel && panelIn === 'summary'}
-              <div>
-                <DictationPanel
-                  connection={voice.connection}
-                  axes={voice.axes}
-                  defaults={voice.defaults}
-                  bind={voice.bind}
-                  mode={voice.mode}
-                  device={voice.device}
-                  onaxes={voice.onaxes}
-                  ondevice={voice.ondevice}
-                  onclose={() => {
-                    dictate.panel = false;
-                    elements.summary?.focus();
-                  }}
-                />
-              </div>
-            {/if}
-          </div>
-          {#if summaryLine !== null}
-            <div class="rv-dictateline {summaryLine.tone}">{summaryLine.text}</div>
-          {/if}
+          {@render roundFinish()}
         </section>
       </div>
     {:else}
@@ -1078,6 +1238,7 @@
           reviews={reviews.reviews.outcome === 'read' ? reviews.reviews.value : []}
           {busy}
           {dictate}
+          {focusComment}
           bind:box
           bind:reply
           {voice}
@@ -1089,6 +1250,24 @@
           onresolve={resolved}
           onreopen={reopened}
         />
+      </div>
+      <!-- The files half's own way to finish: the round's row, opened here
+           by a press and collapsed again once it seals, so the reader never
+           has to leave the diff to close a round. -->
+      <div class="rv-finishbar">
+        {#if finishOpen}
+          {@render roundFinish()}
+        {:else}
+          <button
+            type="button"
+            class="rv-finish"
+            disabled={busy || drafts.size === 0}
+            onclick={openFinish}
+          >
+            finish review
+            {#if drafts.size > 0}({drafts.size}){/if}
+          </button>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -1224,11 +1403,25 @@
   .rv-hint {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 7px;
     padding: 2px 2px 10px;
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--dim);
+  }
+  /* The comment stepper's own count, the cell between its arrows. */
+  .rv-cstep-n {
+    font-family: var(--mono);
+    font-size: var(--fs-data);
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-left: 0;
+    padding: 3px 8px;
+    white-space: nowrap;
+  }
+  .rv-cstep {
+    flex: none;
   }
   .rv-hint .sep {
     color: var(--line);
@@ -1370,6 +1563,20 @@
     align-items: center;
     /* The settings panel opens from this row, so this is what it hangs off. */
     position: relative;
+  }
+  /* The files half's finish, under its canvas: the collapsed button at the
+     row's end, and the page's own finish row filling it once it opens. */
+  .rv-finishbar {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    justify-content: flex-end;
+    padding-top: 4px;
+    flex: none;
+  }
+  .rv-finishbar .rv-finishrow {
+    flex: 1;
+    min-width: 0;
   }
   /* The summary's field, or the bar that takes its place: the row's room,
      the same one the composer's own line takes. */
@@ -1521,25 +1728,8 @@
     display: flex;
     gap: 6px;
   }
-  .chip {
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--muted);
-    border: 1px solid var(--line);
-    border-radius: 99px;
-    padding: 0 8px;
-  }
-  .chip.addressed {
-    color: var(--warn);
-    border-color: rgba(201, 161, 59, 0.4);
-  }
-  .chip.resolved {
-    color: var(--ok);
-    border-color: rgba(130, 199, 107, 0.35);
-  }
-  .chip.outdated {
-    color: var(--dim);
-  }
+  /* The `.chip` set lives in the sheet (web.css): the strip's review panel
+     wears the same chips, and one definition is the rule. */
   .summary {
     font-size: var(--fs-base);
     color: var(--muted);

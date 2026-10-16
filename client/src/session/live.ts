@@ -809,6 +809,14 @@ function createSeat(
       cronNames.remember(payload['uuid'], payload['description']);
     }
 
+    // A review was touched - filed, answered, resolved. The reviews ride a
+    // read rather than a record field, so the notice is the one cue to take
+    // that read again; without it the strip's rows and its panel keep saying
+    // `open` at threads the reader just settled.
+    if (name === 'review_activity_notice') {
+      reread();
+    }
+
     const seq = typeof frame.seq === 'number' ? frame.seq : null;
     const span = typeof frame.span === 'number' && frame.span > 0 ? frame.span : 1;
     if (seq !== null) {

@@ -535,11 +535,13 @@ name unset, which is the built-in.
 ## `[documents]`
 
 The ceiling on one document a session hands the reader through the
-`documents__hand_off` tool. Absent means the default.
+`documents__hand_off` tool, and on one file's content at a revision the
+review page reads for a between-hunk expansion (`file_content`): both read
+under this key. Absent means the default.
 
 | Key            | Type    | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | -------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `max_size_mib` | integer | `10`    | The largest document the viewer opens, in MiB, between `1` and `190`. A read over it is refused naming the size, before any bytes are read. `0` fails the load: a ceiling of nothing would refuse every document, which reads as a bug rather than a choice. A value past `190` fails the load too: a document crosses the socket base64-encoded and the desktop client's frame cap is 256 MiB, so a larger ceiling would read and raise and then die at the client. |
+| `max_size_mib` | integer | `10`    | The largest document the viewer opens, in MiB, between `1` and `190`. A read over it is refused naming the size, before any bytes are read. The review page's `file_content` read shares the ceiling and answers a flagged short read at it rather than a refusal, and caps its answer at 10,000 lines besides - which is what bounds a file of very short lines before the bytes do. `0` fails the load: a ceiling of nothing would refuse every document, which reads as a bug rather than a choice. A value past `190` fails the load too: a document crosses the socket base64-encoded, and a file read crosses as JSON lines whose escaping can cost about twice their bytes, both measured against the desktop client's frame cap of 256 MiB - a document at this ceiling stays inside it, and the file read's own 10,000-line bound is what keeps the ordinary case well inside it too. |
 
 A row's motion is not configurable. The client animates its own: the
 marks move by state - the working mark turns

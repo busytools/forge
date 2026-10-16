@@ -733,6 +733,26 @@ fn is_newer(ts: &str, watermark: Option<&str>) -> bool {
     }
 }
 
+/// Whether a message carries news the cursor has not passed: the message
+/// is newer than the cursor, or it was edited after the cursor. An edit
+/// keeps the message's own `ts`, so the ts test alone drops every
+/// correction.
+fn is_news(message: &SlackHistoryMessage, cursor: Option<&str>) -> bool {
+    is_newer(&message.ts, cursor)
+        || message.edited.as_deref().is_some_and(|edited| is_newer(edited, cursor))
+}
+
+/// The newest cursor value a message owns: its `ts`, or the later ts of
+/// its newest edit. A cursor advanced over a handed edit has to clear the
+/// edit too, or the next sweep re-offers the message forever and, once
+/// the delivery memory lapses, redispatches it.
+fn newest_stamp(message: &SlackHistoryMessage) -> &str {
+    match message.edited.as_deref() {
+        Some(edited) if is_newer(edited, Some(message.ts.as_str())) => edited,
+        _ => message.ts.as_str(),
+    }
+}
+
 #[cfg(test)]
 mod is_newer_tests {
     use super::is_newer;
@@ -1126,7 +1146,7 @@ pub(crate) async fn sweep_scope(
         let mut batch: Vec<SlackHistoryMessage> = history
             .into_iter()
             .filter(|message| {
-                is_newer(&message.ts, watermark.as_deref()) && seen.insert(message.ts.clone())
+                is_news(message, watermark.as_deref()) && seen.insert(message.ts.clone())
             })
             .collect();
 
@@ -1167,7 +1187,7 @@ pub(crate) async fn sweep_scope(
                 continue;
             }
             for reply in replies {
-                if is_newer(&reply.ts, watermark.as_deref()) && seen.insert(reply.ts.clone()) {
+                if is_news(&reply, watermark.as_deref()) && seen.insert(reply.ts.clone()) {
                     batch.push(reply);
                 }
             }
@@ -1230,6 +1250,7 @@ pub(crate) async fn sweep_scope(
                     text: message.text.clone(),
                     parent_user_id: message.parent_user_id.clone(),
                     latest_reply: message.latest_reply.clone(),
+                    edited: message.edited.clone(),
                     files: message.files.clone(),
                 })
                 .collect();
@@ -1258,7 +1279,7 @@ pub(crate) async fn sweep_scope(
         // a cursor advanced past an undelivered message loses it, and the
         // wire's newest-first pages mean any advance jumps over everything
         // at and below the failure. Dedupe absorbs the re-delivery.
-        if all_handed && let Some(newest) = batch.iter().map(|message| message.ts.as_str()).max() {
+        if all_handed && let Some(newest) = batch.iter().map(newest_stamp).max() {
             host.set_watermark(workspace, &conversation.id, newest);
         }
 
@@ -1396,6 +1417,7 @@ pub(crate) async fn sweep_scope(
                         text: reply.text.clone(),
                         parent_user_id: reply.parent_user_id.clone(),
                         latest_reply: reply.latest_reply.clone(),
+                        edited: reply.edited.clone(),
                         files: reply.files.clone(),
                     })
                     .collect();
@@ -1544,6 +1566,7 @@ pub(crate) async fn sweep_mentions(
                 // reports the reply markers.
                 parent_user_id: None,
                 latest_reply: None,
+                edited: None,
                 files: hit.files.clone(),
             };
             let mut all_handed = true;
@@ -1860,6 +1883,15 @@ pub struct SlackHistoryMessage {
     pub parent_user_id: Option<String>,
     /// A parent's newest reply `ts`. Absent on a message with no replies.
     pub latest_reply: Option<String>,
+    /// The `ts` of the message's newest edit, absent on one never edited.
+    /// This is the whole of what an edit looks like on this read path:
+    /// `conversations.history` sends the message it always was, with the
+    /// new text and this object. `message_changed` and `message_deleted`
+    /// are Events API shapes the sweep never sees, and a deleted message
+    /// is simply absent from history - so deletion has no frame here to
+    /// decide on. An edit to a message the cursor has passed and that the
+    /// newest page no longer holds is out of reach on every path.
+    pub edited: Option<String>,
     /// Files shared on the message, ids and all.
     pub files: Vec<SlackFile>,
 }
@@ -1898,7 +1930,17 @@ struct RawWireMessage {
     #[serde(default)]
     latest_reply: Option<String>,
     #[serde(default)]
+    edited: Option<RawEdited>,
+    #[serde(default)]
     files: Vec<SlackFile>,
+}
+
+/// The wire's `edited` object. Only the edit's own `ts` is decision-bearing:
+/// whose edit it was changes nothing the sweep decides.
+#[derive(Debug, Deserialize)]
+struct RawEdited {
+    #[serde(default)]
+    ts: Option<String>,
 }
 
 /// A bot message's own profile. `name` is the app's name, which is the
@@ -1926,6 +1968,7 @@ fn decode_message_page(method: &str, body: &str) -> Result<MessagePage, SlackErr
             bot_name: message.bot_profile.and_then(|profile| profile.name),
             parent_user_id: message.parent_user_id,
             latest_reply: message.latest_reply,
+            edited: message.edited.and_then(|edited| edited.ts),
             files: message.files,
         })
         .collect();
@@ -2677,6 +2720,30 @@ mod tests {
         )
         .expect("an empty cursor means the last page");
         assert_eq!(last.next_cursor, None);
+    }
+
+    /// An edit arrives as the message it always was, with the new text and
+    /// an `edited` object (Slack's message shape; `message_changed` is an
+    /// Events API subtype this sweep never sees). The decode must keep the
+    /// edit's own ts, or nothing downstream can tell a corrected message
+    /// apart from its original.
+    #[test]
+    fn an_edited_message_decodes_the_edit_ts() {
+        let body = r#"{
+          "ok": true,
+          "messages": [
+            {"ts":"100.000001","user":"U9","text":"the correction",
+             "edited":{"user":"U9","ts":"1790186900.123456"}},
+            {"ts":"90.000001","user":"U9","text":"untouched"}
+          ]
+        }"#;
+        let page = decode_message_page("conversations.history", body).expect("decodes");
+        assert_eq!(
+            page.messages[0].edited.as_deref(),
+            Some("1790186900.123456"),
+            "the edit's own ts is what says the text changed after sending",
+        );
+        assert_eq!(page.messages[1].edited, None, "an untouched message carries no edit");
     }
 
     /// The decoder keeps the repeat: Slack returns the parent on every page
@@ -3586,6 +3653,7 @@ mod tests {
             bot_name: None,
             parent_user_id: None,
             latest_reply: None,
+            edited: None,
             files: Vec::new(),
         }
     }
@@ -4083,6 +4151,37 @@ mod tests {
         assert_eq!(host.watermark("acme", "D1").expect("watermark"), Some("300.2".to_owned()));
     }
 
+    /// The defect this fix exists for: a message corrected after delivery
+    /// keeps its `ts`, so a ts-only cursor test drops the edit on every
+    /// sweep. The correction must arrive, and the cursor must clear the
+    /// edit - a cursor left below it re-offers the message every tick, and
+    /// redispatches it once the delivery memory lapses.
+    #[tokio::test]
+    async fn an_edit_to_a_delivered_message_arrives_and_the_cursor_clears_it() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.set_watermark("acme", "D1", "100.0");
+        let mut corrected = history_message("090.0", "U9", "deploy is RED");
+        corrected.edited = Some("150.0".to_owned());
+        host.seed_history("D1", vec![corrected]);
+
+        let outcome = sweep(&host, &host, "acme").await.expect("the edit's sweep");
+        assert_eq!(outcome.delivered, 1, "the correction is delivered");
+        assert_eq!(host.delivered()[0].text, "deploy is RED", "with its new text");
+        assert_eq!(
+            host.delivered()[0].edited.as_deref(),
+            Some("150.0"),
+            "and it carries the edit ts the delivery memory keys on",
+        );
+        assert_eq!(
+            host.watermark("acme", "D1"),
+            Ok(Some("150.0".to_owned())),
+            "the cursor clears the edit, so the next sweep does not re-offer it",
+        );
+
+        let again = sweep(&host, &host, "acme").await.expect("a quiet sweep");
+        assert_eq!(again.delivered, 0, "an edit is delivered once, not every tick");
+    }
+
     /// Without paging, a conversation that exceeds one page inside a poll
     /// interval loses the surplus: the sweep would advance the watermark
     /// past messages it never fetched, and nothing would ever report it.
@@ -4150,6 +4249,52 @@ mod tests {
         );
     }
 
+    /// An edited parent is news again, which makes the sweep read its
+    /// thread fresh - and a corrected reply whose own ts sits behind the
+    /// conversation cursor has to ride that read in. Filtering the read on
+    /// ts alone is the same drop the conversation batch had.
+    #[tokio::test]
+    async fn a_corrected_reply_rides_in_on_its_parents_redelivery() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        // The channel moved on past the thread: only the corrections are
+        // past the cursor, the messages' own ts values are not.
+        host.set_watermark("acme", "C1", "300.0");
+        let mut corrected_parent = parent_with_replies("100.0", 2);
+        corrected_parent.edited = Some("340.0".to_owned());
+        let mut corrected = reply("150.0", "100.0", "U8", "the answer, corrected");
+        corrected.edited = Some("350.0".to_owned());
+        host.seed_history("C1", vec![corrected_parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                corrected_parent,
+                history_message("105.0", "U1", "the user's own reply"),
+                corrected,
+            ],
+        );
+        host.follow_thread("acme", "C1", "100.0", thread_owner("forge", Some("tester")), "150.0");
+
+        sweep(&host, &host, "acme").await.expect("the corrections' sweep");
+
+        let delivered = host.delivered();
+        assert!(
+            delivered.iter().any(|message| message.ts == "100.0" && message.text == "trigger"),
+            "the corrected parent is delivered: {delivered:?}",
+        );
+        assert!(
+            delivered
+                .iter()
+                .any(|message| message.ts == "150.0" && message.text == "the answer, corrected"),
+            "and its thread's corrected reply rides the fresh read: {delivered:?}",
+        );
+    }
+
     /// The pin that would have caught the original Critical: the trigger
     /// sweep delivers a parent, and a reply that arrives on a LATER sweep
     /// still reaches the owning session - the parent has aged past the
@@ -4176,16 +4321,16 @@ mod tests {
             "and the walk has read his own reply, so the cursor is past it",
         );
 
-        // The reply arrives afterwards. History has nothing new; only the
-        // followed thread's own walk can reach it.
+        // The reply arrives afterwards, already carrying an edit: a
+        // correction made before the sweep ever read the reply. History
+        // has nothing new; only the followed thread's own walk can reach
+        // it.
+        let mut arriving = history_message("150.0", "U8", "the reply");
+        arriving.edited = Some("160.0".to_owned());
         host.seed_replies(
             "C1",
             "100.0",
-            vec![
-                parent,
-                history_message("105.0", "U1", "the user's own reply"),
-                history_message("150.0", "U8", "the reply"),
-            ],
+            vec![parent, history_message("105.0", "U1", "the user's own reply"), arriving],
         );
         sweep(&host, &host, "acme").await.expect("follow-up sweep");
 
@@ -4194,6 +4339,11 @@ mod tests {
             delivered.iter().filter(|message| message.ts == "150.0").collect();
         assert_eq!(replies.len(), 1, "the reply is delivered once");
         assert_eq!(replies[0].thread_ts.as_deref(), Some("100.0"), "as a reply of its thread");
+        assert_eq!(
+            replies[0].edited.as_deref(),
+            Some("160.0"),
+            "and the walk's delivery carries the edit ts",
+        );
         assert_eq!(
             host.delivered_owners().last().map(|owner| owner.team_role.clone()),
             Some(Some("tester".to_owned())),

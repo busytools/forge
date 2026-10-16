@@ -348,6 +348,11 @@ pub struct SlackMessage {
     pub parent_user_id: Option<String>,
     /// A parent's newest reply `ts`. Absent on a message with no replies.
     pub latest_reply: Option<String>,
+    /// The `ts` of the message's newest edit, absent on one never edited.
+    /// An edit keeps the message's own `ts`, so this is what says the text
+    /// changed after it was sent - and what keeps a redelivered correction
+    /// distinct from a re-run of the delivery it corrects.
+    pub edited: Option<String>,
     /// Files shared on the message. A file-share with no text is a real
     /// message, and the ids are what `slack__attachment` fetches with.
     pub files: Vec<SlackFile>,

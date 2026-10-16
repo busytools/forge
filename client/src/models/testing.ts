@@ -285,6 +285,7 @@ export function fakeConnection() {
     },
     more: () => false,
     commitDiff: () => false,
+    fileContent: () => false,
     readDocument: () => false,
     seatRange: () => false,
     frame: () => false,

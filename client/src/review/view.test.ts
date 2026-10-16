@@ -6,6 +6,7 @@ import {
   authorName,
   awaitsReviewer,
   canvasLine,
+  commentsInScope,
   latestRound,
   loopState,
   outdatedThreads,
@@ -215,21 +216,22 @@ describe('a round and its members', () => {
 });
 
 describe('where a thread draws on the canvas', () => {
-  it('places by the server landing for all changes, by the recorded line for a commit', () => {
+  it('places by the server landing for all changes, by the recorded line for its own commit', () => {
     // The plausible regression is trusting the recorded line for an
     // all-changes thread - exactly the guess the server's resolution exists
-    // to replace - or parking a commit-scoped one, whose diff cannot move.
+    // to replace - or drawing a commit's own thread at its commit-numbered
+    // line in the branch's numbering.
     const placed = thread('a', 'open', [{ author: 'you', review_id: null }], {
       resolution: { state: 'placed', line: 42, moved_from: 7 },
     });
-    expect(canvasLine(placed), 'moved draws where it landed, remembering 7').toEqual({
+    expect(canvasLine(placed, null), 'moved draws where it landed, remembering 7').toEqual({
       line: 42,
       movedFrom: 7,
     });
     const inPlace = thread('b', 'open', [{ author: 'you', review_id: null }], {
       resolution: { state: 'placed', line: 9, moved_from: null },
     });
-    expect(canvasLine(inPlace)).toEqual({ line: 9, movedFrom: null });
+    expect(canvasLine(inPlace, null)).toEqual({ line: 9, movedFrom: null });
     const scoped = thread('c', 'open', [{ author: 'you', review_id: null }], {
       commit: 'abc123',
       anchor: {
@@ -241,26 +243,57 @@ describe('where a thread draws on the canvas', () => {
         base_ref: 'main',
       },
     });
-    expect(canvasLine(scoped), 'an immutable scope keeps its own numbering').toEqual({
+    expect(canvasLine(scoped, 'abc123'), 'an immutable scope keeps its own numbering').toEqual({
       line: 5,
       movedFrom: null,
     });
-    const unresolvable = thread('d', 'open', [{ author: 'you', review_id: null }], {
+    expect(
+      canvasLine(scoped, null),
+      'and the branch draws it only where the resolver placed it, never at the commit line',
+    ).toBeNull();
+    const scopedPlaced = thread('d', 'open', [{ author: 'you', review_id: null }], {
+      commit: 'abc123',
+      resolution: { state: 'placed', line: 9, moved_from: null },
+    });
+    expect(
+      canvasLine(scopedPlaced, null),
+      'a commit thread the branch still carries draws in all changes too',
+    ).toEqual({ line: 9, movedFrom: null });
+    expect(
+      canvasLine(scopedPlaced, 'def456'),
+      "and another commit's view is not its scope",
+    ).toBeNull();
+    const unresolvable = thread('e', 'open', [{ author: 'you', review_id: null }], {
       resolution: { state: 'outdated', reason: 'gone' },
     });
-    expect(canvasLine(unresolvable), 'nothing to place against').toBeNull();
+    expect(canvasLine(unresolvable, null), 'nothing to place against').toBeNull();
     expect(
-      canvasLine(thread('e', 'open', [{ author: 'you', review_id: null }])),
+      canvasLine(thread('f', 'open', [{ author: 'you', review_id: null }]), null),
       'no landing carried: not guessed onto the recorded line',
+    ).toBeNull();
+    const allChanges = thread('g', 'open', [{ author: 'you', review_id: null }], {
+      resolution: { state: 'placed', line: 3, moved_from: null },
+    });
+    expect(
+      canvasLine(allChanges, 'abc123'),
+      "an all-changes thread has no landing in a commit's numbering",
     ).toBeNull();
   });
 
-  it('draws a thread in its own scope and no other, and parks only the unplaceable', () => {
+  it('draws every thread the scope can place, and parks only the unplaceable', () => {
     const all = thread('all', 'open', [{ author: 'you', review_id: null }], {
       resolution: { state: 'placed', line: 3, moved_from: null },
     });
+    // Written inside a commit, and the branch's diff still carries it: it
+    // draws in both scopes.
     const scoped = thread('scoped', 'open', [{ author: 'you', review_id: null }], {
       commit: 'abc123',
+      resolution: { state: 'placed', line: 8, moved_from: null },
+    });
+    // Written inside a commit the branch no longer shows where it was.
+    const scopedGone = thread('scoped-gone', 'open', [{ author: 'you', review_id: null }], {
+      commit: 'abc123',
+      resolution: { state: 'outdated', reason: 'gone' },
     });
     const parked = thread('parked', 'open', [{ author: 'you', review_id: null }], {
       resolution: { state: 'outdated', reason: { ambiguous: { matches: 2 } } },
@@ -268,20 +301,30 @@ describe('where a thread draws on the canvas', () => {
     const resolved = thread('resolved', 'resolved', [{ author: 'you', review_id: null }], {
       resolution: { state: 'outdated', reason: 'gone' },
     });
-    const threads = [all, scoped, parked, resolved];
+    const threads = [all, scoped, scopedGone, parked, resolved];
 
-    expect(threadsInScope(threads, null).map((t) => t.id)).toEqual(['all', 'parked', 'resolved']);
-    expect(threadsInScope(threads, 'abc123').map((t) => t.id)).toEqual(['scoped']);
+    expect(
+      threadsInScope(threads, null).map((t) => t.id),
+      'all changes draws every placed thread',
+    ).toEqual(['all', 'scoped']);
+    expect(
+      threadsInScope(threads, 'abc123').map((t) => t.id),
+      'a commit draws its own',
+    ).toEqual(['scoped', 'scoped-gone']);
     expect(
       outdatedThreads(threads).map((t) => t.id),
       'the unplaceable park; a resolved one never does',
-    ).toEqual(['parked']);
+    ).toEqual(['scoped-gone', 'parked']);
     expect(parkedReason(parked), 'an ambiguous landing says how many').toBe(
       'its code matches 2 places',
     );
-    expect(parkedReason(scoped), 'and a thread whose read carried no landing draws no reason').toBe(
-      '',
+    expect(parkedReason(scopedGone), 'a landing that says gone says so').toBe(
+      'the code it was written against is gone',
     );
+    expect(
+      parkedReason(thread('draft', 'open', [{ author: 'you', review_id: null }])),
+      'and a thread whose read carried no landing draws no reason',
+    ).toBe('');
     expect(
       outdatedThreads([
         thread('store', 'outdated', [{ author: 'you', review_id: null }], {
@@ -290,6 +333,65 @@ describe('where a thread draws on the canvas', () => {
       ]),
       'code that came back un-parks: the fresh landing wins over the store',
     ).toEqual([]);
+  });
+});
+
+describe('the comments the stepper walks', () => {
+  it('walks the scope by path then line, and never onto what the canvas cannot draw', () => {
+    // The plausible regression is stepping by record order: the canvas draws
+    // by path, so a stepper on another order would jump backwards and
+    // forwards through the diff, and one counting an unplaced thread would
+    // step to a card that is not on screen.
+    const later = thread('later', 'open', [{ author: 'you', review_id: null }], {
+      anchor: {
+        path: 'src/b.rs',
+        side: 'new',
+        line: 10,
+        content_hash: '1',
+        context: [],
+        base_ref: 'main',
+      },
+      resolution: { state: 'placed', line: 10, moved_from: null },
+    });
+    const early = thread('early', 'open', [{ author: 'you', review_id: null }], {
+      anchor: {
+        path: 'src/a.rs',
+        side: 'new',
+        line: 12,
+        content_hash: '1',
+        context: [],
+        base_ref: 'main',
+      },
+      resolution: { state: 'placed', line: 20, moved_from: 12 },
+    });
+    const first = thread('first', 'open', [{ author: 'you', review_id: null }], {
+      anchor: {
+        path: 'src/a.rs',
+        side: 'new',
+        line: 3,
+        content_hash: '1',
+        context: [],
+        base_ref: 'main',
+      },
+      resolution: { state: 'placed', line: 4, moved_from: null },
+    });
+    const gone = thread('gone', 'open', [{ author: 'you', review_id: null }], {
+      resolution: { state: 'outdated', reason: 'gone' },
+    });
+    const other = thread('other', 'open', [{ author: 'you', review_id: null }], {
+      commit: 'abc123',
+    });
+
+    const steps = commentsInScope([later, early, first, gone, other], null);
+    expect(steps.map((held) => held.thread.id)).toEqual(['first', 'early', 'later']);
+    expect(
+      steps.map((held) => held.line),
+      'the stepper names the line it lands on',
+    ).toEqual([4, 20, 10]);
+    expect(
+      commentsInScope([later, early, first, gone, other], 'abc123').map((held) => held.thread.id),
+      "a commit's scope holds its own thread only",
+    ).toEqual(['other']);
   });
 });
 

@@ -29,8 +29,18 @@ vi.mock('../composer/mic', () => ({
   inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
 }));
 
+const viewer = vi.hoisted(() => ({ built: [] as string[] }));
+
 vi.mock('@git-diff-view/core', () => ({
-  DiffFile: class {},
+  // The viewer's own model, stood in for the way the component is: what a
+  // test reads is the diff TEXT each build was handed, which is where an
+  // opened gap either reached the viewer or did not.
+  DiffFile: class {
+    constructor(...args: unknown[]) {
+      const hunks = args[4];
+      viewer.built.push(Array.isArray(hunks) ? hunks.join('') : '');
+    }
+  },
 }));
 
 vi.mock('@git-diff-view/svelte', async () => {
@@ -93,8 +103,84 @@ const DIFF = {
   ],
 };
 
+/** Two hunks round the stood-in viewer's two carried lines (1 and 4): the
+ *  gap between them hides lines 2 and 3. */
+const TWO_HUNKS = {
+  state: 'populated',
+  files: [
+    {
+      path: 'src/a.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'one', oldLine: 1, newLine: 1 }],
+        },
+        {
+          oldStart: 4,
+          oldCount: 1,
+          newStart: 4,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'four', oldLine: 4, newLine: 4 }],
+        },
+      ],
+    },
+  ],
+};
+
+/** The file's whole content, as the read would answer it. */
+const LINES = ['one', 'two', 'three', 'four'];
+
+/** Two hunks far apart, at the stood-in viewer's first and last rows: the gap
+ *  between them (lines 2..29) is longer than one press fills, and the file
+ *  goes on past the last hunk (31..40), which is the row-of-its-own gap. */
+const BIG_GAP = {
+  state: 'populated',
+  files: [
+    {
+      path: 'src/a.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'l1', oldLine: 1, newLine: 1 }],
+        },
+        {
+          oldStart: 30,
+          oldCount: 1,
+          newStart: 30,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'l30', oldLine: 30, newLine: 30 }],
+        },
+      ],
+    },
+  ],
+};
+
+/** That file's whole content: forty lines, ten past its last hunk. */
+const BIG_LINES = Array.from({ length: 40 }, (_, i) => `l${i + 1}`);
+
 let app: Record<string, unknown> | null = null;
 let frames: FrameRequestCallback[] = [];
+/** The scrolls the page asked for, as the element and the options it named.
+ *  `options` is spelled as accepting `undefined` because a call may omit it,
+ *  and the repo's `exactOptionalPropertyTypes` reads an explicit one
+ *  differently from an absent key. */
+let scrolled: { el: Element; options: ScrollIntoViewOptions | undefined }[] = [];
 
 afterEach(async () => {
   if (app !== null) await unmount(app);
@@ -107,6 +193,16 @@ afterEach(async () => {
 
 beforeEach(() => {
   installResizeObserver();
+  // jsdom performs no layout: scrollIntoView is a browser call the jump and
+  // the comment stepper make, so it is stood in for the way the board and
+  // the chat's own reveal stand it in - recording what was scrolled and how,
+  // because where a step lands is the step's whole point.
+  Object.defineProperty(Element.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: function (this: Element, options?: ScrollIntoViewOptions) {
+      scrolled.push({ el: this, options });
+    },
+  });
   (globalThis as { matchMedia?: unknown }).matchMedia = () => ({
     matches: true,
     addEventListener: () => {},
@@ -164,13 +260,18 @@ function record(
   composer: unknown,
   threads: unknown[] = [],
   reviews: unknown[] = [],
+  diff: unknown = DIFF,
+  commits: { sha: string; subject: string }[] = [],
 ): SessionRecord {
   return {
     slot: SLOT,
     composer,
     work: { branch: 'b', dirt: 'clean' },
-    git: { defaultBranch: 'main', ahead: null },
-    diff: { branchAhead: DIFF },
+    git: {
+      defaultBranch: 'main',
+      ahead: commits.length === 0 ? null : { commit_count: commits.length, commits, stats: null },
+    },
+    diff: { branchAhead: diff },
     reviews: {
       threads: { outcome: 'read', value: threads },
       reviews: { outcome: 'read', value: reviews },
@@ -233,19 +334,54 @@ const HELD_THREAD = {
 /** The commands the page dispatched, cleared at each draw, so a test can
  *  read what a take's start or its end put on the wire. */
 let sent: unknown[] = [];
+/** The file-content asks the canvas sent, and the listeners a test answers
+ *  them through. */
+let asked: { path: string; sha: string | null }[] = [];
+const hearers = new Set<(message: unknown) => void>();
+const statusHearers = new Set<(next: 'open' | 'closed' | 'connecting') => void>();
+
+/** Hand the page the frame the server would have sent. */
+function pushMessage(message: unknown): void {
+  for (const hear of [...hearers]) hear(message);
+}
+
+/** The socket's own state, as the page would hear it move. */
+function pushStatus(next: 'open' | 'closed' | 'connecting'): void {
+  for (const hear of [...statusHearers]) hear(next);
+  flushSync();
+}
 
 function connection(): Connection {
   return {
     settings: () => null,
     dispatch: (command?: unknown) => {
       sent.push(command);
-      return null;
+      // A dispatch's answer, from the few writes that read one: the seal
+      // reads a round back (inert for every other command).
+      return { id: 'r9', number: 4, summary: null, created_at: '2026-01-01T00:00:00Z' };
     },
     refresh: () => undefined,
     commitDiff: () => undefined,
+    fileContent: (_session: unknown, path: string, sha: string | null) => {
+      asked.push({ path, sha });
+      return true;
+    },
     status: () => 'open',
-    onStatus: () => () => undefined,
-    onMessage: () => () => undefined,
+    // A real listener, so a test can move the socket's state: the reconnect
+    // path (an ask that never landed is asked again) is a state transition
+    // and nothing else can drive it.
+    onStatus: (fn: (next: 'open' | 'closed' | 'connecting') => void) => {
+      statusHearers.add(fn);
+      return () => {
+        statusHearers.delete(fn);
+      };
+    },
+    onMessage: (fn: (message: unknown) => void) => {
+      hearers.add(fn);
+      return () => {
+        hearers.delete(fn);
+      };
+    },
   } as unknown as Connection;
 }
 
@@ -255,14 +391,21 @@ async function draw(
   threads: unknown[] = [],
   reviews: unknown[] = [],
   dictation = true,
+  diff: unknown = DIFF,
+  commits: { sha: string; subject: string }[] = [],
 ): Promise<void> {
   sent = [];
+  asked = [];
+  hearers.clear();
+  statusHearers.clear();
+  viewer.built = [];
+  scrolled = [];
   app = mount(Review, {
     target: document.body,
     props: { connection: connection(), slot: SLOT, dictation },
   });
   flushSync();
-  push({ wire: record(IDLE, threads, reviews), refused: null });
+  push({ wire: record(IDLE, threads, reviews, diff, commits), refused: null });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
   await settle(() => {
@@ -305,6 +448,14 @@ async function openReply(): Promise<void> {
   if (respond === undefined) throw new Error('the thread card drew no respond');
   respond.click();
   await settle(() => document.querySelector('.rv-reply') !== null);
+}
+
+/** Press one of the diff half's own buttons, and let the press settle. */
+function press(where: 'previous comment' | 'next comment' | 'next scope'): void {
+  const button = document.querySelector<HTMLButtonElement>(`.rv-step-btn[aria-label="${where}"]`);
+  if (button === null) throw new Error(`the page drew no ${where} button`);
+  button.click();
+  flushSync();
 }
 
 function micIn(where: string): HTMLButtonElement {
@@ -486,6 +637,191 @@ describe('a landing', () => {
   });
 
   /**
+   * **A parked row is not a dead end** (Ved, 2026-10-15). The Outdated rows
+   * used to draw no actions at all - no respond, no resolve - so the one
+   * thread the resolver could not place was the one row with no door back.
+   * Here the thread is held by no round, so the reply box - which draws only
+   * under a round's own copy - has nowhere to open: resolve is the door.
+   */
+  it('offers resolve on a parked thread no round holds', async () => {
+    const parked = {
+      id: 'parked-1',
+      anchor: {
+        path: 'src/a.rs',
+        side: 'New',
+        line: 9,
+        content_hash: '1',
+        context: ['captured one', 'captured two'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { Agent: { label: 'w1' } },
+          text: 'still open',
+          at: '2026-01-01T00:00:00Z',
+        },
+      ],
+      status: 'Open',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+      resolution: null,
+    };
+    await draw([parked]);
+    await openConversation();
+
+    const row = document.querySelector('.thread.parked');
+    expect(row, 'the thread parked').not.toBeNull();
+    const acts = [...(row?.querySelectorAll('.acts .rv-a') ?? [])].map((button) =>
+      button.textContent?.trim(),
+    );
+    expect(acts, 'with resolve, and no respond the page could not honour').toEqual(['resolve']);
+
+    sent = [];
+    [...(row?.querySelectorAll<HTMLButtonElement>('.acts .rv-a') ?? [])][0]?.click();
+    flushSync();
+    expect(sent, 'and resolve writes the state for the parked thread').toEqual([
+      {
+        set_review_thread_status: {
+          project: 'forge',
+          branch: 'b',
+          thread_id: 'parked-1',
+          status: 'Resolved',
+        },
+      },
+    ]);
+  });
+
+  it('offers respond on a parked thread a round holds', async () => {
+    // The parked copy of a thread filed into ROUND: respond is offered
+    // because the reply box it opens draws under that round's own copy.
+    const parked = {
+      id: 'parked-1',
+      anchor: {
+        path: 'src/a.rs',
+        side: 'New',
+        line: 9,
+        content_hash: '1',
+        context: ['captured one', 'captured two'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { Agent: { label: 'w1' } },
+          text: 'still open',
+          at: '2026-01-01T00:00:00Z',
+          review_id: 'r1',
+        },
+      ],
+      status: 'Open',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+      resolution: null,
+    };
+    await draw([parked], [ROUND]);
+    await openConversation();
+
+    const row = document.querySelector('.thread.parked');
+    expect(row, 'the thread parked').not.toBeNull();
+    const acts = [...(row?.querySelectorAll('.acts .rv-a') ?? [])].map((button) =>
+      button.textContent?.trim(),
+    );
+    expect(acts, 'respond rides along where the round draws the box').toEqual([
+      'respond',
+      'resolve',
+    ]);
+
+    [...(row?.querySelectorAll<HTMLButtonElement>('.acts .rv-a') ?? [])][0]?.click();
+    flushSync();
+    expect(
+      document.querySelector('.rv-reply'),
+      'and the reply box opens under the round that holds it',
+    ).not.toBeNull();
+  });
+
+  /**
+   * **Done closes the round** (Ved, 2026-10-15): a landed seal closes the
+   * comment and reply boxes and clears the summary - the page is back to the
+   * diff with nothing of the round left open. The mock answers the seal with
+   * a round, which is what `finishRound` reads to call it landed (inert for
+   * every other case, which never reads a dispatch's answer).
+   */
+  it('closes the round when Done seals it', async () => {
+    const live = {
+      id: 't-open',
+      anchor: {
+        path: 'src/a.rs',
+        side: 'New',
+        line: 1,
+        content_hash: '1',
+        context: ['one'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { Agent: { label: 'w1' } },
+          text: 'answered words',
+          at: '2026-01-01T00:00:00Z',
+          review_id: 'r1',
+        },
+      ],
+      status: 'Addressed',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+      resolution: { state: 'placed', line: 1, moved_from: null },
+    };
+    await draw([live], [ROUND]);
+    await openComment();
+
+    const box = document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea');
+    if (box === null) throw new Error('the comment box drew no field');
+    box.value = 'a drafted comment';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const file = [
+      ...document.querySelectorAll<HTMLButtonElement>('.rv-thread.comment button'),
+    ].find((button) => button.textContent?.trim() === 'comment');
+    if (file === undefined) throw new Error('the comment box drew no comment action');
+    file.click();
+    await settle(() => sent.some((held) => typeof held === 'object' && held !== null));
+
+    await openReply();
+    await openConversation();
+    // The precondition the seal's own assert rests on: the conversation half
+    // is where the reply box is left, and only a round that holds the thread
+    // draws it - without this the assert below passes on a box never drawn.
+    expect(
+      document.querySelector('.rv-reply'),
+      'precondition: the reply box is open on the conversation half',
+    ).not.toBeNull();
+
+    const summaryField = document.querySelector<HTMLInputElement>('.rv-summary');
+    if (summaryField === null) throw new Error('the round drew no summary field');
+    summaryField.value = 'the round summary';
+    summaryField.dispatchEvent(new Event('input', { bubbles: true }));
+    summaryField.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    await settle(() => document.body.textContent?.includes('the round summary') === false);
+
+    expect(
+      sent.some((held) => typeof held === 'object' && held !== null && 'submit_review' in held),
+      'the seal went out',
+    ).toBe(true);
+    expect(document.querySelector('.rv-reply'), 'the reply box closed with the round').toBeNull();
+    expect(
+      document.querySelector<HTMLInputElement>('.rv-summary')?.value ?? '',
+      'and the summary is cleared',
+    ).toBe('');
+    // The comment box's own clears in `finish()` are not observable from
+    // here: the seal runs on the conversation half, and the canvas closes
+    // the box when it mounts on the return. They earn their place the day a
+    // Done door draws on the files half.
+  });
+
+  /**
    * **A landing the record re-hands is not the new take's.** Any write between
    * the press and the take's own start runs the landing with the PREVIOUS
    * notice still on the record: skipping that notice rather than spending the
@@ -567,6 +903,688 @@ describe('a landing', () => {
       document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
       'the same words twice, as two takes spoke them',
     ).toBe('this read is the whole input this read is the whole input');
+  });
+});
+
+describe('a comment box opens', () => {
+  /**
+   * **The caret goes in with the box** (Ved, 2026-10-16): clicking a line to
+   * comment is a reader asking to write there, and a box that opened
+   * unfocused made them click a second time before a word could be typed.
+   */
+  it('puts the caret in the field the click opened', async () => {
+    await draw();
+    await openComment();
+
+    expect(document.activeElement, 'the caret is in the box the click opened').toBe(
+      document.querySelector('.rv-thread.comment .rv-txarea'),
+    );
+  });
+});
+
+describe('the steppers', () => {
+  const SECOND_COMMIT = { sha: 'def456', subject: 'the second commit' };
+
+  /** The readout the comment stepper draws, or null when it drew none. */
+  function readout(): string | null {
+    return document.querySelector('.rv-cstep-n')?.textContent?.trim() ?? null;
+  }
+
+  /**
+   * **Both steppers cycle, with buttons a finger can press** (Ved,
+   * 2026-10-16): the comments of the scope, and the scopes themselves - the
+   * last steps round to the first rather than stopping at a wall, and the
+   * pair is on screen so a touch reader has a door the keys are not.
+   */
+  it('walks the scope comments with wrap-around, from its own buttons', async () => {
+    await draw([
+      THREAD,
+      {
+        ...THREAD,
+        id: 't4',
+        resolution: { state: 'placed', line: 4, moved_from: null },
+        anchor: { ...THREAD.anchor, line: 4 },
+      },
+    ]);
+
+    expect(readout(), 'nothing stepped to yet').toBe('0/2');
+    press('next comment');
+    expect(readout()).toBe('1/2');
+    press('next comment');
+    expect(readout()).toBe('2/2');
+    press('next comment');
+    expect(readout(), 'the last comment steps round to the first').toBe('1/2');
+    press('previous comment');
+    expect(readout(), 'and the first steps back round to the last').toBe('2/2');
+  });
+
+  /**
+   * **A step lands on the card it names, not merely on the counter.** The
+   * stepper's whole point is the movement, so this pins the scroll a step
+   * makes: the stepped-to comment's own row, brought to the middle of the
+   * canvas - a counter that counted without moving would pass everything
+   * else here.
+   */
+  it('brings the stepped-to comment into view', async () => {
+    await draw([
+      THREAD,
+      {
+        ...THREAD,
+        id: 't4',
+        resolution: { state: 'placed', line: 4, moved_from: null },
+        anchor: { ...THREAD.anchor, line: 4 },
+      },
+    ]);
+
+    press('next comment');
+    await settle(() => scrolled.some((held) => held.options?.block === 'center'));
+
+    const landed = scrolled.find((held) => held.options?.block === 'center');
+    expect(
+      landed?.el.textContent,
+      'the row the step brought into view is the stepped-to comment',
+    ).toContain('one');
+  });
+
+  /**
+   * **A step taken before its scope is drawn still travels.** The commit's
+   * layer arrives over the socket (and its models build asynchronously), so
+   * a step pressed the moment the scope changes has nothing to land on yet -
+   * the jump has to recover when the models arrive, which is what the built
+   * files being tracked is for.
+   */
+  it('travels to a step whose scope had not been drawn yet', async () => {
+    const scoped = {
+      ...THREAD,
+      id: 't-c',
+      commit: 'abc123',
+      anchor: { ...THREAD.anchor, line: 4 },
+      resolution: null,
+    };
+    await draw([scoped], [], true, TWO_HUNKS, [{ sha: 'abc123', subject: 'the first commit' }]);
+
+    press('next scope');
+    await settle(() => document.querySelector('.rv-quiet') !== null);
+    press('next comment');
+    // The step's own retry is spent before the scope lands - eight frames
+    // and it gives up - so what carries the jump after this is the models
+    // arriving, which is the recovery this test is for.
+    for (let round = 0; round < 12; round += 1) paint();
+    expect(
+      scrolled.some((held) => held.options?.block === 'center'),
+      'nothing to land on yet, and nothing to land on wrongly',
+    ).toBe(false);
+
+    pushMessage({
+      kind: 'commit_diff',
+      sha: 'abc123',
+      files: { populated: TWO_HUNKS.files },
+      truncated: false,
+    });
+    await settle(() => scrolled.some((held) => held.options?.block === 'center'));
+
+    const landed = scrolled.find((held) => held.options?.block === 'center');
+    expect(landed?.el.textContent, 'the row the step travelled to once its scope landed').toContain(
+      'four',
+    );
+  });
+
+  /**
+   * **A rebuild after the step landed is not a step.** Opening a gap (or a
+   * scope or mode switch) rebuilds the models the jump reads; a jump that
+   * re-fired there would yank a reader back from wherever they had scrolled.
+   */
+  it('does not travel again when a rebuild follows the step', async () => {
+    await draw([THREAD], [], true, TWO_HUNKS);
+    press('next comment');
+    await settle(() => scrolled.some((held) => held.options?.block === 'center'));
+    const landed = scrolled.filter((held) => held.options?.block === 'center').length;
+
+    // The reader opened a gap: that file's model is rebuilt.
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+    document.querySelector<HTMLButtonElement>('.rv-gapbtn')?.click();
+    await settle(() => document.querySelector('.rv-gapbtn') === null);
+    paint();
+
+    expect(
+      scrolled.filter((held) => held.options?.block === 'center').length,
+      'the rebuild travelled the canvas back to the comment',
+    ).toBe(landed);
+  });
+
+  it('steps the scopes with wrap-around, from its own buttons', async () => {
+    await draw([], [], true, DIFF, [{ sha: 'abc123', subject: 'the first commit' }, SECOND_COMMIT]);
+
+    const scope = (): string | null =>
+      document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
+    expect(scope()).toBe('All changes');
+    press('next scope');
+    expect(scope()).toBe('abc123');
+    press('next scope');
+    expect(scope()).toBe('def456');
+    press('next scope');
+    expect(scope(), 'the last commit steps round to all changes').toBe('All changes');
+  });
+
+  /**
+   * **The keys are the pair the hint names**: arrows step commits, and
+   * shift+arrows step comments - the same walks the buttons make.
+   */
+  it('steps comments on shift+arrows and commits on the arrows', async () => {
+    const key = (init: KeyboardEventInit): void => {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }),
+      );
+      flushSync();
+    };
+    await draw([THREAD], [], true, DIFF, [SECOND_COMMIT]);
+
+    key({ key: 'ArrowRight', shiftKey: true });
+    expect(readout(), 'shift+right steps a comment').toBe('1/1');
+    key({ key: 'ArrowLeft', shiftKey: true });
+    expect(readout(), 'and shift+left steps back round').toBe('1/1');
+
+    const scope = (): string | null =>
+      document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
+    key({ key: 'ArrowRight' });
+    expect(scope(), 'a bare right still steps the scope').toBe('def456');
+
+    expect(document.querySelector('.rv-hint')?.textContent, 'and the hint row says both').toContain(
+      'shift',
+    );
+  });
+});
+
+describe('the files half finishes the round too', () => {
+  /** File one comment on the diff, so the round has a draft to seal. */
+  async function draft(): Promise<void> {
+    await openComment();
+    const box = document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea');
+    if (box === null) throw new Error('the comment box drew no field');
+    box.value = 'a drafted comment';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const file = [
+      ...document.querySelectorAll<HTMLButtonElement>('.rv-thread.comment button'),
+    ].find((button) => button.textContent?.trim() === 'comment');
+    if (file === undefined) throw new Error('the comment box drew no comment action');
+    file.click();
+    await settle(() => sent.some((held) => typeof held === 'object' && held !== null));
+  }
+
+  /**
+   * **The summary's box follows the half that draws it** (Ved, 2026-10-16):
+   * the files half's finish row is the round's own box, so the dictation key
+   * speaks into it and the words land there. A rule that knew only the
+   * conversation half's copy would leave a reader dictating into a box that
+   * is not on screen.
+   */
+  it("takes the key in the files half's own finish row", async () => {
+    await draw();
+    await draft();
+    const button = document.querySelector<HTMLButtonElement>('.rv-finishbar .rv-finish');
+    button?.click();
+    await settle(() => document.querySelector('.rv-finishbar .rv-summary') !== null);
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+    expect(wire(), 'the key began no take in the row the reader opened').toContain(
+      'dictate_stream',
+    );
+
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, TAP_MS + 100));
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.rv-finishbar .takeline'),
+          'the bar goes with the take',
+        ).toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLInputElement>('.rv-finishbar .rv-summary')?.value,
+      'the key take went somewhere the reader cannot see',
+    ).toBe('this read is the whole input');
+  });
+
+  /**
+   * **The reader finishes without leaving the diff** (Ved, 2026-10-16): a
+   * `finish review (N)` control in the files half opens the page's own
+   * finish row in place, the summary field takes the caret, and Enter seals
+   * the round - after which the row collapses back to its control.
+   */
+  it('opens the row on a press, takes the caret, and seals on Enter', async () => {
+    await draw();
+    await draft();
+
+    const button = document.querySelector<HTMLButtonElement>('.rv-finishbar .rv-finish');
+    expect(button, 'the files half drew its finish control').not.toBeNull();
+    expect(button?.textContent?.trim(), 'naming the drafts it would seal').toContain('(1)');
+
+    button?.click();
+    await settle(() => document.querySelector('.rv-finishbar .rv-summary') !== null);
+
+    expect(document.activeElement, 'the field a press opened takes the caret').toBe(
+      document.querySelector('.rv-finishbar .rv-summary'),
+    );
+
+    sent = [];
+    const field = document.querySelector<HTMLInputElement>('.rv-finishbar .rv-summary');
+    if (field === null) throw new Error('the files half drew no summary field');
+    field.value = 'the round summary';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    await settle(() => document.querySelector('.rv-finishbar .rv-summary') === null);
+
+    expect(
+      sent.some((held) => typeof held === 'object' && held !== null && 'submit_review' in held),
+      'the seal the conversation half runs, from the files half',
+    ).toBe(true);
+    expect(
+      document.querySelector('.rv-finishbar .rv-finish'),
+      'and the row collapsed back to its control',
+    ).not.toBeNull();
+  });
+});
+
+describe('the lines a diff left out', () => {
+  /**
+   * **The read is asked when the file is drawn**, not when a control is
+   * pressed: the answer is what decides whether a control exists at all, so
+   * a door that would open on a read that cannot fill it is never drawn.
+   */
+  it('asks for the file the canvas draws, and draws the control its answer earns', async () => {
+    await draw([], [], true, TWO_HUNKS);
+
+    expect(
+      asked.map((held) => held.path),
+      'the canvas asked for the drawn file',
+    ).toEqual(['src/a.rs']);
+    expect(asked[0]?.sha, 'in the all-changes scope, against the branch tip').toBeNull();
+    expect(
+      document.querySelector('.rv-gapbtn'),
+      'no control before the read landed: a door nothing could fill yet',
+    ).toBeNull();
+
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+
+    const control = document.querySelector('.rv-gapbtn');
+    expect(
+      control?.getAttribute('aria-label'),
+      'the accessible name carries what the glyph cannot',
+    ).toBe('show all 2 hidden lines of src/a.rs');
+    expect(control?.getAttribute('title'), "and the tooltip is GitHub's own word").toBe(
+      'Expand All',
+    );
+    // **The hunk header's own gutter cell is the control's place** (Ved,
+    // 2026-10-16, from the look): a strip in the line-number column of a row
+    // the diff already draws, the way GitHub puts it, rather than a strip
+    // row of its own.
+    expect(
+      control?.closest('td')?.className,
+      'the control is drawn in the hunk header, in the numbers column',
+    ).toContain('hunk-action');
+    expect(
+      control?.closest('tr')?.className,
+      "and on a row of the viewer's own table rather than an inserted strip",
+    ).not.toContain('rv-insert');
+    // A gap this small opens in one press, so the strip is the two-way
+    // glyph - GitHub's own choice for a gap one fetch fills.
+    expect(control?.querySelector('use')?.getAttribute('href'), 'the two-way glyph').toBe(
+      '#i-unfold',
+    );
+
+    // **The press re-emits the file's diff text with the gap drawn as
+    // context**, which is the only way the viewer can number those rows: a
+    // heading that kept its old counts would number every hunk below wrong.
+    // The gap closed, the two hunks now run together under one heading.
+    control?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await settle(() => document.querySelector('.rv-gapbtn') === null);
+
+    const text = viewer.built.at(-1) ?? '';
+    expect(text, 'the closed gap joins the hunks into one block').toContain(
+      '@@ -1,4 +1,4 @@\n one\n two\n three\n four\n',
+    );
+    expect(
+      text.split('\n').filter((held) => held.startsWith('@@')),
+      'and the second heading is gone',
+    ).toEqual(['@@ -1,4 +1,4 @@']);
+  });
+
+  /**
+   * **An answer belongs to the scope that asked for it.** A reader who steps
+   * to another commit before it lands comes back to a scope whose answer is
+   * in hand: keyed to the scope on screen the answer would be dropped, and
+   * the ask it was remembered under would keep that scope control-less for
+   * good, with nothing on screen to say why.
+   */
+  it('keeps an answer for the scope that asked, and draws it on the way back', async () => {
+    await draw([], [], true, TWO_HUNKS, [{ sha: 'abc123', subject: 'the first commit' }]);
+    expect(
+      asked.map((held) => held.sha),
+      'the scope on screen asked first',
+    ).toEqual([null]);
+
+    // The reader steps away - the commit's own layer is not fetched in this
+    // harness, so the canvas draws its "Reading the commit..." state - and
+    // the answer for the scope they left arrives while they are gone.
+    press('next scope');
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: LINES, truncated: false },
+    });
+    flushSync();
+    paint();
+    expect(
+      document.querySelector('.rv-gapbtn'),
+      'and the answer draws nothing for the scope on screen',
+    ).toBeNull();
+
+    // Back: the control is drawn from the answer that landed, with no second
+    // ask for a scope whose content is already in hand.
+    press('next scope');
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+    expect(
+      document.querySelector('.rv-gapbtn')?.getAttribute('aria-label'),
+      'the control the late answer earned',
+    ).toBe('show all 2 hidden lines of src/a.rs');
+    expect(
+      asked.map((held) => held.sha),
+      'and no ask was repeated',
+    ).toEqual([null]);
+  });
+
+  /**
+   * **A one-line gap is named in the singular.** The accessible name is the
+   * only place the count is spelled, and a lone remaining line is the case a
+   * builder that concatenates a numeral and a fixed plural gets wrong - the
+   * plausible regression is dropping the singular branch while simplifying
+   * the label into one template.
+   */
+  it('names a one-line gap in the singular', async () => {
+    // The hunks carry lines 1 and 2, then 4: the gap holds line 3 alone. The
+    // rows are the stood-in viewer's own, so the anchor the control hangs off
+    // is one it has drawn.
+    await draw([], [], true, {
+      state: 'populated',
+      files: [
+        {
+          ...TWO_HUNKS.files[0],
+          hunks: [
+            {
+              oldStart: 1,
+              oldCount: 2,
+              newStart: 1,
+              newCount: 2,
+              lines: [
+                { kind: 'context', text: 'one', oldLine: 1, newLine: 1 },
+                { kind: 'context', text: 'two', oldLine: 2, newLine: 2 },
+              ],
+            },
+            {
+              oldStart: 4,
+              oldCount: 1,
+              newStart: 4,
+              newCount: 1,
+              lines: [{ kind: 'context', text: 'four', oldLine: 4, newLine: 4 }],
+            },
+          ],
+        },
+      ],
+    });
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: ['one', 'two', 'three', 'four'], truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+
+    expect(
+      document.querySelector('.rv-gapbtn')?.getAttribute('aria-label'),
+      'one hidden line, named as one line',
+    ).toBe('show all 1 hidden line of src/a.rs');
+  });
+
+  /**
+   * **A long gap wears GitHub's own pair of strips, one per end, and steps
+   * open a screenful a press.** Ved, 2026-10-16, from the look: between two
+   * hunks GitHub draws the down strip at the top of the header's gutter and
+   * the up strip under it, the gap below the last hunk gets a row of its own
+   * after the file's last line, and a press moves twenty lines from the end
+   * it names. The plausible regression is a press opening the whole gap at
+   * once - a jump of hundreds of lines where the reader asked for the next
+   * screenful - the strips stacked in the other order, or the
+   * below-the-last-hunk control riding a hunk header it has no business on.
+   */
+  it('draws the pair of strips on a long gap, and steps it a screenful a press', async () => {
+    await draw([], [], true, BIG_GAP);
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: BIG_LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+
+    // The gap between the hunks (lines 2..29) is longer than one press
+    // fills: two strips in the header's gutter cell, the down one first.
+    const headerStrips = (): HTMLButtonElement[] => [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        'tr:not(.rv-gaprow) td[class*="hunk-action"] button.rv-gapbtn',
+      ),
+    ];
+    expect(headerStrips().length, 'one strip per end of the gap between the hunks').toBe(2);
+    expect(headerStrips().map((held) => held.title)).toEqual(['Expand Down', 'Expand Up']);
+    expect(headerStrips().map((held) => held.getAttribute('aria-label'))).toEqual([
+      'show the next 20 hidden lines of src/a.rs',
+      'show the previous 20 hidden lines of src/a.rs',
+    ]);
+    expect(headerStrips().map((held) => held.querySelector('use')?.getAttribute('href'))).toEqual([
+      '#i-fold-down',
+      '#i-fold-up',
+    ]);
+    expect(
+      headerStrips()[0]?.closest('tr')?.querySelector('td[class*="hunk-content"]')?.textContent,
+      "both ride the following hunk's own header",
+    ).toContain('@@ -30,1 +30,1 @@');
+
+    // The gap below the last hunk gets a row of its own, right after the
+    // file's last drawn line and empty but for its strip.
+    const bottomRow = document.querySelector('tr.rv-gaprow');
+    expect(bottomRow, 'a row after the last line, holding the control').not.toBeNull();
+    expect(
+      bottomRow?.previousElementSibling?.querySelector('span[data-line-new-num]')?.textContent,
+      "drawn under the file's last drawn line",
+    ).toBe('30');
+    const bottom = bottomRow?.querySelector('button.rv-gapbtn');
+    expect(bottom?.getAttribute('title'), 'the rest of the file fits one press').toBe('Expand All');
+    expect(bottom?.querySelector('use')?.getAttribute('href')).toBe('#i-unfold');
+
+    // A press opens exactly one screenful, and no more.
+    headerStrips()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await settle(() => headerStrips().length === 1 && headerStrips()[0]?.title === 'Expand All');
+
+    const text = viewer.built.at(-1) ?? '';
+    expect(text, 'the down press drew the twenty lines below the first hunk').toContain(
+      '@@ -1,21 +1,21 @@',
+    );
+    expect(text, 'and stopped there').not.toContain(' l22\n');
+    expect(
+      headerStrips().length,
+      'the remainder now fits one press, so the pair collapses to the one control',
+    ).toBe(1);
+
+    // The last press closes the gap, and the hunks run together.
+    headerStrips()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await settle(() => headerStrips().length === 0);
+
+    const joined = viewer.built.at(-1) ?? '';
+    expect(
+      joined.split('\n').filter((held) => held.startsWith('@@')),
+      'one heading for the whole run, the second header gone',
+    ).toEqual(['@@ -1,30 +1,30 @@']);
+  });
+
+  /**
+   * **An ask the socket did not carry is asked again.** A connection that
+   * goes down mid-ask never answers it, so the remembered key comes off and
+   * the scope asks afresh when the socket is back - otherwise the reader's
+   * file stays control-less with nothing on screen to say why.
+   */
+  it('asks again for a read the connection dropped', async () => {
+    await draw([], [], true, TWO_HUNKS);
+    expect(
+      asked.map((held) => held.path),
+      'the read the draw asked for',
+    ).toEqual(['src/a.rs']);
+
+    pushStatus('closed');
+    pushStatus('open');
+    await settle(() => asked.length > 1);
+
+    expect(
+      asked.map((held) => held.path),
+      'the same file, asked again rather than remembered',
+    ).toEqual(['src/a.rs', 'src/a.rs']);
+  });
+
+  /** An added file's one hunk is its whole content: no lines are left out,
+   *  so there is no control to earn and no read worth asking for. */
+  it('asks nothing for a file with no gap to fill', async () => {
+    await draw([], [], true, {
+      state: 'populated',
+      files: [{ ...TWO_HUNKS.files[0], status: 'added' }],
+    });
+    await settle(() => document.querySelector('.rv-frow') !== null);
+
+    expect(asked, 'no read for a file whose hunks carry all of it').toEqual([]);
+  });
+
+  /** A read that refused earns no control: the page draws no door onto a
+   *  read the server answers with a refusal. */
+  it('draws no control for a file whose read refused', async () => {
+    await draw([], [], true, TWO_HUNKS);
+
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'failed', why: 'no file at src/a.rs in HEAD' },
+    });
+    await settle(() => asked.length > 0);
+
+    expect(document.querySelector('.rv-gapbtn'), 'no door onto a refused read').toBeNull();
+  });
+
+  /**
+   * **A line the hunks do not carry takes no door.** An expanded gap draws
+   * lines the record does not hold, and a thread's anchor is resolved
+   * against what the server ships: a comment written on one would park as
+   * outdated the moment it was filed, so the page does not offer.
+   */
+  it('draws no door, and opens no box, on a line the hunks do not carry', async () => {
+    await draw();
+
+    const rows = [...document.querySelectorAll('tr.diff-line')];
+    const uncarried = rows.find((row) => row.querySelector('span[data-line-new-num="9"]') !== null);
+    expect(uncarried, 'the stood-in viewer drew the uncarried line').toBeDefined();
+    expect(uncarried?.querySelector('button.rv-add'), 'no door on it').toBeNull();
+
+    uncarried?.querySelector<HTMLElement>('td.diff-line-content')?.click();
+    flushSync();
+    expect(
+      document.querySelector('.rv-thread.comment'),
+      'and a click on it opens no box',
+    ).toBeNull();
+  });
+});
+
+describe('a scope and its threads', () => {
+  /** A comment written inside a commit, whose line the branch still carries -
+   *  the server resolved it there, by content. */
+  const SCOPED = {
+    ...THREAD,
+    id: 't-scoped',
+    commit: 'abc123',
+    comments: [
+      { author: { kind: 'user' }, text: 'written inside a commit', at: 'x', review_id: null },
+    ],
+    resolution: { state: 'placed', line: 4, moved_from: null },
+  };
+  /** And one the branch no longer shows where it was. */
+  const SCOPED_GONE = {
+    ...THREAD,
+    id: 't-scoped-gone',
+    commit: 'abc123',
+    comments: [
+      { author: { kind: 'user' }, text: 'the branch lost this one', at: 'x', review_id: null },
+    ],
+    resolution: { state: 'outdated', reason: 'gone' },
+  };
+
+  /**
+   * **A thread written inside a commit draws in all changes too**, where the
+   * branch's diff still carries its line: the resolver placed it by content,
+   * and the page draws it at that landing rather than hiding it in the
+   * commit's own scope.
+   */
+  it('draws a comment written inside a commit on the all-changes canvas', async () => {
+    await draw([SCOPED]);
+    await settle(() => document.querySelector('tr.rv-insert') !== null);
+
+    expect(
+      document.querySelector('tr.rv-insert')?.textContent,
+      'the commit-scoped thread, on the branch canvas',
+    ).toContain('written inside a commit');
+  });
+
+  /**
+   * **A commit thread the branch no longer carries parks rather than being
+   * guessed onto its commit-numbered line** - that number addresses
+   * unrelated code in this numbering, and its own commit's view still draws
+   * it where it was written.
+   */
+  it('parks a commit thread the branch no longer carries', async () => {
+    await draw([SCOPED_GONE]);
+    await openConversation();
+
+    const parked = document.querySelector('.thread.parked');
+    expect(parked, 'the thread the branch cannot place parked').not.toBeNull();
+    expect(parked?.textContent, 'with its own words').toContain('the branch lost this one');
   });
 });
 
@@ -862,6 +1880,81 @@ describe("the record's line", () => {
 });
 
 describe("the key's box", () => {
+  /**
+   * **The key speaks in every box on this page** (Ved, 2026-10-16): the
+   * dictation key starts a take in the box the reader is in - the comment
+   * box on the diff and the reply box under a thread, as well as the round's
+   * summary - over the same registration the composer's own box uses.
+   */
+  it('starts a take in the comment box the reader is in', async () => {
+    await draw();
+    await openComment();
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+    expect(wire(), 'the key began no take at all').toContain('dictate_stream');
+
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+    // The hold has to clear TAP_MS, or the release is a tap and means
+    // nothing (the composer's own rule).
+    await new Promise((resolve) => setTimeout(resolve, TAP_MS + 100));
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.rv-thread.comment .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
+      'the key take went somewhere other than the box the reader was in',
+    ).toBe('this read is the whole input');
+  });
+
+  it('starts a take in the reply box the reader is in', async () => {
+    await draw([THREAD]);
+    await openComment();
+    await openReply();
+    // The reader's caret is what names the box: clicking into the reply is
+    // what says they are dictating there rather than in the comment box
+    // still open beside it.
+    document.querySelector<HTMLTextAreaElement>('.rv-reply .rv-txarea')?.focus();
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+    expect(wire(), 'the key began no take at all').toContain('dictate_stream');
+
+    push({ wire: record(TAKE, [THREAD]), refused: null });
+    flushSync();
+    push({ wire: record(LANDED, [THREAD]), refused: null });
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, TAP_MS + 100));
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.rv-reply .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-reply .rv-txarea')?.value,
+      'the key take went somewhere other than the reply box the reader was in',
+    ).toBe('this read is the whole input');
+  });
+
   /**
    * **A key-begun take goes to a box that is DRAWN.** A comment spot outlives
    * the files tab; the take it would have claimed is the summary's, whose box

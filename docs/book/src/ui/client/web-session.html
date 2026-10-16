@@ -1060,7 +1060,7 @@
   .mai .p { color: var(--text); }
   .mai .p em { font-style: normal; color: var(--accent); }
   .mai .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
-  .mai.sel { background: rgba(244,118,0,.09); }
+  .mai.sel { background: var(--sel); }
 
   /* The prompt's own lane: the slot the box would use, so your eye is already here.
      A neutral panel, as the client draws it: the accent is left to the marked
@@ -2707,11 +2707,13 @@ branch main, nothing to commit</div>
           <!-- The review row, seventh: this seat's branch under review - the
                answers waiting to be read on the toggle, the thread count
                otherwise - and the hover panel lists `open review` as its
-               door onto the page, then each thread by its file and line with
-               its state. It draws wherever the tree row draws, with no
-               thread lines when nothing is filed; a threads read that did
-               not land draws as itself. Drawn CLOSED here, like its
-               siblings. -->
+               door onto the page, then the filed ROUNDS oldest first with
+               the latest at the bottom, each with its summary and tally,
+               and each thread by its file and line with its state - a click
+               expands a thread to its commented code and its whole thread.
+               It draws wherever the tree row draws, with no sets when
+               nothing is filed; a sets read that did not land draws as
+               itself. Drawn CLOSED here, like its siblings. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-review"/></svg>

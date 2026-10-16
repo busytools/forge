@@ -853,6 +853,10 @@ fn member_line(message: &SlackMessage) -> String {
     {
         let _ = write!(out, " in thread {thread}");
     }
+    // An edited message keeps its ts, so a correction must be marked or it reads as a duplicate.
+    if message.edited.is_some() {
+        out.push_str(" edited");
+    }
     out.push(']');
     for file in &message.files {
         let _ = write!(out, " [file {} {}]", file.id, file.name);
@@ -2933,6 +2937,7 @@ provider = "anthropic"
             text: text.to_owned(),
             parent_user_id: None,
             latest_reply: None,
+            edited: None,
             files: Vec::new(),
         }
     }
@@ -4173,6 +4178,21 @@ provider = "anthropic"
             prose,
             "[Slack - workspace 'acme', U9] id D1 ts 100.000001\nU9: hello there [ts 100.000001]",
             "the exact prose forge_server::envelope::detect_inbound keys on",
+        );
+    }
+
+    /// A redelivered correction keeps the message's ts and would read as
+    /// a duplicate of one already delivered; the marker is what says the
+    /// text changed.
+    #[test]
+    fn a_bundle_marks_an_edited_member() {
+        let mut message = slack_msg("deploy is RED");
+        message.edited = Some("150.0".to_owned());
+
+        let prose = slack_bundle_to_prose(&[message]);
+        assert!(
+            prose.contains("[ts 100.000001 edited]"),
+            "the correction is marked in the member's own bracket: {prose}",
         );
     }
 

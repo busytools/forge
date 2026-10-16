@@ -53,6 +53,12 @@ async fn a_server() -> (String, Fleet) {
         updated_at: std::time::SystemTime::UNIX_EPOCH,
     });
 
+    let url = serve_over(&fleet).await;
+    (url, fleet)
+}
+
+/// A server over `fleet`'s own surface, and the URL to reach it.
+async fn serve_over(fleet: &Fleet) -> String {
     let state = Arc::new(TransportState {
         surface: fleet.surface(),
         work: Arc::new(WorkCache::new()),
@@ -66,7 +72,7 @@ async fn a_server() -> (String, Fleet) {
     tokio::spawn(async move {
         let _ = serve(state, listener).await;
     });
-    (format!("ws://{addr}/socket"), fleet)
+    format!("ws://{addr}/socket")
 }
 
 /// The client's transcript: every message the server said, in order.
@@ -213,6 +219,78 @@ async fn the_homes_five_reads_arrive_with_real_values() {
         home["data"]["dictate"]["enabled"].is_boolean(),
         "and dictate says whether it is on, rather than leaving it to be inferred: {}",
         home["data"]["dictate"],
+    );
+}
+
+/// A small repository at `path`, with one committed file.
+fn a_repo(path: &std::path::Path) {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    std::fs::create_dir_all(path).expect("the repository directory");
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "fixture@example.test"]);
+    git(&["config", "user.name", "Fixture"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(path.join("lines.txt"), "alpha\nbeta\ngamma\n").expect("write");
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "base"]);
+}
+
+/// **The review page's between-hunk read**, end to end: one file's lines at
+/// the seat's own revision, and a path the revision does not carry answering
+/// as a refusal rather than as an empty read.
+///
+/// The page draws a diff's bounded hunks, so the lines between them are what
+/// only this read can supply - and the two answers are drawn apart, which is
+/// why both are driven here.
+#[tokio::test]
+async fn the_file_content_read_answers_the_seats_own_file() {
+    let dir = tempfile::tempdir().expect("a directory");
+    // The project's directory is `<config_dir>/<project>`, and it is built
+    // BEFORE the fleet so the seat resolves into a real repository.
+    a_repo(&dir.path().join("proj"));
+    let fleet = Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let url = serve_over(&fleet).await;
+
+    let transcript = walk(
+        "file_content TestOrg/proj/lead lines.txt\n\
+         file_content TestOrg/proj/lead never.txt\n",
+        &url,
+    )
+    .await;
+
+    let answers = of_kind(&transcript, "file_content");
+    assert_eq!(answers.len(), 2, "one answer per ask: {transcript:?}");
+    assert_eq!(
+        answers[0]["content"]["state"],
+        Value::String("read".to_owned()),
+        "the file the seat's tree carries reads: {transcript:?}",
+    );
+    assert_eq!(
+        answers[0]["content"]["lines"],
+        serde_json::json!(["alpha", "beta", "gamma"]),
+        "with the file's own lines, in file order: {transcript:?}",
+    );
+    assert_eq!(answers[0]["content"]["truncated"], Value::Bool(false), "and nothing withheld");
+    assert_eq!(
+        answers[1]["content"]["state"],
+        Value::String("failed".to_owned()),
+        "a path the revision does not carry answers as its own refusal: {transcript:?}",
+    );
+    assert!(
+        answers[1]["content"]["why"].as_str().is_some_and(|why| why.contains("never.txt")),
+        "naming the file it could not read: {transcript:?}",
     );
 }
 

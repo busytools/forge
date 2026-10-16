@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DiffFileRecord } from '../session/wire';
-import { filesOf, findLine, lineCounts, synthesizeFileDiff, treeRows } from './diff';
+import {
+  currentFileAt,
+  filesOf,
+  findLine,
+  GAP_STEP,
+  gapRemaining,
+  gapsOf,
+  lineCounts,
+  synthesizeFileDiff,
+  treeRows,
+} from './diff';
 
 function file(overrides: Partial<DiffFileRecord> = {}): DiffFileRecord {
   return {
@@ -103,6 +113,186 @@ describe('the canvas derivations', () => {
     ]);
   });
 
+  it('names the gaps a file leaves, as far as the read in hand can fill them', () => {
+    // Two hunks with a gap between them and lines above and below: the whole
+    // shape an expansion draws controls for. The plausible regression is
+    // offering a gap nothing can fill - the door opens on a failed read - or
+    // missing that a read cut at the ceiling cannot say where the file ends.
+    const two = file({
+      hunks: [
+        {
+          oldStart: 5,
+          oldCount: 2,
+          newStart: 5,
+          newCount: 2,
+          lines: [
+            { kind: 'context', text: 'e', oldLine: 5, newLine: 5 },
+            { kind: 'added', text: 'f', oldLine: null, newLine: 6 },
+          ],
+        },
+        {
+          oldStart: 20,
+          oldCount: 1,
+          newStart: 21,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'u', oldLine: 20, newLine: 21 }],
+        },
+      ],
+    });
+    const lines = Array.from({ length: 30 }, (_, i) => `l${i + 1}`);
+
+    expect(gapsOf(two, null), 'nothing read: no door that would open on it').toEqual([]);
+    expect(gapsOf(two, { lines, truncated: false }), 'above 5, between 6 and 21, below 21').toEqual(
+      [
+        { after: -1, start: 1, count: 4 },
+        { after: 0, start: 7, count: 14 },
+        { after: 1, start: 22, count: 9 },
+      ],
+    );
+    expect(
+      gapsOf(two, { lines, truncated: true }),
+      'a cut read cannot say where the file ends',
+    ).toEqual([
+      { after: -1, start: 1, count: 4 },
+      { after: 0, start: 7, count: 14 },
+    ]);
+    expect(
+      gapsOf(two, { lines: lines.slice(0, 10), truncated: true }),
+      'and offers only the gaps its carried lines reach',
+    ).toEqual([{ after: -1, start: 1, count: 4 }]);
+    expect(
+      gapsOf(file({ truncated: true }), { lines, truncated: false }),
+      'hunks the record cut offer nothing: what follows them may be code the diff changed',
+    ).toEqual([]);
+  });
+
+  it('draws an opened gap as context inside the hunk it follows', () => {
+    const two = file({
+      hunks: [
+        {
+          oldStart: 5,
+          oldCount: 1,
+          newStart: 5,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'e', oldLine: 5, newLine: 5 }],
+        },
+        {
+          oldStart: 20,
+          oldCount: 1,
+          newStart: 22,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'u', oldLine: 20, newLine: 22 }],
+        },
+      ],
+    });
+    const lines = Array.from({ length: 30 }, (_, i) => `l${i + 1}`);
+    // The gap between the hunks: new lines 6..21. A press of "expand all" on a
+    // gap this size opens the whole of it, and the hunks then run together -
+    // one heading, no second header.
+    const text = synthesizeFileDiff(two, {
+      content: { lines, truncated: false },
+      expanded: new Map([[0, { down: 16, up: 0 }]]),
+    });
+
+    expect(text).toBe(
+      [
+        'diff --git a/src/a.rs b/src/a.rs',
+        '--- a/src/a.rs',
+        '+++ b/src/a.rs',
+        // The heading takes the gap into its own counts: the first hunk's
+        // line, 16 context lines, then the second hunk's own line.
+        '@@ -5,18 +5,18 @@',
+        ' e',
+        ...lines.slice(5, 21).map((held) => ` ${held}`),
+        ' u',
+        '',
+      ].join('\n'),
+    );
+
+    // The gap above the first hunk shifts its heading instead: the lines sit
+    // before its first line, so both ranges start earlier by them.
+    const above = synthesizeFileDiff(two, {
+      content: { lines, truncated: false },
+      expanded: new Map([[-1, { down: 0, up: 4 }]]),
+    });
+    expect(above).toContain('@@ -1,5 +1,5 @@');
+    expect(above).toContain(' l1\n l2\n l3\n l4\n e');
+  });
+
+  it('steps a gap open a fixed run a press, from either end', () => {
+    // Twenty lines a press is GitHub's own step, and the two ends of the gap
+    // are its two controls: down opens the lines the previous hunk left off
+    // at, up opens the lines just above the next hunk. The plausible
+    // regression is one press opening the whole gap - a 300-line jump where
+    // the reader asked for the next screenful - or the two ends overlapping
+    // and double-drawing a line.
+    const two = file({
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'a', oldLine: 1, newLine: 1 }],
+        },
+        {
+          oldStart: 42,
+          oldCount: 1,
+          newStart: 42,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'z', oldLine: 42, newLine: 42 }],
+        },
+      ],
+    });
+    const lines = Array.from({ length: 50 }, (_, i) => `l${i + 1}`);
+    // The gap is new lines 2..41: forty lines, so two presses from one end.
+    const content = { lines, truncated: false };
+    const down = synthesizeFileDiff(two, {
+      content,
+      expanded: new Map([[0, { down: GAP_STEP, up: 0 }]]),
+    });
+    expect(down).toContain(
+      ` a\n${lines
+        .slice(1, 21)
+        .map((held) => ` ${held}`)
+        .join('\n')}`,
+    );
+    expect(down.split('\n')).not.toContain(' l22');
+
+    const both = synthesizeFileDiff(two, {
+      content,
+      expanded: new Map([[0, { down: 20, up: 5 }]]),
+    });
+    // Down's twenty and up's five are distinct lines: 2..21 then 37..41.
+    expect(both).toContain(
+      ` a\n${lines
+        .slice(1, 21)
+        .map((held) => ` ${held}`)
+        .join('\n')}`,
+    );
+    // The next hunk's heading starts five lines earlier, carrying up's five.
+    expect(both).toContain('@@ -37,6 +37,6 @@');
+    expect(both.split('\n')).not.toContain(' l22');
+
+    // A press that closes the gap joins the hunks into one block: one heading
+    // for the whole run, and the former second header gone.
+    const joined = synthesizeFileDiff(two, {
+      content,
+      expanded: new Map([[0, { down: 20, up: 20 }]]),
+    });
+    expect(joined.split('\n').filter((held) => held.startsWith('@@'))).toEqual([
+      '@@ -1,42 +1,42 @@',
+    ]);
+    expect(joined).toContain(' l41\n z');
+  });
+
+  it('names the rest of a gap, so a control knows what it would open', () => {
+    const gap = { after: 0, start: 7, count: 14 };
+    expect(gapRemaining(gap, undefined), 'nothing pressed: the whole gap').toBe(14);
+    expect(gapRemaining(gap, { down: 5, up: 4 })).toBe(5);
+    expect(gapRemaining(gap, { down: 20, up: 4 }), 'never negative').toBe(0);
+  });
+
   it('finds the line a composer click landed on, by side', () => {
     const held = file();
     const removal = findLine(held, 'old', 2);
@@ -111,5 +301,28 @@ describe('the canvas derivations', () => {
     expect(addition?.index, 'and the added one on the new side').toBe(2);
     expect(findLine(held, 'new', 2)?.hunk.newStart).toBe(1);
     expect(findLine(held, 'new', 99), 'a line the diff does not carry').toBeNull();
+  });
+
+  it('names the file the reading edge sits in, not the one merely drawn', () => {
+    // The plausible regression is picking the first drawn section, or the
+    // last: the boxes arrive in draw order but only their geometry says
+    // which file the reader is inside, and a section the list has scrolled
+    // past is not among the boxes at all.
+    const sections = [
+      { path: 'src/a.rs', top: -200, bottom: -40 },
+      { path: 'src/b.rs', top: -40, bottom: 300 },
+      { path: 'src/c.rs', top: 300, bottom: 500 },
+    ];
+    expect(currentFileAt(sections, 0), 'the reader is inside b').toBe('src/b.rs');
+    expect(currentFileAt(sections, -100), "above b's top: the reader is inside a").toBe('src/a.rs');
+    expect(currentFileAt(sections, 320), 'and inside c near its top').toBe('src/c.rs');
+    expect(
+      currentFileAt(sections, -500),
+      'above every drawn section: no file is being read',
+    ).toBeNull();
+    expect(
+      currentFileAt([{ path: 'src/c.rs', top: 300, bottom: 500 }], -500),
+      'a virtualised list holds only what it drew, and the edge above all of it names none',
+    ).toBeNull();
   });
 });

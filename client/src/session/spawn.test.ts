@@ -55,6 +55,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     },
     more: () => false,
     commitDiff: () => false,
+    fileContent: () => false,
     readDocument: () => false,
     seatRange: () => false,
     frame: () => false,

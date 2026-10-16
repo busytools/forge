@@ -153,7 +153,8 @@ impl Workspace {
     /// Whether this exact message has already been handed to its
     /// destination. The owner is part of the key: a lead and a worker in
     /// one project are two destinations, and one key would starve the
-    /// second as "already delivered".
+    /// second as "already delivered". The edit ts is part of it too: a
+    /// correction is a new delivery, while a sweep re-run is not.
     pub(crate) fn slack_delivery_seen(
         &self,
         project: &str,
@@ -165,6 +166,7 @@ impl Workspace {
             team_role.map(str::to_owned),
             message.conversation.clone(),
             message.ts.clone(),
+            message.edited.clone(),
         );
         let mut seen = self.slack_recently_delivered.lock();
         seen.retain(|_, seen_at| seen_at.elapsed() < DELIVERY_REMEMBER);
@@ -189,6 +191,7 @@ impl Workspace {
                 team_role.map(str::to_owned),
                 message.conversation.clone(),
                 message.ts.clone(),
+                message.edited.clone(),
             );
             seen.insert(key, std::time::Instant::now());
         }
@@ -1630,6 +1633,7 @@ mod tests {
             text: "ping".to_owned(),
             parent_user_id: None,
             latest_reply: None,
+            edited: None,
             files: Vec::new(),
         };
         assert!(host.auto_subscribe("acme", &message), "the mention subscribes the conversation");
@@ -2335,6 +2339,7 @@ mod tests {
             text: "hello".to_owned(),
             parent_user_id: None,
             latest_reply: None,
+            edited: None,
             files: Vec::new(),
         };
 
@@ -2343,6 +2348,45 @@ mod tests {
         assert!(
             ws.slack_delivery_seen("forge", None, &message),
             "the same ts in the same conversation to the same owner is a re-run",
+        );
+    }
+
+    /// The delivery memory makes a sweep re-run idempotent, and an edit is
+    /// not a re-run: a correction keeps the message's ts, so the edit ts
+    /// is part of the identity or the correction is swallowed as already
+    /// delivered.
+    #[test]
+    fn a_correction_is_a_new_delivery_while_a_re_run_is_not() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let message = SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "C1".to_owned(),
+            ts: "200.1".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            author: None,
+            text: "deploy is green".to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
+            edited: None,
+            files: Vec::new(),
+        };
+        ws.slack_delivery_commit("forge", None, std::slice::from_ref(&message));
+
+        let corrected = SlackMessage {
+            text: "deploy is RED".to_owned(),
+            edited: Some("250.1".to_owned()),
+            ..message.clone()
+        };
+        assert!(
+            !ws.slack_delivery_seen("forge", None, &corrected),
+            "an edit past the delivered version is a new delivery, not a duplicate",
+        );
+        ws.slack_delivery_commit("forge", None, std::slice::from_ref(&corrected));
+        assert!(
+            ws.slack_delivery_seen("forge", None, &corrected),
+            "and the same edit re-run is the duplicate the memory is for",
         );
     }
 
@@ -2362,6 +2406,7 @@ mod tests {
             text: "hello".to_owned(),
             parent_user_id: None,
             latest_reply: None,
+            edited: None,
             files: Vec::new(),
         };
 

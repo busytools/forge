@@ -4,9 +4,10 @@ python3 scripts/test_client_deps.py
 
 A fresh worktree has no `client/node_modules`, and a worktree whose lockfile
 moved under it has a stale one. Either way the client steps fail as though the
-code were broken, so each step installs what it needs first, and these pin
-when that install runs: when the directory is missing, or older than the
-lockfile, and not otherwise.
+code were broken, so each installs what it needs first: a gate step when the
+directory is missing or older than the lockfile and not otherwise, a release
+recipe unconditionally - mtime can read a tree missing a moved dependency as
+current, and a release must not bundle what the tree happens to hold.
 
 Stdlib only, like the unicode gate: python3 is already a check dependency.
 """
@@ -23,6 +24,10 @@ JUSTFILE = Path(__file__).resolve().parent.parent / "justfile"
 
 # The client steps `just check` runs, each of which needs the install.
 CLIENT_STEPS = ("client-format", "client-lint", "client-typecheck", "client-test")
+
+# The release recipes that build the client, each of which needs the install
+# too: a release must not bundle whatever tree the checkout happened to carry.
+RELEASE_STEPS = ("client-release", "client-android-release", "client-web-release")
 
 
 class ClientDepsTest(unittest.TestCase):
@@ -73,6 +78,31 @@ class ClientDepsTest(unittest.TestCase):
             env=self.env,
         )
 
+    def shown_deps(self, name: str) -> list[str]:
+        # `just --show`'s column-0 header line carries the dependency list; the
+        # pin is on the NAME, so re-pointing the recipe reds here.
+        result = subprocess.run(
+            [
+                "just",
+                "--justfile",
+                str(JUSTFILE),
+                "--working-directory",
+                str(self.root),
+                "--show",
+                name,
+            ],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        header = next(
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith(name + " ") or line.startswith(name + ":")
+        )
+        return header.split(":", 1)[1].split()
+
     def calls(self) -> list[str]:
         return self.log.read_text().splitlines() if self.log.exists() else []
 
@@ -113,6 +143,30 @@ class ClientDepsTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("--prefix client ci", self.calls())
+
+    def test_each_release_recipe_takes_the_release_install(self) -> None:
+        for name in RELEASE_STEPS:
+            with self.subTest(step=name):
+                deps = self.shown_deps(name)
+
+                self.assertIn(
+                    "client-release-deps",
+                    deps,
+                    f"{name} takes {deps}, not client-release-deps - the release "
+                    "would build from the checkout's tree",
+                )
+
+    def test_the_release_install_runs_even_on_a_current_tree(self) -> None:
+        self.install(node_modules_time=2_000, lock_time=1_000)
+
+        result = self.step("client-release-deps")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "--prefix client ci",
+            self.calls(),
+            "the release install was skipped on a tree the mtime key reads as current",
+        )
 
 
 if __name__ == "__main__":
