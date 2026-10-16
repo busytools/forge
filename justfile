@@ -287,6 +287,28 @@ client-typecheck: client-deps
 client-test: client-deps
     npm --prefix client run test
 
+# The shell crate's clippy, at the workspace's own strictness. The crate is a
+# workspace root of its own, so `just clippy`'s two invocations never reach
+# it, and its findings drifted unread.
+#
+# One invocation rather than the workspace's pair: this crate declares no
+# features, so there is no second feature set to compile.
+#
+# Lint the shell crate.
+client-tauri-clippy:
+    RUSTFLAGS="-D warnings" cargo clippy --manifest-path client/src-tauri/Cargo.toml --all-targets -- -D warnings
+
+# The shell crate's own tests: the crate is its own workspace root, so the
+# workspace's `test-all` never reaches them, and this is the step that puts
+# them in the gate. `client-tauri-check` runs them beside the build.
+#
+# The cases needing the vendored stack, a scratch forge or a real window are
+# `#[ignore]`d, so a gate run touches neither the network nor the machine.
+#
+# Run the shell crate's tests.
+client-tauri-test:
+    cargo nextest run --manifest-path client/src-tauri/Cargo.toml
+
 # Compile the desktop shell in the configuration that ships. This is the routine
 # gate for anything under client/src-tauri/, and it is quiet.
 #
@@ -306,17 +328,13 @@ client-test: client-deps
 # `0` is the common one, and forge's own sessions carry it - is rejected before
 # the build starts.
 #
-# Not a step in `check`: the webview compile is minutes and forge runs every
-# worker in its own worktree, so it would charge each Rust-only change for a
-# crate it never touched. A cost choice rather than an impossibility.
-client-tauri-check:
+# Its tests and clippy ride `check` (`client-tauri-test` and
+# `client-tauri-clippy`); this build does not. The webview compile is minutes
+# and forge runs every worker in its own worktree, so it would charge each
+# Rust-only change for a crate it never touched. A cost choice rather than an
+# impossibility.
+client-tauri-check: client-tauri-test
     npm --prefix client run tauri -- build --no-bundle --ci -- --locked
-    # The shell's own Rust tests: the shell crate is its own workspace root,
-    # so the workspace's cargo steps never reach them. `just check` reaches
-    # the crate only for rustfmt and one Android target (`client-tauri-fmt`
-    # and `client-android-warnings`), so without this line the tests - and the
-    # macOS build beside them - run in no gate of their own.
-    cargo nextest run --manifest-path client/src-tauri/Cargo.toml
 
 # Build the shell's bundles: `forge.app` and the dmg, under
 # client/src-tauri/target/release/bundle. `client-tauri-check` covers no
@@ -946,7 +964,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-android-warnings clippy test-all doctest doc)
+    steps=(fmt-check unicode-punct-check script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-tauri-clippy client-tauri-test client-android-warnings clippy test-all doctest doc)
     verdict=""
 
     on_exit() {

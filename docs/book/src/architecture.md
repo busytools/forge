@@ -312,23 +312,25 @@ forge and draws it. It is gated like the Rust side rather than beside
 it: `just check` runs the shell crate's rustfmt check
 (`client-tauri-fmt`), Prettier, ESLint on typescript-eslint's
 type-checked configs, `svelte-check`, `tsc --noEmit`, then vitest, then
-the shell's android warnings check (`client-android-warnings`: the
+the shell crate's clippy and tests (`client-tauri-clippy` and
+`client-tauri-test`), then its android warnings check
+(`client-android-warnings`: the
 crate compiled for `aarch64-linux-android` with warnings denied, which is
 what catches desktop-only code going dead on Android),
 so one command decides both stacks and its verdict line names the first
 failing step whichever side it is on.
 
 The shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s workspace-side steps never reach it and no CI job compiles
-it beyond the rustfmt check the `cargo fmt --check` job runs against its
-manifest; `client-tauri-fmt` and `client-android-warnings` are the two
-steps of `just check` that do, and
-neither the macOS build nor the shell's tests are in the gate at all. The
-Unicode punctuation gate, which CI runs too, and the client's Prettier
-step do.
-`just client-tauri-check` builds it in the shipping configuration and
-`just client-tauri-bundle` adds the bundles, and the first is the one to
-run before handing over a change there.
+`just check`'s workspace-side steps never reach it; CI compiles it only in
+the `client-tauri` job (its clippy and tests) and in the rustfmt check the
+`cargo fmt --check` job runs against its manifest.
+`client-tauri-fmt`, `client-tauri-clippy`, `client-tauri-test`
+and `client-android-warnings` are the steps of `just check` that do, and
+the macOS build is still outside the gate. The Unicode punctuation gate,
+which CI runs too, and the client's Prettier step do.
+`just client-tauri-check` builds the shell in the shipping configuration
+and `just client-tauri-bundle` adds the bundles, and the first is the one
+to run before handing over a change there.
 
 The rules a gate cannot see are the same shape as the ones above. The
 denied constructs are `any`, non-null assertion, `@ts-ignore`,
