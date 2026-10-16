@@ -680,7 +680,6 @@ impl BrowserHost {
                 owner: entry.owner.to_string(),
                 running: entry.profile.is_alive(),
                 opened: chromium::ever_opened(&entry.dir),
-                // Filled in below, once the registry lock is gone.
                 windowed: false,
                 closed: false,
             });
