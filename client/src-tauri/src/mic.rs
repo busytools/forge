@@ -23,7 +23,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::bridge::Bridge;
 
@@ -38,6 +38,36 @@ pub const FRAME_SAMPLES: usize = 320;
 /// window is the browser leg's measured 42-53 ms with room for this one,
 /// which was not measured separately.
 pub const DRAIN_MS: u64 = 150;
+
+/// How long a take's open may run before the shell says the microphone did
+/// not come up.
+///
+/// Long enough for a permission dialog to be answered, short enough that a
+/// box waiting on nothing becomes a line.
+pub const OPEN_LIMIT: Duration = Duration::from_secs(20);
+
+/// What the take's line says when the open has not answered within the
+/// caller's bound, whether the bound answered it or the device did, late.
+const NOT_COME_UP: &str = "the microphone did not come up";
+
+/// The caller's give-up signal on a bounded open: the flag it sets when its
+/// bound is spent, and the deadline that bound was measured from.
+///
+/// Both are read because the flag lands a scheduling lag AFTER the deadline:
+/// an open that answers inside that lag is one the caller has already given
+/// up on, and the flag alone would leave its take recording.
+struct GivenUp {
+    flag: Arc<AtomicBool>,
+    deadline: Instant,
+}
+
+impl GivenUp {
+    /// Whether the caller has given up: its flag is set, or the deadline it
+    /// measured its bound from has passed.
+    fn spent(&self) -> bool {
+        self.flag.load(Ordering::Acquire) || Instant::now() >= self.deadline
+    }
+}
 
 /// The open capture's stream side, shared with the callback that fills it.
 ///
@@ -298,6 +328,22 @@ impl Mic {
         page: &str,
         take: &str,
     ) -> Result<forge_capture::Device, String> {
+        self.start_inner(bridge, device, page, take, None)
+    }
+
+    /// [`Mic::start`], with `abandoned` read as the LAST act - once the take is
+    /// already the caller's - so a give-up landing anywhere before that read,
+    /// the release's own window included, ends the take in place: the capture
+    /// is kept as the hold - the device is up, and the next press is warm on
+    /// it - and no take nobody owns is left recording.
+    fn start_inner(
+        &self,
+        bridge: &Arc<Bridge>,
+        device: Option<String>,
+        page: &str,
+        take: &str,
+        abandoned: Option<&GivenUp>,
+    ) -> Result<forge_capture::Device, String> {
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(held) = warm.as_mut() {
             held.claim(page);
@@ -306,6 +352,15 @@ impl Mic {
             }
             if held.requested == device {
                 held.begin(page, take);
+                // **The read comes after the begin, as the last act**: a warm
+                // capture answers at once, so a give-up only lands inside this
+                // call when the lock waited - a wedged open holding it - and
+                // the take begun above is one the caller gave up on. Ended in
+                // place, the capture stays the hold.
+                if abandoned.is_some_and(GivenUp::spent) {
+                    held.end();
+                    return Err(NOT_COME_UP.to_owned());
+                }
                 return Ok(held.held.device().clone());
             }
         }
@@ -314,17 +369,62 @@ impl Mic {
         if let Some(stale) = warm.replace(next) {
             stale.held.release();
         }
+        // **And here the read comes last, after the release**: letting the
+        // replaced capture go takes the capture thread's own window (up to
+        // its 20 ms loop), and a give-up landing inside it must still leave no
+        // take recording. Ended in place, the answered capture stays the hold.
+        if abandoned.is_some_and(GivenUp::spent) {
+            if let Some(held) = warm.as_mut() {
+                held.end();
+            }
+            return Err(NOT_COME_UP.to_owned());
+        }
         Ok(resolved)
+    }
+
+    /// [`Mic::start`] under a bound: an open that has not answered within
+    /// `limit` is reported as the microphone not coming up rather than waited
+    /// on, which is the line the page draws for a device layer that is wedged
+    /// - a permission whose prompt never surfaced, a device another process
+    /// holds. The open is left to answer on its own thread, and a late
+    /// success ends the take nobody owns rather than leaving it recording.
+    pub async fn start_within(
+        self: &Arc<Self>,
+        bridge: &Arc<Bridge>,
+        device: Option<String>,
+        page: &str,
+        take: &str,
+        limit: Duration,
+    ) -> Result<forge_capture::Device, String> {
+        // The deadline is fixed here, before the open is spawned, because the
+        // opener compares it: the flag below only lands when this task wakes,
+        // and a device answering inside that lag must read as given up too.
+        let signal =
+            GivenUp { flag: Arc::new(AtomicBool::new(false)), deadline: Instant::now() + limit };
+        let flag = Arc::clone(&signal.flag);
+        let mic = Arc::clone(self);
+        let bridge = Arc::clone(bridge);
+        let (page, take) = (page.to_owned(), take.to_owned());
+        let started = tokio::task::spawn_blocking(move || {
+            mic.start_inner(&bridge, device, &page, &take, Some(&signal))
+        });
+        match tokio::time::timeout(limit, started).await {
+            Ok(joined) => joined.map_err(|error| error.to_string())?,
+            Err(_) => {
+                flag.store(true, Ordering::Release);
+                Err(NOT_COME_UP.to_owned())
+            }
+        }
     }
 
     /// End the take at once, throwing its audio away. The device stays
     /// open, so the next press records from the press.
     ///
     /// **One naming a take other than the recording does nothing** (#2252,
-    /// #2279): a stop in flight lands after the take it names has ended
-    /// - the page's own re-press may already have begun the next, and a
-    /// reload's discarded page leaves its take for another page to end - and
-    /// the take that followed is not this one's to throw away.
+    /// #2279): a stop in flight lands after the take it names has ended -
+    /// the page's own re-press may already have begun the next, and a
+    /// reload's discarded page leaves its take for another page to end -
+    /// and the take that followed is not this one's to throw away.
     pub fn stop(&self, take: &str) {
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(held) = warm.as_mut() else {
@@ -344,8 +444,8 @@ impl Mic {
     ///
     /// **One naming a take other than the recording drops its tail without
     /// ending anything** (#2252, #2279): the window it sleeps is wide enough
-    /// for that take to end - by a drop, or the server's own `dictate_ended`
-    /// - and for the page to begin its next take, and the take that followed
+    /// for that take to end - by a drop, or the server's own `dictate_ended` -
+    /// and for the page to begin its next take, and the take that followed
     /// is not this one's to throw away.
     pub async fn drain(&self, take: &str) {
         tokio::time::sleep(Duration::from_millis(DRAIN_MS)).await;
@@ -995,6 +1095,429 @@ mod tests {
 
             carry.push(&[0.5; FRAME_SAMPLES]);
             assert!(received.try_recv().is_err(), "and nothing crosses after the end");
+        }
+    }
+
+    /// The bounded open: a device layer that answers neither way is reported
+    /// rather than waited on for ever.
+    mod the_bounded_open {
+        use std::sync::mpsc::{Receiver, Sender};
+
+        use tokio::sync::oneshot;
+
+        use super::*;
+
+        /// The bound the tests drive an open with. The shipped one is
+        /// [`OPEN_LIMIT`], and what matters here is that the bound is the
+        /// caller's, so no test waits the real twenty seconds.
+        const BOUND: Duration = Duration::from_millis(50);
+
+        /// The bound on everything a test does not mean to measure: the open
+        /// reaching the device, the parked open being let go, and the budget
+        /// an open that ANSWERS is given. A failure bound rather than a wait -
+        /// nothing here is timing the open itself.
+        const SETTLE: Duration = Duration::from_secs(10);
+
+        /// A stand-in capture, as the hold's own test stands one in.
+        struct Fake {
+            device: forge_capture::Device,
+            carry: Arc<Carry>,
+            log: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl Held for Fake {
+            fn device(&self) -> &forge_capture::Device {
+                &self.device
+            }
+
+            fn carry(&self) -> &Arc<Carry> {
+                &self.carry
+            }
+
+            fn release(self: Box<Self>) {
+                self.log.lock().unwrap().push(format!("release {}", self.device.id));
+            }
+        }
+
+        /// A stand-in device whose FIRST open answers only when the test lets
+        /// it go: the wedged layer, answering neither way until then. A later
+        /// open is answered at once, so a test that trips the busy guard hears
+        /// about it rather than parking again.
+        struct Wedged {
+            mic: Arc<Mic>,
+            /// Fires as the opener is entered, which is what tells a test the
+            /// open is in flight rather than a thread that never ran.
+            entered: oneshot::Receiver<()>,
+            /// Lets the parked open answer, once the test is done with it.
+            release: Sender<()>,
+            bridge: Arc<Bridge>,
+            log: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl Wedged {
+            fn new() -> Self {
+                let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+                let opened = Arc::clone(&log);
+                let (entered, answer) = oneshot::channel::<()>();
+                let (release, holding) = std::sync::mpsc::channel::<()>();
+                let parked: Arc<Mutex<Option<Receiver<()>>>> = Arc::new(Mutex::new(Some(holding)));
+                // The signal crosses once, and a `Fn` closure may be called
+                // again, so the sender is held where it can be taken.
+                let arrived: Arc<Mutex<Option<oneshot::Sender<()>>>> =
+                    Arc::new(Mutex::new(Some(entered)));
+                let mic = Arc::new(Mic {
+                    warm: Mutex::new(None),
+                    opener: Box::new(move |device, carry| {
+                        let name = device.unwrap_or("default").to_owned();
+                        let sent = arrived.lock().unwrap_or_else(PoisonError::into_inner).take();
+                        if let Some(sent) = sent {
+                            let _ = sent.send(());
+                        }
+                        let waiting = parked.lock().unwrap_or_else(PoisonError::into_inner).take();
+                        if let Some(waiting) = waiting {
+                            let _ = waiting.recv_timeout(SETTLE);
+                        }
+                        opened.lock().unwrap().push(format!("open {name}"));
+                        Ok(Box::new(Fake {
+                            device: forge_capture::Device {
+                                id: name,
+                                name: "stand-in".to_owned(),
+                                is_default: device.is_none(),
+                            },
+                            carry,
+                            log: Arc::clone(&opened),
+                        }))
+                    }),
+                });
+                let (events, _frames) = tokio::sync::mpsc::unbounded_channel();
+                Self { mic, entered: answer, release, bridge: Bridge::new(None, events), log }
+            }
+        }
+
+        fn runtime() -> tokio::runtime::Runtime {
+            tokio::runtime::Builder::new_current_thread().enable_time().build().expect("a runtime")
+        }
+
+        /// A stand-in capture whose release parks until the test lets it go:
+        /// the window between a take installing its own capture and the one it
+        /// replaced being let go.
+        struct Letting {
+            device: forge_capture::Device,
+            carry: Arc<Carry>,
+            /// Fires as the release is entered.
+            entered: Arc<Mutex<Option<Sender<()>>>>,
+            /// Lets the parked release finish.
+            parked: Arc<Mutex<Option<Receiver<()>>>>,
+        }
+
+        impl Held for Letting {
+            fn device(&self) -> &forge_capture::Device {
+                &self.device
+            }
+
+            fn carry(&self) -> &Arc<Carry> {
+                &self.carry
+            }
+
+            fn release(self: Box<Self>) {
+                let sent = self.entered.lock().unwrap_or_else(PoisonError::into_inner).take();
+                if let Some(sent) = sent {
+                    let _ = sent.send(());
+                }
+                let waiting = self.parked.lock().unwrap_or_else(PoisonError::into_inner).take();
+                if let Some(waiting) = waiting {
+                    let _ = waiting.recv_timeout(SETTLE);
+                }
+            }
+        }
+
+        /// The swap rig: every capture's release parks, so a test can hold that
+        /// window open and hand the give-up in inside it.
+        struct Swap {
+            mic: Arc<Mic>,
+            bridge: Arc<Bridge>,
+            /// Fires as a release is entered.
+            letting: Receiver<()>,
+            /// Lets that release finish.
+            let_go: Sender<()>,
+        }
+
+        impl Swap {
+            fn new() -> Self {
+                let (entered, letting) = std::sync::mpsc::channel::<()>();
+                let (let_go, parked) = std::sync::mpsc::channel::<()>();
+                let entered = Arc::new(Mutex::new(Some(entered)));
+                let parked = Arc::new(Mutex::new(Some(parked)));
+                let mic = Arc::new(Mic {
+                    warm: Mutex::new(None),
+                    opener: Box::new(move |device, carry| {
+                        let name = device.unwrap_or("default").to_owned();
+                        Ok(Box::new(Letting {
+                            device: forge_capture::Device {
+                                id: name,
+                                name: "stand-in".to_owned(),
+                                is_default: device.is_none(),
+                            },
+                            carry,
+                            entered: Arc::clone(&entered),
+                            parked: Arc::clone(&parked),
+                        }))
+                    }),
+                });
+                let (events, _frames) = tokio::sync::mpsc::unbounded_channel();
+                Self { mic, bridge: Bridge::new(None, events), letting, let_go }
+            }
+        }
+
+        /// A stand-in device that answers at once, the way the machine's own
+        /// inputs do. `refusal` stands one in that will not open at all.
+        struct Open {
+            mic: Arc<Mic>,
+            bridge: Arc<Bridge>,
+        }
+
+        impl Open {
+            fn new() -> Self {
+                Self::with_opener(None)
+            }
+
+            fn refusing(why: &str) -> Self {
+                Self::with_opener(Some(why.to_owned()))
+            }
+
+            fn with_opener(refusal: Option<String>) -> Self {
+                let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+                let opened = Arc::clone(&log);
+                let mic = Arc::new(Mic {
+                    warm: Mutex::new(None),
+                    opener: Box::new(move |device, carry| {
+                        if let Some(why) = &refusal {
+                            return Err(why.clone());
+                        }
+                        let name = device.unwrap_or("default").to_owned();
+                        opened.lock().unwrap().push(format!("open {name}"));
+                        Ok(Box::new(Fake {
+                            device: forge_capture::Device {
+                                id: name,
+                                name: "stand-in".to_owned(),
+                                is_default: device.is_none(),
+                            },
+                            carry,
+                            log: Arc::clone(&opened),
+                        }))
+                    }),
+                });
+                let (events, _frames) = tokio::sync::mpsc::unbounded_channel();
+                Self { mic, bridge: Bridge::new(None, events) }
+            }
+        }
+
+        #[test]
+        fn an_open_that_answers_neither_way_is_reported_and_leaves_no_take() {
+            let rig = Wedged::new();
+            let runtime = runtime();
+            // Both must complete: the open reaches the device, and the bound
+            // answers it. Joined rather than ordered, so neither thread's
+            // scheduling decides what this test reads.
+            let (refused, entered) = runtime.block_on(async {
+                tokio::join!(
+                    rig.mic.start_within(&rig.bridge, None, "page", "take-1", BOUND),
+                    tokio::time::timeout(SETTLE, rig.entered),
+                )
+            });
+            // The parked open is let go FIRST, whatever the assertions below
+            // make of what it did: a thread left parked would hang the test
+            // rather than fail it, and a failing mutation has to fail.
+            rig.release.send(()).expect("the open is parked");
+
+            assert!(
+                matches!(entered, Ok(Ok(()))),
+                "the opener was entered: the bound answered an open in flight, not a thread \
+                 that never ran, got {entered:?}"
+            );
+            assert_eq!(
+                refused.err().as_deref(),
+                Some("the microphone did not come up"),
+                "an open that answers neither way leaves the take's line saying the microphone \
+                 did not come up, rather than the page waiting on it for ever",
+            );
+
+            // The open answered late, and successfully. The take it began is
+            // nobody's - the page gave up on it - so it must not be left
+            // holding the microphone.
+            let next = rig.mic.start(&rig.bridge, None, "page", "take-2");
+            assert!(
+                next.is_ok(),
+                "the press after a given-up open records rather than being refused: {next:?}"
+            );
+            assert_eq!(
+                rig.log.lock().unwrap().clone(),
+                vec!["open default"],
+                "the late open is kept as the hold, with the take nobody owns ended"
+            );
+        }
+
+        #[test]
+        fn an_open_that_answers_is_the_take_it_opened() {
+            let rig = Open::new();
+            let started = runtime().block_on(rig.mic.start_within(
+                &rig.bridge,
+                Some("one".to_owned()),
+                "page",
+                "take-1",
+                SETTLE,
+            ));
+            assert_eq!(
+                started.expect("an open that answers is the take").id,
+                "one",
+                "the bounded open hands a take that came up its own device back"
+            );
+        }
+
+        #[test]
+        fn a_device_that_will_not_open_keeps_its_own_words() {
+            let rig = Open::refusing("no input device named \"gone\"");
+            let refused = runtime().block_on(rig.mic.start_within(
+                &rig.bridge,
+                Some("gone".to_owned()),
+                "page",
+                "take-1",
+                SETTLE,
+            ));
+            assert_eq!(
+                refused.err().as_deref(),
+                Some("no input device named \"gone\""),
+                "only an open that answers neither way draws the bound's sentence: a device \
+                 that will not open says why itself"
+            );
+        }
+
+        /// A signal whose bound is spent but whose flag is unset: the
+        /// scheduling lag between the deadline and the task waking to set it.
+        fn spent_signal() -> GivenUp {
+            GivenUp {
+                flag: Arc::new(AtomicBool::new(false)),
+                deadline: Instant::now() - Duration::from_secs(1),
+            }
+        }
+
+        #[test]
+        fn an_open_that_answers_past_the_deadline_is_given_up_on_without_the_flag() {
+            let rig = Open::new();
+            let opened =
+                rig.mic.start_inner(&rig.bridge, None, "page", "take-1", Some(&spent_signal()));
+            assert!(
+                opened.is_err(),
+                "an open answering past the deadline is the caller's lost attempt: {opened:?}"
+            );
+            let next = rig.mic.start(&rig.bridge, None, "page", "take-2");
+            assert!(
+                next.is_ok(),
+                "the take nobody owns is ended rather than left recording: {next:?}"
+            );
+        }
+
+        /// The flag is the caller's own word, and a paused clock is the one
+        /// shape where only it can be read: tokio's clock is what paces the
+        /// bound and it moves only where this test moves it, so the bound is
+        /// spent - the flag set - while `Instant::now()` has barely moved.
+        #[test]
+        fn the_give_up_the_bound_sets_is_read_when_the_clock_is_paused() {
+            let rig = Wedged::new();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .start_paused(true)
+                .build()
+                .expect("a runtime");
+            let refused = runtime.block_on(async {
+                tokio::join!(
+                    rig.mic.start_within(&rig.bridge, None, "page", "take-1", SETTLE),
+                    async {
+                        rig.entered.await.expect("the opener is entered");
+                        // Advanced by hand: the open holds a blocking task, and
+                        // the clock never auto-advances past one.
+                        tokio::time::advance(SETTLE).await;
+                    },
+                )
+                .0
+            });
+            rig.release.send(()).expect("the open is parked");
+
+            assert_eq!(
+                refused.err().as_deref(),
+                Some("the microphone did not come up"),
+                "a bound the clock spends is a give-up like any other"
+            );
+            let next = rig.mic.start(&rig.bridge, None, "page", "take-2");
+            assert!(
+                next.is_ok(),
+                "the flag the bound set is what ends the take nobody owns: {next:?}"
+            );
+        }
+
+        #[test]
+        fn a_spent_deadline_does_not_begin_a_warm_take() {
+            let rig = Open::new();
+            rig.mic.hold(&rig.bridge, None, "page").expect("the hold opens the device");
+            let opened =
+                rig.mic.start_inner(&rig.bridge, None, "page", "take-1", Some(&spent_signal()));
+            assert!(
+                opened.is_err(),
+                "a warm capture answers at once, so a spent deadline is a take that waited out \
+                 a wedged open: {opened:?}"
+            );
+            let next = rig.mic.start(&rig.bridge, None, "page", "take-2");
+            assert!(
+                next.is_ok(),
+                "the take nobody owns is ended rather than left recording: {next:?}"
+            );
+        }
+
+        /// The tail the read has to come after: a press that changes the pick
+        /// installs its own capture and lets the held one go, and that release
+        /// takes the capture thread's own window. The give-up lands inside it,
+        /// and the take nobody owns must still end.
+        #[test]
+        fn a_give_up_landing_while_the_old_capture_is_let_go_still_ends_the_take() {
+            let rig = Swap::new();
+            rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page").expect("the hold opens");
+            let signal = GivenUp {
+                flag: Arc::new(AtomicBool::new(false)),
+                deadline: Instant::now() + SETTLE,
+            };
+            let flag = Arc::clone(&signal.flag);
+
+            // The press runs on its own thread: it blocks inside the release,
+            // which is the window this test holds open.
+            let pressing = {
+                let mic = Arc::clone(&rig.mic);
+                let bridge = Arc::clone(&rig.bridge);
+                std::thread::spawn(move || {
+                    mic.start_inner(
+                        &bridge,
+                        Some("two".to_owned()),
+                        "page",
+                        "take-1",
+                        Some(&signal),
+                    )
+                })
+            };
+            rig.letting.recv_timeout(SETTLE).expect("the release is entered");
+            // The caller gives up while the release is inside its window.
+            flag.store(true, Ordering::Release);
+            rig.let_go.send(()).expect("the release is parked");
+
+            let outcome = pressing.join().expect("the press finishes");
+            assert_eq!(
+                outcome.err().as_deref(),
+                Some("the microphone did not come up"),
+                "a give-up landing in the release's window is still the caller's word"
+            );
+            let next = rig.mic.start(&rig.bridge, Some("two".to_owned()), "page", "take-2");
+            assert!(
+                next.is_ok(),
+                "the take nobody owns is ended rather than left recording: {next:?}"
+            );
         }
     }
 }

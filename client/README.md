@@ -31,11 +31,13 @@ bundle built.
 ## The shell
 
 `src-tauri/` is a Tauri 2 app that wraps the built bundle. The crate is
-its own cargo workspace root, so the repo's cargo gates and CI's cargo jobs
-do not reach it apart from the rustfmt check CI's `cargo fmt --check` job
-runs against its manifest. `just check` reaches it through
+its own cargo workspace root, so the repo's cargo gates and CI's other
+cargo jobs do not reach it: CI's `client-tauri` job runs its clippy and
+tests, and the `cargo fmt --check` job runs the rustfmt check against its
+manifest. `just check` reaches it through
 `client-tauri-fmt` (the shell's own `cargo fmt --check`, which `just fmt`
-runs too) and `client-android-warnings` (the crate compiled for
+runs too), `client-tauri-clippy` and `client-tauri-test` (the crate's own
+clippy and nextest run) and `client-android-warnings` (the crate compiled for
 `aarch64-linux-android` with warnings denied), and the Unicode punctuation
 gate and the client's Prettier step do too.
 
@@ -49,14 +51,15 @@ because it never resolves `frontendDist` at all. The CLI build does, and
 runs `npm run build` first to produce it. The dev window loads the dev
 server instead and needs none.
 
-Three recipes, and the difference is the bundle. `just client-tauri-check`
-is the routine gate before handing a change here over: it compiles the
-shipping configuration, which resolves `dist/` and validates the
-identifier, without producing a bundle, so it is quiet.
-`just client-tauri-bundle` adds `forge.app` and the dmg, and is the only
-one that produces the dmg. It is also the only one that opens a Finder
-window, because the dmg step mounts the image and lays the mounted volume
-out with AppleScript. `just client-release` builds the app bundle alone
+The recipes differ by what they cover. `just client-tauri-clippy` and
+`just client-tauri-test` are the crate's lints and its tests alone.
+`just client-tauri-check` is the routine gate before handing a change here
+over: it runs those tests, then compiles the shipping configuration, which
+resolves `dist/` and validates the identifier, without producing a bundle,
+so it is quiet. `just client-tauri-bundle` adds `forge.app` and the dmg,
+and is the only one that produces the dmg. It is also the only one that
+opens a Finder window, because the dmg step mounts the image and lays the
+mounted volume out with AppleScript. `just client-release` builds the app bundle alone
 and installs it over `/Applications/forge.app`; it is the client half of
 `just release`, and `--bundles app` is what keeps the dmg step out of it.
 

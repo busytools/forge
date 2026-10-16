@@ -518,9 +518,7 @@ pub fn tab_call_refusal(tool: &str, args: &Value, listed: &str, ui_origin: &str)
     if action != "select" {
         return None;
     }
-    let Some(index) = args.get("index").and_then(Value::as_u64) else {
-        return None;
-    };
+    let index = args.get("index").and_then(Value::as_u64)?;
     if ui_origin.is_empty() {
         return Some(format!(
             "the client UI's origin is not known, so tab {index} cannot be checked against it"
