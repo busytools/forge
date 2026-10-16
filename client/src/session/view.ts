@@ -465,7 +465,7 @@ export interface ComposerProps {
 
 /**
  * The state mark the rail and the header draw: the core's lifecycle plus the
- * two promotions the home makes over it.
+ * promotions the home makes over it.
  *
  * Its own mapping rather than the home's, because the two are not the same
  * shape: a home row's mark is a class on the row and a dot shape inside it,

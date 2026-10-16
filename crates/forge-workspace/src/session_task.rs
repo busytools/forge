@@ -504,7 +504,8 @@ impl SessionTask {
                 // whether this one resumed it or replaced it under a new id.
                 // Announced once, by the first connect that answers the
                 // death, whichever id it lands under; the record itself
-                // stays until a reader is shown the seat.
+                // stays until a reader is shown the seat AND this
+                // announcement has gone out.
                 if let Some(workspace) = self.workspace.upgrade()
                     && let Some(dead) = workspace.unannounced_death(&key)
                 {
@@ -557,9 +558,12 @@ impl SessionTask {
                     workspace.record_spawn_failure(&key, &message);
                     // An occupant that had been up and ended here died; the
                     // connect that next lands on the slot is told so and says
-                    // which session it answers for, and the failure stays on
-                    // the row until a reader has been shown the seat. A spawn
-                    // that never connected records none: nothing was running.
+                    // which session it answers for. What rides on the row
+                    // until a reader is shown the seat is the DEATH, not this
+                    // failure - the recovering connect clears the failure as
+                    // it always did, and `record_death` keeps the reason for
+                    // the row. A spawn that never connected records none:
+                    // nothing was running.
                     if self.connected_once
                         && let Some(occupant) = self.domain.lock().session_id.clone()
                     {
@@ -572,7 +576,7 @@ impl SessionTask {
                             slot = %key.display(),
                             session_id = %occupant,
                             error = %message,
-                            "the session's subprocess ended; the seat keeps its failure until shown",
+                            "the session's subprocess ended; the seat keeps the death until a reader is shown it",
                         );
                         workspace.record_death(&key, occupant, &message);
                     }
@@ -4441,7 +4445,7 @@ mod tests {
         );
         assert!(
             !workspace.death_stands(&key),
-            "and the record is reaped: it was shown and announced",
+            "spent and announced leaves no standing death behind",
         );
     }
 

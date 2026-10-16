@@ -64,12 +64,16 @@ impl Agents {
         for project in workspace.list_projects() {
             let lead = SessionSlot::lead(&project.org, &project.name);
             // A project with no session behind it is the home's Start row
-            // rather than an agent, so it contributes no rows at all - but
-            // a seat whose session died keeps its row, because the failure
-            // record outlives the release and dropping the row with the
-            // session is what let a crash leave no trace on the fleet.
+            // rather than an agent, so it contributes no rows at all - but a
+            // row is still owed while a failure stands, and while a death no
+            // reader has been shown stands. **The death is its own gate**:
+            // the recovering connect clears the failure by design, so a seat
+            // revived under a standing death would otherwise lose its row
+            // between the revival and the next show, and the show after that
+            // would draw the old death on a session that never died.
             if workspace.domain_session_for(&lead).is_none()
                 && workspace.spawn_failure(&lead).is_none()
+                && !workspace.death_stands(&lead)
             {
                 continue;
             }
@@ -516,6 +520,45 @@ mod tests {
             row.reason.as_deref(),
             Some("the claude subprocess closed its output stream"),
             "with the reason it died with",
+        );
+    }
+
+    /// **A death keeps the row on its own.** With no session behind it and
+    /// no failure standing - the recovering connect clears the failure by
+    /// design, and a release takes the domain - the row is owed for the
+    /// death itself; skipped, the mark would vanish between the revival and
+    /// the next show and come back stale on a session that never died.
+    #[test]
+    fn a_seat_with_no_session_and_a_standing_death_keeps_its_row() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        // No domain session (the release took it) and no failure (the
+        // recovering connect cleared it): the death alone.
+        workspace.record_death_for_test(
+            &lead,
+            "dead-occupant",
+            "the claude subprocess closed its output stream",
+        );
+
+        let agents = surface.agents();
+        let row = agents
+            .for_project(&project)
+            .first()
+            .expect("a standing death keeps the row with nothing else behind it");
+
+        assert!(row.died, "the death is on the row");
+        assert_eq!(
+            row.reason.as_deref(),
+            Some("the claude subprocess closed its output stream"),
+            "with the reason it left",
+        );
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Sleeping,
+            "and the lifecycle reads the seat that is not there",
         );
     }
 

@@ -748,6 +748,21 @@
             <span class="when">9m</span>
           </div>
         </li>
+        <!-- And a session that ENDED, worn until the seat is opened, with
+             the reason it left as the line under it. The lifecycle beside
+             the mark is the truth about now - a seat that came back is
+             counted live - so the mark carries the death, not a claim the
+             seat is down. -->
+        <li class="node">
+          <div class="row failed">
+            <span class="dot bad"></span>
+            <span class="name">session ended</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">a session on the seat ended and you have not opened it</span></span>
+            <span class="when">6m</span>
+          </div>
+          <div class="note">the claude subprocess closed its output stream</div>
+        </li>
         <li class="node">
           <div class="row asleep">
             <span class="dot off"></span>
