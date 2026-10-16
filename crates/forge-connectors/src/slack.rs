@@ -4331,11 +4331,7 @@ mod tests {
         host.seed_replies(
             "C1",
             "100.0",
-            vec![
-                parent,
-                history_message("105.0", "U1", "the user's own reply"),
-                arriving,
-            ],
+            vec![parent, history_message("105.0", "U1", "the user's own reply"), arriving],
         );
         sweep(&host, &host, "acme").await.expect("follow-up sweep");
 
