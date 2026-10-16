@@ -3615,9 +3615,12 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   .review .rv-a { min-height: 44px; padding: 0 14px; }
   .review .rv-finish, .review .rv-expand { min-height: 44px; }
   .review .rv-expand { padding-top: 10px; padding-bottom: 10px; }
-  /* Both steppers' arrows - the scope's and the comments' - and the picker
-     and mode buttons beside them, which a finger reaches the same way. */
-  .review .rv-step-btn { min-height: 44px; padding: 0 14px; }
+  /* The scope row's controls, top to bottom: the scope button and its
+     stepper arrows (both steppers' - the scope's and the comments'), the
+     picker's rows behind the button, and the mode pair. */
+  .review .rv-scope-btn { min-height: 44px; }
+  .review .rv-step-btn { min-height: 44px; min-width: 44px; padding: 0 14px; }
+  .review .rv-menu-it { min-height: 44px; }
   .review .rv-mode button { min-height: 44px; padding: 0 14px; }
   .review .rv-frow, .review .rv-dir { padding-top: 10px; padding-bottom: 10px; }
   /* No pointer to arrive with: the line's `+` rests visible so a tap can

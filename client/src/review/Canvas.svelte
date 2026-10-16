@@ -452,6 +452,20 @@
   });
 
   /**
+   * The step the canvas has already travelled to, by its own number.
+   *
+   * **It is what keeps the recovery from becoming a yank.** The jump below
+   * tracks the built files, because a step pressed before its scope's layer
+   * has landed - a socket scan, the async model build on a big branch - has
+   * nothing to land on yet, and the models arriving is what re-runs the
+   * jump. Once it HAS landed, a later rebuild (an opened gap, a scope or
+   * mode switch) must leave the reader where they scrolled to, so the
+   * landed number is the gate: not reactive, because writing it is not news
+   * to anything.
+   */
+  let landedSeq = -1;
+
+  /**
    * Bring one comment's card into view: its file first - the list may not
    * have drawn it at all - and then the anchored row, once that section is
    * up. The row is looked for over a few frames, because a virtualised
@@ -461,11 +475,11 @@
     const ask = focusComment;
     if (ask === null) return;
     void ask.seq;
-    // **Everything but the ask is untracked.** The jump reads the built
-    // files, the list and the folded set, so tracking them would re-run this
-    // on any rebuild - a scope or mode switch, an opened gap - and yank the
-    // canvas back to the last-stepped comment while the reader was somewhere
-    // else.
+    void built;
+    if (landedSeq === ask.seq) return;
+    // Everything else is untracked: the jump reads the list, the canvases
+    // and the folded set, and tracking those would re-run it on work that is
+    // not this step's.
     untrack(() => {
       // A folded file is unfolded for the step: the card cannot come into
       // view while the section that draws it is closed.
@@ -474,8 +488,11 @@
       let tries = 0;
       const look = (): void => {
         const el = canvases[ask.path];
-        const at = el === undefined ? null : anchorRow(el, ask.side, ask.line, mode);
+        // A section that went between the frame and this look - the list
+        // rebuilding under a step - has no row to find.
+        const at = el === undefined || el === null ? null : anchorRow(el, ask.side, ask.line, mode);
         if (at !== null) {
+          landedSeq = ask.seq;
           at.scrollIntoView({ block: 'center' });
           return;
         }

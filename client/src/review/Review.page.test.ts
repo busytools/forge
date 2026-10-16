@@ -103,6 +103,41 @@ const DIFF = {
   ],
 };
 
+/** Two hunks round the stood-in viewer's two carried lines (1 and 4): the
+ *  gap between them hides lines 2 and 3. */
+const TWO_HUNKS = {
+  state: 'populated',
+  files: [
+    {
+      path: 'src/a.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'one', oldLine: 1, newLine: 1 }],
+        },
+        {
+          oldStart: 4,
+          oldCount: 1,
+          newStart: 4,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'four', oldLine: 4, newLine: 4 }],
+        },
+      ],
+    },
+  ],
+};
+
+/** The file's whole content, as the read would answer it. */
+const LINES = ['one', 'two', 'three', 'four'];
+
 let app: Record<string, unknown> | null = null;
 let frames: FrameRequestCallback[] = [];
 /** The scrolls the page asked for, as the element and the options it named.
@@ -267,10 +302,17 @@ let sent: unknown[] = [];
  *  them through. */
 let asked: { path: string; sha: string | null }[] = [];
 const hearers = new Set<(message: unknown) => void>();
+const statusHearers = new Set<(next: 'open' | 'closed' | 'connecting') => void>();
 
 /** Hand the page the frame the server would have sent. */
 function pushMessage(message: unknown): void {
   for (const hear of [...hearers]) hear(message);
+}
+
+/** The socket's own state, as the page would hear it move. */
+function pushStatus(next: 'open' | 'closed' | 'connecting'): void {
+  for (const hear of [...statusHearers]) hear(next);
+  flushSync();
 }
 
 function connection(): Connection {
@@ -289,7 +331,15 @@ function connection(): Connection {
       return true;
     },
     status: () => 'open',
-    onStatus: () => () => undefined,
+    // A real listener, so a test can move the socket's state: the reconnect
+    // path (an ask that never landed is asked again) is a state transition
+    // and nothing else can drive it.
+    onStatus: (fn: (next: 'open' | 'closed' | 'connecting') => void) => {
+      statusHearers.add(fn);
+      return () => {
+        statusHearers.delete(fn);
+      };
+    },
     onMessage: (fn: (message: unknown) => void) => {
       hearers.add(fn);
       return () => {
@@ -311,6 +361,7 @@ async function draw(
   sent = [];
   asked = [];
   hearers.clear();
+  statusHearers.clear();
   viewer.built = [];
   scrolled = [];
   app = mount(Review, {
@@ -899,6 +950,79 @@ describe('the steppers', () => {
     ).toContain('one');
   });
 
+  /**
+   * **A step taken before its scope is drawn still travels.** The commit's
+   * layer arrives over the socket (and its models build asynchronously), so
+   * a step pressed the moment the scope changes has nothing to land on yet -
+   * the jump has to recover when the models arrive, which is what the built
+   * files being tracked is for.
+   */
+  it('travels to a step whose scope had not been drawn yet', async () => {
+    const scoped = {
+      ...THREAD,
+      id: 't-c',
+      commit: 'abc123',
+      anchor: { ...THREAD.anchor, line: 4 },
+      resolution: null,
+    };
+    await draw([scoped], [], true, TWO_HUNKS, [{ sha: 'abc123', subject: 'the first commit' }]);
+
+    press('next scope');
+    await settle(() => document.querySelector('.rv-quiet') !== null);
+    press('next comment');
+    // The step's own retry is spent before the scope lands - eight frames
+    // and it gives up - so what carries the jump after this is the models
+    // arriving, which is the recovery this test is for.
+    for (let round = 0; round < 12; round += 1) paint();
+    expect(
+      scrolled.some((held) => held.options?.block === 'center'),
+      'nothing to land on yet, and nothing to land on wrongly',
+    ).toBe(false);
+
+    pushMessage({
+      kind: 'commit_diff',
+      sha: 'abc123',
+      files: { populated: TWO_HUNKS.files },
+      truncated: false,
+    });
+    await settle(() => scrolled.some((held) => held.options?.block === 'center'));
+
+    const landed = scrolled.find((held) => held.options?.block === 'center');
+    expect(landed?.el.textContent, 'the row the step travelled to once its scope landed').toContain(
+      'four',
+    );
+  });
+
+  /**
+   * **A rebuild after the step landed is not a step.** Opening a gap (or a
+   * scope or mode switch) rebuilds the models the jump reads; a jump that
+   * re-fired there would yank a reader back from wherever they had scrolled.
+   */
+  it('does not travel again when a rebuild follows the step', async () => {
+    await draw([THREAD], [], true, TWO_HUNKS);
+    press('next comment');
+    await settle(() => scrolled.some((held) => held.options?.block === 'center'));
+    const landed = scrolled.filter((held) => held.options?.block === 'center').length;
+
+    // The reader opened a gap: that file's model is rebuilt.
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-expand') !== null);
+    document.querySelector<HTMLButtonElement>('.rv-expand')?.click();
+    await settle(() => document.querySelector('.rv-expand') === null);
+    paint();
+
+    expect(
+      scrolled.filter((held) => held.options?.block === 'center').length,
+      'the rebuild travelled the canvas back to the comment',
+    ).toBe(landed);
+  });
+
   it('steps the scopes with wrap-around, from its own buttons', async () => {
     await draw([], [], true, DIFF, [{ sha: 'abc123', subject: 'the first commit' }, SECOND_COMMIT]);
 
@@ -1048,41 +1172,6 @@ describe('the files half finishes the round too', () => {
 });
 
 describe('the lines a diff left out', () => {
-  /** Two hunks round the stood-in viewer's two carried lines (1 and 4): the
-   *  gap between them hides lines 2 and 3. */
-  const TWO_HUNKS = {
-    state: 'populated',
-    files: [
-      {
-        path: 'src/a.rs',
-        oldPath: null,
-        status: 'modified',
-        binary: false,
-        submodule: false,
-        truncated: false,
-        hunks: [
-          {
-            oldStart: 1,
-            oldCount: 1,
-            newStart: 1,
-            newCount: 1,
-            lines: [{ kind: 'context', text: 'one', oldLine: 1, newLine: 1 }],
-          },
-          {
-            oldStart: 4,
-            oldCount: 1,
-            newStart: 4,
-            newCount: 1,
-            lines: [{ kind: 'context', text: 'four', oldLine: 4, newLine: 4 }],
-          },
-        ],
-      },
-    ],
-  };
-
-  /** The file's whole content, as the read would answer it. */
-  const LINES = ['one', 'two', 'three', 'four'];
-
   /**
    * **The read is asked when the file is drawn**, not when a control is
    * pressed: the answer is what decides whether a control exists at all, so
@@ -1173,6 +1262,29 @@ describe('the lines a diff left out', () => {
       asked.map((held) => held.sha),
       'and no ask was repeated',
     ).toEqual([null]);
+  });
+
+  /**
+   * **An ask the socket did not carry is asked again.** A connection that
+   * goes down mid-ask never answers it, so the remembered key comes off and
+   * the scope asks afresh when the socket is back - otherwise the reader's
+   * file stays control-less with nothing on screen to say why.
+   */
+  it('asks again for a read the connection dropped', async () => {
+    await draw([], [], true, TWO_HUNKS);
+    expect(
+      asked.map((held) => held.path),
+      'the read the draw asked for',
+    ).toEqual(['src/a.rs']);
+
+    pushStatus('closed');
+    pushStatus('open');
+    await settle(() => asked.length > 1);
+
+    expect(
+      asked.map((held) => held.path),
+      'the same file, asked again rather than remembered',
+    ).toEqual(['src/a.rs', 'src/a.rs']);
   });
 
   /** A read that refused earns no control: the page draws no door onto a
