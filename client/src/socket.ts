@@ -121,6 +121,15 @@ export interface Connection {
    */
   commitDiff(session: SessionSlot, sha: string): boolean;
   /**
+   * Ask for one file's whole content at a revision, for the review page's
+   * between-hunk expansion.
+   *
+   * `sha` is the scope's own revision and `null` the seat's branch tip. The
+   * answer is a `file_content` message, read off `onMessage`; `false` means
+   * the socket was not open and no answer is coming.
+   */
+  fileContent(session: SessionSlot, path: string, sha: string | null): boolean;
+  /**
    * Ask for one document, by the seat whose tree its path resolves against.
    *
    * One ask for one read, answered by a `document_read` message carrying
@@ -487,6 +496,7 @@ export function connect(url: string): Connection {
       // surface that draws one reads it from `onMessage`.
       case 'page':
       case 'commit_diff':
+      case 'file_content':
         return;
       // `seat_frames` is the conversation's too, and the same way: a repaired
       // stretch folds through the chat's own listener, so this switch knows
@@ -808,6 +818,11 @@ export function connect(url: string): Connection {
     commitDiff(session, sha) {
       if (!isOpen()) return false;
       sendNow({ kind: 'commit_diff', session, sha });
+      return true;
+    },
+    fileContent(session, path, sha) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'file_content', session, path, sha });
       return true;
     },
     readDocument(session, path, reviewable) {

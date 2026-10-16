@@ -1067,6 +1067,30 @@ const LINE_KINDS: DiffLineKindRecord[] = ['context', 'added', 'removed'];
  * `clean` this build invented and a clean git reported draw the same "no
  * changes" and mean different things.
  */
+/**
+ * One file's content, as the `file_content` answer carries it: the lines a
+ * review page's between-hunk expansion draws, or why the read could not run
+ * - never folded into each other, the distinction the diff reader keeps.
+ */
+export type FileContentRecord =
+  | { outcome: 'read'; lines: string[]; truncated: boolean }
+  | { outcome: 'failed'; why: string }
+  | { outcome: 'unknown'; raw: unknown };
+
+export function fileContentFrom(value: unknown): FileContentRecord {
+  const held = record(value);
+  const state = held['state'];
+  if (state === 'read') {
+    return {
+      outcome: 'read',
+      lines: list(held['lines']).map((line) => text(line) ?? ''),
+      truncated: held['truncated'] === true,
+    };
+  }
+  if (state === 'failed') return { outcome: 'failed', why: text(held['why']) ?? '' };
+  return { outcome: 'unknown', raw: value };
+}
+
 export function diffLayerFrom(value: unknown): DiffLayerRecord {
   if (value === 'clean') return { state: 'clean' };
   if (value === 'scan_failed') return { state: 'scan_failed' };

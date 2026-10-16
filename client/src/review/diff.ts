@@ -93,6 +93,70 @@ export function treeRows(files: DiffFileRecord[], closed: ReadonlySet<string>): 
   return rows;
 }
 
+/** One file's whole content, as the read answered it. */
+export interface FileLines {
+  lines: string[];
+  truncated: boolean;
+}
+
+/**
+ * One gap the drawn hunks leave: the lines between two hunks, above the
+ * first or below the last, that the record's bounded content does not
+ * carry.
+ */
+export interface Gap {
+  /** The hunk the gap follows; -1 is the gap above the first hunk. */
+  after: number;
+  /** The first new-side line the gap hides. */
+  start: number;
+  /** How many lines it hides. */
+  count: number;
+}
+
+/**
+ * The gaps a file's hunks leave, as far as the read in hand can fill them.
+ *
+ * **A gap is offered exactly where the read can supply it**, so a file
+ * nothing has read - or one whose read refused - offers none, and a door
+ * that would open on a failed read is never drawn. A read cut at the
+ * ceiling offers the gaps its carried lines reach; the gap below the last
+ * hunk exists only in a complete read, because a cut one cannot say where
+ * the file ends - and a file whose hunks the record itself cut (`truncated`)
+ * offers none either: the hunk after the cut is missing, so the lines the
+ * gap would draw as context may be code the diff changed.
+ */
+export function gapsOf(file: DiffFileRecord, content: FileLines | null): Gap[] {
+  if (content === null || file.truncated) return [];
+  const hunks = file.hunks;
+  const first = hunks[0];
+  if (first === undefined) return [];
+  const carried = content.lines.length;
+  const gaps: Gap[] = [];
+  if (first.newStart > 1) gaps.push({ after: -1, start: 1, count: first.newStart - 1 });
+  for (let i = 0; i + 1 < hunks.length; i += 1) {
+    const held = hunks[i];
+    const next = hunks[i + 1];
+    if (held === undefined || next === undefined) continue;
+    const start = held.newStart + held.newCount;
+    const count = next.newStart - start;
+    if (count > 0) gaps.push({ after: i, start, count });
+  }
+  const last = hunks[hunks.length - 1];
+  if (last !== undefined && !content.truncated) {
+    const start = last.newStart + last.newCount;
+    const count = carried - start + 1;
+    if (count > 0) gaps.push({ after: hunks.length - 1, start, count });
+  }
+  return gaps.filter((gap) => gap.start + gap.count - 1 <= carried);
+}
+
+/** What an expansion draws: the file's whole carried lines, and which gaps
+ *  the reader opened, by the hunk each follows. */
+export interface Expansion {
+  content: FileLines;
+  expanded: ReadonlySet<number>;
+}
+
 /**
  * The wire's bounded hunks re-emitted as one unified diff text per file.
  *
@@ -101,20 +165,57 @@ export function treeRows(files: DiffFileRecord[], closed: ReadonlySet<string>): 
  * (headers from the two ranges, one marker per line) rather than fetched.
  * The rebuild is lossless for display: it copies what the crate's parser
  * kept, and the crate's parser kept everything the text carried.
+ *
+ * **An opened gap is drawn as context lines inside the hunk it follows** -
+ * the same lines the diff left out, carrying the markers a context line
+ * does - so the viewer computes their two side's numbers from the heading
+ * exactly as it does every other line's. The heading takes the added lines
+ * into its own counts: a block that grew by them but kept its old count
+ * would number every hunk below it wrong.
  */
-export function synthesizeFileDiff(file: DiffFileRecord): string {
+export function synthesizeFileDiff(
+  file: DiffFileRecord,
+  expansion: Expansion | null = null,
+): string {
   const out = [
     `diff --git a/${file.oldPath ?? file.path} b/${file.path}`,
     `--- a/${file.oldPath ?? file.path}`,
     `+++ b/${file.path}`,
   ];
-  for (const hunk of file.hunks) {
-    out.push(`@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`);
+  const gaps = expansion === null ? [] : gapsOf(file, expansion.content);
+  /** The gap's own lines, when the reader opened it; nothing otherwise. */
+  const opened = (after: number): string[] => {
+    if (expansion === null || !expansion.expanded.has(after)) return [];
+    const gap = gaps.find((held) => held.after === after);
+    if (gap === undefined) return [];
+    return expansion.content.lines.slice(gap.start - 1, gap.start - 1 + gap.count);
+  };
+  file.hunks.forEach((hunk, i) => {
+    let { oldStart, newStart, oldCount, newCount } = hunk;
+    const body: string[] = [];
+    // The gap above the first hunk takes that hunk's own heading: the lines
+    // sit before its first line, so both ranges start earlier by them.
+    const above = opened(-1);
+    if (i === 0 && above.length > 0) {
+      body.push(...above.map((text) => ` ${text}`));
+      oldStart -= above.length;
+      newStart -= above.length;
+      oldCount += above.length;
+      newCount += above.length;
+    }
     for (const line of hunk.lines) {
       const marker = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
-      out.push(marker + line.text);
+      body.push(marker + line.text);
     }
-  }
+    // A gap after a hunk is that hunk's own tail: only the counts grow.
+    const below = opened(i);
+    if (below.length > 0) {
+      body.push(...below.map((text) => ` ${text}`));
+      oldCount += below.length;
+      newCount += below.length;
+    }
+    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...body);
+  });
   return out.join('\n') + '\n';
 }
 

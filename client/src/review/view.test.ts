@@ -242,10 +242,10 @@ describe('where a thread draws on the canvas', () => {
         base_ref: 'main',
       },
     });
-    expect(
-      canvasLine(scoped, 'abc123'),
-      'an immutable scope keeps its own numbering',
-    ).toEqual({ line: 5, movedFrom: null });
+    expect(canvasLine(scoped, 'abc123'), 'an immutable scope keeps its own numbering').toEqual({
+      line: 5,
+      movedFrom: null,
+    });
     expect(
       canvasLine(scoped, null),
       'and the branch draws it only where the resolver placed it, never at the commit line',
@@ -302,14 +302,14 @@ describe('where a thread draws on the canvas', () => {
     });
     const threads = [all, scoped, scopedGone, parked, resolved];
 
-    expect(threadsInScope(threads, null).map((t) => t.id), 'all changes draws every placed thread').toEqual([
-      'all',
-      'scoped',
-    ]);
-    expect(threadsInScope(threads, 'abc123').map((t) => t.id), "a commit draws its own").toEqual([
-      'scoped',
-      'scoped-gone',
-    ]);
+    expect(
+      threadsInScope(threads, null).map((t) => t.id),
+      'all changes draws every placed thread',
+    ).toEqual(['all', 'scoped']);
+    expect(
+      threadsInScope(threads, 'abc123').map((t) => t.id),
+      'a commit draws its own',
+    ).toEqual(['scoped', 'scoped-gone']);
     expect(
       outdatedThreads(threads).map((t) => t.id),
       'the unplaceable park; a resolved one never does',

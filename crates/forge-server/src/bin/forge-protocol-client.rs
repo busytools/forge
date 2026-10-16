@@ -20,6 +20,8 @@
 //! subscribe session Busytools/forge/lead
 //! more Busytools/forge/lead 10
 //! commit_diff Busytools/forge/lead 4f6870839
+//! file_content Busytools/forge/lead crates/forge-server/src/lib.rs
+//! file_content Busytools/forge/lead crates/forge-server/src/lib.rs 4f6870839
 //! command {"prompt": {"key": {"org": "Busytools", "project": "forge", "label": "lead"}, "text": "hello", "attachments": []}}
 //! ask {"submit_review": {"project": "forge", "branch": "main", "summary": null, "thread_ids": [], "origin": {"org": "Busytools", "project": "forge", "label": "lead"}}}
 //! ```
@@ -151,6 +153,26 @@ fn parse_line(line: &str, reply_to: &mut u64) -> anyhow::Result<ClientMessage> {
                 anyhow::bail!("`commit_diff` wants a sha");
             };
             Ok(ClientMessage::CommitDiff { session, sha: sha.to_owned() })
+        }
+        // `file_content <subject> <path> [<sha>]`: the path is one word (a
+        // path with a space in it is not a line this instrument can carry),
+        // and the sha is the scope's revision - absent for the branch tip.
+        "file_content" => {
+            let mut parts = rest.split_whitespace();
+            let Some(seat) = parts.next() else {
+                anyhow::bail!("`file_content` wants a session subject and a path");
+            };
+            let Subject::Session(session) = subject(&format!("session {seat}"))? else {
+                anyhow::bail!("`file_content` wants a session subject");
+            };
+            let Some(path) = parts.next() else {
+                anyhow::bail!("`file_content` wants a path");
+            };
+            Ok(ClientMessage::FileContent {
+                session,
+                path: path.to_owned(),
+                sha: parts.next().map(str::to_owned),
+            })
         }
         "command" | "ask" => {
             let command: Command = serde_json::from_str(rest)?;

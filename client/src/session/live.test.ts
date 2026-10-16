@@ -1250,6 +1250,7 @@ function drivable(refusedAtFirst = false): Driveable {
     },
     more: () => false,
     commitDiff: () => false,
+    fileContent: () => false,
     readDocument: () => false,
     seatRange: (slot, epoch, from, to) => {
       ranges.push({ slot, epoch, from, to });

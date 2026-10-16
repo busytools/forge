@@ -289,6 +289,19 @@ mod commands {
         bridge.commit_diff(&session, &sha)
     }
 
+    /// One file's whole content at a revision; false means no socket is open
+    /// and no answer is coming. The answer is a `file_content` frame, read
+    /// from the page's own frame stream.
+    #[tauri::command]
+    pub fn client_file_content(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        session: Value,
+        path: String,
+        sha: Option<String>,
+    ) -> bool {
+        bridge.file_content(&session, path, sha)
+    }
+
     /// One document read; false means no socket is open and no answer is
     /// coming. The answer is a `document_read` frame or an error, read from
     /// the page's own frame stream.
@@ -367,6 +380,7 @@ pub fn run() {
             commands::client_mic_stop,
             commands::client_mic_devices,
             commands::client_read_document,
+            commands::client_file_content,
             commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,
@@ -415,6 +429,7 @@ pub fn run() {
             commands::client_mic_stop,
             commands::client_mic_devices,
             commands::client_read_document,
+            commands::client_file_content,
             commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,

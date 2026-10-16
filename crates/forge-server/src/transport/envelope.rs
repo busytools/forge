@@ -238,6 +238,22 @@ pub enum ClientMessage {
         path: String,
         reviewable: bool,
     },
+    /// One file's whole content at a revision, for the review page's
+    /// between-hunk expansion.
+    ///
+    /// The record's diff carries bounded hunks, so the lines BETWEEN them
+    /// are exactly what it does not carry - and only a page whose reader
+    /// opened a gap needs them, which is why this is asked for on demand
+    /// rather than carried on every record. `sha` names the scope's own
+    /// revision: a commit's tree for a commit scope, and `None` for the
+    /// seat's branch tip, which is the new side of the all-changes diff.
+    /// The answer is a `file_content` message; a read that could not run
+    /// answers as itself rather than as an error.
+    FileContent {
+        session: SessionSlot,
+        path: String,
+        sha: Option<String>,
+    },
 }
 
 /// What the server sends.
@@ -316,6 +332,17 @@ pub enum ServerMessage {
         /// Something was withheld for the read's budget, the flag the
         /// record's own content read carries.
         truncated: bool,
+    },
+    /// The answer to `file_content`: the file's lines at the revision asked
+    /// for, or why the read could not run.
+    ///
+    /// `session`, `path` and `sha` are named back so a page holding two
+    /// seats, two scopes or several files routes each answer to its own ask.
+    FileContent {
+        session: SessionSlot,
+        path: String,
+        sha: Option<String>,
+        content: crate::transport::wire::FileContentWire,
     },
     /// The answer to a `Command` that carried a `reply_to`, including a
     /// refusal, so a client awaiting one is never left watching a channel

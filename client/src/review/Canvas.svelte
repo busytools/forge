@@ -23,10 +23,12 @@
   import type {
     DiffFileRecord,
     DiffLayerRecord,
+    FileContentRecord,
     ReviewSetRecord,
     ReviewThreadRecord,
   } from '../session/wire';
-  import { diffLayerFrom } from '../session/wire';
+  import { diffLayerFrom, fileContentFrom } from '../session/wire';
+  import { subjectKey } from '../protocol';
   import type { SessionSlot } from '../wire/types';
   import {
     anchorRow,
@@ -34,11 +36,14 @@
     doorSpot,
     filesOf,
     findLine,
+    gapsOf,
     insertRow,
     lineCounts,
     rowSide,
     synthesizeFileDiff,
     treeRows,
+    type FileLines,
+    type Gap,
   } from './diff';
   import { canvasLine, statusName, threadsInScope } from './view';
   import { captureContext, type ComposedComment, type ReviewSpot } from './write';
@@ -179,9 +184,19 @@
   $effect(() => {
     const open = connection;
     if (open === null) return;
+    const seat = subjectKey({ session: slot });
     return open.onMessage((message) => {
-      if (message.kind !== 'commit_diff') return;
-      fetched.set(message.sha, diffLayerFrom(message.files));
+      if (message.kind === 'commit_diff') {
+        fetched.set(message.sha, diffLayerFrom(message.files));
+        return;
+      }
+      if (message.kind !== 'file_content') return;
+      // The answer to THIS canvas's ask: another seat's, another scope's or
+      // another file's belongs to whoever asked it, and the seat is named
+      // back for exactly this routing.
+      if (subjectKey({ session: message.session }) !== seat) return;
+      if ((message.sha ?? null) !== scopeCommit) return;
+      contents.set(contentKeyOf(message.path), fileContentFrom(message.content));
     });
   });
 
@@ -231,6 +246,70 @@
       built = next;
       builtKey = key;
     })();
+  });
+
+  /**
+   * One file's whole content, per scope, as the read answered it - and the
+   * gaps the reader opened, per file.
+   *
+   * The lines a diff's hunks leave out are exactly what a between-hunk
+   * control fills, and the record carries hunks alone; so this is asked for
+   * per file, keyed by the scope it belongs to (a commit's content is not
+   * the branch's).
+   */
+  const contents = new SvelteMap<string, FileContentRecord>();
+  /** The reads already asked for, so a redraw does not ask twice. */
+  const askedFrom = new SvelteSet<string>();
+  const opened = new SvelteMap<string, SvelteSet<number>>();
+
+  const contentKeyOf = (path: string): string => `${scopeCommit ?? 'all'}|${path}`;
+
+  /** A file's carried lines, or `null` when its read refused or has not
+   *  landed - the two cases no control is drawn for. */
+  function contentFor(path: string): FileLines | null {
+    const held = contents.get(contentKeyOf(path));
+    if (held === undefined || held.outcome !== 'read') return null;
+    return { lines: held.lines, truncated: held.truncated };
+  }
+
+  /** The gaps the reader has opened on a file. */
+  function openedFor(path: string): SvelteSet<number> {
+    const key = contentKeyOf(path);
+    let held = opened.get(key);
+    if (held === undefined) {
+      held = new SvelteSet<number>();
+      opened.set(key, held);
+    }
+    return held;
+  }
+
+  /**
+   * Ask for one file's whole content, once per scope.
+   *
+   * **The read decides which controls exist at all**, which is why it is
+   * asked when a section is drawn rather than when a control is pressed: a
+   * deleted file, a subprocess that could not run, a read the ceiling cut -
+   * each answers for itself, and a door that opened on one would be a press
+   * that does nothing.
+   */
+  function ensureContent(path: string): void {
+    const held = built.find((file) => file.path === path);
+    if (held === undefined) return;
+    if (held.file.binary || held.file.submodule || held.file.status === 'deleted') return;
+    const key = contentKeyOf(path);
+    if (contents.has(key) || askedFrom.has(key)) return;
+    const open = connection;
+    if (open === null || connState !== 'open') return;
+    askedFrom.add(key);
+    // An ask that did not go is not remembered: the next attach asks again.
+    if (!open.fileContent(slot, path, scopeCommit)) askedFrom.delete(key);
+  }
+
+  $effect(() => {
+    // Every file the canvas has drawn, and again whenever the connection
+    // moves: a read asked while the socket was down never went.
+    void connState;
+    for (const path of sections.keys()) ensureContent(path);
   });
 
   /** One canvas element per file. */
@@ -371,17 +450,27 @@
    * carries a `data-for` key so a redraw leaves the one already there alone.
    */
   function injectDoors(el: HTMLDivElement, path: string): void {
+    const file = built.find((held) => held.path === path)?.file;
+    if (file === undefined) return;
     for (const tr of el.querySelectorAll('tr.diff-line')) {
       if (mode === 'split') {
         for (const side of ['new', 'old'] as const) {
           const spot = doorSpot(tr, side, mode);
-          if (spot !== null) placeDoor(spot.cell, path, side, spot.line);
+          // **A line the hunks do not carry takes no door.** An expanded
+          // gap's lines are drawn here but the record does not hold them,
+          // and a thread's anchor is resolved against what the server
+          // ships: a comment written on one would park outdated the moment
+          // it was filed.
+          if (spot !== null && findLine(file, side, spot.line) !== null) {
+            placeDoor(spot.cell, path, side, spot.line);
+          }
         }
         continue;
       }
       const hit = rowSide(tr, null, mode);
       const cell = tr.querySelector('td');
       if (hit === null || !(cell instanceof HTMLElement)) continue;
+      if (findLine(file, hit.side, hit.line) === null) continue;
       placeDoor(cell, path, hit.side, hit.line);
     }
   }
@@ -450,6 +539,13 @@
     void box.spot;
     void reply.thread;
     void busy;
+    void built;
+    // A read landing, or a gap the reader opened, changes which controls are
+    // wanted - and these reads run in the pass below, off a frame.
+    for (const path of Object.keys(canvases)) {
+      void contents.get(contentKeyOf(path));
+      void opened.get(contentKeyOf(path));
+    }
     const observers: MutationObserver[] = [];
     const draw = (el: HTMLDivElement, path: string) => {
       // Rows come and go under Svelte's own section swap as well as under this
@@ -461,6 +557,8 @@
         key: string;
         side: 'old' | 'new';
         line: number;
+        /** The control hangs above its anchor line rather than under it. */
+        before?: boolean;
         build: (at: HTMLTableRowElement) => HTMLTableRowElement;
       }[] = [];
       if (!closedFiles.has(path)) {
@@ -488,6 +586,25 @@
             build: (at: HTMLTableRowElement) => composerRow(at, spot),
           });
         }
+        // One control per gap the read in hand can fill and the reader has
+        // not opened: the lines the diff left out, drawn between the hunks
+        // that left them.
+        const file = built.find((held) => held.path === path)?.file;
+        const openedHere = opened.get(contentKeyOf(path));
+        if (file !== undefined) {
+          for (const gap of gapsOf(file, contentFor(path))) {
+            if (openedHere?.has(gap.after) === true) continue;
+            const anchor = gapAnchor(file, gap);
+            if (anchor === null) continue;
+            want.push({
+              key: `g:${gap.after}`,
+              side: anchor.side,
+              line: anchor.line,
+              before: anchor.before,
+              build: (at: HTMLTableRowElement) => gapRow(at, file.path, gap, anchor.side),
+            });
+          }
+        }
       }
       want.sort((a, b) => a.line - b.line || a.key.localeCompare(b.key));
       // The sheet's lint takes reactive collections for any mutable built-in,
@@ -505,18 +622,24 @@
         if (have !== undefined) {
           // Where it belongs is next after its anchor, other inserted rows
           // between the two forgiven: two threads on one line must not
-          // reshuffle each other every pass.
-          let prev = have.previousElementSibling;
-          while (prev !== null && prev.classList.contains('rv-insert')) {
-            prev = prev.previousElementSibling;
+          // reshuffle each other every pass. A row that hangs ABOVE its
+          // anchor has one place, and sits there or nowhere.
+          if (entry.before === true) {
+            if (at.previousElementSibling !== have) at.before(have);
+          } else {
+            let prev = have.previousElementSibling;
+            while (prev !== null && prev.classList.contains('rv-insert')) {
+              prev = prev.previousElementSibling;
+            }
+            if (prev !== at) at.after(have);
           }
-          if (prev !== at) at.after(have);
           kept.add(entry.key);
           continue;
         }
         const row = entry.build(at);
         row.dataset['for'] = entry.key;
-        at.after(row);
+        if (entry.before === true) at.before(row);
+        else at.after(row);
         kept.add(entry.key);
       }
       for (const [key, row] of existing) {
@@ -561,6 +684,10 @@
       if (row === null) return;
       const hit = rowSide(row, target, mode);
       if (hit === null) return;
+      // The rule the doors keep: a line the hunks do not carry - an expanded
+      // gap's own line - opens nothing.
+      const file = built.find((held) => held.path === path)?.file;
+      if (file === undefined || findLine(file, hit.side, hit.line) === null) return;
       openBox({ path, side: hit.side, line: hit.line });
     });
   }
@@ -715,6 +842,91 @@
       wrap.append(threadCard(thread, placed));
     }
     return insertRow(at, side, mode, wrap);
+  }
+
+  /**
+   * The row a gap's control hangs off: the last line of the hunk it follows,
+   * or the first line of the hunk it precedes - the gap above the first, the
+   * one place the diff leaves before any line.
+   */
+  function gapAnchor(
+    file: DiffFileRecord,
+    gap: Gap,
+  ): { side: 'old' | 'new'; line: number; before: boolean } | null {
+    const line =
+      gap.after === -1
+        ? file.hunks[0]?.lines[0]
+        : (() => {
+            const hunk = file.hunks[gap.after];
+            return hunk?.lines[hunk.lines.length - 1];
+          })();
+    if (line === undefined) return null;
+    const side = line.kind === 'removed' ? 'old' : 'new';
+    const at = side === 'old' ? line.oldLine : line.newLine;
+    if (at === null) return null;
+    return { side, line: at, before: gap.after === -1 };
+  }
+
+  /**
+   * One between-hunk control: the lines the diff left out, on a press.
+   *
+   * A real button in a row of its own, so a keyboard and a finger both
+   * reach it - the same door rule every other control on this page keeps.
+   */
+  function gapRow(
+    at: HTMLTableRowElement,
+    path: string,
+    gap: Gap,
+    side: 'old' | 'new',
+  ): HTMLTableRowElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'rv-inline';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'rv-expand';
+    button.textContent = `show ${gap.count} ${gap.count === 1 ? 'line' : 'lines'}`;
+    button.setAttribute(
+      'aria-label',
+      `show the ${gap.count} ${gap.count === 1 ? 'line' : 'lines'} between the hunks of ${path}`,
+    );
+    button.addEventListener('click', () => void expand(path, gap.after));
+    wrap.append(button);
+    return insertRow(at, side, mode, wrap);
+  }
+
+  /**
+   * Open one gap: the file's own diff text is re-synthesized with the gap's
+   * lines drawn as context inside the hunk it follows, and that one table
+   * re-renders.
+   *
+   * The text is re-emitted rather than rows spliced in, because the viewer
+   * parses diff text and computes each row's line numbers from the heading -
+   * rows inserted by hand would draw a numbering the viewer never agreed to.
+   */
+  async function expand(path: string, after: number): Promise<void> {
+    const held = built.find((file) => file.path === path);
+    const content = contentFor(path);
+    if (held === undefined || content === null) return;
+    const key = scopeCommit ?? 'all';
+    const openedHere = openedFor(path);
+    if (openedHere.has(after)) return;
+    openedHere.add(after);
+    const { DiffFile } = await import('@git-diff-view/core');
+    // A build that lands after the scope moved on is the old scope's.
+    if ((scopeCommit ?? 'all') !== key) return;
+    const instance = new DiffFile(
+      held.file.oldPath ?? held.file.path,
+      '',
+      held.file.path,
+      '',
+      [synthesizeFileDiff(held.file, { content, expanded: openedHere })],
+      '',
+      '',
+    );
+    (instance as { init?: () => void }).init?.();
+    built = built.map((file) =>
+      file.path === path ? { path: file.path, diffFile: instance, file: file.file } : file,
+    );
   }
 
   function commentSpot(): ReviewSpot | null {

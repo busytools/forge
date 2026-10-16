@@ -284,6 +284,34 @@ impl ViewSurface {
         .map_err(|refusal| refusal.to_string())
     }
 
+    /// One file's whole content at a revision, for a review page's
+    /// between-hunk expansion.
+    ///
+    /// `sha` names the revision - a commit's own tree for a commit scope -
+    /// and `None` is the seat's branch tip, which is the new side of the
+    /// all-changes diff. The read is bounded by the same ceiling a document
+    /// read is, and a file cut at that ceiling answers the lines it carried,
+    /// flagged, rather than refusing: the gaps those lines reach are still
+    /// worth drawing.
+    pub async fn file_content(
+        &self,
+        seat: &SessionSlot,
+        path: &str,
+        sha: Option<&str>,
+    ) -> Result<forge_workspace::env::git_diff::file::FileLines, String> {
+        let Some(cwd) = self.roster().cwd_for(seat) else {
+            return Err(format!("forge holds no session for {}", seat.display()));
+        };
+        forge_workspace::env::git_diff::file::read_file_lines(
+            &cwd,
+            sha.unwrap_or("HEAD"),
+            path,
+            self.workspace.document_max_bytes(),
+        )
+        .await
+        .map_err(|refusal| refusal.to_string())
+    }
+
     /// The conversation the session at `slot` holds, read from its own
     /// transcript on disk: the same read a resume performs, for a view
     /// that arrived after the session was already running or one opening a

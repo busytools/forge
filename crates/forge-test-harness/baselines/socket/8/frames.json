@@ -6,6 +6,7 @@
     "CommitDiff": "commit_diff",
     "DocumentRead": "document_read",
     "Error": "error",
+    "FileContent": "file_content",
     "Greeting": "greeting",
     "Page": "page",
     "Reply": "reply",
@@ -154,6 +155,7 @@
     "Command": "command",
     "CommitDiff": "commit_diff",
     "DocumentRead": "document_read",
+    "FileContent": "file_content",
     "More": "more",
     "SeatRange": "seat_range",
     "Subscribe": "subscribe",
@@ -573,6 +575,25 @@
         "text"
       ]
     },
+    "FileContent": {
+      "": [
+        "content",
+        "kind",
+        "path",
+        "session",
+        "sha"
+      ],
+      "/content": [
+        "lines",
+        "state",
+        "truncated"
+      ],
+      "/session": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "Greeting": {
       "": [
         "forge_version",
@@ -932,6 +953,19 @@
         "path",
         "reviewable",
         "session"
+      ],
+      "/session": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "FileContent": {
+      "": [
+        "kind",
+        "path",
+        "session",
+        "sha"
       ],
       "/session": [
         "label",

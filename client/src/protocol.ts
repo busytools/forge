@@ -283,6 +283,17 @@ export type ClientMessage =
    */
   | { kind: 'commit_diff'; session: SessionSlot; sha: string }
   /**
+   * Ask for one file's whole content at a revision, for the review page's
+   * between-hunk expansion.
+   *
+   * The record's diff carries bounded hunks, so the lines between them are
+   * exactly what it does not carry. `sha` names the scope's own revision
+   * and `null` is the seat's branch tip, the new side of the all-changes
+   * diff. The answer is a `file_content` message; a read that could not run
+   * answers as itself rather than as an error.
+   */
+  | { kind: 'file_content'; session: SessionSlot; path: string; sha: string | null }
+  /**
    * Ask for one document out of a seat's own tree, for a viewer's route.
    *
    * `path` resolves against the seat's working directory, and `reviewable`
@@ -372,6 +383,21 @@ export type ServerMessage =
    * through one parse.
    */
   | { kind: 'commit_diff'; sha: string; files: unknown; truncated: boolean }
+  /**
+   * The answer to `file_content`: the file's lines at the revision asked
+   * for, or why the read could not run.
+   *
+   * `session`, `path` and `sha` are named back so a page holding two
+   * seats, two scopes or several files routes each answer to its own ask;
+   * the content itself is narrowed where it enters, in `session/wire.ts`.
+   */
+  | {
+      kind: 'file_content';
+      session: SessionSlot;
+      path: string;
+      sha: string | null;
+      content: unknown;
+    }
   /**
    * One document, as the read answered: the seat it was read for, the
    * resolved absolute path, the detected kind, the bytes base64, the flag

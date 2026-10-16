@@ -28,6 +28,7 @@ function untouched(): Connection {
     dispatch: refuse,
     more: refuse,
     commitDiff: refuse,
+    fileContent: refuse,
     readDocument: refuse,
     seatRange: refuse,
     frame: refuse,

@@ -29,8 +29,18 @@ vi.mock('../composer/mic', () => ({
   inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
 }));
 
+const viewer = vi.hoisted(() => ({ built: [] as string[] }));
+
 vi.mock('@git-diff-view/core', () => ({
-  DiffFile: class {},
+  // The viewer's own model, stood in for the way the component is: what a
+  // test reads is the diff TEXT each build was handed, which is where an
+  // opened gap either reached the viewer or did not.
+  DiffFile: class {
+    constructor(...args: unknown[]) {
+      const hunks = args[4];
+      viewer.built.push(Array.isArray(hunks) ? hunks.join('') : '');
+    }
+  },
 }));
 
 vi.mock('@git-diff-view/svelte', async () => {
@@ -164,13 +174,14 @@ function record(
   composer: unknown,
   threads: unknown[] = [],
   reviews: unknown[] = [],
+  diff: unknown = DIFF,
 ): SessionRecord {
   return {
     slot: SLOT,
     composer,
     work: { branch: 'b', dirt: 'clean' },
     git: { defaultBranch: 'main', ahead: null },
-    diff: { branchAhead: DIFF },
+    diff: { branchAhead: diff },
     reviews: {
       threads: { outcome: 'read', value: threads },
       reviews: { outcome: 'read', value: reviews },
@@ -233,6 +244,15 @@ const HELD_THREAD = {
 /** The commands the page dispatched, cleared at each draw, so a test can
  *  read what a take's start or its end put on the wire. */
 let sent: unknown[] = [];
+/** The file-content asks the canvas sent, and the listeners a test answers
+ *  them through. */
+let asked: { path: string; sha: string | null }[] = [];
+const hearers = new Set<(message: unknown) => void>();
+
+/** Hand the page the frame the server would have sent. */
+function pushMessage(message: unknown): void {
+  for (const hear of [...hearers]) hear(message);
+}
 
 function connection(): Connection {
   return {
@@ -245,9 +265,18 @@ function connection(): Connection {
     },
     refresh: () => undefined,
     commitDiff: () => undefined,
+    fileContent: (_session: unknown, path: string, sha: string | null) => {
+      asked.push({ path, sha });
+      return true;
+    },
     status: () => 'open',
     onStatus: () => () => undefined,
-    onMessage: () => () => undefined,
+    onMessage: (fn: (message: unknown) => void) => {
+      hearers.add(fn);
+      return () => {
+        hearers.delete(fn);
+      };
+    },
   } as unknown as Connection;
 }
 
@@ -257,14 +286,18 @@ async function draw(
   threads: unknown[] = [],
   reviews: unknown[] = [],
   dictation = true,
+  diff: unknown = DIFF,
 ): Promise<void> {
   sent = [];
+  asked = [];
+  hearers.clear();
+  viewer.built = [];
   app = mount(Review, {
     target: document.body,
     props: { connection: connection(), slot: SLOT, dictation },
   });
   flushSync();
-  push({ wire: record(IDLE, threads, reviews), refused: null });
+  push({ wire: record(IDLE, threads, reviews, diff), refused: null });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
   await settle(() => {
@@ -754,6 +787,128 @@ describe('a landing', () => {
       document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
       'the same words twice, as two takes spoke them',
     ).toBe('this read is the whole input this read is the whole input');
+  });
+});
+
+describe('the lines a diff left out', () => {
+  /** Two hunks round the stood-in viewer's two carried lines (1 and 4): the
+   *  gap between them hides lines 2 and 3. */
+  const TWO_HUNKS = {
+    state: 'populated',
+    files: [
+      {
+        path: 'src/a.rs',
+        oldPath: null,
+        status: 'modified',
+        binary: false,
+        submodule: false,
+        truncated: false,
+        hunks: [
+          {
+            oldStart: 1,
+            oldCount: 1,
+            newStart: 1,
+            newCount: 1,
+            lines: [{ kind: 'context', text: 'one', oldLine: 1, newLine: 1 }],
+          },
+          {
+            oldStart: 4,
+            oldCount: 1,
+            newStart: 4,
+            newCount: 1,
+            lines: [{ kind: 'context', text: 'four', oldLine: 4, newLine: 4 }],
+          },
+        ],
+      },
+    ],
+  };
+
+  /** The file's whole content, as the read would answer it. */
+  const LINES = ['one', 'two', 'three', 'four'];
+
+  /**
+   * **The read is asked when the file is drawn**, not when a control is
+   * pressed: the answer is what decides whether a control exists at all, so
+   * a door that would open on a read that cannot fill it is never drawn.
+   */
+  it('asks for the file the canvas draws, and draws the control its answer earns', async () => {
+    await draw([], [], true, TWO_HUNKS);
+
+    expect(
+      asked.map((held) => held.path),
+      'the canvas asked for the drawn file',
+    ).toEqual(['src/a.rs']);
+    expect(asked[0]?.sha, 'in the all-changes scope, against the branch tip').toBeNull();
+    expect(
+      document.querySelector('.rv-expand'),
+      'no control before the read landed: a door nothing could fill yet',
+    ).toBeNull();
+
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-expand') !== null);
+
+    const control = document.querySelector('.rv-expand');
+    expect(control?.textContent, 'the control names how much it hides').toBe('show 2 lines');
+    expect(
+      document.querySelector('.rv-expand')?.closest('tr.rv-insert'),
+      'and it sits in a row of its own, after the first hunk',
+    ).not.toBeNull();
+
+    // **The press re-emits the file's diff text with the gap drawn as
+    // context**, which is the only way the viewer can number those rows: a
+    // heading that kept its old counts would number every hunk below wrong.
+    control?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await settle(() => document.querySelector('.rv-expand') === null);
+
+    const text = viewer.built.at(-1) ?? '';
+    expect(text, 'the gap is drawn in the hunk it follows').toContain(
+      '@@ -1,3 +1,3 @@\n one\n two\n three\n@@ -4,1 +4,1 @@\n four\n',
+    );
+  });
+
+  /** A read that refused earns no control: the page draws no door onto a
+   *  read the server answers with a refusal. */
+  it('draws no control for a file whose read refused', async () => {
+    await draw([], [], true, TWO_HUNKS);
+
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'failed', why: 'no file at src/a.rs in HEAD' },
+    });
+    await settle(() => asked.length > 0);
+
+    expect(document.querySelector('.rv-expand'), 'no door onto a refused read').toBeNull();
+  });
+
+  /**
+   * **A line the hunks do not carry takes no door.** An expanded gap draws
+   * lines the record does not hold, and a thread's anchor is resolved
+   * against what the server ships: a comment written on one would park as
+   * outdated the moment it was filed, so the page does not offer.
+   */
+  it('draws no door, and opens no box, on a line the hunks do not carry', async () => {
+    await draw();
+
+    const rows = [...document.querySelectorAll('tr.diff-line')];
+    const uncarried = rows.find((row) => row.querySelector('span[data-line-new-num="9"]') !== null);
+    expect(uncarried, 'the stood-in viewer drew the uncarried line').toBeDefined();
+    expect(uncarried?.querySelector('button.rv-add'), 'no door on it').toBeNull();
+
+    uncarried?.querySelector<HTMLElement>('td.diff-line-content')?.click();
+    flushSync();
+    expect(
+      document.querySelector('.rv-thread.comment'),
+      'and a click on it opens no box',
+    ).toBeNull();
   });
 });
 

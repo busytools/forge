@@ -183,6 +183,15 @@ enum Outbound {
         session: Value,
         sha: String,
     },
+    /// One file's whole content at a revision, for the review page's
+    /// between-hunk expansion: the path, and the scope's revision - absent
+    /// for the seat's branch tip. The answer arrives as a plain server
+    /// frame, so this half forwards and forgets.
+    FileContent {
+        session: Value,
+        path: String,
+        sha: Option<String>,
+    },
     /// One document read: the seat whose tree the path resolves against,
     /// the path, and whether the hand-off flagged it reviewable. The answer
     /// arrives as a plain server frame, so this half forwards and forgets.
@@ -263,6 +272,13 @@ impl Socket {
     /// One commit's own diff, answered by a `commit_diff` frame.
     pub fn commit_diff(&self, session: Value, sha: String) {
         let _ = self.tx.send(Outbound::CommitDiff { session, sha });
+    }
+
+    /// One file's whole content at a revision, answered by a `file_content`
+    /// frame: the path, and the scope's revision - absent for the seat's
+    /// branch tip.
+    pub fn file_content(&self, session: Value, path: String, sha: Option<String>) {
+        let _ = self.tx.send(Outbound::FileContent { session, path, sha });
     }
 
     /// One document read: the seat whose tree the path resolves against,
@@ -380,6 +396,7 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         }
         Outbound::More { .. }
         | Outbound::CommitDiff { .. }
+        | Outbound::FileContent { .. }
         | Outbound::SeatRange { .. }
         | Outbound::DocumentRead { .. }
         | Outbound::Answer { .. }
@@ -552,6 +569,15 @@ async fn run(
                             let _ = writer
                                 .send(Message::Text(
                                     json!({ "kind": "commit_diff", "session": session, "sha": sha })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::FileContent { session, path, sha } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "file_content", "session": session, "path": path, "sha": sha })
                                         .to_string()
                                         .into(),
                                 ))

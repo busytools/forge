@@ -542,6 +542,21 @@ pub struct ReviewsWire {
     pub reviews: ReadWire<Vec<ReviewSet>>,
 }
 
+/// One file's content at a revision, as the `file_content` answer carries
+/// it: the lines a review page's between-hunk expansion draws.
+///
+/// A read that answered something is never folded into one that failed -
+/// the same distinction the diff reader keeps - so a refusal crosses as its
+/// own arm with its own words rather than as an empty read.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum FileContentWire {
+    /// The lines the read carried, and whether its ceiling cut them short.
+    Read { lines: Vec<String>, truncated: bool },
+    /// The read could not run, in its own sentence.
+    Failed { why: String },
+}
+
 /// One review thread as a record carries it: the stored thread, and where
 /// its anchor sits in the content the record ships beside it.
 ///
