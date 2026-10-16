@@ -115,10 +115,24 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
 /// extends the always-on coverage rather than replacing it: a target that
 /// only the defaults name stays readable under every preset.
 fn preset_extending_defaults(preset: &DiagnosticsPreset) -> String {
+    compose_filter_directives(preset.filter_directives(), DEFAULT_LOG_DIRECTIVES)
+}
+
+/// A directive's target, the part two directives naming the same target
+/// collide on. A bare level token (`info`) is its own key.
+fn directive_key(directive: &str) -> &str {
+    directive.split_once('=').map_or(directive, |(target, _)| target)
+}
+
+/// The two directive lists composed into one, a directive both name kept
+/// once - the preset's copy, whatever level it sets - so a default never
+/// overrides a target the preset names. The preset's own order leads; the
+/// defaults' directives it did not name follow.
+fn compose_filter_directives(preset_directives: &str, default_directives: &str) -> String {
     let mut directives: Vec<&str> = Vec::new();
-    for directive in preset.filter_directives().split(',').chain(DEFAULT_LOG_DIRECTIVES.split(','))
-    {
-        if !directives.contains(&directive) {
+    for directive in preset_directives.split(',').chain(default_directives.split(',')) {
+        let key = directive_key(directive);
+        if !directives.iter().any(|kept| directive_key(kept) == key) {
             directives.push(directive);
         }
     }
@@ -341,7 +355,7 @@ fn rotated_log_path(base_path: &Path, index: usize) -> PathBuf {
 mod tests {
     use super::{
         DEFAULT_LOG_DIRECTIVES, RollingFileWriter, build_filter_directives, clear_rotated_files,
-        resolve_log_path, rotated_log_path,
+        compose_filter_directives, resolve_log_path, rotated_log_path,
     };
     use crate::cli::{Cli, DiagnosticsPreset};
     use std::fs;
@@ -396,6 +410,16 @@ mod tests {
         // WARN; dropping it from this set would silence the git probe miss
         // entirely, which is the state the levels moved away from.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
+        // `forge_server` carries the server's own session reads, one
+        // session's work rather than forge's health. Without the directive
+        // those records land nowhere at all.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_server=debug"));
+        // `forge_agent::userdata::catalog::scan` carries the scan's
+        // module-path records at `debug`: an unparseable transcript line, a
+        // session with no on-disk file, an anchor no row names. Each is one
+        // session's own data rather than forge's health, and without the
+        // directive the records land nowhere at all.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_agent::userdata::catalog::scan=debug"));
         // `forge_workspace::output_tail` carries the tail read's
         // unreadable-line record, demoted there for the same reason: a line
         // the watched command wrote that cannot be decoded is that command's
@@ -406,6 +430,11 @@ mod tests {
         // the only record of a seat whose tree is silently not being read, so
         // the target needs the directive or the silence has no explanation.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::work=debug"));
+        // `forge_workspace::browser` records the browser calls a session
+        // made - what ran, for whom, how it ended - at `debug` because a
+        // call is the session's own work. Without the directive the call
+        // record lands nowhere at all.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::browser=debug"));
         // Dictation's own records were demoted out of WARN for the same
         // reason: a take reaching its capture cap, a normalizer hitting
         // its token budget and a take whose recognition failed are one
@@ -424,6 +453,10 @@ mod tests {
         // Pinning to `error` rejects it at the filter before
         // serialisation.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("llama_cpp_2=error"));
+        // The engine reaches tracing under both spellings of its target
+        // (module path and hyphenated), so the pin has to ride both or the
+        // chatter arrives under the one left out.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("llama-cpp-2=error"));
         // A directive the parser rejects takes the whole filter with it
         // and leaves forge logging nothing, so the default set is
         // checked by parsing it rather than by reading it.
@@ -561,6 +594,30 @@ mod tests {
         assert!(
             caught.contains("preset_own_check"),
             "the preset's own directives must survive the composition: {directives}",
+        );
+    }
+
+    /// A target both sides name keeps the preset's directive: no preset can
+    /// be silently overridden by a default naming the same target at a
+    /// different level. Every overlap in the shipped sets is byte-identical,
+    /// so the pair here is synthetic - a divergent level is the case the
+    /// rule exists for.
+    #[test]
+    fn a_preset_directive_wins_an_overlap_with_the_defaults() {
+        let composed =
+            compose_filter_directives("info,forge_server=trace", "info,forge_server=debug");
+
+        let caught = emitted_under(&composed, || {
+            tracing::trace!(
+                target: "forge_server",
+                event_name = "overlap_check",
+                "a record",
+            );
+        });
+
+        assert!(
+            caught.contains("overlap_check"),
+            "the preset's level must survive the overlap: {composed}",
         );
     }
 
