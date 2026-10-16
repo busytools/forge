@@ -1453,8 +1453,8 @@ mod tests {
     /// budget, and a profile open takes the same lock: held across the probes,
     /// one list read parks an open behind every profile it has to ask about.
     /// The endpoint stalls the probe mid-request, so the lock is asserted at
-    /// the one moment it must be free - and the probe's own answer still
-    /// lands on the row.
+    /// the one moment it must be free - and a second profile with no endpoint
+    /// pins which answer lands on which row.
     #[tokio::test]
     async fn a_list_does_not_hold_the_registry_lock_across_its_probes() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -1472,7 +1472,12 @@ mod tests {
         std::fs::write(named.dir.join("windowed"), b"").expect("the windowed marker");
         std::fs::write(named.dir.join("DevToolsActivePort"), format!("{port}\n{identity}\n"))
             .expect("the port file");
-        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
+        let quiet = Named::open(seat(), "quiet", &paths).expect("the open");
+        {
+            let mut registry = host.named.lock().await;
+            registry.insert("hunt".to_owned(), Arc::new(named));
+            registry.insert("quiet".to_owned(), Arc::new(quiet));
+        }
 
         let listing = tokio::spawn({
             let host = Arc::clone(&host);
@@ -1493,6 +1498,8 @@ mod tests {
         let rows = listing.await.expect("the list task");
         let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
         assert!(row.windowed, "the probe's own answer lands on the row");
+        let quiet = rows.iter().find(|row| row.name == "quiet").expect("the quiet row");
+        assert!(!quiet.windowed, "a profile with no endpoint lists no window");
     }
 
     /// **A hide waits for a launch in flight** - the same lock `show` takes,
