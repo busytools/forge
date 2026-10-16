@@ -820,6 +820,7 @@
         "snapshot"
       ],
       "/data/agents[]": [
+        "died",
         "failed_turn",
         "has_background_work",
         "label",

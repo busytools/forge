@@ -160,6 +160,43 @@ spawned `claude` subprocess. Absent means empty.
 CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
 ```
 
+## `[models."<name>"]`
+
+Optional per-model tables, keyed by the exact spelling a project's
+`model` pins - that is the name the read matches on, not what accounts
+declare - so one entry serves every project pinned to that model. Absent
+means no parameters are stamped and the `claude` CLI's own resolution
+stands. A table naming a model no project pins loads, but warns at boot:
+the entry is read by the projects' pins, and no pin carries that name.
+
+| Key                   | Type    | Required | Default | Notes                                                                     |
+| --------------------- | ------- | -------- | ------- | ------------------------------------------------------------------------- |
+| `auto_compact_window` | integer | no       | unset   | The window, in tokens, the CLI's auto-compaction triggers against.        |
+
+```toml
+[models."deepseek-v4.1-flash"]
+auto_compact_window = 983040
+```
+
+`auto_compact_window` is stamped onto the spawned child as
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Set it below the model's real context,
+leaving the compact query room to fit: compaction fires near a window's
+top, and the compact request itself needs headroom beyond that for the
+completion budget and the prompt it carries - a window allowed to reach
+the model's context can fire a compact request the context cannot hold,
+and the `claude` CLI exits with the session, which is what this key
+keeps out of reach. The value is yours to pick because forge does not
+know a model's real context: leaving a sixteenth of the context as
+headroom (a 983040 window for a 1,048,576-token model) is measured to fit
+with room over. An env layer that names
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` itself replaces the table's value.
+
+A value that is not a positive integer fails the load:
+`models "name" in forge.toml ... sets auto_compact_window = 0, which is
+not usable; it must name a positive window in tokens`. Unknown keys
+inside a `[models."<name>"]` table are rejected, so a mistyped key fails
+the load instead of quietly applying nothing.
+
 ## Per-project keys (inside `[[orgs.projects]]`)
 
 The per-project settings live directly on each `[[orgs.projects]]`
@@ -536,8 +573,9 @@ Every table rejects unknown fields, so a mistyped key fails the load
 and names itself rather than parsing clean and meaning something else -
 a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
-`[[accounts]]`, `[[slack]]`, `[gotify]`, `[systemone]`, `[gateway]`,
-`[dictate]`, `[plugins]`, `[server]` and `[client]`.
+`[[accounts]]`, `[models."<name>"]`, `[[slack]]`, `[gotify]`,
+`[systemone]`, `[gateway]`, `[dictate]`, `[plugins]`, `[server]` and
+`[client]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:

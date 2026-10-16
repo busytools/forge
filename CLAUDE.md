@@ -104,6 +104,14 @@ lives in one machine-local redb DB beside the lock. None of it belongs
 in a synced config dir: the DB churns roughly once a minute, redb's
 binary file cannot be merged, and the lock's inode must stay put.
 
+**No model assumptions in code.** The binary is generic over whatever
+model the `claude` CLI can drive: every model-shaped value the machinery
+needs - context and auto-compact windows, token budgets, slugs, any
+per-model parameter - is a `forge.toml` key in a per-model table, so
+changing the model is a config edit and never a code change. A value the
+config does not set is passed through as nothing, not as a default
+guess; a new key owes the book's `configuration.md` in the same PR.
+
 ## Crate placement guide (where does my new code go?)
 
 Work top-down; first match wins.

@@ -186,3 +186,112 @@ ACCOUNT_KEY = "account-value"
         "while still getting the account's own",
     );
 }
+
+/// The `[models]` table reaches the spawned child: a project pinned to a
+/// model with an entry carries the window, a model with no entry stamps
+/// nothing (the CLI's own resolution stands, never a guessed default),
+/// and an env layer that names the same key is the user's own word and
+/// wins over the table.
+#[tokio::test]
+async fn the_models_table_reaches_the_spawned_handle() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        forge_toml_path(dir.path()),
+        r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "deepseek-v4.1-flash"
+
+[[orgs.projects]]
+name = "airmail"
+path = "~/Projects/airmail"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["deepseek-v4.1-flash", "claude-sonnet-5"]
+provider = "anthropic"
+
+[models."deepseek-v4.1-flash"]
+auto_compact_window = 983040
+"#,
+    )
+    .expect("write forge.toml");
+
+    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+    workspace.seed_test_ready_account("Stargate");
+
+    let handle = workspace
+        .get_agent_handle(
+            SessionTarget::Named("forge".to_owned()),
+            SessionLaunchSettings::default(),
+            &SpawnRole::Lead,
+        )
+        .expect("spawn forge");
+    assert_eq!(
+        handle.env().get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
+        Some("983040"),
+        "the model's declared window reaches the child's env",
+    );
+
+    let other = workspace
+        .get_agent_handle(
+            SessionTarget::Named("airmail".to_owned()),
+            SessionLaunchSettings::default(),
+            &SpawnRole::Lead,
+        )
+        .expect("spawn airmail");
+    assert!(
+        !other.env().contains_key("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+        "a model with no [models] entry passes nothing",
+    );
+
+    let hand_set = tempdir().expect("tempdir");
+    fs::write(
+        forge_toml_path(hand_set.path()),
+        r#"
+[env]
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
+
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "deepseek-v4.1-flash"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["deepseek-v4.1-flash"]
+provider = "anthropic"
+
+[models."deepseek-v4.1-flash"]
+auto_compact_window = 983040
+"#,
+    )
+    .expect("write forge.toml");
+    let workspace = Arc::new(Workspace::new_for_test(hand_set.path().to_owned()).expect("new"));
+    workspace.seed_test_ready_account("Stargate");
+    let handle = workspace
+        .get_agent_handle(
+            SessionTarget::Named("forge".to_owned()),
+            SessionLaunchSettings::default(),
+            &SpawnRole::Lead,
+        )
+        .expect("spawn forge");
+    assert_eq!(
+        handle.env().get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
+        Some("950000"),
+        "an env layer naming the key replaces the table's value",
+    );
+}
