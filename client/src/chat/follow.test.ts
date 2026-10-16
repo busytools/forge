@@ -903,6 +903,220 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'a wheel-down did not move them').toEqual([PIN]);
   });
 
+  it('hears the press that starts a scrollbar drag', async () => {
+    // **The gesture the wheel, touch and keys cannot name.** A scrollbar drag
+    // fires none of them, so its moves were read only past `DISARM_SLACK`
+    // above the pin's landing - and while the follow is on, the pin re-writes
+    // the foot on every arriving update, so a slow drag has to out-run the pin
+    // before the disarm can land (Ved, 2026-10-16: "I have to make an effort
+    // to actually move it up, and it is still fighting me"). The press that
+    // starts the drag lands on the pane's own box - the scrollbar is not a row
+    // - so it is heard where the drag begins.
+    //
+    // **The stub stands in for the geometry the browser computes.** The pane
+    // is given a width and the press a `clientX` past it, in the scrollbar's
+    // strip; jsdom reports `offsetX` as `clientX`, so the values carry what a
+    // browser measures - on the live seat with real input, the bar reads 854
+    // against 850 in Chromium and 934 against 930 in WebKit. What the stub
+    // cannot model is the fall-through below (its rows hang directly off the
+    // pane, with no `pointer-events` state), so that case is the one the two
+    // clauses divide on.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    element.width = 400;
+    const pane = document.querySelector('.conv');
+    pane?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 500 }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own hand on the scrollbar moved them').toEqual([]);
+  });
+
+  it('does not arm on a press that lands on a row', async () => {
+    // The control for the press above: a click inside the conversation is not
+    // a hand on the scrollbar, and a click that shifts the layout by a couple
+    // of pixels is the adjuster the slack exists for. Its offset is in the
+    // content box, so the target clause is the one that has to refuse it.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    element.width = 400;
+    const row = document.querySelector('.conv .turn');
+    row?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 500 }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a press on a row is not a scrollbar press').toEqual([PIN]);
+  });
+
+  it('does not arm on a press inside the content box while the list is scrolling', async () => {
+    // **Virtua's `pointer-events: none` window.** While the list is scrolling
+    // it takes the content out of hit-testing for 150ms after the last scroll,
+    // so a press on a ROW then arrives with the PANE as its target - measured
+    // in Chromium (offset 200 against a clientWidth of 850) - and the offset
+    // is the only thing that tells it from a hand on the bar. Without the
+    // clause the click arms the token, and a nudge the slack exists to absorb
+    // turns the follow off for a reader who never touched the bar.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    element.width = 400;
+    const pane = document.querySelector('.conv');
+    pane?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 300 }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a fall-through press is not a bar press').toEqual([PIN]);
+  });
+
+  it('holds a pressed scrollbar past the token window, until the release', async () => {
+    // **The press-then-pause drag.** A reader who presses the thumb, aims for
+    // a second and only then drags gets nothing from a 250ms token, and a drag
+    // fires no second pointerdown to re-arm - measured in both engines, where
+    // a real drag delivers pointerdown and pointerup and NO moves between
+    // them. So the press holds until the release does.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    vi.useFakeTimers();
+    try {
+      element.width = 400;
+      const pane = document.querySelector('.conv');
+      pane?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 500 }));
+      // Past the window the press armed on its own.
+      vi.advanceTimersByTime(300);
+
+      readerAt(FOOT - 2);
+      // A size change is the observer's pass, which is where a pin runs when
+      // the follow is still on: with the press held, the disarm above means
+      // there is none to run.
+      resized();
+      flushSync();
+
+      expect(pinned(), 'a held press is the reader, however long it waits').toEqual([]);
+
+      // The release gives the hand back: with the follow on again (the reader
+      // pressing the way-back, which is how they return), the same move is the
+      // nudge the slack exists for and the follow takes them down again.
+      window.dispatchEvent(new MouseEvent('pointerup'));
+      const back = document.querySelector('button.follow');
+      back?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      clear();
+
+      readerAt(FOOT - 2);
+      resized();
+      flushSync();
+
+      expect(pinned(), 'and a released bar is not a hand').toEqual([PIN]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives the hand back when the window is lost with no release', async () => {
+    // **The press let go outside the app.** A pointerup released over another
+    // window belongs to that window, so nothing arrives here - and a hold left
+    // standing makes every later nudge the reader's for the life of the seat:
+    // it turns the slack off and lets a clamp carry a parked reader back to
+    // the foot. The token this replaced self-healed in 250ms; the hold cannot,
+    // so every exit clears it - the release, the window going, the attachment
+    // ending, the seat changing.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    vi.useFakeTimers();
+    try {
+      element.width = 400;
+      const pane = document.querySelector('.conv');
+      pane?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 500 }));
+      vi.advanceTimersByTime(300);
+
+      // Lost with no pointerup, as a release over another app is.
+      window.dispatchEvent(new Event('blur'));
+
+      readerAt(FOOT - 2);
+      resized();
+      flushSync();
+
+      expect(pinned(), 'a lost window is not a hand').toEqual([PIN]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not carry a hold across a list that unmounted mid-press', async () => {
+    // **The list goes while the hand is down.** An occupant swap empties the
+    // conversation, so the pane - and with it the window listeners - tears
+    // down under the press, and the release that would have cleared the hold
+    // lands after they are gone. The component instance survives, so the flag
+    // is still standing when the new occupant's list comes back: every later
+    // nudge reads as the reader's, the slack stops protecting them and a clamp
+    // carries them to the foot.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    vi.useFakeTimers();
+    try {
+      element.width = 400;
+      const pane = document.querySelector('.conv');
+      pane?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 500 }));
+      vi.advanceTimersByTime(300);
+
+      // The swap: the held turns go, the list unmounts with the hold set, and
+      // the release arrives where no listener is left to hear it.
+      server.replaced();
+      await vi.advanceTimersByTimeAsync(0);
+      flushSync();
+      window.dispatchEvent(new MouseEvent('pointerup'));
+
+      // The new occupant's own page, and the list with it. Its landing gets
+      // its painted frames before the records are cleared, or the landing's
+      // own pin would land among the ones under test.
+      server.page([turn('t1'), turn('t2')]);
+      await vi.advanceTimersByTimeAsync(120);
+      flushSync();
+      clear();
+
+      readerAt(FOOT - 2);
+      flushSync();
+
+      // The disarm is the thing the stuck hold would cause, and the way-back
+      // button is the disarm's own mark: with the hold cleared, the move is
+      // the nudge the slack absorbs and the follow stays on. (The pin itself
+      // is not the assertion here: a remount leaves the harness's stale
+      // observer firing beside the new one, so a count would read two.)
+      expect(
+        document.querySelector('button.follow'),
+        'a handle lost with the pane is not a hand',
+      ).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("disarms on the reader's own key at any distance", async () => {
     // The keys are the vocabulary the view this client replaced used: the
     // ones that scroll the column up are the ones that may let the follow go.

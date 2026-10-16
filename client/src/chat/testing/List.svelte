@@ -104,6 +104,13 @@
       configurable: true,
       get: elementViewport,
     });
+    // The width the column reads to tell a scrollbar press from one on the
+    // content: the scrollbar strip sits past `clientWidth`, and jsdom reports
+    // `offsetX` as `clientX`, so a test sets `element.width` and dispatches.
+    Object.defineProperty(node, 'clientWidth', {
+      configurable: true,
+      get: () => element.width,
+    });
     Object.defineProperty(node, 'scrollTop', {
       configurable: true,
       get: () => element.offset,
