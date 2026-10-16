@@ -790,6 +790,22 @@ describe('a landing', () => {
   });
 });
 
+describe('a comment box opens', () => {
+  /**
+   * **The caret goes in with the box** (Ved, 2026-10-16): clicking a line to
+   * comment is a reader asking to write there, and a box that opened
+   * unfocused made them click a second time before a word could be typed.
+   */
+  it('puts the caret in the field the click opened', async () => {
+    await draw();
+    await openComment();
+
+    expect(document.activeElement, 'the caret is in the box the click opened').toBe(
+      document.querySelector('.rv-thread.comment .rv-txarea'),
+    );
+  });
+});
+
 describe('the lines a diff left out', () => {
   /** Two hunks round the stood-in viewer's two carried lines (1 and 4): the
    *  gap between them hides lines 2 and 3. */

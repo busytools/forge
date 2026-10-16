@@ -491,11 +491,36 @@
     cell.append(door);
   }
 
+  /** The comment box's own field, as its row mounts and goes. */
+  let commentField = $state<HTMLElement | null>(null);
+  /**
+   * Whether the box being opened owes the reader the caret.
+   *
+   * **A new comment takes the caret** (Ved, 2026-10-16): the reader clicked
+   * a line to write on, so the box it opened is where the words go - and the
+   * row mounts a frame later, which is why the ask is held here rather than
+   * spent at the click.
+   */
+  let focusPending = false;
+
   /** Open the comment box on a line, which is where a take's words will land. */
   function openBox(spot: ReviewSpot): void {
+    // The box is already open on this very line - the reader clicked it
+    // again - so no row is rebuilt and the ask would never be spent: the
+    // caret goes to the field that is there.
+    const same =
+      box.spot !== null &&
+      box.spot.path === spot.path &&
+      box.spot.side === spot.side &&
+      box.spot.line === spot.line;
     box.spot = spot;
     box.draft = '';
     box.line = null;
+    if (same && commentField !== null) {
+      commentField.focus();
+      return;
+    }
+    focusPending = true;
   }
 
   /**
@@ -511,6 +536,7 @@
     box.draft = '';
     box.line = null;
     dictate.panel = false;
+    focusPending = false;
   }
 
   /**
@@ -992,7 +1018,16 @@
         oncancel: closeBox,
         onpress: () => onpress('comment'),
         onhold: () => onhold('comment'),
-        field: (el: HTMLElement | null) => onelement('comment', el),
+        field: (el: HTMLElement | null) => {
+          commentField = el;
+          onelement('comment', el);
+          // The row the click opened has just mounted: the caret the reader
+          // owes goes in with it.
+          if (el !== null && focusPending) {
+            focusPending = false;
+            el.focus();
+          }
+        },
       },
     });
     mounts.hold(wrap, () => void unmount(card));
