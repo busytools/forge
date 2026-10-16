@@ -654,6 +654,27 @@ mod tests {
         }
     }
 
+    /// The ruling is on the index root's own `.git` and nothing else: a
+    /// nested checkout is the user's content, so the subtree walk a watcher
+    /// event runs keeps its rows.
+    #[test]
+    fn a_nested_checkouts_git_survives_a_subtree_walk() {
+        let dir = fixture();
+        let root = dir.path();
+        touch(&root.join("vendor/dep/.git/config"));
+        touch(&root.join("vendor/dep/main.rs"));
+
+        let candidates = collect_candidates(root, &root.join("vendor/dep"), true);
+        let paths: Vec<&str> =
+            candidates.iter().map(|candidate| candidate.rel_path.as_str()).collect();
+
+        assert!(paths.contains(&"vendor/dep/.git/config"), "a nested checkout stays: {paths:?}");
+        assert!(
+            paths.contains(&"vendor/dep/main.rs"),
+            "and a real file beside it lists, which is the control: {paths:?}",
+        );
+    }
+
     /// The change watch reports a write to the tree.
     #[test]
     fn the_change_watch_reports_a_write() {
