@@ -163,42 +163,58 @@ interface Placed {
 }
 
 /**
- * Where a thread draws on a canvas, or `null` when it cannot be placed.
+ * Where a thread draws in one scope, or `null` when it cannot be drawn
+ * there.
  *
- * A commit-scoped thread always sits at its recorded line: a commit's diff
- * is immutable, so the numbering it was written in is the numbering it
- * drew in. An all-changes thread sits where the server's resolution says,
- * and one with no resolution - a read that carried none - cannot be drawn
- * rather than being guessed onto its recorded line.
+ * **A commit's own thread sits at its recorded line there**: a commit's
+ * diff is immutable, so the numbering it was written in is the numbering
+ * it drew in. **In the all-changes scope every thread sits where the
+ * server's resolution says**, whichever scope it was written in - a thread
+ * written inside a commit draws there too when the branch's diff still
+ * carries its line (the server resolves it by content and neighbours,
+ * never by its commit-numbered line) - and a thread with no resolution, or
+ * one the resolver could not place, cannot be drawn rather than being
+ * guessed onto its recorded line.
+ *
+ * **A commit's scope draws only its own threads.** An all-changes thread's
+ * numbering is the branch's, and the record carries no landing for it
+ * against a commit's diff, so placing it there would be a guess the
+ * resolver refuses to make.
  */
-export function canvasLine(thread: ReviewThreadRecord): Placed | null {
-  if (thread.commit !== null) return { line: thread.anchor.line, movedFrom: null };
+export function canvasLine(thread: ReviewThreadRecord, commit: string | null): Placed | null {
+  if (thread.commit !== null && thread.commit === commit) {
+    return { line: thread.anchor.line, movedFrom: null };
+  }
+  if (commit !== null) return null;
   const resolution = thread.resolution;
   if (resolution === null || resolution.state !== 'placed') return null;
   return { line: resolution.line, movedFrom: resolution.moved_from };
 }
 
-/** The threads drawn in one scope: a commit's sha, or `null` for all
- *  changes. A thread is drawn in its own scope and no other. */
+/** The threads a canvas draws in one scope: a commit's sha, or `null` for
+ *  all changes. */
 export function threadsInScope(
   threads: ReviewThreadRecord[],
   commit: string | null,
 ): ReviewThreadRecord[] {
-  return threads.filter((thread) => thread.commit === commit);
+  return threads.filter((thread) => canvasLine(thread, commit) !== null);
 }
 
 /**
- * The threads the parked section lists: code that cannot be drawn and is
- * not resolved.
+ * The threads the parked section lists: code the all-changes canvas cannot
+ * place and that is not resolved.
  *
  * The fresh landing wins over the store's status, because that status was
  * written by whichever view last resolved and cannot say where the code
  * stands now; a resolved thread parks nowhere, the same reopen rule the view
- * this client replaced had, read from the other side.
+ * this client replaced had, read from the other side. A thread written
+ * inside a commit parks here when the branch's diff no longer carries it -
+ * it still draws in that commit's own view, where its numbering is
+ * settled.
  */
 export function outdatedThreads(threads: ReviewThreadRecord[]): ReviewThreadRecord[] {
   return threads.filter(
-    (thread) => statusName(thread.status) !== 'resolved' && canvasLine(thread) === null,
+    (thread) => statusName(thread.status) !== 'resolved' && canvasLine(thread, null) === null,
   );
 }
 

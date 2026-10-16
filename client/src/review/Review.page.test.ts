@@ -757,6 +757,61 @@ describe('a landing', () => {
   });
 });
 
+describe('a scope and its threads', () => {
+  /** A comment written inside a commit, whose line the branch still carries -
+   *  the server resolved it there, by content. */
+  const SCOPED = {
+    ...THREAD,
+    id: 't-scoped',
+    commit: 'abc123',
+    comments: [
+      { author: { kind: 'user' }, text: 'written inside a commit', at: 'x', review_id: null },
+    ],
+    resolution: { state: 'placed', line: 4, moved_from: null },
+  };
+  /** And one the branch no longer shows where it was. */
+  const SCOPED_GONE = {
+    ...THREAD,
+    id: 't-scoped-gone',
+    commit: 'abc123',
+    comments: [
+      { author: { kind: 'user' }, text: 'the branch lost this one', at: 'x', review_id: null },
+    ],
+    resolution: { state: 'outdated', reason: 'gone' },
+  };
+
+  /**
+   * **A thread written inside a commit draws in all changes too**, where the
+   * branch's diff still carries its line: the resolver placed it by content,
+   * and the page draws it at that landing rather than hiding it in the
+   * commit's own scope.
+   */
+  it('draws a comment written inside a commit on the all-changes canvas', async () => {
+    await draw([SCOPED]);
+    await settle(() => document.querySelector('tr.rv-insert') !== null);
+
+    expect(
+      document.querySelector('tr.rv-insert')?.textContent,
+      'the commit-scoped thread, on the branch canvas',
+    ).toContain('written inside a commit');
+  });
+
+  /**
+   * **A commit thread the branch no longer carries parks rather than being
+   * guessed onto its commit-numbered line** - that number addresses
+   * unrelated code in this numbering, and its own commit's view still draws
+   * it where it was written.
+   */
+  it('parks a commit thread the branch no longer carries', async () => {
+    await draw([SCOPED_GONE]);
+    await openConversation();
+
+    const parked = document.querySelector('.thread.parked');
+    expect(parked, 'the thread the branch cannot place parked').not.toBeNull();
+    expect(parked?.textContent, 'with its own words').toContain('the branch lost this one');
+  });
+});
+
 describe("the take's bar", () => {
   it("takes the line of the box that began the take, and no other box's", async () => {
     await draw([THREAD]);

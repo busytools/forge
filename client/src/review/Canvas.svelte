@@ -401,7 +401,7 @@
         for (const thread of scoped) {
           if (thread.anchor.path !== path) continue;
           const side = thread.anchor.side === 'old' ? 'old' : 'new';
-          const placed = canvasLine(thread);
+          const placed = canvasLine(thread, scopeCommit);
           if (placed === null) continue;
           const key = `t:${thread.id}:${statusName(thread.status)}:${thread.comments.length}:${
             reply.thread === thread.id ? 'open' : ''
@@ -742,7 +742,7 @@
       {#if file !== null}
         {@const at = lineCounts(file)}
         {@const mine = scoped.filter(
-          (thread) => thread.anchor.path === file.path && canvasLine(thread) !== null,
+          (thread) => thread.anchor.path === file.path && canvasLine(thread, scopeCommit) !== null,
         )}
         <button
           type="button"
@@ -801,7 +801,7 @@
 
 {#snippet fileSection(file: BuiltFile)}
   {@const mine = scoped.filter(
-    (thread) => thread.anchor.path === file.path && canvasLine(thread) !== null,
+    (thread) => thread.anchor.path === file.path && canvasLine(thread, scopeCommit) !== null,
   )}
   <!-- The floor is the section's, and the MEASUREMENT is its inner body's:
        an observer on the floored section records the clamp, so the height

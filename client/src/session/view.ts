@@ -1744,7 +1744,7 @@ export function reviewSets(record: SessionRecord | null, now: number): ReviewSet
         age: ageOf(round.created_at, now),
         chips,
         threads: threadsInRound(threads, round.id).map((thread) => {
-          const placed = thread.commit === null ? canvasLine(thread) : null;
+          const placed = thread.commit === null ? canvasLine(thread, null) : null;
           const excerpt = codeAround(record, thread, placed);
           return {
             id: thread.id,
