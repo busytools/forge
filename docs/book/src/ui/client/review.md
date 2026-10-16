@@ -108,7 +108,8 @@ heading grown by them, because the viewer numbers every row from that
 heading and rows spliced in by hand would draw a numbering it never agreed
 to. The lines come from the file's whole content read at the scope's own
 revision - a commit's tree for a commit's scope, the branch tip for all
-changes - bounded by the same ceiling a document read is. **The page asks
+changes - bounded by the same ceiling a document read is, and answered as a
+flagged short read at that ceiling rather than as a refusal. **The page asks
 for that read when it draws a file**, because the answer decides which
 controls exist: a deleted file, a binary, a submodule, a read that could not
 run or was cut before the gap, each earns none rather than a door that opens

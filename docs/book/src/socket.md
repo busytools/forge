@@ -308,6 +308,22 @@ over the ceiling, a PDF handed reviewable, or a markdown or text kind that
 is not UTF-8 - and that sentence is what a viewer draws as its own line. The
 answer is a `document_read` message or that error; those are its only two.
 
+**`file_content {session, path, sha}`** - one file's whole content at a
+revision, for a review page's between-hunk expansion. The record's diff
+carries bounded hunks, so the lines between them are what only this read
+can supply: `sha` is the scope's own revision - a commit's tree for a
+commit's scope - and `null` reads the seat's branch tip, the new side of
+the all-changes diff. **The revision is resolved to a commit id before git
+sees it**, so an option-shaped string is refused as a revision rather than
+read as a flag. The read is bounded by the same `[documents] max_size_mib`
+ceiling the document read is, and by the file's SIZE first (`git cat-file
+-s`): a file inside the ceiling reads whole, and one over it answers the
+lines the ceiling reaches, flagged `truncated`, rather than refusing.
+**There is no `error` arm**: a read that could not run answers as a
+`file_content` message with the `failed` state and the sentence for its
+`why`, because a page draws that as the absence of a control rather than as
+a broken file.
+
 **Binary messages are frames, and a frame's first byte says which kind.** A
 client that captures sends one dictation frame per 20 ms of speech:
 
@@ -451,6 +467,13 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   under the seat that asked - and so does one whose review store could not
   be read, because an answer with no comments would draw an uncommented
   document.
+- **`file_content {session, path, sha, content}`** - in answer to
+  `file_content`: the three names of the ask back - so a page holding two
+  seats, two scopes or several files routes each answer to its own ask, and
+  the scope it names is the one that asked rather than the one on screen -
+  and the read under `content`: `{"state": "read", "lines": [...],
+  "truncated": bool}` for a read, `{"state": "failed", "why": ...}` for one
+  that could not run. There is no `error` arm.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
 - **`browser_ask {id, seat, tool, args}`** - one browser tool call, sent to
   the client that holds the browser role. **This is the socket's only
@@ -662,9 +685,11 @@ one on screen.
 - **Anything drawn from the diff.** The changed files and their raw hunks
   cross, bounded and flagged (the session table's `diff` row); what does
   not is any rendering of them - glyphs, colours, folding, a tree,
-  highlighting - and the heavier reads a review surface may want beyond
-  those two layers, like a per-commit history or a diff against an
-  arbitrary base.
+  highlighting. The two heavier reads a review surface wants are here now:
+  one commit's own diff (`commit_diff`, asked for on demand rather than
+  carried on the record) and one file's whole content at a revision
+  (`file_content`, above, for a between-hunk expansion). What is still not
+  here is a diff against an arbitrary base.
 - **A monitor's tail as it runs.** `read_call_output` answers a call's own
   output - the newest lines of the file the task wrote to, or a named
   reason there is none - and a Monitor's file is the same read, so the
