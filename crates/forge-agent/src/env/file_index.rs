@@ -276,6 +276,12 @@ pub fn collect_candidates(
     candidates
 }
 
+/// Whether a root-relative path is under the root's own `.git` - the walk
+/// drops it the way the watch does, with one ruling so the two cannot drift.
+fn is_under_git(rel: &Path) -> bool {
+    rel.components().next().is_some_and(|first| first.as_os_str() == ".git")
+}
+
 /// Walk `walk_root` (rooted relative to `root`), invoking `emit` for
 /// each `FileCandidate`. `emit` returning `false` cancels the walk.
 /// Returns `true` when the walk completed naturally, `false` when
@@ -288,11 +294,15 @@ fn for_each_candidate(
     emit: &mut impl FnMut(FileCandidate) -> bool,
 ) -> bool {
     let mut builder = ignore::WalkBuilder::new(walk_root);
+    let filter_root = root.to_path_buf();
     builder
         .hidden(false)
         .git_ignore(respect_gitignore)
         .git_global(respect_gitignore)
         .git_exclude(respect_gitignore)
+        .filter_entry(move |entry| {
+            entry.path().strip_prefix(&filter_root).map_or(true, |rel| !is_under_git(rel))
+        })
         .sort_by_file_path(std::cmp::Ord::cmp);
 
     for result in builder.build() {
@@ -391,7 +401,7 @@ impl WatchFilter {
         else {
             return false;
         };
-        if rel.components().next().is_some_and(|first| first.as_os_str() == ".git") {
+        if is_under_git(rel) {
             return true;
         }
         let Some(matcher) = self.matcher.as_ref() else { return false };
@@ -617,6 +627,31 @@ mod tests {
             !filter.is_ignored(root, &root.join("src/main.rs")),
             "and a tracked path is the control: it is not filtered",
         );
+    }
+
+    /// The walk drops `.git` the way the watch already does: git's own
+    /// bookkeeping moves on almost every git command, and an entry indexed
+    /// there is one the watch can never mark dirty.
+    #[test]
+    fn the_walk_does_not_index_git_internals() {
+        let dir = fixture();
+        let root = dir.path();
+        touch(&root.join(".git/config"));
+        touch(&root.join(".git/refs/heads/main"));
+
+        for respect_gitignore in [true, false] {
+            let candidates = collect_candidates(root, root, respect_gitignore);
+            let paths: Vec<&str> =
+                candidates.iter().map(|candidate| candidate.rel_path.as_str()).collect();
+            assert!(
+                !paths.iter().any(|path| path.starts_with(".git/")),
+                ".git is not the tree's ({respect_gitignore}): {paths:?}",
+            );
+            assert!(
+                paths.contains(&"src/main.rs"),
+                "and a real file still lists, which is the control ({respect_gitignore}): {paths:?}",
+            );
+        }
     }
 
     /// The change watch reports a write to the tree.
