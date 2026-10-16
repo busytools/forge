@@ -16,13 +16,15 @@ just check-feature-configs
 tests and the client-dependency bootstrap's, the shell crate's rustfmt
 check (`client-tauri-fmt`), the client's
 Prettier check, ESLint, `svelte-check` and
-`tsc --noEmit` and then its vitest run, the shell crate's android
+`tsc --noEmit` and then its vitest run, the shell crate's clippy and tests
+(`client-tauri-clippy`, `client-tauri-test`), its android
 warnings check (`client-android-warnings`),
 clippy with warnings denied, `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features`, and `cargo doc`. CI's set
 minus its `cargo check --release` job, and plus the
 android warnings check CI cannot run yet (`client-android-warnings`; its
-vendoring refuses non-macOS hosts - #1959).
+vendoring refuses non-macOS hosts - #1959, closed as an enhancement and
+tracked in #2258).
 
 The gate is two commands: `just check`, and `just check-feature-configs`,
 which compiles the configuration `install.sh` builds. Both green before
@@ -33,15 +35,18 @@ first when it is missing or older than `package-lock.json`, so the first
 `just check` there runs whole rather than stopping at the Prettier step.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
-workspace's cargo steps do not reach it and, in CI, only the `cargo fmt
---check` job's second invocation does. `just check`
+workspace's cargo steps do not reach it; in CI its clippy and tests are the
+`client-tauri` job's, and its rustfmt check the `cargo fmt --check` job's
+second invocation. `just check`
 reaches it through `client-tauri-fmt` (the shell crate's own `cargo fmt
---check`) and `client-android-warnings` (the crate compiled for
+--check`), the crate's own clippy and tests (`client-tauri-clippy` and
+`client-tauri-test`) and `client-android-warnings` (the crate compiled for
 `aarch64-linux-android` with warnings denied, which is what catches
 desktop-only code going dead on Android); the Unicode punctuation gate and
 the client's Prettier step reach it too.
-`just client-tauri-check` builds the shipping configuration and `just
-client-tauri-bundle` adds the bundles. `just client-android-check`
+`just client-tauri-check` builds the shipping configuration (and runs the
+tests) and `just client-tauri-bundle` adds the bundles.
+`just client-android-check`
 compiles the Kotlin half and runs its unit tests, because nothing else
 reaches that code; it needs the Android SDK and a JDK.
 

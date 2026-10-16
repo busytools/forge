@@ -421,10 +421,10 @@ impl Mic {
     /// open, so the next press records from the press.
     ///
     /// **One naming a take other than the recording does nothing** (#2252,
-    /// #2279): a stop in flight lands after the take it names has ended
-    /// - the page's own re-press may already have begun the next, and a
-    /// reload's discarded page leaves its take for another page to end - and
-    /// the take that followed is not this one's to throw away.
+    /// #2279): a stop in flight lands after the take it names has ended -
+    /// the page's own re-press may already have begun the next, and a
+    /// reload's discarded page leaves its take for another page to end -
+    /// and the take that followed is not this one's to throw away.
     pub fn stop(&self, take: &str) {
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(held) = warm.as_mut() else {
@@ -444,8 +444,8 @@ impl Mic {
     ///
     /// **One naming a take other than the recording drops its tail without
     /// ending anything** (#2252, #2279): the window it sleeps is wide enough
-    /// for that take to end - by a drop, or the server's own `dictate_ended`
-    /// - and for the page to begin its next take, and the take that followed
+    /// for that take to end - by a drop, or the server's own `dictate_ended` -
+    /// and for the page to begin its next take, and the take that followed
     /// is not this one's to throw away.
     pub async fn drain(&self, take: &str) {
         tokio::time::sleep(Duration::from_millis(DRAIN_MS)).await;

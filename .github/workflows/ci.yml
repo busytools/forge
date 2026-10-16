@@ -153,10 +153,10 @@ jobs:
   # it: without this the client's steps run only when a person types them,
   # and a gate that does not run reports what a gate that passes does. The
   # steps are `just check`'s frontend client recipes, in its order, plus the
-  # build: `just check` also carries the shell's two Rust steps, the rustfmt
-  # check (which the `fmt` job above runs) and the android warnings step,
-  # which this job cannot run (its vendoring refuses non-macOS hosts; the CI
-  # side is issue #1959).
+  # build. The shell's own Rust steps live in the `client-tauri` job below
+  # and in the `fmt` job above; the android warnings step has no job, because
+  # its vendoring refuses non-macOS hosts (#1959, closed as an enhancement
+  # and tracked in #2258).
   client:
     name: client format, lint, build, typecheck and tests
     runs-on: ubuntu-latest
@@ -177,3 +177,38 @@ jobs:
       - run: npm run typecheck:markup
       - run: npm run typecheck
       - run: npm test
+
+  # The shell crate under `client/src-tauri/` is a cargo workspace root of its
+  # own, so no other job here compiles it. `just check` runs its clippy and
+  # its tests (`client-tauri-clippy`, `client-tauri-test`), and this job runs
+  # the same two recipes: without it they run only when a person types them,
+  # and a gate that does not run reports what a gate that passes does.
+  #
+  # The crate links the webview stack and, through `forge-capture`, cpal's
+  # Linux backend, so the runner takes Tauri's own Linux prerequisite list
+  # plus ALSA. The tests themselves need no browser and no vendored stack:
+  # every case that does is `#[ignore]`d.
+  client-tauri:
+    name: client shell clippy and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The webview stack the crate links: `libwebkit2gtk-4.1-dev` is Tauri's
+      # own entry and pulls GTK, libsoup and JavaScriptCore with it, so the
+      # rest of the list is Tauri's; `libasound2-dev` is cpal's Linux backend,
+      # as in the jobs above.
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev
+      - uses: ./.github/actions/rust
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: client-tauri
+          # The crate carries its own target dir, which the default root
+          # workspace would not cache.
+          workspaces: client/src-tauri -> target
+      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@just
+      - run: just client-tauri-clippy
+      - run: just client-tauri-test

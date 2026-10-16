@@ -77,7 +77,9 @@ check (`client-tauri-fmt`: `cargo fmt --check` against the shell's own
 workspace root), the client's Prettier check,
 its ESLint, `svelte-check` and `tsc --noEmit`
 and then its vitest run,
-the shell crate's android warnings check (`client-android-warnings`:
+the shell crate's clippy and its own nextest run
+(`client-tauri-clippy`, `client-tauri-test`), its android warnings check
+(`client-android-warnings`:
 `cargo check --target aarch64-linux-android` with warnings denied),
 `cargo clippy --all-targets --workspace -- -D warnings` once per feature
 set (with and without `--all-features`),
@@ -97,22 +99,26 @@ The gate is two commands: run this one before opening a pull request, and
 this is CI's set with two differences: CI also runs
 `cargo check --release`, while `client-android-warnings` (the shell's
 android step) is in `just check` alone - the vendoring its build needs
-refuses non-macOS hosts, so CI runs no such job yet (issue #1959). The
+refuses non-macOS hosts, so CI runs no such job yet (issue #1959, closed
+as an enhancement and tracked in #2258). The
 client's steps are in here too, so the client and the server are not
 separate commands, and a failure on either side lands on the same verdict
 line.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
-workspace's cargo steps do not reach it and, in CI, only the `cargo fmt
---check` job's second invocation does. `just check` reaches it through
-`client-tauri-fmt` (the shell crate's own `cargo fmt --check`) and
+workspace's cargo steps do not reach it; in CI its clippy and tests are
+the `client-tauri` job's, and its rustfmt check the `cargo fmt --check`
+job's second invocation. `just check` reaches it through
+`client-tauri-fmt` (the shell crate's own `cargo fmt --check`), the
+crate's own clippy and tests (`client-tauri-clippy` and
+`client-tauri-test`) and
 `client-android-warnings` - the crate compiled
 for `aarch64-linux-android` with warnings denied, which is what catches
 desktop-only code going dead on Android - and the Unicode punctuation gate
-and the client's Prettier step reach it too. Everything else about the
-shell needs `just client-tauri-check` (the shipping configuration) or
-`just client-tauri-bundle` (plus the bundles), and the first is the one to
-run before handing over a change there.
+and the client's Prettier step reach it too. The shell's shipping
+configuration needs `just client-tauri-check` (which runs the tests too)
+or `just client-tauri-bundle` (plus the bundles), and the first is the one
+to run before handing over a change there.
 
 A client that BUNDLES takes one step of its own first: `just
 vendor-browser-stack` fetches and verifies the driver the client hosts -
@@ -141,6 +147,8 @@ just test             # forge-sdk only
 just conformance      # replay every committed wire baseline
 just doctest          # compile the workspace's doctests
 just doc              # rustdoc with warnings denied
+just client-tauri-clippy   # the shell crate's lints
+just client-tauri-test     # the shell crate's tests
 just client-tauri-check    # the client shell, in the shipping configuration
 just client-android-check  # the Kotlin half and its unit tests
 just web-image-check       # the web image's poller and serving tests
