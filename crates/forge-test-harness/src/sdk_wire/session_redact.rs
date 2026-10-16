@@ -736,39 +736,57 @@ pub fn transform_persistence_line(
     // before the disk marks drop, user frames only: the CLI writes
     // `isSynthetic` from `isMeta || isVisibleInTranscriptOnly ||
     // isCompactSummary` there, and `turnCompanion` never travels.
-    // Keeping one disk mark and dropping its siblings manufactured a
-    // row the CLI cannot emit (#1544).
+    // Keeping one disk mark and dropping its siblings manufactures a
+    // row the CLI cannot emit.
     let synthetic = ty == "user"
         && ["isMeta", "isVisibleInTranscriptOnly", "isCompactSummary"]
             .iter()
             .any(|mark| obj.get(*mark).and_then(Value::as_bool) == Some(true));
 
+    // `isVirtual` is the one other spelling pair: the wire writes
+    // `is_virtual`.
+    let virtual_row = obj.get("isVirtual").and_then(Value::as_bool) == Some(true);
+
     // Drop persistence-only fields the wire decoder doesn't expect.
     // `toolUseResult` / `lastPrompt` / `content` (snapshot body) carry
     // raw tool output / prompt text with embedded paths + project
-    // content - must be removed entirely, not just scrubbed.
+    // content - must be removed entirely, not just scrubbed. The
+    // camelCase names below are disk-only too: no live wire capture
+    // carries any of them, and the CLI writes several of them on every
+    // session row, so a regenerated baseline that kept them would
+    // describe a wire shape the CLI does not send.
     for field in [
         "attachment",
+        "classifierMetaLines",
         "content",
         "cwd",
         "entrypoint",
         "gitBranch",
+        "imagePasteIds",
         "isCompactSummary",
-        "isSidechain",
         "isMeta",
+        "isSidechain",
         "isSnapshotUpdate",
+        "isVirtual",
         "isVisibleInTranscriptOnly",
         "lastPrompt",
         "messageId",
         "operation",
         "permissionMode",
         "promptId",
+        "promptSource",
+        "queueSkipAttachments",
+        "queueTranscriptOnly",
         "requestId",
+        "slug",
         "snapshot",
         "sourceToolAssistantUUID",
+        "sourceToolUseID",
         "timestamp",
+        "toolDenialKind",
         "toolUseResult",
         "turnCompanion",
+        "turnOrigin",
         "userType",
         "version",
     ] {
@@ -777,6 +795,9 @@ pub fn transform_persistence_line(
 
     if synthetic {
         obj.insert("isSynthetic".into(), Value::Bool(true));
+    }
+    if virtual_row {
+        obj.insert("is_virtual".into(), Value::Bool(true));
     }
 
     // Redact message content + tool input/result bodies.
@@ -1285,9 +1306,9 @@ mod tests {
     /// The disk gives a row nobody typed four spellings; the wire has one.
     /// A corpus row carrying a disk spelling with the mark that would have
     /// travelled beside it removed describes a mark set the CLI cannot
-    /// emit (#1544) - the wire writes `isSynthetic` from the disk's
-    /// `isMeta || isVisibleInTranscriptOnly || isCompactSummary`, and
-    /// `turnCompanion` never travels.
+    /// emit - the wire writes `isSynthetic` from the disk's `isMeta ||
+    /// isVisibleInTranscriptOnly || isCompactSummary`, and `turnCompanion`
+    /// never travels.
     #[test]
     fn disk_synthetic_marks_fold_into_the_wires_spelling() {
         // The companion row the CLI writes beside an image paste.
@@ -1337,7 +1358,59 @@ mod tests {
                 Some(&json!(true)),
                 "the predicate's arm {mark} stamps the same wire spelling: {summary}"
             );
+            assert!(
+                summary.get(mark).is_none(),
+                "the disk spelling {mark} reached the wire: {summary}"
+            );
         }
+    }
+
+    /// Every other name the disk writes and the wire does not, swept
+    /// together: each was carried by no live capture, and the CLI's own
+    /// outbound user-frame literal names none of them. `isVirtual` is the
+    /// exception that proves the rule - it is the one with a wire
+    /// spelling, `is_virtual`.
+    #[test]
+    fn persistence_only_names_never_reach_the_wire() {
+        let mut row = json!({
+            "type": "user",
+            "message": {"role": "user", "content": "swept row"},
+            "uuid": "uuid-swept",
+            "isMeta": true,
+        });
+        let disk_only = [
+            "promptSource",
+            "turnOrigin",
+            "imagePasteIds",
+            "toolDenialKind",
+            "slug",
+            "sourceToolUseID",
+            "queueSkipAttachments",
+            "queueTranscriptOnly",
+            "classifierMetaLines",
+        ];
+        for name in disk_only {
+            row[name] = json!("disk value");
+        }
+        row["isVirtual"] = json!(true);
+        let out = transform_row(&row);
+        for name in disk_only {
+            assert!(out.get(name).is_none(), "the disk-only name {name} reached the wire: {out}");
+        }
+        assert_eq!(
+            out.get("is_virtual"),
+            Some(&json!(true)),
+            "the wire's own spelling carries the virtual mark: {out}"
+        );
+        assert!(
+            out.get("isVirtual").is_none(),
+            "the disk spelling of the virtual mark reached the wire: {out}"
+        );
+        assert_eq!(
+            out.get("isSynthetic"),
+            Some(&json!(true)),
+            "the sweep does not eat the fold: {out}"
+        );
     }
 
     /// The other half of the fold: only a user frame the CLI's predicate
