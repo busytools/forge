@@ -344,7 +344,7 @@ impl BrowserHost {
         {
             let node = driver::node_path(&paths.stack);
             let cli = driver::cli_path(&paths.stack);
-            return match profile {
+            match profile {
                 None => {
                     // **The seat's auto profile is ensured on its first
                     // unnamed reach**, before anything is driven: the record
@@ -408,7 +408,7 @@ impl BrowserHost {
                     .await;
                     outcome
                 }
-            };
+            }
         }
         #[cfg(target_os = "android")]
         {
