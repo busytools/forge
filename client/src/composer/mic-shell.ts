@@ -23,7 +23,7 @@ import { mintPromptId } from '../wire/ids';
 import type { MicSource } from './take';
 
 /**
- * This page load's own id, stated on every hold and press.
+ * This page load's own id, stated on the hold and the press.
  *
  * It is what lets the shell end a take a reload stranded: a reload discards
  * the page that held the take's stop, so a recording another page finds is
@@ -49,6 +49,12 @@ export class ShellMic implements MicSource {
      * the take learns it from here and remembers it, as it does on the web.
      */
     readonly resolved: { id: string; label: string },
+    /**
+     * This take's own token on the wire, minted at the open. The shell
+     * matches the take's stop and drain against it, which the page id could
+     * not do: a second take of the same page is a different token.
+     */
+    private readonly take: string,
   ) {}
 
   /**
@@ -60,18 +66,23 @@ export class ShellMic implements MicSource {
    * start with the input it opened.
    */
   static async open(device: string | null): Promise<ShellMic> {
+    const take = mintPromptId();
     const held: { mic: ShellMic | null } = { mic: null };
     const hearing = await listen<number[]>('client://mic', (event) => {
       held.mic?.onFrame?.(new Uint8Array(event.payload));
     });
     let resolved: { id: string; label: string };
     try {
-      resolved = await invoke<{ id: string; label: string }>('client_mic_start', { device, page });
+      resolved = await invoke<{ id: string; label: string }>('client_mic_start', {
+        device,
+        page,
+        take,
+      });
     } catch (why) {
       hearing();
       throw why;
     }
-    const mic = new ShellMic(hearing, resolved);
+    const mic = new ShellMic(hearing, resolved, take);
     held.mic = mic;
     return mic;
   }
@@ -103,16 +114,19 @@ export class ShellMic implements MicSource {
    * what that costs is one partial frame, bounded.
    */
   async drain(): Promise<void> {
-    await invoke('client_mic_drain', { page });
+    await invoke('client_mic_drain', { take: this.take });
   }
 
   /**
    * End the take at once, for audio that is being thrown away. The device
    * stays held, so the next press is warm.
+   *
+   * It names this take's own token, so one landing after the take ended -
+   * the page re-pressed - ends nothing.
    */
   stop(): void {
     this.hearing();
-    void invoke('client_mic_stop', { page }).catch(() => {
+    void invoke('client_mic_stop', { take: this.take }).catch(() => {
       // The shell is gone, and the held device went with it.
     });
   }

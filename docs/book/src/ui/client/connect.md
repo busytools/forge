@@ -57,12 +57,12 @@ asked for and not the one the app was guessing at.
 
 ## The design plan
 
-**Colour.** The theme's own tokens, unchanged: `--bg`, `--s1`, `--line`,
-`--text`, `--muted`, `--dim`, `--accent`, `--bad`. **This screen carries
-no palette of its own**, because one theme is the project's hard scope
-rule and the server owns the palette. That is a decision rather than a
-constraint worked around: a first screen is exactly where an identity is
-usually invented, and here the identity is already the mark and the
+**Colour.** The theme's own tokens, unchanged: `--bg`, `--s1`, `--s2`,
+`--line`, `--ctl`, `--text`, `--muted`, `--dim`, `--accent`, `--bad`. **This
+screen carries no palette of its own**, because one theme is the project's
+hard scope rule and the server owns the palette. That is a decision rather
+than a constraint worked around: a first screen is exactly where an identity
+is usually invented, and here the identity is already the mark and the
 palette every later page draws with.
 
 **Type.** Fira Code throughout. The address is data, and this house sets

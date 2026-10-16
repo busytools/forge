@@ -20,7 +20,9 @@ use tracing::Instrument;
 
 use crate::SessionSlot;
 use crate::domain_session::{DomainSession, PendingAutoContinue};
-use crate::protocol::{Command, PendingInteractionSlot, PromptSource, SessionUpdate};
+use crate::protocol::{
+    Command, NoticeSeverity, PendingInteractionSlot, PromptSource, SessionUpdate,
+};
 use crate::update_fanout::UpdateFanout;
 
 pub(crate) struct SessionTask {
@@ -57,6 +59,52 @@ pub(crate) struct SessionTask {
     /// to what is RUNNING rather than to what is being read - which is the
     /// price of having one producer rather than two.
     pub(crate) conversation: Option<(Vec<forge_primitives::Message>, u32)>,
+}
+
+/// The file a call's own output sits at, off what its conversation holds:
+/// the path the task's ending frame named, else the path composed from the
+/// task id the launch frame carries while the task still runs.
+///
+/// **The ending frame's own path wins when both are reachable** - it is the
+/// CLI's word for where the output went, while the composed path is this
+/// build's reading of a layout the CLI never promised. `None` when the
+/// conversation names neither - and a composition that finds no file is the
+/// same answer rather than a third one, so the caller has one miss to draw.
+///
+/// **`base` is a thunk because a settled read never needs it**: resolving it
+/// costs a `realpath` syscall, and a call whose ending frame named the file
+/// answers off that frame alone. Only the composition's own lookup pays for
+/// it. It is a parameter rather than read here so the composition can be
+/// exercised against a scratch tree; the arm passes the real base's function.
+fn resolve_call_output_path(
+    history: &[forge_primitives::Message],
+    call_id: &str,
+    base: impl FnOnce() -> std::path::PathBuf,
+) -> Option<std::path::PathBuf> {
+    let named = history.iter().find_map(|message| match message {
+        forge_primitives::Message::TaskNotification {
+            tool_use_id: Some(id), output_file, ..
+        // An empty path is a path the frame does not carry: the wire sends
+        // `output_file: ""` for a task with no file, and reading that as a
+        // path would answer "gone" about a file that never existed.
+        } if id == call_id && !output_file.is_empty() => Some(std::path::PathBuf::from(output_file)),
+        _ => None,
+    });
+    if named.is_some() {
+        return named;
+    }
+    let (session_id, task_id) = history.iter().find_map(|message| match message {
+        forge_primitives::Message::TaskStarted {
+            task_id,
+            tool_use_id: Some(id),
+            session_id,
+            ..
+        } if id == call_id => Some((session_id.clone(), task_id.clone())),
+        _ => None,
+    })?;
+    let base = base();
+    crate::output_tail::probe_task_output_layout(&base);
+    crate::output_tail::compose_task_output_path(&base, &session_id, &task_id)
 }
 
 impl SessionTask {
@@ -248,6 +296,19 @@ impl SessionTask {
                     },
                 });
             }
+            if let Some(ended) = &moved.turn_ended {
+                match ended {
+                    MovedTurnEnd::Complete { terminal_reason } => {
+                        self.emit(SessionUpdate::TurnComplete {
+                            key: self.key.clone(),
+                            terminal_reason: *terminal_reason,
+                        });
+                    }
+                    MovedTurnEnd::Cancelled => {
+                        self.emit(SessionUpdate::TurnCancelled { key: self.key.clone() });
+                    }
+                }
+            }
         }
 
         // Mirror Connected into the project catalog so the Projects
@@ -310,6 +371,12 @@ impl SessionTask {
                 // spawn entry: production hoists a domain straight into
                 // `domain_handles` and never registers one, so a clear on
                 // registration would never run at all.
+                //
+                // **A death the reader has not been shown does not hold
+                // this record down.** It rides `died` and its own reason on
+                // the row, so the lifecycle goes back to telling the truth
+                // about NOW - a recovered, working seat reading Failed is
+                // the same lie the issue was filed against, mirrored.
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.clear_spawn_failure(&key);
                 }
@@ -478,6 +545,29 @@ impl SessionTask {
                     // user-typed prompts.
                     self.drain_parked();
                 }
+                // A connect on a slot whose last occupant died is not a
+                // silent swap: the reader is told which session died and
+                // whether this one resumed it or replaced it under a new id.
+                // Announced once, by the first connect that answers the
+                // death, whichever id it lands under; the record itself
+                // stays until a reader is shown the seat AND this
+                // announcement has gone out.
+                if let Some(workspace) = self.workspace.upgrade()
+                    && let Some(dead) = workspace.unannounced_death(&key)
+                {
+                    let text = if dead.as_str() == session_id.as_str() {
+                        format!("The agent's session ended; forge resumed it ({session_id}).")
+                    } else {
+                        format!(
+                            "The agent's session ended; forge restarted it under a new id ({dead} -> {session_id})."
+                        )
+                    };
+                    self.emit(SessionUpdate::Notice {
+                        key: key.clone(),
+                        severity: NoticeSeverity::Error,
+                        text,
+                    });
+                }
                 // Re-tag must fire on BOTH first-Connected and
                 // post-/new Connected paths: a /new writes a fresh
                 // JSONL, and an untagged one is listed by the boot scan
@@ -512,6 +602,30 @@ impl SessionTask {
                 // the attempt happened.
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.record_spawn_failure(&key, &message);
+                    // An occupant that had been up and ended here died; the
+                    // connect that next lands on the slot is told so and says
+                    // which session it answers for. What rides on the row
+                    // until a reader is shown the seat is the DEATH, not this
+                    // failure - the recovering connect clears the failure as
+                    // it always did, and `record_death` keeps the reason for
+                    // the row. A spawn that never connected records none:
+                    // nothing was running.
+                    if self.connected_once
+                        && let Some(occupant) = self.domain.lock().session_id.clone()
+                    {
+                        // WARN, and with the slot on it: this is the one line
+                        // that says a seat's session ended, and a reader
+                        // triaging it needs to know which seat.
+                        tracing::warn!(
+                            target: "forge_workspace::session_task",
+                            event_name = "session_ended",
+                            slot = %key.display(),
+                            session_id = %occupant,
+                            error = %message,
+                            "the session's subprocess ended; the seat keeps the death until a reader is shown it",
+                        );
+                        workspace.record_death(&key, occupant, &message);
+                    }
                 }
                 // A `/new` or `/resume` that fails to respawn ends the
                 // live turn without a Result, so flush the turn's own
@@ -1032,32 +1146,25 @@ impl SessionTask {
                     compaction_count: *compaction_count,
                 });
             }
-            // Answered here for the same reason a replay is: the frame that
-            // named the call's output file is in the conversation this task
-            // carries, and nowhere a read could reach without walking the
-            // transcript. A call the conversation no longer names - or the
-            // window has carried off - is the no-path reason, not a blank.
+            // Answered here for the same reason a replay is: the frames that
+            // name the call's output file - the ending one that names it, the
+            // launch one its task id composes from - are in the conversation
+            // this task carries, and nowhere a read could reach without
+            // walking the transcript. A call the conversation no longer names
+            // - or the window has carried off - is the no-path reason, not a
+            // blank.
             Command::ReadCallOutput { key: _, call_id } => {
                 let path = self.conversation.as_ref().and_then(|(history, _)| {
-                    history.iter().find_map(|message| match message {
-                        forge_primitives::Message::TaskNotification {
-                            tool_use_id: Some(id),
-                            output_file,
-                            ..
-                        // An empty path is a path the frame does not carry:
-                        // the wire sends `output_file: ""` for a task with no
-                        // file, and reading that as a path would answer
-                        // "gone" about a file that never existed.
-                        } if id == &call_id && !output_file.is_empty() => {
-                            Some(output_file.clone())
-                        }
-                        _ => None,
-                    })
+                    resolve_call_output_path(
+                        history,
+                        &call_id,
+                        crate::output_tail::task_output_base,
+                    )
                 });
                 let output = match path {
                     None => forge_primitives::CallOutput::NoPath,
                     Some(path) => match crate::output_tail::read_output_file_tail(
-                        std::path::Path::new(&path),
+                        &path,
                         Self::CALL_OUTPUT_MAX_LINES,
                     ) {
                         None => forge_primitives::CallOutput::FileGone,
@@ -1743,6 +1850,19 @@ pub(crate) struct Moved {
     /// A failed turn armed the continuation, which the caller fires the
     /// moment this fold returns.
     pub nudge: bool,
+    /// The seat's turn ended in this event, as the caller announces it.
+    /// `None` while no turn ended here.
+    pub turn_ended: Option<MovedTurnEnd>,
+}
+
+/// What a turn's end was, for the caller to announce.
+pub(crate) enum MovedTurnEnd {
+    /// The turn finished (or failed) on its own; the CLI's terminal reason
+    /// rides where it gave one.
+    Complete { terminal_reason: Option<forge_primitives::runtime::TerminalReason> },
+    /// The reader's own interrupt: the CLI reports it as a failed `Result`
+    /// too, so the cancel flag is what tells the two apart.
+    Cancelled,
 }
 
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
@@ -1764,6 +1884,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     let held_agents = domain.available_agents.clone();
     let held_cards = domain.cards_snapshot.clone();
     let mut nudge = false;
+    let mut turn_ended = None;
     hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
@@ -1786,13 +1907,28 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.process_snapshot = None;
     }
     if let AgentEvent::SdkMessage {
-        msg: forge_primitives::Message::Result { is_error, subtype, errors, .. },
+        msg: forge_primitives::Message::Result { is_error, subtype, errors, terminal_reason, .. },
         ..
     } = event
     {
         // The stamp is spent on every outcome: a cancel that raced a turn
         // the CLI had already finished must not exempt the next failure.
         let cancelled = std::mem::take(&mut domain.pending_cancel);
+        // The turn's end is announced (#1486): the frames carry the
+        // Result, but a page's live row reads its liveness from the record
+        // and only this frame asks it to re-read. **Every Result announces**,
+        // including one covering no turn at all (a `/compact` on an idle
+        // seat): the frame states the CLI's terminator, and a page whose
+        // record says nothing is in flight no-ops on it. The cancel flag is
+        // the one the failure mark already spends, so an interrupt racing a
+        // finished turn is announced as cancelled and a cancel spent by an
+        // earlier result reads as a completion - the page settles either
+        // way, and only its record-consult differs.
+        turn_ended = Some(if cancelled {
+            MovedTurnEnd::Cancelled
+        } else {
+            MovedTurnEnd::Complete { terminal_reason: *terminal_reason }
+        });
         // An errored `Result` marks the slot for the rail, unless the
         // reader asked for the interruption - a cancel ends with the same
         // failed result a genuine error does.
@@ -2078,6 +2214,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         cards: domain.cards_snapshot != held_cards
             && matches!(event, AgentEvent::SdkMessage { .. }),
         nudge,
+        turn_ended,
     }
 }
 
@@ -3211,6 +3348,36 @@ mod tests {
         .expect("parse result message")
     }
 
+    /// The same frame with the CLI's terminal reason aboard.
+    fn result_message_with_reason(reason: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "worker",
+            "terminal_reason": reason,
+        }))
+        .expect("parse result message")
+    }
+
+    /// A `Result` covering no turn, as a local command (`/compact` on an
+    /// idle seat) emits: the capture's seventh result of a six-turn run.
+    fn result_message_for_a_local_command() -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 0,
+            "is_error": false,
+            "num_turns": 0,
+            "session_id": "worker",
+        }))
+        .expect("parse result message")
+    }
+
     /// An errored `Result` carrying the CLI's own error strings, which are
     /// what the nudge's reason is composed from.
     fn result_message_with_errors(errors: &[&str]) -> forge_primitives::Message {
@@ -3264,6 +3431,124 @@ mod tests {
         assert_eq!(waiting, 1, "the replied-to thread now awaits the reviewer");
         assert!(message.contains("review #1"), "the notice names the review: {message}");
         assert!(message.contains("1 replied"), "the tally counts the reply: {message}");
+    }
+
+    /// **A turn's end is announced** (#1486): the frames carry a `Result`
+    /// when a turn ends, but a page's live row reads its liveness from the
+    /// record - and only this frame asks the page to re-read it. Never
+    /// sent, every frame-built turn stayed live for the rest of the
+    /// session.
+    #[tokio::test]
+    async fn a_results_end_announces_the_turn_complete() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("turn-ends");
+        let (mut task, mut update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "turn-ends".to_owned(),
+            msg: result_message("success", false),
+        });
+
+        let mut said = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            match frame.update {
+                SessionUpdate::TurnComplete { key, terminal_reason } => {
+                    said.push(("complete", key, terminal_reason));
+                }
+                SessionUpdate::TurnCancelled { key } => said.push(("cancelled", key, None)),
+                _ => {}
+            }
+        }
+        assert_eq!(said.len(), 1, "exactly one end frame, saw {said:?}");
+        assert_eq!(said[0].0, "complete", "an ordinary end, not the cancel's frame");
+        assert_eq!(said[0].1, key, "announced on the seat its turn ended");
+        assert_eq!(said[0].2, None, "the test's Result carries no terminal reason");
+    }
+
+    /// The CLI's terminal reason rides the frame when the result carried
+    /// one, and a local command's result - covering no turn - still
+    /// announces: the frame states the CLI's terminator, and the page's
+    /// handlers no-op when nothing is in flight.
+    #[tokio::test]
+    async fn a_results_terminal_reason_rides_the_frame() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("turn-reason");
+        let (mut task, mut update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "turn-reason".to_owned(),
+            msg: result_message_with_reason("completed"),
+        });
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "turn-reason".to_owned(),
+            msg: result_message_for_a_local_command(),
+        });
+
+        let mut said = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::TurnComplete { terminal_reason, .. } = frame.update {
+                said.push(terminal_reason);
+            }
+        }
+        assert_eq!(
+            said,
+            [Some(forge_primitives::runtime::TerminalReason::Completed), None],
+            "the reason rides the frame, and a turn-less result announces without one",
+        );
+    }
+
+    /// A transport `Error` announces no end of its own: it ends the turn
+    /// too (`liveness_of` says so), but the page learns that from the
+    /// lifecycle, and the frame is the `Result`'s.
+    #[tokio::test]
+    async fn a_transport_error_announces_no_end() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("turn-error");
+        let (mut task, mut update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "turn-error".to_owned(),
+            msg: forge_primitives::Message::Error {
+                error: "stream closed".to_owned(),
+                extras: serde_json::Map::new(),
+            },
+        });
+
+        let mut said = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            match frame.update {
+                SessionUpdate::TurnComplete { .. } => said.push("complete"),
+                SessionUpdate::TurnCancelled { .. } => said.push("cancelled"),
+                _ => {}
+            }
+        }
+        assert!(said.is_empty(), "a transport error is not the Result's frame: {said:?}");
+    }
+
+    /// The reader's own interrupt is the other end: the CLI reports it as a
+    /// failed `Result` too, so the cancel flag the arm already spends is
+    /// what tells the two apart.
+    #[tokio::test]
+    async fn a_cancelled_results_end_announces_the_turn_cancelled() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("turn-cancelled");
+        let (mut task, mut update_rx) = review_task_for(&workspace, &key);
+
+        task.domain.lock().pending_cancel = true;
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "turn-cancelled".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+
+        let mut said = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            match frame.update {
+                SessionUpdate::TurnComplete { .. } => said.push("complete"),
+                SessionUpdate::TurnCancelled { .. } => said.push("cancelled"),
+                _ => {}
+            }
+        }
+        assert_eq!(said, ["cancelled"], "the reader's cancel is its own frame");
     }
 
     /// A cancelled turn reaches the same `Message::Result` arm - the CLI
@@ -4050,6 +4335,220 @@ mod tests {
             workspace.take_parked_for_slot(&test_slot()).slack.is_empty(),
             "the message parked for this slot is expired, not left for a later session",
         );
+    }
+
+    /// Everything `updates` holds that is a `Notice`, as its text.
+    fn notices_of(
+        updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
+    ) -> Vec<(NoticeSeverity, String)> {
+        drain_updates(updates)
+            .into_iter()
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Record a death on `key`'s seat the way the arm above does, so a test
+    /// drives the record rather than hand-rolling it.
+    fn record_death_via_arm(task: &mut SessionTask, occupant: &str, message: &str) {
+        task.connected_once = true;
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new(occupant));
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: message.to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
+    }
+
+    /// A session that died is not silently swapped: the recovery that comes
+    /// up on the slot announces the death and what forge did about it - the
+    /// same occupant resumed, or a new one under a new id - exactly once,
+    /// and a connect with no death behind it stays quiet.
+    ///
+    /// The verb is "ended" rather than "died" on purpose: the same arm
+    /// catches a `/new` or `/resume` that failed to respawn, where the
+    /// occupant was swapped out rather than crashing, and "ended" is true
+    /// of both.
+    #[test]
+    fn a_recovery_after_a_death_announces_what_forge_did() {
+        let message = "the claude subprocess closed its output stream";
+
+        // The death: an occupant that had been up, whose subprocess ended.
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("died-and-restarted");
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
+        record_death_via_arm(&mut task, "dead-occupant", message);
+
+        // The recovery lands as its own task on the same slot, under a new id.
+        let (mut revived, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
+        revived.translate_event(connected_event("fresh-occupant", "/tmp/recovery-announced"));
+        let notices = notices_of(&mut updates);
+        assert_eq!(notices.len(), 1, "one line, and only one: {notices:?}");
+        let (severity, text) = &notices[0];
+        assert_eq!(
+            *severity,
+            NoticeSeverity::Error,
+            "a death reads at failure level: the client leads the row with the severity word",
+        );
+        assert_eq!(
+            text,
+            "The agent's session ended; forge restarted it under a new id (dead-occupant -> fresh-occupant).",
+            "the restart names both ids, in pinned words",
+        );
+
+        // A second connect on the slot stays quiet: the death is announced
+        // once, not on every connect that follows it.
+        revived.translate_event(connected_event("second-occupant", "/tmp/recovery-announced"));
+        assert!(
+            notices_of(&mut updates).is_empty(),
+            "a later connect does not re-announce the death",
+        );
+
+        // **The lifecycle tells the truth about now**: the recovering connect
+        // clears the failure as it always did, so the row reads what the seat
+        // is - and the death rides on as its own record.
+        assert_eq!(
+            workspace.spawn_failure(&key),
+            None,
+            "a recovered seat that still read Failed would be the same lie, mirrored",
+        );
+        assert!(
+            workspace.death_stands(&key),
+            "the death nobody was shown rides until a reader sees it",
+        );
+        assert_eq!(
+            workspace.death_reason(&key).as_deref(),
+            Some(message),
+            "and it carries the reason the seat died with",
+        );
+        assert!(
+            workspace.spend_death(&key),
+            "showing the seat takes the death, and answers that it did",
+        );
+        assert!(!workspace.death_stands(&key), "the record goes with the spend");
+        assert_eq!(workspace.death_reason(&key), None, "and the reason with it");
+
+        // And the same id back: the session resumed.
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("died-and-resumed");
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
+        record_death_via_arm(&mut task, "kept-occupant", message);
+        let (mut revived, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
+        revived.translate_event(connected_event("kept-occupant", "/tmp/recovery-announced"));
+        let notices = notices_of(&mut updates);
+        assert_eq!(
+            notices.first().map(|(_, text)| text.as_str()),
+            Some("The agent's session ended; forge resumed it (kept-occupant)."),
+            "the same occupant coming back reads as a resume: {notices:?}",
+        );
+
+        // Control: a connect with no death behind it draws no line.
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("connected-quiet");
+        let (mut task, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
+        task.translate_event(connected_event("first-occupant", "/tmp/plain-connect"));
+        assert!(notices_of(&mut updates).is_empty(), "a plain connect announces nothing");
+    }
+
+    /// **The spend does not eat the announcement.** A reader who opens a
+    /// crashed seat's page spends the row's trace and then wakes the seat,
+    /// so the connect that answers their own click is the first one to see
+    /// the death - and it still owes them the sentence.
+    #[test]
+    fn a_spent_death_still_announces_on_the_recovery_that_answers_the_click() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("spent-then-recovered");
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
+        record_death_via_arm(
+            &mut task,
+            "dead-occupant",
+            "the claude subprocess closed its output stream",
+        );
+
+        // The page opened: the seat was shown, the trace spent, and the
+        // recovery has not happened yet.
+        assert!(workspace.spend_death(&key), "the show took the trace");
+        assert!(!workspace.death_stands(&key), "and the row's mark is gone");
+
+        // The wake's spawn lands, under a new id.
+        let (mut revived, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
+        revived.translate_event(connected_event("fresh-occupant", "/tmp/recovery-announced"));
+        let notices = notices_of(&mut updates);
+        assert_eq!(
+            notices.first().map(|(_, text)| text.as_str()),
+            Some(
+                "The agent's session ended; forge restarted it under a new id (dead-occupant -> fresh-occupant)."
+            ),
+            "the click's own recovery is still announced: {notices:?}",
+        );
+        assert!(
+            !workspace.death_stands(&key),
+            "spent and announced leaves no standing death behind",
+        );
+    }
+
+    /// One logged event: its level and every field formatted into a string.
+    /// `record_str` forwards here, so a `%`-formatted field arrives through
+    /// this arm however the macro wrote it.
+    #[derive(Default, Clone)]
+    struct LoggedEvent(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    struct AllFields<'a>(&'a mut String);
+
+    impl tracing::field::Visit for AllFields<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, " {}={value:?}", field.name());
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LoggedEvent {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = String::new();
+            event.record(&mut AllFields(&mut fields));
+            self.0.lock().expect("capture").push((*event.metadata().level(), fields));
+        }
+    }
+
+    /// **The one line that says a seat's session ended.** It is a WARN, and
+    /// it carries the seat and the occupant: a reader triaging it has to
+    /// know which seat died, and the agent-side line alone names neither.
+    #[test]
+    fn a_death_warns_at_warn_with_the_seat_and_the_occupant() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("death-warns");
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
+
+        let capture = LoggedEvent::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            record_death_via_arm(
+                &mut task,
+                "dead-occupant",
+                "the claude subprocess closed its output stream",
+            );
+        });
+
+        let events = capture.0.lock().expect("capture");
+        let (level, fields) = events
+            .iter()
+            .find(|(_, fields)| fields.contains("event_name=\"session_ended\""))
+            .unwrap_or_else(|| panic!("no session_ended event; saw {events:?}"));
+        assert_eq!(*level, tracing::Level::WARN, "a session's end reads at WARN: {fields}");
+        for needle in [
+            "slot=TestOrg/test-project/death-warns",
+            "session_id=dead-occupant",
+            "error=the claude subprocess closed its output stream",
+        ] {
+            assert!(fields.contains(needle), "the line carries `{needle}`: {fields}");
+        }
     }
 
     /// A `PermissionRequest` registers a pending slot; `RespondPermission`
@@ -5945,6 +6444,344 @@ provider = "anthropic"
              frame and a call with an empty path are both no-path, and a call whose file is gone \
              is gone - none of them blanks",
         );
+    }
+
+    /// A running backgrounded call's own output, through the arm a view
+    /// reaches: nothing on the wire names the file yet - only the ending
+    /// frame does, and it has not arrived - so the path is composed from the
+    /// task id the start frame carries, under the base the child runs with.
+    ///
+    /// The tree is planted under the REAL base (a unique slug beside the live
+    /// CLI's own), because the composition resolves that base from the
+    /// process's env and nothing in-crate can stand in for it.
+    #[tokio::test]
+    async fn a_running_calls_output_is_read_from_the_path_composed_from_its_task_id() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("call-output-running");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+        task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-running"));
+
+        let nonce = std::process::id();
+        let frame_session = format!("run-session-{nonce}");
+        let task_id = format!("t-run-{nonce}");
+        let slug = format!("forge-test-{nonce}");
+        let tree = crate::output_tail::task_output_base()
+            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
+            .join(&slug);
+        let tasks = tree.join(&frame_session).join("tasks");
+        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
+        let written = (0..15).fold(String::new(), |mut all, at| {
+            let _ = writeln!(all, "run-line-{at:02}");
+            all
+        });
+        std::fs::write(tasks.join(format!("{task_id}.output")), &written).expect("write the file");
+
+        // The launch frame only: no ending frame, so no frame names the file.
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: session_key.display(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_started",
+                "task_id": task_id,
+                "description": "watch the run",
+                "uuid": "u-run",
+                "session_id": frame_session,
+                "tool_use_id": "tu-run",
+            }))
+            .expect("a task_started frame"),
+        });
+        while update_rx.try_recv().is_ok() {}
+
+        task.execute_command(crate::protocol::Command::ReadCallOutput {
+            key: session_key.clone(),
+            call_id: "tu-run".to_owned(),
+        });
+
+        let mut answered = None;
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::CallOutput { key, call_id, output } = frame.update {
+                answered = Some((key, call_id, output));
+            }
+        }
+        let (key, call_id, output) = answered.expect("the read is answered by the task");
+        assert_eq!(key, session_key, "the answer names the seat it routes on");
+        assert_eq!(call_id, "tu-run", "the answer names the call it answers");
+        let expected: Vec<String> = (3..15).map(|at| format!("run-line-{at:02}")).collect();
+        assert_eq!(
+            output,
+            forge_primitives::CallOutput::Lines(expected),
+            "and reads the file composed from the task id, bounded to the newest twelve lines",
+        );
+        let _ = std::fs::remove_dir_all(&tree);
+    }
+
+    /// A running call whose file is not there yet is no-path - the reason the
+    /// client draws as "not appeared yet" - never the gone-file reason about a
+    /// file that was never read.
+    ///
+    /// **And the miss is not remembered.** The read is answered twice: the
+    /// first before the file exists, the second after it is planted, and the
+    /// second must answer the tail - a memo of the first answer would freeze
+    /// the row at "not yet" for the rest of the call.
+    #[tokio::test]
+    async fn a_running_calls_output_answers_no_path_until_the_file_is_there() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("call-output-not-yet");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+        task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-not-yet"));
+        let nonce = std::process::id();
+        let frame_session = format!("late-session-{nonce}");
+        let task_id = format!("t-absent-{nonce}");
+        let tree = crate::output_tail::task_output_base()
+            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
+            .join(format!("forge-test-{nonce}"));
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: session_key.display(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_started",
+                "task_id": task_id,
+                "description": "just started",
+                "uuid": "u-absent",
+                "session_id": frame_session,
+                "tool_use_id": "tu-absent",
+            }))
+            .expect("a task_started frame"),
+        });
+        while update_rx.try_recv().is_ok() {}
+
+        let read = |task: &SessionTask| {
+            task.execute_command(crate::protocol::Command::ReadCallOutput {
+                key: session_key.clone(),
+                call_id: "tu-absent".to_owned(),
+            });
+        };
+        let mut take_answer = || {
+            let mut answered = None;
+            while let Ok(frame) = update_rx.try_recv() {
+                if let SessionUpdate::CallOutput { output, .. } = frame.update {
+                    answered = Some(output);
+                }
+            }
+            answered
+        };
+
+        read(&task);
+        assert_eq!(
+            take_answer(),
+            Some(forge_primitives::CallOutput::NoPath),
+            "a file that is not there yet is the no-path reason, not a blank and not gone",
+        );
+
+        // The command writes its first line: the same read now answers the
+        // tail rather than a remembered miss.
+        let tasks = tree.join(&frame_session).join("tasks");
+        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
+        std::fs::write(tasks.join(format!("{task_id}.output")), "first line\n")
+            .expect("write the file");
+        read(&task);
+        assert_eq!(
+            take_answer(),
+            Some(forge_primitives::CallOutput::Lines(vec!["first line".to_owned()])),
+            "and once the file is there the read answers its tail",
+        );
+        let _ = std::fs::remove_dir_all(&tree);
+    }
+
+    /// The ending frame's own path WINS over the composed one when both are
+    /// reachable: `task_notification` is the CLI's word for where the output
+    /// went, and the composed path is this build's reading of a layout the CLI
+    /// never promised. Held at the resolver rather than through the arm so
+    /// both sides of the choice are real paths.
+    #[test]
+    fn the_ending_frames_path_wins_over_the_composed_one() {
+        let nonce = std::process::id();
+        let base = std::env::temp_dir().join(format!("forge-call-output-override-{nonce}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let slug = format!("claude-{}", rustix::process::getuid().as_raw());
+        let tasks = base.join(&slug).join("slug-any").join("sess-live").join("tasks");
+        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
+        std::fs::write(tasks.join("t-live.output"), "composed\n").expect("write the composed file");
+        let named = base.join("named-by-the-ending-frame.output");
+        std::fs::write(&named, "named\n").expect("write the named file");
+
+        let started: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t-live",
+            "description": "watch the run",
+            "uuid": "u-s",
+            "session_id": "sess-live",
+            "tool_use_id": "tu-live",
+        }))
+        .expect("a task_started frame");
+        let ended: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "t-live",
+            "status": "completed",
+            "output_file": named.display().to_string(),
+            "summary": "Background command \"true\" completed",
+            "uuid": "u-n",
+            "session_id": "sess-live",
+            "tool_use_id": "tu-live",
+        }))
+        .expect("a task_notification frame");
+
+        assert_eq!(
+            resolve_call_output_path(std::slice::from_ref(&started), "tu-live", || base.clone()),
+            Some(tasks.join("t-live.output")),
+            "while it runs, the composed path is the one the read uses",
+        );
+        assert_eq!(
+            resolve_call_output_path(&[started, ended], "tu-live", || base.clone()),
+            Some(named),
+            "and once the ending frame lands, its own path overrides the composition",
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// **Nothing reads the launch sentence.** The launch result says where the
+    /// output will be written in prose, and a resolver that took that path
+    /// would be reading text the CLI is free to reword - so the pin carries
+    /// the real sentence naming file A beside a task id that composes to file
+    /// B, and the answer must be B's path. The second half catches the other
+    /// mistake: with B gone the answer is no-path, never A.
+    #[test]
+    fn nothing_reads_the_launch_sentence_for_the_path() {
+        let nonce = std::process::id();
+        let base = std::env::temp_dir().join(format!("forge-call-output-prose-{nonce}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let tasks = base
+            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
+            .join("slug-any")
+            .join("sess-prose")
+            .join("tasks");
+        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
+        let composed = tasks.join("t-prose.output");
+        std::fs::write(&composed, "from the composition\n").expect("write the composed file");
+        // File A, which only the sentence names, with bytes nothing else has.
+        let named_by_prose = base.join("named-by-the-launch-sentence.output");
+        std::fs::write(&named_by_prose, "from the launch sentence\n").expect("write file A");
+
+        let launch: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu-prose",
+                    "is_error": false,
+                    "content": format!(
+                        "Command running in background with ID: t-prose. Output is being \
+                         written to: {}. You will be notified when it completes. To check \
+                         interim output, use Read on that file path.",
+                        named_by_prose.display(),
+                    ),
+                }],
+            },
+            "tool_use_result": { "backgroundTaskId": "t-prose" },
+            "uuid": "u-prose",
+            "session_id": "sess-prose",
+        }))
+        .expect("a launch result frame");
+        let started: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t-prose",
+            "description": "watch the run",
+            "uuid": "u-s",
+            "session_id": "sess-prose",
+            "tool_use_id": "tu-prose",
+        }))
+        .expect("a task_started frame");
+
+        assert_eq!(
+            resolve_call_output_path(&[launch.clone(), started.clone()], "tu-prose", || base
+                .clone()),
+            Some(composed.clone()),
+            "the composed path answers, not the one the launch sentence names",
+        );
+        std::fs::remove_file(&composed).expect("unplant the composed file");
+        assert_eq!(
+            resolve_call_output_path(&[launch, started], "tu-prose", || base.clone()),
+            None,
+            "and with the composed file gone the answer is no-path, never the sentence's file",
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// **Each task reads its own file.** Two backgrounded calls in one session
+    /// carry two `task_started` frames, and the arm's link is the tool-use id:
+    /// without that guard, row B tails row A's file - wrong output shown as if
+    /// it were B's, which is worse than nothing.
+    #[test]
+    fn two_running_calls_each_read_their_own_task() {
+        let nonce = std::process::id();
+        let base = std::env::temp_dir().join(format!("forge-call-output-two-{nonce}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let tasks = base
+            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
+            .join("slug-any")
+            .join("sess-two")
+            .join("tasks");
+        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
+        std::fs::write(tasks.join("t-a.output"), "task a\n").expect("write a's file");
+        std::fs::write(tasks.join("t-b.output"), "task b\n").expect("write b's file");
+
+        let started = |task_id: &str, call: &str| -> forge_primitives::Message {
+            serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_started",
+                "task_id": task_id,
+                "description": "watch the run",
+                "uuid": format!("u-{task_id}"),
+                "session_id": "sess-two",
+                "tool_use_id": call,
+            }))
+            .expect("a task_started frame")
+        };
+        let history = vec![started("t-a", "tu-a"), started("t-b", "tu-b")];
+
+        assert_eq!(
+            resolve_call_output_path(&history, "tu-a", || base.clone()),
+            Some(tasks.join("t-a.output")),
+            "the first call reads its own task's file",
+        );
+        assert_eq!(
+            resolve_call_output_path(&history, "tu-b", || base.clone()),
+            Some(tasks.join("t-b.output")),
+            "and the second reads its own, not the first's",
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The count has coverage at both ends - the scan produces it, the

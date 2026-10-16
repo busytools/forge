@@ -13,9 +13,7 @@ use serde_json::json;
 use forge_primitives::usage::oauth::OauthUsageError;
 use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
 
-use crate::helpers::{
-    OAUTH_TIMEOUT, parse_retry_after, system_time_from_epoch, truncated_body_suffix,
-};
+use crate::helpers::{OAUTH_TIMEOUT, parse_retry_after, redacted_body, system_time_from_epoch};
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
 /// The variable the flat `token` key is stamped onto for an Anthropic
@@ -164,7 +162,7 @@ async fn messages_probe(
             status,
             outcome = "non_ok",
             retry_after_secs = ?retry_after.map(|duration| duration.as_secs()),
-            body_suffix = %truncated_body_suffix(&body),
+            body_suffix = %redacted_body(&body, access_token),
         );
     }
 
@@ -172,7 +170,7 @@ async fn messages_probe(
         200 => Ok(headers),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
         429 => Err(OauthUsageError::RateLimited { retry_after }),
-        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+        _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, access_token))),
     }
 }
 

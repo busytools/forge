@@ -39,6 +39,11 @@ struct ForgeToml {
     orgs: Vec<OrgEntry>,
     #[serde(default)]
     accounts: Vec<AccountEntry>,
+    /// Optional `[models."<name>"]` tables - parameters a model name
+    /// carries to every spawn. Absent means no model parameters are
+    /// stamped and the CLI's own resolution stands.
+    #[serde(default)]
+    models: HashMap<String, ModelSettings>,
     /// Optional `[dictate]` section - local dictation. Absent section
     /// -> disabled, which is what keeps a 3 GB model download opt-in.
     #[serde(default)]
@@ -126,6 +131,7 @@ impl std::fmt::Debug for ForgeToml {
         f.debug_struct("ForgeToml")
             .field("orgs", &self.orgs)
             .field("accounts", &self.accounts)
+            .field("models", &self.models)
             .field("dictate", &self.dictate)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
@@ -493,6 +499,24 @@ pub struct PluginSettings {
 /// `max_workers` override is absent.
 pub(crate) const DEFAULT_MAX_WORKERS_PER_PROJECT: usize = 2;
 
+/// The `[models."<name>"]` table: the parameters a model name carries to
+/// every spawn, keyed by the canonical name forge.toml already pins
+/// projects to. Model-shaped values live here rather than in code, so
+/// changing a model is a config edit. Unknown fields are rejected so a
+/// mistyped key cannot silently leave a parameter unset.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ModelSettings {
+    /// The window, in tokens, the CLI's auto-compaction triggers against,
+    /// stamped onto the child as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. It is
+    /// set below the model's context so the compact request has room to
+    /// fit - compaction fires near a window's top, and the request itself
+    /// needs headroom beyond that. Absent leaves the CLI's own resolution
+    /// in place.
+    #[serde(default)]
+    pub auto_compact_window: Option<i64>,
+}
+
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
     /// Index into `projects` for the default startup target -
@@ -502,6 +526,10 @@ pub(crate) struct LoadedConfig {
     /// / smoke paths; a production picker overrides it.
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
+    /// `[models."<name>"]` tables, keyed by the spelling a project's
+    /// `model` pins. Absent tables mean a spawn stamps no model
+    /// parameters.
+    pub models: HashMap<String, ModelSettings>,
     /// `[dictate]` section knobs. Absent section means dictation is
     /// off and preflight skips it entirely.
     pub dictate: crate::dictate::DictateSettings,
@@ -548,6 +576,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("projects", &self.projects)
             .field("default_index", &self.default_index)
             .field("accounts", &self.accounts)
+            .field("models", &self.models)
             .field("dictate", &self.dictate)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
@@ -676,6 +705,7 @@ impl LoadedConfig {
             projects: Vec::new(),
             default_index: 0,
             accounts: Vec::new(),
+            models: HashMap::new(),
             dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
             systemone: None,
@@ -768,13 +798,70 @@ fn resolve_client(client: ClientConfig, path: &Path) -> Result<ClientConfig, Wor
     Ok(client)
 }
 
+/// Where a parse failure sits in the document, from the byte span the error
+/// carries: ` at line N, column M in <key>`, or empty when it names no span -
+/// no position rather than a confident line 1.
+///
+/// The key is the text left of that line's `=` when that text is shaped
+/// like a bare key (serde's own words do not name it for a value error, and
+/// the snippet that used to is gone). A line with no `=` - a malformed
+/// array element, a bare value - names nothing rather than quoting whatever
+/// sits there as a key: the text right of the `=` is the value, and it
+/// never prints.
+fn parse_position(raw: &str, span: Option<std::ops::Range<usize>>) -> String {
+    let Some(span) = span else { return String::new() };
+    let Some(upto) = raw.get(..span.start) else { return String::new() };
+    let line = upto.matches('\n').count() + 1;
+    let column = upto.rsplit('\n').next().map_or(0, |tail| tail.chars().count()) + 1;
+    let key = raw
+        .lines()
+        .nth(line - 1)
+        .and_then(|text| text.split_once('='))
+        .map(|(head, _)| head.trim())
+        .filter(|head| !head.is_empty() && head.chars().all(is_bare_key_char));
+    match key {
+        Some(key) => format!(" at line {line}, column {column} in `{key}`"),
+        None => format!(" at line {line}, column {column}"),
+    }
+}
+
+/// A TOML bare-key character (`a-z A-Z 0-9 _ - .`).
+fn is_bare_key_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.'
+}
+
+/// The error's own words with any double-quoted run scrubbed: serde renders
+/// a mismatched value as `invalid type: string "…"`, and a value in this
+/// file can be a token (#2267). A key is backtick-quoted and stays legible.
+fn scrub_quoted(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    loop {
+        let Some((before, after)) = rest.split_once('"') else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(before);
+        out.push_str("[redacted]");
+        // Drop the quoted run; an unterminated quote takes the tail with it
+        // rather than printing a value whose end nobody found.
+        match after.split_once('"') {
+            Some((_, tail)) => rest = tail,
+            None => return out,
+        }
+    }
+}
+
 /// Load + validate `forge.toml`. Returns the parsed orgs + projects
 /// with `~` expanded.
 pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, WorkspaceError> {
     let (path, raw) = read_config(config_dir)?;
 
-    let parsed: ForgeToml = toml::from_str(&raw)
-        .map_err(|source| WorkspaceError::ConfigParse { path: path.clone(), source })?;
+    let parsed: ForgeToml = toml::from_str(&raw).map_err(|source| WorkspaceError::ConfigParse {
+        at: parse_position(&raw, source.span()),
+        message: scrub_quoted(source.message()),
+        path: path.clone(),
+    })?;
 
     if parsed.web.is_some() {
         return Err(WorkspaceError::WebSectionRenamed { path });
@@ -1104,10 +1191,38 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         None => None,
     };
 
+    // Per-model parameters are read by the exact spelling a project's
+    // `model` pins - not by what accounts declare - so a name no project
+    // pins is a statement nothing will act on. Warned rather than refused:
+    // a project may pin the model on a later edit, and the table entry is
+    // how it would be there waiting.
+    let pinned: std::collections::HashSet<&str> =
+        projects.iter().filter_map(|project| project.model.as_deref()).collect();
+    for (model, parameters) in &parsed.models {
+        if !pinned.contains(model.as_str()) {
+            tracing::warn!(
+                target: "forge_workspace::config",
+                event_name = "model_parameters_unpinned",
+                model = %model,
+                "the [models] table names a model no project pins; nothing will read it",
+            );
+        }
+        if let Some(window) = parameters.auto_compact_window
+            && window <= 0
+        {
+            return Err(WorkspaceError::ModelAutoCompactWindowInvalid {
+                path,
+                model: model.clone(),
+                value: window,
+            });
+        }
+    }
+
     Ok(LoadedConfig {
         projects,
         default_index,
         accounts,
+        models: parsed.models,
         dictate: parsed.dictate,
         gotify: parsed.gotify,
         systemone,
@@ -1253,6 +1368,65 @@ token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#
+    }
+
+    /// One logged event: its level and the `event_name` it carries. A
+    /// config that declares something forge ignores must warn at WARN with
+    /// its own name, and the level is half of that: these targets are not
+    /// raised by the default filters, so a warn demoted to debug is a warn
+    /// that stopped being seen.
+    #[derive(Default, Clone)]
+    struct WarnedEvents(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    struct CollectEventName(String);
+
+    impl tracing::field::Visit for CollectEventName {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "event_name" {
+                self.0 = format!("{value:?}").trim_matches('"').to_owned();
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnedEvents {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = CollectEventName(String::new());
+            event.record(&mut visitor);
+            if !visitor.0.is_empty() {
+                self.0.lock().expect("capture").push((*event.metadata().level(), visitor.0));
+            }
+        }
+    }
+
+    impl WarnedEvents {
+        /// Whether `event` was logged, at WARN.
+        fn warns(&self, event: &str) -> bool {
+            self.0
+                .lock()
+                .expect("capture")
+                .iter()
+                .any(|(level, name)| name == event && *level == tracing::Level::WARN)
+        }
+
+        /// Every event name logged, in order.
+        fn names(&self) -> Vec<String> {
+            self.0.lock().expect("capture").iter().map(|(_, name)| name.clone()).collect()
+        }
+    }
+
+    /// Load `dir`, capturing every `event_name` the load logs.
+    fn load_capturing(
+        dir: &std::path::Path,
+    ) -> (Result<LoadedConfig, WorkspaceError>, WarnedEvents) {
+        use tracing_subscriber::layer::SubscriberExt;
+        let logged = WarnedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(logged.clone());
+        let loaded = tracing::subscriber::with_default(subscriber, || load_from_dir(dir));
+        (loaded, logged)
     }
 
     /// `[gateway] port = 0` is refused at load: the port is fixed, and
@@ -3447,6 +3621,68 @@ provider = "anthropic"
         assert!(matches!(err, WorkspaceError::ConfigParse { .. }));
     }
 
+    /// **A parse failure prints neither the line it failed on nor the value
+    /// it read** (#2267): the error used to render `toml`'s snippet of the
+    /// offending line, so a mistyped key on the token's own line echoed the
+    /// token to stderr on the next boot. The key, the reason and the
+    /// position are the three things a reader fixes it with; the value is
+    /// not one of them.
+    #[test]
+    fn a_parse_failure_never_prints_the_value() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "[[accounts]]\ndisplay_name = \"Stargate\"\nclient_tokenn = \"hunter2secret\"\n",
+        );
+        let err = load_from_dir(dir.path()).expect_err("the near-miss key fails loudly");
+        let said = err.to_string();
+        assert!(said.contains("client_tokenn"), "the key still names what to fix: {said}");
+        assert!(!said.contains("hunter2secret"), "the value on the line never prints: {said}");
+        assert!(said.contains("line 3"), "the position says where: {said}");
+    }
+
+    /// The other shape the snippet padded out: serde's own words quote the
+    /// VALUE of a type mismatch (`invalid type: string "…"`), and those
+    /// words survive the snippet's removal - so they are scrubbed too, while
+    /// a key name (backtick-quoted) stays legible.
+    #[test]
+    fn a_type_mismatch_never_prints_the_value_either() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), "[server]\nport = \"hunter2secret\"\n");
+        let err = load_from_dir(dir.path()).expect_err("a string port fails to parse");
+        let said = err.to_string();
+        assert!(!said.contains("hunter2secret"), "the mismatched value never prints: {said}");
+        assert!(said.contains("invalid type"), "and the reason the parse failed survives: {said}");
+        assert!(said.contains("line 2"), "with the position: {said}");
+    }
+
+    /// The position counts characters, not bytes, and a key is named only
+    /// when the line actually has one: a malformed array element or a bare
+    /// value has no `=` (or its head is not key-shaped), and quoting
+    /// whatever sits there would put a value back in the message - the leak
+    /// this change exists to close.
+    #[test]
+    fn the_position_counts_characters_and_names_only_a_key_line() {
+        assert_eq!(parse_position("port = \"x\"\n", Some(8..9)), " at line 1, column 9 in `port`");
+        // A multi-byte character before the span: `é` is two bytes and one
+        // column, and its line has no bare key, so no key prints either.
+        assert_eq!(parse_position("caf\u{e9} = 1\n", Some(8..9)), " at line 1, column 8",);
+        // A line with no `=`, and a head that is not key-shaped: nothing is
+        // named rather than a value quoted as a key.
+        assert_eq!(parse_position("[[accounts]]\n", Some(2..3)), " at line 1, column 3");
+        assert_eq!(parse_position("\"sk-secret=\" = 1\n", Some(15..16)), " at line 1, column 16",);
+    }
+
+    /// An unterminated quote takes its tail with it: the tail is the value
+    /// whose end nobody found.
+    #[test]
+    fn the_scrub_drops_an_unterminated_tail() {
+        assert_eq!(
+            scrub_quoted("invalid type: string \"hunter2secret"),
+            "invalid type: string [redacted]",
+        );
+    }
+
     #[test]
     fn no_orgs_errors() {
         let dir = tempdir().expect("tempdir");
@@ -3789,6 +4025,105 @@ path = "~/Projects/forge"
         assert!(matches!(err, WorkspaceError::NoAccountsConfigured { .. }));
     }
 
+    /// The `[models."<name>"]` table parses by the spelling a project's
+    /// `model` pins and reaches the loaded config; an absent table leaves
+    /// the map empty, so every spawn stays on the CLI's own resolution.
+    #[test]
+    fn parses_the_models_table_by_name() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "deepseek-v4.1-flash"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["deepseek-v4.1-flash"]
+provider = "openrouter"
+base_url = "https://openrouter.ai/api"
+
+[models."deepseek-v4.1-flash"]
+auto_compact_window = 983040
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("the table loads");
+        let parameters =
+            config.models.get("deepseek-v4.1-flash").expect("the model's table is keyed by name");
+        assert_eq!(parameters.auto_compact_window, Some(983_040), "the window parses as declared");
+
+        let bare = tempdir().expect("tempdir");
+        write_config(
+            bare.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+        let config = load_from_dir(bare.path()).expect("no table loads too");
+        assert!(config.models.is_empty(), "an absent [models] table loads as no parameters");
+    }
+
+    /// A window that is not positive is refused by name, pointing at the
+    /// model whose entry carries it: a zero or negative window would leave
+    /// the CLI compacting on every turn.
+    #[test]
+    fn a_non_positive_auto_compact_window_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["deepseek-v4.1-flash"]
+provider = "openrouter"
+base_url = "https://openrouter.ai/api"
+
+[models."deepseek-v4.1-flash"]
+auto_compact_window = 0
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a zero window should error");
+        let message = err.to_string();
+        assert!(
+            matches!(
+                err,
+                WorkspaceError::ModelAutoCompactWindowInvalid { ref model, value: 0, .. }
+                    if model == "deepseek-v4.1-flash"
+            ),
+            "the refusal names the model, got: {message}",
+        );
+        assert!(
+            message.contains("auto_compact_window")
+                && message.contains("positive window in tokens"),
+            "and says what to fix, got: {message}",
+        );
+    }
+
     #[test]
     fn duplicate_account_display_name_errors() {
         let dir = tempdir().expect("tempdir");
@@ -3847,38 +4182,6 @@ provider = "anthropic"
     /// to debug is a warn that stopped being seen.
     #[test]
     fn every_ignored_key_warns() {
-        use std::sync::{Arc, Mutex};
-
-        /// One logged event: its level and the `event_name` it carries.
-        #[derive(Default, Clone)]
-        struct LoggedEvents(Arc<Mutex<Vec<(tracing::Level, String)>>>);
-
-        struct CollectEventName(String);
-
-        impl tracing::field::Visit for CollectEventName {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "event_name" {
-                    self.0 = format!("{value:?}").trim_matches('"').to_owned();
-                }
-            }
-        }
-
-        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LoggedEvents {
-            fn on_event(
-                &self,
-                event: &tracing::Event<'_>,
-                _ctx: tracing_subscriber::layer::Context<'_, S>,
-            ) {
-                let mut visitor = CollectEventName(String::new());
-                event.record(&mut visitor);
-                if !visitor.0.is_empty() {
-                    self.0.lock().expect("capture").push((*event.metadata().level(), visitor.0));
-                }
-            }
-        }
-
-        use tracing_subscriber::layer::SubscriberExt;
-
         let cases = [
             (
                 "[selection]",
@@ -3902,20 +4205,119 @@ provider = "anthropic"
                 "\n[env]\nANTHROPIC_BASE_URL = \"https://proxy.example\"\n",
                 "gateway_keys_dropped_from_env_layer",
             ),
+            (
+                "a [models] entry for a model nobody pins",
+                "\n[models.\"nobody-pins-this\"]\nauto_compact_window = 100\n",
+                "model_parameters_unpinned",
+            ),
         ];
         for (label, stanza, event) in cases {
             let dir = tempdir().expect("tempdir");
             write_config(dir.path(), &format!("{}{stanza}", minimal_config()));
-            let logged = LoggedEvents::default();
-            let subscriber = tracing_subscriber::registry().with(logged.clone());
-            let loaded =
-                tracing::subscriber::with_default(subscriber, || load_from_dir(dir.path()));
+            let (loaded, logged) = load_capturing(dir.path());
             assert!(loaded.is_ok(), "{label} still loads");
-            let seen = logged.0.lock().expect("capture");
             assert!(
-                seen.iter().any(|(level, name)| name == event && *level == tracing::Level::WARN),
-                "{label} warns at WARN with {event}; saw {seen:?}",
+                logged.warns(event),
+                "{label} warns at WARN with {event}; saw {:?}",
+                logged.names(),
             );
         }
+    }
+
+    /// The `[models]` table is read by the exact spelling a project's
+    /// `model` pins, not by what accounts declare: the pinned spelling is
+    /// the entry that acts and warns nothing, and the account-facing
+    /// spelling of the same model warns even though an account declares it.
+    #[test]
+    fn a_models_table_keys_on_the_spelling_a_project_pins() {
+        let config_for = |table_key: &str| {
+            format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-opus-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+
+[accounts.model_aliases]
+"claude-opus-5[1m]" = ["claude-opus-5"]
+
+[models."{table_key}"]
+auto_compact_window = 983040
+"#
+            )
+        };
+
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &config_for("claude-opus-5"));
+        let (loaded, logged) = load_capturing(dir.path());
+        let config = loaded.expect("the pinned spelling loads");
+        assert_eq!(
+            config
+                .models
+                .get("claude-opus-5")
+                .and_then(|parameters| parameters.auto_compact_window),
+            Some(983_040),
+            "the entry the project pins is the one read",
+        );
+        assert!(
+            !logged.warns("model_parameters_unpinned"),
+            "and it warns nothing: {:?}",
+            logged.names(),
+        );
+
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &config_for("claude-opus-5[1m]"));
+        let (loaded, logged) = load_capturing(dir.path());
+        assert!(loaded.is_ok(), "the account-facing spelling still loads");
+        assert!(
+            logged.warns("model_parameters_unpinned"),
+            "an entry no project pins warns even though an account declares it: {:?}",
+            logged.names(),
+        );
+    }
+
+    /// A mistyped key inside a `[models]` table is refused at load rather
+    /// than silently applying nothing.
+    #[test]
+    fn a_mistyped_models_key_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[models."claude-sonnet-5"]
+auto_compact_windows = 983040
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a mistyped key should be a parse failure");
+        let message = err.to_string();
+        assert!(
+            message.contains("auto_compact_windows"),
+            "the refusal names the key that was not recognized, got: {message}",
+        );
     }
 }

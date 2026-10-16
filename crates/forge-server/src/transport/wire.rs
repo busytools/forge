@@ -219,6 +219,10 @@ pub struct AgentWire {
     /// been shown: `None` once the seat has been shown since the failure,
     /// or while it is being shown now.
     pub failed_turn: Option<std::time::SystemTime>,
+    /// Whether a session on the seat ended and no reader has been shown it
+    /// since: the row's failure is the durable trace of a crash nobody
+    /// watched.
+    pub died: bool,
     /// The seat's own tree, `None` for a seat forge holds no directory for.
     ///
     /// Read through the same shared cache the project rows use, so a lead's
@@ -238,6 +242,7 @@ impl From<&AgentRow> for AgentWire {
             last_activity: row.last_activity,
             reason: row.reason.clone(),
             failed_turn: row.failed_turn,
+            died: row.died,
             work: None,
         }
     }

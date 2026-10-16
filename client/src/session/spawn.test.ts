@@ -83,10 +83,10 @@ function home(lead: boolean): HomeWire {
 }
 
 /** The fixture's home with its lead row in the lifecycle named. */
-function homeAs(lifecycle: HomeWire['agents'][number]['lifecycle']): HomeWire {
+function homeAs(lifecycle: HomeWire['agents'][number]['lifecycle'], died = false): HomeWire {
   const template = homeWire.agents[0];
   if (template === undefined) throw new Error('the fixture holds no agent');
-  return { ...homeWire, agents: [{ ...template, lifecycle }] };
+  return { ...homeWire, agents: [{ ...template, lifecycle, died }] };
 }
 
 let app: Record<string, unknown> | null = null;
@@ -193,6 +193,35 @@ describe("starting a project's lead from its own page", () => {
     const { sent } = openWith(homeAs('LoggedOut'));
 
     expect(sent, 'a logged-out lead was opened and nothing asked').toHaveLength(1);
+  });
+
+  /**
+   * A lead whose session DIED is the third wake: the failure on its row is
+   * a crash the reader has not been shown, and the page is where it comes
+   * back - and the respawn is not silent, since the row carried the failure
+   * and the recovery announces itself.
+   */
+  it('asks the core to start a lead whose session died', () => {
+    const { sent } = openWith(homeAs('Failed', true));
+
+    expect(sent, 'a lead that died is a seat to start again').toEqual([
+      {
+        command: {
+          spawn_project: { project_name: 'proj', launch_settings: {} },
+        },
+      },
+    ]);
+  });
+
+  /**
+   * And a seat that only failed to START is not one of them: an auth or
+   * config failure stays parked with its reason rather than being woken in
+   * a loop, which is what the recorded death tells apart.
+   */
+  it('asks for nothing at a lead that only failed to start', () => {
+    const { sent } = openWith(homeAs('Failed', false));
+
+    expect(sent, 'a spawn failure is not a wake').toEqual([]);
   });
 
   /**

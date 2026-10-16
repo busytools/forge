@@ -15,12 +15,9 @@ pub enum DiagnosticsPreset {
 }
 
 impl DiagnosticsPreset {
-    /// A preset replaces the default directives rather than adding to
-    /// them, so a target that only the defaults name lands nowhere under
-    /// one. The presets that carry a session's own records carry
-    /// `forge_server`, the tail read's home and dictation's two crates
-    /// too, which is where the demoted ones live; the rest of the gap is
-    /// #1911.
+    /// A preset's own directives. The resolver composes them with the
+    /// default set rather than replacing it, so a target that only the
+    /// defaults name stays readable under every preset.
     ///
     /// The targets named are the ones the surviving binaries emit; the
     /// old render/input/paste family retired with the terminal crate.

@@ -141,19 +141,27 @@ impl Held for Opened {
 /// the lifecycle below is what a hardware-free test needs to reach.
 type Opener = Box<dyn Fn(Option<&str>, Arc<Carry>) -> Result<Box<dyn Held>, String> + Send + Sync>;
 
+/// The recording on a capture as the page named it: the page load that began
+/// the take, and the token that take minted.
+struct Owner {
+    page: String,
+    take: String,
+}
+
 /// The open capture, and who it is for.
 struct Warm {
     /// What the page asked for when it was opened, `None` for the system
     /// default; a take asking for the same one is served by this capture.
     requested: Option<String>,
     held: Box<dyn Held>,
-    /// The page that began the recording on this capture, `None` while none
-    /// does.
+    /// The take recording on this capture, `None` while none does.
     ///
-    /// A page's own id, minted per load: a hold or a press naming a different
-    /// one is a page other than the one recording, and since the client is
-    /// one page, that page is gone.
-    owner: Option<String>,
+    /// The page is what a hold or a press claims against - one naming a
+    /// different page is a page other than the one recording, and since the
+    /// client is one page, that page is gone. The token is what the take's
+    /// own stop and drain match: one page runs take after take, so the page
+    /// id cannot tell the take that just ended from the one that followed it.
+    owner: Option<Owner>,
 }
 
 impl Warm {
@@ -161,9 +169,14 @@ impl Warm {
         self.held.carry().recording()
     }
 
-    /// Whether `page` is the one recording on this capture.
+    /// Whether `page` is the page whose recording runs on this capture.
     fn owned_by(&self, page: &str) -> bool {
-        self.owner.as_deref() == Some(page)
+        self.owner.as_ref().is_some_and(|owner| owner.page == page)
+    }
+
+    /// Whether `take` is the take recording on this capture.
+    fn own_take(&self, take: &str) -> bool {
+        self.owner.as_ref().is_some_and(|owner| owner.take == take)
     }
 
     /// End a recording `page` does not own, if one is running.
@@ -179,14 +192,14 @@ impl Warm {
         }
     }
 
-    /// Begin a take here, for `page`.
-    fn begin(&mut self, page: &str) {
+    /// Begin a take here: `take`, on `page`.
+    fn begin(&mut self, page: &str, take: &str) {
         self.held.carry().begin();
-        self.owner = Some(page.to_owned());
+        self.owner = Some(Owner { page: page.to_owned(), take: take.to_owned() });
     }
 
     /// End the recording here, handing over the partial frame it held, and
-    /// forget the page that began it: the next take names its own.
+    /// forget the take that began it: the next take names its own.
     fn end(&mut self) -> Vec<f32> {
         self.owner = None;
         self.held.carry().end()
@@ -274,11 +287,16 @@ impl Mic {
     /// recording left by any other page is ended first (see `Warm::claim`):
     /// the first press after a reload records, rather than being denied by
     /// the take the reload discarded.
+    ///
+    /// `take` is the token the page minted for this take, and the take's own
+    /// identity for the stop and drain that end it - which a page id cannot
+    /// be, because one page runs take after take.
     pub fn start(
         &self,
         bridge: &Arc<Bridge>,
         device: Option<String>,
         page: &str,
+        take: &str,
     ) -> Result<forge_capture::Device, String> {
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(held) = warm.as_mut() {
@@ -287,11 +305,11 @@ impl Mic {
                 return Err("the microphone is already recording".to_owned());
             }
             if held.requested == device {
-                held.begin(page);
+                held.begin(page, take);
                 return Ok(held.held.device().clone());
             }
         }
-        let next = self.open(bridge, device.as_deref(), Some(page))?;
+        let next = self.open(bridge, device.as_deref(), Some((page, take)))?;
         let resolved = next.held.device().clone();
         if let Some(stale) = warm.replace(next) {
             stale.held.release();
@@ -302,15 +320,17 @@ impl Mic {
     /// End the take at once, throwing its audio away. The device stays
     /// open, so the next press records from the press.
     ///
-    /// **One naming a page other than the take's own does nothing** (#2252):
-    /// a stop in flight from a page a reload discarded lands after the next
-    /// page may have begun, and that take is not this one's to throw away.
-    pub fn stop(&self, page: &str) {
+    /// **One naming a take other than the recording does nothing** (#2252,
+    /// #2279): a stop in flight lands after the take it names has ended
+    /// - the page's own re-press may already have begun the next, and a
+    /// reload's discarded page leaves its take for another page to end - and
+    /// the take that followed is not this one's to throw away.
+    pub fn stop(&self, take: &str) {
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(held) = warm.as_mut() else {
             return;
         };
-        if held.owned_by(page) {
+        if held.own_take(take) {
             held.end();
         }
     }
@@ -322,17 +342,18 @@ impl Mic {
     /// finalises the take on the server, so a frame that follows it has no
     /// take to land in.
     ///
-    /// **One naming a page other than the take's own drops its tail without
-    /// ending anything** (#2252): a drain still in flight from a page a
-    /// reload discarded wakes inside the window the page that came back may
-    /// have begun in, and that take's audio is not this one's to throw away.
-    pub async fn drain(&self, page: &str) {
+    /// **One naming a take other than the recording drops its tail without
+    /// ending anything** (#2252, #2279): the window it sleeps is wide enough
+    /// for that take to end - by a drop, or the server's own `dictate_ended`
+    /// - and for the page to begin its next take, and the take that followed
+    /// is not this one's to throw away.
+    pub async fn drain(&self, take: &str) {
         tokio::time::sleep(Duration::from_millis(DRAIN_MS)).await;
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(held) = warm.as_mut() else {
             return;
         };
-        if !held.owned_by(page) {
+        if !held.own_take(take) {
             return;
         }
         let tail = held.end();
@@ -350,17 +371,21 @@ impl Mic {
         }
     }
 
-    /// Open one capture; a take's while `owner` names the page recording on
-    /// it, a hold's while it is `None`.
+    /// Open one capture; a take's while `owner` names the page and the take
+    /// recording on it, a hold's while it is `None`.
     fn open(
         &self,
         bridge: &Arc<Bridge>,
         device: Option<&str>,
-        owner: Option<&str>,
+        owner: Option<(&str, &str)>,
     ) -> Result<Warm, String> {
         let carry = Arc::new(Carry::new(bridge, owner.is_some()));
         let held = (self.opener)(device, Arc::clone(&carry))?;
-        Ok(Warm { requested: device.map(str::to_owned), held, owner: owner.map(str::to_owned) })
+        Ok(Warm {
+            requested: device.map(str::to_owned),
+            held,
+            owner: owner.map(|(page, take)| Owner { page: page.to_owned(), take: take.to_owned() }),
+        })
     }
 }
 
@@ -514,17 +539,19 @@ mod tests {
         fn a_take_consumes_the_held_capture_without_reopening() {
             let rig = Rig::new();
             rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page").expect("opens");
-            let started =
-                rig.mic.start(&rig.bridge, Some("one".to_owned()), "page").expect("starts");
+            let started = rig
+                .mic
+                .start(&rig.bridge, Some("one".to_owned()), "page", "take-1")
+                .expect("starts");
             assert_eq!(started.id, "one");
             assert_eq!(rig.calls(), vec!["open one"], "the press opens nothing");
 
             // And ending the take does not close it either: the same device
             // serves the next take.
-            rig.mic.stop("page");
+            rig.mic.stop("take-1");
             assert_eq!(rig.calls(), vec!["open one"], "the take's end keeps the device open");
             rig.mic
-                .start(&rig.bridge, Some("one".to_owned()), "page")
+                .start(&rig.bridge, Some("one".to_owned()), "page", "take-2")
                 .expect("the next take is warm");
             assert_eq!(rig.calls(), vec!["open one"], "the second press opens nothing either");
         }
@@ -542,7 +569,7 @@ mod tests {
             // And the new pick is the one a take gets.
             let held = rig
                 .mic
-                .start(&rig.bridge, Some("two".to_owned()), "page")
+                .start(&rig.bridge, Some("two".to_owned()), "page", "take")
                 .expect("the take starts");
             assert_eq!(held.id, "two", "the re-acquired device is the one recorded from");
         }
@@ -551,7 +578,9 @@ mod tests {
         fn a_press_for_another_device_takes_over_the_hold() {
             let rig = Rig::new();
             rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page").expect("opens");
-            rig.mic.start(&rig.bridge, None, "page").expect("a plain take opens the default");
+            rig.mic
+                .start(&rig.bridge, None, "page", "take-1")
+                .expect("a plain take opens the default");
             assert_eq!(
                 rig.calls(),
                 vec!["open one", "open default", "release one"],
@@ -559,8 +588,10 @@ mod tests {
             );
             // The hold now follows the pressed device: the pick moves with
             // the take rather than fighting it.
-            rig.mic.stop("page");
-            rig.mic.start(&rig.bridge, None, "page").expect("the next plain take is warm");
+            rig.mic.stop("take-1");
+            rig.mic
+                .start(&rig.bridge, None, "page", "take-2")
+                .expect("the next plain take is warm");
             assert_eq!(rig.calls().len(), 3, "the second press reuses the take's own capture");
         }
 
@@ -577,7 +608,9 @@ mod tests {
         #[test]
         fn a_hold_while_recording_waits_for_the_next_take() {
             let rig = Rig::new();
-            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page").expect("starts cold");
+            rig.mic
+                .start(&rig.bridge, Some("one".to_owned()), "page", "take")
+                .expect("starts cold");
             // The page recording states a new pick as it changes: its own
             // hold is not a claim from another page, so the take keeps the
             // stream it is recording on.
@@ -596,8 +629,8 @@ mod tests {
         #[test]
         fn a_second_take_on_a_live_capture_is_refused() {
             let rig = Rig::new();
-            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page").expect("starts");
-            let refused = rig.mic.start(&rig.bridge, Some("one".to_owned()), "page");
+            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page", "take-1").expect("starts");
+            let refused = rig.mic.start(&rig.bridge, Some("one".to_owned()), "page", "take-2");
             assert_eq!(refused.err().as_deref(), Some("the microphone is already recording"));
         }
 
@@ -605,7 +638,7 @@ mod tests {
         /// that held its stop gone.
         fn reload(rig: &Rig, device: Option<String>) {
             rig.mic.hold(&rig.bridge, device.clone(), "page-a").expect("opens");
-            rig.mic.start(&rig.bridge, device, "page-a").expect("starts");
+            rig.mic.start(&rig.bridge, device, "page-a", "take-a").expect("starts");
             // Nothing else happens on this side: a reload discards the page
             // without ever ending the take it began.
         }
@@ -617,7 +650,7 @@ mod tests {
             // The page that comes back mounts and states its hold, as every
             // page does on its way in.
             rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page-b").expect("holds");
-            match rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b") {
+            match rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b", "take-b") {
                 Ok(started) => assert_eq!(started.id, "one"),
                 Err(why) => panic!("the press after a reload is refused: {why}"),
             }
@@ -634,7 +667,7 @@ mod tests {
             reload(&rig, Some("one".to_owned()));
             // The mount's hold is in flight, so the press is the first call
             // the reloaded page makes.
-            match rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b") {
+            match rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b", "take-b") {
                 Ok(started) => assert_eq!(started.id, "one"),
                 Err(why) => panic!("the press before the new page's hold is refused: {why}"),
             }
@@ -642,12 +675,12 @@ mod tests {
 
         /// Run one drain to its end, the way the shell runs it: the window
         /// it sleeps for is real, so the test waits it out.
-        fn drained(rig: &Rig, page: &str) {
+        fn drained(rig: &Rig, take: &str) {
             tokio::runtime::Builder::new_current_thread()
                 .enable_time()
                 .build()
                 .expect("a runtime")
-                .block_on(rig.mic.drain(page));
+                .block_on(rig.mic.drain(take));
         }
 
         #[test]
@@ -662,20 +695,109 @@ mod tests {
                 .build()
                 .expect("a runtime")
                 .block_on(async {
-                    let drain = rig.mic.drain("page-a");
+                    let drain = rig.mic.drain("take-a");
                     let begin = async {
                         rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page-b").expect("holds");
                         rig.mic
-                            .start(&rig.bridge, Some("one".to_owned()), "page-b")
+                            .start(&rig.bridge, Some("one".to_owned()), "page-b", "take-b")
                             .expect("page-b records");
                     };
                     tokio::join!(drain, begin);
                 });
 
             assert_eq!(
-                rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b").err().as_deref(),
+                rig.mic
+                    .start(&rig.bridge, Some("one".to_owned()), "page-b", "take-b-2")
+                    .err()
+                    .as_deref(),
                 Some("the microphone is already recording"),
                 "the stale drain must not end the take the reloaded page began",
+            );
+        }
+
+        /// The issue's own sequence (#2279): one page, two takes, and a
+        /// drain still in flight from the first.
+        #[test]
+        fn a_drain_waking_after_the_same_pages_re_press_leaves_the_new_take_alone() {
+            let rig = Rig::new();
+            rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page").expect("opens");
+            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page", "take-1").expect("starts");
+
+            // The release begins the drain and the socket drops - or the
+            // server says `dictate_ended` - while it sleeps, so the take ends
+            // and the page's own re-press is free.
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("a runtime")
+                .block_on(async {
+                    let drain = rig.mic.drain("take-1");
+                    let re_press = async {
+                        rig.mic.stop("take-1");
+                        rig.mic
+                            .start(&rig.bridge, Some("one".to_owned()), "page", "take-2")
+                            .expect("the re-press records");
+                    };
+                    tokio::join!(drain, re_press);
+                });
+
+            assert_eq!(
+                rig.mic
+                    .start(&rig.bridge, Some("one".to_owned()), "page", "take-3")
+                    .err()
+                    .as_deref(),
+                Some("the microphone is already recording"),
+                "the stale drain must not end the take the same page's re-press began",
+            );
+        }
+
+        /// The stop's half of the same window: it is fire-and-forget on the
+        /// page's side, so one for the take that ended can land after the
+        /// re-press began.
+        #[test]
+        fn a_stop_for_the_take_that_ended_leaves_the_new_take_alone() {
+            let rig = Rig::new();
+            rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page").expect("opens");
+            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page", "take-1").expect("starts");
+            rig.mic.stop("take-1");
+            rig.mic
+                .start(&rig.bridge, Some("one".to_owned()), "page", "take-2")
+                .expect("the re-press records");
+
+            rig.mic.stop("take-1");
+
+            assert_eq!(
+                rig.mic
+                    .start(&rig.bridge, Some("one".to_owned()), "page", "take-3")
+                    .err()
+                    .as_deref(),
+                Some("the microphone is already recording"),
+                "the late stop must not end the take the re-press began",
+            );
+        }
+
+        /// One page, and a first take whose token happens to equal the page's
+        /// own id: the guards must read the take field, not the page, however
+        /// the two strings line up.
+        #[test]
+        fn a_guard_reads_the_take_field_even_when_the_token_equals_the_page() {
+            let rig = Rig::new();
+            rig.mic.hold(&rig.bridge, Some("one".to_owned()), "same").expect("opens");
+            rig.mic.start(&rig.bridge, Some("one".to_owned()), "same", "same").expect("starts");
+            rig.mic.stop("same");
+            rig.mic
+                .start(&rig.bridge, Some("one".to_owned()), "same", "next")
+                .expect("the re-press records");
+
+            rig.mic.stop("same");
+
+            assert_eq!(
+                rig.mic
+                    .start(&rig.bridge, Some("one".to_owned()), "same", "third")
+                    .err()
+                    .as_deref(),
+                Some("the microphone is already recording"),
+                "a stop naming the page-id take must not end the take that followed it",
             );
         }
 
@@ -684,22 +806,27 @@ mod tests {
             let rig = Rig::new();
             reload(&rig, Some("one".to_owned()));
             rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page-b").expect("holds");
-            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b").expect("page-b records");
+            rig.mic
+                .start(&rig.bridge, Some("one".to_owned()), "page-b", "take-b")
+                .expect("page-b records");
 
-            rig.mic.stop("page-a");
+            rig.mic.stop("take-a");
 
             assert_eq!(
-                rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b").err().as_deref(),
+                rig.mic
+                    .start(&rig.bridge, Some("one".to_owned()), "page-b", "take-b-2")
+                    .err()
+                    .as_deref(),
                 Some("the microphone is already recording"),
                 "the stale stop must not end the take the reloaded page began",
             );
         }
 
         #[test]
-        fn a_drain_from_the_recording_page_ends_its_own_take() {
+        fn a_drain_from_the_recording_take_ends_that_take() {
             let mut rig = Rig::new();
             rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page").expect("opens");
-            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page").expect("starts");
+            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page", "take-1").expect("starts");
 
             // A partial frame the device left mid-frame: the drain's hand-over.
             let partial = 8usize;
@@ -708,18 +835,18 @@ mod tests {
                 let held = warm.as_ref().expect("warm");
                 held.held.carry().push(&vec![0.0; partial]);
             }
-            drained(&rig, "page");
+            drained(&rig, "take-1");
 
             assert!(
                 matches!(
                     rig.frames.try_recv(),
                     Ok(crate::bridge::ClientEvent::Mic(bytes)) if bytes.len() == 1 + partial * 2
                 ),
-                "the page's own drain carries the partial frame it was holding",
+                "the take's own drain carries the partial frame it was holding",
             );
             rig.mic
-                .start(&rig.bridge, Some("one".to_owned()), "page")
-                .expect("the page's own drain ended its take");
+                .start(&rig.bridge, Some("one".to_owned()), "page", "take-2")
+                .expect("the take's own drain ended its take");
         }
 
         #[test]
@@ -772,7 +899,9 @@ mod tests {
             eprintln!("no input on this machine; the wiring is unproven here");
             return;
         };
-        let take = mic.start(&bridge, None, "page").expect("the held capture must serve the take");
+        let take = mic
+            .start(&bridge, None, "page", "take-1")
+            .expect("the held capture must serve the take");
         assert_eq!(take.id, held.id, "the take records from the device the hold opened");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -795,9 +924,10 @@ mod tests {
 
         // And ending the take keeps the device: the second take is served by
         // the same capture, which is the whole point of holding it.
-        mic.stop("page");
-        let again =
-            mic.start(&bridge, None, "page").expect("the next take is served without reopening");
+        mic.stop("take-1");
+        let again = mic
+            .start(&bridge, None, "page", "take-2")
+            .expect("the next take is served without reopening");
         assert_eq!(again.id, held.id, "the same device, still open");
         mic.release();
     }

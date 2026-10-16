@@ -2084,6 +2084,82 @@ describe('the conversation the chat draws', () => {
     ]);
   });
 
+  /**
+   * **The interrupt marker opens no turn** (#1323): the CLI writes it as
+   * the reader's own row INSIDE the turn it ended - the in-flight call,
+   * then this, then the failing result - so a turn opened for it splits
+   * the call from the report and failure line that answer it. The server's
+   * transcript fold keeps the same rule in the same breath.
+   *
+   * The shape a page-attached seat meets: a page carries no result frame,
+   * so the turn holding the call is settled when the live marker follows,
+   * and nothing but this rule keeps the marker in it.
+   */
+  it('folds the interrupt marker into the turn it ended', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    const inFlight = {
+      type: 'user',
+      uuid: 'u-call',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_killed',
+            name: 'Bash',
+            input: { command: 'just check' },
+          },
+        ],
+      },
+    };
+    server.send(page([{ key: 't1', messages: [inFlight] }], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: typed('[Request interrupted by user]') } });
+
+    const after = get(chat.value).turns;
+    expect(after.length, 'one turn, not a second opened at the marker').toBe(1);
+    expect(
+      after[0]?.messages,
+      'the marker draws inside the turn holding the call it ended',
+    ).toEqual([inFlight, typed('[Request interrupted by user]')]);
+  });
+
+  /**
+   * **The marker is the reader's row, not any frame whose text opens with
+   * its words**: an assistant frame saying the same thing is the model
+   * talking and opens its own turn, the way every drawn assistant frame
+   * does. The server's arm is guarded the same way (`!assistant`).
+   */
+  it('reads the marker only on the reader own row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      chat_appended: { key: LEAD, msg: said('[Request interrupted by user] but I keep going') },
+    });
+
+    expect(get(chat.value).turns.length, 'an assistant frame is not the marker').toBe(2);
+  });
+
+  /**
+   * A marker with no turn to join is held rather than opening a row of its
+   * own: it belongs to a turn this page has not seen yet, the same way
+   * every frame with nothing to attach to is.
+   */
+  it('holds an interrupt marker arriving before any turn', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    server.update({ chat_appended: { key: LEAD, msg: typed('[Request interrupted by user]') } });
+
+    expect(get(chat.value).turns.length, 'no turn to join yet: held, not a row').toBe(0);
+  });
+
   it('does not draw a keyless turn twice when a frame joined it and a page repeats it', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

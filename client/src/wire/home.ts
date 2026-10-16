@@ -244,6 +244,13 @@ export interface AgentRow {
    */
   failed_turn: WireTime | null;
   /**
+   * Whether a session on the seat ended and the reader has not been shown
+   * it since: the row's failure is the durable trace of a crash nobody
+   * watched, and it is what tells a stalled-from-birth seat (which stays
+   * parked) from one that should be started again.
+   */
+  died: boolean;
+  /**
    * The seat's OWN working tree, which is not the project's.
    *
    * A worker's is its worktree and the lead's is the project's path, so a
@@ -597,6 +604,9 @@ export function homeFrom(data: HomeWire): HomeWire {
       // A server old enough not to state the failure leaves the field out,
       // and it must read as `null` rather than as a failure.
       failed_turn: agent.failed_turn ?? null,
+      // Same shape: a server that never states the death must read as no
+      // death, not as one nobody has been shown.
+      died: agent.died === true,
       // The gate inside the seat's tree, which is the one member of it that is
       // a union of literals: `WorkState` is a struct, so there is nothing else
       // in it to narrow and a shape test over the object would discriminate

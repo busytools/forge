@@ -220,18 +220,21 @@ mod commands {
     ///
     /// A press says which page load it comes from the way a hold does, so the
     /// first press after a reload ends the take the discarded page left
-    /// rather than being refused by it.
+    /// rather than being refused by it, and it carries the take's own token,
+    /// which the page minted as it opened the mic and is what the take's
+    /// drain and stop name.
     #[tauri::command]
     pub async fn client_mic_start(
         bridge: tauri::State<'_, Arc<Bridge>>,
         mic: tauri::State<'_, Arc<crate::mic::Mic>>,
         device: Option<String>,
         page: String,
+        take: String,
     ) -> Result<Value, String> {
         let bridge = Arc::clone(bridge.inner());
         let mic = Arc::clone(mic.inner());
         tauri::async_runtime::spawn_blocking(move || {
-            mic.start(&bridge, device, &page).map(|held| crate::mic::device_json(&held))
+            mic.start(&bridge, device, &page, &take).map(|held| crate::mic::device_json(&held))
         })
         .await
         .map_err(|error| error.to_string())?
@@ -243,25 +246,27 @@ mod commands {
     ///
     /// The caller sends its stop after this answers - the server finalises
     /// the take on that stop, so a frame that follows it would have no take
-    /// to land in. It says which page load it comes from, so a drain still
-    /// in flight from a page a reload discarded ends nothing.
+    /// to land in. It names the take's own token, so a drain still in flight
+    /// from a take that has ended - a discarded page's, or the page's own
+    /// last take - ends nothing.
     #[tauri::command]
     pub async fn client_mic_drain(
         mic: tauri::State<'_, Arc<crate::mic::Mic>>,
-        page: String,
+        take: String,
     ) -> Result<(), String> {
         let mic = Arc::clone(mic.inner());
-        mic.drain(&page).await;
+        mic.drain(&take).await;
         Ok(())
     }
 
     /// End the take at once: an abandoned take throws its audio away, so
     /// nothing waits for the pipeline to land. The device stays open and
-    /// warm for the next press, and the page is named for the same reason
-    /// the drain names it: one in flight from a discarded page ends nothing.
+    /// warm for the next press, and the take is named for the same reason
+    /// the drain names it: one in flight from a take that has ended ends
+    /// nothing.
     #[tauri::command]
-    pub fn client_mic_stop(mic: tauri::State<'_, Arc<crate::mic::Mic>>, page: String) {
-        mic.stop(&page);
+    pub fn client_mic_stop(mic: tauri::State<'_, Arc<crate::mic::Mic>>, take: String) {
+        mic.stop(&take);
     }
 
     /// The inputs this machine can record from, for the panel's pick: the

@@ -5,9 +5,9 @@
  * **Nothing is folded here, and that is the point.** A row's state is the
  * server's, folded from the core's own `Live` alongside the roster, so it
  * arrives in the row already decided - including the unseen marks. The only
- * states this client makes for itself are `stateOf`'s four promotions: the
- * cases where the state read from the wire alone would disagree with the view
- * this client replaced, silently, the first time one of them turned. So an
+ * states this client makes for itself are `stateOf`'s promotions: the cases
+ * where the state read from the wire alone would disagree with the view this
+ * client replaced, silently, the first time one of them turned. So an
  * update the home is sent is answered with a fresh read rather than with
  * arithmetic, and an update it is not sent is never seen.
  */

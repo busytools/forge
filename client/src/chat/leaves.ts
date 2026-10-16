@@ -281,7 +281,11 @@ function toolUseError(text: string): { message: string; detail: string } | null 
   if (start === -1) return null;
   const end = lower.indexOf('</tool_use_error>', start + open.length);
   if (end === -1) return null;
-  const inner = text.slice(start + open.length, end).trim();
+  // The envelope's own words are read as PLAIN text, unlike the body around
+  // them: a failure draws in the caption lane (`errhint`, the row's tail)
+  // where there is no terminal box to render a sequence, so an escape left on
+  // them is residue on the page.
+  const inner = stripEscapes(text.slice(start + open.length, end)).trim();
   if (inner === '') return null;
   const at = inner.indexOf('\n');
   return at === -1
@@ -297,21 +301,29 @@ function toolUseError(text: string): { message: string; detail: string } | null 
  * box. `failed` is the call's own settle: only there is the CLI's error
  * envelope read off (see `toolUseError`), and a completed result draws
  * verbatim, tags and all.
+ *
+ * **Escapes stay on the text.** The terminal box that draws a command's output
+ * reads them into the page's own colours (`Ansi.svelte`), so stripping them
+ * here would throw the colour away before the one renderer that can use it
+ * ever saw it. Every other consumer of a body - a failure's reason, a card's
+ * prose, a source file - strips at its own draw, where plain text is what it
+ * wants.
  */
 export function bodyOf(content: unknown, failed = false): CallBody[] {
   if (typeof content === 'string') {
-    const text = stripEscapes(content);
-    if (text.trim() === '') return [];
-    const said = failed ? toolUseError(text) : null;
-    return [said === null ? { kind: 'text', text } : { kind: 'error', ...said }];
+    // Emptiness is read off the STRIPPED text: a result that is only escape
+    // sequences is a result that said nothing, and drawing it would leave a
+    // row that expands to an empty box.
+    if (stripEscapes(content).trim() === '') return [];
+    const said = failed ? toolUseError(content) : null;
+    return [said === null ? { kind: 'text', text: content } : { kind: 'error', ...said }];
   }
   const out: CallBody[] = [];
   for (const block of blocksOf(content)) {
     if (block.type === 'text' && typeof block.text === 'string') {
-      const text = stripEscapes(block.text);
-      if (text.trim() !== '') {
-        const said = failed ? toolUseError(text) : null;
-        out.push(said === null ? { kind: 'text', text } : { kind: 'error', ...said });
+      if (stripEscapes(block.text).trim() !== '') {
+        const said = failed ? toolUseError(block.text) : null;
+        out.push(said === null ? { kind: 'text', text: block.text } : { kind: 'error', ...said });
       }
     }
     if (block.type === 'image') {

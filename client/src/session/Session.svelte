@@ -230,7 +230,22 @@
     const open = connection;
     const seatSlot = slot;
     const key = subjectKey({ session: seatSlot });
-    if (!seat.waking && seat.lifecycle !== 'Sleeping' && seat.lifecycle !== 'LoggedOut') {
+    // The states the page starts a lead for: nothing named, asleep, and a
+    // seat a session ENDED on - the death is recorded, the page is where
+    // it comes back, and the respawn is not silent (the row carried the
+    // failure, and the recovery announces itself).
+    //
+    // **What stays parked**: a Failed row with no death behind it is a
+    // spawn that never came up - a bad config, a refused credential - and
+    // waking it would loop on the same failure, so `died` is what tells the
+    // two apart. A seat waiting on sign-in is not here at all: its own
+    // lifecycle is `AuthRequired`, which this wake has never asked for.
+    const wake =
+      seat.waking ||
+      seat.lifecycle === 'Sleeping' ||
+      seat.lifecycle === 'LoggedOut' ||
+      (seat.lifecycle === 'Failed' && seat.died);
+    if (!wake) {
       if (asked.has(key)) asked.delete(key);
       return;
     }

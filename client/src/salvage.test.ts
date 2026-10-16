@@ -115,8 +115,10 @@ describe('the salvage copies', () => {
     // exactly as they were skipped from the other side before. 214 now that
     // the usage page is gone: its drawing declared the palette's seventeen.
     // 191 after the residue cut's two unreferenced home drawings left this
-    // sweep, the queue drawing's own `--violet` adding one back.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(191);
+    // sweep, the queue drawing's own `--violet` adding one back. 192 after the
+    // connect drawing declared the `--ctl` its button's rule draws, the
+    // address field's rule staying borderless in that drawing.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(192);
   });
 
   /**

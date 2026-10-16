@@ -33,6 +33,11 @@ pub struct AgentRow {
     /// when the reader cancelled that turn, or when a newer turn has since
     /// been committed.
     pub failed_turn: Option<SystemTime>,
+    /// Whether a session on this seat ended and no reader has been shown it
+    /// since. The row's failure is the durable trace of a crash nobody
+    /// watched, and this is what tells a seat that never came up (which
+    /// stays parked with its reason) from one that should be started again.
+    pub died: bool,
 }
 
 /// What a session is waiting on a person for. The core's own kind rather
@@ -59,8 +64,17 @@ impl Agents {
         for project in workspace.list_projects() {
             let lead = SessionSlot::lead(&project.org, &project.name);
             // A project with no session behind it is the home's Start row
-            // rather than an agent, so it contributes no rows at all.
-            if workspace.domain_session_for(&lead).is_none() {
+            // rather than an agent, so it contributes no rows at all - but a
+            // row is still owed while a failure stands, and while a death no
+            // reader has been shown stands. **The death is its own gate**:
+            // the recovering connect clears the failure by design, so a seat
+            // revived under a standing death would otherwise lose its row
+            // between the revival and the next show, and the show after that
+            // would draw the old death on a session that never died.
+            if workspace.domain_session_for(&lead).is_none()
+                && workspace.spawn_failure(&lead).is_none()
+                && !workspace.death_stands(&lead)
+            {
                 continue;
             }
             let start = rows.len();
@@ -116,12 +130,18 @@ fn row_for(
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),
         failed_turn: workspace.session_failed_turn(&slot),
+        died: workspace.death_stands(&slot),
         pending: workspace.pending_interaction(&slot),
         pending_depth: workspace.pending_interaction_depth(&slot),
         // A worker's own spawn diagnostic is the more specific record, so
         // it wins; a lead has only the slot's, which is why the fallback
-        // is here rather than at the call sites.
-        reason: reason.or_else(|| workspace.spawn_failure(&slot)),
+        // is here rather than at the call sites. **A standing death is the
+        // last of the three**: the recovering connect clears the failure
+        // (the lifecycle has to tell the truth about now), and the reason
+        // the seat died still has to reach the row that carries `died`.
+        reason: reason
+            .or_else(|| workspace.spawn_failure(&slot))
+            .or_else(|| workspace.death_reason(&slot)),
         lifecycle,
         label,
         slot,
@@ -142,6 +162,25 @@ impl ViewSurface {
     /// the home needs re-encoding for the connection that attached.
     pub fn failed_turn(&self, slot: &SessionSlot) -> Option<SystemTime> {
         self.workspace.session_failed_turn(slot)
+    }
+
+    /// A subscribe has served `slot`, which is this view saying the seat was
+    /// shown: a death the reader had not been shown is spent with it - the
+    /// mark and its reason leave the row - so a crash nobody watched is the
+    /// durable trace until someone looks. Answers whether anything was
+    /// spent, which is the connection's cue to re-encode the home it holds.
+    ///
+    /// **"Shown" is the SUBJECT's granularity, not the page's**: any
+    /// subscriber to the seat - the chat, the review page, a document
+    /// hand-off - serves it and spends the trace, whether or not that page
+    /// ever draws the failure. Narrowing this would need the server to know
+    /// which page is on the other end, which is the client's business and
+    /// not something the wire carries.
+    ///
+    /// Called after the seat's own snapshot was encoded, deliberately: the
+    /// read that spends the mark is the read that shows it.
+    pub fn seat_shown(&self, slot: &SessionSlot) -> bool {
+        self.workspace.spend_death(slot)
     }
 }
 
@@ -371,6 +410,156 @@ mod tests {
 
         assert_eq!(failed_of(&failed), Some(at), "the row carries the failed turn's instant");
         assert_eq!(failed_of(&quiet), None, "a seat that never failed carries none");
+    }
+
+    /// A session whose subprocess died keeps its row after the failure
+    /// released the session: this is what the fleet's left panel draws the
+    /// failed mark from when an agent dies. Catches a collect that drops the
+    /// row because no domain session is left behind - the shape the fleet
+    /// showed nothing for.
+    #[test]
+    fn a_lead_whose_session_died_keeps_a_failed_row() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace
+            .record_spawn_failure_for_test(&lead, "the claude subprocess closed its output stream");
+
+        let agents = surface.agents();
+        let row = agents
+            .for_project(&project)
+            .first()
+            .expect("a crashed seat still has a row, with no domain session behind it");
+
+        assert_eq!(row.slot, lead, "the row is the seat that died");
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Failed,
+            "a dead session reads failed rather than absent",
+        );
+        assert_eq!(
+            row.reason.as_deref(),
+            Some("the claude subprocess closed its output stream"),
+            "and the row carries why",
+        );
+    }
+
+    /// **A recovered seat reads the truth about now, with the death riding
+    /// as its own trace.** The recovering connect clears the failure - the
+    /// lifecycle is about the seat as it stands, and a live, working
+    /// project drawn failed is the same lie the issue was filed against,
+    /// mirrored - so what carries the death until a reader is shown the
+    /// seat is `died` plus the reason it left. Showing the seat takes both.
+    #[test]
+    fn a_recovered_seat_reads_live_and_still_carries_its_death() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.register_domain_session(lead.clone(), None);
+        workspace.record_death_for_test(
+            &lead,
+            "dead-occupant",
+            "the claude subprocess closed its output stream",
+        );
+
+        let agents = surface.agents();
+        let row = agents.for_project(&project).first().expect("the recovered seat has its row");
+
+        assert_ne!(
+            row.lifecycle,
+            SessionLifecycleState::Failed,
+            "a recovered seat reading Failed is the lie, mirrored",
+        );
+        assert!(row.died, "and the death nobody was shown still rides");
+        assert_eq!(
+            row.reason.as_deref(),
+            Some("the claude subprocess closed its output stream"),
+            "with the reason it left, which the cleared failure no longer carries",
+        );
+
+        // Shown: the trace goes, the row stays.
+        assert!(surface.seat_shown(&lead), "the show takes the trace");
+        let agents = surface.agents();
+        let row = agents.for_project(&project).first().expect("the row is still there");
+        assert!(!row.died, "the spent death is off the row");
+        assert_eq!(row.reason, None, "and its reason with it");
+    }
+
+    /// And a seat that crashed and is still DOWN reads Failed with its
+    /// reason: that is the truth about a seat nothing brought back. Catches
+    /// a row that reports a live state for a seat no session is behind.
+    #[test]
+    fn a_seat_that_crashed_and_is_still_down_reads_failed() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace
+            .record_spawn_failure_for_test(&lead, "the claude subprocess closed its output stream");
+        workspace.record_death_for_test(
+            &lead,
+            "dead-occupant",
+            "the claude subprocess closed its output stream",
+        );
+
+        let agents = surface.agents();
+        let row = agents.for_project(&project).first().expect("the crashed seat has its row");
+
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Failed,
+            "a seat nothing brought back reads failed",
+        );
+        assert!(row.died, "and the death it has not been shown rides");
+        assert_eq!(
+            row.reason.as_deref(),
+            Some("the claude subprocess closed its output stream"),
+            "with the reason it died with",
+        );
+    }
+
+    /// **A death keeps the row on its own.** With no session behind it and
+    /// no failure standing - the recovering connect clears the failure by
+    /// design, and a release takes the domain - the row is owed for the
+    /// death itself; skipped, the mark would vanish between the revival and
+    /// the next show and come back stale on a session that never died.
+    #[test]
+    fn a_seat_with_no_session_and_a_standing_death_keeps_its_row() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        // No domain session (the release took it) and no failure (the
+        // recovering connect cleared it): the death alone.
+        workspace.record_death_for_test(
+            &lead,
+            "dead-occupant",
+            "the claude subprocess closed its output stream",
+        );
+
+        let agents = surface.agents();
+        let row = agents
+            .for_project(&project)
+            .first()
+            .expect("a standing death keeps the row with nothing else behind it");
+
+        assert!(row.died, "the death is on the row");
+        assert_eq!(
+            row.reason.as_deref(),
+            Some("the claude subprocess closed its output stream"),
+            "with the reason it left",
+        );
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Sleeping,
+            "and the lifecycle reads the seat that is not there",
+        );
     }
 
     /// A lead's failed spawn reaches its row, which is what the slot's own
