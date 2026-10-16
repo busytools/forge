@@ -961,9 +961,9 @@ describe('the output a backgrounded row reads back', () => {
 
   /**
    * A search's hits are read off the plain text: the escapes a body keeps for
-   * the terminal box are not part of a location or a line, and left on they
-   * stop the line reading as a hit at all - a coloured `grep` would draw its
-   * output as one run of text instead of a list of places.
+   * the terminal box are not part of a location or a line, and left on, the
+   * residue draws ON them. The teeth are the last assertion - no sequence
+   * reaches the page for a hit to carry.
    */
   it('reads a search its hits even when the command coloured them', () => {
     const leaf: ToolLeaf = {
@@ -999,9 +999,9 @@ describe('the output a backgrounded row reads back', () => {
 
   /**
    * **While the call runs, a read that found nothing is "not yet", not a
-   * missing file**: the file is composed from the task id and appears when the
-   * command first writes, so the settled wording - which says no file was ever
-   * recorded - would be a claim the row cannot make yet.
+   * missing file**: the path composes from the task id, so a read that has not
+   * found the file yet is not a call that never recorded one - the settled
+   * wording would be a claim the row cannot make while it runs.
    */
   it('says the output has not appeared yet while the call still runs', () => {
     const running: ToolLeaf = { ...backgrounded(null), status: 'in_progress' };

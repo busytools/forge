@@ -74,8 +74,15 @@ describe('the command output a box draws', () => {
     expect(ansiRuns('\u001b[31mr\u001b[38;2;31;31;31mx\u001b[0m')).toEqual([
       { text: 'rx', cls: 'ansi-red' },
     ]);
-    // `48` is the background half and is consumed the same way.
+    // `48` is the background half and `58` the underline half, consumed the
+    // same way - `58` was the one that still leaked its payload.
     expect(ansiRuns('\u001b[31mr\u001b[48;5;2mx\u001b[0m')).toEqual([
+      { text: 'rx', cls: 'ansi-red' },
+    ]);
+    expect(ansiRuns('\u001b[31mr\u001b[58;5;1mx\u001b[0m')).toEqual([
+      { text: 'rx', cls: 'ansi-red' },
+    ]);
+    expect(ansiRuns('\u001b[31mr\u001b[58;2;31;31;31mx\u001b[0m')).toEqual([
       { text: 'rx', cls: 'ansi-red' },
     ]);
   });
@@ -109,6 +116,11 @@ describe('the command output a box draws', () => {
       'first\nsecond\tthird',
       'progress\rfinished',
       '\u007fdelete\u0008back',
+      // The CSI abort arm: a byte that cannot be part of a sequence, and a
+      // second escape inside one. Both end the sequence where the stripper
+      // ends it, which is the arm a corpus of valid sequences never reaches.
+      '\u001b[31éx',
+      '\u001b[31\u001b[0my',
     ];
     for (const text of corpus) {
       expect(

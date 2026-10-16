@@ -18,6 +18,8 @@
  * check.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { rootTokens } from './theme';
@@ -210,6 +212,14 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  */
 const LIFTED = (token: string): string => `color-mix(in srgb, var(${token}) 70%, var(--text))`;
 
+/**
+ * The composite `.ansi-dim` paints: the token at the sheet's own opacity over
+ * the box's ground. `opacity: .7` on text composites the glyph over what is
+ * behind it, which is exactly this mix - so the values the attribute costs are
+ * the ones the rows below measure.
+ */
+const DIMMED = (token: string): string => `color-mix(in srgb, var(${token}) 70%, var(--bg))`;
+
 const DRAWN: readonly Pair[] = [
   ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
   ['--text', '--s1', TEXT],
@@ -264,6 +274,20 @@ const DRAWN: readonly Pair[] = [
   [LIFTED('--blue'), '--bg', TEXT],
   [LIFTED('--violet'), '--bg', TEXT],
   [LIFTED('--teal'), '--bg', TEXT],
+  // **`\e[2m` is the command's own attribute and draws dim.** A command that
+  // asked for de-emphasis gets it, so these composites sit under the text
+  // floor - and the floors are the values measured when the swap landed,
+  // rounded down a tenth, so a heavier opacity is a red test rather than a
+  // silent drift. Measured: dim 3.03, red 3.37, blue 4.04, yellow 4.45,
+  // magenta 4.49, green 5.21, cyan 5.28, white 6.65.
+  [DIMMED('--dim'), '--bg', 3.0],
+  [DIMMED('--bad'), '--bg', 3.3],
+  [DIMMED('--blue'), '--bg', 4.0],
+  [DIMMED('--warn'), '--bg', 4.4],
+  [DIMMED('--violet'), '--bg', 4.4],
+  [DIMMED('--ok'), '--bg', 5.2],
+  [DIMMED('--teal'), '--bg', 5.2],
+  [DIMMED('--text'), '--bg', 6.6],
 ];
 
 /**
@@ -342,6 +366,25 @@ describe('the palette', () => {
       ),
       'a colour lifted the wrong way on the box ground',
     ).toHaveLength(1);
+  });
+
+  /**
+   * **The table's derived rows are the sheet's own text.** A lift copied here
+   * would keep measuring an expression the sheet had stopped drawing - a
+   * percentage changed in `web.css` would leave the guard green over a colour
+   * nobody draws - so every derived row is asserted against the sheet
+   * verbatim, and the dim composites against the opacity the sheet sets.
+   */
+  it('measures the lifts and the dim opacity the sheet actually draws', () => {
+    const sheet = readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8');
+    for (const token of ['--dim', '--bad', '--ok', '--warn', '--blue', '--violet', '--teal']) {
+      expect(sheet, `the sheet draws the bright weight for ${token}`).toContain(
+        `color: ${LIFTED(token)}`,
+      );
+    }
+    expect(sheet, 'and the dim composite is that sheet value').toContain(
+      '.ansi-dim { opacity: .7; }',
+    );
   });
 
   /** A pair naming a token the palette does not resolve is a stale pair. */

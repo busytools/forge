@@ -66,7 +66,8 @@ pub(crate) struct SessionTask {
 /// **The ending frame's own path wins when both are reachable** - it is the
 /// CLI's word for where the output went, while the composed path is this
 /// build's reading of a layout the CLI never promised. `None` when the
-/// conversation names neither, which a view draws as no-path.
+/// conversation names neither - and a composition that finds no file is the
+/// same answer rather than a third one, so the caller has one miss to draw.
 ///
 /// **`base` is a thunk because a settled read never needs it**: resolving it
 /// costs a `realpath` syscall, and a call whose ending frame named the file
@@ -6438,7 +6439,7 @@ provider = "anthropic"
                     ),
                 }],
             },
-            "toolUseResult": { "backgroundTaskId": "t-prose" },
+            "tool_use_result": { "backgroundTaskId": "t-prose" },
             "uuid": "u-prose",
             "session_id": "sess-prose",
         }))

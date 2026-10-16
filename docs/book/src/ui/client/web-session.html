@@ -1902,9 +1902,9 @@ rendering chunks (49/52)
 computing gzip size...</div>
             </div>
           </details>
-          <!-- And the same call with nothing to read yet: the file is written
-               when the command first writes, so the row says so rather than
-               drawing a blank. -->
+          <!-- And the same call with nothing to read yet: the file is there
+               from launch and reads as empty until the command's first line
+               lands, so the row says not yet rather than drawing a blank. -->
           <details class="leaf running" open>
             <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">gh run watch 38861655815</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">

@@ -138,7 +138,9 @@
   function textOf(piece: RunPiece): string {
     if (piece.kind === 'text') return piece.text;
     if (piece.kind === 'error') return piece.message;
-    return piece.mime === null ? 'image' : `image \u{b7} ${piece.mime}`;
+    // Truthy rather than non-null, matching the image arm's own drawing: a
+    // mime the wire sent as an empty string draws no separator after it.
+    return piece.mime ? `image \u{b7} ${piece.mime}` : 'image';
   }
 
   /**
@@ -683,10 +685,10 @@
             <div class="sg-pr">the output file is gone</div>
           {:else if readback.kind === 'no_path'}
             {#if liveTail}
-              <!-- The file is composed from the task id and appears when the
-                   command first writes, so while the call runs the settled
-                   wording - no file was ever recorded - is a claim the row
-                   cannot make yet. -->
+              <!-- The path composes from the task id, so while the call runs
+                   an answer with nothing on it is a file the composition has
+                   not found yet - and the settled wording, no file was ever
+                   recorded, is a claim the row cannot make. -->
               <div class="sg-pr">the output has not appeared yet</div>
             {:else}
               <div class="sg-pr">no output file was recorded for this call</div>

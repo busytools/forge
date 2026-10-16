@@ -84,14 +84,14 @@ function classesOf(style: Style): string {
 /**
  * Apply one SGR parameter list to `style`, mutating it.
  *
- * **The extended-colour payload is consumed as a UNIT.** `38` and `48`
+ * **The extended-colour payload is consumed as a UNIT.** `38`, `48` and `58`
  * introduce a colour written as further numbers - `38;5;n` a palette index,
  * `38;2;r;g;b` a literal one - and those numbers are not parameters of their
  * own. Fed to the arms below one by one, `38;5;1` would set bold, `38;5;0`
  * would reset the whole style, and `38;2;31;31;31` would paint red: three
- * wrong draws for the tools that emit 256-colour or RGB at all. The payload is
- * therefore skipped whole, and none of the three are drawn here - the theme
- * has no token for an arbitrary colour.
+ * wrong draws for the tools that emit 256-colour or RGB at all, and `58` (the
+ * underline half) the same. The payload is therefore skipped whole, and none
+ * of them are drawn here - the theme has no token for an arbitrary colour.
  *
  * Unknown parameters are ignored on purpose: a code this page has no style for
  * changes nothing rather than guessing one.
@@ -100,7 +100,7 @@ function applySgr(style: Style, params: number[]): void {
   const list = params.length === 0 ? [0] : params;
   for (let at = 0; at < list.length; at += 1) {
     const param = list[at] ?? 0;
-    if (param === 38 || param === 48) {
+    if (param === 38 || param === 48 || param === 58) {
       const kind = list[at + 1];
       // `5` carries one more number and `2` three; anything else is a number
       // whose reading this build does not know, skipped the same way.
