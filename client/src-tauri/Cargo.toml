@@ -6,8 +6,9 @@ edition = "2024"
 rust-version = "1.90"
 
 # Its own workspace root, so the crate above is not a member of forge's: the
-# shell links the whole webview stack, which is minutes of compile the
-# workspace gate should not carry for every Rust-only change.
+# shell links the whole webview stack, and it is the shipping build - minutes
+# of compile - that neither `just check` nor CI carries for every Rust-only
+# change; the crate's clippy and tests ride both.
 # `just client-tauri-check` builds it, `client-tauri-bundle` adds the bundles.
 [workspace]
 

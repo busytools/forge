@@ -287,12 +287,14 @@ client-typecheck: client-deps
 client-test: client-deps
     npm --prefix client run test
 
-# The shell crate's clippy, at the workspace's own strictness. The crate is a
-# workspace root of its own, so `just clippy`'s two invocations never reach
-# it, and its findings drifted unread.
+# The shell crate's clippy, warnings denied. The crate is a workspace root of
+# its own, so `just clippy`'s two invocations never reach it, and its findings
+# drifted unread.
 #
-# One invocation rather than the workspace's pair: this crate declares no
-# features, so there is no second feature set to compile.
+# **The default lint set, not the workspace's**: this crate carries no
+# `[lints]` table of its own, so nothing pedantic applies here and the denied
+# `unwrap`/`expect`/`panic`/`exit` do not either (#2321). One invocation
+# rather than the workspace's pair, since it declares no features.
 #
 # Lint the shell crate.
 client-tauri-clippy:
@@ -305,9 +307,12 @@ client-tauri-clippy:
 # The cases needing the vendored stack, a scratch forge or a real window are
 # `#[ignore]`d, so a gate run touches neither the network nor the machine.
 #
+# `RUSTFLAGS=-D warnings` mirrors CI's workflow-level env, as `test-all` does:
+# without it the test-target compile is less strict here than there.
+#
 # Run the shell crate's tests.
 client-tauri-test:
-    cargo nextest run --manifest-path client/src-tauri/Cargo.toml
+    RUSTFLAGS="-D warnings" cargo nextest run --manifest-path client/src-tauri/Cargo.toml
 
 # Compile the desktop shell in the configuration that ships. This is the routine
 # gate for anything under client/src-tauri/, and it is quiet.
@@ -333,8 +338,12 @@ client-tauri-test:
 # and forge runs every worker in its own worktree, so it would charge each
 # Rust-only change for a crate it never touched. A cost choice rather than an
 # impossibility.
-client-tauri-check: client-tauri-test
+client-tauri-check:
     npm --prefix client run tauri -- build --no-bundle --ci -- --locked
+    # The tests run AFTER the build: `--locked` up there is what catches a
+    # manifest edit rewriting the tracked `Cargo.lock`, and an ungated nextest
+    # run first would rewrite it out from under that check.
+    "{{just_executable()}}" --justfile "{{justfile()}}" client-tauri-test
 
 # Build the shell's bundles: `forge.app` and the dmg, under
 # client/src-tauri/target/release/bundle. `client-tauri-check` covers no
