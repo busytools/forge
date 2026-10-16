@@ -318,8 +318,22 @@
   // The measured heights belong to the turns this conversation holds.
   $effect(() => rowSizes.prune(held.turns.map((turn) => turn.key)));
 
+  /**
+   * Whether a press on the scrollbar is still held down.
+   *
+   * The press arms the token for `READER_WINDOW_MS`, and a reader who presses
+   * the thumb, aims for a second and only then drags would get nothing from
+   * it - a drag fires no second pointerdown to re-arm (measured: a real drag
+   * in Chromium and in WebKit delivers pointerdown and pointerup and NO moves
+   * between them). So the press also sets this hold, the window's own
+   * pointerup/pointercancel clears it - the pair the drag does deliver - and
+   * while it is set the hand counts whatever the clock says.
+   */
+  let readerHeld = false;
+
   /** Whether the events arriving are the reader's own, made moments ago. */
   function readerMoved(): boolean {
+    if (readerHeld) return true;
     const seen = readerAt;
     return seen !== null && performance.now() - seen < READER_WINDOW_MS;
   }
@@ -364,8 +378,8 @@
     // scroll events carry no source, so the gesture has to be heard separately
     // - and only the UP-capable kinds, because a gesture that cannot move the
     // reader up cannot have moved them up (the view this client replaced
-    // disarmed on an up-scroll alone). A touch arms whole: it carries no
-    // direction.
+    // disarmed on an up-scroll alone). A touch and a press on the scrollbar
+    // arm whole: neither carries a direction.
     const arm = () => {
       readerAt = performance.now();
     };
@@ -375,10 +389,58 @@
     const onKey = (event: KeyboardEvent) => {
       if (SCROLL_UP_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)) arm();
     };
+    /**
+     * **The press that starts a scrollbar drag, which has no wheel to hear.**
+     * A drag fires neither a wheel nor a touch, so its moves were read only
+     * past `DISARM_SLACK` above the pin's landing - and while the follow is
+     * on, the pin re-writes the foot on every arriving update, so a drag had
+     * to out-run the pin before the disarm could land (Ved, 2026-10-16: "I
+     * have to make an effort to actually move it up, and it is still fighting
+     * me"). The press lands on the pane's own box - a scrollbar is not a row,
+     * and no row covers the gutter - so the hand is heard where the drag
+     * begins, and the disarm takes at any distance like a wheel's.
+     *
+     * **The offset is the second clause because the target alone is not
+     * enough.** While `virtua` is scrolling it sets `pointer-events: none` on
+     * the content container for 150ms after the last scroll, so a press on a
+     * ROW then falls through and fires with the pane as its target - which
+     * would arm the token for a click on the conversation. Measured with real
+     * input on the live seat: a scrollbar press reads an offset past
+     * `clientWidth` (854 against 850 in Chromium, 934 against 930 in WebKit),
+     * the pane's own padding strip reads under it (846, 926), and the
+     * fall-through press reads under it too (200, and 199 in WebKit, where
+     * the press still found the row).
+     */
+    const onPress = (event: PointerEvent) => {
+      if (event.target === node && event.offsetX >= node.clientWidth) {
+        arm();
+        readerHeld = true;
+      }
+    };
+    /**
+     * The release, which the drag does deliver, gives the hand back.
+     *
+     * **And so does losing the window**, because a release outside the app
+     * never arrives: the pointerup belongs to whatever took the pointer, and
+     * without a fallback the hold would stand for the life of the seat - which
+     * is the one state this flag can get stuck in and is invisible on screen.
+     * The old 250ms token self-healed; this cannot, so every exit clears it.
+     */
+    const onRelease = () => {
+      readerHeld = false;
+    };
     node.addEventListener('wheel', onWheel, { passive: true });
     node.addEventListener('touchstart', arm, { passive: true });
     node.addEventListener('touchmove', arm, { passive: true });
     node.addEventListener('keydown', onKey);
+    node.addEventListener('pointerdown', onPress);
+    // Window-level, because the drag's pointerup lands on the window when the
+    // pointer has left the pane - and a hold with no release would count every
+    // later nudge as the reader's.
+    window.addEventListener('pointerup', onRelease);
+    window.addEventListener('pointercancel', onRelease);
+    // The release that never arrives, for the press let go outside the app.
+    window.addEventListener('blur', onRelease);
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
       if (holdsEverything()) {
@@ -404,6 +466,14 @@
       node.removeEventListener('touchstart', arm);
       node.removeEventListener('touchmove', arm);
       node.removeEventListener('keydown', onKey);
+      node.removeEventListener('pointerdown', onPress);
+      window.removeEventListener('pointerup', onRelease);
+      window.removeEventListener('pointercancel', onRelease);
+      window.removeEventListener('blur', onRelease);
+      // **A hold does not outlive its attachment.** The list unmounts mid-drag
+      // - an empty or unloaded conversation draws no list - and the release
+      // that would have cleared the flag lands after the listener is gone.
+      readerHeld = false;
       viewport = null;
     };
   }
@@ -555,6 +625,11 @@
       // restore out of a prepend's way and would keep it out for good.
       outstanding = 0;
       settling = false;
+      // **And the hand is not this seat's.** A hold that outlived its press
+      // belongs to the gesture that left; the one state this flag can get
+      // stuck in is invisible on screen, and the time-token it replaced
+      // self-healed in 250ms where this does not.
+      readerHeld = false;
     }
     placedFor = which;
     // The seat coming on screen is put there from what was kept, not from a
@@ -957,7 +1032,9 @@
       } else {
         // Keep asking while pages land: `older()` answers false for a fetch
         // already in flight as well as for the top, and treating that as the
-        // top is what made an older dispatch's click do nothing at all.
+        // top is what made an older dispatch's click do nothing at all. The
+        // empty-page beat is a third false - a chase that stops on it stands
+        // the click down until the beat passes, rather than spinning.
         loadOlder();
       }
       return;

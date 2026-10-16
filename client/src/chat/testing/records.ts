@@ -92,7 +92,7 @@ export const reported = { size: 0, viewport: 0 };
  * The browser clamps the scroll on the element, so this is the only side the
  * column may decide the foot from.
  */
-export const element = { offset: 0, height: 0, viewport: 0 };
+export const element = { offset: 0, height: 0, viewport: 0, width: 0 };
 
 /**
  * A list that has MEASURED, with the reader at its start.
