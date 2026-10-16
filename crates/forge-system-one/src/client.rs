@@ -68,11 +68,13 @@ impl SystemOneClient {
         if !status.is_success() {
             return Err(SystemOneError::Http {
                 status: status.as_u16(),
-                body: truncate(&text, ERROR_BODY_LIMIT),
+                body: truncate(&self.redact(&text), ERROR_BODY_LIMIT),
             });
         }
         let envelope: ResponseEnvelope = serde_json::from_str(&text).map_err(|err| {
-            SystemOneError::InvalidResponse(format!("response did not parse: {err}"))
+            // A serde message quotes the body it was reading, so the same
+            // mask covers it.
+            SystemOneError::InvalidResponse(self.redact(&format!("response did not parse: {err}")))
         })?;
         let ResponseEnvelope { model, mut answers, usage } = envelope;
         let answer = match (answers.len(), answers.remove(QUESTION_KEY)) {
@@ -88,8 +90,20 @@ impl SystemOneClient {
                 )));
             }
         };
-        validate_answer(question, &answer).map_err(SystemOneError::InvalidResponse)?;
+        // The detail quotes provider values - the choice, the legend and
+        // probability keys - so it is masked like the body.
+        validate_answer(question, &answer)
+            .map_err(|detail| SystemOneError::InvalidResponse(self.redact(&detail)))?;
         Ok(AskOutcome { model, answer, usage })
+    }
+
+    /// The provider's text with the configured key's copies masked; no key
+    /// configured means nothing to mask.
+    fn redact(&self, text: &str) -> String {
+        match self.api_key.as_deref() {
+            Some(key) => redact_key(text, key),
+            None => text.to_owned(),
+        }
     }
 }
 
@@ -102,6 +116,61 @@ fn transport_or_timeout(err: &reqwest::Error) -> SystemOneError {
     } else {
         SystemOneError::Transport(err.to_string())
     }
+}
+
+/// The width of the key piece a mask matches on: long enough that it is
+/// key material rather than a scheme, short enough to survive a truncation.
+const TAG: usize = 8;
+
+/// Text with the credential's copies masked, before the body is cut - a
+/// key straddling the cut would otherwise survive as a fragment of itself.
+/// A text carrying no key material comes back untouched, its own formatting
+/// intact.
+///
+/// The error text reaches tool output and the transcript JSONL, neither of
+/// which rotates, so a host reflecting the request (the key rides its auth)
+/// must not put key material there. Two masks cover the shapes a copy
+/// arrives in: the key itself wherever it appears, and any word carrying a
+/// window of it - a reflected copy can be truncated or wrapped across
+/// words, so a word may carry only a piece of the key.
+fn redact_key(text: &str, key: &str) -> String {
+    // Below the tag's own width the key is a placeholder rather than key
+    // material, so only a word that IS the key is masked: masking the
+    // words that merely CONTAIN it eats the diagnostics the body exists for.
+    let tag: String = key.chars().take(TAG).collect();
+    if tag.chars().count() < TAG {
+        if key.is_empty() {
+            return text.to_owned();
+        }
+        if !text.split_whitespace().any(|word| bare_word(word) == key) {
+            return text.to_owned();
+        }
+        return text
+            .split_whitespace()
+            .map(|word| if bare_word(word) == key { "[redacted]" } else { word })
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    // Every window of the key, not just its opening: a copy can be
+    // truncated or wrapped, so the piece that survives still carries a
+    // window of it.
+    let windows: Vec<String> =
+        key.chars().collect::<Vec<_>>().windows(TAG).map(|w| w.iter().collect()).collect();
+    if !windows.iter().any(|window| text.contains(window)) {
+        return text.to_owned();
+    }
+    // Whitespace runs normalize in a text that carried key material.
+    text.replace(key, "[redacted]")
+        .split_whitespace()
+        .map(|word| if windows.iter().any(|w| word.contains(w)) { "[redacted]" } else { word })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A word with the punctuation a key cannot hold trimmed off its ends, the
+/// way a JSON body carries one (`"hunter2",` reads as the key).
+fn bare_word(word: &str) -> &str {
+    word.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
 }
 
 /// A bounded prefix of a provider error body, cut on a char boundary.
@@ -517,6 +586,153 @@ mod tests {
         let (_, text) = http_error(err);
         assert!(text.starts_with('A'), "{text}");
         assert!(text.ends_with("..."), "{text}");
+    }
+
+    /// The error body reaches tool output and the transcript JSONL, which
+    /// do not rotate: a host reflecting the request (the key rides its
+    /// auth) must never print key material there - the key itself, and a
+    /// copy wrapped across words, each piece carrying a run of the key.
+    #[tokio::test]
+    async fn a_reflected_key_in_an_error_body_never_prints() {
+        let key = "sk-live-EXAMPLEKEYVALUE";
+        let body = format!(
+            "origin echoed the request: {key} and the header \"Authorization: Bearer {key}\" \
+             and a wrapped echo: {} {}",
+            &key[..12],
+            &key[12..]
+        );
+        let (base, _) = spawn_server(502, &body, None).await;
+        let client = client_for(&base, Some(key));
+
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("502 is an error");
+
+        let (status, text) = http_error(err);
+        assert_eq!(status, 502);
+        assert!(!text.contains(key), "the key itself never prints: {text}");
+        assert!(!text.contains(&key[..12]), "a wrapped copy's head never prints: {text}");
+        assert!(!text.contains(&key[12..]), "a wrapped copy's tail never prints: {text}");
+        assert!(
+            text.contains("\"Authorization: Bearer [redacted]\""),
+            "the verbatim echo is masked in place, its header kept: {text}"
+        );
+        assert!(
+            text.contains("origin echoed the request"),
+            "the body is masked, not dropped: {text}"
+        );
+    }
+
+    /// The parse-failure detail quotes the body serde was reading, and it
+    /// lands in the same tool output: the key is masked there too.
+    #[tokio::test]
+    async fn a_reflected_key_in_a_parse_failure_never_prints() {
+        let key = "sk-live-EXAMPLEKEYVALUE";
+        let (base, _) = spawn_server(200, &format!("\"upstream echoed: {key}\""), None).await;
+        let client = client_for(&base, Some(key));
+
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("a body that is not an envelope is an error");
+
+        let detail = invalid_response(err);
+        assert!(
+            detail.starts_with("response did not parse"),
+            "a parse failure is still named as one"
+        );
+        assert!(!detail.contains(key), "the parse-failure detail never prints the key");
+    }
+
+    /// The validation detail is built from provider strings - the choice it
+    /// was given, legend and probability keys - and it lands in the same
+    /// tool output: the key is masked there too.
+    #[tokio::test]
+    async fn a_reflected_key_in_a_validation_detail_never_prints() {
+        let key = "sk-live-EXAMPLEKEYVALUE";
+        let body = format!(
+            r#"{{"model":"m","answers":{{"q":{{"type":"choice","choice":"{key}"}}}},"usage":null}}"#
+        );
+        let (base, _) = spawn_server(200, &body, None).await;
+        let client = client_for(&base, Some(key));
+
+        let err = client
+            .ask(&serde_json::json!("x"), &choice_question())
+            .await
+            .expect_err("a choice outside the criteria is an error");
+
+        let detail = invalid_response(err);
+        assert!(
+            detail.contains("not one of the criteria keys"),
+            "the validation failure keeps its own wording"
+        );
+        assert!(!detail.contains(key), "the validation detail never prints the key");
+    }
+
+    /// A body carrying no key material comes back byte-identical: the mask
+    /// is a no-op there, so a clean body's own newlines and indentation
+    /// survive. Each mask path guards its no-op separately - a key at or
+    /// over the tag width, and one below it - so both keys run.
+    #[tokio::test]
+    async fn a_body_without_the_key_is_untouched() {
+        let body = "<html>\n  <body>gateway timeout</body>\n</html>";
+        for key in ["sk-live-EXAMPLEKEYVALUE", "hunter2"] {
+            let (base, _) = spawn_server(504, body, None).await;
+            let client = client_for(&base, Some(key));
+
+            let err = client
+                .ask(&serde_json::json!("x"), &noul_question())
+                .await
+                .expect_err("504 is an error");
+
+            let (_, text) = http_error(err);
+            assert_eq!(text, body, "a keyless body is not reflowed (key `{key}`)");
+        }
+    }
+
+    /// A key below the tag width is masked only where a word IS it, so a
+    /// placeholder does not eat the diagnostics around it. The masked word
+    /// goes whole, punctuation and all (`"hunter2",` reads as the key). The
+    /// glued compact-JSON shape (`{"token":"hunter2"}`) stays unmasked by
+    /// design: its word is not the key, and masking every word containing
+    /// the placeholder is what the width rule avoids.
+    #[tokio::test]
+    async fn a_short_key_masks_the_word_that_is_it() {
+        let (base, _) = spawn_server(500, "upstream said: \"hunter2\", apparently", None).await;
+        let client = client_for(&base, Some("hunter2"));
+
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("500 is an error");
+
+        let (_, text) = http_error(err);
+        assert_eq!(
+            text, "upstream said: [redacted] apparently",
+            "the word that carries the key is masked whole, its neighbours kept"
+        );
+    }
+
+    /// The mask runs over the whole body, before the cut: the cut can land
+    /// a few characters into the key, below the width the windowed masks
+    /// match on, so a key in its reach would otherwise survive as a
+    /// fragment of itself.
+    #[tokio::test]
+    async fn the_key_is_masked_before_the_body_is_cut() {
+        let key = "sk-live-EXAMPLEKEYVALUE";
+        let body = format!("{}{key} tail", "x".repeat(496));
+        let (base, _) = spawn_server(500, &body, None).await;
+        let client = client_for(&base, Some(key));
+
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("500 is an error");
+
+        let (_, text) = http_error(err);
+        assert!(text.ends_with("..."), "the body reached the cut this pins: {text}");
+        assert!(!text.contains(&key[..4]), "no fragment of the key survives the cut: {text}");
     }
 
     #[tokio::test]
