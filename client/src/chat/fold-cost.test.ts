@@ -70,13 +70,18 @@ const prompt = (text: string): unknown =>
   });
 
 /** The storm's own frame: a counter append that draws nothing of its own. */
-const counter = (at: number): unknown =>
+const counter = (at: number, timestamp?: string): unknown =>
   counted({
     type: 'system',
     subtype: 'thinking_tokens',
     uuid: `t-${at}`,
     estimated_tokens_delta: 12,
+    ...(timestamp === undefined ? {} : { timestamp }),
   });
+
+/** Whether a frame is one of the storm's: what a counter's arrival may cost. */
+const isCounter = (frame: unknown): boolean =>
+  (frame as { subtype?: unknown } | null)?.subtype === 'thinking_tokens';
 
 /** One assistant frame, whose row the turn does have to draw. */
 const said = (at: number): unknown =>
@@ -111,14 +116,30 @@ function growing(frames: readonly unknown[]): Array<{ messages: unknown[] }> {
   return steps;
 }
 
-/** Fold every step once, answering the total frame reads. */
-function readsOf(
-  steps: readonly { messages: unknown[] }[],
-  foldIt: (turn: { messages: unknown[] }) => unknown,
-): number {
-  const before = reads;
-  for (const turn of steps) foldIt(turn);
-  return reads - before;
+/**
+ * Fold every step, as the column does, and answer what the counter-appended
+ * ones cost between them.
+ *
+ * The counters are the storm, and a mean over every step would carry the
+ * row-drawing frames' own whole folds in: what they cost is not what this pin
+ * is about, and folding them keeps the carry current for the counters after
+ * them - the same order the column folds in.
+ */
+function counterSteps(steps: readonly { messages: unknown[] }[]): {
+  spent: number;
+  counted: number;
+} {
+  let spent = 0;
+  let counted = 0;
+  for (const turn of steps) {
+    reads = 0;
+    turnFold(turn, null, true, false);
+    const last = turn.messages[turn.messages.length - 1];
+    if (!isCounter(last)) continue;
+    spent += reads;
+    counted += 1;
+  }
+  return { spent, counted };
 }
 
 describe('the live turn fold cost', () => {
@@ -126,19 +147,23 @@ describe('the live turn fold cost', () => {
    * The storm's shape: 4,140 of a live capture's 4,167 frames were counter
    * appends, and each one re-folded the whole turn. A counter carries nothing
    * the turn has to be re-read for, so it may cost its own frame's worth.
+   *
+   * **Only the counter-appended steps are measured.** The turn also carries
+   * row-drawing frames, and each of those folds the whole turn by design - so
+   * a mean over every step would be that cost in disguise, moving with how
+   * many row-drawing frames the corpus happens to hold.
    */
   it('an arriving counter costs the frame, not the turn', () => {
     const frames = arriving(400);
-    const steps = growing(frames);
     reads = 0;
     fold(frames, null, true, false);
     const whole = reads;
     expect(whole, 'a whole fold of the turn reads it').toBeGreaterThan(frames.length);
-    const spent = readsOf(steps, (turn) => turnFold(turn, null, true, false));
-    const perFrame = spent / steps.length;
-    // A twentieth of the turn is a wide margin over the few reads a counter
-    // costs, and the shape this pins away fails it by two orders of
-    // magnitude: ~2x the turn read per frame, once per counter.
+    const { spent, counted } = counterSteps(growing(frames));
+    const perFrame = spent / counted;
+    // A counter costs a fixed handful of reads against the twentieth of the
+    // turn this allows, while the shape this pins away reads about two turns
+    // per counter - some forty times over, and growing with the turn.
     expect(perFrame, 'frame reads per arriving counter').toBeLessThan(whole / 20);
   });
 
@@ -261,6 +286,9 @@ describe('the column as the frames arrive', () => {
       await painted();
       spent += reads - before;
     }
+    // A probe that can only return zero would pass the bound below whatever
+    // the column did, so the column's own reads have to be there at all.
+    expect(spent, 'the column reads its frames').toBeGreaterThan(0);
     expect(spent / FRAMES, "the column's reads per arriving counter").toBeLessThan(whole);
   });
 });
@@ -270,23 +298,37 @@ describe('the carried fold draws what the whole fold draws', () => {
   it('equals fold(), frame for frame, across a live turn', () => {
     const frames: unknown[] = [
       prompt('work'),
+      // No stamp anywhere yet: the running row's span has no start until the
+      // first stamped frame, whichever frame that turns out to be.
       counter(1),
-      said(2),
-      counter(3),
-      counter(4),
+      counter(2, '2026-10-01T06:00:02Z'),
+      said(3),
+      counter(4, '2026-10-01T06:00:20Z'),
+      // Backwards: the fold's span clamps to zero, and the carry may not
+      // measure from anywhere but the turn's own first stamp.
+      counter(5, '2026-10-01T06:00:05Z'),
+      counter(6, '2026-10-01T06:00:10Z'),
       counted({
         type: 'assistant',
-        uuid: 'a-5',
-        timestamp: '2026-10-01T06:00:05Z',
+        uuid: 'a-7',
+        timestamp: '2026-10-01T06:00:08Z',
         message: {
-          id: 'm-5',
+          id: 'm-7',
           role: 'assistant',
           model: 'claude-opus-5',
           content: [{ type: 'tool_use', id: 'c1', name: 'Bash', input: { command: 'ls' } }],
           usage: { input_tokens: 120, output_tokens: 8 },
         },
       }),
-      counter(6),
+      // A backgrounded call's task: the fold writes the fact the call's own
+      // row reads, so a frame like this may never be carried.
+      counted({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 't1',
+        tool_use_id: 'c1',
+        is_backgrounded: true,
+      }),
       counted({
         type: 'user',
         uuid: 'r1',
@@ -295,7 +337,6 @@ describe('the carried fold draws what the whole fold draws', () => {
           content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'one file' }],
         },
       }),
-      counter(7),
       counter(8),
       counted({
         type: 'assistant',
@@ -310,17 +351,26 @@ describe('the carried fold draws what the whole fold draws', () => {
         },
       }),
       counter(10),
+      // The task's ending, which the call's row reads as its note.
+      counted({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 't1',
+        tool_use_id: 'c1',
+        status: 'completed',
+        summary: 'the listing finished',
+      }),
       // A dispatched agent's counter: the SUBAGENTS surface's, which the fold
       // skips whole - so the carry may not count its tokens or its stamp.
       counted({
         type: 'system',
         subtype: 'thinking_tokens',
-        uuid: 't-10-sub',
+        uuid: 't-11-sub',
         parent_tool_use_id: 'c1',
         estimated_tokens_delta: 50,
         timestamp: '2026-10-01T06:00:30Z',
       }),
-      counter(105),
+      counter(12),
       counted({
         type: 'result',
         uuid: 'res1',
@@ -329,8 +379,8 @@ describe('the carried fold draws what the whole fold draws', () => {
         total_cost_usd: 0.4,
         usage: {},
       }),
-      counter(11),
-      counter(12),
+      counter(13),
+      counter(14),
     ];
     let turn = { messages: frames.slice(0, 1) };
     for (const frame of frames.slice(1)) {

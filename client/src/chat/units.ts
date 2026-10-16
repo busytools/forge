@@ -2391,7 +2391,15 @@ interface TurnMemo {
 
 const memos = new WeakMap<object, TurnMemo>();
 
-/** Whether `next` is `held` with frames appended, which is an append's growth. */
+/**
+ * Whether `next` is `held` with frames appended, which is an append's growth.
+ *
+ * One element, not a walk of the prefix: the cost this serves would not
+ * survive an O(turn) check per frame. The probe is sound because of where
+ * growth comes from - the store's append grows a live turn as
+ * `[...target.messages, message]` (`conversation.ts`), and every other
+ * producer hands over wire objects the held array does not share.
+ */
 function extendsFrom(held: readonly unknown[], next: readonly unknown[]): boolean {
   return (
     next.length >= held.length && held.length > 0 && held[held.length - 1] === next[held.length - 1]
@@ -2420,6 +2428,22 @@ function carriesNothing(frame: unknown): boolean {
 }
 
 /**
+ * The first stamp a turn carries, as the fold keeps it: the one its span is
+ * measured from, parsed once here so the carry never has to re-derive it.
+ *
+ * `NaN` for a stamp that will not parse, which the fold's own span reads the
+ * same way - it keeps the string and every span that starts there is null.
+ */
+function firstStampMs(messages: readonly unknown[]): number | null {
+  for (const frame of messages as Frame[]) {
+    if (typeof frame.timestamp === 'string' && frame.timestamp !== '') {
+      return Date.parse(frame.timestamp);
+    }
+  }
+  return null;
+}
+
+/**
  * The running row after frames that carry nothing, from the figures the memo
  * holds: what the fold would compute for the same input.
  *
@@ -2438,6 +2462,9 @@ function advance(memo: TurnMemo, tail: readonly Frame[]): Unit[] {
     // skips them whole - their stamps and their counters are not the turn's.
     if (isDispatched(frame)) continue;
     if (typeof frame.timestamp === 'string' && frame.timestamp !== '') {
+      // The fold's `startedAt ??= frame.timestamp`: the span starts at the
+      // turn's first stamp, whichever frame that turns out to be.
+      memo.startedMs ??= Date.parse(frame.timestamp);
       endedAt = frame.timestamp;
       endedMs = Date.parse(frame.timestamp);
     }
@@ -2474,14 +2501,10 @@ function memoOf(
     ended,
     units,
     report,
-    // The running row's own figures carry the span it was drawn with, so its
-    // start is its end minus that span - the same two instants the fold
-    // measures between. A turn's clock runs forward, so the fold's clamp to
-    // zero cannot have fired here.
-    startedMs:
-      report === null || report.ended_at_utc === null || report.duration_ms === null
-        ? null
-        : Date.parse(report.ended_at_utc) - report.duration_ms,
+    // Scanned rather than recovered from the running row's own span: the row
+    // carries the span it was drawn with, but not the instant it started, and
+    // a span at the fold's clamp to zero cannot be told from a forward one.
+    startedMs: firstStampMs(messages),
   };
 }
 
