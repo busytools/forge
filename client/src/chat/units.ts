@@ -2343,8 +2343,209 @@ export function fold(
 
 /** The wall clock between two stamps, or null when either is not a time. */
 function spanMs(start: string | null, end: string | null): number | null {
-  if (start === null || end === null) return null;
-  const from = Date.parse(start);
-  const to = Date.parse(end);
-  return Number.isFinite(from) && Number.isFinite(to) ? Math.max(0, to - from) : null;
+  return spanOf(start === null ? null : Date.parse(start), end === null ? null : Date.parse(end));
+}
+
+/** The wall clock between two instants, or null when either is not a time. */
+function spanOf(from: number | null, to: number | null): number | null {
+  if (from === null || to === null || !Number.isFinite(from) || !Number.isFinite(to)) return null;
+  return Math.max(0, to - from);
+}
+
+/**
+ * A turn's fold, carried between frames, so a frame that changes nothing
+ * already folded does not re-read the turn.
+ *
+ * **A live turn's frames EXTEND one array** - the store grows it as
+ * `[...target.messages, message]` - so the fold of the grown turn differs from
+ * the fold of it before only where the new frames make it differ. A frame that
+ * makes it differ nowhere draws nothing and writes state no other frame reads,
+ * and this memo reapplies the one thing such a frame does touch: the running
+ * row's own figures. `thinking_tokens` is that frame almost exclusively, and
+ * the counter storm is thousands of them per turn (#1643), so the whole-turn
+ * fold they used to force per append is what this carries across.
+ *
+ * **Anything else takes the whole fold**, which is the only thing that knows
+ * how to re-read what a `tool_result`, a task report or a failing frame
+ * changed above it. A fold is keyed by the turn's FIRST frame - the one part
+ * of the array every append preserves - so the memo goes with the turn, and a
+ * miss is always correct: it folds and memoizes afresh.
+ *
+ * The memo also serves the SECOND reader of one fold: the column folds the
+ * newest turn for the running row while the turn itself folds for its rows, so
+ * one of the two is answered from here rather than folding the turn again.
+ */
+interface TurnMemo {
+  /** The array this memo folded; the next call's must extend it. */
+  messages: readonly unknown[];
+  self: Self | null;
+  live: boolean;
+  ended: boolean;
+  /** The fold this memo holds. */
+  units: Unit[];
+  /** The running row this fold drew, when it drew one, whose figures move. */
+  report: TurnInfo | null;
+  /** The instant the running row's own span is measured from, in ms. */
+  startedMs: number | null;
+}
+
+const memos = new WeakMap<object, TurnMemo>();
+
+/**
+ * Whether `next` is `held` with frames appended, which is an append's growth.
+ *
+ * One element, not a walk of the prefix: the cost this serves would not
+ * survive an O(turn) check per frame. The probe is sound because of where
+ * growth comes from - the store's append grows a live turn as
+ * `[...target.messages, message]` (`conversation.ts`), and every other
+ * producer hands over wire objects the held array does not share.
+ */
+function extendsFrom(held: readonly unknown[], next: readonly unknown[]): boolean {
+  return (
+    next.length >= held.length && held.length > 0 && held[held.length - 1] === next[held.length - 1]
+  );
+}
+
+/**
+ * Whether a frame carries nothing another frame has to be re-read for.
+ *
+ * A `system` frame the fold draws nothing with and that is not one of the task
+ * reports - those write the fact a call row above them reads. The draw is
+ * asked of the fold itself rather than assumed from the subtype, so a frame a
+ * later fold learns to draw stops being inert by that same fold.
+ */
+function carriesNothing(frame: unknown): boolean {
+  const held = frame as Frame | null;
+  if (held === null || typeof held !== 'object' || held.type !== 'system') return false;
+  if (
+    held.subtype === 'task_started' ||
+    held.subtype === 'task_updated' ||
+    held.subtype === 'task_notification'
+  ) {
+    return false;
+  }
+  return fold([frame]).length === 0;
+}
+
+/**
+ * The first stamp a turn carries, as the fold keeps it: the one its span is
+ * measured from, parsed once here so the carry never has to re-derive it.
+ *
+ * `NaN` for a stamp that will not parse, which the fold's own span reads the
+ * same way - it keeps the string and every span that starts there is null.
+ *
+ * **A dispatched frame's stamp is not the turn's**, the same rule both of the
+ * fold's passes keep - and one can LEAD the array: a frame that draws nothing
+ * and finds no turn to join waits in the store and rides ahead of whatever
+ * opens the next turn (`conversation.ts`'s `unturned`).
+ */
+function firstStampMs(messages: readonly unknown[]): number | null {
+  for (const frame of messages as Frame[]) {
+    if (isDispatched(frame)) continue;
+    if (typeof frame.timestamp === 'string' && frame.timestamp !== '') {
+      return Date.parse(frame.timestamp);
+    }
+  }
+  return null;
+}
+
+/**
+ * The running row after frames that carry nothing, from the figures the memo
+ * holds: what the fold would compute for the same input.
+ *
+ * It is the only row such a frame moves - the counters and the row's own
+ * stamps - and the fold's running row carries both, so the work is the row
+ * rather than the turn.
+ */
+function advance(memo: TurnMemo, tail: readonly Frame[]): Unit[] {
+  if (memo.report === null) return memo.units;
+  const held = memo.report;
+  let thinking = held.thinking_tokens;
+  let endedAt = held.ended_at_utc;
+  let endedMs = endedAt === null ? null : Date.parse(endedAt);
+  for (const frame of tail) {
+    // A dispatched agent's frames are the SUBAGENTS surface's, and the fold
+    // skips them whole - their stamps and their counters are not the turn's.
+    if (isDispatched(frame)) continue;
+    if (typeof frame.timestamp === 'string' && frame.timestamp !== '') {
+      // The fold's `startedAt ??= frame.timestamp`: the span starts at the
+      // turn's first stamp, whichever frame that turns out to be.
+      memo.startedMs ??= Date.parse(frame.timestamp);
+      endedAt = frame.timestamp;
+      endedMs = Date.parse(frame.timestamp);
+    }
+    if (frame.subtype === 'thinking_tokens' && typeof frame.estimated_tokens_delta === 'number') {
+      thinking = (thinking ?? 0) + frame.estimated_tokens_delta;
+    }
+  }
+  const info: TurnInfo = {
+    ...held,
+    thinking_tokens: thinking,
+    ended_at_utc: endedAt,
+    duration_ms: spanOf(memo.startedMs, endedMs),
+  };
+  memo.report = info;
+  memo.units = [...memo.units.slice(0, -1), { kind: 'report', key: 'live-report', info }];
+  return memo.units;
+}
+
+/** The memo a fold of `messages` leaves behind. */
+function memoOf(
+  messages: readonly unknown[],
+  units: Unit[],
+  self: Self | null,
+  live: boolean,
+  ended: boolean,
+): TurnMemo {
+  const last = units[units.length - 1];
+  const report =
+    last !== undefined && last.kind === 'report' && last.key === 'live-report' ? last.info : null;
+  return {
+    messages,
+    self,
+    live,
+    ended,
+    units,
+    report,
+    // Scanned rather than recovered from the running row's own span: the row
+    // carries the span it was drawn with, but not the instant it started, and
+    // a span at the fold's clamp to zero cannot be told from a forward one.
+    startedMs: firstStampMs(messages),
+  };
+}
+
+/**
+ * The fold of one turn, carried between frames: see [`TurnMemo`].
+ *
+ * A turn that did not grow since the last fold, folded with the same seat and
+ * the same running facts, is answered from the memo as it stands.
+ */
+export function turnFold(
+  turn: { messages: readonly unknown[] },
+  self: Self | null,
+  live: boolean,
+  ended: boolean,
+): Unit[] {
+  const messages = turn.messages;
+  const head = messages[0];
+  const memo = head !== null && typeof head === 'object' ? memos.get(head) : undefined;
+  if (
+    memo !== undefined &&
+    memo.self === self &&
+    memo.live === live &&
+    memo.ended === ended &&
+    extendsFrom(memo.messages, messages)
+  ) {
+    const tail = messages.slice(memo.messages.length) as Frame[];
+    if (tail.every(carriesNothing)) {
+      const units = tail.length === 0 ? memo.units : advance(memo, tail);
+      memo.messages = messages;
+      return units;
+    }
+  }
+  const units = fold(messages, self, live, ended);
+  if (head !== null && typeof head === 'object') {
+    memos.set(head, memoOf(messages, units, self, live, ended));
+  }
+  return units;
 }

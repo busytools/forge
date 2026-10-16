@@ -26,7 +26,7 @@
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
   import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
-  import { fold, type TurnInfo } from './units';
+  import { turnFold, type TurnInfo } from './units';
 
   /**
    * The conversation: whole turns, virtualised.
@@ -664,12 +664,14 @@
    *
    * **One fold and one pick, because the row has two readers**: the pin draws
    * it, and the turn's own copy of it stands aside. Which row that is is
-   * answered here rather than worked out again at each of them.
+   * answered here rather than worked out again at each of them - and the fold
+   * itself is shared with the turn's own, so one arriving frame is folded
+   * once rather than once per reader.
    */
   const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
     const turn = newestTurn;
     if (turn === null) return null;
-    const units = fold(turn.messages, slot, beingWritten(turn), !beingWritten(turn));
+    const units = turnFold(turn, slot, beingWritten(turn), !beingWritten(turn));
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };
