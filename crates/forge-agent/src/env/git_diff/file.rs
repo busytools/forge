@@ -7,14 +7,16 @@
 //! commit scope, and the branch tip for the all-changes one.
 //!
 //! **The read is bounded by the caller's ceiling and never by the file.**
-//! The size comes first (a `cat-file -s`, a handful of bytes), a file at or
-//! under the ceiling is read whole, and one over it is read up to the
-//! ceiling and flagged - the child is killed at the ceiling, so a
-//! multi-gigabyte blob costs the ceiling's allocation and not its own. The
-//! content never goes through the layer's own subprocess bound
-//! (`STDOUT_SIZE_CAP`, below the shipped ceiling) at all, which is what
-//! keeps a file between that bound and the ceiling answering a flagged
-//! short read rather than a refusal.
+//! Only a blob is a file (a gitlink's size is the commit line `git show`
+//! prints for it), the size comes next (`cat-file -s`, a handful of bytes),
+//! and the content is read through a child killed at the ceiling - so a
+//! multi-gigabyte blob costs the ceiling's allocation and not its own, and
+//! the content never goes through the layer's own subprocess bound
+//! (`STDOUT_SIZE_CAP`, below the shipped ceiling), which is what keeps a
+//! file between that bound and the ceiling answering a flagged short read
+//! rather than a refusal. The LINES are bounded too ([`MAX_READ_LINES`]):
+//! a file of very short lines meets that long before either byte bound, and
+//! the answer's own JSON is the other half of what a read costs.
 //!
 //! **A revision off the wire is resolved before it reaches git.** `git show`
 //! reads a `--output=<file>`-shaped revision as an option of its own rather
@@ -29,23 +31,32 @@ use tokio::io::AsyncReadExt as _;
 
 use super::{COMMAND_TIMEOUT, GitOutput, run_git_within};
 
+/// The most lines one read carries, whatever ceiling the caller hands in: a
+/// file of very short lines meets this long before the byte ceiling, and
+/// every line past it is one the answer's own JSON would pay for. The
+/// response is the smaller of the two bounds, flagged whenever either bites.
+pub const MAX_READ_LINES: usize = 10_000;
+
 /// One file's content at a revision, bounded by the caller's ceiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileLines {
     /// The file's lines, without their terminators, in file order.
     pub lines: Vec<String>,
-    /// The ceiling cut the read short: what is below the last line was not
-    /// carried.
+    /// The ceiling or the line cap cut the read short: what is below the
+    /// last line was not carried.
     pub truncated: bool,
 }
 
-/// Why a file's content could not be read at a revision.
+/// Why a file's content could not be read at a revision, per child:
 ///
-/// **What the code can tell apart, and no more.** `git` answers the same
-/// way for a revision it cannot resolve and a path the revision does not
-/// carry - a non-zero exit with its own words - so both answer `Missing`; a
-/// child that could not start, or one the budget cut off mid-read, answers
-/// `Unreadable`.
+/// - The revision gate answers [`Self::Missing`] when `rev` names no commit.
+/// - The type and size probes answer [`Self::Missing`] when their child
+///   fails - git refuses a revision or a path it does not carry the same way
+///   it refuses a protocol problem, and neither probe can tell those apart -
+///   and when the path is not a BLOB (a gitlink or a tree is not a file, and
+///   `git show` formats one as something whose size is not its content's).
+/// - The content read answers [`Self::Unreadable`] when its child could not
+///   start, the budget cut it off, or it exited non-zero.
 #[derive(Debug, thiserror::Error)]
 pub enum FileReadRefusal {
     #[error("no file at {path} in {rev}")]
@@ -99,6 +110,13 @@ pub async fn read_file_lines_within(
     };
     let spec = format!("{commit}:{path}");
     let ceiling = usize::try_from(ceiling_bytes).unwrap_or(usize::MAX);
+    // **Only a blob is a file.** A gitlink or a tree at the path answers a
+    // size that is not its content's - a gitlink's is the commit line git
+    // prints for it, a tree's is the listing's - so the type is what says
+    // whether a size, and a read, mean anything here.
+    if !is_blob(cwd, &spec, budget).await {
+        return Err(FileReadRefusal::Missing { rev: rev.to_owned(), path: path.to_owned() });
+    }
     // **The size is known before a line is read**, so a file the ceiling
     // cannot hold is never materialised to be refused.
     let Some(size) = file_size(cwd, &spec, budget).await else {
@@ -120,9 +138,18 @@ pub async fn read_file_lines_within(
     // file inside the ceiling is answered whole, whatever the read's take
     // was bounded by.
     if size <= ceiling_bytes {
-        return Ok(whole_lines(&String::from_utf8_lossy(&capped)));
+        return Ok(capped_lines(&String::from_utf8_lossy(&capped), false));
     }
-    Ok(cut_lines(&capped, ceiling))
+    Ok(capped_lines(&String::from_utf8_lossy(&capped), true))
+}
+
+/// Whether the object at `spec` is a blob - the only kind this read calls a
+/// file.
+async fn is_blob(cwd: &Path, spec: &str, budget: Duration) -> bool {
+    match run_git_within(cwd, &["cat-file", "-t", "--end-of-options", spec], budget).await {
+        GitOutput::Ok(raw) => raw.trim() == "blob",
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => false,
+    }
 }
 
 /// The blob's size in bytes, or `None` when git cannot read it.
@@ -136,7 +163,9 @@ async fn file_size(cwd: &Path, spec: &str, budget: Duration) -> Option<u64> {
 /// `git show <spec>`, at most `ceiling` bytes of its stdout and never a byte
 /// more: the child is killed the moment the ceiling is reached, so what this
 /// allocates is the ceiling's, not the file's. `None` when the child could
-/// not start, or the budget cut the read off.
+/// not start, the budget cut the read off, or it ended in failure - a `git
+/// show` that failed after the size probe answered is a read that did not
+/// happen, never an empty file.
 async fn show_capped(cwd: &Path, spec: &str, ceiling: usize, budget: Duration) -> Option<Vec<u8>> {
     let mut command = super::super::git_command::tokio_git_command(cwd);
     command
@@ -152,31 +181,41 @@ async fn show_capped(cwd: &Path, spec: &str, ceiling: usize, budget: Duration) -
         let out = child.stdout.take()?;
         let mut carried = Vec::with_capacity(ceiling.min(64 * 1024));
         out.take(ceiling as u64).read_to_end(&mut carried).await.ok()?;
-        // The child is left mid-stream on purpose: killing it here is what
-        // keeps a file the ceiling cannot hold from being read to its end.
-        let _ = child.kill().await;
+        // A read that ended before the take did is the child's own end, so
+        // its exit is the read's verdict; one that filled the take was cut
+        // off on purpose and the child is killed there.
+        if carried.len() < ceiling {
+            let status = child.wait().await.ok()?;
+            if !status.success() {
+                return None;
+            }
+        } else {
+            let _ = child.kill().await;
+        }
         Some(carried)
     };
     tokio::time::timeout(budget, read).await.ok().flatten()
 }
 
-/// The lines of a whole file's content: every line, in order.
-fn whole_lines(raw: &str) -> FileLines {
-    FileLines { lines: raw.lines().map(str::to_owned).collect(), truncated: false }
-}
-
-/// The whole lines inside the first `ceiling` bytes of a file's content,
-/// flagged as a short read: a line the ceiling cuts in half is dropped
-/// rather than carried in part, so every line answered is a line of the
-/// file.
-fn cut_lines(bytes: &[u8], ceiling: usize) -> FileLines {
-    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(ceiling)]);
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    // The last line is whole only when the cut landed on its terminator.
-    if !text.ends_with('\n') {
+/// The file's lines, cut to the counts a frame can afford.
+///
+/// **Two bounds, and a frame pays for both.** The byte ceiling bounds the
+/// content, and this bounds the LINES: a file of very short lines reaches
+/// ten thousand long before a byte ceiling, and ten million `String`s is a
+/// server-side allocation and a JSON answer nobody asked for. A line the
+/// byte bound cuts in half is dropped rather than carried in part, so every
+/// line answered is a line of the file.
+fn capped_lines(raw: &str, cut_by_bytes: bool) -> FileLines {
+    let mut lines: Vec<String> = raw.lines().map(str::to_owned).collect();
+    let mut truncated = cut_by_bytes;
+    if truncated && !raw.ends_with('\n') {
         lines.pop();
     }
-    FileLines { lines, truncated: true }
+    if lines.len() > MAX_READ_LINES {
+        lines.truncate(MAX_READ_LINES);
+        truncated = true;
+    }
+    FileLines { lines, truncated }
 }
 
 #[cfg(test)]
@@ -328,9 +367,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("a directory");
         repo(dir.path());
         let over = super::super::STDOUT_SIZE_CAP + 4096;
-        let mut big = String::with_capacity(over + 128);
+        // Long lines on purpose: the fixture must sit over the layer's bound
+        // WITHOUT meeting the line cap, which bounds the answer's other half.
+        let line = format!("{}\n", "x".repeat(899));
+        let mut big = String::with_capacity(over + 1024);
         while big.len() < over {
-            big.push_str("0123456789012345678901234567890123456789012345678901234567890123\n");
+            big.push_str(&line);
         }
         std::fs::write(dir.path().join("huge.txt"), &big).expect("write");
         let git = |args: &[&str]| {
@@ -365,6 +407,97 @@ mod tests {
             big.len(),
             "every line of it, whole",
         );
+    }
+
+    /// **Only a blob is a file.** A tree or a gitlink at the path answers a
+    /// size that is not its content's (`git show` prints a listing, or the
+    /// commit line, for them), so a read that trusted the size would draw
+    /// lines no file has.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_path_that_is_not_a_blob_is_missing() {
+        let dir = tempfile::tempdir().expect("a directory");
+        repo(dir.path());
+        std::fs::create_dir_all(dir.path().join("dir")).expect("mkdir");
+        std::fs::write(dir.path().join("dir/inner.txt"), "x\n").expect("write");
+        let git = |args: &[&str]| {
+            let out = StdCommand::new("git")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_COMMON_DIR")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(out.status.success());
+        };
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "dir"]);
+
+        let head = head_of(dir.path());
+        let tree =
+            read_file_lines_within(dir.path(), &head, "dir", u64::MAX, TEST_GIT_BUDGET).await;
+        assert!(
+            matches!(tree, Err(FileReadRefusal::Missing { .. })),
+            "a tree is not a file: {tree:?}",
+        );
+    }
+
+    /// **A child that failed is a read that did not happen**, never an empty
+    /// file: a `git show` that exits non-zero after the probes answered must
+    /// not be drawn as a file of no lines.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_show_is_no_read_at_all() {
+        let dir = tempfile::tempdir().expect("a directory");
+        repo(dir.path());
+        let head = head_of(dir.path());
+
+        let missing = format!("{head}:never.txt");
+        assert!(
+            show_capped(dir.path(), &missing, 4096, TEST_GIT_BUDGET).await.is_none(),
+            "a failing child answers no content",
+        );
+        let there = format!("{head}:small.txt");
+        assert!(
+            show_capped(dir.path(), &there, 4096, TEST_GIT_BUDGET).await.is_some(),
+            "and one that reads answers its bytes",
+        );
+    }
+
+    /// **The LINES are bounded too.** A file of very short lines meets the
+    /// line cap long before any byte ceiling, and the answer's own JSON is
+    /// what that cap is for: ten thousand lines is the most one read
+    /// carries, flagged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_line_cap_holds_a_short_line_file() {
+        let dir = tempfile::tempdir().expect("a directory");
+        repo(dir.path());
+        let mut many = String::new();
+        for _ in 0..(MAX_READ_LINES + 500) {
+            many.push_str("l\n");
+        }
+        std::fs::write(dir.path().join("many.txt"), many).expect("write");
+        let git = |args: &[&str]| {
+            let out = StdCommand::new("git")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_COMMON_DIR")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(out.status.success());
+        };
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "many"]);
+
+        let head = head_of(dir.path());
+        let read = read_file_lines_within(dir.path(), &head, "many.txt", u64::MAX, TEST_GIT_BUDGET)
+            .await
+            .expect("the read answers");
+        assert_eq!(read.lines.len(), MAX_READ_LINES, "the cap's own count");
+        assert!(read.truncated, "and the read says it stopped");
     }
 
     /// The capped read stops at the ceiling, whatever the file's size: the
