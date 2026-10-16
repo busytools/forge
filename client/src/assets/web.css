@@ -2693,7 +2693,9 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .app { grid-template-rows: minmax(0, 1fr) auto; }
 .composer { grid-column: 1; grid-row: 2; }
 
-.ac .it.sel { background: rgba(244,118,0,.09); }
+/* The flat token rather than a tint, so --dim on the marked row is one
+   measured number (4.65:1) instead of an alpha layer no check can name. */
+.ac .it.sel { background: var(--sel); }
 .ac .it.sel .p { color: var(--text); }
 .ac .it .g { width: 20px; flex: 0 0 20px; text-align: center; }
 
