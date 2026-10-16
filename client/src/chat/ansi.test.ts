@@ -121,6 +121,14 @@ describe('the command output a box draws', () => {
       // ends it, which is the arm a corpus of valid sequences never reaches.
       '\u001b[31éx',
       '\u001b[31\u001b[0my',
+      // And the four other arms a corpus of ordinary sequences misses: the
+      // escape-and-one-character arm, an intermediate byte inside a CSI, the
+      // escape-with-intermediate arm's edge (nothing after the introducer),
+      // and the `~` final byte.
+      '\u001b7saved',
+      '\u001b[ 1mtext',
+      '\u001b(',
+      '\u001b[1~home',
     ];
     for (const text of corpus) {
       expect(

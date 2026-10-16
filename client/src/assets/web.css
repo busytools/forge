@@ -1713,12 +1713,14 @@ details.leaf.running > summary { color: var(--text); }
    the page. The normal weight is the token itself - every one of the eight
    clears AA on the box's ground - and the bright weight is that token lifted
    toward the page's prose tone, which is how a terminal's two weights read.
-   The lift is small where the token already sits near that tone (green, cyan
-   and yellow differ by a tenth of a ratio and read the same), which is the
-   theme's own answer rather than a missing weight. `.ansi-dim` is the one
-   attribute the box draws as itself: `\e[2m` asked for text to be
-   de-emphasised, so the composite is left under the text floor at the values
-   contrast.test.ts measures. */
+   The lift is small where the token already sits near that tone (green +0.79,
+   cyan +0.62, yellow +1.14, and the two weights read the same), which is the
+   theme's own answer rather than a missing weight.
+   `.ansi-dim` is the one attribute the box draws as itself: `\e[2m` asked for
+   de-emphasis, so the composites sit at their measured values - five of the
+   eight coloured ones under the text floor, three above it, and bare `\e[2m`
+   on the box's own tone at 3.85. Those nine are measured in
+   contrast.test.ts; a colour that is both bright and dim is not. */
 .ansi-black { color: var(--dim); }
 .ansi-bright-black { color: color-mix(in srgb, var(--dim) 70%, var(--text)); }
 .ansi-red { color: var(--bad); }

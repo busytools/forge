@@ -204,6 +204,11 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * The one ceiling is on the row the prose is read from: every other row that
  * draws `--text` is the same token on a raised ground, and always measures
  * below it.
+ *
+ * The command box's dim composites are the rows that do not follow the two
+ * floors above: they are words, and they take the values `\e[2m` costs rather
+ * than AA - which is what de-emphasis asked for - so their floors are minima
+ * measured off those values rather than `TEXT`.
  */
 /**
  * The bright weight of an ANSI colour, as the sheet writes it: the token
@@ -275,11 +280,16 @@ const DRAWN: readonly Pair[] = [
   [LIFTED('--violet'), '--bg', TEXT],
   [LIFTED('--teal'), '--bg', TEXT],
   // **`\e[2m` is the command's own attribute and draws dim.** A command that
-  // asked for de-emphasis gets it, so these composites sit under the text
-  // floor - and the floors are the values measured when the swap landed,
-  // rounded down a tenth, so a heavier opacity is a red test rather than a
-  // silent drift. Measured: dim 3.03, red 3.37, blue 4.04, yellow 4.45,
-  // magenta 4.49, green 5.21, cyan 5.28, white 6.65.
+  // asked for de-emphasis gets it, so these nine composites sit at their
+  // measured values - five of the eight coloured ones under the text floor
+  // (dim 3.03, red 3.37, blue 4.04, yellow 4.45, magenta 4.49) and three above
+  // it (green 5.21, cyan 5.28, white 6.65), with bare `\e[2m` - no colour
+  // class at all, so the box's own tone - at 3.85.
+  //
+  // The floors are those values rounded down a tenth, so they are MINIMA: a
+  // lighter opacity is what they catch. A heavier one is caught by the
+  // sheet-parity assertion below, which reads the verbatim `.7` out of the
+  // sheet - the two together are what makes either direction of drift red.
   [DIMMED('--dim'), '--bg', 3.0],
   [DIMMED('--bad'), '--bg', 3.3],
   [DIMMED('--blue'), '--bg', 4.0],
@@ -288,6 +298,8 @@ const DRAWN: readonly Pair[] = [
   [DIMMED('--ok'), '--bg', 5.2],
   [DIMMED('--teal'), '--bg', 5.2],
   [DIMMED('--text'), '--bg', 6.6],
+  // Bare `\e[2m`: the box's own tone, `.term { color: var(--muted) }`.
+  [DIMMED('--muted'), '--bg', 3.8],
 ];
 
 /**
@@ -382,8 +394,11 @@ describe('the palette', () => {
         `color: ${LIFTED(token)}`,
       );
     }
-    expect(sheet, 'and the dim composite is that sheet value').toContain(
+    expect(sheet, 'and the dim composites are that sheet value').toContain(
       '.ansi-dim { opacity: .7; }',
+    );
+    expect(sheet, "bare dim draws the box's own tone").toContain(
+      '.term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',
     );
   });
 
