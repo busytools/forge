@@ -54,9 +54,9 @@ pub enum Progress {
 /// a file ready. Safe to call repeatedly; a verified file is left
 /// alone.
 ///
-/// A file that is present but does not match its spec is reported, not
-/// repaired. Deciding to discard someone's model file belongs to
-/// whoever put it there.
+/// A file that is present but does not match its spec is fetched again,
+/// which is what settles a mismatch of bytes. A file that cannot be read
+/// is reported instead: nothing says a fetch would help it.
 ///
 /// Models are prepared concurrently, one thread each, so the pair costs
 /// the slower of the two rather than their sum. `on_progress` is still
@@ -341,29 +341,24 @@ fn ensure(
 ) -> Result<(), Error> {
     let target = dir.join(&spec.file);
     if target.try_exists().map_err(|source| Error::Io { path: target.clone(), source })? {
-        // A digestless spec's whole check is the size, which is the stat
-        // this already made: nothing to hash, nothing to remember, and no
-        // "verifying" row that lives for one stat.
-        if spec.sha256.is_none() {
-            verify(&target, spec, on_progress)?;
-            announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
-            return Ok(());
+        match check_present(&target, spec, cache, on_progress) {
+            Ok(()) => {
+                announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
+                return Ok(());
+            }
+            Err(failure) if !is_bytes_verdict(&failure) => return Err(failure),
+            // A file whose bytes do not match its spec is what a download
+            // settles. The fetch below replaces it by rename, so one that
+            // fails or is cancelled costs nothing already on disk.
+            Err(failure) => {
+                tracing::debug!(
+                    event_name = "dictate_model_mismatch_refetching",
+                    file = %spec.file,
+                    error = %failure,
+                    "model on disk does not match its spec; fetching a replacement"
+                );
+            }
         }
-        // Nothing is announced before this: a file whose state matches its
-        // record is not checked again, and a "verifying" row that lives
-        // for one stat is noise.
-        if cache.hit(&target, spec) {
-            announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
-            return Ok(());
-        }
-        announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
-        let state = state_of(&target);
-        let digest = verify(&target, spec, on_progress)?;
-        if let Some(digest) = &digest {
-            cache.record(&target, state, digest);
-        }
-        announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
-        return Ok(());
     }
 
     let partial = dir.join(format!("{}.part", spec.file));
@@ -391,13 +386,47 @@ fn ensure(
     Ok(())
 }
 
+/// Check a model already on disk, verifying it unless its record says it
+/// has not changed since the last check.
+fn check_present(
+    target: &Path,
+    spec: &ModelSpec,
+    cache: &DigestCache,
+    on_progress: &mut Reporter<'_>,
+) -> Result<(), Error> {
+    // Nothing is announced before a hit: such a file is not read again,
+    // and a "verifying" row that lives for one stat is noise.
+    if cache.hit(target, spec) {
+        return Ok(());
+    }
+    // A digestless spec's whole check is the size, which is the stat
+    // `verify` makes on its way in: nothing to hash, so nothing says it
+    // is verifying.
+    if spec.sha256.is_some() {
+        announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
+    }
+    let state = state_of(target);
+    let digest = verify(target, spec, on_progress)?;
+    if let Some(digest) = &digest {
+        cache.record(target, state, digest);
+    }
+    Ok(())
+}
+
+/// Whether a failure is a verdict on the BYTES rather than on reaching or
+/// reading them. Only a verdict on the bytes is a download's to settle: an
+/// io error says nothing about them, and a fetch cannot answer it.
+fn is_bytes_verdict(failure: &Error) -> bool {
+    matches!(failure, Error::SizeMismatch { .. } | Error::HashMismatch { .. })
+}
+
 /// Decide what a failed partial deserves, and say so in the log.
 ///
 /// Only a verdict on the BYTES earns a deletion: an io error says
 /// nothing about them, and a partial may predate this run, so deleting
 /// on one would throw away a correct multi-gigabyte file.
 fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
-    if !matches!(failure, Error::SizeMismatch { .. } | Error::HashMismatch { .. }) {
+    if !is_bytes_verdict(&failure) {
         tracing::warn!(
             event_name = "dictate_partial_unchecked",
             path = %partial.display(),
@@ -677,9 +706,9 @@ mod tests_cached_verification {
     use std::fs;
     use std::io::Write as _;
 
-    /// A spec whose URL is guaranteed unreachable, so any code path
-    /// that reaches the network fails loudly as [`Error::Http`]
-    /// instead of quietly repairing what the test corrupted.
+    /// A spec whose URL is guaranteed unreachable, so a code path that
+    /// decides to refetch fails loudly as [`Error::Http`] rather than
+    /// quietly reaching a server this test never stood up.
     fn offline_spec(file: &str, body: &[u8]) -> ModelSpec {
         ModelSpec {
             file: file.into(),
@@ -730,36 +759,6 @@ mod tests_cached_verification {
             !announced.borrow().iter().any(|p| matches!(p, Progress::Verifying { .. })),
             "a digestless spec has nothing to hash, so nothing may say it is verifying"
         );
-    }
-
-    /// The size is the whole check, and it still fails loudly on a
-    /// mismatch - naming both numbers, via the variant `fetch` already has.
-    #[test]
-    fn a_spec_without_a_digest_still_rejects_the_wrong_size() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("candidate.gguf"), b"five!").unwrap();
-
-        let cfg = ConfigBuilder::new()
-            .models_dir(dir.path())
-            .asr_model(spec_for_download(
-                "candidate.gguf",
-                "http://127.0.0.1:1/unreachable",
-                6,
-                None,
-                ModelFacts::default(),
-            ))
-            .normalizer(None)
-            .build();
-
-        let failure = prepare(&cfg, |_| std::ops::ControlFlow::Continue(()))
-            .expect_err("six bytes expected against five on disk");
-
-        match failure {
-            Error::SizeMismatch { expected, actual, .. } => {
-                assert_eq!((expected, actual), (6, 5));
-            }
-            other => panic!("a size check reported {other:?}"),
-        }
     }
 
     #[test]
@@ -880,38 +879,39 @@ mod tests_cached_verification {
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
     }
 
+    /// The other direction, and the one a repair must not swallow: a
+    /// target that cannot be READ is not a target a fetch can settle.
+    /// Nothing here says its bytes are wrong, so it stays the refusal -
+    /// and the file survives, since the fetch was never made.
+    #[cfg(unix)]
     #[test]
-    fn truncated_cached_model_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let spec = offline_spec("asr.gguf", b"the complete model weights");
-        fs::write(dir.path().join("asr.gguf"), b"the complete model weight").unwrap();
+    fn an_unreadable_target_is_reported_not_replaced() {
+        use std::os::unix::fs::PermissionsExt;
 
-        let cfg =
-            ConfigBuilder::new().models_dir(dir.path()).asr_model(spec).normalizer(None).build();
+        let dir = tempfile::tempdir().unwrap();
+        let body = b"the complete model weights";
+        let target = dir.path().join("asr.gguf");
+        fs::write(&target, body).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(offline_spec("asr.gguf", body))
+            .normalizer(None)
+            .build();
 
         let err = prepare(&cfg, |_| ControlFlow::Continue(()))
-            .expect_err("a truncated model must not be accepted");
+            .expect_err("a model that cannot be read cannot be verified");
         assert!(
-            matches!(err, Error::SizeMismatch { expected: 26, actual: 25, .. }),
-            "truncation must be rejected on size, got: {err:?}"
+            matches!(err, Error::Io { .. }),
+            "an unreadable file must stay an io error rather than be sent to the network, got: {err:?}"
         );
-    }
-
-    #[test]
-    fn cached_model_of_right_length_but_wrong_bytes_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let spec = offline_spec("asr.gguf", b"the complete model weights");
-        fs::write(dir.path().join("asr.gguf"), b"the corrupted model weight").unwrap();
-
-        let cfg =
-            ConfigBuilder::new().models_dir(dir.path()).asr_model(spec).normalizer(None).build();
-
-        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
-            .expect_err("a same-length corruption must not be accepted");
         assert!(
-            matches!(err, Error::HashMismatch { .. }),
-            "a file of the right length with the wrong bytes must be rejected on hash, got: {err:?}"
+            target.exists(),
+            "an io error says nothing about the bytes, so the file must survive it"
         );
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     fn hashing_sink<'a, 'r>(
@@ -982,7 +982,7 @@ mod tests_cached_verification {
 #[cfg(test)]
 mod tests_download {
     use super::*;
-    use crate::{ConfigBuilder, ModelFacts, ModelSpec};
+    use crate::{ConfigBuilder, ModelFacts, ModelSpec, spec_for_download};
     use sha2::{Digest, Sha256};
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
@@ -1416,6 +1416,128 @@ mod tests_download {
             "a partial that cannot ever verify must be discarded, or every later resume inherits it"
         );
     }
+
+    /// Two feed entries shipping one file name, so the name is already
+    /// taken by different bytes: the mismatch is what a fetch settles,
+    /// not something to refuse.
+    #[test]
+    fn a_model_of_the_wrong_bytes_is_replaced_by_a_fetch() {
+        let body = b"pretend these are recognition weights".to_vec();
+        let server = serve(vec![("/asr.gguf", body.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+        // The same length, so the size check passes and only the digest
+        // can tell the two apart.
+        fs::write(dir.path().join("asr.gguf"), vec![b'x'; body.len()]).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &body))
+            .normalizer(None)
+            .build();
+
+        prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect("a file whose bytes are wrong must be replaced, not refused");
+        assert_eq!(
+            fs::read(dir.path().join("asr.gguf")).unwrap(),
+            body,
+            "the name must end up holding the served bytes, not the ones it had"
+        );
+    }
+
+    #[test]
+    fn a_truncated_model_is_replaced_by_a_fetch() {
+        let body = b"pretend these are recognition weights".to_vec();
+        let server = serve(vec![("/asr.gguf", body.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("asr.gguf"), &body[..body.len() - 1]).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &body))
+            .normalizer(None)
+            .build();
+
+        prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect("a short file must be replaced, not refused");
+        assert_eq!(
+            fs::read(dir.path().join("asr.gguf")).unwrap(),
+            body,
+            "the name must end up holding the served bytes, not the truncated ones"
+        );
+    }
+
+    /// A candidate whose upstream publishes no digest: the size is the
+    /// whole check, and a wrong size is a fetch's to settle like any
+    /// other mismatch. Refusing it leaves a truncated file unfixable.
+    #[test]
+    fn a_digestless_model_of_the_wrong_size_is_replaced_by_a_fetch() {
+        let body = b"pretend these are recognition weights".to_vec();
+        let server = serve(vec![("/asr.gguf", body.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("asr.gguf"), &body[..10]).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for_download(
+                "asr.gguf",
+                &format!("{}/asr.gguf", server.base),
+                body.len() as u64,
+                None,
+                ModelFacts::default(),
+            ))
+            .normalizer(None)
+            .build();
+
+        prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect("a digestless file of the wrong size must be replaced, not refused");
+        assert_eq!(
+            fs::read(dir.path().join("asr.gguf")).unwrap(),
+            body,
+            "the name must end up holding the served bytes, not the short ones"
+        );
+    }
+
+    /// One fetch, not a loop: a replacement that also fails verification
+    /// is the refusal the caller already had. The file being replaced is
+    /// still there afterwards - nothing is cleared before the bytes that
+    /// replace it have verified.
+    #[test]
+    fn a_mismatch_a_fetch_cannot_settle_is_still_refused() {
+        let other = b"the copy the server holds is wrong too".to_vec();
+        let wanted = b"pretend these are recognition weights".to_vec();
+        let server = serve(vec![("/asr.gguf", other.clone())]);
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("asr.gguf");
+        let wrong = vec![b'x'; wanted.len()];
+        fs::write(&target, &wrong).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for(&server, "/asr.gguf", &wanted))
+            .normalizer(None)
+            .build();
+
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("bytes that fail verification twice must not be accepted");
+        assert!(
+            matches!(
+                err,
+                Error::SizeMismatch { expected, actual, .. }
+                    if (expected, actual) == (wanted.len() as u64, other.len() as u64)
+            ),
+            "the second mismatch must be reported as the mismatch it is, got: {err:?}"
+        );
+        assert_eq!(
+            server.seen.try_iter().count(),
+            1,
+            "the repair is a single fetch, not a retry loop"
+        );
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            wrong,
+            "a replacement that never verified must not cost the file it was replacing"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1429,9 +1551,9 @@ mod tests_digest_cache {
 
     const BODY: &[u8] = b"the complete model weights";
 
-    /// A spec whose URL is guaranteed unreachable, so any code path that
-    /// reaches the network fails loudly as [`Error::Http`] instead of
-    /// quietly repairing what the test changed.
+    /// A spec whose URL is guaranteed unreachable, so a code path that
+    /// decides to refetch fails loudly as [`Error::Http`] rather than
+    /// quietly reaching a server this test never stood up.
     fn offline_spec(file: &str, body: &[u8]) -> ModelSpec {
         ModelSpec {
             file: file.into(),
@@ -1471,6 +1593,34 @@ mod tests_digest_cache {
         })
         .expect("prepare must succeed");
         reported
+    }
+
+    /// A file the record does not cover: it must be read again, and the
+    /// repair that follows is what reaches the network. The spec here is
+    /// unreachable, so a repair surfaces as [`Error::Http`] - which is
+    /// itself the proof that the file was not taken on trust, and that
+    /// the fetch it reached never got far enough to touch the file.
+    fn refuse_after_repair(cfg: &Config, target: &Path) {
+        let before = fs::read(target).unwrap();
+        let mut reported = Vec::new();
+        let err = prepare(cfg, |progress| {
+            reported.push(tag(&progress));
+            ControlFlow::Continue(())
+        })
+        .expect_err("a file this run cannot accept must not be reported ready");
+        assert!(
+            reported.contains(&"verifying"),
+            "the file must be read again rather than taken on trust, reported: {reported:?}"
+        );
+        assert!(
+            matches!(err, Error::Http { .. }),
+            "the refusal must be the repair it could not make, got: {err:?}"
+        );
+        assert_eq!(
+            fs::read(target).unwrap(),
+            before,
+            "a fetch that died before it ever verified must not cost the file it was replacing"
+        );
     }
 
     /// Deny reads on a file without moving its size or its mtime, so a
@@ -1546,7 +1696,7 @@ mod tests_digest_cache {
     }
 
     #[test]
-    fn a_size_change_is_rejected_with_the_mtime_restored() {
+    fn a_size_change_is_not_taken_on_trust_with_the_mtime_restored() {
         let models = tempfile::tempdir().unwrap();
         let digests = tempfile::tempdir().unwrap();
         let file = models.path().join("asr.gguf");
@@ -1555,7 +1705,7 @@ mod tests_digest_cache {
         prepare_ok(&cfg);
 
         // One byte longer, mtime put back to what the record holds, so
-        // the size is the only field that can reject it.
+        // the size is the only field that can keep it from being a hit.
         let recorded = mtime(&file);
         fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b"!").unwrap();
         touch_mtime(&file, recorded);
@@ -1565,12 +1715,7 @@ mod tests_digest_cache {
             "this filesystem cannot restore an mtime exactly, so this test cannot isolate the size"
         );
 
-        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
-            .expect_err("a file a byte longer than its record must not be accepted");
-        assert!(
-            matches!(err, Error::SizeMismatch { .. }),
-            "the size, not the digest, is what rejects it, got: {err:?}"
-        );
+        refuse_after_repair(&cfg, &file);
     }
 
     /// A build that pins a new digest for a re-released model, over a
@@ -1593,22 +1738,14 @@ mod tests_digest_cache {
             "only the digest may differ, or this test is about the size instead"
         );
 
-        let err = prepare(&config_with(models.path(), digests.path(), moved), |_| {
-            ControlFlow::Continue(())
-        })
-        .expect_err("a file whose record covers another digest must not be reported ready");
-
-        assert!(
-            matches!(err, Error::HashMismatch { .. }),
-            "the moved spec must be what rejects it, and by the digest it pins, got: {err:?}"
-        );
+        refuse_after_repair(&config_with(models.path(), digests.path(), moved), &file);
     }
 
     /// The direction that has to keep working: a file whose bytes were
     /// replaced is caught, because every real replacement moves the
     /// mtime with it.
     #[test]
-    fn a_corrupted_file_whose_mtime_moved_is_still_rejected() {
+    fn a_corrupted_file_whose_mtime_moved_is_still_caught() {
         let models = tempfile::tempdir().unwrap();
         let digests = tempfile::tempdir().unwrap();
         let file = models.path().join("asr.gguf");
@@ -1619,12 +1756,7 @@ mod tests_digest_cache {
         fs::write(&file, vec![b'x'; BODY.len()]).unwrap();
         touch_mtime(&file, SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000));
 
-        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
-            .expect_err("a file whose bytes changed must not be taken on trust");
-        assert!(
-            matches!(err, Error::HashMismatch { .. }),
-            "the digest, not the size, is what rejects it, got: {err:?}"
-        );
+        refuse_after_repair(&cfg, &file);
     }
 
     /// The trade this cache makes, pinned so it stays a decision: bytes
