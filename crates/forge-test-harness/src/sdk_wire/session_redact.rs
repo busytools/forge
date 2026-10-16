@@ -732,6 +732,17 @@ pub fn transform_persistence_line(
         obj.insert("uuid".into(), Value::String(opaque));
     }
 
+    // Fold the disk's synthetic marks into the wire's own spelling
+    // before the disk marks drop, user frames only: the CLI writes
+    // `isSynthetic` from `isMeta || isVisibleInTranscriptOnly ||
+    // isCompactSummary` there, and `turnCompanion` never travels.
+    // Keeping one disk mark and dropping its siblings manufactured a
+    // row the CLI cannot emit (#1544).
+    let synthetic = ty == "user"
+        && ["isMeta", "isVisibleInTranscriptOnly", "isCompactSummary"]
+            .iter()
+            .any(|mark| obj.get(*mark).and_then(Value::as_bool) == Some(true));
+
     // Drop persistence-only fields the wire decoder doesn't expect.
     // `toolUseResult` / `lastPrompt` / `content` (snapshot body) carry
     // raw tool output / prompt text with embedded paths + project
@@ -742,9 +753,11 @@ pub fn transform_persistence_line(
         "cwd",
         "entrypoint",
         "gitBranch",
+        "isCompactSummary",
         "isSidechain",
         "isMeta",
         "isSnapshotUpdate",
+        "isVisibleInTranscriptOnly",
         "lastPrompt",
         "messageId",
         "operation",
@@ -755,10 +768,15 @@ pub fn transform_persistence_line(
         "sourceToolAssistantUUID",
         "timestamp",
         "toolUseResult",
+        "turnCompanion",
         "userType",
         "version",
     ] {
         obj.remove(field);
+    }
+
+    if synthetic {
+        obj.insert("isSynthetic".into(), Value::Bool(true));
     }
 
     // Redact message content + tool input/result bodies.
@@ -1253,5 +1271,123 @@ mod tests {
         let original = v.clone();
         scrub_paths_recursive(&mut v);
         assert_eq!(v, original);
+    }
+
+    /// Run one persistence row through the transform and parse the wire
+    /// frame back out.
+    fn transform_row(row: &Value) -> Value {
+        let out = transform_persistence_line(&row.to_string(), &mut RedactState::default())
+            .expect("transforms")
+            .expect("maps to a wire frame");
+        serde_json::from_str(&out).expect("stays valid JSON")
+    }
+
+    /// The disk gives a row nobody typed four spellings; the wire has one.
+    /// A corpus row carrying a disk spelling with the mark that would have
+    /// travelled beside it removed describes a mark set the CLI cannot
+    /// emit (#1544) - the wire writes `isSynthetic` from the disk's
+    /// `isMeta || isVisibleInTranscriptOnly || isCompactSummary`, and
+    /// `turnCompanion` never travels.
+    #[test]
+    fn disk_synthetic_marks_fold_into_the_wires_spelling() {
+        // The companion row the CLI writes beside an image paste.
+        let companion = transform_row(&json!({
+            "parentUuid": "cef55743-4eec-4553-86f9-68a54e1cb284",
+            "isSidechain": false,
+            "promptId": "9b1257b5-1eae-47ce-8ab6-4c80952bca2c",
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": "companion notice"}]},
+            "isMeta": true,
+            "turnCompanion": true,
+            "uuid": "a22e6f91-7b16-4586-95e6-88b654b1c928",
+            "timestamp": "2026-09-27T12:17:30.732Z",
+            "userType": "external",
+            "entrypoint": "sdk-cli",
+            "cwd": "/home/dev/Projects/example-app",
+            "sessionId": "3f1c0a1e-0000-4000-8000-000000000002",
+            "version": "2.1.280",
+            "gitBranch": "main",
+        }));
+        assert_eq!(
+            companion.get("isSynthetic"),
+            Some(&json!(true)),
+            "a row the wire stamps must reach the corpus stamped, in the wire's spelling: \
+             {companion}"
+        );
+        for mark in ["isMeta", "turnCompanion", "isCompactSummary", "isVisibleInTranscriptOnly"] {
+            assert!(
+                companion.get(mark).is_none(),
+                "the disk spelling {mark} reached the wire, which has none: {companion}"
+            );
+        }
+
+        // The compaction summary's spellings, each arm on its own: they
+        // co-occur on the rows this machine wrote, which would let one
+        // arm's removal ride the other's stamp.
+        for mark in ["isVisibleInTranscriptOnly", "isCompactSummary"] {
+            let mut row = json!({
+                "type": "user",
+                "message": {"role": "user", "content": "continued from a previous conversation"},
+                "uuid": "uuid-summary",
+            });
+            row[mark] = json!(true);
+            let summary = transform_row(&row);
+            assert_eq!(
+                summary.get("isSynthetic"),
+                Some(&json!(true)),
+                "the predicate's arm {mark} stamps the same wire spelling: {summary}"
+            );
+        }
+    }
+
+    /// The other half of the fold: only a user frame the CLI's predicate
+    /// holds for is stamped. A row it does not hold for must not grow the
+    /// key, `turnCompanion` - which the wire does not carry at all - must
+    /// not stand one in, and a system row's disk mark is dropped without
+    /// one: the wire's system frames carry no mark (the captured
+    /// `compact_boundary` is the evidence).
+    #[test]
+    fn only_a_user_frame_the_cli_stamps_for_is_marked() {
+        let unmarked = transform_row(&json!({
+            "type": "user",
+            "message": {"role": "user", "content": "typed by hand"},
+            "uuid": "uuid-typed",
+        }));
+        assert_eq!(
+            unmarked.get("isSynthetic"),
+            None,
+            "a row the CLI does not stamp must not grow the key: {unmarked}"
+        );
+
+        let companion_only = transform_row(&json!({
+            "type": "user",
+            "message": {"role": "user", "content": "companion text"},
+            "turnCompanion": true,
+            "uuid": "uuid-companion",
+        }));
+        assert_eq!(
+            companion_only.get("isSynthetic"),
+            None,
+            "turnCompanion is a disk field and stamps nothing: {companion_only}"
+        );
+        assert!(
+            companion_only.get("turnCompanion").is_none(),
+            "the disk field still reached the wire: {companion_only}"
+        );
+
+        let system = transform_row(&json!({
+            "type": "system",
+            "subtype": "turn_duration",
+            "durationMs": 4,
+            "isMeta": true,
+            "messageCount": 2,
+            "uuid": "uuid-turn",
+        }));
+        assert_eq!(
+            system.get("isSynthetic"),
+            None,
+            "a system frame carries no synthetic mark on the wire: {system}"
+        );
+        assert!(system.get("isMeta").is_none(), "the disk mark still reached the wire: {system}");
     }
 }
