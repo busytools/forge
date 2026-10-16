@@ -186,10 +186,10 @@ completion budget and the prompt it carries - a window allowed to reach
 the model's context can fire a compact request the context cannot hold,
 and the `claude` CLI exits with the session, which is what this key
 keeps out of reach. The value is yours to pick because forge does not
-know a model's real context: leaving roughly a sixteenth of the context
-(983040 for a 1,048,576-token model) is measured to fit with room over.
-An env layer that names `CLAUDE_CODE_AUTO_COMPACT_WINDOW` itself
-replaces the table's value.
+know a model's real context: leaving a sixteenth of the context as
+headroom (a 983040 window for a 1,048,576-token model) is measured to fit
+with room over. An env layer that names
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` itself replaces the table's value.
 
 A value that is not a positive integer fails the load:
 `models "name" in forge.toml ... sets auto_compact_window = 0, which is

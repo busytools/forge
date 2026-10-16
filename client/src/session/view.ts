@@ -167,6 +167,8 @@ function paletteWord(row: AgentRow, unseen: SessionSlot[]): string {
   switch (state.kind) {
     case 'failed-turn':
       return 'failed';
+    case 'died':
+      return 'session ended';
     case 'unseen':
       return 'finished';
     case 'never-started':
@@ -473,8 +475,9 @@ export function railMark(state: RowState): string {
   if (state.kind === 'unseen') return 'unseen';
   // A failed turn draws the failure mark, the same answer the view this
   // client replaced gave: its cross replaces the state glyph until the seat
-  // is opened.
-  if (state.kind === 'failed-turn') return 'failed';
+  // is opened. A death wears the same one - one failure vocabulary on the
+  // rail, and the seat's own page says which it was.
+  if (state.kind === 'failed-turn' || state.kind === 'died') return 'failed';
   if (state.kind === 'never-started') return 'off';
   switch (state.lifecycle) {
     case 'Running':
@@ -727,8 +730,9 @@ export function rankOf(
   if (pending !== null) return 0;
   if (state.kind === 'unseen') return 1;
   // A failed turn is the seat's own version of a needed person, so it ranks
-  // with the attention states rather than with the completions.
-  if (state.kind === 'failed-turn') return 0;
+  // with the attention states rather than with the completions - and so does
+  // a death the reader has not been shown.
+  if (state.kind === 'failed-turn' || state.kind === 'died') return 0;
   if (state.kind === 'never-started') return 2;
   switch (state.lifecycle) {
     case 'Attention':
@@ -757,6 +761,9 @@ export function failedLine(row: Row): string | null {
   // the failure's own words are in the seat's conversation - so the line
   // is the word alone.
   if (row.state.kind === 'failed-turn') return 'a turn failed';
+  // A death has words of its own: the core's reason for it, which is what
+  // a failed row would have drawn too.
+  if (row.state.kind === 'died') return row.reason ?? 'the session ended';
   if (row.state.kind !== 'lifecycle') return null;
   const lifecycle = row.state.lifecycle;
   if (lifecycle !== 'Failed' && lifecycle !== 'AuthRequired') return null;

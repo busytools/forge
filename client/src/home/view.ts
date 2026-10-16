@@ -4,7 +4,7 @@
  *
  * Pure, so a test can build a fleet by hand. Everything here comes from the
  * snapshot, and the only states this file makes for itself are `stateOf`'s
- * four promotions - the cases a state read from the wire alone would disagree
+ * promotions - the cases a state read from the wire alone would disagree
  * with that view about, silently, the first time one of them turned.
  *
  * Every cell the server's own home draws is drawn from the snapshot. The
@@ -56,7 +56,7 @@ export interface BandCard {
 
 /**
  * The state a row draws: the core's lifecycle the snapshot carries, plus the
- * three states that are not the core's to know.
+ * states that are not the core's to know.
  */
 export type RowState =
   | { kind: 'lifecycle'; lifecycle: Lifecycle }
@@ -64,6 +64,12 @@ export type RowState =
   | { kind: 'unseen' }
   /** A seat whose newest turn failed, which the reader has not been shown. */
   | { kind: 'failed-turn' }
+  /**
+   * A seat a session ENDED on, which the reader has not been shown since:
+   * the mark is the death's, and the lifecycle the row carries still reads
+   * the truth about now - the seat may be back up and working.
+   */
+  | { kind: 'died' }
   /** A project nothing has ever run in. */
   | { kind: 'never-started' };
 
@@ -285,17 +291,21 @@ function orgOf(wire: HomeWire, project: string): string {
 /**
  * The state a row draws from what the snapshot carries.
  *
- * Four promotions the core does not make, all about what the mark means: a
+ * Five promotions the core does not make, all about what the mark means: a
  * backgrounded task is work even after the turn that started it settled, a
  * turn that finished while this view was not showing the seat answers "what
  * changed while I was away", a failed turn the view has not been shown
- * since is the one state the reader has to act on, and an ASK is the state's
- * own name whether or not the CLI's lifecycle has caught up - the view this
+ * since is the one state the reader has to act on, a session that ENDED
+ * rides its own mark until the seat is shown, and an ASK is the state's own
+ * name whether or not the CLI's lifecycle has caught up - the view this
  * client replaced drew its triangle from the prompt queue rather than from a
  * lifecycle it had to trust. None is computed here - `has_background_work`,
- * `unseen`, `failed_turn` and `pending` all cross on the snapshot.
+ * `unseen`, `failed_turn`, `died` and `pending` all cross on the snapshot.
  */
 export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
+  // **A death outranks a failed turn**, both drawing the one failure mark:
+  // the session ended, which is the larger fact about the seat.
+  if (row.died) return { kind: 'died' };
   // The failure outranks every other promotion, and the view this client
   // replaced ordered it over the spinner and the diamond both.
   if (row.failed_turn !== null) return { kind: 'failed-turn' };
@@ -321,9 +331,11 @@ function sameSlot(a: SessionSlot, b: SessionSlot): boolean {
 /** The mark a state draws: one class and one dot shape per meaning. */
 export function markOf(state: RowState): { class: string; dot: string } {
   if (state.kind === 'unseen') return { class: 'unseen', dot: 'ok' };
-  // The failed turn draws the same mark a failed session does: one failure
-  // vocabulary, and the seat's own page tells the two apart.
-  if (state.kind === 'failed-turn') return { class: 'failed', dot: 'bad' };
+  // The failed turn and the death draw the same mark a failed session does:
+  // one failure vocabulary, and the seat's own page tells the three apart.
+  if (state.kind === 'failed-turn' || state.kind === 'died') {
+    return { class: 'failed', dot: 'bad' };
+  }
   if (state.kind === 'never-started') return { class: 'never', dot: 'off' };
   switch (state.lifecycle) {
     case 'Running':

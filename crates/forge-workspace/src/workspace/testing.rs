@@ -179,13 +179,13 @@ impl Workspace {
         }
     }
 
-    /// Record a slot's death and the failure behind it, the way the
-    /// connection-failure arm does, so a cross-crate test can drive the
-    /// durable-trace reader without a real subprocess. Test-only.
+    /// Record a slot's death alone - the state a recovering connect leaves:
+    /// the failure cleared, the death riding with the reason it left. Add
+    /// [`Self::record_spawn_failure_for_test`] for the crashed-and-still-
+    /// down shape, where no connect has cleared anything. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn record_death_for_test(&self, slot: &SessionSlot, occupant: &str, message: &str) {
-        self.record_spawn_failure(slot, message);
-        self.record_death(slot, SessionId::new(occupant));
+        self.record_death(slot, SessionId::new(occupant), message);
     }
 
     /// Push one update onto the fan-out, so a test can watch a view react

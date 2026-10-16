@@ -284,18 +284,19 @@ describe('closing a seat', () => {
 });
 
 /**
- * A seat whose session died has a failure behind it, not a session: a
- * landing on one would hand the reader a page about to start the project
- * they were leaving, so the walk passes it like a sleeping row.
+ * A failed lead has no session behind it - a spawn that never came up, or a
+ * session that died and nothing brought back: a landing on one would hand
+ * the reader a page about to start the project they were leaving, so the
+ * walk passes it like a sleeping row.
  */
-describe('the walk passes a seat whose session died', () => {
-  it('never lands on a died lead', () => {
-    const crashed: HomeWire = { ...homeWire, agents: [agentIn(LEAD, 'Failed')] };
+describe('the walk passes a failed lead', () => {
+  it('never lands on a failed lead', () => {
+    const failed: HomeWire = { ...homeWire, agents: [agentIn(LEAD, 'Failed')] };
 
-    expect(closeLanding(crashed, W1, NOW), 'a close landed on the died lead').toEqual({
+    expect(closeLanding(failed, W1, NOW), 'a close landed on the failed lead').toEqual({
       name: 'home',
     });
-    expect(removedLanding(crashed, W1, LEAD, NOW), 'a removal landed on the died lead').toEqual({
+    expect(removedLanding(failed, W1, LEAD, NOW), 'a removal landed on the failed lead').toEqual({
       name: 'home',
     });
   });

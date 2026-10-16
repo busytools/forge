@@ -92,17 +92,20 @@ and draws it as a shape as well as a colour, so the row reads without colour:
 | Finished | `unseen` | a turn completed on a seat no client was attached to |
 | Needs you | `needs` | a question or a permission prompt is waiting |
 | Sign-in needed | `auth` | the bridge is waiting on `/login` |
-| Failed | `failed` | a session failed to start, or its subprocess died and no reader has been shown it since |
+| Failed | `failed` | the session is not running: its spawn never came up, or it died and nothing brought it back |
+| Session ended | `failed` | a session on the seat ended, and the seat has not been opened since |
 | Turn failed | `failed` | the newest turn ended in failure, and the seat has not been opened since |
 | Asleep | `asleep` | the seat is not running, and no failure is recorded for it |
 | Never started | `never` | nothing has ever run in this project |
 
 A project that cannot start does not draw a state of its own: the refusal is
 one of the named misses instead, which is the same fact placed where a miss
-already lives. A row that failed carries its reason as a line under it; a
-failed TURN has no reason text of its own (the failure's words are in the
-seat's conversation), so its line is the words `a turn failed`, and its mark
-goes the moment the seat is opened.
+already lives. A row that failed carries its reason as a line under it, and
+so does a row a session ENDED on - the lifecycle beside the mark is the
+truth about now, so a seat that came back is still drawn working while the
+mark and the line say what happened; the mark goes the moment the seat is
+opened. A failed TURN has no reason text of its own (the failure's words are
+in the seat's conversation), so its line is the words `a turn failed`.
 
 ## The states the page can be in
 

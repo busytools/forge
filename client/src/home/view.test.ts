@@ -103,6 +103,7 @@ const MARKS: [RowState, string][] = [
   [{ kind: 'lifecycle', lifecycle: 'Sleeping' }, 'asleep'],
   [{ kind: 'lifecycle', lifecycle: 'LoggedOut' }, 'asleep'],
   [{ kind: 'unseen' }, 'unseen'],
+  [{ kind: 'died' }, 'failed'],
   [{ kind: 'never-started' }, 'never'],
 ];
 
@@ -753,6 +754,31 @@ describe('the cells the reshape made drawable', () => {
       unseen: [slot],
     };
     expect(leadOf(busy).state).toEqual({ kind: 'failed-turn' });
+  });
+
+  /**
+   * **A seat a session ended on.** The mark is the death's until the seat is
+   * opened, and the lifecycle beside it still reads the truth about now: a
+   * seat the recovery brought back is drawn with the failure mark and a
+   * live lifecycle at once, so what the fleet counts and where a close
+   * walks do not inherit a death that is already over.
+   */
+  it('marks a seat a session ended on, over a live lifecycle', () => {
+    const wire = withAgentRow({
+      lifecycle: 'Running',
+      died: true,
+      reason: 'the claude subprocess closed its output stream',
+    });
+    const recovered = leadOf(wire);
+
+    expect(wire.agents[0]?.lifecycle, 'the lifecycle is the truth about now').toBe('Running');
+    expect(recovered.state, 'the death is the row state until the seat is shown').toEqual({
+      kind: 'died',
+    });
+    expect(markOf(recovered.state)).toEqual({ class: 'failed', dot: 'bad' });
+    expect(recovered.reason, 'and the reason the seat died with rides it').toBe(
+      'the claude subprocess closed its output stream',
+    );
   });
 
   /**

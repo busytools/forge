@@ -101,12 +101,14 @@ beside what it is costing, not on the strip.
   reason, because a worker is spawned by the lead that owns it. A seat
   this client just closed is never asked: the roster landing it asleep is
   that close arriving, not a wake to start.
-- **A seat whose session died**: the roster keeps the seat's row carrying
-  the failure and its reason, so the page draws failed rather than a seat
-  nothing has started - and opening a lead's page starts it again, the way
-  a sleeping seat is started, because the death is recorded. A seat that
-  only failed to START (a sign-in, a bad config) is not woken: it stays
-  parked with its reason rather than being asked for in a loop. The
+- **A seat whose session died**: the row carries the death with the reason
+  it left, drawn with the failure mark, until the seat is shown - even
+  after the seat is back up, when its lifecycle reads what it is now. The
+  trace is spent by any subscribe to the seat, whichever page made it, and
+  an opened lead's page starts a died seat again the way a sleeping one is.
+  **What stays parked**: a Failed row with no death behind it, which is a
+  spawn that never came up - the reason line says which - and a seat
+  waiting on sign-in, whose lifecycle is its own and is never woken. The
   recovery that brings a died seat back says so in the chat - the session
   resumed, or a new one under a new id.
 - **A refused read**: the server turned the subscription down, and its own

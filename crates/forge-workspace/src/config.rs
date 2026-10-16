@@ -526,8 +526,9 @@ pub(crate) struct LoadedConfig {
     /// / smoke paths; a production picker overrides it.
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
-    /// `[models."<name>"]` tables, keyed by canonical model name. Absent
-    /// tables mean a spawn stamps no model parameters.
+    /// `[models."<name>"]` tables, keyed by the spelling a project's
+    /// `model` pins. Absent tables mean a spawn stamps no model
+    /// parameters.
     pub models: HashMap<String, ModelSettings>,
     /// `[dictate]` section knobs. Absent section means dictation is
     /// off and preflight skips it entirely.
@@ -4024,9 +4025,9 @@ path = "~/Projects/forge"
         assert!(matches!(err, WorkspaceError::NoAccountsConfigured { .. }));
     }
 
-    /// The `[models."<name>"]` table parses by canonical model name and
-    /// reaches the loaded config; an absent table leaves the map empty, so
-    /// every spawn stays on the CLI's own resolution.
+    /// The `[models."<name>"]` table parses by the spelling a project's
+    /// `model` pins and reaches the loaded config; an absent table leaves
+    /// the map empty, so every spawn stays on the CLI's own resolution.
     #[test]
     fn parses_the_models_table_by_name() {
         let dir = tempdir().expect("tempdir");

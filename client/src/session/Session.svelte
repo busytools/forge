@@ -231,11 +231,14 @@
     const key = subjectKey({ session: seatSlot });
     // The states the page starts a lead for: nothing named, asleep, and a
     // seat a session ENDED on - the death is recorded, the page is where
-    // it comes back, and the respawn is no longer silent (the seat's row
-    // carried the failure, and the recovery announces itself). **A seat
-    // that only failed to start is not one of them**: an auth or config
-    // failure stays parked with its reason rather than being woken in a
-    // loop, which is what `died` tells apart.
+    // it comes back, and the respawn is not silent (the row carried the
+    // failure, and the recovery announces itself).
+    //
+    // **What stays parked**: a Failed row with no death behind it is a
+    // spawn that never came up - a bad config, a refused credential - and
+    // waking it would loop on the same failure, so `died` is what tells the
+    // two apart. A seat waiting on sign-in is not here at all: its own
+    // lifecycle is `AuthRequired`, which this wake has never asked for.
     const wake =
       seat.waking ||
       seat.lifecycle === 'Sleeping' ||

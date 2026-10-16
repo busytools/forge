@@ -123,9 +123,10 @@ function behind(home: HomeWire, slot: SessionSlot): boolean {
       keyOf(agent.slot) === key &&
       agent.lifecycle !== 'Sleeping' &&
       agent.lifecycle !== 'LoggedOut' &&
-      // A seat whose session died has a failure behind it, not a session:
-      // landing a close's walk on one would hand the reader a page that is
-      // about to start the very project it was leaving.
+      // A failed lead has no session behind it - a spawn that never came up,
+      // or a session that died and nothing brought back - so landing a
+      // close's walk on one would hand the reader a page that is about to
+      // start the very project it was leaving.
       agent.lifecycle !== 'Failed',
   );
 }

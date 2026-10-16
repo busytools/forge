@@ -546,6 +546,28 @@ describe('the rail', () => {
     expect(railMark({ kind: 'failed-turn' })).toBe('failed');
     expect(rankOf({ kind: 'failed-turn' }, null)).toBe(0);
     expect(rankOf({ kind: 'failed-turn' }, 'question')).toBe(0);
+    // A death the reader has not been shown is the rail's own version of
+    // the same: one failure mark, ranked with the asks.
+    expect(railMark({ kind: 'died' })).toBe('failed');
+    expect(rankOf({ kind: 'died' }, null)).toBe(0);
+  });
+
+  /**
+   * **A death is the mark, not the lifecycle.** A seat the recovery brought
+   * back counts live - the row reads the truth about now - and the reason
+   * the seat died with is the line it draws under itself until the seat is
+   * opened.
+   */
+  it('carries a death on a seat that counts live, with the reason as its line', () => {
+    const why = 'the claude subprocess closed its output stream';
+    const recovered = withHome({
+      agents: [{ ...lead(), lifecycle: 'Running', pending: null, died: true, reason: why }],
+    });
+
+    expect(fleetCount(recovered), 'a recovered seat was not counted live').toBe('1 live / 1');
+    const block = railGroups(recovered, LEAD, 0)[0]?.projects[0];
+    if (block === undefined) throw new Error('the rail drew no block for the recovered seat');
+    expect(failedLine(block.row), 'the death did not draw its reason').toBe(why);
   });
 
   it('counts the fleet by its seats, not by the rows a group drew', () => {

@@ -423,8 +423,11 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
 #[tokio::test]
 async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
     let (url, fleet) = a_server().await;
-    // The core's own records, seeded by hand: the fold that writes them runs
-    // in the session task, which a fixture does not start.
+    // The row the recovering connect leaves: the seat is up, and the death
+    // it has not been shown rides beside a lifecycle that reads the truth.
+    // Seeded by hand: the fold that writes it runs in the session task,
+    // which a fixture does not start.
+    fleet.workspace().register_domain_session(lead_seat(), None);
     fleet.workspace().record_death_for_test(
         &lead_seat(),
         "dead-occupant",
@@ -483,17 +486,19 @@ async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
         "the attach re-sends the home, because showing the seat spent the death",
     );
 
-    // And the spent record is gone: no row on the re-sent home still claims
-    // it, whether the seat left the roster or stayed without the mark.
+    // The spent trace leaves a row that is still there and clean: the seat
+    // is up and its lifecycle stands, with `died` false rather than the row
+    // gone. Read as a shape, not an absence - "no row claims died" would
+    // hold just as well for a row that vanished.
     assert!(
         snapshot_until(&mut socket, Subject::Home, |data| {
-            !data
-                .get("agents")
+            data.get("agents")
                 .and_then(|held| held.as_array())
-                .is_some_and(|held| held.iter().any(|row| row["died"] == true))
+                .and_then(|held| held.iter().find(|row| row["slot"]["label"] == "lead"))
+                .is_some_and(|row| row["died"] == false)
         })
         .await,
-        "a spent death was still on the row it was written on",
+        "the row the death was written on did not come back clean",
     );
 }
 

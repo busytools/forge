@@ -1218,7 +1218,7 @@ pub struct QueuedPrompt {
 ///
 /// Two levels rather than a scale: the core's own answer about a seat, and
 /// the failures it owes the reader - a command that did not run, a session
-/// that died.
+/// that ended.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum NoticeSeverity {

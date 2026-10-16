@@ -232,14 +232,21 @@ pub(crate) type ParkedBrowserHandOff = (
 );
 
 /// A seat's occupant that died, held until a reader has been shown the
-/// seat or a new turn commits - so a crash nobody watched is still
-/// readable when someone looks, and the recovery that answers it is
-/// announced exactly once.
+/// seat AND the recovery has announced itself - so a crash nobody watched
+/// is still readable when someone looks, and the recovery that answers it
+/// is announced exactly once. The two are spent independently: showing the
+/// seat takes the row's trace, and the connect takes the announcement,
+/// whichever comes first.
 struct SeatDeath {
     /// The session that ended.
     occupant: SessionId,
+    /// What the seat's failure said when it died, which the row keeps
+    /// drawing after the recovering connect clears the failure itself.
+    reason: String,
     /// Whether the recovery's connect has announced it already.
     announced: bool,
+    /// Whether a reader has been shown the seat since.
+    shown: bool,
 }
 
 /// spawned [`forge_agent::Agent`] handles, one per active session.
@@ -6112,41 +6119,69 @@ impl Workspace {
         let _ = self.spawn_failures.lock().remove(slot);
     }
 
-    /// Record that the occupant running on `slot` died, keeping its session
-    /// id until a reader has been shown the seat or a new turn commits.
-    pub(crate) fn record_death(&self, slot: &SessionSlot, occupant: SessionId) {
-        self.deaths.lock().insert(slot.clone(), SeatDeath { occupant, announced: false });
+    /// Record that the occupant running on `slot` died, with the reason it
+    /// left, keeping both until a reader has been shown the seat and the
+    /// recovery has announced itself. The lifecycle is NOT held down by
+    /// this: a recovering connect clears the failure as it always did, and
+    /// what rides on until shown is the death - `died` on the row, with the
+    /// reason and the mark the client draws from it.
+    pub(crate) fn record_death(&self, slot: &SessionSlot, occupant: SessionId, reason: &str) {
+        self.deaths.lock().insert(
+            slot.clone(),
+            SeatDeath { occupant, reason: reason.to_owned(), announced: false, shown: false },
+        );
     }
 
     /// The died occupant recorded for `slot` when the recovery has not
     /// announced it yet, consuming that one announcement: the notice fires
     /// on the first connect that answers the death and stays quiet after.
-    /// The record itself stays until [`Self::spend_death`].
+    ///
+    /// **The spend does not consume it.** A reader who opens the crashed
+    /// seat's page spends the row's trace and then wakes the seat, so the
+    /// connect that answers their own click is the first one to see the
+    /// death - and it is owed the sentence like any other.
     pub(crate) fn unannounced_death(&self, slot: &SessionSlot) -> Option<SessionId> {
         let mut deaths = self.deaths.lock();
         let death = deaths.get_mut(slot)?;
-        let was_unannounced = !death.announced;
+        if death.announced {
+            return None;
+        }
         death.announced = true;
-        was_unannounced.then(|| death.occupant.clone())
+        let occupant = death.occupant.clone();
+        if death.shown {
+            deaths.remove(slot);
+        }
+        Some(occupant)
     }
 
-    /// Whether a death stands unshown on `slot`: the row keeps its failure
-    /// and its reason while one does, so a crash nobody watched is still
+    /// Whether a death stands unshown on `slot`: the row carries `died` with
+    /// its reason while one does, so a crash nobody watched is still
     /// readable when someone looks. `pub` because the row a view reads
     /// carries it.
     pub fn death_stands(&self, slot: &SessionSlot) -> bool {
-        self.deaths.lock().contains_key(slot)
+        self.deaths.lock().get(slot).is_some_and(|death| !death.shown)
     }
 
-    /// A reader has taken the death on `slot` - shown the seat, or moved it
-    /// on with a new turn: the record and the failure it held go together,
-    /// and the answer says whether anything was spent. `pub` because the
-    /// seat being shown is the server's to see, and this is the spend the
-    /// server makes on the view's behalf.
+    /// The reason a standing death left, for the row to draw beside its
+    /// mark. `None` once a reader has been shown the seat.
+    pub fn death_reason(&self, slot: &SessionSlot) -> Option<String> {
+        self.deaths.lock().get(slot).filter(|death| !death.shown).map(|death| death.reason.clone())
+    }
+
+    /// A reader has been shown the death on `slot` - the seat's page was
+    /// opened: the row's trace goes (whether or not the recovery has
+    /// announced itself yet), and the answer says whether there was one to
+    /// spend. `pub` because the seat being shown is the server's to see,
+    /// and this is the spend the server makes on the view's behalf.
     pub fn spend_death(&self, slot: &SessionSlot) -> bool {
-        let spent = self.deaths.lock().remove(slot).is_some();
-        if spent {
-            self.clear_spawn_failure(slot);
+        let mut deaths = self.deaths.lock();
+        let Some(death) = deaths.get_mut(slot) else {
+            return false;
+        };
+        let spent = !death.shown;
+        death.shown = true;
+        if death.announced {
+            deaths.remove(slot);
         }
         spent
     }
@@ -10544,6 +10579,47 @@ provider = "anthropic"
             !drain_updates(&mut rx).iter().any(|u| matches!(u, SessionUpdate::ChatAppended { .. })),
             "a refused prompt never reached a model, so nothing draws its words",
         );
+    }
+
+    /// **Only the reader's own send is a reader looking.** A standing death
+    /// is spent by a prompt the person typed - they have moved the seat on -
+    /// and is NOT spent by a cron's, a peer's or forge's own prompt, which
+    /// are the machinery talking rather than anyone having seen it.
+    #[test]
+    fn a_readers_prompt_spends_a_death_and_another_sources_does_not() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let key = SessionSlot::from_str_for_test("prompt-spend");
+        // The routed path is what spends, so a command sender has to exist:
+        // without one the dispatch falls to the bare stub below.
+        let (tx, mut sent) = mpsc::unbounded_channel();
+        ws.command_senders.lock().insert(key.clone(), tx);
+        ws.record_death_for_test(
+            &key,
+            "dead-occupant",
+            "the claude subprocess closed its output stream",
+        );
+
+        let prompt = |uuid: &str, source: crate::protocol::PromptSource| Command::PromptUnder {
+            key: key.clone(),
+            text: "hello".to_owned(),
+            attachments: Vec::new(),
+            uuid: uuid.to_owned(),
+            source,
+        };
+
+        ws.dispatch(prompt("cron-1", crate::protocol::PromptSource::Cron)).expect("routed");
+        assert!(ws.death_stands(&key), "a cron's prompt is not a reader looking");
+
+        ws.dispatch(prompt("peer-1", crate::protocol::PromptSource::Peer)).expect("routed");
+        assert!(ws.death_stands(&key), "a peer's prompt is not a reader looking");
+
+        ws.dispatch(prompt("you-1", crate::protocol::PromptSource::You)).expect("routed");
+        assert!(!ws.death_stands(&key), "the reader's own send spends the death");
+        assert!(!ws.spend_death(&key), "and there is nothing left to spend");
+
+        let delivered: Vec<Command> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
+        assert_eq!(delivered.len(), 3, "all three prompts still reached the seat");
     }
 
     /// A seat with a live domain session whose dispatch is captured rather
