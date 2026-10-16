@@ -856,6 +856,31 @@ impl Workspace {
             // launchpad without needing a worktree on disk.
             false,
             None,
+            None,
+        );
+    }
+
+    /// [`Self::seed_test_worker_row`] with the worker pointed at its own
+    /// tree, the way a spawn with `cwd` records it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_worker_row_at(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+        cwd: &str,
+        is_git_repo: bool,
+    ) {
+        let _ = self.record_worker_row(
+            project_key,
+            label,
+            &format!("{label}-test-id"),
+            &format!("charter for {label}"),
+            None,
+            None,
+            false,
+            is_git_repo,
+            None,
+            Some(cwd),
         );
     }
 
@@ -875,6 +900,7 @@ impl Workspace {
             None,
             false,
             true,
+            None,
             None,
         );
     }
@@ -910,6 +936,7 @@ impl Workspace {
                 interactive: Some(interactive),
                 is_git_repo: None,
                 mcp_families: None,
+                cwd: None,
             },
         );
     }

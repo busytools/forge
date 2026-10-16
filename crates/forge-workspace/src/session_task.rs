@@ -2685,6 +2685,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .expect("seed the row the rollback judges");
 
@@ -4986,6 +4987,7 @@ provider = "anthropic"
                     interactive: None,
                     is_git_repo: None,
                     mcp_families: None,
+                    cwd: None,
                 },
             )
             .expect("seed the row");
@@ -8055,6 +8057,7 @@ provider = "anthropic"
                 false,
                 true,
                 None,
+                None,
             )
             .expect("seed the worker's row");
 
@@ -8728,6 +8731,7 @@ mod connected_hook_tests {
                 false,
                 false,
                 None,
+                None,
             )
             .expect("seed the worker row");
         dir
@@ -8804,6 +8808,7 @@ mod connected_hook_tests {
                 None,
                 false,
                 false,
+                None,
                 None,
             )
             .expect("seed the worker row");

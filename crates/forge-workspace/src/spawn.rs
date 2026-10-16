@@ -1396,6 +1396,7 @@ pub(crate) fn handle_spawn_worker(
         interactive,
         is_git,
         families_field,
+        None,
     ) {
         Ok(()) => None,
         Err(error) => {
@@ -3043,6 +3044,7 @@ provider = "anthropic"
                     interactive: None,
                     is_git_repo: seeded_is_git,
                     mcp_families: None,
+                    cwd: None,
                 },
             )
             .expect("seed the row the spawn will write");
@@ -3146,6 +3148,7 @@ provider = "anthropic"
             false,
             false,
             None,
+            None,
         )
         .expect("seed the row the resume re-writes");
 
@@ -3219,6 +3222,7 @@ provider = "anthropic"
             false,
             false,
             Some(&["cron".to_owned()]),
+            None,
         )
         .expect("seed a stale selection");
 
@@ -3271,6 +3275,7 @@ provider = "anthropic"
             false,
             false,
             Some(&["cron".to_owned()]),
+            None,
         )
         .expect("seed the stored selection");
 
@@ -5013,6 +5018,7 @@ provider = "anthropic"
                 false,
                 false,
                 None,
+                None,
             )
             .expect("seed the row whose live worker is gone");
 
@@ -5053,6 +5059,7 @@ provider = "anthropic"
                 None,
                 false,
                 false,
+                None,
                 None,
             )
             .expect("seed the stranded row");
@@ -5115,6 +5122,7 @@ provider = "anthropic"
                 false,
                 false,
                 None,
+                None,
             )
             .expect("seed the lead's row");
 
@@ -5154,7 +5162,9 @@ provider = "anthropic"
         // A sibling row, so "nothing was cleared" cannot pass because the
         // store was empty.
         workspace
-            .record_worker_row(&project, "other", "other-id", "c", None, None, false, false, None)
+            .record_worker_row(
+                &project, "other", "other-id", "c", None, None, false, false, None, None,
+            )
             .expect("seed a row the despawn must leave alone");
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -5633,6 +5643,7 @@ provider = "anthropic"
                 // it is what the despawn has to read the gitness from.
                 true,
                 None,
+                None,
             )
             .expect("seed the row that outlived its worker");
         (workspace, project_key, wt, repo, config)
@@ -5696,6 +5707,7 @@ provider = "anthropic"
                     // The shape `migrate_from_dynamic_workers` writes.
                     is_git_repo: None,
                     mcp_families: None,
+                    cwd: None,
                 },
             )
             .expect("seed the row the migration writes");

@@ -480,6 +480,7 @@ mod tests {
             false,
             true,
             None,
+            None,
         )
         .expect("seed the stranded worker's row");
         (ws, key, dir, project_dir)
@@ -1343,8 +1344,10 @@ mod tests {
         let project_dir = tempdir().expect("project dir");
         ws.seed_test_project("proj", &project_dir.path().to_string_lossy());
         let key = ws.project_key_for_name("proj").expect("seeded project");
-        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true, None)
-            .expect("seed the worker's row");
+        ws.record_worker_row(
+            &key, "steward", "steward-uuid", "c", None, None, false, true, None, None,
+        )
+        .expect("seed the worker's row");
 
         let outcome = deliver_cron(&ws, "proj", Some("steward"), "x", false);
         let crate::spawn::CronFireOutcome::TargetCannotBeWoken { directory } = outcome else {

@@ -3695,6 +3695,7 @@ impl Workspace {
             interactive: existing.as_ref().and_then(|row| row.interactive),
             is_git_repo: existing.as_ref().and_then(|row| row.is_git_repo),
             mcp_families: existing.as_ref().and_then(|row| row.mcp_families.clone()),
+            cwd: existing.and_then(|row| row.cwd),
         };
         if let Err(error) = crate::store::sessions::put(db, &row) {
             tracing::warn!(
@@ -6335,6 +6336,7 @@ impl Workspace {
         interactive: bool,
         is_git_repo: bool,
         mcp_families: Option<&[String]>,
+        cwd: Option<&str>,
     ) -> anyhow::Result<()> {
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             anyhow::bail!("no configured project for {}", project_key.as_str());
@@ -6373,6 +6375,10 @@ impl Workspace {
                     .or_else(|| existing.and_then(|row| row.resume_kick)),
                 interactive: Some(interactive),
                 is_git_repo: Some(is_git_repo),
+                // Stored as the spawn resolved it, never carried forward
+                // from an older row: a spawn that states no tree runs in
+                // the project root, and only a resume adopts one.
+                cwd: cwd.map(str::to_owned),
             },
         )
     }
@@ -6613,6 +6619,9 @@ impl Workspace {
                 // Absent leaves the stored selection alone; `Some(empty)`
                 // resets it to every family.
                 mcp_families,
+                // And absent leaves the stored tree alone: the tree is
+                // fixed at spawn, the way the gitness is.
+                cwd: None,
             },
         )
     }
@@ -9845,7 +9854,7 @@ path = "{}"
         let key = ws.project_key_for_name("proj").expect("seeded project");
         // A git worker whose worktree is not there, so the wave would skip
         // it and no fire can land.
-        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true, None)
+        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true, None, None)
             .expect("seed the stranded row");
 
         // A whole minute, so the recurring's next `*/5` slot is at least a
@@ -10100,6 +10109,7 @@ provider = "anthropic"
             false,
             false,
             None,
+            None,
         )
         .expect("seed the row this test then updates");
         let stored = |ws: &Arc<Workspace>| {
@@ -10351,7 +10361,7 @@ provider = "anthropic"
         // No install_db_for_test: the store is closed for this session.
         let error = ws
             .record_worker_row(
-                &project, "reviewer", "id", "charter", None, None, false, false, None,
+                &project, "reviewer", "id", "charter", None, None, false, false, None, None,
             )
             .expect_err("a closed store must surface a durability failure, not a silent no-op");
         assert!(
@@ -11488,6 +11498,7 @@ provider = "anthropic"
                 interactive: None,
                 is_git_repo: None,
                 mcp_families: None,
+                cwd: None,
             },
         )
         .expect("seed the lead row a spawn writes");
@@ -11504,6 +11515,7 @@ provider = "anthropic"
                 interactive: None,
                 is_git_repo: None,
                 mcp_families: None,
+                cwd: None,
             },
         )
         .expect("seed the steward's own row, as the released build leaves it");
@@ -11723,6 +11735,7 @@ provider = "anthropic"
                 interactive: None,
                 is_git_repo: None,
                 mcp_families: None,
+                cwd: None,
             },
         )
         .expect("seed the row");
@@ -14275,6 +14288,7 @@ mod tag_retry_tests {
                 false,
                 false,
                 None,
+                None,
             )
             .expect("seed the row this arm must keep");
 
@@ -14378,6 +14392,7 @@ mod tag_retry_tests {
                 None,
                 false,
                 false,
+                None,
                 None,
             )
             .expect("seed the row the rollback judges");
@@ -15090,6 +15105,7 @@ mod worker_respawn_tests {
             interactive: Some(false),
             is_git_repo: None,
             mcp_families: None,
+            cwd: None,
         }
     }
 
@@ -15137,6 +15153,7 @@ mod worker_respawn_tests {
                     false,
                     is_git,
                     None,
+                    None,
                 )
                 .expect("seed the row this wave re-spawns");
         }
@@ -15158,6 +15175,7 @@ mod worker_respawn_tests {
                 interactive: Some(false),
                 is_git_repo: Some(true),
                 mcp_families: None,
+                cwd: None,
             },
         )
         .expect("seed the id-less row");
@@ -15456,6 +15474,7 @@ mod worker_respawn_tests {
                 false,
                 false,
                 None,
+                None,
             )
             .expect("seed the persisted worker this test re-spawns");
         workspace.enable_test_dispatch_intercept();
@@ -15501,6 +15520,7 @@ mod worker_respawn_tests {
                 None,
                 false,
                 false,
+                None,
                 None,
             )
             .expect("write the row this test then deletes");
@@ -15585,6 +15605,7 @@ provider = "anthropic"
             // `demo` is not a git repo, so the worker runs in the project
             // root and has no worktree the wave must find.
             false,
+            None,
             None,
         )
         .expect("the row the re-spawn wave resumes onto");
@@ -16234,7 +16255,7 @@ provider = "anthropic"
         let dir = tempfile::tempdir().expect("tempdir");
         ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
         ws.record_worker_row(
-            &key, "steward", session_id, "charter", None, None, false, false, None,
+            &key, "steward", session_id, "charter", None, None, false, false, None, None,
         )
         .expect("seed the row that disagrees with the disk");
         ws.enable_test_dispatch_intercept();
