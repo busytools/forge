@@ -1598,8 +1598,10 @@ mod tests_digest_cache {
     /// A file the record does not cover: it must be read again, and the
     /// repair that follows is what reaches the network. The spec here is
     /// unreachable, so a repair surfaces as [`Error::Http`] - which is
-    /// itself the proof that the file was not taken on trust.
-    fn refuse_after_repair(cfg: &Config) {
+    /// itself the proof that the file was not taken on trust, and that
+    /// the fetch it reached never got far enough to touch the file.
+    fn refuse_after_repair(cfg: &Config, target: &Path) {
+        let before = fs::read(target).unwrap();
         let mut reported = Vec::new();
         let err = prepare(cfg, |progress| {
             reported.push(tag(&progress));
@@ -1613,6 +1615,11 @@ mod tests_digest_cache {
         assert!(
             matches!(err, Error::Http { .. }),
             "the refusal must be the repair it could not make, got: {err:?}"
+        );
+        assert_eq!(
+            fs::read(target).unwrap(),
+            before,
+            "a fetch that died before it ever verified must not cost the file it was replacing"
         );
     }
 
@@ -1708,7 +1715,7 @@ mod tests_digest_cache {
             "this filesystem cannot restore an mtime exactly, so this test cannot isolate the size"
         );
 
-        refuse_after_repair(&cfg);
+        refuse_after_repair(&cfg, &file);
     }
 
     /// A build that pins a new digest for a re-released model, over a
@@ -1731,7 +1738,7 @@ mod tests_digest_cache {
             "only the digest may differ, or this test is about the size instead"
         );
 
-        refuse_after_repair(&config_with(models.path(), digests.path(), moved));
+        refuse_after_repair(&config_with(models.path(), digests.path(), moved), &file);
     }
 
     /// The direction that has to keep working: a file whose bytes were
@@ -1749,7 +1756,7 @@ mod tests_digest_cache {
         fs::write(&file, vec![b'x'; BODY.len()]).unwrap();
         touch_mtime(&file, SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000));
 
-        refuse_after_repair(&cfg);
+        refuse_after_repair(&cfg, &file);
     }
 
     /// The trade this cache makes, pinned so it stays a decision: bytes
