@@ -434,6 +434,7 @@ impl Workspace {
             live_workers: Mutex::new(HashMap::new()),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
+            dead_occupants: Mutex::new(HashMap::new()),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),

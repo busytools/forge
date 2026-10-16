@@ -59,8 +59,13 @@ impl Agents {
         for project in workspace.list_projects() {
             let lead = SessionSlot::lead(&project.org, &project.name);
             // A project with no session behind it is the home's Start row
-            // rather than an agent, so it contributes no rows at all.
-            if workspace.domain_session_for(&lead).is_none() {
+            // rather than an agent, so it contributes no rows at all - but
+            // a seat whose session died keeps its row, because the failure
+            // record outlives the release and dropping the row with the
+            // session is what let a crash leave no trace on the fleet.
+            if workspace.domain_session_for(&lead).is_none()
+                && workspace.spawn_failure(&lead).is_none()
+            {
                 continue;
             }
             let start = rows.len();
@@ -371,6 +376,40 @@ mod tests {
 
         assert_eq!(failed_of(&failed), Some(at), "the row carries the failed turn's instant");
         assert_eq!(failed_of(&quiet), None, "a seat that never failed carries none");
+    }
+
+    /// A session whose subprocess died keeps its row after the failure
+    /// released the session: this is what the fleet's left panel draws the
+    /// failed mark from when an agent dies. Catches a collect that drops the
+    /// row because no domain session is left behind - the shape the fleet
+    /// showed nothing for.
+    #[test]
+    fn a_lead_whose_session_died_keeps_a_failed_row() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace
+            .record_spawn_failure_for_test(&lead, "the claude subprocess closed its output stream");
+
+        let agents = surface.agents();
+        let row = agents
+            .for_project(&project)
+            .first()
+            .expect("a crashed seat still has a row, with no domain session behind it");
+
+        assert_eq!(row.slot, lead, "the row is the seat that died");
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Failed,
+            "a dead session reads failed rather than absent",
+        );
+        assert_eq!(
+            row.reason.as_deref(),
+            Some("the claude subprocess closed its output stream"),
+            "and the row carries why",
+        );
     }
 
     /// A lead's failed spawn reaches its row, which is what the slot's own

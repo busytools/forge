@@ -92,9 +92,9 @@ and draws it as a shape as well as a colour, so the row reads without colour:
 | Finished | `unseen` | a turn completed on a seat no client was attached to |
 | Needs you | `needs` | a question or a permission prompt is waiting |
 | Sign-in needed | `auth` | the bridge is waiting on `/login` |
-| Failed | `failed` | setup or the run hit a fatal error |
+| Failed | `failed` | a session failed to start, or its subprocess died and it has not come back |
 | Turn failed | `failed` | the newest turn ended in failure, and the seat has not been opened since |
-| Asleep | `asleep` | the subprocess is gone, or `/logout` took it |
+| Asleep | `asleep` | the seat is not running, and no failure is recorded for it |
 | Never started | `never` | nothing has ever run in this project |
 
 A project that cannot start does not draw a state of its own: the refusal is

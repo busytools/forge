@@ -1216,8 +1216,9 @@ pub struct QueuedPrompt {
 
 /// How loudly a [`SessionUpdate::Notice`] reads.
 ///
-/// Two levels rather than a scale, because the core has two things to say:
-/// what a command found, and why one did not run.
+/// Two levels rather than a scale: the core's own answer about a seat, and
+/// the failures it owes the reader - a command that did not run, a session
+/// that died.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum NoticeSeverity {

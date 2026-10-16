@@ -491,6 +491,27 @@ impl SessionTask {
                     // user-typed prompts.
                     self.drain_parked();
                 }
+                // A connect on a slot whose last occupant died is not a
+                // silent swap: the reader is told which session died and
+                // whether this one resumed it or replaced it under a new id.
+                // Taken either way - a connect answers the death whichever
+                // id it lands under.
+                if let Some(workspace) = self.workspace.upgrade()
+                    && let Some(dead) = workspace.take_dead_occupant(&key)
+                {
+                    let text = if dead.as_str() == session_id.as_str() {
+                        format!("The agent died; forge resumed its session ({session_id}).")
+                    } else {
+                        format!(
+                            "The agent died; forge restarted its session under a new id ({dead} -> {session_id})."
+                        )
+                    };
+                    self.emit(SessionUpdate::Notice {
+                        key: key.clone(),
+                        severity: crate::protocol::NoticeSeverity::Error,
+                        text,
+                    });
+                }
                 // Re-tag must fire on BOTH first-Connected and
                 // post-/new Connected paths: a /new writes a fresh
                 // JSONL, and an untagged one is listed by the boot scan
@@ -525,6 +546,15 @@ impl SessionTask {
                 // the attempt happened.
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.record_spawn_failure(&key, &message);
+                    // An occupant that had been up and ended here died; the
+                    // connect that next lands on the slot is told so and says
+                    // which session it answers for. A spawn that never
+                    // connected records none: nothing was running.
+                    if self.connected_once
+                        && let Some(occupant) = self.domain.lock().session_id.clone()
+                    {
+                        workspace.record_dead_occupant(&key, occupant);
+                    }
                 }
                 // A `/new` or `/resume` that fails to respawn ends the
                 // live turn without a Result, so flush the turn's own
@@ -4241,6 +4271,71 @@ mod tests {
             workspace.take_parked_for_slot(&test_slot()).slack.is_empty(),
             "the message parked for this slot is expired, not left for a later session",
         );
+    }
+
+    /// Everything `updates` holds that is a `Notice`, as its text.
+    fn notices_of(updates: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<String> {
+        drain_updates(updates)
+            .into_iter()
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A session that died is not silently swapped: the recovery that comes
+    /// up on the slot announces the death and what forge did about it - the
+    /// same occupant resumed, or a new one under a new id - and a connect
+    /// with no death behind it stays quiet.
+    #[test]
+    fn a_recovery_after_a_death_announces_what_forge_did() {
+        // The death: an occupant that had been up, whose subprocess ended.
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("died-and-restarted");
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
+        task.connected_once = true;
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("dead-occupant"));
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "the claude subprocess closed its output stream".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
+
+        // The recovery lands as its own task on the same slot, under a new id.
+        let (mut revived, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
+        revived.translate_event(connected_event("fresh-occupant", "/tmp/recovery-announced"));
+        let notices = notices_of(&mut updates);
+        assert!(
+            notices.iter().any(|text| text.contains("The agent died")
+                && text.contains("dead-occupant")
+                && text.contains("fresh-occupant")),
+            "the restart under a new id is announced with both ids: {notices:?}",
+        );
+
+        // And the same id back: the session resumed.
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("died-and-resumed");
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
+        task.connected_once = true;
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("kept-occupant"));
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "the claude subprocess closed its output stream".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
+        let (mut revived, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
+        revived.translate_event(connected_event("kept-occupant", "/tmp/recovery-announced"));
+        let notices = notices_of(&mut updates);
+        assert!(
+            notices.iter().any(|text| text.contains("The agent died") && text.contains("resumed")),
+            "the same occupant coming back reads as a resume: {notices:?}",
+        );
+
+        // Control: a connect with no death behind it draws no line.
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("connected-quiet");
+        let (mut task, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
+        task.translate_event(connected_event("first-occupant", "/tmp/plain-connect"));
+        assert!(notices_of(&mut updates).is_empty(), "a plain connect announces nothing");
     }
 
     /// A `PermissionRequest` registers a pending slot; `RespondPermission`

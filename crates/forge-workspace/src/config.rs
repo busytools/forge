@@ -39,6 +39,11 @@ struct ForgeToml {
     orgs: Vec<OrgEntry>,
     #[serde(default)]
     accounts: Vec<AccountEntry>,
+    /// Optional `[models."<name>"]` tables - parameters a model name
+    /// carries to every spawn. Absent means no model parameters are
+    /// stamped and the CLI's own resolution stands.
+    #[serde(default)]
+    models: HashMap<String, ModelSettings>,
     /// Optional `[dictate]` section - local dictation. Absent section
     /// -> disabled, which is what keeps a 3 GB model download opt-in.
     #[serde(default)]
@@ -126,6 +131,7 @@ impl std::fmt::Debug for ForgeToml {
         f.debug_struct("ForgeToml")
             .field("orgs", &self.orgs)
             .field("accounts", &self.accounts)
+            .field("models", &self.models)
             .field("dictate", &self.dictate)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
@@ -493,6 +499,24 @@ pub struct PluginSettings {
 /// `max_workers` override is absent.
 pub(crate) const DEFAULT_MAX_WORKERS_PER_PROJECT: usize = 2;
 
+/// The `[models."<name>"]` table: the parameters a model name carries to
+/// every spawn, keyed by the canonical name forge.toml already pins
+/// projects to. Model-shaped values live here rather than in code, so
+/// changing a model is a config edit. Unknown fields are rejected so a
+/// mistyped key cannot silently leave a parameter unset.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ModelSettings {
+    /// The window, in tokens, the CLI's auto-compaction triggers against,
+    /// stamped onto the child as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Lower
+    /// it below the model's context so the compact request fits: the CLI
+    /// fires at this window minus its own summary buffer, then adds the
+    /// completion budget on top of the compact prompt. Absent leaves the
+    /// CLI's own resolution in place.
+    #[serde(default)]
+    pub auto_compact_window: Option<i64>,
+}
+
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
     /// Index into `projects` for the default startup target -
@@ -502,6 +526,9 @@ pub(crate) struct LoadedConfig {
     /// / smoke paths; a production picker overrides it.
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
+    /// `[models."<name>"]` tables, keyed by canonical model name. Absent
+    /// tables mean a spawn stamps no model parameters.
+    pub models: HashMap<String, ModelSettings>,
     /// `[dictate]` section knobs. Absent section means dictation is
     /// off and preflight skips it entirely.
     pub dictate: crate::dictate::DictateSettings,
@@ -548,6 +575,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("projects", &self.projects)
             .field("default_index", &self.default_index)
             .field("accounts", &self.accounts)
+            .field("models", &self.models)
             .field("dictate", &self.dictate)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
@@ -676,6 +704,7 @@ impl LoadedConfig {
             projects: Vec::new(),
             default_index: 0,
             accounts: Vec::new(),
+            models: HashMap::new(),
             dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
             systemone: None,
@@ -1161,10 +1190,37 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         None => None,
     };
 
+    // Per-model parameters are read by name, so a name no account declares
+    // is a statement nothing will act on. Warned rather than refused: a
+    // project may pin the model on a later edit, and the table entry is
+    // how it would be there waiting.
+    let declared_models: std::collections::HashSet<&str> =
+        accounts.iter().flat_map(|account| account.models.iter().map(String::as_str)).collect();
+    for (model, parameters) in &parsed.models {
+        if !declared_models.contains(model.as_str()) {
+            tracing::warn!(
+                target: "forge_workspace::config",
+                event_name = "model_parameters_name_undeclared",
+                model = %model,
+                "the [models] table names a model no account declares; nothing will read it",
+            );
+        }
+        if let Some(window) = parameters.auto_compact_window
+            && window <= 0
+        {
+            return Err(WorkspaceError::ModelAutoCompactWindowInvalid {
+                path,
+                model: model.clone(),
+                value: window,
+            });
+        }
+    }
+
     Ok(LoadedConfig {
         projects,
         default_index,
         accounts,
+        models: parsed.models,
         dictate: parsed.dictate,
         gotify: parsed.gotify,
         systemone,
@@ -3906,6 +3962,105 @@ path = "~/Projects/forge"
         );
         let err = load_from_dir(dir.path()).expect_err("missing accounts should error");
         assert!(matches!(err, WorkspaceError::NoAccountsConfigured { .. }));
+    }
+
+    /// The `[models."<name>"]` table parses by canonical model name and
+    /// reaches the loaded config; an absent table leaves the map empty, so
+    /// every spawn stays on the CLI's own resolution.
+    #[test]
+    fn parses_the_models_table_by_name() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "deepseek-v4.1-flash"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["deepseek-v4.1-flash"]
+provider = "openrouter"
+base_url = "https://openrouter.ai/api"
+
+[models."deepseek-v4.1-flash"]
+auto_compact_window = 983040
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("the table loads");
+        let parameters =
+            config.models.get("deepseek-v4.1-flash").expect("the model's table is keyed by name");
+        assert_eq!(parameters.auto_compact_window, Some(983_040), "the window parses as declared");
+
+        let bare = tempdir().expect("tempdir");
+        write_config(
+            bare.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+        let config = load_from_dir(bare.path()).expect("no table loads too");
+        assert!(config.models.is_empty(), "an absent [models] table loads as no parameters");
+    }
+
+    /// A window that is not positive is refused by name, pointing at the
+    /// model whose entry carries it: a zero or negative window would leave
+    /// the CLI compacting on every turn.
+    #[test]
+    fn a_non_positive_auto_compact_window_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["deepseek-v4.1-flash"]
+provider = "openrouter"
+base_url = "https://openrouter.ai/api"
+
+[models."deepseek-v4.1-flash"]
+auto_compact_window = 0
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a zero window should error");
+        let message = err.to_string();
+        assert!(
+            matches!(
+                err,
+                WorkspaceError::ModelAutoCompactWindowInvalid { ref model, value: 0, .. }
+                    if model == "deepseek-v4.1-flash"
+            ),
+            "the refusal names the model, got: {message}",
+        );
+        assert!(
+            message.contains("auto_compact_window")
+                && message.contains("positive window in tokens"),
+            "and says what to fix, got: {message}",
+        );
     }
 
     #[test]

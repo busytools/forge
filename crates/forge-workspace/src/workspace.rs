@@ -11,7 +11,7 @@ use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
 use forge_primitives::cloud::service_status::ServiceIssue;
 use forge_primitives::tasks::TaskId;
-use forge_primitives::{AvailableAgent, AvailableCommand, Message, SDKSessionInfo};
+use forge_primitives::{AvailableAgent, AvailableCommand, Message, SDKSessionInfo, SessionId};
 
 use crate::mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
@@ -51,6 +51,10 @@ const MODEL_SLOT_VARIABLES: [&str; 5] = [
     "ANTHROPIC_SMALL_FAST_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
 ];
+
+/// The env the CLI takes its auto-compaction window from: the `[models]`
+/// table's `auto_compact_window` is stamped here for the project's model.
+const AUTO_COMPACT_WINDOW_ENV: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
@@ -390,6 +394,13 @@ pub struct Workspace {
     /// for the slot comes up again, so it reports an unrecovered failure
     /// rather than a history.
     spawn_failures: Mutex<HashMap<SessionSlot, String>>,
+    /// The occupant that died on a slot, keyed by slot, held until an
+    /// occupant comes up there again. [`Self::spawn_failures`] says an
+    /// attempt failed; this says the seat HAD something running and it
+    /// ended under its own process, which is what lets the recovery be
+    /// announced as a resume or a restart under a new id rather than
+    /// reading as a plain connect.
+    dead_occupants: Mutex<HashMap<SessionSlot, SessionId>>,
     /// The seats a view is showing, each with the working-tree scan loop it
     /// runs. Empty is the quiet case: a seat nobody holds is not scanned.
     pub(crate) held_work_seats: crate::work::HeldSeats,
@@ -1688,6 +1699,7 @@ impl Workspace {
             live_workers: Mutex::new(HashMap::new()),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
+            dead_occupants: Mutex::new(HashMap::new()),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
@@ -2188,6 +2200,16 @@ impl Workspace {
         if let Some(model) = project.model.as_ref() {
             for var in MODEL_SLOT_VARIABLES {
                 session_env.insert((*var).to_owned(), model.clone());
+            }
+            // And the parameters the model's `[models]` table carries,
+            // for the same reason the slots do: they describe this model,
+            // so they follow the project's pin. An env layer that already
+            // names the key is the user's own word on it and wins.
+            if let Some(window) =
+                self.config.models.get(model).and_then(|parameters| parameters.auto_compact_window)
+                && !session_env.contains_key(AUTO_COMPACT_WINDOW_ENV)
+            {
+                session_env.insert(AUTO_COMPACT_WINDOW_ENV.to_owned(), window.to_string());
             }
         }
         // Telling the CLI the project's model is what stops the
@@ -6067,6 +6089,20 @@ impl Workspace {
     /// than registering one, so clearing on registration would never run.
     pub(crate) fn clear_spawn_failure(&self, slot: &SessionSlot) {
         let _ = self.spawn_failures.lock().remove(slot);
+    }
+
+    /// Record that the occupant running on `slot` died, keeping its session
+    /// id until an occupant comes up there again. Taken by the connect that
+    /// answers the death, so the recovery can say which session died and
+    /// whether it was resumed or replaced.
+    pub(crate) fn record_dead_occupant(&self, slot: &SessionSlot, occupant: SessionId) {
+        self.dead_occupants.lock().insert(slot.clone(), occupant);
+    }
+
+    /// Take the died occupant recorded for `slot`, clearing it: the connect
+    /// consuming it is the recovery that answers the death.
+    pub(crate) fn take_dead_occupant(&self, slot: &SessionSlot) -> Option<SessionId> {
+        self.dead_occupants.lock().remove(slot)
     }
 
     /// What the session at `slot` is doing right now - the axis

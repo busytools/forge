@@ -75,6 +75,12 @@ pub enum WorkspaceError {
     GatewayRotationInvalid { path: PathBuf, key: &'static str },
 
     #[error(
+        "models \"{model}\" in forge.toml at {} sets auto_compact_window = {value}, which is not usable; it must name a positive window in tokens, so remove the key to leave the CLI's own resolution in place",
+        path.display()
+    )]
+    ModelAutoCompactWindowInvalid { path: PathBuf, model: String, value: i64 },
+
+    #[error(
         "documents max_size_mib = {value} in forge.toml at {} is not usable; it must name a positive ceiling in MiB, so remove the key for the {} MiB default",
         path.display(),
         crate::config::DEFAULT_DOCUMENT_MAX_MIB
