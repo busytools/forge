@@ -111,15 +111,24 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
 
+/// The preset's directives with the default set composed in, so a preset
+/// extends the always-on coverage rather than replacing it: a target that
+/// only the defaults name stays readable under every preset.
+fn preset_extending_defaults(preset: &DiagnosticsPreset) -> String {
+    let mut directives: Vec<&str> = Vec::new();
+    for directive in preset.filter_directives().split(',').chain(DEFAULT_LOG_DIRECTIVES.split(','))
+    {
+        if !directives.contains(&directive) {
+            directives.push(directive);
+        }
+    }
+    directives.join(",")
+}
+
 fn build_filter_directives(cli: &Cli) -> String {
     cli.log_filter
         .clone()
-        .or_else(|| {
-            cli.diagnostics_preset
-                .as_ref()
-                .map(DiagnosticsPreset::filter_directives)
-                .map(str::to_owned)
-        })
+        .or_else(|| cli.diagnostics_preset.as_ref().map(preset_extending_defaults))
         .or_else(|| std::env::var("RUST_LOG").ok())
         .unwrap_or_else(|| DEFAULT_LOG_DIRECTIVES.to_owned())
 }
@@ -331,8 +340,8 @@ fn rotated_log_path(base_path: &Path, index: usize) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_LOG_DIRECTIVES, RollingFileWriter, clear_rotated_files, resolve_log_path,
-        rotated_log_path,
+        DEFAULT_LOG_DIRECTIVES, RollingFileWriter, build_filter_directives, clear_rotated_files,
+        resolve_log_path, rotated_log_path,
     };
     use crate::cli::{Cli, DiagnosticsPreset};
     use std::fs;
@@ -461,6 +470,19 @@ mod tests {
         emitted_under(DEFAULT_LOG_DIRECTIVES, emit)
     }
 
+    /// The directive string boot builds for a preset, through the same
+    /// `Cli` shape the binary passes.
+    fn directives_under_preset(preset: &DiagnosticsPreset) -> String {
+        build_filter_directives(&Cli {
+            project: None,
+            new: false,
+            generate_completion: None,
+            diagnostics_preset: Some(preset.clone()),
+            log_file: None,
+            log_filter: None,
+        })
+    }
+
     /// Driven through the site rather than through a target written here:
     /// a directive matches by prefix, so a record labelled by the test would
     /// prove only that the label matches. The reader's unreadable-line arm
@@ -483,39 +505,69 @@ mod tests {
         );
     }
 
-    /// A preset REPLACES the default directives, so a target only the
-    /// defaults name lands nowhere under one. The presets that carry a
-    /// session's own records have to carry the crate those records live in
-    /// with them, or the demotion silences them for anyone running under
-    /// that preset.
+    /// The resolver composes a preset with the default set rather than
+    /// letting the preset replace it: every default directive rides along
+    /// under every preset, so a target that only the defaults name stays
+    /// readable. `agent.env_git` is the sharp case - its records were
+    /// demoted out of WARN, so without the directive they land nowhere at
+    /// all - and it is in no preset's own list.
     #[test]
-    fn the_presets_carrying_session_records_carry_the_crate_they_live_in() {
-        let carrying =
-            [DiagnosticsPreset::Runtime, DiagnosticsPreset::Session, DiagnosticsPreset::Full];
+    fn a_preset_carries_the_default_set_rather_than_replacing_it() {
+        let presets = [
+            DiagnosticsPreset::Runtime,
+            DiagnosticsPreset::Session,
+            DiagnosticsPreset::Bridge,
+            DiagnosticsPreset::Full,
+        ];
 
-        for preset in carrying {
-            let directives = preset.filter_directives();
-            // Every crate whose demoted records this preset would otherwise
-            // drop: the tail read's home, the server's own session reads,
-            // and dictation's two.
-            for target in [
-                "forge_server",
-                "forge_workspace::output_tail",
-                "forge_workspace::dictate",
-                "forge_dictate",
-            ] {
+        for preset in presets {
+            let directives = directives_under_preset(&preset);
+            for directive in DEFAULT_LOG_DIRECTIVES.split(',') {
                 assert!(
-                    directives.contains(&format!("{target}=debug")),
-                    "{preset:?} carries a session's own records, so it must carry {target}, \
-                     which is where the demoted ones live: {directives}",
+                    directives.split(',').any(|d| d == directive),
+                    "{preset:?} drops the default directive {directive}: {directives}",
                 );
             }
+
+            let caught = emitted_under(&directives, || {
+                tracing::debug!(
+                    target: "agent.env_git",
+                    event_name = "preset_default_check",
+                    "a record",
+                );
+            });
+            assert!(
+                caught.contains("preset_default_check"),
+                "{preset:?} must keep a default-only target readable: {caught}",
+            );
         }
     }
 
-    /// The control for the assertion above: a crate the defaults say
-    /// nothing about emits nothing under them, so the record landing is
-    /// the directive's doing rather than the subscriber's.
+    /// The control for the composition: a preset's own directives still
+    /// apply. `bridge.sdk` is the Bridge preset's to name - the defaults
+    /// say nothing about it - so the record landing is the preset's doing.
+    #[test]
+    fn a_presets_own_directives_still_apply() {
+        let directives = directives_under_preset(&DiagnosticsPreset::Bridge);
+
+        let caught = emitted_under(&directives, || {
+            tracing::debug!(
+                target: "bridge.sdk",
+                event_name = "preset_own_check",
+                "a record",
+            );
+        });
+
+        assert!(
+            caught.contains("preset_own_check"),
+            "the preset's own directives must survive the composition: {directives}",
+        );
+    }
+
+    /// The control for `a_demoted_site_emits_under_the_default_directives`:
+    /// a crate the defaults say nothing about emits nothing under them, so
+    /// the record landing is the directive's doing rather than the
+    /// subscriber's.
     #[test]
     fn a_target_the_defaults_say_nothing_about_stays_out() {
         let absent = emitted_under_defaults(|| {
@@ -544,11 +596,11 @@ mod tests {
             DiagnosticsPreset::Bridge,
             DiagnosticsPreset::Full,
         ];
-        let sets = std::iter::once(("defaults".to_owned(), DEFAULT_LOG_DIRECTIVES))
-            .chain(presets.into_iter().map(|p| (format!("{p:?}"), p.filter_directives())));
+        let sets = std::iter::once(("defaults".to_owned(), DEFAULT_LOG_DIRECTIVES.to_owned()))
+            .chain(presets.into_iter().map(|p| (format!("{p:?}"), directives_under_preset(&p))));
 
         for (label, directives) in sets {
-            let caught = emitted_under(directives, || {
+            let caught = emitted_under(&directives, || {
                 tracing::info!(
                     target: "a_web_view::nowhere",
                     event_name = "baseline_check",
