@@ -1889,7 +1889,9 @@ pub struct SlackHistoryMessage {
     /// new text and this object. `message_changed` and `message_deleted`
     /// are Events API shapes the sweep never sees, and a deleted message
     /// is simply absent from history - so deletion has no frame here to
-    /// decide on.
+    /// decide on. The sweep only reads a conversation's newest page, so
+    /// an edit to a message below that window is out of reach on every
+    /// path.
     pub edited: Option<String>,
     /// Files shared on the message, ids and all.
     pub files: Vec<SlackFile>,
