@@ -145,11 +145,15 @@
   .rv-insert td { padding: 0; background: var(--s1); }
   .rv-inline { padding: 3px 10px 6px; }
   /* The gap controls, in the hunk header's own gutter cell: GitHub's own
-     strips, one per end of the gap - the two-way glyph alone when the rest
-     of the gap fits one press. Hovering lights the whole strip. */
-  .rv-hunkcell { width: 46px; padding: 0; vertical-align: middle; }
+     strips, one per end of the gap and each taking half the row, so the
+     down strip runs along the row's top and the up strip along its bottom -
+     the two-way glyph alone when the rest of the gap fits one press.
+     Hovering lights the whole strip. */
+  .rv-hunkcell { width: 46px; padding: 0; vertical-align: middle; display: flex;
+    flex-direction: column; }
   .rv-gapbtn { display: flex; align-items: center; justify-content: center;
-    width: 100%; min-height: 20px; color: var(--dim); }
+    width: 100%; flex: 1 1 0; min-height: 20px; color: var(--dim); }
+  .rv-hunkcell > .rv-gapbtn:only-of-type { min-height: 28px; }
   .rv-gapbtn:hover { background: var(--s3); color: var(--text); }
   .rv-gapbtn .ic { width: 15px; height: 15px; }
   .rv-thread { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2);
