@@ -102,13 +102,16 @@ fn compute_suffixes() -> (String, String) {
     (short, full)
 }
 
-/// Absolute path behind `--git-path <name>`, as git resolves it:
-/// `--path-format=absolute` because the plain-checkout answer is
-/// otherwise relative to the repo root, not to this script's cwd.
-/// Falls back to the literal `../../.git/...` when git cannot answer;
-/// `None` when the path is missing, so no watch is emitted.
+/// Absolute path behind `--git-path <name>`, as git resolves it;
+/// `--path-format=absolute` so the answer does not depend on the cwd
+/// git happens to run from. rev-parse echoes options it does not know
+/// and still exits 0, so a multi-line or flag-shaped answer means the
+/// flag is unknown (git before 2.31): treated as no answer, and the
+/// literal `../../.git/...` fallback covers those checkouts. A missing
+/// path yields no watch.
 fn watch_path(name: &str) -> Option<PathBuf> {
     let resolved = run_git(&["rev-parse", "--path-format=absolute", "--git-path", name])
+        .filter(|answer| !answer.contains('\n') && !answer.starts_with('-'))
         .unwrap_or_else(|| format!("../../.git/{name}"));
     let path = PathBuf::from(resolved);
     path.exists().then_some(path)
