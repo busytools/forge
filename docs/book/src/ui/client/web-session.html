@@ -608,6 +608,18 @@
     white-space: pre-wrap; overflow-wrap: anywhere; }
   .term .pfx { color: var(--dim); }
   .term .sum { color: var(--ok); }
+  /* The live mark a running call's own output draws: the row's ring says the
+     call is still out, this says the box under it is still being written -
+     without it a tail that stopped moving and a finished one read alike. */
+  .outlive { display: flex; align-items: center; gap: 5px; margin: 4px 0 0 13px;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--hot); }
+  .outlive::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--hot); animation: b-breath 2.4s ease-in-out infinite; }
+  @keyframes b-breath { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .outlive::before { animation: none; opacity: 1; } }
+  /* A muted line a row draws where there is no output to show. */
+  .sg-pr { color: var(--muted); font-size: var(--fs-base); padding: 3px 0;
+    max-width: 72ch; }
   /* A task that ended badly is the same line in the bad tone. */
   .term .fail { color: var(--bad); }
   /* A systemone decision's block: the question it answered, the answer as a
@@ -1847,6 +1859,33 @@ Every call, message and thought draws on its own row, in the order it arrived.</
           </details>
           <details class="leaf running">
             <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">just check-feature-configs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <!-- A call the reader backgrounded WHILE IT RUNS: its own file is
+               named by no frame yet, so the row composes the path from the
+               task id and re-reads it on a tick - the live mark says the box
+               is still being written. -->
+          <details class="leaf running" open>
+            <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">bun run release:web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term"><span class="pfx">$</span> bun run release:web
+Command running in background with ID: bj5g0t2kq.</div>
+              <div class="outlive">live</div>
+              <div class="term">vite v7.1.3 building for production...
+transforming (1284) src/index.ts
+rendering chunks (49/52)
+computing gzip size...</div>
+            </div>
+          </details>
+          <!-- And the same call with nothing to read yet: the file is written
+               when the command first writes, so the row says so rather than
+               drawing a blank. -->
+          <details class="leaf running" open>
+            <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">gh run watch 38861655815</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term"><span class="pfx">$</span> gh run watch 38861655815
+Command running in background with ID: a69098eff5f5d405a.</div>
+              <div class="sg-pr">the output has not appeared yet</div>
+            </div>
           </details>
           <!-- A call the reader backgrounded: its own result says the command
                STARTED, and the ending arrives later as a frame of its own. -->

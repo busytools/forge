@@ -1699,6 +1699,14 @@ details.leaf.running > summary { color: var(--text); }
 .term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
   white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The live mark a running call's own output draws: the row's ring says the
+   call is still out, this says the box under it is still being written -
+   without it a tail that stopped moving and a finished one read alike. */
+.outlive { display: flex; align-items: center; gap: 5px; margin: 4px 0 0 13px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--hot); }
+.outlive::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--hot); animation: b-breath 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .outlive::before { animation: none; opacity: 1; } }
 .term .pfx { color: var(--dim); }
 /* A line a command reported as its own result: the book's drawing has the
    summary half, and a task that ended badly is the same line in the bad tone. */

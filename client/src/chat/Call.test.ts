@@ -922,6 +922,50 @@ describe('the output a backgrounded row reads back', () => {
   });
 
   /**
+   * **While the call runs, a read that found nothing is "not yet", not a
+   * missing file**: the file is composed from the task id and appears when the
+   * command first writes, so the settled wording - which says no file was ever
+   * recorded - would be a claim the row cannot make yet.
+   */
+  it('says the output has not appeared yet while the call still runs', () => {
+    const running: ToolLeaf = { ...backgrounded(null), status: 'in_progress' };
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'no_path' });
+
+    const open = render(Call, { props: { k: 'f1', call: running, open: true } }).body;
+    expect(open, 'a running call with nothing to read says so').toContain(
+      'the output has not appeared yet',
+    );
+    expect(open, 'and not the settled wording about a call that never had a file').not.toContain(
+      'no output file was recorded for this call',
+    );
+
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'lines', lines: [] });
+    const empty = render(Call, { props: { k: 'f1', call: running, open: true } }).body;
+    expect(empty, 'an empty file while it runs is the same not-yet').toContain(
+      'the output has not appeared yet',
+    );
+  });
+
+  /**
+   * The live mark rides the tail only while the call runs: a settled row's
+   * tail is the finished output, and a mark saying it is still being written
+   * would be false.
+   */
+  it('marks the tail live while the call runs, and not once it has settled', () => {
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', {
+      kind: 'lines',
+      lines: ['building...'],
+    });
+
+    const running: ToolLeaf = { ...backgrounded(null), status: 'in_progress' };
+    const open = render(Call, { props: { k: 'f1', call: running, open: true } }).body;
+    expect(open, 'a running tail draws its live mark').toContain('>live<');
+
+    const settled = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(settled, 'and a settled tail draws none').not.toContain('>live<');
+  });
+
+  /**
    * An empty tail is not nothing said: a zero-byte file, a path that names a
    * directory and a file of undecodable bytes all read as no lines, and an
    * empty box would be the blank the contract forbids.
