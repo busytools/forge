@@ -126,22 +126,37 @@ describe('the shell capture', () => {
       shell.invoked.map((call) => call.command),
       "the drain is the shell's own: its pipeline is where the audio waits",
     ).toEqual(['client_mic_start', 'client_mic_drain']);
-    const pages = shell.invoked.map((call) => (call.args as { page?: unknown }).page);
+  });
+
+  it('names the take its own token on the drain and the stop', async () => {
+    const mic = await ShellMic.open(null);
+    await mic.drain();
+    mic.stop();
+
+    const takes = shell.invoked.map((call) => (call.args as { take?: unknown }).take);
+    expect(takes[0], 'the press mints the take its own token').toEqual(expect.any(String));
     expect(
-      pages.at(-1),
-      'and the drain names the page load the press did: one from a page a reload discarded ends nothing when it wakes',
-    ).toEqual(pages[0]);
+      takes[1],
+      'the drain names that take, so one waking after the take ended - the page re-pressed - ends nothing',
+    ).toEqual(takes[0]);
+    expect(takes[2], 'and the stop names that take too').toEqual(takes[0]);
+  });
+
+  it('mints a token per press, so a re-press on the page is a new take', async () => {
+    await ShellMic.open(null);
+    await ShellMic.open(null);
+
+    const takes = shell.invoked.map((call) => (call.args as { take?: unknown }).take);
+    expect(
+      takes[0],
+      "two takes are two tokens: one minted per load would read as the same take, and the first take's drain would end the second",
+    ).not.toEqual(takes[1]);
   });
 
   it('ends the take at once when the audio is being thrown away', async () => {
     const mic = await ShellMic.open(null);
     mic.stop();
     expect(shell.invoked.at(-1)?.command).toBe('client_mic_stop');
-    const pages = shell.invoked.map((call) => (call.args as { page?: unknown }).page);
-    expect(
-      pages.at(-1),
-      'and the stop names the same page load, so one in flight from a discarded page ends nothing',
-    ).toEqual(pages[0]);
     expect(
       shell.hearing.every((entry) => entry.handler === null),
       'and the frames stop reaching a take that is over: the held device stays open',
