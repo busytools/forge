@@ -266,6 +266,13 @@ client-deps:
         npm --prefix client ci
     fi
 
+# The install the release recipes build against: `npm ci` unconditionally, so
+# the bundle is always built from the lockfile. The mtime key above can read a
+# stale tree as current - a failed build's own writes bump the directory - and
+# a release must not fail late or ship wrong on that.
+client-release-deps:
+    npm --prefix client ci
+
 client-format: client-deps
     npm --prefix client run format:check
 
@@ -458,8 +465,10 @@ client-android-check: vendor-browser-stack vendor-browser-stack-android client-a
 #
 # The browser stack is vendored first (a dependency, so it happens before
 # the bundle is built): a release without it is an app whose browser host
-# cannot start.
-client-release version: vendor-browser-stack
+# cannot start. The install is refreshed first too (`client-release-deps`),
+# unconditionally: the bundle is built from the lockfile, never from whatever
+# `node_modules` the checkout happens to hold.
+client-release version: vendor-browser-stack client-release-deps
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -590,7 +599,7 @@ client-release version: vendor-browser-stack
 # clean afterwards, so a Cargo.lock rewrite cannot ride out of a release.
 #
 # Build and stage the Android release APK.
-client-android-release version: vendor-browser-stack vendor-browser-stack-android
+client-android-release version: vendor-browser-stack vendor-browser-stack-android client-release-deps
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -751,7 +760,7 @@ client-android-release version: vendor-browser-stack vendor-browser-stack-androi
 # cannot update.
 #
 # Stage the web release archive.
-client-web-release version:
+client-web-release version: client-release-deps
     #!/usr/bin/env bash
     set -euo pipefail
 
