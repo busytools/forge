@@ -133,6 +133,12 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * 3.50, and 3.10 on the selected row's own ground. Each clears its floor
  * where it lands.
  *
+ * A control's boundary has two neighbours, and the pair that matters is the
+ * tighter one: the fill it encloses rather than the page outside it. The
+ * connect screen's field and its button draw `--ctl` over `--s1` and `--s2`,
+ * at 3.25 and 3.02 - 3.02 being the tightest margin the table carries, and the
+ * pair to watch if `--ctl` or a raised ground moves.
+ *
  * `--violet`'s rule is the pile card's own: `.m .src.forge` in `Queue.svelte`
  * paints it on the card's raised ground, and it is paired there so the token
  * cannot sit in the palette with no answer for where a surface would put it.
@@ -157,6 +163,11 @@ const DRAWN: readonly Pair[] = [
   // A control's own mark, on the page and on the selected row's ground.
   ['--ctl', '--bg', MARK],
   ['--ctl', '--sel', MARK],
+  // The connect screen's two controls, each boundary read against the fill it
+  // encloses rather than the page - `Connect.svelte`'s `.field :global(input)`
+  // on `--s1` and its `button` on `--s2`.
+  ['--ctl', '--s1', MARK],
+  ['--ctl', '--s2', MARK],
   ['--accent', '--bg', TEXT],
   ['--accent', '--s1', TEXT],
   ['--accent', '--s2', TEXT],
@@ -184,14 +195,13 @@ const DRAWN: readonly Pair[] = [
  * separator is not information WCAG requires to be perceived - the single
  * rule that inks it, `.sess .facts .sep`, is a middot at 1.42:1.
  *
- * A border that identifies a control is a different job, and the sheet's own
- * controls have left this token: the dock's box, its checkbox and its notes
- * field all draw `--ctl` at rest, carried above at the 3:1 of 1.4.11. The
- * connect screen's address field and its button still draw `--line`, over
- * fills of 1.08:1 and 1.16:1 against the page, so neither fill separates from
- * it and the field's boundary is drawn by its border alone.
- * That screen is #1320 and owes its own drawing rather than a mirror here.
- * Named rather than left out, so a token arriving without a pair still fails.
+ * A border that identifies a control is a different job: it takes the 3:1 of
+ * 1.4.11, and the connect screen's field and its button carry it in `--ctl`,
+ * over `--s1` and `--s2` - the two rows above. Which token a rule NAMES is not
+ * this file's to check, so those two rules are pinned where they are, in
+ * `connect/controls.test.ts`; the controls still drawing `--line` over a
+ * ground that does not separate them are #2306's sweep. Named rather than left
+ * out, so a token arriving without a pair still fails.
  */
 const NOT_INK = ['--line'];
 

@@ -164,7 +164,7 @@
     flex: 1 1 auto;
     min-width: 0;
     background: var(--s1);
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-radius: var(--r);
     padding: 10px 12px;
     color: var(--text);
@@ -193,7 +193,7 @@
   button {
     flex: 0 0 auto;
     background: var(--s2);
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-radius: var(--r);
     padding: 10px 16px;
     color: var(--text);
