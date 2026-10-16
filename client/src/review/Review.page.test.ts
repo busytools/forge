@@ -1433,6 +1433,81 @@ describe("the record's line", () => {
 
 describe("the key's box", () => {
   /**
+   * **The key speaks in every box on this page** (Ved, 2026-10-16): the
+   * dictation key starts a take in the box the reader is in - the comment
+   * box on the diff and the reply box under a thread, as well as the round's
+   * summary - over the same registration the composer's own box uses.
+   */
+  it('starts a take in the comment box the reader is in', async () => {
+    await draw();
+    await openComment();
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+    expect(wire(), 'the key began no take at all').toContain('dictate_stream');
+
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+    // The hold has to clear TAP_MS, or the release is a tap and means
+    // nothing (the composer's own rule).
+    await new Promise((resolve) => setTimeout(resolve, TAP_MS + 100));
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.rv-thread.comment .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
+      'the key take went somewhere other than the box the reader was in',
+    ).toBe('this read is the whole input');
+  });
+
+  it('starts a take in the reply box the reader is in', async () => {
+    await draw([THREAD]);
+    await openComment();
+    await openReply();
+    // The reader's caret is what names the box: clicking into the reply is
+    // what says they are dictating there rather than in the comment box
+    // still open beside it.
+    document.querySelector<HTMLTextAreaElement>('.rv-reply .rv-txarea')?.focus();
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+    expect(wire(), 'the key began no take at all').toContain('dictate_stream');
+
+    push({ wire: record(TAKE, [THREAD]), refused: null });
+    flushSync();
+    push({ wire: record(LANDED, [THREAD]), refused: null });
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, TAP_MS + 100));
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.rv-reply .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-reply .rv-txarea')?.value,
+      'the key take went somewhere other than the reply box the reader was in',
+    ).toBe('this read is the whole input');
+  });
+
+  /**
    * **A key-begun take goes to a box that is DRAWN.** A comment spot outlives
    * the files tab; the take it would have claimed is the summary's, whose box
    * is on screen - never one the reader cannot see.
