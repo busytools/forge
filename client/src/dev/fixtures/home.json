@@ -45,6 +45,7 @@
       "reason": null,
       "failed_turn": null,
       "died": false,
+      "tree": null,
       "work": {
         "branch": null,
         "changed": null,

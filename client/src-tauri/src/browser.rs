@@ -673,19 +673,26 @@ impl BrowserHost {
     pub async fn profiles(&self, seat: Option<&Seat>) -> Vec<ProfileRow> {
         let named = self.named.lock().await;
         let mut rows: Vec<ProfileRow> = Vec::new();
+        let mut dirs: Vec<PathBuf> = Vec::new();
         for (name, entry) in named.iter() {
             rows.push(ProfileRow {
                 name: name.clone(),
                 owner: entry.owner.to_string(),
                 running: entry.profile.is_alive(),
                 opened: chromium::ever_opened(&entry.dir),
-                // The same predicate `show` keeps: the marker alone reads a
-                // window that an X-close already took down.
-                windowed: chromium::windowed(&entry.dir).await,
+                windowed: false,
                 closed: false,
             });
+            dirs.push(entry.dir.clone());
         }
         drop(named);
+        // Probed outside the lock: each probe is a blocking devtools read
+        // with a seconds-long budget, and a profile open takes this lock.
+        for (row, dir) in rows.iter_mut().zip(&dirs) {
+            // The same predicate `show` keeps: the marker alone reads a
+            // window that an X-close already took down.
+            row.windowed = chromium::windowed(dir).await;
+        }
         // **A closed profile is still a profile.** Its entry goes on close
         // while its files stay - the logins a person means to delete - so a
         // directory with no entry is listed too, not running, its owner read
@@ -1397,6 +1404,102 @@ mod tests {
             !row.windowed,
             "a profile's row keeps show's rule too - a marker with no launch is no window",
         );
+    }
+
+    /// A devtools endpoint that stalls the identity probe mid-request: the
+    /// port, a signal that the request arrived, and the gate whose send lets
+    /// the answers - identity first, then one page - complete.
+    async fn stalling_devtools(
+        identity: &str,
+    ) -> (u16, tokio::sync::oneshot::Receiver<()>, tokio::sync::oneshot::Sender<()>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let port = listener.local_addr().expect("the bound port").port();
+        let identity = identity.to_owned();
+        let (reached, in_flight) = tokio::sync::oneshot::channel();
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let mut reached = Some(reached);
+            let mut gate = Some(gate);
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { continue };
+                let mut buffer = [0_u8; 2048];
+                let read = socket.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let body = if request.starts_with("GET /json/version") {
+                    if let Some(reached) = reached.take() {
+                        let _ = reached.send(());
+                    }
+                    if let Some(gate) = gate.take() {
+                        let _ = gate.await;
+                    }
+                    format!("{{\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}{identity}\"}}")
+                } else {
+                    "[{\"type\":\"page\",\"url\":\"https://example.com/x\"}]".to_owned()
+                };
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                let _ = socket.write_all(answer.as_bytes()).await;
+            }
+        });
+        (port, in_flight, release)
+    }
+
+    /// **The strip's list does not hold the registry lock across its probes.**
+    /// The window predicate is a blocking devtools read with a seconds-long
+    /// budget, and a profile open takes the same lock: held across the probes,
+    /// one list read parks an open behind every profile it has to ask about.
+    /// The endpoint stalls the probe mid-request, so the lock is asserted at
+    /// the one moment it must be free - and a second profile with no endpoint
+    /// pins which answer lands on which row.
+    #[tokio::test]
+    async fn a_list_does_not_hold_the_registry_lock_across_its_probes() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+
+        let identity = "/devtools/browser/9d1f-77aa";
+        let (port, in_flight, release) = stalling_devtools(identity).await;
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
+        std::fs::write(named.dir.join("windowed"), b"").expect("the windowed marker");
+        std::fs::write(named.dir.join("DevToolsActivePort"), format!("{port}\n{identity}\n"))
+            .expect("the port file");
+        let quiet = Named::open(seat(), "quiet", &paths).expect("the open");
+        {
+            let mut registry = host.named.lock().await;
+            registry.insert("hunt".to_owned(), Arc::new(named));
+            registry.insert("quiet".to_owned(), Arc::new(quiet));
+        }
+
+        let listing = tokio::spawn({
+            let host = Arc::clone(&host);
+            async move { host.profiles(None).await }
+        });
+        // A hang guard, not a deadline: the probe reaches the endpoint in
+        // milliseconds, and a run that never signals has no probe at all.
+        tokio::time::timeout(std::time::Duration::from_secs(10), in_flight)
+            .await
+            .expect("the probe reaches the endpoint")
+            .expect("the endpoint signals the request");
+        assert!(
+            host.named.try_lock().is_ok(),
+            "the list holds the registry lock across its probe: a profile open waits the probe's \
+             whole budget out",
+        );
+        release.send(()).expect("the endpoint releases");
+        let rows = listing.await.expect("the list task");
+        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
+        assert!(row.windowed, "the probe's own answer lands on the row");
+        let quiet = rows.iter().find(|row| row.name == "quiet").expect("the quiet row");
+        assert!(!quiet.windowed, "a profile with no endpoint lists no window");
     }
 
     /// **A hide waits for a launch in flight** - the same lock `show` takes,

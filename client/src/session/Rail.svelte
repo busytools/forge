@@ -151,6 +151,12 @@
           {#if failed !== null}
             <div class="why">{failed}</div>
           {/if}
+          <!-- The tree a worker runs in, hung under the worker's own name: the
+               path alone, a little under the sub-row's size, and on hover it
+               slides left to show whatever the row was too narrow for. -->
+          {#if worker.tree !== null}
+            <div class="why where" title={worker.tree}><span>{worker.tree}</span></div>
+          {/if}
         {/each}
         <!-- The seats this project has asleep, behind one row that counts
              them: they are rows a reader is not working in, and the count is

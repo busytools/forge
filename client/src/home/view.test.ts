@@ -263,6 +263,7 @@ function agent(
     reason: null,
     failed_turn: failedTurn,
     died,
+    tree: null,
     work,
   };
 }
@@ -306,6 +307,7 @@ const LEAD_ROW: Row = {
   state: { kind: 'lifecycle', lifecycle: 'Idle' },
   name: 'proj',
   place: { branch: null, files: null },
+  tree: null,
   gate: null,
   task: null,
   pending: null,
@@ -313,6 +315,45 @@ const LEAD_ROW: Row = {
   lastActivity: null,
   failedTurn: null,
 };
+
+/**
+ * The worker row carries the tree it runs in, which is what the rail draws
+ * beside the label: a worker a lead pointed at a sibling repo reads as
+ * running there rather than as one whose branch and directory disagree with
+ * its project's.
+ */
+describe("the row's own tree", () => {
+  it("carries a worker's own tree, and none for a project's own rows", () => {
+    const wire = {
+      ...homeWire,
+      agents: [
+        AGENT,
+        {
+          ...AGENT,
+          slot: { org: 'TestOrg', project: 'proj', label: 'moved' },
+          label: 'moved',
+          tree: '~/Projects/nazar',
+        },
+        {
+          ...AGENT,
+          slot: { org: 'TestOrg', project: 'proj', label: 'at-home' },
+          label: 'at-home',
+          tree: null,
+        },
+      ],
+    };
+    const rows = rowsOf(wire);
+    const worker = (label: string): Row | undefined =>
+      rows.workers.find((row) => row.slot.label === label);
+
+    expect(worker('moved')?.tree, "a worker's own tree is carried").toBe('~/Projects/nazar');
+    expect(worker('at-home')?.tree, "a worker in its project's tree carries none").toBeNull();
+    expect(
+      rows.lead.tree,
+      'a lead runs in its project, so it carries no tree of its own',
+    ).toBeNull();
+  });
+});
 
 describe('the fleet the snapshot describes', () => {
   /**

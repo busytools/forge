@@ -164,13 +164,19 @@ on-disk session files
 a persistence-format superset of stream-json; the
 `session_redact::transform_persistence_line` helper rewrites each line
 into wire shape + scrubs PII, then the probe feeds everything through
-the decoder.
+the decoder. Workflow journals
+(`<session-id>/subagents/workflows/<wf-id>/journal.jsonl`) share the
+`.jsonl` extension but are not session transcripts; the probe skips
+them and reports the count it skipped.
 
 Run it against your own recorded sessions, pointing at whichever
-config dir holds them (`$CLAUDE_CONFIG_DIR`, else `~/.claude`):
+config dir holds them (`$CLAUDE_CONFIG_DIR`, else `~/.claude`). Point
+it at one project, not the whole `projects` dir: a full tree is
+minutes of work, and nextest's default 120s test timeout kills the
+probe before it reports.
 
 ```bash
-FORGE_REAL_SESSIONS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" \
+FORGE_REAL_SESSIONS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>" \
   cargo nextest run -p forge-test-harness --no-capture \
   real_session_decode_probe
 ```

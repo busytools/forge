@@ -3,7 +3,9 @@
  *
  * Held as the record is: one seat is on screen, so one row, replaced whole
  * when the record moves. A branch is a fact about the seat and not the
- * project, so the row reads the seat's own record and never the home.
+ * project, so the row reads the seat's own record - the home contributes
+ * one fact the record cannot carry, the NAME of a tree the worker runs in
+ * that is not its project's, which the strip's row states.
  */
 import type { GitStats, GitStrip } from '../session/view';
 

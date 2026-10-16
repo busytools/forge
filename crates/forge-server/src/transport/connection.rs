@@ -1941,6 +1941,7 @@ async fn dispatch_answering(
             resume_kick,
             interactive,
             mcp_families,
+            cwd,
             from_boot_respawn,
             ..
         } => {
@@ -1955,6 +1956,7 @@ async fn dispatch_answering(
                 resume_kick,
                 interactive,
                 mcp_families,
+                cwd,
                 from_boot_respawn,
                 return_to: Some(tx),
             };

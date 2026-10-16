@@ -851,6 +851,7 @@
         "pending_depth",
         "reason",
         "slot",
+        "tree",
         "work"
       ],
       "/data/agents[]/slot": [
