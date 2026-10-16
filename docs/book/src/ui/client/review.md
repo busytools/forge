@@ -109,7 +109,8 @@ heading and rows spliced in by hand would draw a numbering it never agreed
 to. The lines come from the file's whole content read at the scope's own
 revision - a commit's tree for a commit's scope, the branch tip for all
 changes - bounded by the same ceiling a document read is, and answered as a
-flagged short read at that ceiling rather than as a refusal. **The page asks
+flagged short read at that ceiling rather than as a refusal, its lines
+capped at ten thousand besides. **The page asks
 for that read when it draws a file that can have a gap** - not a deleted
 file, a binary, a submodule, or one whose hunks the record itself cut, none
 of which a control can ever fill - because the answer decides which controls
