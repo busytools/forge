@@ -129,6 +129,18 @@
   const drafts = new SvelteSet<string>();
   let busy = $state(false);
   let summary = $state('');
+  /**
+   * Whether the FILES half's finish row is open.
+   *
+   * **The files half draws the finish collapsed** (Ved, 2026-10-16): a
+   * reader still in the diff gets one control - `finish review (N)` - a
+   * press opens the page's own finish row where they are reading, and a
+   * sealed round collapses it again. The conversation half always draws the
+   * row, so this is only about the half that draws the diff.
+   */
+  let finishOpen = $state(false);
+  /** A press opened the row, so the summary field owes the reader the caret. */
+  let summaryFocus = false;
   /** The last write's refusal, drawn where the reader acted; cleared by the
    *  next write that lands. */
   let refusal = $state<string | null>(null);
@@ -422,7 +434,7 @@
     if (takeIn === null) return;
     const gone =
       takeIn === 'summary'
-        ? tab !== 'conversation'
+        ? !summaryDrawn()
         : takeIn === 'comment'
           ? box.spot === null || !sameSpot(box.spot, takeSpot) || tab !== 'files'
           : !replyDrawn() || reply.thread !== takeThread;
@@ -456,6 +468,15 @@
    * conversation half a thread is drawn only while a round holds it - a
    * drafted thread is in no round, so no box exists for it there.
    */
+  /**
+   * Whether the round's summary box is drawn by the half that is up: always
+   * on the conversation half, and on the files half only while its own
+   * finish row is open - the box a take goes with.
+   */
+  function summaryDrawn(): boolean {
+    return tab === 'conversation' || (tab === 'files' && finishOpen);
+  }
+
   function replyDrawn(): boolean {
     if (reply.thread === null) return false;
     if (tab === 'files') return true;
@@ -482,7 +503,7 @@
     }
     if (tab === 'files' && box.spot !== null) return 'comment';
     if (replyDrawn()) return 'reply';
-    return tab === 'conversation' ? 'summary' : null;
+    return summaryDrawn() ? 'summary' : null;
   }
 
   // The push-to-talk key, once for the page: the microphone is the client's
@@ -615,6 +636,12 @@
     );
   }
 
+  /** The files half's own finish: the row opens, the field takes the caret. */
+  function openFinish(): void {
+    finishOpen = true;
+    summaryFocus = true;
+  }
+
   async function finish(): Promise<void> {
     if (drafts.size === 0) return;
     const sealed = await finishRound(
@@ -630,6 +657,10 @@
     if (sealed) {
       drafts.clear();
       summary = '';
+      // The files half's row collapses with the round: the reader is back to
+      // the diff with nothing of the round open.
+      finishOpen = false;
+      summaryFocus = false;
       // **Done closes the round** (Ved, 2026-10-15): the boxes, the summary's
       // panel and any take line go with it, so the page is back to the diff
       // with nothing of the round left open.
@@ -725,6 +756,95 @@
     return rows.filter(([, count]) => count > 0);
   }
 </script>
+
+<!-- The round's finish, drawn by both halves: the conversation half's Finish
+     section, and the files half's own row, where it opens on a press and
+     collapses again once the round is sealed. One snippet, because the round,
+     the field and the write are the page's own either way. -->
+{#snippet roundFinish()}
+  <div class="rv-finishrow">
+    <!-- The round's own words take a take the way every box does: the bar in
+         the field's place while it runs, and the words at the end of what is
+         written. -->
+    <div class="rv-wordline line" class:takeline={phaseIn('summary') !== null}>
+      {#if phaseIn('summary') !== null}
+        <TakeCard
+          take={composer.take}
+          wire={rowWire}
+          phase={phaseIn('summary') ?? 'recording'}
+          oncancel={() => {
+            landing.drop();
+            dictate.act('cancel');
+          }}
+          spread
+        />
+      {:else}
+        <Field
+          element="input"
+          editor="nowhere"
+          class="rv-summary"
+          placeholder="summary (optional)"
+          aria={{ label: 'the round summary' }}
+          bind:value={summary}
+          onkeydown={(event: KeyboardEvent) => {
+            // **Enter finishes the review**, as its own button does: the same
+            // key sends everywhere, and the same guard keeps a round with
+            // nothing filed from sealing (Ved, 2026-10-15).
+            if (event.key !== 'Enter' || event.shiftKey) return;
+            event.preventDefault();
+            if (!busy && drafts.size > 0) void finish();
+          }}
+          field={(el: HTMLElement | null) => {
+            elements.summary = el;
+            // A finish row a press opened owes the field the caret, the same
+            // way a comment box a click opened does.
+            if (el !== null && summaryFocus) {
+              summaryFocus = false;
+              el.focus();
+            }
+          }}
+        />
+      {/if}
+    </div>
+    <button
+      type="button"
+      class="rv-finish"
+      disabled={busy || drafts.size === 0}
+      onclick={() => void finish()}
+    >
+      finish review
+      {#if drafts.size > 0}({drafts.size}){/if}
+    </button>
+    {#if dictation}
+      <DictateControl
+        {dictate}
+        onpress={() => (pressedIn = 'summary')}
+        onhold={() => (panelIn = 'summary')}
+      />
+    {/if}
+    {#if dictate.panel && panelIn === 'summary'}
+      <div>
+        <DictationPanel
+          connection={voice.connection}
+          axes={voice.axes}
+          defaults={voice.defaults}
+          bind={voice.bind}
+          mode={voice.mode}
+          device={voice.device}
+          onaxes={voice.onaxes}
+          ondevice={voice.ondevice}
+          onclose={() => {
+            dictate.panel = false;
+            elements.summary?.focus();
+          }}
+        />
+      </div>
+    {/if}
+  </div>
+  {#if summaryLine !== null}
+    <div class="rv-dictateline {summaryLine.tone}">{summaryLine.text}</div>
+  {/if}
+{/snippet}
 
 <main class="wrap review">
   <header class="top">
@@ -1027,82 +1147,7 @@
           <p class="rv-quiet">
             Comments written on the diff file into the next round when you finish the review.
           </p>
-          <div class="rv-finishrow">
-            <!-- The round's own words take a take the way every box does: the
-                 bar in the field's place while it runs, and the words at the
-                 end of what is written. -->
-            <div class="rv-wordline line" class:takeline={phaseIn('summary') !== null}>
-              {#if phaseIn('summary') !== null}
-                <TakeCard
-                  take={composer.take}
-                  wire={rowWire}
-                  phase={phaseIn('summary') ?? 'recording'}
-                  oncancel={() => {
-                    landing.drop();
-                    dictate.act('cancel');
-                  }}
-                  spread
-                />
-              {:else}
-                <Field
-                  element="input"
-                  editor="nowhere"
-                  class="rv-summary"
-                  placeholder="summary (optional)"
-                  aria={{ label: 'the round summary' }}
-                  bind:value={summary}
-                  onkeydown={(event: KeyboardEvent) => {
-                    // **Enter finishes the review**, as its own button does:
-                    // the same key sends everywhere, and the same guard keeps
-                    // a round with nothing filed from sealing (Ved, 2026-10-15).
-                    if (event.key !== 'Enter' || event.shiftKey) return;
-                    event.preventDefault();
-                    if (!busy && drafts.size > 0) void finish();
-                  }}
-                  field={(el: HTMLElement | null) => {
-                    elements.summary = el;
-                  }}
-                />
-              {/if}
-            </div>
-            <button
-              type="button"
-              class="rv-finish"
-              disabled={busy || drafts.size === 0}
-              onclick={() => void finish()}
-            >
-              finish review
-              {#if drafts.size > 0}({drafts.size}){/if}
-            </button>
-            {#if dictation}
-              <DictateControl
-                {dictate}
-                onpress={() => (pressedIn = 'summary')}
-                onhold={() => (panelIn = 'summary')}
-              />
-            {/if}
-            {#if dictate.panel && panelIn === 'summary'}
-              <div>
-                <DictationPanel
-                  connection={voice.connection}
-                  axes={voice.axes}
-                  defaults={voice.defaults}
-                  bind={voice.bind}
-                  mode={voice.mode}
-                  device={voice.device}
-                  onaxes={voice.onaxes}
-                  ondevice={voice.ondevice}
-                  onclose={() => {
-                    dictate.panel = false;
-                    elements.summary?.focus();
-                  }}
-                />
-              </div>
-            {/if}
-          </div>
-          {#if summaryLine !== null}
-            <div class="rv-dictateline {summaryLine.tone}">{summaryLine.text}</div>
-          {/if}
+          {@render roundFinish()}
         </section>
       </div>
     {:else}
@@ -1128,6 +1173,24 @@
           onresolve={resolved}
           onreopen={reopened}
         />
+      </div>
+      <!-- The files half's own way to finish: the round's row, opened here
+           by a press and collapsed again once it seals, so the reader never
+           has to leave the diff to close a round. -->
+      <div class="rv-finishbar">
+        {#if finishOpen}
+          {@render roundFinish()}
+        {:else}
+          <button
+            type="button"
+            class="rv-finish"
+            disabled={busy || drafts.size === 0}
+            onclick={openFinish}
+          >
+            finish review
+            {#if drafts.size > 0}({drafts.size}){/if}
+          </button>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -1409,6 +1472,20 @@
     align-items: center;
     /* The settings panel opens from this row, so this is what it hangs off. */
     position: relative;
+  }
+  /* The files half's finish, under its canvas: the collapsed button at the
+     row's end, and the page's own finish row filling it once it opens. */
+  .rv-finishbar {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    justify-content: flex-end;
+    padding-top: 4px;
+    flex: none;
+  }
+  .rv-finishbar .rv-finishrow {
+    flex: 1;
+    min-width: 0;
   }
   /* The summary's field, or the bar that takes its place: the row's room,
      the same one the composer's own line takes. */

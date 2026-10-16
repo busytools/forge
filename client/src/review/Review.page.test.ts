@@ -806,6 +806,65 @@ describe('a comment box opens', () => {
   });
 });
 
+describe('the files half finishes the round too', () => {
+  /** File one comment on the diff, so the round has a draft to seal. */
+  async function draft(): Promise<void> {
+    await openComment();
+    const box = document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea');
+    if (box === null) throw new Error('the comment box drew no field');
+    box.value = 'a drafted comment';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const file = [
+      ...document.querySelectorAll<HTMLButtonElement>('.rv-thread.comment button'),
+    ].find((button) => button.textContent?.trim() === 'comment');
+    if (file === undefined) throw new Error('the comment box drew no comment action');
+    file.click();
+    await settle(() => sent.some((held) => typeof held === 'object' && held !== null));
+  }
+
+  /**
+   * **The reader finishes without leaving the diff** (Ved, 2026-10-16): a
+   * `finish review (N)` control in the files half opens the page's own
+   * finish row in place, the summary field takes the caret, and Enter seals
+   * the round - after which the row collapses back to its control.
+   */
+  it('opens the row on a press, takes the caret, and seals on Enter', async () => {
+    await draw();
+    await draft();
+
+    const button = document.querySelector<HTMLButtonElement>('.rv-finishbar .rv-finish');
+    expect(button, 'the files half drew its finish control').not.toBeNull();
+    expect(button?.textContent?.trim(), 'naming the drafts it would seal').toContain('(1)');
+
+    button?.click();
+    await settle(() => document.querySelector('.rv-finishbar .rv-summary') !== null);
+
+    expect(document.activeElement, 'the field a press opened takes the caret').toBe(
+      document.querySelector('.rv-finishbar .rv-summary'),
+    );
+
+    sent = [];
+    const field = document.querySelector<HTMLInputElement>('.rv-finishbar .rv-summary');
+    if (field === null) throw new Error('the files half drew no summary field');
+    field.value = 'the round summary';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    await settle(() => document.querySelector('.rv-finishbar .rv-summary') === null);
+
+    expect(
+      sent.some((held) => typeof held === 'object' && held !== null && 'submit_review' in held),
+      'the seal the conversation half runs, from the files half',
+    ).toBe(true);
+    expect(
+      document.querySelector('.rv-finishbar .rv-finish'),
+      'and the row collapsed back to its control',
+    ).not.toBeNull();
+  });
+});
+
 describe('the lines a diff left out', () => {
   /** Two hunks round the stood-in viewer's two carried lines (1 and 4): the
    *  gap between them hides lines 2 and 3. */
