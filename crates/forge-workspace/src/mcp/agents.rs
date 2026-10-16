@@ -664,7 +664,7 @@ impl Tool for Spawn {
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "Optional tree for this worker, when it should run somewhere other than your project's own directory - a sibling repo you are driving, for instance. Absolute or `~`-prefixed; a bare relative path is refused. A subdirectory of a repo resolves to the repo root. A path inside a project declared in forge.toml is refused: that project is driven by its own agent, so message it instead. Recorded on the worker's row, so the resume after a forge restart lands back in the same tree. Omit it and the worker runs in your project exactly as before.",
+                    "description": "Optional tree for this worker, when it should run somewhere other than your project's own directory - a sibling repo you are driving, for instance. Absolute or `~`-prefixed; a bare relative path is refused. A subdirectory of a repo resolves to the repo root. A path inside a project declared in forge.toml is refused when it is another project's: that project is driven by its own agent, so message it instead. Recorded on the worker's row, so the resume after a forge restart lands back in the same tree, and a resume may state that same tree again. State a DIFFERENT tree on a `resume_session` and it is refused, because a conversation is found by the tree it ran in - move a worker between trees by despawning it and spawning fresh. Omit `cwd` and the worker runs in your project exactly as before.",
                 },
             },
             "required": ["label", "charter"],

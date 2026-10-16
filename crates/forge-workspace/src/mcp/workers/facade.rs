@@ -1827,6 +1827,29 @@ mod worktree_creation_failed_tests {
         );
     }
 
+    /// The known-project refusal is recognised by its own phrase too, and
+    /// that guard is what keeps it a dispatch failure: the sentence
+    /// interpolates a project NAME, and a project may be called anything -
+    /// `worktree-lab` here - which the classifier would otherwise route to
+    /// a worktree-creation failure the spawn never suffered.
+    #[test]
+    fn the_known_project_refusal_stays_a_dispatch_failure_whatever_the_project_is_called() {
+        let message = crate::spawn::known_project_refusal("worktree-lab", "forge");
+        assert_eq!(
+            classify_worker_spawn_failure(&message, true, SpawnFailureKind::Unclassified),
+            WorkerSpawnError::DispatchFailed { message: message.clone() },
+            "the known-project refusal stays DispatchFailed however its project reads",
+        );
+
+        // The other arm too: a spawn from the project named that way.
+        let own = crate::spawn::known_project_refusal("worktree-lab", "worktree-lab");
+        assert_eq!(
+            classify_worker_spawn_failure(&own, true, SpawnFailureKind::Unclassified),
+            WorkerSpawnError::DispatchFailed { message: own.clone() },
+            "and the same for a project whose own name carries the word",
+        );
+    }
+
     /// The despawn-cleanup refusal is recognised by its own phrase, so a
     /// label the sentence might come to carry ("worktree-fix" here, the
     /// shape the LabelLive refusal already has) cannot route it to a

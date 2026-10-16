@@ -7507,9 +7507,9 @@ impl Workspace {
     /// Called from `SessionTask::translate_event` on the worker's first
     /// `Connected`.
     ///
-    /// `cwd` is the worker's project path (the `directory` discriminator
-    /// `tag_session` uses to find the right `.jsonl` when CONFIG_DIR
-    /// hosts multiple project directories).
+    /// `cwd` is the tree the worker runs in (the `directory`
+    /// discriminator `tag_session` uses to find the right `.jsonl` when
+    /// CONFIG_DIR hosts multiple project directories).
     ///
     /// The tag-write races against claude CLI's first JSONL write. For
     /// workers spawned with an `initial_prompt`, the file lands within
@@ -7575,9 +7575,11 @@ impl Workspace {
     /// exercise the retry / rollback / deferred branches without
     /// having to register a full `AgentHandle`.
     ///
-    /// `cwd` is the project root from `forge.toml`; for git-repo
-    /// workers (`is_git_repo_at_spawn = true`) the tag-write is
-    /// routed to `<cwd>/.claude/worktrees/<label>` via
+    /// `cwd` is the tree this worker runs in - the root its spawn
+    /// resolved, which is the project's `forge.toml` path for a worker
+    /// that stated none. For git-repo workers
+    /// (`is_git_repo_at_spawn = true`) the tag-write is routed to
+    /// `<cwd>/.claude/worktrees/<label>` via
     /// [`crate::mcp::workers::types::worker_tag_dir`] so the lookup
     /// matches where claude's `--worktree <label>` actually wrote
     /// the JSONL.
@@ -16885,13 +16887,40 @@ provider = "anthropic"
             "the refusal says why the tree cannot move: {message}",
         );
         assert!(
-            !message.contains("worktree"),
-            "and never the word the failure classifier routes on: {message}",
-        );
-        assert!(
             ws.drain_test_dispatch_buffer().is_empty(),
             "nothing was dispatched for a refused resume",
         );
+
+        // The control, and the arm a guard that refused every stated tree
+        // would break: a resume stating the row's OWN tree is accepted, and
+        // dispatches with that tree.
+        let stated = home_root.to_string_lossy().into_owned();
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "steward".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                    None,
+                    Some(stated),
+                )
+                .await
+        });
+        let dispatched = poll_spawn_worker_field(&ws, |cmd| match cmd {
+            Command::SpawnWorker { cwd, .. } => Some(cwd.clone()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(
+            dispatched.flatten().as_deref(),
+            Some(home_root.to_string_lossy().as_ref()),
+            "a resume stating the tree the history lives in is accepted and carries it",
+        );
+        spawner.abort();
     }
 
     /// `--new`: the same fixture comes up fresh, so the worker that

@@ -1110,10 +1110,11 @@ pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usiz
 /// ensures anything, and the handler refuses with it as the shared core
 /// both dispatch sources pass through.
 ///
-/// The sentence holds no word the worktree-creation classifier routes
-/// on, and the phrase it IS recognised by ("which forge.toml declares")
-/// sits before the project name, so no project's own spelling can turn
-/// the refusal into another failure.
+/// The sentence interpolates a project NAME, which is whatever a project
+/// is called - "worktree" included - and the classifier scans this text
+/// for exactly that word. What keeps it a dispatch failure is the
+/// classifier's own guard on the phrase "which forge.toml declares",
+/// which sits ahead of the name in both arms.
 pub(crate) fn known_project_refusal(known: &str, own: &str) -> String {
     if known == own {
         format!(
@@ -1234,9 +1235,8 @@ pub(crate) fn handle_spawn_worker(
     // project's own agent, so the spawn is refused here - before the label
     // is reserved, before the obstruction probe and before the row is
     // written, so nothing at all is minted for a spawn that cannot run.
-    // The refusal names the project as the door, and its sentence avoids
-    // the word "worktree": the facade's failure classifier routes that
-    // word to a worktree-creation failure, which this is not.
+    // The sentence names the project as the door; the classifier reads it
+    // as a dispatch failure by its own phrase guard, which see.
     if cwd.is_some()
         && let Some(known) = workspace.project_name_for_resolved_path(&root.to_string_lossy())
     {
