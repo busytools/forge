@@ -223,6 +223,10 @@ mod commands {
     /// rather than being refused by it, and it carries the take's own token,
     /// which the page minted as it opened the mic and is what the take's
     /// drain and stop name.
+    ///
+    /// **The open is bounded** (`crate::mic::OPEN_LIMIT`): a device layer that
+    /// answers neither way is reported on the take's line rather than leaving
+    /// the page waiting with nothing drawn.
     #[tauri::command]
     pub async fn client_mic_start(
         bridge: tauri::State<'_, Arc<Bridge>>,
@@ -233,11 +237,9 @@ mod commands {
     ) -> Result<Value, String> {
         let bridge = Arc::clone(bridge.inner());
         let mic = Arc::clone(mic.inner());
-        tauri::async_runtime::spawn_blocking(move || {
-            mic.start(&bridge, device, &page, &take).map(|held| crate::mic::device_json(&held))
-        })
-        .await
-        .map_err(|error| error.to_string())?
+        mic.start_within(&bridge, device, &page, &take, crate::mic::OPEN_LIMIT)
+            .await
+            .map(|held| crate::mic::device_json(&held))
     }
 
     /// End the take: the audio still in flight lands, the last partial frame

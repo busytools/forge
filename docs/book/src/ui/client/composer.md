@@ -75,6 +75,15 @@ while the hold is on - the accepted cost - and macOS asks for the
 microphone as the page opens rather than at the first press. In a browser
 the capture is the webview's own, opened per take as it always was.
 
+**An open that the device never answers is reported rather than waited
+on.**
+The open blocks on the hardware, and a device layer that is wedged - a
+permission whose prompt never surfaced, a device another process holds -
+answers neither way. Past twenty seconds the line above the box says the
+microphone did not come up, and the take the open began is left nobody's:
+when it answers late it is ended, so the next press records rather than
+being refused as busy.
+
 ## The states the surface can be in
 
 | State | Draws |
@@ -88,6 +97,7 @@ the capture is the webview's own, opened per take as it always was.
 | A command in flight | `Running <name>` for the slash command the turn is still working on |
 | Waking | `Waking up agent...` while the lead's seat comes up |
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
+| A take that does not come up | the box stays, with the line above it: the microphone did not come up |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
 
 **A blocked state replaces the box entirely and always says why.** The

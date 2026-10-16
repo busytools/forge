@@ -344,7 +344,7 @@ impl BrowserHost {
         {
             let node = driver::node_path(&paths.stack);
             let cli = driver::cli_path(&paths.stack);
-            return match profile {
+            match profile {
                 None => {
                     // **The seat's auto profile is ensured on its first
                     // unnamed reach**, before anything is driven: the record
@@ -408,7 +408,7 @@ impl BrowserHost {
                     .await;
                     outcome
                 }
-            };
+            }
         }
         #[cfg(target_os = "android")]
         {
@@ -1720,8 +1720,10 @@ mod tests {
     /// does that. **No browser is launched by this test**: the shared
     /// directory is a FILE, so the launch refuses before spawning anything,
     /// and the call's failure lands past the ensure, which is the act under
-    /// test. A unit test that drives the real launch belongs only in the
-    /// deliberate, ignored live suite.
+    /// test - whether or not the machine has one of the two browsers to
+    /// discover, which is all the refusal's wording varies with. A unit test
+    /// that drives the real launch belongs only in the deliberate, ignored
+    /// live suite.
     #[tokio::test]
     async fn the_auto_profile_is_created_on_the_first_unnamed_reach() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -1741,8 +1743,15 @@ mod tests {
         let why = host
             .call(&who, "browser_navigate", json!({ "url": "https://example.com" }))
             .await
-            .expect_err("the shared browser's directory cannot be made");
-        assert!(why.contains("cannot be made"), "the call reached the launch: {why}");
+            .expect_err("the call cannot drive a shared directory that is a file");
+        // The reason is the machine's: where a browser is installed, the
+        // launch refuses at the shared directory, and where none is, at the
+        // discovery before it. Both are past the ensure, which is what the
+        // assertions below pin.
+        assert!(
+            why.contains("cannot be made") || why.contains("no browser to drive"),
+            "the call failed for some other reason: {why}",
+        );
 
         let auto = paths.profiles.join("forge-lead");
         assert_eq!(

@@ -702,17 +702,19 @@ inspected.
     check` runs the client's steps too - the shell crate's rustfmt check
     (`client-tauri-fmt`), Prettier, ESLint on
     typescript-eslint's type-checked configs, `svelte-check`, `tsc
-    --noEmit`, then vitest, then the shell's android warnings check
-    (`client-android-warnings`:
+    --noEmit`, then vitest, then the shell crate's own clippy and tests
+    (`client-tauri-clippy` and `client-tauri-test`), then its android
+    warnings check (`client-android-warnings`:
     `cargo check --target aarch64-linux-android` with warnings
     denied, the thing that catches desktop-only code going dead on
     Android) - so one command decides both stacks and its
     verdict line names the first failing step. **The shell under
     `client/src-tauri/` is its own workspace root**, so the workspace's
-    cargo steps never reach it and no CI job compiles it beyond the
-    rustfmt check the `cargo fmt --check` job runs against its manifest;
-    `just check`'s `client-tauri-fmt` and `client-android-warnings` reach
-    it, and the Unicode punctuation gate
+    cargo steps never reach it; CI compiles it in the `client-tauri` job
+    (its clippy and tests), and the `cargo fmt --check` job's second
+    invocation carries its rustfmt check. `just check`'s
+    `client-tauri-fmt`, `client-tauri-clippy`, `client-tauri-test` and
+    `client-android-warnings` reach it, and the Unicode punctuation gate
     and the client's Prettier step reach it too.
     `just client-tauri-check` builds it in the shipping configuration
     and `just client-tauri-bundle` adds the bundles. **Denied as errors**, the

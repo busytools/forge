@@ -36,8 +36,25 @@ describe('the text a command produced, as a page draws it', () => {
     // what a terminal does and the case a pattern requiring a terminator
     // leaves on the page.
     expect(stripEscapes('text\u{1b}Pq~payload')).toBe('text');
-    // The bell terminates too, and that arm is shared with OSC.
-    expect(stripEscapes('\u{1b}_a\u{7}after')).toBe('after');
+  });
+
+  it('#1296: only OSC ends at a bell', () => {
+    // ECMA-48: DCS, SOS, PM and APC end at a string terminator alone, so a
+    // bell inside one of their payloads is payload. Cutting the sequence
+    // there prints its tail as ordinary text.
+    expect(stripEscapes('before \u{1b}Ppay\u{7}load\u{1b}\\after')).toBe('before after');
+    expect(stripEscapes('\u{1b}Xpay\u{7}load\u{1b}\\after')).toBe('after');
+    expect(stripEscapes('\u{1b}^pay\u{7}load\u{1b}\\after')).toBe('after');
+    expect(stripEscapes('\u{1b}_pay\u{7}load\u{1b}\\after')).toBe('after');
+    // With no terminator behind the bell, the payload eats the rest of the
+    // text rather than leaking its tail.
+    expect(stripEscapes('text\u{1b}Ppay\u{7}tail')).toBe('text');
+    expect(stripEscapes('text\u{1b}Xpay\u{7}tail')).toBe('text');
+    expect(stripEscapes('text\u{1b}^pay\u{7}tail')).toBe('text');
+    expect(stripEscapes('text\u{1b}_pay\u{7}tail')).toBe('text');
+    // OSC keeps the bell: it ends there, and the rest is ordinary text.
+    expect(stripEscapes('\u{1b}]0;title\u{7}after')).toBe('after');
+    expect(stripEscapes('\u{1b}]pay\u{7}load\u{1b}\\after')).toBe('loadafter');
   });
 
   it('strips an escape that carries an intermediate byte', () => {

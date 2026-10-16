@@ -143,11 +143,13 @@ function sequenceAt(text: string, at: number): { end: number; sgr: number[] | nu
   if (Number.isNaN(next)) return { end: text.length, sgr: null };
 
   // A string control carries a payload and is never text: OSC `]`, DCS `P`,
-  // SOS `X`, PM `^`, APC `_`.
+  // SOS `X`, PM `^`, APC `_`. Only OSC ends at a bell; the other four end at
+  // a string terminator alone (ECMA-48), so a bell inside one is payload.
   if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
+    const endsAtBell = next === 0x5d;
     for (let scan = at + 2; scan < text.length; scan += 1) {
       const code = text.charCodeAt(scan);
-      if (code === BELL) return { end: scan + 1, sgr: null };
+      if (endsAtBell && code === BELL) return { end: scan + 1, sgr: null };
       if (code === ESCAPE && text.charCodeAt(scan + 1) === 0x5c)
         return { end: scan + 2, sgr: null };
     }
