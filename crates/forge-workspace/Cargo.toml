@@ -49,7 +49,8 @@ parking_lot = { workspace = true }
 dirs = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
-rustix = { workspace = true }
+# `process` for `getuid`, the uid component of the CLI's task-file path.
+rustix = { workspace = true, features = ["process"] }
 croner = { workspace = true }
 chrono = { workspace = true }
 redb = { workspace = true }
