@@ -341,8 +341,9 @@ export interface GitStrip {
   /** The toggle's own line: the branch, how far it runs, what moved and
    *  whether the tree is dirty - or where the tree is not. */
   label: string;
-  /** What the tree IS - the project's, or a worker's worktree - which is the
-   *  first thing a reader looking at a fleet needs to know. */
+  /** What the tree IS - the project's, a worker's worktree, or the name of a
+   *  tree a lead pointed a worker at - which is the first thing a reader
+   *  looking at a fleet needs to know. */
   head: string;
   /** The branch's chain ahead of its default, when it has one: each commit
    *  with the files it changed and when it landed, and the range's own

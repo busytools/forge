@@ -88,6 +88,13 @@ export interface Row {
   /** The branch and the count, from the seat's own tree. */
   place: { branch: string | null; files: string | null };
   /**
+   * The seat's own tree, home-shortened, when the worker runs somewhere
+   * other than its project's directory. The row names it so a worker a lead
+   * pointed at a sibling repo reads as expected rather than as a worker
+   * whose branch and directory do not match its project's.
+   */
+  tree: string | null;
+  /**
    * Why the seat's tree could not be read, or `null` when it could or when
    * forge holds no tree for the seat at all.
    */
@@ -779,6 +786,7 @@ function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: Session
     state: stateOf(agent, unseen),
     name,
     place: agent.work === null ? { branch: null, files: null } : placeOf(agent.work),
+    tree: agent.tree,
     gate: agent.work === null ? null : gateLine(agent.work.gate),
     task:
       held === null
@@ -809,6 +817,7 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
       lastRan === null ? { kind: 'never-started' } : { kind: 'lifecycle', lifecycle: 'Sleeping' },
     name: wire.project.name,
     place: placeOf(wire.work),
+    tree: null,
     gate: gateLine(wire.work.gate),
     task: null,
     pending: null,

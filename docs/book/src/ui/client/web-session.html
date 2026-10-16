@@ -305,6 +305,14 @@
     padding: 0 10px 6px 34px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
   .why.bad { color: var(--bad); }
+  /* The tree a worker runs in: the worker's own row, hung under its name (34px
+     of row inset + the dot + the gap), a little under the sub-row's size, and
+     sliding left on hover to show the part of a long path the rail cut. */
+  .why.where { font-size: 12px; padding-left: 51px; container-type: inline-size; }
+  .why.where > span { display: inline-block; max-width: 100%; overflow: hidden;
+    text-overflow: ellipsis; vertical-align: bottom; transition: transform 320ms ease; }
+  .why.where:hover > span { max-width: none;
+    transform: translateX(min(0px, calc(100cqw - 100%))); }
 
   /* ---------- chat ---------- */
   /* min-height:0 or the column refuses to shrink below its content and the
@@ -1492,6 +1500,14 @@
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
           <span class="nm">em-dash-sweep</span><button class="x" type="button" title="close">&#10005;</button></div>
+        <!-- A worker a lead pointed at a tree of its own: the tree draws on
+             the dim sub-row a failure uses, so the worker's name stays whole
+             on its own line and this is the quiet line under it saying where
+             it runs. -->
+        <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">nazar-hand</span>
+          <button class="x" type="button" title="close">&#10005;</button></div>
+        <div class="why where"><span>~/Projects/nazar</span></div>
         <!-- A closing seat: it reads asleep AT ONCE - out of the reader's
              working section from the close, whether that was a click here or
              a close made in another view - and its dot pulses until the core

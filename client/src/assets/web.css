@@ -1368,6 +1368,19 @@ details.gfold[open] > summary .arw { color: var(--accent); }
   padding: 0 10px 6px 34px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
 .pj .why.bad { color: var(--bad); }
+/* The tree a worker runs in, which is a row of the worker's own rather than a
+   note about it: it hangs directly under the worker's name (34px of row inset
+   + the dot + the gap), a little under the sub-row's size, and it is the path
+   alone. **A path is longer than the rail, so the line slides left on hover
+   to show what it cut**: the container is the query container, and the span
+   moves by its own overflow (`100cqw` is the container's width, `100%` the
+   span's), so nothing has to measure or guess the distance. */
+.pj .why.where { font-size: 12px; padding-left: 51px; container-type: inline-size; }
+.pj .why.where > span { display: inline-block; max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; vertical-align: bottom;
+  transition: transform 320ms ease; }
+.pj .why.where:hover > span, .pj .why.where:focus-visible > span { max-width: none;
+  transform: translateX(min(0px, calc(100cqw - 100%))); }
 .rail .nm a { color: inherit; text-decoration: none; }
 .rail .nm a:hover { text-decoration: underline; }
 /* A project's sleeping workers, behind one row that carries the count. The

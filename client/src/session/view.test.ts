@@ -37,6 +37,7 @@ import {
   seatConnectorRows,
   seatScheduleRows,
   seatState,
+  seatTree,
   taskRows,
   untilOf,
 } from './view';
@@ -599,6 +600,35 @@ describe('the seat', () => {
   it('names a lead for its project and a worker for its label', () => {
     expect(seatState(homeWire, LEAD).name).toBe('proj');
     expect(seatState(homeWire, { ...LEAD, label: 'w1' }).name).toBe('w1');
+  });
+});
+
+/**
+ * The seat's tree is looked up on the home by its WHOLE slot, not its label:
+ * two projects may carry a worker of the same name, and a label-only lookup
+ * would hand one seat the other's tree.
+ */
+describe("the seat's own tree", () => {
+  it('reads it by the whole slot, not the label alone', () => {
+    const wire: HomeWire = {
+      ...homeWire,
+      agents: [
+        {
+          ...lead(),
+          slot: { org: 'TestOrg', project: 'proj', label: 'hand' },
+          label: 'hand',
+          tree: '~/Projects/nazar',
+        },
+      ],
+    };
+
+    expect(seatTree(wire, { org: 'TestOrg', project: 'proj', label: 'hand' })).toBe(
+      '~/Projects/nazar',
+    );
+    expect(
+      seatTree(wire, { org: 'TestOrg', project: 'other', label: 'hand' }),
+      'a same-labelled seat of another project names no tree',
+    ).toBeNull();
   });
 });
 
