@@ -464,12 +464,6 @@
   }
 
   /**
-   * Whether the reply box's thread is drawn by the half that is up: on the
-   * files half the canvas closes the box when its row goes, and on the
-   * conversation half a thread is drawn only while a round holds it - a
-   * drafted thread is in no round, so no box exists for it there.
-   */
-  /**
    * Whether the round's summary box is drawn by the half that is up: always
    * on the conversation half, and on the files half only while its own
    * finish row is open - the box a take goes with.
@@ -478,6 +472,12 @@
     return tab === 'conversation' || (tab === 'files' && finishOpen);
   }
 
+  /**
+   * Whether the reply box's thread is drawn by the half that is up: on the
+   * files half the canvas closes the box when its row goes, and on the
+   * conversation half a thread is drawn only while a round holds it - a
+   * drafted thread is in no round, so no box exists for it there.
+   */
   function replyDrawn(): boolean {
     if (reply.thread === null) return false;
     if (tab === 'files') return true;
@@ -713,6 +713,11 @@
   const comments = $derived(commentsInScope(threads, scopeCommit));
   /** Which of them the stepper is on, -1 for none. */
   let commentAt = $state(-1);
+  /** The place the readout names: never past the end of a list that shrank
+   *  under it - a re-read can drop the comment the reader was on. */
+  const commentAtShown = $derived(
+    commentAt < 0 || comments.length === 0 ? 0 : Math.min(commentAt, comments.length - 1) + 1,
+  );
   /**
    * The comment the stepper last moved to, and the step's own number - a
    * repeat of the same target is a step all the same, and the canvas has to
@@ -1028,9 +1033,7 @@
             disabled={comments.length === 0}
             onclick={() => stepComment(-1)}>&#8249;</button
           >
-          <span class="rv-cstep-n" aria-live="polite">
-            {commentAt < 0 ? 0 : commentAt + 1}/{comments.length}
-          </span>
+          <span class="rv-cstep-n" aria-live="polite">{commentAtShown}/{comments.length}</span>
           <button
             type="button"
             class="rv-step-btn"
