@@ -325,6 +325,12 @@ impl Tool for SendMessage {
          is still allowed; only state changes and hand-offs go through \
          this tool. \
          \
+         A work package handed to another project lands on that \
+         project's board: the lead that accepts it builds the epic and \
+         its phase rows at acceptance, unprompted, before dispatching any \
+         of it. Expect that of a package you send, and do the same for \
+         one you accept. \
+         \
          A request addressed to another project's own agent is delivered \
          to that project's agent, spawning it first if it was sleeping, \
          so expect extra latency on the first message to a sleeping \
