@@ -10,7 +10,7 @@
   import Prose from './Prose.svelte';
   import Report from './Report.svelte';
   import Skill from './Skill.svelte';
-  import { fold, type Self, type Unit } from './units';
+  import { turnFold, type Self, type Unit } from './units';
 
   /**
    * One turn of the conversation, as the page draws it: what the reader said,
@@ -53,7 +53,7 @@
     onreadoutput?: ((callId: string) => void) | null;
   } = $props();
 
-  const folded = $derived(fold(turn.messages, slot, beingWritten(turn), !beingWritten(turn)));
+  const folded = $derived(turnFold(turn, slot, beingWritten(turn), !beingWritten(turn)));
 
   /**
    * The fold's units, less the one row the pin is carrying.
