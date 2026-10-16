@@ -6,8 +6,10 @@
  * over fills one step off the page (`--s1` at 1.08:1, `--s2` at 1.16:1).
  * Nothing separated either control from the page, so the border was the whole
  * of what said a control was there - under the 3:1 WCAG 1.4.11 asks of a
- * control's boundary. Every other control in the tree met that rule by drawing
- * `--ctl`, which measures 3.25:1 against `--s1` and 3.02:1 against `--s2`.
+ * control's boundary. These two draw `--ctl` now: 3.25:1 against `--s1` and
+ * 3.02:1 against `--s2`. That is a claim about this screen only - other
+ * controls still carry `--line` over a ground that does not separate them,
+ * and #2306 is the sweep for those.
  *
  * **Why the pin is here rather than only in `contrast.test.ts`.** That file
  * measures the palette against itself, and it now carries the pairs this

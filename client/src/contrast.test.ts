@@ -195,13 +195,13 @@ const DRAWN: readonly Pair[] = [
  * separator is not information WCAG requires to be perceived - the single
  * rule that inks it, `.sess .facts .sep`, is a middot at 1.42:1.
  *
- * A border that identifies a control is a different job, and no control in the
- * tree draws this token for one: the dock's box, its checkbox and its notes
- * field, and the connect screen's field and its button, all draw `--ctl` at
- * rest, carried above at the 3:1 of 1.4.11. Which token a rule NAMES is not
- * this file's to check - it measures values - so the connect screen's two are
- * pinned where their rules are, in `connect/controls.test.ts`. Named rather
- * than left out, so a token arriving without a pair still fails.
+ * A border that identifies a control is a different job: it takes the 3:1 of
+ * 1.4.11, and the connect screen's field and its button carry it in `--ctl`,
+ * over `--s1` and `--s2` - the two rows above. Which token a rule NAMES is not
+ * this file's to check, so those two rules are pinned where they are, in
+ * `connect/controls.test.ts`; the controls still drawing `--line` over a
+ * ground that does not separate them are #2306's sweep. Named rather than left
+ * out, so a token arriving without a pair still fails.
  */
 const NOT_INK = ['--line'];
 
