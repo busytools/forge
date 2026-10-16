@@ -3,6 +3,8 @@ use anyhow::Context as _;
 use std::fs::{File, OpenOptions, create_dir_all, metadata, remove_file, rename};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr as _;
+use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
 
 pub mod targets {
@@ -118,15 +120,36 @@ fn preset_extending_defaults(preset: &DiagnosticsPreset) -> String {
     compose_filter_directives(preset.filter_directives(), DEFAULT_LOG_DIRECTIVES)
 }
 
-/// A directive's target, the part two directives naming the same target
-/// collide on. A bare level token (`info`) is its own key.
+/// No target can be empty, so this key collides with no real slot: every
+/// bare level token shares it, because the parser resolves them all to the
+/// filter's one global directive and the level is not part of that slot's
+/// identity.
+const GLOBAL_SLOT_KEY: &str = "";
+
+/// A directive's slot in the filter, the part two directives naming the
+/// same slot collide on. A bare level token (`info`, `4`, a case variant)
+/// is the global directive, which every bare level shares. Anything else
+/// keys by its target, cut at the `=` the parser would use: the first one
+/// outside a brace shape.
 fn directive_key(directive: &str) -> &str {
-    directive.split_once('=').map_or(directive, |(target, _)| target)
+    if LevelFilter::from_str(directive).is_ok() {
+        return GLOBAL_SLOT_KEY;
+    }
+    let mut depth = 0usize;
+    for (index, ch) in directive.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '=' if depth == 0 => return &directive[..index],
+            _ => {}
+        }
+    }
+    directive
 }
 
 /// The two directive lists composed into one, a directive both name kept
 /// once - the preset's copy, whatever level it sets - so a default never
-/// overrides a target the preset names. The preset's own order leads; the
+/// overrides a slot the preset names. The preset's own order leads; the
 /// defaults' directives it did not name follow.
 fn compose_filter_directives(preset_directives: &str, default_directives: &str) -> String {
     let mut directives: Vec<&str> = Vec::new();
@@ -355,7 +378,7 @@ fn rotated_log_path(base_path: &Path, index: usize) -> PathBuf {
 mod tests {
     use super::{
         DEFAULT_LOG_DIRECTIVES, RollingFileWriter, build_filter_directives, clear_rotated_files,
-        compose_filter_directives, resolve_log_path, rotated_log_path,
+        compose_filter_directives, directive_key, resolve_log_path, rotated_log_path,
     };
     use crate::cli::{Cli, DiagnosticsPreset};
     use std::fs;
@@ -410,9 +433,9 @@ mod tests {
         // WARN; dropping it from this set would silence the git probe miss
         // entirely, which is the state the levels moved away from.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
-        // `forge_server` carries the server's own session reads, one
-        // session's work rather than forge's health. Without the directive
-        // those records land nowhere at all.
+        // `forge_server` pins the whole server crate at `debug`, so the
+        // transport, surface and boot records ride it alongside the session
+        // reads. Without the directive those records land nowhere at all.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_server=debug"));
         // `forge_agent::userdata::catalog::scan` carries the scan's
         // module-path records at `debug`: an unparseable transcript line, a
@@ -539,11 +562,11 @@ mod tests {
     }
 
     /// The resolver composes a preset with the default set rather than
-    /// letting the preset replace it: every default directive rides along
-    /// under every preset, so a target that only the defaults name stays
-    /// readable. `agent.env_git` is the sharp case - its records were
-    /// demoted out of WARN, so without the directive they land nowhere at
-    /// all - and it is in no preset's own list.
+    /// letting the preset replace it: every default slot rides along under
+    /// every preset, so a target that only the defaults name stays readable.
+    /// `agent.env_git` is the sharp case - its records were demoted out of
+    /// WARN, so without the directive they land nowhere at all - and it is
+    /// in no preset's own list.
     #[test]
     fn a_preset_carries_the_default_set_rather_than_replacing_it() {
         let presets = [
@@ -556,9 +579,10 @@ mod tests {
         for preset in presets {
             let directives = directives_under_preset(&preset);
             for directive in DEFAULT_LOG_DIRECTIVES.split(',') {
+                let key = directive_key(directive);
                 assert!(
-                    directives.split(',').any(|d| d == directive),
-                    "{preset:?} drops the default directive {directive}: {directives}",
+                    directives.split(',').any(|d| directive_key(d) == key),
+                    "{preset:?} drops the default slot {directive}: {directives}",
                 );
             }
 
@@ -597,13 +621,14 @@ mod tests {
         );
     }
 
-    /// A target both sides name keeps the preset's directive: no preset can
-    /// be silently overridden by a default naming the same target at a
-    /// different level. Every overlap in the shipped sets is byte-identical,
-    /// so the pair here is synthetic - a divergent level is the case the
-    /// rule exists for.
+    /// A slot both sides name keeps the preset's directive: no preset can be
+    /// silently overridden by a default naming the same slot at a different
+    /// level. Every overlap in the shipped sets is byte-identical, so the
+    /// pairs here are synthetic - a divergent level is the case the rule
+    /// exists for.
     #[test]
     fn a_preset_directive_wins_an_overlap_with_the_defaults() {
+        // The target slot: the defaults name the same target at a lower level.
         let composed =
             compose_filter_directives("info,forge_server=trace", "info,forge_server=debug");
 
@@ -614,10 +639,38 @@ mod tests {
                 "a record",
             );
         });
-
         assert!(
             caught.contains("overlap_check"),
-            "the preset's level must survive the overlap: {composed}",
+            "the preset's level must survive the target overlap: {composed}",
+        );
+
+        // The global slot: the parser resolves every bare level token to the
+        // one global directive, so the defaults' trailing `info` would replace
+        // the preset's `debug` if both rode the string.
+        let composed = compose_filter_directives("debug,bridge.sdk=trace", "info,bridge.sdk=debug");
+
+        let caught = emitted_under(&composed, || {
+            tracing::debug!(
+                target: "a_crate_forge_does_not_name::module",
+                event_name = "global_overlap_check",
+                "a record",
+            );
+        });
+        assert!(
+            caught.contains("global_overlap_check"),
+            "the preset's baseline must survive the global overlap: {composed}",
+        );
+    }
+
+    /// The key cuts at the `=` the parser would: one inside a brace shape
+    /// (`[take{kind=open}]`) belongs to the shape, not to the directive, so
+    /// an `open` shape and a `stop` shape key apart.
+    #[test]
+    fn a_directive_key_keeps_a_brace_shape_whole() {
+        assert_eq!(directive_key("browser[take{kind=open}]=trace"), "browser[take{kind=open}]",);
+        assert_ne!(
+            directive_key("browser[take{kind=open}]=trace"),
+            directive_key("browser[take{kind=stop}]=debug"),
         );
     }
 
