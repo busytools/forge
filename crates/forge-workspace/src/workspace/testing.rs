@@ -854,7 +854,30 @@ impl Workspace {
             false,
             // Non-git: the seeded row nests under its project in the
             // launchpad without needing a worktree on disk.
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+            None,
+        );
+    }
+
+    /// [`Self::seed_test_worker_row`] with the worker pointed at its own
+    /// tree, the way a spawn with `cwd` records it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_worker_row_at(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+        cwd: &str,
+        is_git_repo: bool,
+    ) {
+        let _ = self.record_worker_row(
+            project_key,
+            label,
+            &format!("{label}-test-id"),
+            &format!("charter for {label}"),
+            None,
+            None,
             false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo, cwd: Some(cwd.to_owned()) },
             None,
         );
     }
@@ -874,7 +897,7 @@ impl Workspace {
             None,
             None,
             false,
-            true,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
             None,
         );
     }
@@ -910,6 +933,7 @@ impl Workspace {
                 interactive: Some(interactive),
                 is_git_repo: None,
                 mcp_families: None,
+                cwd: None,
             },
         );
     }

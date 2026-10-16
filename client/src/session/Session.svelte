@@ -42,6 +42,7 @@
     seatConnectorRows,
     seatScheduleRows,
     seatState,
+    seatTree,
     taskRows,
     type ComposerProps,
     type ConversationProps,
@@ -165,7 +166,7 @@
    * re-derives on the page's clock rather than going stale between reads.
    */
   $effect(() => {
-    git.sync(record === null ? null : gitStrip(record, slot));
+    git.sync(record === null ? null : gitStrip(record, slot, seatTree(wire, slot)));
   });
   $effect(() => {
     tasks.sync(

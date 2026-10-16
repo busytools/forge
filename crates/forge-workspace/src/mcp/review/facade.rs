@@ -556,6 +556,7 @@ mod resolve_scope_tests {
                 spawned_by: SessionSlot::lead("TestOrg", "myproj"),
                 needs_tag: false,
                 is_git_repo_at_spawn,
+                cwd: None,
                 diagnostic: None,
                 kick: None,
             },

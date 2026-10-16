@@ -91,6 +91,7 @@ mod tests {
             spawned_by: SessionSlot::lead("me", "myproj"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }

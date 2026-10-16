@@ -344,6 +344,7 @@ provider = "anthropic"
                 spawned_by: SessionSlot::lead("TestOrg", "forge"),
                 needs_tag: false,
                 is_git_repo_at_spawn: true,
+                cwd: None,
                 diagnostic: None,
                 kick: None,
             },

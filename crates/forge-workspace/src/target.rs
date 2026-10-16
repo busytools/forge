@@ -31,5 +31,10 @@ pub enum SessionTarget {
     /// a brand-new session, not a resume of the project's existing
     /// lead. The caller has already recorded the id it minted for the
     /// slot, so the child adopts exactly that one.
-    FreshInProject { slot: SessionSlot },
+    ///
+    /// `cwd` is the tree the fresh session runs in when the spawn
+    /// pointed it somewhere other than the project's own path (a
+    /// worker's own `cwd`); `None` is the project path, exactly as
+    /// before.
+    FreshInProject { slot: SessionSlot, cwd: Option<std::path::PathBuf> },
 }

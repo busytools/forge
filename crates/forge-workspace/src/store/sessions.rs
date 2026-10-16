@@ -66,6 +66,13 @@ pub struct SessionRecord {
     /// existed keeps its full surface.
     #[serde(default)]
     pub mcp_families: Option<Vec<String>>,
+    /// The tree the worker runs in, when the spawn pointed it somewhere
+    /// other than the project's own directory: the resolved repo root,
+    /// which is the only handle on where its JSONL lives once the session
+    /// is not live. `None` is the project root, so a row written before
+    /// the field existed reads as today.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 /// A configured project as the migration needs it: its catalog key, and
@@ -223,6 +230,8 @@ pub fn migrate_from_dynamic_workers(
             is_git_repo: None,
             // Nor a family selection; absent means every family.
             mcp_families: None,
+            // Nor a tree of its own: the retired table never held one.
+            cwd: None,
         };
         // An existing row is the id-bearing one: merge onto it so the
         // occupant it names survives. `update` leaves an absent field at
@@ -258,6 +267,11 @@ pub struct WorkerRowIndex {
     pub label: String,
     pub session_id: Option<String>,
     pub is_git_repo: Option<bool>,
+    /// The tree the row records, `None` for the project's own directory.
+    /// Read here because the launchpad, the boot wave and the cron wake
+    /// all compose the directory a row would start in, and the rule for
+    /// that composition is one.
+    pub cwd: Option<String>,
 }
 
 /// What [`WorkerRowIndex`] reads out of a row's body. Deserialising into
@@ -275,6 +289,8 @@ pub struct WorkerRowIndex {
 struct RowStart {
     session_id: Option<String>,
     is_git_repo: Option<bool>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 /// Every row's identity plus the fields that say whether its worker can
@@ -309,6 +325,7 @@ pub fn worker_row_index(db: &Db) -> anyhow::Result<Vec<WorkerRowIndex>> {
             // An empty string is absence, not an id - see `decode`.
             session_id: start.session_id.filter(|id| !id.is_empty()),
             is_git_repo: start.is_git_repo,
+            cwd: start.cwd,
         });
     }
     Ok(out)
@@ -381,6 +398,8 @@ pub fn update(db: &Db, fields: &SessionRecord) -> anyhow::Result<bool> {
     if let Some(families) = &fields.mcp_families {
         row.mcp_families = if families.is_empty() { None } else { Some(families.clone()) };
     }
+    // `cwd` has no arm on purpose: a worker's tree is fixed at spawn, so
+    // nothing that merges onto a row moves it.
     put(db, &row)?;
     Ok(true)
 }
@@ -446,6 +465,7 @@ mod tests {
             interactive: None,
             is_git_repo: None,
             mcp_families: None,
+            cwd: None,
         }
     }
 
@@ -489,6 +509,53 @@ mod tests {
         );
     }
 
+    /// The worker's own tree survives the store: written as spawned, read
+    /// back whole; a row written before the field existed decodes as
+    /// absent, which is the project's own directory.
+    #[test]
+    fn the_worker_cwd_round_trips_and_older_rows_stay_absent() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let mut row = record("Personal", "forge", "nazar-hand", None);
+        row.cwd = Some("/Users/someone/Projects/nazar".to_owned());
+        put(&db, &row).expect("write");
+
+        let read = get(&db, "Personal", "forge", "nazar-hand").expect("read").expect("row");
+        assert_eq!(
+            read.cwd,
+            Some("/Users/someone/Projects/nazar".to_owned()),
+            "the stored tree reads back whole"
+        );
+
+        let legacy = br#"{"session_id":null}"#;
+        let decoded =
+            decode("Personal", "forge", "old", legacy).expect("a legacy body still decodes");
+        assert_eq!(decoded.cwd, None, "an absent tree stays absent, never an invented one");
+    }
+
+    /// The launchpad's row read answers whether the worker can start, and
+    /// the tree it would start in is part of that: the projection carries
+    /// the recorded cwd beside the gitness.
+    #[test]
+    fn the_row_index_carries_the_recorded_cwd() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let mut row = record("Personal", "forge", "nazar-hand", Some("id-1"));
+        row.cwd = Some("/Users/someone/Projects/nazar".to_owned());
+        row.is_git_repo = Some(true);
+        put(&db, &row).expect("write");
+
+        let index = worker_row_index(&db).expect("read");
+        let entry = index.iter().find(|entry| entry.label == "nazar-hand").expect("row");
+        assert_eq!(
+            entry.cwd.as_deref(),
+            Some("/Users/someone/Projects/nazar"),
+            "the launchpad composes the row's directory from this"
+        );
+    }
+
     /// The first boot after this table exists is the migration: every
     /// persisted worker crosses over with its fields, and its id is left
     /// empty because `dynamic_workers` never stored one - so the session
@@ -525,6 +592,8 @@ mod tests {
                 // Neither did it hold a family selection; absent means
                 // every family.
                 mcp_families: None,
+                // Nor a tree of its own; absent is the project root.
+                cwd: None,
             },
             "the row carries the worker's fields and no id",
         );

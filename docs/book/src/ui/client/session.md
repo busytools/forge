@@ -28,7 +28,12 @@ never a mere change - and exactly one, not an error, goes straight to that
 seat; several, or any failure among them, opens the home to pick from;
 none goes home too, from the quiet `projects` word. Hovering it summons
 the rail as a peek. It is a real anchor, so keyboard, middle-click and
-new-tab all behave.
+new-tab all behave. **A worker's row in the rail names the tree it runs
+in** when a lead pointed it at one of its own: the path alone, a little
+under a failure's sub-row, hung under the worker's own name so that name
+stays whole on its line - and on hover it slides left to show whatever
+the rail was too narrow for. Its branch and files reading a tree other
+than the project's is then expected rather than a fault.
 
 **The header reads the seat, not the app.** The name leads and the org
 qualifies it only where the fleet makes the name ambiguous (#1707); the
@@ -103,8 +108,10 @@ seat's own set - a cron names the seat that created it - and its
 countdowns re-derive against the page's own clock, as the monitors' ages
 do; the tasks row reads the project's slice of the home; the tree row is
 the seat's own working tree, the worktree for a worker and the project's
-directory for a lead, and a tree that could not be read says so rather
-than drawing a blank. The account a row chips is on the rail's footer
+directory for a lead, and a worker a lead pointed at a tree of its own is
+named by that tree - `~/Projects/nazar` beside its project's siblings -
+rather than described. A tree that could not be read says so rather than
+drawing a blank. The account a row chips is on the rail's footer
 beside what it is costing, not on the strip.
 
 **The review row's panel is the review sets.** The filed rounds draw

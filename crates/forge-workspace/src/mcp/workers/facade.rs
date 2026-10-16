@@ -207,6 +207,12 @@ pub fn classify_worker_spawn_failure(
     if message.contains("is still cleaning up; retry once it finishes") {
         return WorkerSpawnError::DispatchFailed { message: message.to_owned() };
     }
+    // The known-project refusal is forge's own sentence and carries a
+    // project's name - whatever that project is called, "worktree"
+    // included - so it is recognised by the phrase no name can split.
+    if message.contains("which forge.toml declares") {
+        return WorkerSpawnError::DispatchFailed { message: message.to_owned() };
+    }
     let lower = message.to_lowercase();
     let mentions_worktree = lower.contains("worktree");
     let resembles_branch_resolve = lower.contains("failed to resolve base branch");
@@ -271,6 +277,11 @@ pub trait WorkerFacade: Send + Sync {
     /// `ResumeTarget::None`, which starts a fresh session and says so in
     /// the reply's [`SessionChoice`]; only a lookup that failed is an
     /// error.
+    ///
+    /// `cwd` names the tree the worker should run in when it is not the
+    /// project's own - an absolute or `~`-prefixed path, resolved to its
+    /// repo root. `None` keeps the project's path for a fresh spawn, and
+    /// adopts the row's recorded tree for a resume that states none.
     async fn spawn_worker(
         &self,
         caller: &SessionSlot,
@@ -281,6 +292,7 @@ pub trait WorkerFacade: Send + Sync {
         interactive: bool,
         resume_session: bool,
         mcp_families: Option<Vec<String>>,
+        cwd: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
 
     /// Merge the supplied fields onto the stored dynamic-worker row for
@@ -443,6 +455,7 @@ impl WorkerFacade for ProdWorkerFacade {
         interactive: bool,
         resume_session: bool,
         mcp_families: Option<Vec<String>>,
+        cwd: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
@@ -468,27 +481,97 @@ impl WorkerFacade for ProdWorkerFacade {
         let Some(view) = ws.list_projects().into_iter().find(|v| v.key == cp.project_key) else {
             return Err(WorkerSpawnError::UnknownCallerProject);
         };
+        // D7's fallback: a resume that states no tree resumes the one the
+        // row records, so the session lands back where its JSONL lives.
+        // A fresh spawn stating none keeps the project's own path (D9).
+        // The row is read once here: its tree is both that fallback and
+        // what a stated tree is judged against below.
+        let row = if resume_session {
+            ws.stored_worker_row(&cp.project_key, &label).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::mcp::workers",
+                    event_name = "worker_row_cwd_unreadable",
+                    project = %cp.project_key.as_str(),
+                    label = %label,
+                    %error,
+                    "reading the worker's recorded tree failed; resuming in the project \
+                     path, which may be a different directory than the row names",
+                );
+                None
+            })
+        } else {
+            None
+        };
+        let stated = cwd
+            .as_deref()
+            .map(str::to_owned)
+            .or_else(|| row.as_ref().and_then(|row| row.cwd.clone()));
+        // The tree this spawn runs the worker in: the stated path resolved
+        // to its repo root, else the project's own path. Resolving here is
+        // what makes the ensure, the run directory and the record agree -
+        // they all compose from `root` below.
+        let (root, stated_is_git) =
+            crate::mcp::workers::types::worker_root_and_git(&view.path, stated.as_deref())
+                .map_err(|message| WorkerSpawnError::DispatchFailed { message })?;
+        // D3 again, before anything is ensured: the handler refuses this
+        // as the shared core, but it runs after this half has already
+        // recreated a worktree - and a refused spawn must not write into
+        // a declared project's tree even transiently.
+        if stated.is_some()
+            && let Some(known) = ws.project_name_for_resolved_path(&root.to_string_lossy())
+        {
+            return Err(WorkerSpawnError::DispatchFailed {
+                message: crate::spawn::known_project_refusal(&known, &view.name),
+            });
+        }
+        // A resume that states a DIFFERENT tree than the row's cannot
+        // carry the history: claude finds a conversation by the project
+        // key derived from the directory it runs in, so a moved resume
+        // dies "No conversation found". The worker's history is keyed to
+        // its tree, so moving means despawn and a fresh spawn.
+        if resume_session && let (Some(_), Some(row)) = (cwd.as_deref(), row.as_ref()) {
+            let history =
+                row.cwd.as_deref().map_or_else(|| view.path.clone(), std::path::PathBuf::from);
+            let history = std::fs::canonicalize(&history).unwrap_or(history);
+            if root != history {
+                return Err(WorkerSpawnError::DispatchFailed {
+                    message: format!(
+                        "this resume states a different tree ('{}') than the one this \
+                         worker's history lives in ('{}'); a conversation is found by the \
+                         directory it ran in, so a worker moves trees only by being \
+                         despawned and spawned fresh",
+                        root.display(),
+                        history.display(),
+                    ),
+                });
+            }
+        }
         // A row that already exists answers for gitness, exactly as it
         // does in `handle_spawn_worker`, so the worktree ensured below is
         // the one the spawn will actually run in. Probing here instead
         // would diverge on a project whose repo-ness changed since the
         // worker was spawned: the ensure would create a worktree nothing
-        // uses and nothing cleans up, or skip one the resume needs.
-        let is_git_repo_at_spawn = ws
-            .recorded_worker_is_git_repo(&cp.project_key, &label)
-            .unwrap_or_else(|error| {
-                tracing::warn!(
-                    target: "forge_workspace::mcp::workers",
-                    event_name = "worker_row_gitness_unreadable",
-                    project = %cp.project_key.as_str(),
-                    label = %label,
-                    %error,
-                    "reading the worker's recorded gitness failed; probing the project path, \
-                     which may ensure a different worktree than the row names",
-                );
-                None
-            })
-            .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
+        // uses and nothing cleans up, or skip one the resume needs. A
+        // stated tree answers for itself: the row's gitness belongs to the
+        // directory the row names.
+        let is_git_repo_at_spawn = if let Some(stated_is_git) = stated_is_git {
+            stated_is_git
+        } else {
+            ws.recorded_worker_is_git_repo(&cp.project_key, &label)
+                .unwrap_or_else(|error| {
+                    tracing::warn!(
+                        target: "forge_workspace::mcp::workers",
+                        event_name = "worker_row_gitness_unreadable",
+                        project = %cp.project_key.as_str(),
+                        label = %label,
+                        %error,
+                        "reading the worker's recorded gitness failed; probing the project path, \
+                         which may ensure a different worktree than the row names",
+                    );
+                    None
+                })
+                .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path))
+        };
         // The one-live-worker-per-label guard lives in the shared
         // `handle_spawn_worker` core, so a boot re-spawn is deduped
         // against this one; a duplicate MCP spawn surfaces from there as
@@ -506,15 +589,10 @@ impl WorkerFacade for ProdWorkerFacade {
             // ensure, the tag write and the lookup below all take it from
             // `worker_tag_dir`, so they cannot disagree about where a
             // worker lives.
-            let run_dir = crate::mcp::workers::types::worker_tag_dir(
-                &view.path,
-                &label,
-                is_git_repo_at_spawn,
-            );
+            let run_dir =
+                crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git_repo_at_spawn);
             if is_git_repo_at_spawn {
-                match forge_agent::env::worktree::ensure_worker_worktree(
-                    &view.path, &label, &run_dir,
-                ) {
+                match forge_agent::env::worktree::ensure_worker_worktree(&root, &label, &run_dir) {
                     Ok(outcome) => ensured = Some((run_dir.clone(), outcome)),
                     Err(err) => {
                         return Err(WorkerSpawnError::WorktreeCreationFailed {
@@ -534,7 +612,7 @@ impl WorkerFacade for ProdWorkerFacade {
                 // answered, leaving the caller holding context it does
                 // not have.
                 Err(error) => {
-                    discard_refused_worktree(&view.path, &label, ensured.take());
+                    discard_refused_worktree(&root, &label, ensured.take());
                     return Err(WorkerSpawnError::ResumeLookupFailed {
                         label,
                         message: error.to_string(),
@@ -562,11 +640,15 @@ impl WorkerFacade for ProdWorkerFacade {
             resume_kick,
             interactive,
             mcp_families,
+            // The resolved root, which the handler records on the row: a
+            // spawn that stated no tree records none, so the row keeps
+            // meaning the project's own path.
+            cwd: stated.as_ref().map(|_| root.to_string_lossy().into_owned()),
             from_boot_respawn: false,
             return_to: Some(tx),
         };
         if let Err(err) = ws.dispatch(cmd) {
-            discard_refused_worktree(&view.path, &spawn_label, ensured.take());
+            discard_refused_worktree(&root, &spawn_label, ensured.take());
             return Err(WorkerSpawnError::DispatchFailed {
                 message: format!("dispatch failed: {err:?}"),
             });
@@ -587,7 +669,7 @@ impl WorkerFacade for ProdWorkerFacade {
                 Ok(reply)
             }
             Ok(Err(message)) => {
-                discard_refused_worktree(&view.path, &spawn_label, ensured.take());
+                discard_refused_worktree(&root, &spawn_label, ensured.take());
                 // The sync path's reply is a string the spawn handler
                 // built, not an SDK error, so there is no variant to
                 // name and the heuristics answer.
@@ -829,10 +911,19 @@ impl WorkerFacade for ProdWorkerFacade {
 
 /// A captured `MockWorkerFacade::spawn_worker` call:
 /// `(caller, label, resolved charter, kick, resume_kick, interactive,
-/// resume_session)`.
+/// resume_session, mcp_families, cwd)`.
 #[cfg(any(test, feature = "testing"))]
-type RecordedSpawnCall =
-    (SessionSlot, String, String, Option<String>, Option<String>, bool, bool, Option<Vec<String>>);
+type RecordedSpawnCall = (
+    SessionSlot,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    bool,
+    bool,
+    Option<Vec<String>>,
+    Option<String>,
+);
 
 /// A captured `MockWorkerFacade::update_worker` call:
 /// `(caller, label, charter, kick, resume_kick)`.
@@ -920,6 +1011,7 @@ impl WorkerFacade for MockWorkerFacade {
         interactive: bool,
         resume_session: bool,
         mcp_families: Option<Vec<String>>,
+        cwd: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
@@ -932,6 +1024,7 @@ impl WorkerFacade for MockWorkerFacade {
             interactive,
             resume_session,
             mcp_families,
+            cwd,
         ));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
@@ -1132,6 +1225,7 @@ mod mock_tests {
                 false,
                 false,
                 None,
+                None,
             )
             .await;
         assert!(matches!(res, Err(WorkerSpawnError::NotLeadCaller)));
@@ -1162,6 +1256,7 @@ mod mock_tests {
                 None,
                 false,
                 false,
+                None,
                 None,
             )
             .await
@@ -1202,7 +1297,17 @@ mod mock_tests {
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
         let res = mock
-            .spawn_worker(&lead, "reviewer".into(), "   ".into(), None, None, false, false, None)
+            .spawn_worker(
+                &lead,
+                "reviewer".into(),
+                "   ".into(),
+                None,
+                None,
+                false,
+                false,
+                None,
+                None,
+            )
             .await;
         assert!(matches!(res, Err(WorkerSpawnError::EmptyCharter)));
         assert_eq!(
@@ -1227,6 +1332,7 @@ mod mock_tests {
             spawned_by: SessionSlot::from_str_for_test("lead"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         };
@@ -1345,6 +1451,7 @@ mod prod_list_workers_tests {
                 spawned_by: SessionSlot::lead("TestOrg", "forge"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                cwd: None,
                 diagnostic: None,
                 kick: None,
             },
@@ -1390,6 +1497,7 @@ mod capacity_tests {
             spawned_by: SessionSlot::lead("TestOrg", "forge"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -1716,6 +1824,29 @@ mod worktree_creation_failed_tests {
             classify_worker_spawn_failure(&message, true, SpawnFailureKind::Unclassified),
             WorkerSpawnError::DispatchFailed { message },
             "the cap refusal stays DispatchFailed even when the project key carries 'worktree'",
+        );
+    }
+
+    /// The known-project refusal is recognised by its own phrase too, and
+    /// that guard is what keeps it a dispatch failure: the sentence
+    /// interpolates a project NAME, and a project may be called anything -
+    /// `worktree-lab` here - which the classifier would otherwise route to
+    /// a worktree-creation failure the spawn never suffered.
+    #[test]
+    fn the_known_project_refusal_stays_a_dispatch_failure_whatever_the_project_is_called() {
+        let message = crate::spawn::known_project_refusal("worktree-lab", "forge");
+        assert_eq!(
+            classify_worker_spawn_failure(&message, true, SpawnFailureKind::Unclassified),
+            WorkerSpawnError::DispatchFailed { message: message.clone() },
+            "the known-project refusal stays DispatchFailed however its project reads",
+        );
+
+        // The other arm too: a spawn from the project named that way.
+        let own = crate::spawn::known_project_refusal("worktree-lab", "worktree-lab");
+        assert_eq!(
+            classify_worker_spawn_failure(&own, true, SpawnFailureKind::Unclassified),
+            WorkerSpawnError::DispatchFailed { message: own.clone() },
+            "and the same for a project whose own name carries the word",
         );
     }
 

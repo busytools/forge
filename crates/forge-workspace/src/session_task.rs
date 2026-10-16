@@ -2670,6 +2670,7 @@ mod tests {
                 // Its tag never landed, so the rollback's second fact holds.
                 needs_tag: true,
                 is_git_repo_at_spawn: false,
+                cwd: None,
                 diagnostic: None,
                 kick: None,
             },
@@ -2683,7 +2684,7 @@ mod tests {
                 Some("kick"),
                 None,
                 false,
-                false,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("seed the row the rollback judges");
@@ -4987,6 +4988,7 @@ provider = "anthropic"
                     interactive: None,
                     is_git_repo: None,
                     mcp_families: None,
+                    cwd: None,
                 },
             )
             .expect("seed the row");
@@ -5877,6 +5879,7 @@ provider = "anthropic"
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -8055,7 +8058,7 @@ provider = "anthropic"
                 None,
                 None,
                 false,
-                true,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
                 None,
             )
             .expect("seed the worker's row");
@@ -8073,6 +8076,7 @@ provider = "anthropic"
                 spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
                 needs_tag: false,
                 is_git_repo_at_spawn: true,
+                cwd: None,
                 diagnostic: None,
                 kick: None,
             },
@@ -8728,7 +8732,7 @@ mod connected_hook_tests {
                 None,
                 None,
                 false,
-                false,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("seed the worker row");
@@ -8805,7 +8809,7 @@ mod connected_hook_tests {
                 None,
                 None,
                 false,
-                false,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("seed the worker row");
@@ -8857,6 +8861,7 @@ mod connected_hook_tests {
                 spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                cwd: None,
                 diagnostic: None,
                 kick: None,
             },
@@ -8898,6 +8903,7 @@ mod connected_hook_tests {
                 spawned_by: crate::SessionSlot::lead("TestOrg", "forge"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                cwd: None,
                 diagnostic: None,
                 kick,
             },

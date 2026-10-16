@@ -38,6 +38,23 @@ pub struct AgentRow {
     /// watched, and this is what tells a seat that never came up (which
     /// stays parked with its reason) from one that should be started again.
     pub died: bool,
+    /// The seat's own tree, home-shortened, when the worker runs somewhere
+    /// other than its project's directory. `None` for a lead, for a worker
+    /// in its project's tree, and for one this cannot place - so a row
+    /// drawn with one can name the tree beside its project's siblings.
+    pub tree: Option<String>,
+}
+
+/// `path` with the home directory written as `~`, the way a project's
+/// `display_path` is authored: the seat's tree should read as the same
+/// kind of name its project's rows do, not as a machine path.
+fn short_path(path: &std::path::Path) -> String {
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", rest.to_string_lossy());
+    }
+    path.to_string_lossy().into_owned()
 }
 
 /// What a session is waiting on a person for. The core's own kind rather
@@ -142,6 +159,7 @@ fn row_for(
         reason: reason
             .or_else(|| workspace.spawn_failure(&slot))
             .or_else(|| workspace.death_reason(&slot)),
+        tree: workspace.worker_tree_for_session(&slot).map(|root| short_path(&root)),
         lifecycle,
         label,
         slot,
@@ -192,7 +210,7 @@ mod tests {
     use forge_primitives::{SessionLifecycleState, SessionSlot, WorkerLiveness};
 
     use crate::surface::ViewSurface;
-    use crate::surface::agents::PendingKind;
+    use crate::surface::agents::{PendingKind, short_path};
 
     /// The row set the home draws: a project's lead first, then its
     /// workers in the persisted-label order. Catches a collect that heads
@@ -412,6 +430,81 @@ mod tests {
         assert_eq!(failed_of(&quiet), None, "a seat that never failed carries none");
     }
 
+    /// The row names the tree a worker runs in when a lead pointed it at
+    /// one of its own, and names nothing for a worker in its project's own
+    /// directory - where the project's name already says it.
+    #[test]
+    fn a_row_names_the_tree_a_worker_was_pointed_at() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        // A project with no session behind it contributes no rows at all,
+        // so the lead has to be up for the workers' rows to be drawn.
+        workspace.register_domain_session(SessionSlot::lead("TestOrg", "forge"), None);
+        // The worker's own tree, with the worktree a spawn would have
+        // forked there - the row's `where` names the tree, and the row is
+        // only offered when that tree's worktree is there.
+        let tree = tempfile::tempdir().expect("worker tree");
+        let root = std::fs::canonicalize(tree.path()).expect("canonical tree");
+        std::fs::create_dir_all(root.join(".claude").join("worktrees").join("probe-moved"))
+            .expect("worker worktree");
+        let entry = |label: &str, slot: &SessionSlot, cwd: Option<std::path::PathBuf>| {
+            forge_workspace::WorkerEntry {
+                label: label.to_owned(),
+                charter: "c".to_owned(),
+                slot: slot.clone(),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
+                cwd,
+                diagnostic: None,
+                kick: None,
+            }
+        };
+        let moved = SessionSlot::worker("TestOrg", "forge", "probe-moved");
+        workspace.insert_live_worker(&project, entry("probe-moved", &moved, Some(root.clone())));
+        workspace.seed_test_worker_row_at(&project, "probe-moved", &root.to_string_lossy(), true);
+        let at_home = SessionSlot::worker("TestOrg", "forge", "probe-at-home");
+        workspace.insert_live_worker(&project, entry("probe-at-home", &at_home, None));
+        workspace.seed_test_worker_row(&project, "probe-at-home");
+
+        let agents = surface.agents();
+        let tree_of = |slot: &SessionSlot| {
+            agents
+                .for_project(&project)
+                .iter()
+                .find(|row| &row.slot == slot)
+                .expect("the row exists")
+                .tree
+                .clone()
+        };
+
+        assert_eq!(
+            tree_of(&moved).as_deref(),
+            Some(root.to_string_lossy().as_ref()),
+            "the worker's own tree is named",
+        );
+        assert_eq!(
+            tree_of(&at_home),
+            None,
+            "a worker in its project's own directory names no tree of its own",
+        );
+    }
+
+    /// The home directory is written as `~` the way a project's
+    /// `display_path` is authored, and a path that does not start under it
+    /// is left alone.
+    #[test]
+    fn a_named_tree_is_shortened_at_the_home() {
+        let home = dirs::home_dir().expect("home dir");
+        assert_eq!(short_path(&home.join("Projects").join("nazar")), "~/Projects/nazar");
+        assert_eq!(short_path(std::path::Path::new("/opt/trees/nazar")), "/opt/trees/nazar");
+    }
+
     /// A session whose subprocess died keeps its row after the failure
     /// released the session: this is what the fleet's left panel draws the
     /// failed mark from when an agent dies. Catches a collect that drops the
@@ -597,6 +690,7 @@ mod tests {
             spawned_by: SessionSlot::lead("TestOrg", "forge"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }

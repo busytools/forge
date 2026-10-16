@@ -209,6 +209,7 @@ describe('the session shell as it draws', () => {
       reason: null,
       failed_turn: null,
       died: false,
+      tree: null,
       work: null,
       ...over,
     });
@@ -396,6 +397,27 @@ describe('the rail folds', () => {
       wire: { ...homeWire, agents: [row('lead', 'Running'), row('awake', 'Running')] },
     });
     expect(body, 'a project with nothing asleep drew a fold').not.toContain('class="sfold"');
+  });
+
+  /**
+   * The rail row says where a worker runs when a lead pointed it at a tree of
+   * its own: without the name, a worker whose branch comes from another repo
+   * reads as a fault rather than as the shape the lead asked for.
+   */
+  it('names the tree a worker runs in under its rail row', () => {
+    const moved = { ...row('moved', 'Running'), tree: '~/Projects/nazar' };
+    const body = draw({ wire: { ...homeWire, agents: [row('lead', 'Running'), moved] } });
+
+    expect(body, "the worker's own tree is named, and it is the path alone").toContain(
+      '~/Projects/nazar',
+    );
+    const workerRow = body.slice(body.indexOf('class="wk'));
+    expect(workerRow, "the worker's name is whole on its line").toContain('>moved</a>');
+    expect(
+      workerRow.indexOf('</div>') < workerRow.indexOf('~/Projects/nazar'),
+      'the tree draws under the row, not inside it - a name sharing the line would be cut off',
+    ).toBe(true);
+    expect(workerRow, 'and it draws as the footnote it is').toContain('class="why where"');
   });
 });
 
