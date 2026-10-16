@@ -33,6 +33,11 @@ pub struct AgentRow {
     /// when the reader cancelled that turn, or when a newer turn has since
     /// been committed.
     pub failed_turn: Option<SystemTime>,
+    /// Whether a session on this seat ended and no reader has been shown it
+    /// since. The row's failure is the durable trace of a crash nobody
+    /// watched, and this is what tells a seat that never came up (which
+    /// stays parked with its reason) from one that should be started again.
+    pub died: bool,
 }
 
 /// What a session is waiting on a person for. The core's own kind rather
@@ -121,6 +126,7 @@ fn row_for(
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),
         failed_turn: workspace.session_failed_turn(&slot),
+        died: workspace.death_stands(&slot),
         pending: workspace.pending_interaction(&slot),
         pending_depth: workspace.pending_interaction_depth(&slot),
         // A worker's own spawn diagnostic is the more specific record, so
@@ -147,6 +153,18 @@ impl ViewSurface {
     /// the home needs re-encoding for the connection that attached.
     pub fn failed_turn(&self, slot: &SessionSlot) -> Option<SystemTime> {
         self.workspace.session_failed_turn(slot)
+    }
+
+    /// A page has been opened on `slot`: a death the reader had not been
+    /// shown yet is spent with it - the failure and its reason leave the
+    /// row - so a crash nobody watched is the durable trace until someone
+    /// looks. Answers whether anything was spent, which is the connection's
+    /// cue to re-encode the home it holds.
+    ///
+    /// Called after the seat's own snapshot was encoded, deliberately: the
+    /// read that spends the mark is the read that shows it.
+    pub fn seat_shown(&self, slot: &SessionSlot) -> bool {
+        self.workspace.spend_death(slot)
     }
 }
 

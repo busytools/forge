@@ -791,7 +791,11 @@ async fn handle_client(
                     let spent = match &seat {
                         Some(slot) if !declare => {
                             let failed = state.surface.failed_turn(slot);
-                            Live::lock(&state.live).attach(slot, failed)
+                            // The seat's own snapshot was encoded above, so
+                            // the failure a death left on its row is drawn
+                            // by the read that spends it.
+                            let death = state.surface.seat_shown(slot);
+                            Live::lock(&state.live).attach(slot, failed) || death
                         }
                         _ => false,
                     };

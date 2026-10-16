@@ -229,7 +229,19 @@
     const open = connection;
     const seatSlot = slot;
     const key = subjectKey({ session: seatSlot });
-    if (!seat.waking && seat.lifecycle !== 'Sleeping' && seat.lifecycle !== 'LoggedOut') {
+    // The states the page starts a lead for: nothing named, asleep, and a
+    // seat a session ENDED on - the death is recorded, the page is where
+    // it comes back, and the respawn is no longer silent (the seat's row
+    // carried the failure, and the recovery announces itself). **A seat
+    // that only failed to start is not one of them**: an auth or config
+    // failure stays parked with its reason rather than being woken in a
+    // loop, which is what `died` tells apart.
+    const wake =
+      seat.waking ||
+      seat.lifecycle === 'Sleeping' ||
+      seat.lifecycle === 'LoggedOut' ||
+      (seat.lifecycle === 'Failed' && seat.died);
+    if (!wake) {
       if (asked.has(key)) asked.delete(key);
       return;
     }

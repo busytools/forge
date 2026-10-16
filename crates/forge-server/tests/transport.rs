@@ -415,6 +415,88 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
     );
 }
 
+/// **The death half of the same gate.** A crash nobody watched keeps its
+/// failure on the row - that is the durable trace - and the attach that
+/// shows the seat is what spends it. Until then the row carries `died`, and
+/// the home the connection holds is re-sent because showing the seat
+/// changed it.
+#[tokio::test]
+async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
+    let (url, fleet) = a_server().await;
+    // The core's own records, seeded by hand: the fold that writes them runs
+    // in the session task, which a fixture does not start.
+    fleet.workspace().record_death_for_test(
+        &lead_seat(),
+        "dead-occupant",
+        "the claude subprocess closed its output stream",
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
+
+    // The crash is readable on the row before anyone has shown the seat.
+    assert!(
+        snapshot_until(&mut socket, Subject::Home, |data| {
+            data.get("agents")
+                .and_then(|held| held.as_array())
+                .and_then(|held| held.iter().find(|row| row["slot"]["label"] == "lead"))
+                .and_then(|row| row.get("died"))
+                .and_then(serde_json::Value::as_bool)
+                .is_some_and(|died| died)
+        })
+        .await,
+        "precondition: the death the seat left is on the home's row",
+    );
+
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    // Read as an absence, for the reason the failure-mark case gives: the
+    // re-send not coming is what this catches, and it should say so itself.
+    let resent = match next_server_within(&mut socket, 700).await {
+        Some(ServerMessage::Snapshot { subject, .. }) => Some(subject),
+        _ => None,
+    };
+    assert_eq!(
+        resent,
+        Some(Subject::Home),
+        "the attach re-sends the home, because showing the seat spent the death",
+    );
+
+    // And the spent record is gone: no row on the re-sent home still claims
+    // it, whether the seat left the roster or stayed without the mark.
+    assert!(
+        snapshot_until(&mut socket, Subject::Home, |data| {
+            !data
+                .get("agents")
+                .and_then(|held| held.as_array())
+                .is_some_and(|held| held.iter().any(|row| row["died"] == true))
+        })
+        .await,
+        "a spent death was still on the row it was written on",
+    );
+}
+
 /// **An attach with nothing to spend leaves the home alone.**
 ///
 /// The re-send is owed exactly when showing the seat cleared a diamond or a

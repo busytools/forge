@@ -16,6 +16,7 @@ use crate::target::{ProjectKey, SessionSlot};
 use crate::update_fanout::{SeatUpdate, SubscriberRole, UpdateFanout};
 use crate::workspace::{KickRequest, PendingInteractionKind, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
+use forge_primitives::SessionId;
 
 /// Drive a seat's frame window down, so a fixture reaches the transcript
 /// fallback without emitting a window's worth of frames. The window is
@@ -176,6 +177,15 @@ impl Workspace {
         if let Some(domain) = self.domain_session_for(slot) {
             domain.lock().failed_turn_at = Some(at);
         }
+    }
+
+    /// Record a slot's death and the failure behind it, the way the
+    /// connection-failure arm does, so a cross-crate test can drive the
+    /// durable-trace reader without a real subprocess. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn record_death_for_test(&self, slot: &SessionSlot, occupant: &str, message: &str) {
+        self.record_spawn_failure(slot, message);
+        self.record_death(slot, SessionId::new(occupant));
     }
 
     /// Push one update onto the fan-out, so a test can watch a view react
@@ -434,7 +444,7 @@ impl Workspace {
             live_workers: Mutex::new(HashMap::new()),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
-            dead_occupants: Mutex::new(HashMap::new()),
+            deaths: Mutex::new(HashMap::new()),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),

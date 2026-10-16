@@ -523,7 +523,9 @@ export function foldMark(marks: readonly string[]): string | null {
  * projects the roster declares.
  *
  * Counted from the seats rather than from the rows the rail draws, so a
- * project filtered out of a group is still counted.
+ * project filtered out of a group is still counted. **A failed lead is not
+ * up**: the roster names a crashed seat's row until a reader is shown it,
+ * and counting it would call a project live while its agent is down.
  */
 export function fleetCount(home: HomeWire): string {
   const live = home.projects.filter((row) =>
@@ -531,7 +533,8 @@ export function fleetCount(home: HomeWire): string {
       (agent) =>
         agent.slot.org === row.project.org &&
         agent.slot.project === row.project.name &&
-        agent.slot.label === 'lead',
+        agent.slot.label === 'lead' &&
+        agent.lifecycle !== 'Failed',
     ),
   ).length;
   return `${live} live / ${home.projects.length}`;
@@ -551,6 +554,13 @@ export interface SeatState {
   lifecycle: Lifecycle | null;
   /** Why it is not running, when the roster says. */
   reason: string | null;
+  /**
+   * Whether a session here ended and the reader has not been shown it
+   * since. A failed seat with this behind it is one the page starts
+   * again; one without it only failed to start, and stays parked with its
+   * reason rather than being woken in a loop.
+   */
+  died: boolean;
   /**
    * How many prompts this seat is holding, the one on screen included.
    *
@@ -599,6 +609,7 @@ export function seatState(home: HomeWire, slot: SessionSlot): SeatState {
     waking: row === undefined,
     lifecycle: row?.lifecycle ?? null,
     reason: row?.reason ?? null,
+    died: row?.died ?? false,
     // A seat the roster does not name is holding nothing, so the count is the
     // one prompt the composer may be drawing rather than zero.
     pendingDepth: row?.pending_depth ?? 1,

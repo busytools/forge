@@ -162,12 +162,12 @@ CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
 
 ## `[models."<name>"]`
 
-Optional per-model tables, keyed by a canonical model name - the same
-spelling `[[accounts]] models` and a project's `model` use - so one
-entry serves every project pinned to that model. Absent means no
-parameters are stamped and the `claude` CLI's own resolution stands. A
-table naming a model no account declares loads, but warns at boot: the
-entry is read by name, and that name is read by nothing.
+Optional per-model tables, keyed by the exact spelling a project's
+`model` pins - that is the name the read matches on, not what accounts
+declare - so one entry serves every project pinned to that model. Absent
+means no parameters are stamped and the `claude` CLI's own resolution
+stands. A table naming a model no project pins loads, but warns at boot:
+the entry is read by the projects' pins, and no pin carries that name.
 
 | Key                   | Type    | Required | Default | Notes                                                                     |
 | --------------------- | ------- | -------- | ------- | ------------------------------------------------------------------------- |
@@ -179,17 +179,17 @@ auto_compact_window = 983040
 ```
 
 `auto_compact_window` is stamped onto the spawned child as
-`CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Set it below the model's real context
-so the compact query fits: the CLI triggers compaction at this window
-minus its own summary buffer, and then adds the completion budget on top
-of the compact prompt it sends. A window allowed to reach the model's
-context fires a compact request the context cannot hold, and the CLI
-exits with the session. The value is yours to compute because forge does
-not know a model's real context: for a model whose context is 1,048,576
-tokens, `983040` leaves the CLI's 32k completion budget and as much again
-for the compact prompt and its token-estimate drift. An env layer that
-names `CLAUDE_CODE_AUTO_COMPACT_WINDOW` itself replaces the table's
-value, the way every env layer outranks a stamp.
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Set it below the model's real context,
+leaving the compact query room to fit: compaction fires near a window's
+top, and the compact request itself needs headroom beyond that for the
+completion budget and the prompt it carries - a window allowed to reach
+the model's context can fire a compact request the context cannot hold,
+and the `claude` CLI exits with the session, which is what this key
+keeps out of reach. The value is yours to pick because forge does not
+know a model's real context: leaving roughly a sixteenth of the context
+(983040 for a 1,048,576-token model) is measured to fit with room over.
+An env layer that names `CLAUDE_CODE_AUTO_COMPACT_WINDOW` itself
+replaces the table's value.
 
 A value that is not a positive integer fails the load:
 `models "name" in forge.toml ... sets auto_compact_window = 0, which is

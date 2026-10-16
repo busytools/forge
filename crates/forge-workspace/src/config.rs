@@ -508,11 +508,11 @@ pub(crate) const DEFAULT_MAX_WORKERS_PER_PROJECT: usize = 2;
 #[serde(deny_unknown_fields)]
 pub struct ModelSettings {
     /// The window, in tokens, the CLI's auto-compaction triggers against,
-    /// stamped onto the child as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Lower
-    /// it below the model's context so the compact request fits: the CLI
-    /// fires at this window minus its own summary buffer, then adds the
-    /// completion budget on top of the compact prompt. Absent leaves the
-    /// CLI's own resolution in place.
+    /// stamped onto the child as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. It is
+    /// set below the model's context so the compact request has room to
+    /// fit - compaction fires near a window's top, and the request itself
+    /// needs headroom beyond that. Absent leaves the CLI's own resolution
+    /// in place.
     #[serde(default)]
     pub auto_compact_window: Option<i64>,
 }
@@ -1190,19 +1190,20 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         None => None,
     };
 
-    // Per-model parameters are read by name, so a name no account declares
-    // is a statement nothing will act on. Warned rather than refused: a
-    // project may pin the model on a later edit, and the table entry is
+    // Per-model parameters are read by the exact spelling a project's
+    // `model` pins - not by what accounts declare - so a name no project
+    // pins is a statement nothing will act on. Warned rather than refused:
+    // a project may pin the model on a later edit, and the table entry is
     // how it would be there waiting.
-    let declared_models: std::collections::HashSet<&str> =
-        accounts.iter().flat_map(|account| account.models.iter().map(String::as_str)).collect();
+    let pinned: std::collections::HashSet<&str> =
+        projects.iter().filter_map(|project| project.model.as_deref()).collect();
     for (model, parameters) in &parsed.models {
-        if !declared_models.contains(model.as_str()) {
+        if !pinned.contains(model.as_str()) {
             tracing::warn!(
                 target: "forge_workspace::config",
-                event_name = "model_parameters_name_undeclared",
+                event_name = "model_parameters_unpinned",
                 model = %model,
-                "the [models] table names a model no account declares; nothing will read it",
+                "the [models] table names a model no project pins; nothing will read it",
             );
         }
         if let Some(window) = parameters.auto_compact_window
@@ -1366,6 +1367,65 @@ token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#
+    }
+
+    /// One logged event: its level and the `event_name` it carries. A
+    /// config that declares something forge ignores must warn at WARN with
+    /// its own name, and the level is half of that: these targets are not
+    /// raised by the default filters, so a warn demoted to debug is a warn
+    /// that stopped being seen.
+    #[derive(Default, Clone)]
+    struct WarnedEvents(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    struct CollectEventName(String);
+
+    impl tracing::field::Visit for CollectEventName {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "event_name" {
+                self.0 = format!("{value:?}").trim_matches('"').to_owned();
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnedEvents {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = CollectEventName(String::new());
+            event.record(&mut visitor);
+            if !visitor.0.is_empty() {
+                self.0.lock().expect("capture").push((*event.metadata().level(), visitor.0));
+            }
+        }
+    }
+
+    impl WarnedEvents {
+        /// Whether `event` was logged, at WARN.
+        fn warns(&self, event: &str) -> bool {
+            self.0
+                .lock()
+                .expect("capture")
+                .iter()
+                .any(|(level, name)| name == event && *level == tracing::Level::WARN)
+        }
+
+        /// Every event name logged, in order.
+        fn names(&self) -> Vec<String> {
+            self.0.lock().expect("capture").iter().map(|(_, name)| name.clone()).collect()
+        }
+    }
+
+    /// Load `dir`, capturing every `event_name` the load logs.
+    fn load_capturing(
+        dir: &std::path::Path,
+    ) -> (Result<LoadedConfig, WorkspaceError>, WarnedEvents) {
+        use tracing_subscriber::layer::SubscriberExt;
+        let logged = WarnedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(logged.clone());
+        let loaded = tracing::subscriber::with_default(subscriber, || load_from_dir(dir));
+        (loaded, logged)
     }
 
     /// `[gateway] port = 0` is refused at load: the port is fixed, and
@@ -4121,38 +4181,6 @@ provider = "anthropic"
     /// to debug is a warn that stopped being seen.
     #[test]
     fn every_ignored_key_warns() {
-        use std::sync::{Arc, Mutex};
-
-        /// One logged event: its level and the `event_name` it carries.
-        #[derive(Default, Clone)]
-        struct LoggedEvents(Arc<Mutex<Vec<(tracing::Level, String)>>>);
-
-        struct CollectEventName(String);
-
-        impl tracing::field::Visit for CollectEventName {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "event_name" {
-                    self.0 = format!("{value:?}").trim_matches('"').to_owned();
-                }
-            }
-        }
-
-        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LoggedEvents {
-            fn on_event(
-                &self,
-                event: &tracing::Event<'_>,
-                _ctx: tracing_subscriber::layer::Context<'_, S>,
-            ) {
-                let mut visitor = CollectEventName(String::new());
-                event.record(&mut visitor);
-                if !visitor.0.is_empty() {
-                    self.0.lock().expect("capture").push((*event.metadata().level(), visitor.0));
-                }
-            }
-        }
-
-        use tracing_subscriber::layer::SubscriberExt;
-
         let cases = [
             (
                 "[selection]",
@@ -4176,20 +4204,119 @@ provider = "anthropic"
                 "\n[env]\nANTHROPIC_BASE_URL = \"https://proxy.example\"\n",
                 "gateway_keys_dropped_from_env_layer",
             ),
+            (
+                "a [models] entry for a model nobody pins",
+                "\n[models.\"nobody-pins-this\"]\nauto_compact_window = 100\n",
+                "model_parameters_unpinned",
+            ),
         ];
         for (label, stanza, event) in cases {
             let dir = tempdir().expect("tempdir");
             write_config(dir.path(), &format!("{}{stanza}", minimal_config()));
-            let logged = LoggedEvents::default();
-            let subscriber = tracing_subscriber::registry().with(logged.clone());
-            let loaded =
-                tracing::subscriber::with_default(subscriber, || load_from_dir(dir.path()));
+            let (loaded, logged) = load_capturing(dir.path());
             assert!(loaded.is_ok(), "{label} still loads");
-            let seen = logged.0.lock().expect("capture");
             assert!(
-                seen.iter().any(|(level, name)| name == event && *level == tracing::Level::WARN),
-                "{label} warns at WARN with {event}; saw {seen:?}",
+                logged.warns(event),
+                "{label} warns at WARN with {event}; saw {:?}",
+                logged.names(),
             );
         }
+    }
+
+    /// The `[models]` table is read by the exact spelling a project's
+    /// `model` pins, not by what accounts declare: the pinned spelling is
+    /// the entry that acts and warns nothing, and the account-facing
+    /// spelling of the same model warns even though an account declares it.
+    #[test]
+    fn a_models_table_keys_on_the_spelling_a_project_pins() {
+        let config_for = |table_key: &str| {
+            format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-opus-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+
+[accounts.model_aliases]
+"claude-opus-5[1m]" = ["claude-opus-5"]
+
+[models."{table_key}"]
+auto_compact_window = 983040
+"#
+            )
+        };
+
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &config_for("claude-opus-5"));
+        let (loaded, logged) = load_capturing(dir.path());
+        let config = loaded.expect("the pinned spelling loads");
+        assert_eq!(
+            config
+                .models
+                .get("claude-opus-5")
+                .and_then(|parameters| parameters.auto_compact_window),
+            Some(983_040),
+            "the entry the project pins is the one read",
+        );
+        assert!(
+            !logged.warns("model_parameters_unpinned"),
+            "and it warns nothing: {:?}",
+            logged.names(),
+        );
+
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &config_for("claude-opus-5[1m]"));
+        let (loaded, logged) = load_capturing(dir.path());
+        assert!(loaded.is_ok(), "the account-facing spelling still loads");
+        assert!(
+            logged.warns("model_parameters_unpinned"),
+            "an entry no project pins warns even though an account declares it: {:?}",
+            logged.names(),
+        );
+    }
+
+    /// A mistyped key inside a `[models]` table is refused at load rather
+    /// than silently applying nothing.
+    #[test]
+    fn a_mistyped_models_key_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[models."claude-sonnet-5"]
+auto_compact_windows = 983040
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a mistyped key should be a parse failure");
+        let message = err.to_string();
+        assert!(
+            message.contains("auto_compact_windows"),
+            "the refusal names the key that was not recognized, got: {message}",
+        );
     }
 }

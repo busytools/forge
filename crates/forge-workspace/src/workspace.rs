@@ -231,6 +231,17 @@ pub(crate) type ParkedBrowserHandOff = (
     tokio::sync::oneshot::Sender<forge_primitives::browser::HandOffEnding>,
 );
 
+/// A seat's occupant that died, held until a reader has been shown the
+/// seat or a new turn commits - so a crash nobody watched is still
+/// readable when someone looks, and the recovery that answers it is
+/// announced exactly once.
+struct SeatDeath {
+    /// The session that ended.
+    occupant: SessionId,
+    /// Whether the recovery's connect has announced it already.
+    announced: bool,
+}
+
 /// spawned [`forge_agent::Agent`] handles, one per active session.
 ///
 /// Construct via [`Workspace::new`]; consume via
@@ -394,13 +405,14 @@ pub struct Workspace {
     /// for the slot comes up again, so it reports an unrecovered failure
     /// rather than a history.
     spawn_failures: Mutex<HashMap<SessionSlot, String>>,
-    /// The occupant that died on a slot, keyed by slot, held until an
-    /// occupant comes up there again. [`Self::spawn_failures`] says an
-    /// attempt failed; this says the seat HAD something running and it
-    /// ended under its own process, which is what lets the recovery be
-    /// announced as a resume or a restart under a new id rather than
-    /// reading as a plain connect.
-    dead_occupants: Mutex<HashMap<SessionSlot, SessionId>>,
+    /// The occupant that died on a slot, keyed by slot, held until a
+    /// reader has been shown the seat again or a new turn commits there.
+    /// [`Self::spawn_failures`] says an attempt failed; this says the seat
+    /// HAD something running and it ended under its own process, which is
+    /// what lets the recovery be announced as a resume or a restart under
+    /// a new id rather than reading as a plain connect - and what keeps
+    /// the failure and its reason on the row until someone has looked.
+    deaths: Mutex<HashMap<SessionSlot, SeatDeath>>,
     /// The seats a view is showing, each with the working-tree scan loop it
     /// runs. Empty is the quiet case: a seat nobody holds is not scanned.
     pub(crate) held_work_seats: crate::work::HeldSeats,
@@ -1699,7 +1711,7 @@ impl Workspace {
             live_workers: Mutex::new(HashMap::new()),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
-            dead_occupants: Mutex::new(HashMap::new()),
+            deaths: Mutex::new(HashMap::new()),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
@@ -4655,6 +4667,15 @@ impl Workspace {
                     guard.turn_pending = true;
                     guard.failed_turn_at = None;
                 }
+                // A prompt the reader's own hands sent moves the seat on: a
+                // death trace still standing is taken with it, like the
+                // failure mark above. A cron's, a peer's or forge's own
+                // prompt is not a reader looking, so none of those spends it.
+                if let Command::PromptUnder { source: crate::protocol::PromptSource::You, .. } =
+                    &cmd
+                {
+                    self.spend_death(&key);
+                }
                 // Arm the cancel stamp on the routed path, so the turn's
                 // own failed `Result` can tell a reader's interrupt from a
                 // genuine error. An idle Cancel arms nothing.
@@ -6092,17 +6113,42 @@ impl Workspace {
     }
 
     /// Record that the occupant running on `slot` died, keeping its session
-    /// id until an occupant comes up there again. Taken by the connect that
-    /// answers the death, so the recovery can say which session died and
-    /// whether it was resumed or replaced.
-    pub(crate) fn record_dead_occupant(&self, slot: &SessionSlot, occupant: SessionId) {
-        self.dead_occupants.lock().insert(slot.clone(), occupant);
+    /// id until a reader has been shown the seat or a new turn commits.
+    pub(crate) fn record_death(&self, slot: &SessionSlot, occupant: SessionId) {
+        self.deaths.lock().insert(slot.clone(), SeatDeath { occupant, announced: false });
     }
 
-    /// Take the died occupant recorded for `slot`, clearing it: the connect
-    /// consuming it is the recovery that answers the death.
-    pub(crate) fn take_dead_occupant(&self, slot: &SessionSlot) -> Option<SessionId> {
-        self.dead_occupants.lock().remove(slot)
+    /// The died occupant recorded for `slot` when the recovery has not
+    /// announced it yet, consuming that one announcement: the notice fires
+    /// on the first connect that answers the death and stays quiet after.
+    /// The record itself stays until [`Self::spend_death`].
+    pub(crate) fn unannounced_death(&self, slot: &SessionSlot) -> Option<SessionId> {
+        let mut deaths = self.deaths.lock();
+        let death = deaths.get_mut(slot)?;
+        let was_unannounced = !death.announced;
+        death.announced = true;
+        was_unannounced.then(|| death.occupant.clone())
+    }
+
+    /// Whether a death stands unshown on `slot`: the row keeps its failure
+    /// and its reason while one does, so a crash nobody watched is still
+    /// readable when someone looks. `pub` because the row a view reads
+    /// carries it.
+    pub fn death_stands(&self, slot: &SessionSlot) -> bool {
+        self.deaths.lock().contains_key(slot)
+    }
+
+    /// A reader has taken the death on `slot` - shown the seat, or moved it
+    /// on with a new turn: the record and the failure it held go together,
+    /// and the answer says whether anything was spent. `pub` because the
+    /// seat being shown is the server's to see, and this is the spend the
+    /// server makes on the view's behalf.
+    pub fn spend_death(&self, slot: &SessionSlot) -> bool {
+        let spent = self.deaths.lock().remove(slot).is_some();
+        if spent {
+            self.clear_spawn_failure(slot);
+        }
+        spent
     }
 
     /// What the session at `slot` is doing right now - the axis

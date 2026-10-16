@@ -267,10 +267,37 @@ describe('closing a seat', () => {
     forgetClosed({ ...home(LEAD), agents: [agent(LEAD), agentIn(W1, 'LoggedOut')] });
     expect(closingSeat(W1), 'a logged-out seat kept its mark').toBe(false);
 
+    // **And a row whose session died is caught up too**: the roster keeps a
+    // crashed seat's row - the failure is its durable trace - so a close
+    // over one would hold the closing mark forever while the row draws its
+    // own settled state.
+    const crashed = connection();
+    expect(closeSeat(crashed.open, home(LEAD, W1), W1, LEAD, NOW)).toBe(true);
+    forgetClosed({ ...home(LEAD), agents: [agent(LEAD), agentIn(W1, 'Failed')] });
+    expect(closingSeat(W1), 'a failed seat kept its closing mark').toBe(false);
+
     // A lead's close cascades: every live row the project takes says it too.
     const cascaded = connection();
     expect(closeSeat(cascaded.open, home(LEAD, W1), LEAD, LEAD, NOW)).toBe(true);
     expect(closingSeat(W1), 'the cascade left a worker row reading live').toBe(true);
+  });
+});
+
+/**
+ * A seat whose session died has a failure behind it, not a session: a
+ * landing on one would hand the reader a page about to start the project
+ * they were leaving, so the walk passes it like a sleeping row.
+ */
+describe('the walk passes a seat whose session died', () => {
+  it('never lands on a died lead', () => {
+    const crashed: HomeWire = { ...homeWire, agents: [agentIn(LEAD, 'Failed')] };
+
+    expect(closeLanding(crashed, W1, NOW), 'a close landed on the died lead').toEqual({
+      name: 'home',
+    });
+    expect(removedLanding(crashed, W1, LEAD, NOW), 'a removal landed on the died lead').toEqual({
+      name: 'home',
+    });
   });
 });
 

@@ -74,6 +74,10 @@ export function closingSeat(slot: SessionSlot): boolean {
  * has to drop when the seat reads asleep too, and a row that says "going to
  * sleep" goes as the row itself goes quiet. (A closed LEAD is the other
  * shape: `home.agents` stops naming it, so its mark goes by the first arm.)
+ *
+ * **A failed row is caught up too**: a seat whose session died keeps its
+ * roster row - the failure is the durable trace - so a close over one would
+ * hold the closing mark forever while the row draws its own settled state.
  */
 export function forgetClosed(home: HomeWire): void {
   const forget = (marks: SvelteSet<string>): void => {
@@ -82,7 +86,8 @@ export function forgetClosed(home: HomeWire): void {
       if (
         agent === undefined ||
         agent.lifecycle === 'Sleeping' ||
-        agent.lifecycle === 'LoggedOut'
+        agent.lifecycle === 'LoggedOut' ||
+        agent.lifecycle === 'Failed'
       ) {
         marks.delete(key);
       }
@@ -117,7 +122,11 @@ function behind(home: HomeWire, slot: SessionSlot): boolean {
     (agent) =>
       keyOf(agent.slot) === key &&
       agent.lifecycle !== 'Sleeping' &&
-      agent.lifecycle !== 'LoggedOut',
+      agent.lifecycle !== 'LoggedOut' &&
+      // A seat whose session died has a failure behind it, not a session:
+      // landing a close's walk on one would hand the reader a page that is
+      // about to start the very project it was leaving.
+      agent.lifecycle !== 'Failed',
   );
 }
 

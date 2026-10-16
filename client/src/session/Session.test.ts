@@ -207,6 +207,7 @@ describe('the session shell as it draws', () => {
       last_activity: null,
       reason: null,
       failed_turn: null,
+      died: false,
       work: null,
       ...over,
     });

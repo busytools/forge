@@ -552,6 +552,17 @@ describe('the rail', () => {
     expect(fleetCount(homeWire)).toBe('1 live / 1');
     expect(fleetCount(withHome({ projects: [] }))).toBe('0 live / 0');
   });
+
+  /**
+   * A failed lead is not up: the roster names a crashed seat's row until a
+   * reader is shown it, so counting the name alone would call a project
+   * live while its agent is down.
+   */
+  it('does not count a failed lead as live', () => {
+    const crashed = withHome({ agents: [{ ...lead(), lifecycle: 'Failed', pending: null }] });
+
+    expect(fleetCount(crashed), 'a project with no agent up counted as live').toBe('0 live / 1');
+  });
 });
 
 describe('the seat', () => {
@@ -941,6 +952,7 @@ describe('the projects chip', () => {
     last_activity: null,
     reason: null,
     failed_turn: null,
+    died: false,
     work: null,
     ...over,
   });
@@ -1008,6 +1020,7 @@ describe("the palette's rows", () => {
     last_activity: null,
     reason: null,
     failed_turn: null,
+    died: false,
     work: null,
     ...over,
   });

@@ -20,7 +20,9 @@ use tracing::Instrument;
 
 use crate::SessionSlot;
 use crate::domain_session::{DomainSession, PendingAutoContinue};
-use crate::protocol::{Command, PendingInteractionSlot, PromptSource, SessionUpdate};
+use crate::protocol::{
+    Command, NoticeSeverity, PendingInteractionSlot, PromptSource, SessionUpdate,
+};
 use crate::update_fanout::UpdateFanout;
 
 pub(crate) struct SessionTask {
@@ -322,8 +324,14 @@ impl SessionTask {
                 // over. This arm is where that clears rather than the
                 // spawn entry: production hoists a domain straight into
                 // `domain_handles` and never registers one, so a clear on
-                // registration would never run at all.
-                if let Some(workspace) = self.workspace.upgrade() {
+                // registration would never run at all. **A death the reader
+                // has not been shown keeps its record and its reason**: the
+                // row's failure is the durable trace of a crash nobody
+                // watched, and it goes when the seat is shown, not when the
+                // recovery lands under it.
+                if let Some(workspace) = self.workspace.upgrade()
+                    && !workspace.death_stands(&key)
+                {
                     workspace.clear_spawn_failure(&key);
                 }
                 // Nothing re-keys on `Connected`: the task is
@@ -494,21 +502,22 @@ impl SessionTask {
                 // A connect on a slot whose last occupant died is not a
                 // silent swap: the reader is told which session died and
                 // whether this one resumed it or replaced it under a new id.
-                // Taken either way - a connect answers the death whichever
-                // id it lands under.
+                // Announced once, by the first connect that answers the
+                // death, whichever id it lands under; the record itself
+                // stays until a reader is shown the seat.
                 if let Some(workspace) = self.workspace.upgrade()
-                    && let Some(dead) = workspace.take_dead_occupant(&key)
+                    && let Some(dead) = workspace.unannounced_death(&key)
                 {
                     let text = if dead.as_str() == session_id.as_str() {
-                        format!("The agent died; forge resumed its session ({session_id}).")
+                        format!("The agent's session ended; forge resumed it ({session_id}).")
                     } else {
                         format!(
-                            "The agent died; forge restarted its session under a new id ({dead} -> {session_id})."
+                            "The agent's session ended; forge restarted it under a new id ({dead} -> {session_id})."
                         )
                     };
                     self.emit(SessionUpdate::Notice {
                         key: key.clone(),
-                        severity: crate::protocol::NoticeSeverity::Error,
+                        severity: NoticeSeverity::Error,
                         text,
                     });
                 }
@@ -548,12 +557,24 @@ impl SessionTask {
                     workspace.record_spawn_failure(&key, &message);
                     // An occupant that had been up and ended here died; the
                     // connect that next lands on the slot is told so and says
-                    // which session it answers for. A spawn that never
-                    // connected records none: nothing was running.
+                    // which session it answers for, and the failure stays on
+                    // the row until a reader has been shown the seat. A spawn
+                    // that never connected records none: nothing was running.
                     if self.connected_once
                         && let Some(occupant) = self.domain.lock().session_id.clone()
                     {
-                        workspace.record_dead_occupant(&key, occupant);
+                        // WARN, and with the slot on it: this is the one line
+                        // that says a seat's session ended, and a reader
+                        // triaging it needs to know which seat.
+                        tracing::warn!(
+                            target: "forge_workspace::session_task",
+                            event_name = "session_ended",
+                            slot = %key.display(),
+                            session_id = %occupant,
+                            error = %message,
+                            "the session's subprocess ended; the seat keeps its failure until shown",
+                        );
+                        workspace.record_death(&key, occupant);
                     }
                 }
                 // A `/new` or `/resume` that fails to respawn ends the
@@ -4274,11 +4295,13 @@ mod tests {
     }
 
     /// Everything `updates` holds that is a `Notice`, as its text.
-    fn notices_of(updates: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<String> {
+    fn notices_of(
+        updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
+    ) -> Vec<(NoticeSeverity, String)> {
         drain_updates(updates)
             .into_iter()
             .filter_map(|update| match update {
-                SessionUpdate::Notice { text, .. } => Some(text),
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
             .collect()
@@ -4286,8 +4309,13 @@ mod tests {
 
     /// A session that died is not silently swapped: the recovery that comes
     /// up on the slot announces the death and what forge did about it - the
-    /// same occupant resumed, or a new one under a new id - and a connect
-    /// with no death behind it stays quiet.
+    /// same occupant resumed, or a new one under a new id - exactly once,
+    /// and a connect with no death behind it stays quiet.
+    ///
+    /// The verb is "ended" rather than "died" on purpose: the same arm
+    /// catches a `/new` or `/resume` that failed to respawn, where the
+    /// occupant was swapped out rather than crashing, and "ended" is true
+    /// of both.
     #[test]
     fn a_recovery_after_a_death_announces_what_forge_did() {
         // The death: an occupant that had been up, whose subprocess ended.
@@ -4305,12 +4333,46 @@ mod tests {
         let (mut revived, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
         revived.translate_event(connected_event("fresh-occupant", "/tmp/recovery-announced"));
         let notices = notices_of(&mut updates);
-        assert!(
-            notices.iter().any(|text| text.contains("The agent died")
-                && text.contains("dead-occupant")
-                && text.contains("fresh-occupant")),
-            "the restart under a new id is announced with both ids: {notices:?}",
+        assert_eq!(notices.len(), 1, "one line, and only one: {notices:?}");
+        let (severity, text) = &notices[0];
+        assert_eq!(
+            *severity,
+            NoticeSeverity::Error,
+            "a death reads at failure level: the client leads the row with the severity word",
         );
+        assert_eq!(
+            text,
+            "The agent's session ended; forge restarted it under a new id (dead-occupant -> fresh-occupant).",
+            "the restart names both ids, in pinned words",
+        );
+
+        // A second connect on the slot stays quiet: the death is announced
+        // once, not on every connect that follows it.
+        revived.translate_event(connected_event("second-occupant", "/tmp/recovery-announced"));
+        assert!(
+            notices_of(&mut updates).is_empty(),
+            "a later connect does not re-announce the death",
+        );
+
+        // The row keeps the failure until a reader takes the death: a crash
+        // nobody watched is still readable when someone looks. The recovery
+        // consumed the ANNOUNCEMENT, not the record - the connect that
+        // answers a death nobody was watching leaves the trace standing.
+        assert!(
+            workspace.death_stands(&key),
+            "the recovery did not spend the death nobody was shown",
+        );
+        assert_eq!(
+            workspace.spawn_failure(&key).as_deref(),
+            Some("the claude subprocess closed its output stream"),
+            "the recovery does not clear the failure the reader has not seen",
+        );
+        assert!(
+            workspace.spend_death(&key),
+            "showing the seat takes the death, and answers that it did",
+        );
+        assert!(!workspace.death_stands(&key), "the record goes with the spend");
+        assert_eq!(workspace.spawn_failure(&key), None, "and the failure goes with it");
 
         // And the same id back: the session resumed.
         let (workspace, _rx) = crate::Workspace::testing_stub();
@@ -4325,8 +4387,9 @@ mod tests {
         let (mut revived, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
         revived.translate_event(connected_event("kept-occupant", "/tmp/recovery-announced"));
         let notices = notices_of(&mut updates);
-        assert!(
-            notices.iter().any(|text| text.contains("The agent died") && text.contains("resumed")),
+        assert_eq!(
+            notices.first().map(|(_, text)| text.as_str()),
+            Some("The agent's session ended; forge resumed it (kept-occupant)."),
             "the same occupant coming back reads as a resume: {notices:?}",
         );
 

@@ -249,6 +249,7 @@ function agent(
   lifecycle: Lifecycle,
   work: WorkState | null = null,
   failedTurn: WireTime | null = null,
+  died = false,
 ): AgentRow {
   return {
     slot: { org, project, label },
@@ -260,6 +261,7 @@ function agent(
     last_activity: null,
     reason: null,
     failed_turn: failedTurn,
+    died,
     work,
   };
 }
@@ -416,6 +418,22 @@ describe('the fleet the snapshot describes', () => {
     const header = homeView(FLEET, '').header;
     expect(header.liveAgents, 'the header read the project count as agents').toBe(4);
     expect(header.projects, 'the header read the agent count as projects').toBe(3);
+  });
+
+  /**
+   * A failed seat is not an agent that is up: a crashed lead keeps its
+   * roster row until a reader is shown it, and counting it would name an
+   * agent that is not running.
+   */
+  it('does not count a failed seat as a live agent', () => {
+    const first = FLEET.agents[0];
+    if (first === undefined) throw new Error('the fixture holds no agent');
+    const crashed: HomeWire = {
+      ...FLEET,
+      agents: [{ ...first, lifecycle: 'Failed' }, ...FLEET.agents.slice(1)],
+    };
+
+    expect(homeView(crashed, '').header.liveAgents, 'a failed seat counted as up').toBe(3);
   });
 
   /**

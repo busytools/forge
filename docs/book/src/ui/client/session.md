@@ -102,9 +102,13 @@ beside what it is costing, not on the strip.
   this client just closed is never asked: the roster landing it asleep is
   that close arriving, not a wake to start.
 - **A seat whose session died**: the roster keeps the seat's row carrying
-  the failure and its reason, so the page draws failed rather than waking,
-  and the recovery that brings the seat back says so in the chat - the
-  session resumed, or a new one under a new id.
+  the failure and its reason, so the page draws failed rather than a seat
+  nothing has started - and opening a lead's page starts it again, the way
+  a sleeping seat is started, because the death is recorded. A seat that
+  only failed to START (a sign-in, a bad config) is not woken: it stays
+  parked with its reason rather than being asked for in a loop. The
+  recovery that brings a died seat back says so in the chat - the session
+  resumed, or a new one under a new id.
 - **A refused read**: the server turned the subscription down, and its own
   words are drawn.
 - **A connection that dropped**: the page keeps what it last read, and the

@@ -845,7 +845,10 @@ export function homeView(wire: HomeWire, address: string): HomeView {
     upstream: wire.service_status,
     fleet: fleetRows(wire),
     header: {
-      liveAgents: wire.agents.length,
+      // A failed seat is not up: a crashed lead keeps its roster row until
+      // a reader is shown it, and counting it would name an agent that is
+      // not running.
+      liveAgents: wire.agents.filter((agent) => agent.lifecycle !== 'Failed').length,
       tasks: wire.projects.reduce((total, row) => total + row.rows.length, 0),
       projects: wire.projects.length,
       installed: wire.cli_version?.installed ?? null,
