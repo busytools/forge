@@ -3,6 +3,13 @@
 //! spelling rules without being written FROM them, which is what made a
 //! substring blocklist blind.
 //!
+//! It also refuses a user frame carrying one of the disk-only synthetic
+//! marks. The persistence-to-wire transform drops them before a baseline
+//! is written, so a committed capture holding one describes a wire shape
+//! the CLI cannot send - the state a hand edit or a stale corpus leaves
+//! and the fixed-point check cannot see, because the redactor does not
+//! rewrite those names either.
+//!
 //! Two things it cannot see. Prose in a captured tool result is not
 //! redacted at all - read `session_redact`'s "what it does not cover".
 //! And the owner rule is unverifiable here by construction: `for_trace`
@@ -18,6 +25,13 @@
 
 use forge_test_harness::sdk_wire::session_redact::WireRedactor;
 use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir};
+
+/// Top-level spellings the disk gives a synthetic row and the wire never
+/// sends on a user frame. Closed over these four on purpose: the
+/// open-ended question of which names the wire may carry is a separate
+/// one, and this list is small enough to be checkable by eye.
+const DISK_ONLY_USER_MARKS: &[&str] =
+    &["isMeta", "isCompactSummary", "isVisibleInTranscriptOnly", "turnCompanion"];
 
 /// Every directory of committed captures. The reference captures are a
 /// raw `claude --print` shell redirect that no code path redacts, so they
@@ -84,6 +98,19 @@ fn committed_captures_are_a_fixed_point_of_the_redactor() {
                 hits.push(format!("{}: no wire lines at all", path.display()));
             }
             for (i, line) in lines.iter().enumerate() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+                    && v.get("type").and_then(serde_json::Value::as_str) == Some("user")
+                {
+                    for mark in DISK_ONLY_USER_MARKS {
+                        if v.get(*mark).is_some() {
+                            hits.push(format!(
+                                "{}:{}: a user frame carries the disk-only mark {mark}",
+                                path.display(),
+                                i + 1
+                            ));
+                        }
+                    }
+                }
                 match redactor.redact_line(line) {
                     Ok(again) if again == *line => {}
                     Ok(_) => hits.push(format!(
