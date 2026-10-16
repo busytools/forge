@@ -288,11 +288,22 @@ impl ViewSurface {
     /// between-hunk expansion.
     ///
     /// `sha` names the revision - a commit's own tree for a commit scope -
-    /// and `None` is the seat's branch tip, which is the new side of the
+    /// and `None` reads the seat's branch tip, which is the new side of the
     /// all-changes diff. The read is bounded by the same ceiling a document
     /// read is, and a file cut at that ceiling answers the lines it carried,
     /// flagged, rather than refusing: the gaps those lines reach are still
     /// worth drawing.
+    ///
+    /// **`None` is the branch tip read NOW, and it is stated rather than
+    /// pinned for want of anything to pin it to.** The record's diff was
+    /// scanned from this same seat, but it carries no revision for its
+    /// branch layer - its commit chain names only the commits ahead of the
+    /// default - so a branch that moves between the record's read and the
+    /// reader's ask can draw newer lines against frozen hunks. The window is
+    /// the record's age, the page draws its own controls only for lines the
+    /// read reaches, and the alternative (carrying the scanned revision on
+    /// the record, and a wire field with it) buys a race nobody has hit for
+    /// a field every reader would pay.
     pub async fn file_content(
         &self,
         seat: &SessionSlot,

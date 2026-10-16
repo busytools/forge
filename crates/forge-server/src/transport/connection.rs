@@ -1268,8 +1268,9 @@ async fn handle_client(
             // The seat resolution the document read takes, so a file reads
             // out of the tree the record's own content read describes. A
             // read that could not run answers as itself rather than as an
-            // error: a file the revision does not carry and one git could
-            // not read are different facts, and the page draws the arm.
+            // error - the refusal's own sentence rides the `failed` arm, and
+            // a page draws that arm as the absence of a control rather than
+            // as a broken file.
             let content = match state.surface.file_content(&session, &path, sha.as_deref()).await {
                 Ok(read) => FileContentWire::Read { lines: read.lines, truncated: read.truncated },
                 Err(why) => FileContentWire::Failed { why },

@@ -231,22 +231,39 @@ pub async fn scan_commit(cwd: &Path, sha: &str) -> ScanOutcome {
 /// [`scan_commit`] with its command budget spelled; see the module's
 /// [`scan_within`].
 pub async fn scan_commit_within(cwd: &Path, sha: &str, budget: Duration) -> ScanOutcome {
-    let ref_spec = commit_ref_spec(cwd, sha, budget).await;
+    let Some(ref_spec) = commit_ref_spec(cwd, sha, budget).await else {
+        // Nothing a revision could be built from: the scan reports its own
+        // failure rather than a diff of some other tree.
+        return ScanOutcome { files: Vec::new(), scanner_ok: false, untracked_suppressed: 0 };
+    };
     scan_with_ref_spec(cwd, &ref_spec, budget).await
 }
 
-/// Resolve the two-endpoint `git diff` range for one commit. Uses
-/// `git rev-list --parents -n 1 <sha>` (always exits 0, so no spurious
-/// non-zero-exit WARN) to detect a parent: `<sha> <parent…>` means a
-/// normal commit (`<sha>^..<sha>`, first-parent for a merge), a lone
-/// `<sha>` means a root commit (diff against the empty tree).
-pub(crate) async fn commit_ref_spec(cwd: &Path, sha: &str, budget: Duration) -> String {
-    match run_git_within(cwd, &["rev-list", "--parents", "-n", "1", sha], budget).await {
-        GitOutput::Ok(s) if s.split_whitespace().count() > 1 => format!("{sha}^..{sha}"),
-        GitOutput::Ok(_) => format!("{EMPTY_TREE_SHA}..{sha}"),
+/// Resolve the two-endpoint `git diff` range for one commit, or `None` when
+/// `sha` names no commit git can read.
+///
+/// **The sha is resolved first, because it is a revision off a wire**: the
+/// range this builds is handed to `git diff` as one argv, and an
+/// option-shaped sha would be read as an option of the diff's own - the same
+/// gate [`super::file::resolve_commit`] applies to the file read, and the
+/// same reason. Resolved, it is a commit id, which cannot be a flag.
+///
+/// Uses `git rev-list --parents -n 1 <id>` (always exits 0, so no spurious
+/// non-zero-exit WARN) to detect a parent: `<id> <parent…>` means a normal
+/// commit (`<id>^..<id>`, first-parent for a merge), a lone `<id>` means a
+/// root commit (diff against the empty tree).
+pub(crate) async fn commit_ref_spec(cwd: &Path, sha: &str, budget: Duration) -> Option<String> {
+    let commit = super::file::resolve_commit(cwd, sha, budget).await?;
+    match run_git_within(cwd, &["rev-list", "--parents", "-n", "1", &commit], budget).await {
+        GitOutput::Ok(s) if s.split_whitespace().count() > 1 => {
+            Some(format!("{commit}^..{commit}"))
+        }
+        GitOutput::Ok(_) => Some(format!("{EMPTY_TREE_SHA}..{commit}")),
         // Best-effort on any anomaly: the normal-commit spec, whose
         // scan just reports scanner failure rather than panicking.
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => format!("{sha}^..{sha}"),
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => {
+            Some(format!("{commit}^..{commit}"))
+        }
     }
 }
 
@@ -261,8 +278,16 @@ pub async fn scan_commit_body(cwd: &Path, sha: &str) -> String {
 
 /// [`scan_commit_body`] with its command budget spelled; see the module's
 /// [`scan_within`].
+///
+/// The sha is resolved first, the same gate the commit scan's own ref spec
+/// takes: it is a revision off a wire, and `git show` would read an
+/// option-shaped one as its own option. A sha that names no commit reads as
+/// no body.
 pub async fn scan_commit_body_within(cwd: &Path, sha: &str, budget: Duration) -> String {
-    match run_git_within(cwd, &["show", "-s", "--format=%b", sha], budget).await {
+    let Some(commit) = super::file::resolve_commit(cwd, sha, budget).await else {
+        return String::new();
+    };
+    match run_git_within(cwd, &["show", "-s", "--format=%b", &commit], budget).await {
         GitOutput::Ok(s) => s.trim_end().to_owned(),
         GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => String::new(),
     }
@@ -1258,6 +1283,30 @@ diff --git a/x.rs b/x.rs
         let paths: Vec<&str> = middle.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, vec!["b.rs"], "middle commit touches only b.rs");
         assert!(middle.scanner_ok);
+    }
+
+    /// **A sha off a wire never reaches `git diff` as an option.** The range
+    /// this scan builds is one argv, and `git diff --output=<file>^..…`
+    /// writes files wherever the caller points it; the resolution is the
+    /// gate, and this is the pin (the file read's own is beside it, in
+    /// `file.rs`).
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_option_shaped_sha_scans_nothing_and_writes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_commit_repo(&dir);
+        write_file(&dir, "a.rs", "a\n");
+        commit(&dir, "init");
+        let target = dir.path().join("written-by-git");
+        let shaped = format!("--output={}", target.display());
+
+        let outcome = scan_commit_within(dir.path(), &shaped, TEST_GIT_BUDGET).await;
+        assert!(!outcome.scanner_ok, "a sha that names no commit is the scan's own failure");
+        assert!(outcome.files.is_empty(), "and it carries no files: {outcome:?}");
+        assert!(!target.exists(), "git was never asked to write a file");
+
+        let body = scan_commit_body_within(dir.path(), &shaped, TEST_GIT_BUDGET).await;
+        assert!(body.is_empty(), "nor does the body read ask git for it");
+        assert!(!target.exists(), "still no file");
     }
 
     #[tokio::test(flavor = "current_thread")]
