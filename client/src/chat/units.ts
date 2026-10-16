@@ -2433,9 +2433,15 @@ function carriesNothing(frame: unknown): boolean {
  *
  * `NaN` for a stamp that will not parse, which the fold's own span reads the
  * same way - it keeps the string and every span that starts there is null.
+ *
+ * **A dispatched frame's stamp is not the turn's**, the same rule both of the
+ * fold's passes keep - and one can LEAD the array: a frame that draws nothing
+ * and finds no turn to join waits in the store and rides ahead of whatever
+ * opens the next turn (`conversation.ts`'s `unturned`).
  */
 function firstStampMs(messages: readonly unknown[]): number | null {
   for (const frame of messages as Frame[]) {
+    if (isDispatched(frame)) continue;
     if (typeof frame.timestamp === 'string' && frame.timestamp !== '') {
       return Date.parse(frame.timestamp);
     }

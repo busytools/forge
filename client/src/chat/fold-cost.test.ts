@@ -297,6 +297,18 @@ describe('the carried fold draws what the whole fold draws', () => {
   /** One frame at a time, folded both ways: the carry may not move a row. */
   it('equals fold(), frame for frame, across a live turn', () => {
     const frames: unknown[] = [
+      // A dispatched agent's frame can LEAD a turn's array: one that draws
+      // nothing and finds no turn to join waits in the store and rides ahead
+      // of whatever opens the next turn (`conversation.ts`'s `unturned`) -
+      // and its stamp is still not the turn's.
+      counted({
+        type: 'system',
+        subtype: 'thinking_tokens',
+        uuid: 't-lead-sub',
+        parent_tool_use_id: 'c0',
+        estimated_tokens_delta: 5,
+        timestamp: '2026-10-01T06:00:40Z',
+      }),
       prompt('work'),
       // No stamp anywhere yet: the running row's span has no start until the
       // first stamped frame, whichever frame that turns out to be.
