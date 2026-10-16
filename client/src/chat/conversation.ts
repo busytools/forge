@@ -644,8 +644,14 @@ function textIn(update: SessionUpdate, variant: string, field: string): string |
   return typeof value === 'string' ? value : null;
 }
 
-/** How long a refused page waits before it is asked again, while the column is live. */
+/**
+ * How long a refused page waits before it is asked again, while the column is
+ * live - and what an empty page's retry doubles from.
+ */
 const RETRY_MS = 2_000;
+
+/** The longest an empty page's retry waits, however many came in a row. */
+const EMPTY_RETRY_MAX_MS = 30_000;
 
 /**
  * How long a publish waits for a paint before it goes out anyway.
@@ -798,6 +804,20 @@ export class Chat {
    * walk's cursor never came.
    */
   private retry: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * When an older ask last came back EMPTY, and how many in a row have.
+   *
+   * An empty page keeps the walk's cursor, so the reader's next pull asks
+   * again - but a reader parked at the top fires a pull per scroll event, and
+   * each ask costs the server a transcript read below the window. One ask a
+   * beat is the reader's retry without the hammering; `emptyAt` of `0` (never
+   * asked, or a page with rows since) leaves the walk unmetered, and
+   * `emptyBeats` doubles the wait per consecutive empty so a futile retry
+   * cannot hold the column to one ask every two seconds all day.
+   */
+  private emptyAt = 0;
+  /** Consecutive empty pages, which is what the wait doubles from. */
+  private emptyBeats = 0;
   /** This seat's subject key, which is how a snapshot is known to be its own. */
   private readonly key: string;
   /**
@@ -1137,6 +1157,14 @@ export class Chat {
     // Nothing above the page already drawn is the server's own `null`, and
     // asking again on it would walk the same page forever.
     if (!loaded || cursor === null || this.inFlight !== null) return false;
+    // An empty page kept the walk where it was, and the retry costs the server
+    // a transcript read - so one ask a beat, not one per scroll event, and the
+    // beat doubles per consecutive empty (on the 84MB seat a futile retry is
+    // not cheap: each ask searches back through the transcript).
+    if (this.emptyAt !== 0) {
+      const beat = Math.min(RETRY_MS * 2 ** (this.emptyBeats - 1), EMPTY_RETRY_MAX_MS);
+      if (Date.now() - this.emptyAt < beat) return false;
+    }
     return this.ask(cursor);
   }
 
@@ -1386,6 +1414,16 @@ export class Chat {
     this.askedBefore = null;
     this.clearRetry();
     const pageRows = pageTurns(rows);
+    // **No rows and no cursor is a read that failed, not an end.** The seat's
+    // below-floor walk answers exactly this way when it cannot resolve an
+    // anchor the window names; the merge below keeps the walk's cursor for it,
+    // and this is the beat the retry is paced and widened by. A page of rows
+    // that carry nothing to draw is the OTHER shape - the transcript answered
+    // it, so its own cursor is taken, and a null one ends the walk as always.
+    const emptied = pageRows.length === 0 && cursor === null;
+    if (emptied) this.emptyBeats += 1;
+    else this.emptyBeats = 0;
+    this.emptyAt = emptied ? Date.now() : 0;
     // The page's frames, indexed once for everything below that asks what the
     // page carries: the heal, the ride, and the walk's own check.
     const fromPage = new Frames(pageRows.flatMap((row) => messagesOf(row)));
@@ -1694,7 +1732,22 @@ export class Chat {
         // send the walk to the top of the conversation and fetch every page
         // between a second time. Only a page asked for BY cursor moves the
         // walk, and the first page establishes it.
-        cursor: direction === 'older' || !held.loaded || !reachesHeld ? cursor : held.cursor,
+        //
+        // **And an EMPTY page is a failed read, not the history's end.** The
+        // seat's below-floor walk answers zero rows with a null cursor when it
+        // cannot resolve an anchor the window names - measured on the
+        // playground lead seat as `transcript_page_unavailable` plus
+        // `page_boundary_unresolved` - and a null cursor taken from it ends the
+        // walk for the life of the conversation: `older()` refuses forever
+        // after, so the reader's next pull is never asked and everything above
+        // stays unreachable. The cursor the walk arrived with is kept instead,
+        // and `emptyAt` paces the retry; a page that DID carry rows and no
+        // cursor is the honest end and still ends the walk.
+        cursor: emptied
+          ? held.cursor
+          : direction === 'older' || !held.loaded || !reachesHeld
+            ? cursor
+            : held.cursor,
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
         turns:
           direction === 'older'
@@ -1796,6 +1849,14 @@ export class Chat {
     // moved it to 290).
     if (held) this.forgot();
     this.clearRetry();
+    // **And the empty-page beat goes with it.** The backoff belonged to the
+    // walk over the occupant that left, and the new one decides its own pacing
+    // from its own first page. Defensive rather than load-bearing today: every
+    // landing re-stamps `emptyAt`, and `older()` cannot run before one,
+    // because the swap leaves `loaded` false - so no test can tell this line
+    // from its absence, and it stays for the path that would.
+    this.emptyAt = 0;
+    this.emptyBeats = 0;
     this.ask(null);
   }
 

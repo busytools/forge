@@ -2811,6 +2811,79 @@ describe('the conversation the chat draws', () => {
     expect(get(chat.value).cursor, 'and a null cursor is the end of the walk').toBeNull();
   });
 
+  it('does not end the walk on a page that came back empty', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t2', 'second')], 'r:900'));
+    chat.older();
+    expect(server.more()[1], 'the walk asked from the page it holds').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: 'r:900',
+      turns: MORE_TURNS,
+    });
+
+    // The seat's below-floor read answers EMPTY - no rows, no cursor - when it
+    // cannot resolve the anchor the walk holds (`transcript_page_unavailable`,
+    // `page_boundary_unresolved`; measured on the playground lead seat). That
+    // is a read that failed, not the history's end: a cursor taken from it as
+    // null ends the walk for the life of the conversation, because `older()`
+    // refuses forever after - the reader's own next pull is never asked and
+    // everything above stays unreachable.
+    server.send(page([], null));
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'an empty page draws nothing',
+    ).toEqual(['t2']);
+
+    // The retry is paced - one ask a beat, not one per scroll event, because
+    // each ask costs the server a transcript read below the window - so the
+    // clock is driven rather than waited on. Two seconds is the beat
+    // (`RETRY_MS` in `conversation.ts`), and the retry below is what has to
+    // answer by then.
+    expect(chat.older(), 'a pull inside the beat is held back').toBe(false);
+    vi.useFakeTimers();
+    try {
+      vi.advanceTimersByTime(2_000);
+      expect(chat.older(), 'and the reader can walk again').toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(server.more().at(-1), 'from the same place the walk stopped at').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: 'r:900',
+      turns: MORE_TURNS,
+    });
+  });
+
+  it('widens the empty-page retry per consecutive empty answer', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t2', 'second')], 'r:900'));
+    vi.useFakeTimers();
+    try {
+      chat.older();
+      server.send(page([], null));
+      // The first beat is `RETRY_MS`: held inside it, and it goes after it.
+      expect(chat.older(), 'inside the first beat').toBe(false);
+      vi.advanceTimersByTime(2_000);
+      expect(chat.older(), 'the first retry goes').toBe(true);
+
+      // A second empty in a row doubles the wait - a futile retry searches the
+      // 84MB seat's transcript back every time it goes.
+      server.send(page([], null));
+      vi.advanceTimersByTime(2_000);
+      expect(chat.older(), 'inside the doubled beat').toBe(false);
+      vi.advanceTimersByTime(2_000);
+      expect(chat.older(), 'the doubled retry goes').toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('draws its shell and says so when a seat has no history', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
