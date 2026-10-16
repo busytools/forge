@@ -1708,25 +1708,29 @@ details.leaf.running > summary { color: var(--text); }
   background: var(--hot); animation: b-breath 2.4s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .outlive::before { animation: none; opacity: 1; } }
 /* A command's own colours, as its escapes are read into the page's palette
-   (chat/ansi.ts): the sixteen every terminal has, mapped to the tokens this
-   theme already owns. A normal colour is the token pulled toward the ground it
-   draws on, a bright one is the token itself, which is how a terminal's own
-   two weights read. */
-.ansi-black { color: color-mix(in srgb, var(--dim) 70%, var(--bg)); }
-.ansi-bright-black { color: var(--muted); }
-.ansi-red { color: color-mix(in srgb, var(--bad) 70%, var(--bg)); }
-.ansi-bright-red { color: var(--bad); }
-.ansi-green { color: color-mix(in srgb, var(--ok) 70%, var(--bg)); }
-.ansi-bright-green { color: var(--ok); }
-.ansi-yellow { color: color-mix(in srgb, var(--warn) 70%, var(--bg)); }
-.ansi-bright-yellow { color: var(--warn); }
-.ansi-blue { color: color-mix(in srgb, var(--blue) 70%, var(--bg)); }
-.ansi-bright-blue { color: var(--blue); }
-.ansi-magenta { color: color-mix(in srgb, var(--violet) 70%, var(--bg)); }
-.ansi-bright-magenta { color: var(--violet); }
-.ansi-cyan { color: color-mix(in srgb, var(--teal) 70%, var(--bg)); }
-.ansi-bright-cyan { color: var(--teal); }
-.ansi-white { color: color-mix(in srgb, var(--text) 70%, var(--bg)); }
+   (chat/ansi.ts): the sixteen every terminal has, mapped to tokens this theme
+   already owns, so a coloured row belongs to the same palette as the rest of
+   the page. The normal weight is the token itself - every one of the eight
+   clears AA on the box's ground - and the bright weight is that token lifted
+   toward the page's prose tone, which is how a terminal's two weights read.
+   Both weights, and the lift, are measured in contrast.test.ts. */
+.ansi-black { color: var(--dim); }
+.ansi-bright-black { color: color-mix(in srgb, var(--dim) 70%, var(--text)); }
+.ansi-red { color: var(--bad); }
+.ansi-bright-red { color: color-mix(in srgb, var(--bad) 70%, var(--text)); }
+.ansi-green { color: var(--ok); }
+.ansi-bright-green { color: color-mix(in srgb, var(--ok) 70%, var(--text)); }
+.ansi-yellow { color: var(--warn); }
+.ansi-bright-yellow { color: color-mix(in srgb, var(--warn) 70%, var(--text)); }
+.ansi-blue { color: var(--blue); }
+.ansi-bright-blue { color: color-mix(in srgb, var(--blue) 70%, var(--text)); }
+.ansi-magenta { color: var(--violet); }
+.ansi-bright-magenta { color: color-mix(in srgb, var(--violet) 70%, var(--text)); }
+.ansi-cyan { color: var(--teal); }
+.ansi-bright-cyan { color: color-mix(in srgb, var(--teal) 70%, var(--text)); }
+/* White's bright weight is the same token: the theme's white is already the
+   page's brightest tone, so there is no lift left to take. */
+.ansi-white { color: var(--text); }
 .ansi-bright-white { color: var(--text); }
 .ansi-bold { font-weight: 640; }
 .ansi-dim { opacity: .7; }

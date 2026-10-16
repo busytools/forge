@@ -281,7 +281,11 @@ function toolUseError(text: string): { message: string; detail: string } | null 
   if (start === -1) return null;
   const end = lower.indexOf('</tool_use_error>', start + open.length);
   if (end === -1) return null;
-  const inner = text.slice(start + open.length, end).trim();
+  // The envelope's own words are read as PLAIN text, unlike the body around
+  // them: a failure draws in the caption lane (`errhint`, the row's tail)
+  // where there is no terminal box to render a sequence, so an escape left on
+  // them is residue on the page.
+  const inner = stripEscapes(text.slice(start + open.length, end)).trim();
   if (inner === '') return null;
   const at = inner.indexOf('\n');
   return at === -1

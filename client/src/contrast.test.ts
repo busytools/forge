@@ -71,6 +71,58 @@ function contrast(a: string, b: string): number {
 /** The only value shape `luminance` reads. */
 const OPAQUE = /^#[0-9a-f]{6}$/i;
 
+/** The sheet's spelling of a token, which is what a pair's entry names. */
+const TOKEN = /^--[a-z0-9-]+$/;
+
+/** And its spelling of a two-token lift: `color-mix(in srgb, var(--a) p%, var(--b))`. */
+const MIX = /^color-mix\(in srgb, var\((--[a-z0-9-]+)\) (\d+)%, var\((--[a-z0-9-]+)\)\)$/;
+
+/** An entry resolved to a `#rrggbb` value, or the reason it could not be. */
+type Resolved = { ink: string } | { why: string };
+
+/**
+ * The colour an entry names: a token, or one of the two-token `color-mix`
+ * expressions the sheet writes.
+ *
+ * **Reading the mix is what keeps the floor over a derived colour.** A pair
+ * naming `color-mix(...)` used to arrive here as a value the arithmetic could
+ * not run on, and `NaN` compares false, so it passed vacuously; resolving it
+ * the way the browser does is what makes the command box's bright colours a
+ * guarded pair rather than a comment.
+ */
+function inkOf(entry: string, palette: Readonly<Record<string, string>>): Resolved {
+  if (TOKEN.test(entry)) {
+    const value = palette[entry];
+    return value === undefined ? { why: 'the palette resolves no such token' } : { ink: value };
+  }
+  const mix = MIX.exec(entry);
+  if (mix === null) return { why: 'not a pair of #rrggbb values' };
+  const [, left = '', percent = '0', right = ''] = mix;
+  const a = palette[left];
+  const b = palette[right];
+  if (a === undefined || b === undefined) return { why: 'the palette resolves no such token' };
+  const mixed = blend(a, b, Number(percent));
+  return mixed === null ? { why: 'not a pair of #rrggbb values' } : { ink: mixed };
+}
+
+/**
+ * `color-mix(in srgb, a percent%, b)` as a hex, or `null` when either side is
+ * not a value this file can blend - plain sRGB interpolation, which is what
+ * the browser does with two opaque colours.
+ */
+function blend(a: string, b: string, percent: number): string | null {
+  if (!OPAQUE.test(a) || !OPAQUE.test(b)) return null;
+  const p = percent / 100;
+  const part = (at: number): string => {
+    const left = Number.parseInt(a.slice(at, at + 2), 16);
+    const right = Number.parseInt(b.slice(at, at + 2), 16);
+    return Math.round(left * p + right * (1 - p))
+      .toString(16)
+      .padStart(2, '0');
+  };
+  return `#${part(1)}${part(3)}${part(5)}`;
+}
+
 /**
  * What a failure should say: the two tokens and both ratios.
  *
@@ -86,17 +138,21 @@ const OPAQUE = /^#[0-9a-f]{6}$/i;
 function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, string>>): string[] {
   const outside: string[] = [];
   for (const [foreground, ground, floor, ceiling] of pairs) {
-    const fg = palette[foreground];
-    const bg = palette[ground];
-    if (fg === undefined || bg === undefined) {
-      outside.push(`${foreground} on ${ground}: the palette resolves no such token`);
+    const fg = inkOf(foreground, palette);
+    const bg = inkOf(ground, palette);
+    if ('why' in fg) {
+      outside.push(`${foreground} on ${ground}: ${fg.why}`);
       continue;
     }
-    if (!OPAQUE.test(fg) || !OPAQUE.test(bg)) {
+    if ('why' in bg) {
+      outside.push(`${foreground} on ${ground}: ${bg.why}`);
+      continue;
+    }
+    if (!OPAQUE.test(fg.ink) || !OPAQUE.test(bg.ink)) {
       outside.push(`${foreground} on ${ground}: not a pair of #rrggbb values`);
       continue;
     }
-    const measured = contrast(fg, bg);
+    const measured = contrast(fg.ink, bg.ink);
     if (measured < floor) {
       outside.push(
         `${foreground} on ${ground} measures ${measured.toFixed(2)}:1, below the ${floor}:1 floor`,
@@ -147,6 +203,13 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * draws `--text` is the same token on a raised ground, and always measures
  * below it.
  */
+/**
+ * The bright weight of an ANSI colour, as the sheet writes it: the token
+ * lifted toward the page's prose tone. Held as the expression rather than a
+ * number, so a lift that moves in the sheet is measured where it moved.
+ */
+const LIFTED = (token: string): string => `color-mix(in srgb, var(${token}) 70%, var(--text))`;
+
 const DRAWN: readonly Pair[] = [
   ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
   ['--text', '--s1', TEXT],
@@ -187,6 +250,20 @@ const DRAWN: readonly Pair[] = [
   // The pile card's own source chip: `.m .src.forge`, on the card's ground.
   ['--violet', '--s2', TEXT],
   ['--hot', '--bg', TEXT],
+  // The command output box's own colours (`.ansi-*` in `web.css`, read off the
+  // escapes a command wrote by `chat/ansi.ts`), on the ground the box draws on.
+  // The normal weight is the token itself - the eight rows above already carry
+  // most of them - and the bright weight is the token lifted toward the page's
+  // prose tone, written here exactly as the sheet writes it so the lift is
+  // measured rather than trusted.
+  ['--violet', '--bg', TEXT],
+  [LIFTED('--dim'), '--bg', TEXT],
+  [LIFTED('--bad'), '--bg', TEXT],
+  [LIFTED('--ok'), '--bg', TEXT],
+  [LIFTED('--warn'), '--bg', TEXT],
+  [LIFTED('--blue'), '--bg', TEXT],
+  [LIFTED('--violet'), '--bg', TEXT],
+  [LIFTED('--teal'), '--bg', TEXT],
 ];
 
 /**
@@ -248,6 +325,22 @@ describe('the palette', () => {
         '--bg': '#04050a',
       }),
       'a grey above AA and under the prose floor',
+    ).toHaveLength(1);
+  });
+
+  /**
+   * **The mix path's own control**, separate from the token one: a lift that
+   * lands too close to its ground must be reported exactly as a token is.
+   * Without this, the new entry form could resolve to something that never
+   * reaches `contrast` and every bright row would pass vacuously.
+   */
+  it('finds a lifted pair too close to its ground', () => {
+    expect(
+      outOfBand(
+        [[`color-mix(in srgb, var(--bad) 20%, var(--bg))`, '--bg', TEXT]],
+        rootTokens(null),
+      ),
+      'a colour lifted the wrong way on the box ground',
     ).toHaveLength(1);
   });
 

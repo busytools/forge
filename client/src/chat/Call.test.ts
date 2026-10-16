@@ -959,6 +959,32 @@ describe('the output a backgrounded row reads back', () => {
     expect(open, 'and the erase is nowhere on the page').not.toContain('\u001b');
   });
 
+  /**
+   * A search's hits are read off the plain text: the escapes a body keeps for
+   * the terminal box are not part of a location or a line, and left on they
+   * stop the line reading as a hit at all - a coloured `grep` would draw its
+   * output as one run of text instead of a list of places.
+   */
+  it('reads a search its hits even when the command coloured them', () => {
+    const leaf: ToolLeaf = {
+      ...backgrounded(null),
+      backgrounded: false,
+      name: 'Grep',
+      title: 'pattern',
+      body: [
+        {
+          kind: 'text',
+          text: '\u001b[35msrc/a.rs\u001b[0m:12:\u001b[32mconst x = 1;\u001b[0m',
+        },
+      ],
+    };
+
+    const open = render(Call, { props: { k: 'f1', call: leaf, open: true } }).body;
+    expect(open, 'the location draws as a hit').toContain('src/a.rs');
+    expect(open, 'with its line').toContain('const x = 1;');
+    expect(open, 'and no escape on the page').not.toContain('\u001b');
+  });
+
   /** The read never answers blank: a reason is drawn in words. */
   it('names a reason where there is no tail, never a blank', () => {
     outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'file_gone' });

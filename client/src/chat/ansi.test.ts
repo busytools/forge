@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ansiRuns } from './ansi';
+import { stripEscapes } from './text';
 
 describe('the command output a box draws', () => {
   /** Plain output is one run with no style of its own: the box's own tone. */
@@ -56,14 +57,67 @@ describe('the command output a box draws', () => {
   });
 
   /**
-   * **Extended colour is the cut's own boundary**: `38;5;n` and `38;2;r;g;b`
-   * are read as the sequence they are (so nothing leaks onto the page) and
-   * leave the current colour alone. Nothing is invented for them.
+   * **Extended colour is the cut's own boundary, and its payload is a unit.**
+   * `38;5;n` and `38;2;r;g;b` are read as the one sequence they are (so
+   * nothing leaks onto the page) and leave the current colour alone. The
+   * numbers must never reach the arms: `38;5;1` would set bold, `38;5;0`
+   * would reset, and `38;2;31;31;31` would paint red - so each case is pinned
+   * on a payload whose numbers collide with real ones.
    */
   it('keeps the current colour across an extended-colour sequence', () => {
-    expect(ansiRuns('\u001b[31mr\u001b[38;5;208mx\u001b[0m')).toEqual([
+    expect(ansiRuns('\u001b[31mr\u001b[38;5;1mx\u001b[0m')).toEqual([
       { text: 'rx', cls: 'ansi-red' },
     ]);
+    expect(ansiRuns('\u001b[31mr\u001b[38;5;0mx\u001b[0m')).toEqual([
+      { text: 'rx', cls: 'ansi-red' },
+    ]);
+    expect(ansiRuns('\u001b[31mr\u001b[38;2;31;31;31mx\u001b[0m')).toEqual([
+      { text: 'rx', cls: 'ansi-red' },
+    ]);
+    // `48` is the background half and is consumed the same way.
+    expect(ansiRuns('\u001b[31mr\u001b[48;5;2mx\u001b[0m')).toEqual([
+      { text: 'rx', cls: 'ansi-red' },
+    ]);
+  });
+
+  /**
+   * **The two scanners read the bytes the same way.** `ansiRuns` keeps the
+   * text and `stripEscapes` throws it away, and the one property that must
+   * hold across every shape - colour codes, string controls, truncated
+   * sequences, intermediate-byte escapes, controls - is that they agree on
+   * what the text IS. A drift here is a sequence one draws as residue and the
+   * other drops.
+   */
+  it('keeps exactly the text the stripper keeps, over the shapes both read', () => {
+    const corpus = [
+      'plain text with no escapes',
+      '\u001b[31mred\u001b[0m and \u001b[1;32mgreen\u001b[m',
+      '\u001b[31mred\u001b[38;5;208mextended\u001b[0m',
+      'running\u001b[38;5;12',
+      'done\u001b[0m\u001b]8;;http://x',
+      '\u001b]777;notify;forge;finished\u0007after',
+      '\u001b]8;;http://example.com\u001b\\a link\u001b]8;;\u001b\\',
+      'before \u001bPq~xyz\u001b\\ after',
+      '\u001bXhello\u001b\\after',
+      '\u001b^meta\u001b\\after',
+      '\u001b_app\u001b\\after',
+      'text\u001bPq~payload',
+      '\u001b_a\u0007after',
+      'before \u001b(B\u001b[m after',
+      '\u001b)0plain',
+      '\u001b#8',
+      'first\nsecond\tthird',
+      'progress\rfinished',
+      '\u007fdelete\u0008back',
+    ];
+    for (const text of corpus) {
+      expect(
+        ansiRuns(text)
+          .map((run) => run.text)
+          .join(''),
+        `the runs' text is the stripper's text for ${JSON.stringify(text)}`,
+      ).toBe(stripEscapes(text));
+    }
   });
 
   /**

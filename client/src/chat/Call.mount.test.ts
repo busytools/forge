@@ -245,7 +245,7 @@ describe('the call row, mounted', () => {
       flushSync();
       vi.advanceTimersByTime(TICK_MS);
       const askedWhileMounted = asked.length;
-      expect(askedWhileMounted).toBe(2);
+      expect(askedWhileMounted, 'the open ask and the first tick both landed').toBe(2);
       void unmount(app);
       vi.advanceTimersByTime(TICK_MS * 5);
       expect(asked.length, 'nothing ticks after the row is gone').toBe(askedWhileMounted);

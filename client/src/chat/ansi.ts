@@ -30,8 +30,31 @@ export interface AnsiRun {
   cls: string;
 }
 
-/** The sixteen the theme has a token for, indexed the way SGR numbers them. */
-const COLOURS = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'] as const;
+/**
+ * The colour each foreground parameter names, by the parameter itself.
+ *
+ * A map rather than a range check plus an index, because the index reads back
+ * `string | undefined` and the guard that would follow can never fire - the
+ * range already said the entry is there.
+ */
+const FOREGROUND = new Map<number, { name: string; bright: boolean }>([
+  [30, { name: 'black', bright: false }],
+  [31, { name: 'red', bright: false }],
+  [32, { name: 'green', bright: false }],
+  [33, { name: 'yellow', bright: false }],
+  [34, { name: 'blue', bright: false }],
+  [35, { name: 'magenta', bright: false }],
+  [36, { name: 'cyan', bright: false }],
+  [37, { name: 'white', bright: false }],
+  [90, { name: 'black', bright: true }],
+  [91, { name: 'red', bright: true }],
+  [92, { name: 'green', bright: true }],
+  [93, { name: 'yellow', bright: true }],
+  [94, { name: 'blue', bright: true }],
+  [95, { name: 'magenta', bright: true }],
+  [96, { name: 'cyan', bright: true }],
+  [97, { name: 'white', bright: true }],
+]);
 
 /** The style a run draws with, carried across the text as the escape sets it. */
 interface Style {
@@ -61,14 +84,29 @@ function classesOf(style: Style): string {
 /**
  * Apply one SGR parameter list to `style`, mutating it.
  *
+ * **The extended-colour payload is consumed as a UNIT.** `38` and `48`
+ * introduce a colour written as further numbers - `38;5;n` a palette index,
+ * `38;2;r;g;b` a literal one - and those numbers are not parameters of their
+ * own. Fed to the arms below one by one, `38;5;1` would set bold, `38;5;0`
+ * would reset the whole style, and `38;2;31;31;31` would paint red: three
+ * wrong draws for the tools that emit 256-colour or RGB at all. The payload is
+ * therefore skipped whole, and none of the three are drawn here - the theme
+ * has no token for an arbitrary colour.
+ *
  * Unknown parameters are ignored on purpose: a code this page has no style for
- * changes nothing rather than guessing one. The extended-colour parameters are
- * the case that matters - they arrive as several numbers, and each is simply
- * not a style this build draws.
+ * changes nothing rather than guessing one.
  */
 function applySgr(style: Style, params: number[]): void {
   const list = params.length === 0 ? [0] : params;
-  for (const param of list) {
+  for (let at = 0; at < list.length; at += 1) {
+    const param = list[at] ?? 0;
+    if (param === 38 || param === 48) {
+      const kind = list[at + 1];
+      // `5` carries one more number and `2` three; anything else is a number
+      // whose reading this build does not know, skipped the same way.
+      at += kind === 5 ? 2 : kind === 2 ? 4 : 1;
+      continue;
+    }
     if (param === 0) Object.assign(style, defaultStyle());
     else if (param === 1) style.bold = true;
     else if (param === 2) style.dim = true;
@@ -79,18 +117,15 @@ function applySgr(style: Style, params: number[]): void {
       style.dim = false;
     } else if (param === 23) style.italic = false;
     else if (param === 24) style.underline = false;
-    else if (param >= 30 && param <= 37) {
-      style.colour = COLOURS[param - 30] ?? null;
-      style.bright = false;
-    } else if (param === 39) {
+    else if (param === 39 || param === 99) {
       style.colour = null;
       style.bright = false;
-    } else if (param >= 90 && param <= 97) {
-      style.colour = COLOURS[param - 90] ?? null;
-      style.bright = true;
-    } else if (param === 99) {
-      style.colour = null;
-      style.bright = false;
+    } else {
+      const named = FOREGROUND.get(param);
+      if (named !== undefined) {
+        style.colour = named.name;
+        style.bright = named.bright;
+      }
     }
   }
 }

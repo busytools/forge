@@ -618,23 +618,24 @@
   @keyframes b-breath { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
   @media (prefers-reduced-motion: reduce) { .outlive::before { animation: none; opacity: 1; } }
   /* A command's own colours, as they are read into the page's palette: the
-     sixteen mapped to tokens the theme already owns, a normal colour pulled
-     toward the ground and a bright one the token itself. */
-  .ansi-black { color: color-mix(in srgb, var(--dim) 70%, var(--bg)); }
-  .ansi-bright-black { color: var(--muted); }
-  .ansi-red { color: color-mix(in srgb, var(--bad) 70%, var(--bg)); }
-  .ansi-bright-red { color: var(--bad); }
-  .ansi-green { color: color-mix(in srgb, var(--ok) 70%, var(--bg)); }
-  .ansi-bright-green { color: var(--ok); }
-  .ansi-yellow { color: color-mix(in srgb, var(--warn) 70%, var(--bg)); }
-  .ansi-bright-yellow { color: var(--warn); }
-  .ansi-blue { color: color-mix(in srgb, var(--blue) 70%, var(--bg)); }
-  .ansi-bright-blue { color: var(--blue); }
-  .ansi-magenta { color: color-mix(in srgb, var(--violet) 70%, var(--bg)); }
-  .ansi-bright-magenta { color: var(--violet); }
-  .ansi-cyan { color: color-mix(in srgb, var(--teal) 70%, var(--bg)); }
-  .ansi-bright-cyan { color: var(--teal); }
-  .ansi-white { color: color-mix(in srgb, var(--text) 70%, var(--bg)); }
+     sixteen mapped to tokens the theme already owns. The normal weight is the
+     token itself and the bright weight is the token lifted toward the page's
+     prose tone, which is how a terminal's two weights read. */
+  .ansi-black { color: var(--dim); }
+  .ansi-bright-black { color: color-mix(in srgb, var(--dim) 70%, var(--text)); }
+  .ansi-red { color: var(--bad); }
+  .ansi-bright-red { color: color-mix(in srgb, var(--bad) 70%, var(--text)); }
+  .ansi-green { color: var(--ok); }
+  .ansi-bright-green { color: color-mix(in srgb, var(--ok) 70%, var(--text)); }
+  .ansi-yellow { color: var(--warn); }
+  .ansi-bright-yellow { color: color-mix(in srgb, var(--warn) 70%, var(--text)); }
+  .ansi-blue { color: var(--blue); }
+  .ansi-bright-blue { color: color-mix(in srgb, var(--blue) 70%, var(--text)); }
+  .ansi-magenta { color: var(--violet); }
+  .ansi-bright-magenta { color: color-mix(in srgb, var(--violet) 70%, var(--text)); }
+  .ansi-cyan { color: var(--teal); }
+  .ansi-bright-cyan { color: color-mix(in srgb, var(--teal) 70%, var(--text)); }
+  .ansi-white { color: var(--text); }
   .ansi-bright-white { color: var(--text); }
   .ansi-bold { font-weight: 640; }
   .ansi-dim { opacity: .7; }

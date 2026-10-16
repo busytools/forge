@@ -272,6 +272,33 @@ describe('what a call body draws', () => {
     });
   });
 
+  /**
+   * **The envelope's words are read as plain text.** A failure draws in the
+   * caption lane - the collapsed row's tail, the error block under it - where
+   * there is no terminal box to read a sequence into a colour, so an escape
+   * left on the message is residue on the page. Quotes, backticks and words
+   * survive; only the sequences go.
+   */
+  it('reads the envelope plain, with the escapes a failed command wrote taken off', () => {
+    const failed = leafOf(
+      't7',
+      'Bash',
+      { command: 'false' },
+      {
+        type: 'tool_result',
+        content:
+          '\u001b[31m<tool_use_error>Exit code 1\u001b[0m\n\u001b[1mthe detail line\u001b[0m</tool_use_error>',
+        is_error: true,
+      },
+    );
+
+    expect(failed.body.at(-1), 'the reason draws without its colour codes').toEqual({
+      kind: 'error',
+      message: 'Exit code 1',
+      detail: 'the detail line',
+    });
+  });
+
   it('draws a completed result verbatim even when it quotes both tags', () => {
     // **The failure direction is the only one the envelope belongs to.** Ten
     // real completed results on this machine carry both tags - Reads of forge

@@ -106,7 +106,14 @@
     // A failed search carries no hits: its reason must draw through the
     // pieces, not be swallowed by a hits path that has nothing to list.
     SEARCHES.has(call.name) && !call.body.some((piece) => piece.kind === 'error')
-      ? searchHits(call.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join('\n'))
+      ? searchHits(
+          // A hit is a location and a line of text, and the escapes a body
+          // keeps for the terminal box are not part of either - left on, a
+          // coloured Grep line stops reading as a hit at all.
+          stripEscapes(
+            call.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join('\n'),
+          ),
+        )
       : null,
   );
 
@@ -119,15 +126,19 @@
   type RunPiece = Exclude<CallBody, { kind: 'diff' } | { kind: 'hunk' }>;
 
   /**
-   * The text of a piece that draws as text.
+   * The words a piece draws with.
    *
    * Every branch below the image and error arms draws a text piece - the arms
    * above them take the rest - so this is the narrowing the template needs to
    * hand a string on, rather than a cast that would hide a piece arriving in a
-   * shape no arm claims.
+   * shape no arm claims. **The other kinds answer their own words rather than
+   * a blank**: unreachable today, but a piece no arm claimed must draw as
+   * itself rather than as nothing (rule 25).
    */
   function textOf(piece: RunPiece): string {
-    return piece.kind === 'text' ? piece.text : '';
+    if (piece.kind === 'text') return piece.text;
+    if (piece.kind === 'error') return piece.message;
+    return piece.mime === null ? 'image' : `image \u{b7} ${piece.mime}`;
   }
 
   /**

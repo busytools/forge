@@ -11,9 +11,9 @@
 //! Two ways a path is found, and the ending frame's own word wins when both
 //! exist: `task_notification.output_file` names the file when the task ends,
 //! and until then the path is composed from the task id the wire carries
-//! ([`compose_task_output_path`], under [`task_output_base`]). Neither reads
-//! the launch sentence: forge resolves the file structurally, never from
-//! prose.
+//! (`compose_task_output_path`, under `task_output_base` - both crate-internal,
+//! so named rather than linked). Neither reads the launch sentence: forge
+//! resolves the file structurally, never from prose.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -32,7 +32,7 @@ pub const TAIL_WINDOW_BYTES: u64 = 64 * 1024;
 /// `realpath($CLAUDE_CODE_TMPDIR ?? /tmp)`, read from the same environment
 /// the spawned child runs with (forge sets none of its own). Rule 14: never
 /// forge's own cwd.
-pub fn task_output_base() -> PathBuf {
+pub(crate) fn task_output_base() -> PathBuf {
     base_of(std::env::var_os("CLAUDE_CODE_TMPDIR"))
 }
 
@@ -54,7 +54,11 @@ fn base_of(tmpdir: Option<OsString>) -> PathBuf {
 /// change to the CLI's own slug rule cannot starve the read. `None` unless
 /// exactly one directory under this user's tree holds the file: more than one
 /// match is a miss rather than a guess, and the caller draws that as no-path.
-pub fn compose_task_output_path(base: &Path, session_id: &str, task_id: &str) -> Option<PathBuf> {
+pub(crate) fn compose_task_output_path(
+    base: &Path,
+    session_id: &str,
+    task_id: &str,
+) -> Option<PathBuf> {
     let mine = base.join(format!("claude-{}", rustix::process::getuid().as_raw()));
     let mut found: Option<PathBuf> = None;
     for entry in std::fs::read_dir(&mine).ok()?.flatten() {
@@ -76,7 +80,14 @@ pub fn compose_task_output_path(base: &Path, session_id: &str, task_id: &str) ->
 ///
 /// Forge's own health, not a session's - there is no slot to name (rule 20) -
 /// and it fires only when a running call's output is actually looked up.
-pub fn probe_task_output_layout(base: &Path) {
+///
+/// **The bound is the directory's existence, and that is the whole check.** A
+/// base that MOVES leaves its old directory behind, so the probe stays quiet
+/// while every composed lookup under the new one misses; what it catches is a
+/// CLI that stops making the tree where this build looks at all. D7's shape:
+/// one announcement per process, not a guarantee that a silent probe means
+/// the reads are landing.
+pub(crate) fn probe_task_output_layout(base: &Path) {
     LAYOUT_PROBED.call_once(|| {
         let mine = base.join(format!("claude-{}", rustix::process::getuid().as_raw()));
         if !mine.is_dir() {

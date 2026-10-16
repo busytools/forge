@@ -68,12 +68,15 @@ pub(crate) struct SessionTask {
 /// build's reading of a layout the CLI never promised. `None` when the
 /// conversation names neither, which a view draws as no-path.
 ///
-/// `base` is a parameter rather than read here so the composition can be
-/// exercised against a scratch tree; the arm passes the real one.
+/// **`base` is a thunk because a settled read never needs it**: resolving it
+/// costs a `realpath` syscall, and a call whose ending frame named the file
+/// answers off that frame alone. Only the composition's own lookup pays for
+/// it. It is a parameter rather than read here so the composition can be
+/// exercised against a scratch tree; the arm passes the real base's function.
 fn resolve_call_output_path(
     history: &[forge_primitives::Message],
     call_id: &str,
-    base: &std::path::Path,
+    base: impl FnOnce() -> std::path::PathBuf,
 ) -> Option<std::path::PathBuf> {
     let named = history.iter().find_map(|message| match message {
         forge_primitives::Message::TaskNotification {
@@ -96,8 +99,9 @@ fn resolve_call_output_path(
         } if id == call_id => Some((session_id.clone(), task_id.clone())),
         _ => None,
     })?;
-    crate::output_tail::probe_task_output_layout(base);
-    crate::output_tail::compose_task_output_path(base, &session_id, &task_id)
+    let base = base();
+    crate::output_tail::probe_task_output_layout(&base);
+    crate::output_tail::compose_task_output_path(&base, &session_id, &task_id)
 }
 
 impl SessionTask {
@@ -1098,7 +1102,7 @@ impl SessionTask {
                     resolve_call_output_path(
                         history,
                         &call_id,
-                        &crate::output_tail::task_output_base(),
+                        crate::output_tail::task_output_base,
                     )
                 });
                 let output = match path {
@@ -6258,6 +6262,11 @@ provider = "anthropic"
     /// A running call whose file is not there yet is no-path - the reason the
     /// client draws as "not appeared yet" - never the gone-file reason about a
     /// file that was never read.
+    ///
+    /// **And the miss is not remembered.** The read is answered twice: the
+    /// first before the file exists, the second after it is planted, and the
+    /// second must answer the tail - a memo of the first answer would freeze
+    /// the row at "not yet" for the rest of the call.
     #[tokio::test]
     async fn a_running_calls_output_answers_no_path_until_the_file_is_there() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
@@ -6278,37 +6287,63 @@ provider = "anthropic"
             conversation: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-not-yet"));
+        let nonce = std::process::id();
+        let frame_session = format!("late-session-{nonce}");
+        let task_id = format!("t-absent-{nonce}");
+        let tree = crate::output_tail::task_output_base()
+            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
+            .join(format!("forge-test-{nonce}"));
         task.translate_event(AgentEvent::SdkMessage {
             session_id: session_key.display(),
             msg: serde_json::from_value(serde_json::json!({
                 "type": "system",
                 "subtype": "task_started",
-                "task_id": format!("t-absent-{}", std::process::id()),
+                "task_id": task_id,
                 "description": "just started",
                 "uuid": "u-absent",
-                "session_id": format!("never-on-disk-{}", std::process::id()),
+                "session_id": frame_session,
                 "tool_use_id": "tu-absent",
             }))
             .expect("a task_started frame"),
         });
         while update_rx.try_recv().is_ok() {}
 
-        task.execute_command(crate::protocol::Command::ReadCallOutput {
-            key: session_key.clone(),
-            call_id: "tu-absent".to_owned(),
-        });
-
-        let mut answered = None;
-        while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::CallOutput { output, .. } = frame.update {
-                answered = Some(output);
+        let read = |task: &SessionTask| {
+            task.execute_command(crate::protocol::Command::ReadCallOutput {
+                key: session_key.clone(),
+                call_id: "tu-absent".to_owned(),
+            });
+        };
+        let mut take_answer = || {
+            let mut answered = None;
+            while let Ok(frame) = update_rx.try_recv() {
+                if let SessionUpdate::CallOutput { output, .. } = frame.update {
+                    answered = Some(output);
+                }
             }
-        }
+            answered
+        };
+
+        read(&task);
         assert_eq!(
-            answered,
+            take_answer(),
             Some(forge_primitives::CallOutput::NoPath),
             "a file that is not there yet is the no-path reason, not a blank and not gone",
         );
+
+        // The command writes its first line: the same read now answers the
+        // tail rather than a remembered miss.
+        let tasks = tree.join(&frame_session).join("tasks");
+        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
+        std::fs::write(tasks.join(format!("{task_id}.output")), "first line\n")
+            .expect("write the file");
+        read(&task);
+        assert_eq!(
+            take_answer(),
+            Some(forge_primitives::CallOutput::Lines(vec!["first line".to_owned()])),
+            "and once the file is there the read answers its tail",
+        );
+        let _ = std::fs::remove_dir_all(&tree);
     }
 
     /// The ending frame's own path WINS over the composed one when both are
@@ -6352,14 +6387,129 @@ provider = "anthropic"
         .expect("a task_notification frame");
 
         assert_eq!(
-            resolve_call_output_path(std::slice::from_ref(&started), "tu-live", &base),
+            resolve_call_output_path(std::slice::from_ref(&started), "tu-live", || base.clone()),
             Some(tasks.join("t-live.output")),
             "while it runs, the composed path is the one the read uses",
         );
         assert_eq!(
-            resolve_call_output_path(&[started, ended], "tu-live", &base),
+            resolve_call_output_path(&[started, ended], "tu-live", || base.clone()),
             Some(named),
             "and once the ending frame lands, its own path overrides the composition",
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// **Nothing reads the launch sentence.** The launch result says where the
+    /// output will be written in prose, and a resolver that took that path
+    /// would be reading text the CLI is free to reword - so the pin carries
+    /// the real sentence naming file A beside a task id that composes to file
+    /// B, and the answer must be B's path. The second half catches the other
+    /// mistake: with B gone the answer is no-path, never A.
+    #[test]
+    fn nothing_reads_the_launch_sentence_for_the_path() {
+        let nonce = std::process::id();
+        let base = std::env::temp_dir().join(format!("forge-call-output-prose-{nonce}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let tasks = base
+            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
+            .join("slug-any")
+            .join("sess-prose")
+            .join("tasks");
+        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
+        let composed = tasks.join("t-prose.output");
+        std::fs::write(&composed, "from the composition\n").expect("write the composed file");
+        // File A, which only the sentence names, with bytes nothing else has.
+        let named_by_prose = base.join("named-by-the-launch-sentence.output");
+        std::fs::write(&named_by_prose, "from the launch sentence\n").expect("write file A");
+
+        let launch: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu-prose",
+                    "is_error": false,
+                    "content": format!(
+                        "Command running in background with ID: t-prose. Output is being \
+                         written to: {}. You will be notified when it completes. To check \
+                         interim output, use Read on that file path.",
+                        named_by_prose.display(),
+                    ),
+                }],
+            },
+            "toolUseResult": { "backgroundTaskId": "t-prose" },
+            "uuid": "u-prose",
+            "session_id": "sess-prose",
+        }))
+        .expect("a launch result frame");
+        let started: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t-prose",
+            "description": "watch the run",
+            "uuid": "u-s",
+            "session_id": "sess-prose",
+            "tool_use_id": "tu-prose",
+        }))
+        .expect("a task_started frame");
+
+        assert_eq!(
+            resolve_call_output_path(&[launch.clone(), started.clone()], "tu-prose", || base
+                .clone()),
+            Some(composed.clone()),
+            "the composed path answers, not the one the launch sentence names",
+        );
+        std::fs::remove_file(&composed).expect("unplant the composed file");
+        assert_eq!(
+            resolve_call_output_path(&[launch, started], "tu-prose", || base.clone()),
+            None,
+            "and with the composed file gone the answer is no-path, never the sentence's file",
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// **Each task reads its own file.** Two backgrounded calls in one session
+    /// carry two `task_started` frames, and the arm's link is the tool-use id:
+    /// without that guard, row B tails row A's file - wrong output shown as if
+    /// it were B's, which is worse than nothing.
+    #[test]
+    fn two_running_calls_each_read_their_own_task() {
+        let nonce = std::process::id();
+        let base = std::env::temp_dir().join(format!("forge-call-output-two-{nonce}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let tasks = base
+            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
+            .join("slug-any")
+            .join("sess-two")
+            .join("tasks");
+        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
+        std::fs::write(tasks.join("t-a.output"), "task a\n").expect("write a's file");
+        std::fs::write(tasks.join("t-b.output"), "task b\n").expect("write b's file");
+
+        let started = |task_id: &str, call: &str| -> forge_primitives::Message {
+            serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_started",
+                "task_id": task_id,
+                "description": "watch the run",
+                "uuid": format!("u-{task_id}"),
+                "session_id": "sess-two",
+                "tool_use_id": call,
+            }))
+            .expect("a task_started frame")
+        };
+        let history = vec![started("t-a", "tu-a"), started("t-b", "tu-b")];
+
+        assert_eq!(
+            resolve_call_output_path(&history, "tu-a", || base.clone()),
+            Some(tasks.join("t-a.output")),
+            "the first call reads its own task's file",
+        );
+        assert_eq!(
+            resolve_call_output_path(&history, "tu-b", || base.clone()),
+            Some(tasks.join("t-b.output")),
+            "and the second reads its own, not the first's",
         );
         let _ = std::fs::remove_dir_all(&base);
     }

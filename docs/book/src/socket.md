@@ -405,10 +405,12 @@ none. **It answers while the task still runs as well as after it ends.**
 Until the ending frame arrives the path is composed from the task id the
 launch frame carries - `<base>/claude-<uid>/<slug>/<session-id>/tasks/<task-id>.output`,
 where `base` is the same `CLAUDE_CODE_TMPDIR` the child runs with and the
-slug is a wildcard - and a file that is not there yet answers no-path
-rather than gone, because the command has simply not written yet. Once the
-task ends, the path its `task_notification` names is the one the read
-uses. Nothing is parsed out of prose on either side.
+slug is a wildcard. The file itself is there from launch, so a read taken
+between the launch and the command's first line comes back as an empty
+tail rather than as a path the read could not find; a path that resolves
+to nothing at all answers no-path. Once the task ends, the path its
+`task_notification` names is the one the read uses. Nothing is parsed out
+of prose on either side.
 
 ## What a client receives
 
