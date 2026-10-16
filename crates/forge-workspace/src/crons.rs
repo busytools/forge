@@ -478,8 +478,7 @@ mod tests {
             None,
             None,
             false,
-            true,
-            None,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
             None,
         )
         .expect("seed the stranded worker's row");
@@ -504,6 +503,7 @@ mod tests {
             spawned_by: SessionSlot::lead("TestOrg", project),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -1345,7 +1345,15 @@ mod tests {
         ws.seed_test_project("proj", &project_dir.path().to_string_lossy());
         let key = ws.project_key_for_name("proj").expect("seeded project");
         ws.record_worker_row(
-            &key, "steward", "steward-uuid", "c", None, None, false, true, None, None,
+            &key,
+            "steward",
+            "steward-uuid",
+            "c",
+            None,
+            None,
+            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
+            None,
         )
         .expect("seed the worker's row");
 
@@ -1379,6 +1387,44 @@ mod tests {
             parked_crons(&ws, "proj", Some("steward")).len(),
             1,
             "and its prompt is parked for the owner to drain on connect",
+        );
+    }
+
+    /// The directory this fire waits on is the ROW's tree, not the
+    /// project's: a worker the spawn pointed at another repository starts
+    /// in THAT repository's worktree, so an operator has to be told to
+    /// restore that one. The project's own worktree stands here, so a
+    /// wake composing the project path would call the owner wakeable and
+    /// park a prompt nothing would drain.
+    #[test]
+    fn a_cron_wake_reads_the_rows_own_tree() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_dir = tempdir().expect("project dir");
+        ws.seed_test_project("proj", &project_dir.path().to_string_lossy());
+        let key = ws.project_key_for_name("proj").expect("seeded project");
+        // The project's own worktree stands: anything composing the
+        // project path answers "the owner can start".
+        std::fs::create_dir_all(
+            project_dir.path().join(".claude").join("worktrees").join("steward"),
+        )
+        .expect("create the project worktree");
+        // The row's own tree, with no worktree under it.
+        let worker_tree = tempdir().expect("worker tree");
+        let root = std::fs::canonicalize(worker_tree.path()).expect("canonical tree");
+        ws.seed_test_worker_row_at(&key, "steward", &root.to_string_lossy(), true);
+
+        let outcome = deliver_cron(&ws, "proj", Some("steward"), "x", false);
+        let crate::spawn::CronFireOutcome::TargetCannotBeWoken { directory } = outcome else {
+            panic!("an owner whose own tree has no worktree cannot be woken");
+        };
+        assert_eq!(
+            directory,
+            root.join(".claude").join("worktrees").join("steward"),
+            "the outcome names the tree an operator has to restore - the worker's own",
         );
     }
 

@@ -660,13 +660,17 @@ fn cron_slot_exists(
     match workspace.stored_worker_row(&view.key, label) {
         Ok(None) => CronOwnerCheck::Absent,
         Ok(Some(row)) => {
+            // The tree this fire would wake the worker in is the one the
+            // ROW records: a worker pointed at another directory starts
+            // there, so its worktree (and its absence) is read there.
+            let root = row.cwd.as_deref().map_or(view.path.as_path(), std::path::Path::new);
             let directory = crate::mcp::workers::types::worker_tag_dir(
-                &view.path,
+                root,
                 &row.label,
                 matches!(row.is_git_repo, Some(true)),
             );
             let can_start = crate::mcp::workers::types::worker_row_can_start(
-                &view.path,
+                root,
                 &row.label,
                 row.is_git_repo,
                 row.session_id.is_some(),
@@ -1109,6 +1113,10 @@ pub(crate) struct WorkerSpawnArgs {
     /// The validated MCP-family allowlist from `agents__spawn`; `None`
     /// or empty means every family.
     pub mcp_families: Option<Vec<String>>,
+    /// The tree this spawn runs the worker in, resolved to its repo root
+    /// by the facade (or, on a boot re-spawn, taken from the row): `None`
+    /// means the project's own path.
+    pub cwd: Option<String>,
 }
 
 /// The charter a spawned worker's prompt carries: the stored text plus
@@ -1170,7 +1178,8 @@ pub(crate) fn handle_spawn_worker(
     from_boot_respawn: bool,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
-    let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive, mcp_families } = args;
+    let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive, mcp_families, cwd } =
+        args;
     let label = label.as_str();
     let resume_kick = resume_kick.as_deref();
     // Verify the project exists before minting the worker's id. A worker
@@ -1187,21 +1196,60 @@ pub(crate) fn handle_spawn_worker(
         let _ = return_to.send(Err(format!("project not found: {}", project_key.as_str())));
         return;
     };
-    let is_git = workspace
-        .recorded_worker_is_git_repo(&project_key, label)
-        .unwrap_or_else(|error| {
-            tracing::warn!(
-                target: "forge_workspace::spawn",
-                event_name = "worker_row_gitness_unreadable",
-                project = %project_key.as_str(),
-                label = %label,
-                %error,
-                "reading the worker's recorded gitness failed; probing the project path, \
-                 which may compose a different directory than the row names",
-            );
-            None
-        })
-        .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
+    // The tree this spawn runs the worker in: the resolved root the facade
+    // resolved (or the boot wave took off the row), else the project's own
+    // path. Every probe below and every path composed from it reads the
+    // same root, so the entry, the row and the CLI cannot disagree about
+    // where the worker lives.
+    let root = cwd.as_deref().map_or_else(|| view.path.clone(), std::path::PathBuf::from);
+    // D3: a tree inside a project `forge.toml` declares is driven by that
+    // project's own agent, so the spawn is refused here - before the label
+    // is reserved, before the obstruction probe and before the row is
+    // written, so nothing at all is minted for a spawn that cannot run.
+    // The refusal names the project as the door, and its sentence avoids
+    // the word "worktree": the facade's failure classifier routes that
+    // word to a worktree-creation failure, which this is not.
+    if cwd.is_some()
+        && let Some(known) = workspace.project_name_for_resolved_path(&root.to_string_lossy())
+    {
+        let reason = format!(
+            "this worker's tree is inside the project '{known}', which forge.toml declares; \
+             a declared project is driven by its own agent - message that project's agent \
+             instead of pointing a worker at its tree"
+        );
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            event_name = "worker_spawn_refused_known_project",
+            project = %project_key.as_str(),
+            label = %label,
+            tree = %root.display(),
+            known_project = %known,
+            "the worker's tree resolves to a declared project, so the spawn is refused",
+        );
+        let _ = return_to.send(Err(reason));
+        return;
+    }
+    let is_git = if cwd.is_some() {
+        // A stated tree answers for itself: the row's recorded gitness
+        // belongs to the directory the row names, which is not this one.
+        forge_agent::env::worktree::is_git_repo(&root)
+    } else {
+        workspace
+            .recorded_worker_is_git_repo(&project_key, label)
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    event_name = "worker_row_gitness_unreadable",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    %error,
+                    "reading the worker's recorded gitness failed; probing the project path, \
+                     which may compose a different directory than the row names",
+                );
+                None
+            })
+            .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&root))
+    };
 
     // The pool key a fresh worker spawns under: an id minted here and
     // recorded under the worker's slot before the child starts, so the
@@ -1243,6 +1291,7 @@ pub(crate) fn handle_spawn_worker(
         spawned_by,
         needs_tag: !is_resume,
         is_git_repo_at_spawn: is_git,
+        cwd: cwd.as_deref().map(std::path::PathBuf::from),
         diagnostic: None,
         kick,
     };
@@ -1323,9 +1372,9 @@ pub(crate) fn handle_spawn_worker(
     if is_git
         && !is_resume
         && let Some(obstacle) = forge_agent::env::worktree::worktree_creation_obstacle(
-            &view.path,
+            &root,
             label,
-            &crate::mcp::workers::types::worker_tag_dir(&view.path, label, true),
+            &crate::mcp::workers::types::worker_tag_dir(&root, label, true),
         )
     {
         tracing::warn!(
@@ -1394,9 +1443,14 @@ pub(crate) fn handle_spawn_worker(
         kick_field,
         resume_kick,
         interactive,
-        is_git,
+        crate::mcp::workers::types::WorkerTree {
+            is_git_repo: is_git,
+            // What the spawn resolved, written verbatim: a stated tree is
+            // the row's durable handle to where the JSONL lives, and a
+            // spawn that stated none records none.
+            cwd: cwd.clone(),
+        },
         families_field,
-        None,
     ) {
         Ok(()) => None,
         Err(error) => {
@@ -1471,7 +1525,12 @@ pub(crate) fn handle_spawn_worker(
     let target = if resume_existing.is_some() {
         SessionTarget::Session(slot.clone())
     } else {
-        SessionTarget::FreshInProject { slot: slot.clone() }
+        SessionTarget::FreshInProject {
+            slot: slot.clone(),
+            // The same resolved root the row and the entry carry, so the
+            // child starts where they say it runs.
+            cwd: cwd.as_deref().map(std::path::PathBuf::from),
+        }
     };
     match workspace.get_agent_handle_at_key(
         target,
@@ -1520,7 +1579,7 @@ pub(crate) fn handle_spawn_worker(
                 // a git project's worker gets `<root>/.claude/worktrees/
                 // <label>`, and everything else runs in the project root
                 // and has no worktree to name.
-                worktree: spawn_worktree(&view.path, label, is_git),
+                worktree: spawn_worktree(&root, label, is_git),
                 // What the arguments say, which is all this handler
                 // knows: a `resume_session` spawn whose lookup found
                 // nothing arrives here as a fresh spawn like any other,
@@ -1738,11 +1797,19 @@ pub(crate) fn handle_despawn_worker(
     // Asking one question for both is what makes a row the migration wrote
     // - it records no gitness before the first spawn - look like no row,
     // and that row is exactly the one #1142 exists to reach.
-    let is_git_repo = match live.as_ref() {
-        Some(entry) => Some(entry.is_git_repo_at_spawn),
+    //
+    // The tree is read in the same breath for the same reason: a worker
+    // the spawn pointed at another directory keeps its worktree THERE, so
+    // the probe, the removal and the branch reap all run against that
+    // tree - composing them against the project path would probe (and
+    // block on) a directory the worker never ran in.
+    let (is_git_repo, recorded_cwd) = match live.as_ref() {
+        Some(entry) => (Some(entry.is_git_repo_at_spawn), entry.cwd.clone()),
         None => match workspace.stored_worker_row(project_key, label) {
-            Ok(Some(row)) => Some(matches!(row.is_git_repo, Some(true))),
-            Ok(None) => None,
+            Ok(Some(row)) => {
+                (Some(matches!(row.is_git_repo, Some(true))), row.cwd.map(std::path::PathBuf::from))
+            }
+            Ok(None) => (None, None),
             // A row that cannot be read is not an absent one, and reading
             // it is how this call decides whether there is anything here.
             Err(error) => {
@@ -1762,13 +1829,14 @@ pub(crate) fn handle_despawn_worker(
     };
 
     // Resolve the worktree path for git-repo workers (claude's
-    // `<project_root>/.claude/worktrees/<label>/`). Non-git workers
-    // have no worktree to clean.
+    // `<root>/.claude/worktrees/<label>/`, `root` being the tree the
+    // worker was spawned in). Non-git workers have no worktree to clean.
     let project_view = workspace.list_projects().into_iter().find(|v| v.key == *project_key);
+    let worktree_root = recorded_cwd.or_else(|| project_view.as_ref().map(|v| v.path.clone()));
     let worktree_path = if is_git_repo {
-        project_view
+        worktree_root
             .as_ref()
-            .map(|v| crate::mcp::workers::types::worker_tag_dir(&v.path, label, true))
+            .map(|root| crate::mcp::workers::types::worker_tag_dir(root, label, true))
     } else {
         None
     };
@@ -1914,6 +1982,7 @@ pub(crate) fn handle_despawn_worker(
         worktree_path,
         worktree_display,
         worktree_already_gone,
+        worktree_root,
         project_view,
         live,
         is_git_repo,
@@ -1959,6 +2028,10 @@ struct DespawnCleanup {
     worktree_path: Option<std::path::PathBuf>,
     worktree_display: String,
     worktree_already_gone: bool,
+    /// The tree the worker was spawned in - the repo every `git` call in
+    /// the cleanup anchors on. `None` when the project is no longer
+    /// loaded and the row recorded no tree of its own.
+    worktree_root: Option<std::path::PathBuf>,
     project_view: Option<crate::views::ProjectView>,
     live: Option<crate::mcp::workers::types::WorkerEntry>,
     is_git_repo: bool,
@@ -1981,6 +2054,7 @@ impl DespawnCleanup {
             worktree_path,
             worktree_display,
             worktree_already_gone,
+            worktree_root,
             project_view,
             live,
             is_git_repo,
@@ -2041,6 +2115,7 @@ impl DespawnCleanup {
                 );
                 branch_cleanup_warning = reap_branch_and_reviews(
                     &workspace,
+                    worktree_root.as_deref(),
                     project_view.as_ref(),
                     review_key.as_ref(),
                     label,
@@ -2085,12 +2160,11 @@ impl DespawnCleanup {
                 // deregistered tree cannot be asked again.
                 let removal = match removal {
                     Ok(()) => Ok(()),
-                    Err(git_error) => match project_view.as_ref() {
+                    Err(git_error) => match worktree_root.as_deref() {
                         None => Err(git_error.to_string()),
-                        Some(view) => {
+                        Some(root) => {
                             match forge_agent::env::worktree::remove_orphaned_worktree_dir(
-                                &view.path,
-                                path,
+                                root, path,
                             ) {
                                 Ok(()) => {
                                     tracing::info!(
@@ -2148,6 +2222,7 @@ impl DespawnCleanup {
                         // to delete a checked-out branch.
                         branch_cleanup_warning = reap_branch_and_reviews(
                             &workspace,
+                            worktree_root.as_deref(),
                             project_view.as_ref(),
                             review_key.as_ref(),
                             label,
@@ -2210,20 +2285,24 @@ impl DespawnCleanup {
 /// exactly when the delete is safe.
 fn reap_branch_and_reviews(
     workspace: &Arc<Workspace>,
+    repo: Option<&std::path::Path>,
     project_view: Option<&crate::views::ProjectView>,
     review_key: Option<&(String, String)>,
     label: &str,
 ) -> Option<String> {
-    let warning = project_view.and_then(|view| reap_worker_branch(&view.path, label));
+    let warning = repo.and_then(|repo| reap_worker_branch(repo, label));
     // Threads are only orphaned once their branch is gone, and the reap
     // above can be what removes it - a worker that made no branch of its
-    // own sits on `worktree-<label>`.
+    // own sits on `worktree-<label>`. The review state stays keyed by the
+    // project's name: that is where the diff overlay saved it, even when
+    // the worker ran in another tree.
     if let Some((project, branch)) = review_key
-        && let Some(view) = project_view
-        && !forge_agent::env::worktree::branch_ref_exists(&view.path, branch)
+        && let Some(repo) = repo
+        && !forge_agent::env::worktree::branch_ref_exists(repo, branch)
     {
         workspace.delete_branch_review_state(project, branch);
     }
+    let _ = project_view;
     warning
 }
 
@@ -2810,6 +2889,7 @@ provider = "anthropic"
             spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -2956,6 +3036,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3060,6 +3141,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             resume_existing,
@@ -3146,8 +3228,7 @@ provider = "anthropic"
             Some("original kick"),
             None,
             false,
-            false,
-            None,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             None,
         )
         .expect("seed the row the resume re-writes");
@@ -3164,6 +3245,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             Some("tester-id"),
@@ -3206,6 +3288,199 @@ provider = "anthropic"
         (ws, key, dir)
     }
 
+    /// A spawn whose tree is inside a project `forge.toml` declares is
+    /// refused (D3): that project is driven by its own agent, so the
+    /// door is a message to it. The refusal comes BEFORE the label is
+    /// reserved, the obstruction probed or the row written, so a refused
+    /// spawn leaves nothing at all behind.
+    ///
+    /// The tree is fed in canonical, the way the facade resolves one,
+    /// while the declared path is the alias a tempdir hands out - the
+    /// shape `/tmp` and a symlinked parent both take - so the refusal has
+    /// to resolve both sides rather than compare strings.
+    #[tokio::test]
+    async fn a_cwd_inside_a_declared_project_is_refused() {
+        let (workspace, (_config, projects_dir)) = stub_with_project_cap(5);
+        let project = seeded_project(&workspace);
+        let inside = std::fs::canonicalize(projects_dir.path().join("notes"))
+            .expect("canonical notes path")
+            .join("crates");
+        std::fs::create_dir_all(&inside).expect("create the nested dir");
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            WorkerSpawnArgs {
+                label: "trespasser".to_owned(),
+                charter: "c".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+                cwd: Some(inside.to_string_lossy().into_owned()),
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+
+        let error = rx.await.expect("reply").expect_err("a declared project's tree is refused");
+        assert!(error.contains("notes"), "the refusal names the project as the door: {error}");
+        assert!(
+            !error.contains("worktree"),
+            "the word routes the spawn failure classifier to a worktree-creation failure, \
+             which this is not: {error}",
+        );
+        assert!(
+            workspace.list_live_workers(&project).is_empty(),
+            "a refused spawn leaves no live worker",
+        );
+        assert!(
+            workspace.worker_rows_for_project(&project).is_empty(),
+            "and no durable row, so nothing comes back on the next boot",
+        );
+    }
+
+    /// The despawn acts on the tree the ROW records, not the project's:
+    /// a worker the spawn pointed at another repository keeps its
+    /// worktree there, so the dirty probe and the removal have to read
+    /// that tree. Composing them against the project path probes a
+    /// directory the worker never ran in - today's code would read the
+    /// project's tree, find it clean, and block on the dirty one under
+    /// the worker's own root instead.
+    #[tokio::test]
+    async fn a_despawn_reads_the_tree_the_row_records() {
+        let (workspace, project_key, _project_wt, _repo, _config) =
+            git_despawn_fixture("traveller");
+        let dir = tempfile::tempdir().expect("store dir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        // The worker's own tree: a sibling repo the spawn pointed it at,
+        // with the worktree claude's `--worktree` would have forked.
+        let sibling = tempfile::tempdir().expect("sibling repo");
+        run_git(sibling.path(), &["init", "-q"]);
+        run_git(sibling.path(), &["config", "user.email", "t@example.com"]);
+        run_git(sibling.path(), &["config", "user.name", "Test"]);
+        run_git(sibling.path(), &["config", "commit.gpgsign", "false"]);
+        std::fs::write(sibling.path().join("README.md"), "seed").expect("write seed");
+        run_git(sibling.path(), &["add", "."]);
+        run_git(sibling.path(), &["commit", "-q", "-m", "init"]);
+        let sibling_root = std::fs::canonicalize(sibling.path()).expect("canonical sibling");
+        let worker_wt = sibling_root.join(".claude").join("worktrees").join("traveller");
+        std::fs::create_dir_all(worker_wt.parent().expect("wt parent")).expect("mkdir worktrees");
+        run_git(
+            &sibling_root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-traveller",
+                worker_wt.to_str().expect("utf8 path"),
+            ],
+        );
+
+        // What the spawn writes: the row names the sibling tree, and the
+        // live entry carries the same root.
+        workspace
+            .record_worker_row(
+                &project_key,
+                "traveller",
+                "traveller-id",
+                "charter",
+                None,
+                None,
+                false,
+                crate::mcp::workers::types::WorkerTree {
+                    is_git_repo: true,
+                    cwd: Some(sibling_root.to_string_lossy().into_owned()),
+                },
+                None,
+            )
+            .expect("record the row the despawn reads");
+        workspace.remove_latest_worker(&project_key, "traveller");
+        let mut entry = fake_git_worker_entry("traveller", "worker-1");
+        entry.cwd = Some(sibling_root.clone());
+        workspace.insert_live_worker(&project_key, entry);
+
+        // Dirty in the WORKER's tree, clean in the project's: the probe
+        // must block on the worker's.
+        std::fs::write(worker_wt.join("dirty.txt"), "uncommitted").expect("write dirty file");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "traveller", false, tx);
+        let blocked = rx.await.expect("despawn result");
+        let crate::protocol::DespawnResult::Blocked { reason } = blocked else {
+            panic!("a dirty worktree in the worker's own tree must block the despawn: {blocked:?}");
+        };
+        assert!(
+            reason.contains("uncommitted or untracked changes"),
+            "the reason is the worker's tree's own verdict, not the project's: {reason}",
+        );
+
+        // Clean: the despawn removes the worktree under the worker's own
+        // tree, not one under the project.
+        std::fs::remove_file(worker_wt.join("dirty.txt")).expect("clean the worktree");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "traveller", false, tx);
+        let result = rx.await.expect("despawn result");
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
+            "a clean despawn lands: {result:?}",
+        );
+        assert!(!worker_wt.exists(), "the worker's own worktree is the one removed");
+    }
+
+    /// The boot wave carries a persisted row's tree into the spawn it
+    /// dispatches, so a worker pointed at another directory comes back in
+    /// it after a restart.
+    #[tokio::test]
+    async fn the_boot_wave_carries_the_rows_tree() {
+        let dir = tempdir().expect("tempdir");
+        let sibling = tempdir().expect("sibling repo");
+        std::fs::create_dir_all(&sibling).expect("sibling dir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+        let store = tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+        let root = std::fs::canonicalize(sibling.path()).expect("canonical sibling");
+        ws.seed_test_worker_row_at(&key, "traveller", &root.to_string_lossy(), false);
+        ws.enable_test_dispatch_intercept();
+
+        ws.dispatch_worker_respawns(
+            &SessionSlot::lead("Default", "forge"),
+            &key,
+            &ws.worker_rows_for_project(&key),
+            false,
+        );
+
+        let dispatched = ws.drain_test_dispatch_buffer();
+        let spawn = dispatched
+            .iter()
+            .find_map(|cmd| match cmd {
+                crate::protocol::Command::SpawnWorker { cwd, .. } => Some(cwd.clone()),
+                _ => None,
+            })
+            .expect("the wave dispatches the persisted row");
+        assert_eq!(
+            spawn.as_deref(),
+            Some(root.to_string_lossy().as_ref()),
+            "the re-spawn carries the row's tree, so the worker comes back in it",
+        );
+    }
+
     /// A fresh spawn that omits `mcp_families` states "every family", so
     /// a stale stored selection must not survive it: reply, running
     /// surface and row have to agree.
@@ -3220,9 +3495,8 @@ provider = "anthropic"
             None,
             None,
             false,
-            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             Some(&["cron".to_owned()]),
-            None,
         )
         .expect("seed a stale selection");
 
@@ -3237,6 +3511,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3273,9 +3548,8 @@ provider = "anthropic"
             None,
             None,
             false,
-            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             Some(&["cron".to_owned()]),
-            None,
         )
         .expect("seed the stored selection");
 
@@ -3291,6 +3565,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3319,6 +3594,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: Some(vec!["tasks".to_owned()]),
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3367,6 +3643,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: Some(vec!["slack".to_owned()]),
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3446,6 +3723,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3525,6 +3803,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3626,6 +3905,7 @@ provider = "anthropic"
         let result = ws.get_agent_handle_at_key(
             crate::target::SessionTarget::FreshInProject {
                 slot: SessionSlot::worker("TestOrg", "not-in-config", "minted-worker-id"),
+                cwd: None,
             },
             forge_agent::client::SessionLaunchSettings::default(),
             None,
@@ -3837,6 +4117,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3889,6 +4170,7 @@ provider = "anthropic"
                     resume_kick: None,
                     interactive: false,
                     mcp_families: None,
+                    cwd: None,
                 },
                 SessionSlot::from_str_for_test("lead"),
                 None,
@@ -3979,6 +4261,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4183,6 +4466,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4213,6 +4497,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4256,6 +4541,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4285,6 +4571,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4311,6 +4598,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4347,6 +4635,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4395,6 +4684,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4499,6 +4789,7 @@ provider = "anthropic"
                         resume_kick: None,
                         interactive: false,
                         mcp_families: None,
+                        cwd: None,
                     },
                     SessionSlot::from_str_for_test("lead"),
                     None,
@@ -4560,6 +4851,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4598,6 +4890,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4626,6 +4919,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4661,6 +4955,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -5016,8 +5311,7 @@ provider = "anthropic"
                 Some("kick"),
                 None,
                 false,
-                false,
-                None,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("seed the row whose live worker is gone");
@@ -5058,8 +5352,7 @@ provider = "anthropic"
                 None,
                 None,
                 false,
-                false,
-                None,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("seed the stranded row");
@@ -5120,8 +5413,7 @@ provider = "anthropic"
                 None,
                 None,
                 false,
-                false,
-                None,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("seed the lead's row");
@@ -5163,7 +5455,15 @@ provider = "anthropic"
         // store was empty.
         workspace
             .record_worker_row(
-                &project, "other", "other-id", "c", None, None, false, false, None, None,
+                &project,
+                "other",
+                "other-id",
+                "c",
+                None,
+                None,
+                false,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
             )
             .expect("seed a row the despawn must leave alone");
 
@@ -5529,6 +5829,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::lead("Default", "forge"),
             None,
@@ -5582,6 +5883,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
                 None,
             )
             .await
@@ -5641,8 +5943,7 @@ provider = "anthropic"
                 false,
                 // The row is what says this worker runs in a worktree, so
                 // it is what the despawn has to read the gitness from.
-                true,
-                None,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
                 None,
             )
             .expect("seed the row that outlived its worker");
@@ -5938,6 +6239,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: false,
                 mcp_families: None,
+                cwd: None,
             },
             SessionSlot::from_str_for_test("lead-uuid"),
             None,
@@ -6285,6 +6587,7 @@ provider = "anthropic"
                 spawned_by: SessionSlot::lead("TestOrg", "forge"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                cwd: None,
                 diagnostic: None,
                 kick: None,
             },
@@ -6344,6 +6647,7 @@ provider = "anthropic"
             spawned_by: SessionSlot::lead("TestOrg", "forge"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -6502,6 +6806,7 @@ provider = "anthropic"
                 spawned_by: SessionSlot::lead(&project_view.org, &project_view.name),
                 needs_tag: true,
                 is_git_repo_at_spawn: false,
+                cwd: None,
                 diagnostic: None,
                 kick: None,
             },

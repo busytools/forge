@@ -531,6 +531,8 @@ struct SpawnArgs {
     resume_session: bool,
     #[serde(default)]
     mcp_families: Option<Vec<String>>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 /// Validate and canonicalise a spawn or update `mcp_families` argument:
@@ -615,8 +617,16 @@ impl Tool for Spawn {
          worker and survives restarts; revise it with agents__update. On \
          a resume or re-spawn that states no `mcp_families`, the \
          worker's stored selection applies; stating one then revises \
-         it. This tool errors if called from a worker session; only the \
-         project lead may spawn."
+         it. PASS `cwd` WHEN THE WORKER'S TREE IS NOT YOUR PROJECT'S: \
+         an absolute or `~`-prefixed path to the directory it should \
+         run in, for driving a sibling repo your project does not own. \
+         A subdirectory of a repo resolves to the repo root, and the \
+         resolved root is recorded on the worker's row so every resume \
+         lands back in it. A path inside a project declared in \
+         forge.toml is refused - that project is driven by its own \
+         agent, so message it instead. Omit `cwd` and the worker runs \
+         in your project exactly as before. This tool errors if called \
+         from a worker session; only the project lead may spawn."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -652,6 +662,10 @@ impl Tool for Spawn {
                     "items": { "type": "string", "enum": ["review", "cron", "tasks", "gotify", "slack", "systemone"] },
                     "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt.",
                 },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional tree for this worker, when it should run somewhere other than your project's own directory - a sibling repo you are driving, for instance. Absolute or `~`-prefixed; a bare relative path is refused. A subdirectory of a repo resolves to the repo root. A path inside a project declared in forge.toml is refused: that project is driven by its own agent, so message it instead. Recorded on the worker's row, so the resume after a forge restart lands back in the same tree. Omit it and the worker runs in your project exactly as before.",
+                },
             },
             "required": ["label", "charter"],
             "additionalProperties": false,
@@ -686,6 +700,7 @@ impl Tool for Spawn {
                 args.interactive,
                 args.resume_session,
                 mcp_families,
+                args.cwd,
             )
             .await
         {
@@ -1956,6 +1971,53 @@ mod tests {
             worktree: None,
             session_choice: SessionChoice::Fresh,
         }
+    }
+
+    /// A spawn's `cwd`, when stated, reaches the facade as the tree the
+    /// worker runs in - the facade resolves it, because a `~`-form or a
+    /// repo subdirectory is not a directory the record can hold.
+    #[tokio::test]
+    async fn spawn_passes_the_stated_cwd_to_the_facade() {
+        let host = host();
+        *host.workers.spawn_reply.lock() = Some(Ok(preloaded_reply(None)));
+        let tool = spawn_tool(&host);
+
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "reviewer",
+                    "charter": "c",
+                    "cwd": "~/Projects/nazar",
+                }),
+            })
+            .await;
+
+        assert!(!output.is_error, "{:?}", output.blocks);
+        assert_eq!(
+            host.workers.spawn_calls.lock()[0].8.as_deref(),
+            Some("~/Projects/nazar"),
+            "the stated cwd reaches the facade, which resolves it",
+        );
+    }
+
+    /// No `cwd` named: the facade hears `None`, so the project's own path
+    /// keeps answering exactly as it always did.
+    #[tokio::test]
+    async fn spawn_without_a_cwd_sends_none() {
+        let host = host();
+        *host.workers.spawn_reply.lock() = Some(Ok(preloaded_reply(None)));
+        let tool = spawn_tool(&host);
+
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({"label": "reviewer", "charter": "c"}) })
+            .await;
+
+        assert!(!output.is_error, "{:?}", output.blocks);
+        assert_eq!(
+            host.workers.spawn_calls.lock()[0].8,
+            None,
+            "no cwd means the project's own path",
+        );
     }
 
     /// The spawn argument reaches the facade in canonical wire order,

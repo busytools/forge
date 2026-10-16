@@ -854,8 +854,7 @@ impl Workspace {
             false,
             // Non-git: the seeded row nests under its project in the
             // launchpad without needing a worktree on disk.
-            false,
-            None,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             None,
         );
     }
@@ -878,9 +877,8 @@ impl Workspace {
             None,
             None,
             false,
-            is_git_repo,
+            crate::mcp::workers::types::WorkerTree { is_git_repo, cwd: Some(cwd.to_owned()) },
             None,
-            Some(cwd),
         );
     }
 
@@ -899,8 +897,7 @@ impl Workspace {
             None,
             None,
             false,
-            true,
-            None,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
             None,
         );
     }

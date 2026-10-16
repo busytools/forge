@@ -68,6 +68,59 @@ pub fn worker_row_can_start(
     }
 }
 
+/// Resolve a spawn's `cwd` argument to the absolute path it names: `~`
+/// expands to home the way every other forge path expands it, and
+/// anything that is not absolute after that is refused rather than
+/// resolved against forge's own launch directory, which hard rule 14
+/// forbids anything to depend on.
+pub(crate) fn resolve_spawn_cwd(raw: &str) -> Result<PathBuf, String> {
+    let named = raw.trim();
+    if named.is_empty() {
+        return Err("cwd must be a non-empty path".to_owned());
+    }
+    let expanded = crate::config::expand_home(named);
+    if !expanded.is_absolute() {
+        return Err(format!(
+            "cwd must be an absolute path or start with ~ (got '{named}'), so the worker's \
+             tree does not depend on the directory forge happens to run in"
+        ));
+    }
+    Ok(expanded)
+}
+
+/// The tree a spawned worker runs in, and whether that tree is a git
+/// repo: the project's own path when the spawn states no `cwd` (today's
+/// behaviour, unchanged), else the stated path resolved to its repo root,
+/// so the record, every read-back and the claude CLI's `--worktree` fork
+/// all name the same directory.
+pub(crate) fn worker_root_and_git(
+    project_root: &Path,
+    spawn_cwd: Option<&str>,
+) -> Result<(PathBuf, bool), String> {
+    let Some(raw) = spawn_cwd else {
+        return Ok((
+            project_root.to_path_buf(),
+            forge_agent::env::worktree::is_git_repo(project_root),
+        ));
+    };
+    let named = resolve_spawn_cwd(raw)?;
+    let root = forge_agent::env::worktree::worker_root(&named)?;
+    let is_git = forge_agent::env::worktree::is_git_repo(&root);
+    Ok((root, is_git))
+}
+
+/// The tree a worker's row records, as one value: whether that tree is a
+/// git repo - which is what forks a worktree under it - and the root
+/// itself when the spawn pointed the worker somewhere other than the
+/// project's own path. The two travel together because every reader
+/// composes one directory out of both, and two adjacent fields of the
+/// same shape invite a silent transposition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerTree {
+    pub is_git_repo: bool,
+    pub cwd: Option<String>,
+}
+
 /// One live worker's liveness, without the spawn args. A render path
 /// reads only these three fields, and cloning a `WorkerEntry` to get
 /// them copies the worker's whole charter.
@@ -114,6 +167,12 @@ pub struct WorkerEntry {
     /// in claude's auto-created `<project>/.claude/worktrees/<label>/`;
     /// `false` means non-git-repo project (no worktree, plain cwd).
     pub is_git_repo_at_spawn: bool,
+    /// Cached at spawn time: the tree this worker runs in when the spawn
+    /// pointed it somewhere other than the project's own path. Every
+    /// read-back composes the worker's directory from it - the entry
+    /// holds it so a seat read does not go to the store per frame, the
+    /// way the gitness above is held.
+    pub cwd: Option<std::path::PathBuf>,
     /// Human-readable failure reason when `status == Failed` (set by
     /// `transition_worker_to_failed` on `Connected`-never-arrived
     /// outcomes). `None` otherwise. The Projects pane renders this
@@ -201,6 +260,7 @@ mod is_git_repo_at_spawn_tests {
             spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: is_git,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -216,5 +276,109 @@ mod is_git_repo_at_spawn_tests {
     fn worker_entry_carries_is_git_repo_at_spawn_false() {
         let entry = fake_entry(false);
         assert!(!entry.is_git_repo_at_spawn);
+    }
+}
+
+#[cfg(test)]
+mod spawn_cwd_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// `git init` is the whole fixture: the two questions these helpers
+    /// ask (`--git-dir`, `--show-toplevel`) both answer in an empty repo.
+    fn init_repo(dir: &Path) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["init", "-q"])
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git init succeeds");
+    }
+
+    #[test]
+    fn resolve_spawn_cwd_expands_a_tilde_path() {
+        let home = dirs::home_dir().expect("home dir");
+
+        let resolved = resolve_spawn_cwd("~/Projects/nazar").expect("a tilde path resolves");
+
+        assert_eq!(
+            resolved,
+            home.join("Projects/nazar"),
+            "~ expands to home, the way every \
+            other forge path expands it"
+        );
+    }
+
+    #[test]
+    fn resolve_spawn_cwd_takes_an_absolute_path_unchanged() {
+        let resolved = resolve_spawn_cwd("/tmp/some-tree").expect("an absolute path resolves");
+
+        assert_eq!(resolved, PathBuf::from("/tmp/some-tree"));
+    }
+
+    /// A bare relative path would resolve against forge's own launch
+    /// directory, which hard rule 14 forbids anything to depend on - so it
+    /// is refused rather than placed. The refusal also keeps the word
+    /// "worktree" out of it: the spawn failure classifier routes any
+    /// message containing that word to a worktree-creation failure, which
+    /// a bad argument is not.
+    #[test]
+    fn resolve_spawn_cwd_refuses_a_bare_relative_path() {
+        let error = resolve_spawn_cwd("Projects/nazar").expect_err("relative is refused");
+
+        assert!(error.contains("absolute"), "the refusal says what form is wanted: {error}");
+        assert!(!error.contains("worktree"), "and never the classifier's word: {error}");
+    }
+
+    #[test]
+    fn resolve_spawn_cwd_refuses_an_empty_or_blank_argument() {
+        for raw in ["", "   "] {
+            let error = resolve_spawn_cwd(raw).expect_err("blank is refused");
+            assert!(!error.contains("worktree"), "never the classifier's word: {error}");
+        }
+    }
+
+    /// D9: a spawn that states no tree keeps today's behaviour exactly -
+    /// the project's own path, probed for gitness the way it always was.
+    #[test]
+    fn worker_root_and_git_without_a_cwd_keeps_the_project_root() {
+        let dir = tempdir().expect("tempdir");
+
+        let (root, is_git) = worker_root_and_git(dir.path(), None).expect("resolves");
+
+        assert_eq!(root, dir.path(), "no cwd leaves the project root where it was");
+        assert!(!is_git, "an empty directory is not a git repo");
+    }
+
+    /// D5: a subdirectory of a repo resolves to the repo root at spawn, so
+    /// the record and the worktree fork agree with where the claude CLI
+    /// actually forks.
+    #[test]
+    fn worker_root_and_git_resolves_a_repo_subdirectory_to_the_root() {
+        let repo = tempdir().expect("repo dir");
+        init_repo(repo.path());
+        let nested = repo.path().join("crates/deep");
+        std::fs::create_dir_all(&nested).expect("nested dir");
+
+        let (root, is_git) =
+            worker_root_and_git(Path::new("/nonexistent-project"), Some(&nested.to_string_lossy()))
+                .expect("resolves");
+
+        assert_eq!(
+            root,
+            std::fs::canonicalize(repo.path()).expect("canonical repo"),
+            "the stated subdirectory resolves to the repo root, not itself",
+        );
+        assert!(is_git, "and the tree is read as a git repo, which is what forks a worktree");
+    }
+
+    #[test]
+    fn worker_root_and_git_refuses_a_stated_path_that_is_not_there() {
+        let error = worker_root_and_git(Path::new("/tmp"), Some("/nonexistent/nope"))
+            .expect_err("a path that is not there is refused");
+
+        assert!(error.contains("/nonexistent/nope"), "the refusal names the path: {error}");
+        assert!(!error.contains("worktree"), "and never the classifier's word: {error}");
     }
 }

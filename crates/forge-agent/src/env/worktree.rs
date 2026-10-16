@@ -26,6 +26,28 @@ pub fn is_git_repo(path: &Path) -> bool {
         .is_ok_and(|out| out.status.success())
 }
 
+/// The tree a worker spawned at `cwd` runs in: the repo root when the
+/// path is inside a repository, the path itself otherwise. Both are
+/// canonical, because the `claude` CLI derives the session JSONL's
+/// directory from the canonical path - measured: a worktree under
+/// `/tmp` writes its transcript under `/private/tmp` - so a record
+/// holding the alias would name a directory the CLI never wrote to.
+///
+/// `Err` when the path is not there to canonicalize or is not a
+/// directory, so a typo is refused where it was typed rather than
+/// surfacing as claude's own cwd failure at spawn.
+pub fn worker_root(cwd: &Path) -> Result<std::path::PathBuf, String> {
+    let resolved = std::fs::canonicalize(cwd)
+        .map_err(|error| format!("{} is not a directory: {error}", cwd.display()))?;
+    if !resolved.is_dir() {
+        return Err(format!("{} is not a directory", cwd.display()));
+    }
+    let Some(toplevel) = git_in_repo(&resolved, &["rev-parse", "--show-toplevel"]) else {
+        return Ok(resolved);
+    };
+    Ok(std::fs::canonicalize(toplevel.trim()).unwrap_or(resolved))
+}
+
 /// The branch checked out at `path`, via `git rev-parse --abbrev-ref
 /// HEAD`. `None` on detached HEAD, a git error, or non-utf8 output.
 /// Read before a worktree is removed so its per-branch review threads
@@ -1128,6 +1150,75 @@ mod tests {
         let sub = dir.path().join("sub");
         fs::create_dir(&sub).expect("mkdir");
         assert!(is_git_repo(&sub));
+    }
+
+    /// A spawn's tree is the repo root of wherever it points: a
+    /// subdirectory must land the worker at the root, because that is
+    /// where claude's `--worktree` forks from.
+    #[test]
+    fn worker_root_resolves_a_subdirectory_to_the_repo_root() {
+        let repo = init_repo_with_commit();
+        let nested = repo.path().join("crates/deep");
+        fs::create_dir_all(&nested).expect("nested dir");
+
+        let root = worker_root(&nested).expect("resolves");
+
+        assert_eq!(
+            root,
+            fs::canonicalize(repo.path()).expect("canonical repo"),
+            "a subdirectory must resolve to the repo root, not itself",
+        );
+    }
+
+    /// A path outside any repo is its own tree, resolved: the worker runs
+    /// there without a worktree.
+    #[test]
+    fn worker_root_keeps_a_path_outside_a_repo_as_itself() {
+        let dir = tempdir().expect("tempdir");
+
+        let root = worker_root(dir.path()).expect("resolves");
+
+        assert_eq!(
+            root,
+            fs::canonicalize(dir.path()).expect("canonical dir"),
+            "a non-repo directory is its own root",
+        );
+    }
+
+    /// The record stores the canonical root on purpose: the claude CLI
+    /// derives the session JSONL's directory from the canonical path
+    /// (measured: `/tmp` resolves to `/private/tmp`), so an alias in the
+    /// record would compose a directory the CLI never wrote to.
+    #[test]
+    fn worker_root_canonicalizes_the_path_it_returns() {
+        let dir = tempdir().expect("tempdir");
+        let alias = dir.path().join("alias");
+        fs::create_dir_all(&alias).expect("alias dir");
+        std::os::unix::fs::symlink(&alias, dir.path().join("link")).expect("symlink");
+
+        let root = worker_root(&dir.path().join("link")).expect("resolves");
+
+        assert_eq!(
+            root,
+            fs::canonicalize(&alias).expect("canonical"),
+            "the resolved root must carry no symlink component",
+        );
+    }
+
+    /// A directory that is not there is a refusal, not a silent pass: the
+    /// spawn would otherwise fail later with claude's own cwd error, far
+    /// from the caller that mistyped the path.
+    #[test]
+    fn worker_root_refuses_a_directory_that_is_not_there() {
+        let dir = tempdir().expect("tempdir");
+        let missing = dir.path().join("not-there");
+
+        let error = worker_root(&missing).expect_err("a missing directory is refused");
+
+        assert!(
+            error.contains("not-there") && error.contains("not a directory"),
+            "the refusal names the path and what is wrong with it: {error}",
+        );
     }
 
     fn run_git(dir: &Path, args: &[&str]) {

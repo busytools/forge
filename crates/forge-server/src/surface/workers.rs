@@ -38,7 +38,7 @@ impl Workers {
     /// live worker - a project lead, or a closed worker.
     pub fn lookup(&self, slot: &SessionSlot) -> Option<WorkerRef> {
         self.workspace.worker_lookup_for_session(slot).map(
-            |(project, label, is_git_repo_at_spawn, needs_tag)| WorkerRef {
+            |(project, label, is_git_repo_at_spawn, needs_tag, _)| WorkerRef {
                 project,
                 label,
                 is_git_repo_at_spawn,
@@ -78,6 +78,7 @@ mod tests {
             spawned_by: SessionSlot::lead("TestOrg", project),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }

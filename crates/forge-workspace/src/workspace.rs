@@ -2384,11 +2384,16 @@ impl Workspace {
                 let cwd = self.resume_cwd_for_slot(&slot);
                 handle.resume_session(session_id.clone(), cwd, settings)?;
             }
-            SessionTarget::FreshInProject { .. } => {
-                // Worker spawn: a fresh session in the project's cwd.
-                // Skip the lead-resume path so each worker runs under
-                // the id its caller already minted and recorded.
-                let cwd = project.path.to_string_lossy().to_string();
+            SessionTarget::FreshInProject { cwd, .. } => {
+                // Worker spawn: a fresh session in the tree the spawn
+                // resolved - its own `cwd` when it stated one, else the
+                // project's. Skip the lead-resume path so each worker
+                // runs under the id its caller already minted and
+                // recorded.
+                let cwd = cwd.as_ref().map_or_else(
+                    || project.path.to_string_lossy().to_string(),
+                    |cwd| cwd.to_string_lossy().into_owned(),
+                );
                 handle.new_session(Some(session_id.clone()), cwd, settings)?;
             }
         }
@@ -3421,7 +3426,7 @@ impl Workspace {
                 let project = self.find_project_by_name(name)?;
                 Ok(SessionSlot::lead(&project.org, &project.name))
             }
-            SessionTarget::Session(slot) | SessionTarget::FreshInProject { slot } => {
+            SessionTarget::Session(slot) | SessionTarget::FreshInProject { slot, .. } => {
                 Ok(slot.clone())
             }
         }
@@ -3434,7 +3439,7 @@ impl Workspace {
         match target {
             SessionTarget::Default => Some(self.config.default_project().clone()),
             SessionTarget::Named(name) => self.find_project_view_by_name(name),
-            SessionTarget::Session(slot) | SessionTarget::FreshInProject { slot } => self
+            SessionTarget::Session(slot) | SessionTarget::FreshInProject { slot, .. } => self
                 .config
                 .projects
                 .iter()
@@ -4785,6 +4790,7 @@ impl Workspace {
                     resume_kick,
                     interactive,
                     mcp_families,
+                    cwd,
                     from_boot_respawn,
                     return_to,
                 } => {
@@ -4806,6 +4812,7 @@ impl Workspace {
                             resume_kick,
                             interactive,
                             mcp_families,
+                            cwd,
                         },
                         spawned_by,
                         resume_existing.as_deref(),
@@ -5462,11 +5469,20 @@ impl Workspace {
             // A resume starts the subprocess in the worker's worktree,
             // and a subprocess cannot enter a directory that is not
             // there: the spawn fails on every boot and the row never
-            // clears. A FRESH re-spawn runs in the project root and
-            // takes `--worktree`, so it is the resume this skip is for:
-            // a fresh one that cannot get a worktree is refused by the
+            // clears. A FRESH re-spawn runs in its tree and takes
+            // `--worktree`, so it is the resume this skip is for: a
+            // fresh one that cannot get a worktree is refused by the
             // spawn itself, which leaves its row failed with the reason.
-            if let Some(root) = project.as_ref().map(|p| p.path.as_path())
+            //
+            // The tree composed here is the ROW's own: a worker the
+            // spawn pointed at another directory reads back to that
+            // directory, so the wave and the spawn ask about the same
+            // one.
+            let root = worker.cwd.as_deref().map_or_else(
+                || project.as_ref().map(|p| p.path.clone()),
+                |cwd| Some(std::path::PathBuf::from(cwd)),
+            );
+            if let Some(root) = root.as_deref()
                 && !crate::mcp::workers::types::worker_row_can_start(
                     root,
                     &worker.label,
@@ -5509,6 +5525,9 @@ impl Workspace {
                 // reads it back rather than restating it here.
                 mcp_families: worker.mcp_families.clone(),
                 interactive: worker.interactive.unwrap_or(false),
+                // The row's own tree, which is what this re-spawn
+                // restores: the handler records it back verbatim.
+                cwd: worker.cwd.clone(),
                 from_boot_respawn: true,
                 return_to: Some(tx),
             };
@@ -6308,6 +6327,34 @@ impl Workspace {
             .map(|view| view.name)
     }
 
+    /// The forge.toml project NAME that owns the RESOLVED `cwd`: the
+    /// match [`Self::project_name_for_path`] makes, retried with both
+    /// sides canonicalized when the lexical one misses. A spawn's tree is
+    /// canonical - the CLI derives its state directory from the canonical
+    /// path - while a declared path may reach the same directory through
+    /// an alias (`/tmp` for `/private/tmp`, a symlinked parent), and the
+    /// lexical rule alone would miss: a crossing-into-another-project
+    /// check that misses is the rule the check exists for.
+    ///
+    /// Both sides resolve together or not at all, the way the sibling's
+    /// lexical match keeps them in one form - a per-side canonicalize
+    /// would put an existing root on one side of the comparison and an
+    /// uncanonicalized child on the other.
+    pub fn project_name_for_resolved_path(&self, cwd: &str) -> Option<String> {
+        if let Some(name) = self.project_name_for_path(cwd) {
+            return Some(name);
+        }
+        let canonical = std::fs::canonicalize(crate::config::expand_home(cwd)).ok()?;
+        self.list_projects()
+            .into_iter()
+            .filter_map(|view| {
+                let declared = std::fs::canonicalize(&view.path).ok()?;
+                canonical.starts_with(&declared).then_some((declared, view.name))
+            })
+            .max_by_key(|(declared, _)| declared.as_os_str().len())
+            .map(|(_, name)| name)
+    }
+
     /// The `(org, project name)` a project key names, when forge.toml
     /// still declares it. The `sessions` table is keyed by the pair
     /// while every worker site holds the key, so a worker's row cannot be
@@ -6334,9 +6381,8 @@ impl Workspace {
         kick: Option<&str>,
         resume_kick: Option<&str>,
         interactive: bool,
-        is_git_repo: bool,
+        tree: crate::mcp::workers::types::WorkerTree,
         mcp_families: Option<&[String]>,
-        cwd: Option<&str>,
     ) -> anyhow::Result<()> {
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             anyhow::bail!("no configured project for {}", project_key.as_str());
@@ -6374,11 +6420,11 @@ impl Workspace {
                     .map(str::to_owned)
                     .or_else(|| existing.and_then(|row| row.resume_kick)),
                 interactive: Some(interactive),
-                is_git_repo: Some(is_git_repo),
+                is_git_repo: Some(tree.is_git_repo),
                 // Stored as the spawn resolved it, never carried forward
                 // from an older row: a spawn that states no tree runs in
                 // the project root, and only a resume adopts one.
-                cwd: cwd.map(str::to_owned),
+                cwd: tree.cwd,
             },
         )
     }
@@ -6407,6 +6453,25 @@ impl Workspace {
             anyhow::bail!("the session store is unavailable this session");
         };
         Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.is_git_repo))
+    }
+
+    /// The tree the worker's row records, or `Ok(None)` when there is no
+    /// row or its row names none (which is the project's own directory).
+    /// Same failure contract as [`Self::recorded_worker_is_git_repo`]: an
+    /// unreadable row is an `Err`, not an absence.
+    pub(crate) fn recorded_worker_cwd(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let Some((org, project)) = self.project_identity_for_key(project_key) else {
+            return Ok(None);
+        };
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            anyhow::bail!("the session store is unavailable this session");
+        };
+        Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.cwd))
     }
 
     /// The MCP-family selection the worker's row records, or `Ok(None)`
@@ -6545,10 +6610,12 @@ impl Workspace {
             }
             // A row the wave would not start is not a worker the
             // launchpad can offer either - the same question, so the
-            // pane and the wave answer it with one call.
+            // pane and the wave answer it with one call. The tree it
+            // asks about is the ROW's own: a worker pointed at another
+            // directory is offered on that directory, not the project's.
             if let Some(view) = views.iter().find(|v| v.org == row.org && v.name == row.project)
                 && crate::mcp::workers::types::worker_row_can_start(
-                    &view.path,
+                    row.cwd.as_deref().map_or(view.path.as_path(), std::path::Path::new),
                     &row.label,
                     row.is_git_repo,
                     row.session_id.is_some(),
@@ -7032,9 +7099,9 @@ impl Workspace {
         self.live_workers.lock().remove(project_key).unwrap_or_default()
     }
 
-    /// Locate `(project_key, label, is_git_repo_at_spawn, needs_tag)`
-    /// for any worker matching `session_key` across every project's
-    /// `live_workers`. Used by the Connected handler in
+    /// Locate `(project_key, label, is_git_repo_at_spawn, needs_tag,
+    /// cwd)` for any worker matching `session_key` across every
+    /// project's `live_workers`. Used by the Connected handler in
     /// `SessionTask::translate_event` to decide whether a just-
     /// connected session is a worker (and what tag to write).
     /// `is_git_repo_at_spawn` lets the tag-write path route to the
@@ -7042,11 +7109,13 @@ impl Workspace {
     /// `crate::mcp::workers::types`, and `needs_tag` says whether that
     /// write has ever landed - the rollback reads it to tell a worker
     /// that never established itself from one that is simply re-tagging.
+    /// `cwd` is the tree the spawn resolved, which every composed
+    /// directory reads instead of the project's path.
     /// `None` when the session is a lead (or not a worker at all).
     pub fn worker_lookup_for_session(
         &self,
         session_key: &SessionSlot,
-    ) -> Option<(ProjectKey, String, bool, bool)> {
+    ) -> Option<(ProjectKey, String, bool, bool, Option<std::path::PathBuf>)> {
         let workers = self.live_workers.lock();
         for (project_key, entries) in workers.iter() {
             if let Some(entry) = entries.iter().find(|e| e.slot == *session_key) {
@@ -7055,10 +7124,26 @@ impl Workspace {
                     entry.label.clone(),
                     entry.is_git_repo_at_spawn,
                     entry.needs_tag,
+                    entry.cwd.clone(),
                 ));
             }
         }
         None
+    }
+
+    /// The tree a live worker's directory composes against: the one its
+    /// spawn resolved, or the project's own `forge.toml` path when the
+    /// spawn stated none. `None` when the session is not a live worker,
+    /// or its project is no longer loaded.
+    fn live_worker_root(
+        &self,
+        project_key: &ProjectKey,
+        cwd: Option<&std::path::Path>,
+    ) -> Option<std::path::PathBuf> {
+        match cwd {
+            Some(root) => Some(root.to_path_buf()),
+            None => self.project_root_for_key(project_key),
+        }
     }
 
     /// The working directory forge holds for `session_key`. Two
@@ -7080,8 +7165,8 @@ impl Workspace {
         if let Some(cwd) = self.session_cwd_for(session_key) {
             return Some(cwd);
         }
-        let (project_key, label, is_git, _) = self.worker_lookup_for_session(session_key)?;
-        let Some(root) = self.project_root_for_key(&project_key) else {
+        let (project_key, label, is_git, _, cwd) = self.worker_lookup_for_session(session_key)?;
+        let Some(root) = self.live_worker_root(&project_key, cwd.as_deref()) else {
             // Unreachable while `forge.toml` and `live_workers` agree,
             // so treat a firing as drift rather than a normal miss.
             tracing::warn!(
@@ -7203,18 +7288,18 @@ impl Workspace {
     ///   (claude chdirs before writing the first catalog row, so the
     ///   resume path reads the worktree path back as `cwd`).
     ///
-    /// Anchor the composition on the worker's `project_key` (via
+    /// Anchor the composition on the worker's own tree (via
     /// [`Self::worker_lookup_for_session`] + the internal
-    /// `project_root_for_key` lookup) rather than `cwd_raw` so both
+    /// `live_worker_root` lookup) rather than `cwd_raw` so both
     /// lifecycle states resolve to the same final path. For non-
-    /// worker sessions (project leads), non-git workers, or projects
+    /// worker sessions (project leads), non-git workers, or workers
     /// whose root can't be resolved, returns `cwd_raw` unchanged.
     pub fn git_scan_cwd_for_session(
         &self,
         session_key: &SessionSlot,
         cwd_raw: &std::path::Path,
     ) -> std::path::PathBuf {
-        let Some((project_key, label, is_git_repo_at_spawn, _)) =
+        let Some((project_key, label, is_git_repo_at_spawn, _, cwd)) =
             self.worker_lookup_for_session(session_key)
         else {
             // Trace-level so a real lookup-miss (race during
@@ -7231,12 +7316,12 @@ impl Workspace {
         };
         if !is_git_repo_at_spawn {
             // Non-git workers don't fork into a worktree; they run
-            // in the project root itself, so `cwd_raw` is already
+            // in their tree itself, so `cwd_raw` is already
             // the correct scan target.
             return cwd_raw.to_path_buf();
         }
-        let Some(project_root) = self.project_root_for_key(&project_key) else {
-            // Project lookup miss is structurally unusual (a worker
+        let Some(root) = self.live_worker_root(&project_key, cwd.as_deref()) else {
+            // Root lookup miss is structurally unusual (a worker
             // entry exists but its project_key doesn't resolve to a
             // loaded project) - log so a regression on the
             // forge.toml refresh path is visible, then fall back to
@@ -7245,11 +7330,11 @@ impl Workspace {
                 target: "forge_workspace::git_scan",
                 slot = %session_key.display(),
                 project_key = project_key.as_str(),
-                "worker entry present but project_root lookup missed; falling back to cwd_raw"
+                "worker entry present but its tree could not be resolved; falling back to cwd_raw"
             );
             return cwd_raw.to_path_buf();
         };
-        project_root.join(".claude/worktrees").join(&label)
+        root.join(".claude/worktrees").join(&label)
     }
 
     /// Handle an async worker-spawn failure. Two paths, branching
@@ -7450,7 +7535,7 @@ impl Workspace {
         cwd: &str,
         minted_row: bool,
     ) {
-        let Some((project_key, label, is_git_repo_at_spawn, needs_tag)) =
+        let Some((project_key, label, is_git_repo_at_spawn, needs_tag, _)) =
             self.worker_lookup_for_session(session_key)
         else {
             return;
@@ -9854,8 +9939,18 @@ path = "{}"
         let key = ws.project_key_for_name("proj").expect("seeded project");
         // A git worker whose worktree is not there, so the wave would skip
         // it and no fire can land.
-        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true, None, None)
-            .expect("seed the stranded row");
+        ws.record_worker_row(
+            &key,
+            "steward",
+            "steward-uuid",
+            "c",
+            None,
+            None,
+            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
+            None,
+        )
+        .expect("seed the stranded row");
 
         // A whole minute, so the recurring's next `*/5` slot is at least a
         // minute later and the middle pass below cannot catch it.
@@ -10033,6 +10128,7 @@ provider = "anthropic"
         let _ = key(&shared);
         let ambiguous = SessionTarget::FreshInProject {
             slot: SessionSlot::worker("TestOrg", "no-such-project", "minted-twin-id"),
+            cwd: None,
         };
         assert!(
             ws.project_for_target(&ambiguous).is_none(),
@@ -10107,8 +10203,7 @@ provider = "anthropic"
             Some("original kick"),
             Some("original resume"),
             false,
-            false,
-            None,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             None,
         )
         .expect("seed the row this test then updates");
@@ -10205,6 +10300,7 @@ provider = "anthropic"
             spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -10361,7 +10457,15 @@ provider = "anthropic"
         // No install_db_for_test: the store is closed for this session.
         let error = ws
             .record_worker_row(
-                &project, "reviewer", "id", "charter", None, None, false, false, None, None,
+                &project,
+                "reviewer",
+                "id",
+                "charter",
+                None,
+                None,
+                false,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
             )
             .expect_err("a closed store must surface a durability failure, not a silent no-op");
         assert!(
@@ -13065,6 +13169,7 @@ mod workers_state_tests {
             spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -13177,6 +13282,7 @@ mod worker_activity_tests {
             spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -13920,6 +14026,7 @@ mod release_session_cascade_tests {
             spawned_by: lead_slot(),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -14247,6 +14354,7 @@ mod tag_retry_tests {
             spawned_by: SessionSlot::lead("TestOrg", "forge"),
             needs_tag,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -14286,8 +14394,7 @@ mod tag_retry_tests {
                 Some("kick"),
                 None,
                 false,
-                false,
-                None,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("seed the row this arm must keep");
@@ -14391,8 +14498,7 @@ mod tag_retry_tests {
                 Some("kick"),
                 None,
                 false,
-                false,
-                None,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("seed the row the rollback judges");
@@ -14852,6 +14958,7 @@ mod worker_respawn_tests {
             spawned_by: lead_slot(),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -15151,8 +15258,7 @@ mod worker_respawn_tests {
                     None,
                     None,
                     false,
-                    is_git,
-                    None,
+                    crate::mcp::workers::types::WorkerTree { is_git_repo: is_git, cwd: None },
                     None,
                 )
                 .expect("seed the row this wave re-spawns");
@@ -15472,8 +15578,7 @@ mod worker_respawn_tests {
                 Some("go"),
                 None,
                 false,
-                false,
-                None,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("seed the persisted worker this test re-spawns");
@@ -15519,8 +15624,7 @@ mod worker_respawn_tests {
                 None,
                 None,
                 false,
-                false,
-                None,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
             )
             .expect("write the row this test then deletes");
@@ -15604,8 +15708,7 @@ provider = "anthropic"
             false,
             // `demo` is not a git repo, so the worker runs in the project
             // root and has no worktree the wave must find.
-            false,
-            None,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             None,
         )
         .expect("the row the re-spawn wave resumes onto");
@@ -15701,6 +15804,7 @@ provider = "anthropic"
                     false,
                     false,
                     None,
+                    None,
                 )
                 .await;
         });
@@ -15746,6 +15850,7 @@ provider = "anthropic"
                     false,
                     true,
                     None,
+                    None,
                 )
                 .await
         });
@@ -15790,6 +15895,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                 )
                 .await
@@ -16013,6 +16119,7 @@ provider = "anthropic"
                 false,
                 true,
                 None,
+                None,
             ),
         )
         .await
@@ -16070,6 +16177,7 @@ provider = "anthropic"
                 false,
                 true,
                 None,
+                None,
             )
             .await
             .expect_err("the label is already live");
@@ -16110,6 +16218,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
                 None,
             )
             .await
@@ -16223,6 +16332,7 @@ provider = "anthropic"
                     false,
                     true,
                     None,
+                    None,
                 )
                 .await
         });
@@ -16255,7 +16365,15 @@ provider = "anthropic"
         let dir = tempfile::tempdir().expect("tempdir");
         ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
         ws.record_worker_row(
-            &key, "steward", session_id, "charter", None, None, false, false, None, None,
+            &key,
+            "steward",
+            session_id,
+            "charter",
+            None,
+            None,
+            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+            None,
         )
         .expect("seed the row that disagrees with the disk");
         ws.enable_test_dispatch_intercept();
@@ -16271,6 +16389,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                 )
                 .await
@@ -16323,6 +16442,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                 )
                 .await
@@ -16407,6 +16527,7 @@ provider = "anthropic"
                     false,
                     true,
                     None,
+                    None,
                 )
                 .await
         });
@@ -16448,6 +16569,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                 )
                 .await
@@ -16505,6 +16627,7 @@ provider = "anthropic"
                     None,
                     false,
                     false,
+                    None,
                     None,
                 )
                 .await
@@ -16594,6 +16717,87 @@ provider = "anthropic"
         }
     }
 
+    /// D7: a resume that states no tree resumes the one the ROW records.
+    /// The subprocess has to start where the JSONL lives, and for a
+    /// worker the spawn pointed at another repository that is its own
+    /// tree - the project's path would send the resume looking under a
+    /// directory nothing was ever written to.
+    #[tokio::test]
+    async fn a_resume_without_a_stated_cwd_adopts_the_rows_tree() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        run_git_in(project.path(), &["init", "-q"]);
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "demo"
+path = "{}"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                project.path().to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("write forge.toml");
+
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let view = ws.list_projects().into_iter().find(|v| v.name == "demo").expect("project");
+        let _store = seed_stored_session(&ws, "steward", "550e8400-e29b-41d4-a716-446655440099");
+        // The tree the spawn resolved: a second repository, with the
+        // worktree claude's `--worktree` would have forked there.
+        let sibling = tempfile::tempdir().expect("sibling repo");
+        run_git_in(sibling.path(), &["init", "-q"]);
+        run_git_in(sibling.path(), &["config", "commit.gpgsign", "false"]);
+        let root = std::fs::canonicalize(sibling.path()).expect("canonical sibling");
+        ws.seed_test_worker_row_at(&view.key, "steward", &root.to_string_lossy(), true);
+        let worktree = root.join(".claude").join("worktrees").join("steward");
+        run_git_in(
+            &root,
+            &["worktree", "add", "-q", "-b", "worktree-steward", worktree.to_str().expect("utf8")],
+        );
+        ws.enable_test_dispatch_intercept();
+
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "steward".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                    None,
+                    None,
+                )
+                .await
+        });
+
+        let dispatched = poll_spawn_worker_field(&ws, |cmd| match cmd {
+            Command::SpawnWorker { cwd, .. } => Some(cwd.clone()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(
+            dispatched.flatten().as_deref(),
+            Some(root.to_string_lossy().as_ref()),
+            "the resume carries the row's tree, not the project's",
+        );
+        spawner.abort();
+    }
+
     /// `--new`: the same fixture comes up fresh, so the worker that
     /// WOULD have resumed spawns fresh. Paired with the resume test
     /// deliberately - against a fixture with nothing stored both arms
@@ -16638,6 +16842,7 @@ mod async_worker_spawn_failure_tests {
             spawned_by: SessionSlot::from_str_for_test(lead_id),
             needs_tag: true,
             is_git_repo_at_spawn: is_git,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -17248,6 +17453,7 @@ mod git_scan_cwd_tests {
             spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: is_git,
+            cwd: None,
             diagnostic: None,
             kick: None,
         }
@@ -17434,6 +17640,109 @@ mod git_scan_cwd_tests {
         assert_eq!(
             ws.cwd_for_session(&session_key).as_deref(),
             project_root.join(".claude/worktrees/pyth-review-fixes").to_str(),
+        );
+    }
+
+    /// A worker the spawn pointed at another tree reads back to THAT
+    /// tree, not the project's: the seat's cwd, the resume cwd and the
+    /// git scan all compose from the root the spawn resolved. Composing
+    /// from the project path instead would put the worker's branch, its
+    /// files and its resumed JSONL under a directory the worker never
+    /// ran in.
+    #[test]
+    fn a_cwd_workers_read_backs_compose_its_own_tree() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let (_project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "playground",
+            "/tmp/test-playground",
+            "nazar-hand",
+            "worker-uuid-nazar",
+            true,
+        );
+        let project_key = ws.project_key_for_name("playground").expect("seeded project");
+        let root = std::path::PathBuf::from("/tmp/test-nazar");
+        let mut entry = worker_entry("nazar-hand", &session_key, true);
+        entry.cwd = Some(root.clone());
+        ws.remove_latest_worker(&project_key, "nazar-hand");
+        ws.insert_live_worker(&project_key, entry);
+        let tree = root.join(".claude/worktrees/nazar-hand");
+
+        assert_eq!(
+            ws.cwd_for_session(&session_key).as_deref(),
+            tree.to_str(),
+            "the seat's tree is the worker's own, not the project's",
+        );
+        assert_eq!(
+            ws.git_scan_cwd_for_session(&session_key, std::path::Path::new("/tmp/test-playground")),
+            tree,
+            "the branch and file counts read the worker's tree",
+        );
+        assert_eq!(
+            ws.resume_cwd_for_slot(&session_key),
+            tree.to_string_lossy(),
+            "and a resume lands where the JSONL lives",
+        );
+
+        // A non-git tree is its own directory, no worktree composed.
+        let plain_root = std::path::PathBuf::from("/tmp/test-plain");
+        let mut plain = worker_entry("nazar-hand", &session_key, false);
+        plain.cwd = Some(plain_root.clone());
+        ws.remove_latest_worker(&project_key, "nazar-hand");
+        ws.insert_live_worker(&project_key, plain);
+        assert_eq!(
+            ws.cwd_for_session(&session_key).as_deref(),
+            plain_root.to_str(),
+            "a non-git worker's own directory is the tree itself",
+        );
+    }
+
+    /// The launchpad asks about the ROW's tree, not the project's: a
+    /// worker pointed at another directory is offered on whether that
+    /// directory's worktree is there. The project's own worktree stands
+    /// in this fixture, so a launchpad reading the project path would
+    /// offer a row the boot wave would skip.
+    #[test]
+    fn the_launchpad_asks_about_the_rows_own_tree() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let repo = tempfile::tempdir().expect("git project dir");
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git init");
+        workspace.seed_test_project("proj-x", repo.path().to_str().expect("utf8 repo path"));
+        let proj_x = workspace.project_key_for_name("proj-x").expect("seeded project");
+        // The project's own worktree stands, so the project path answers
+        // "there is one" for anything that asks it.
+        std::fs::create_dir_all(repo.path().join(".claude").join("worktrees").join("at-home"))
+            .expect("create the project worktree");
+
+        let gone = tempfile::tempdir().expect("worker tree dir");
+        let gone_root = std::fs::canonicalize(gone.path()).expect("canonical");
+        workspace.seed_test_worker_row_at(&proj_x, "moved", &gone_root.to_string_lossy(), true);
+        workspace.seed_test_worker_row_at(
+            &proj_x,
+            "at-home",
+            repo.path().to_str().expect("utf8 repo path"),
+            true,
+        );
+
+        let offered = workspace.worker_labels_by_project();
+        let labels = offered.get(&proj_x).cloned().unwrap_or_default();
+        assert!(
+            !labels.contains(&"moved".to_owned()),
+            "a worker whose own tree has no worktree must not be offered, however the project \
+             looks; offered {labels:?}",
+        );
+        assert!(
+            labels.contains(&"at-home".to_owned()),
+            "and the project's own worker is still offered; offered {labels:?}",
         );
     }
 

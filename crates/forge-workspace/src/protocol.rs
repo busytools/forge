@@ -617,6 +617,13 @@ pub enum Command {
         /// family. Written to the row on a first spawn and read back
         /// from it on a re-spawn, so the selection survives restarts.
         mcp_families: Option<Vec<String>>,
+        /// The tree this spawn runs the worker in, already resolved to
+        /// its repo root by the facade: `None` means the project's own
+        /// path. Written to the row, which is what every read-back
+        /// composes from - so a defaulted field reads exactly as a
+        /// spawn written before the key existed.
+        #[serde(default)]
+        cwd: Option<String>,
         /// True only for boot/reconnect re-spawns of persisted
         /// workers, which bypass the project's worker cap:
         /// they restore state the user already had, and their reply is
@@ -3017,6 +3024,37 @@ mod workers_command_tests {
         match placed {
             Command::TaskMove { place, .. } => {
                 assert_eq!(place, Some(RankMove::Before(Some("a".to_owned()))));
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
+
+    /// A spawn frame written before `cwd` existed parses: the recorded
+    /// frames and the in-repo client's own payloads predate the key, and
+    /// the default on the field is what keeps one from coming back as an
+    /// unknown message. A key that IS there comes through rather than
+    /// being dropped.
+    #[test]
+    fn a_spawn_worker_carries_an_optional_cwd() {
+        let frame = |cwd: &str| {
+            format!(
+                r#"{{"spawn_worker":{{"project_key":"proj","label":"w","charter":"c","spawned_by":{{"org":"o","project":"p","label":"lead"}},"resume_existing":null,"kick":null,"resume_kick":null,"interactive":false,"mcp_families":null{cwd},"from_boot_respawn":false}}}}"#
+            )
+        };
+        let bare: Command =
+            serde_json::from_str(&frame("")).expect("a frame written before the key");
+        match bare {
+            Command::SpawnWorker { cwd, .. } => {
+                assert_eq!(cwd, None, "an absent tree is None, which is the project's own path");
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+
+        let stated: Command =
+            serde_json::from_str(&frame(r#","cwd":"/tmp/nazar""#)).expect("a frame with a tree");
+        match stated {
+            Command::SpawnWorker { cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some("/tmp/nazar"), "a stated tree crosses whole");
             }
             other => panic!("parsed as {other:?}"),
         }
