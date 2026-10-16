@@ -105,6 +105,11 @@ const DIFF = {
 
 let app: Record<string, unknown> | null = null;
 let frames: FrameRequestCallback[] = [];
+/** The scrolls the page asked for, as the element and the options it named.
+ *  `options` is spelled as accepting `undefined` because a call may omit it,
+ *  and the repo's `exactOptionalPropertyTypes` reads an explicit one
+ *  differently from an absent key. */
+let scrolled: { el: Element; options: ScrollIntoViewOptions | undefined }[] = [];
 
 afterEach(async () => {
   if (app !== null) await unmount(app);
@@ -119,10 +124,13 @@ beforeEach(() => {
   installResizeObserver();
   // jsdom performs no layout: scrollIntoView is a browser call the jump and
   // the comment stepper make, so it is stood in for the way the board and
-  // the chat's own reveal stand it in.
+  // the chat's own reveal stand it in - recording what was scrolled and how,
+  // because where a step lands is the step's whole point.
   Object.defineProperty(Element.prototype, 'scrollIntoView', {
     configurable: true,
-    value: () => {},
+    value: function (this: Element, options?: ScrollIntoViewOptions) {
+      scrolled.push({ el: this, options });
+    },
   });
   (globalThis as { matchMedia?: unknown }).matchMedia = () => ({
     matches: true,
@@ -304,6 +312,7 @@ async function draw(
   asked = [];
   hearers.clear();
   viewer.built = [];
+  scrolled = [];
   app = mount(Review, {
     target: document.body,
     props: { connection: connection(), slot: SLOT, dictation },
@@ -352,6 +361,14 @@ async function openReply(): Promise<void> {
   if (respond === undefined) throw new Error('the thread card drew no respond');
   respond.click();
   await settle(() => document.querySelector('.rv-reply') !== null);
+}
+
+/** Press one of the diff half's own buttons, and let the press settle. */
+function press(where: 'previous comment' | 'next comment' | 'next scope'): void {
+  const button = document.querySelector<HTMLButtonElement>(`.rv-step-btn[aria-label="${where}"]`);
+  if (button === null) throw new Error(`the page drew no ${where} button`);
+  button.click();
+  flushSync();
 }
 
 function micIn(where: string): HTMLButtonElement {
@@ -826,13 +843,6 @@ describe('the steppers', () => {
     return document.querySelector('.rv-cstep-n')?.textContent?.trim() ?? null;
   }
 
-  function press(where: 'previous comment' | 'next comment' | 'next scope'): void {
-    const button = document.querySelector<HTMLButtonElement>(`.rv-step-btn[aria-label="${where}"]`);
-    if (button === null) throw new Error(`the page drew no ${where} button`);
-    button.click();
-    flushSync();
-  }
-
   /**
    * **Both steppers cycle, with buttons a finger can press** (Ved,
    * 2026-10-16): the comments of the scope, and the scopes themselves - the
@@ -859,6 +869,34 @@ describe('the steppers', () => {
     expect(readout(), 'the last comment steps round to the first').toBe('1/2');
     press('previous comment');
     expect(readout(), 'and the first steps back round to the last').toBe('2/2');
+  });
+
+  /**
+   * **A step lands on the card it names, not merely on the counter.** The
+   * stepper's whole point is the movement, so this pins the scroll a step
+   * makes: the stepped-to comment's own row, brought to the middle of the
+   * canvas - a counter that counted without moving would pass everything
+   * else here.
+   */
+  it('brings the stepped-to comment into view', async () => {
+    await draw([
+      THREAD,
+      {
+        ...THREAD,
+        id: 't4',
+        resolution: { state: 'placed', line: 4, moved_from: null },
+        anchor: { ...THREAD.anchor, line: 4 },
+      },
+    ]);
+
+    press('next comment');
+    await settle(() => scrolled.some((held) => held.options?.block === 'center'));
+
+    const landed = scrolled.find((held) => held.options?.block === 'center');
+    expect(
+      landed?.el.textContent,
+      'the row the step brought into view is the stepped-to comment',
+    ).toContain('one');
   });
 
   it('steps the scopes with wrap-around, from its own buttons', async () => {
@@ -920,6 +958,52 @@ describe('the files half finishes the round too', () => {
     file.click();
     await settle(() => sent.some((held) => typeof held === 'object' && held !== null));
   }
+
+  /**
+   * **The summary's box follows the half that draws it** (Ved, 2026-10-16):
+   * the files half's finish row is the round's own box, so the dictation key
+   * speaks into it and the words land there. A rule that knew only the
+   * conversation half's copy would leave a reader dictating into a box that
+   * is not on screen.
+   */
+  it("takes the key in the files half's own finish row", async () => {
+    await draw();
+    await draft();
+    const button = document.querySelector<HTMLButtonElement>('.rv-finishbar .rv-finish');
+    button?.click();
+    await settle(() => document.querySelector('.rv-finishbar .rv-summary') !== null);
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+    expect(wire(), 'the key began no take in the row the reader opened').toContain(
+      'dictate_stream',
+    );
+
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, TAP_MS + 100));
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.rv-finishbar .takeline'),
+          'the bar goes with the take',
+        ).toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLInputElement>('.rv-finishbar .rv-summary')?.value,
+      'the key take went somewhere the reader cannot see',
+    ).toBe('this read is the whole input');
+  });
 
   /**
    * **The reader finishes without leaving the diff** (Ved, 2026-10-16): a
@@ -1043,6 +1127,52 @@ describe('the lines a diff left out', () => {
     expect(text, 'the gap is drawn in the hunk it follows').toContain(
       '@@ -1,3 +1,3 @@\n one\n two\n three\n@@ -4,1 +4,1 @@\n four\n',
     );
+  });
+
+  /**
+   * **An answer belongs to the scope that asked for it.** A reader who steps
+   * to another commit before it lands comes back to a scope whose answer is
+   * in hand: keyed to the scope on screen the answer would be dropped, and
+   * the ask it was remembered under would keep that scope control-less for
+   * good, with nothing on screen to say why.
+   */
+  it('keeps an answer for the scope that asked, and draws it on the way back', async () => {
+    await draw([], [], true, TWO_HUNKS, [{ sha: 'abc123', subject: 'the first commit' }]);
+    expect(
+      asked.map((held) => held.sha),
+      'the scope on screen asked first',
+    ).toEqual([null]);
+
+    // The reader steps away - the commit's own layer is not fetched in this
+    // harness, so the canvas draws its "Reading the commit..." state - and
+    // the answer for the scope they left arrives while they are gone.
+    press('next scope');
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: LINES, truncated: false },
+    });
+    flushSync();
+    paint();
+    expect(
+      document.querySelector('.rv-expand'),
+      'and the answer draws nothing for the scope on screen',
+    ).toBeNull();
+
+    // Back: the control is drawn from the answer that landed, with no second
+    // ask for a scope whose content is already in hand.
+    press('next scope');
+    await settle(() => document.querySelector('.rv-expand') !== null);
+    expect(
+      document.querySelector('.rv-expand')?.textContent,
+      'the control the late answer earned',
+    ).toBe('show 2 lines');
+    expect(
+      asked.map((held) => held.sha),
+      'and no ask was repeated',
+    ).toEqual([null]);
   });
 
   /** A read that refused earns no control: the page draws no door onto a

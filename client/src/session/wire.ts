@@ -260,9 +260,15 @@ type ReviewOutdatedReasonRecord = 'gone' | { ambiguous: { matches: number } };
 
 /**
  * Where a thread's anchor sits in the content the record ships: the server
- * resolved it because this side has no working tree to re-scan. `null` on a
- * thread means this read carries no landing - a commit-scoped thread's own
- * diff is immutable, so its recorded line is already settled.
+ * resolved it because this side has no working tree to re-scan.
+ *
+ * A thread written inside a commit is resolved too - against the branch's
+ * content, by content and neighbours rather than by its commit-numbered
+ * line - which is what lets the all-changes canvas draw it beside the same
+ * code. `null` means this read carries no landing at all: the branch layer
+ * the scan could not read, or an anchor numbered against another base. A
+ * placed landing never carries `moved_from` for such a thread: that number
+ * counts in another scope's numbering.
  */
 export type ReviewResolutionRecord =
   | { state: 'placed'; line: number; moved_from: number | null }

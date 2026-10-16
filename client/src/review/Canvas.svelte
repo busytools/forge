@@ -3,10 +3,13 @@
    * The Files-changed half of the review page: one scope's diff, the file
    * tree, the threads drawn on their own lines, and the composer.
    *
-   * **A scope is the All-changes view or one commit**, and a thread is drawn
-   * only in the scope it was written in: a commit's diff is immutable, so an
-   * anchor there is settled, while an all-changes anchor sits where the
-   * server resolved it against the content this page draws.
+   * **A scope is the All-changes view or one commit.** A commit's own view
+   * draws its threads at their recorded lines - a commit's diff is immutable,
+   * so an anchor there is settled - while the all-changes view draws every
+   * thread the server resolved against the content this page draws, a
+   * commit-scoped one included when the branch still carries its line. A
+   * commit's view draws none of the branch's own threads: the record holds no
+   * landing for them in that numbering.
    *
    * The viewer parses unified diff text and nothing else, so each file's
    * bounded hunks are re-emitted as text (`synthesizeFileDiff`); thread cards
@@ -14,7 +17,7 @@
    * row, which is what makes them span the table in both modes.
    */
   import { DiffView, DiffModeEnum } from '@git-diff-view/svelte';
-  import { mount, unmount, type ComponentProps } from 'svelte';
+  import { mount, unmount, untrack, type ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
   import type { Dictation } from '../composer/dictate.svelte';
@@ -166,7 +169,14 @@
     // Read once as well as subscribed: a page attaching to an already-open
     // socket hears no transition.
     connState = open.status();
-    return open.onStatus((next) => (connState = next));
+    return open.onStatus((next) => {
+      // **An ask the connection did not carry is not remembered.** A socket
+      // that goes down mid-ask never answers it, so its key comes off the
+      // asked set now and the scope asks again when the connection is back -
+      // the same rule the commit scope's own fetch keeps.
+      if (next !== 'open') askedFrom.clear();
+      connState = next;
+    });
   });
 
   /**
@@ -196,12 +206,16 @@
         return;
       }
       if (message.kind !== 'file_content') return;
-      // The answer to THIS canvas's ask: another seat's, another scope's or
-      // another file's belongs to whoever asked it, and the seat is named
-      // back for exactly this routing.
+      // The answer to THIS canvas's ask: another seat's belongs to whoever
+      // asked it, and the seat is named back for exactly this routing.
       if (subjectKey({ session: message.session }) !== seat) return;
-      if ((message.sha ?? null) !== scopeCommit) return;
-      contents.set(contentKeyOf(message.path), fileContentFrom(message.content));
+      // **Stored under the scope that ASKED**, which is the one its sha
+      // names - never the scope on screen. A reader who steps to another
+      // commit before the answer lands still has it when they come back, and
+      // the key is what the next `ensureContent` for that scope looks for;
+      // keyed to the scope on screen it would be dropped, and the ask it was
+      // remembered under would keep that scope control-less for good.
+      contents.set(`${message.sha ?? 'all'}|${message.path}`, fileContentFrom(message.content));
     });
   });
 
@@ -300,7 +314,12 @@
   function ensureContent(path: string): void {
     const held = built.find((file) => file.path === path);
     if (held === undefined) return;
+    // A file that can never yield a control is not asked about: no new side
+    // to read (a deleted file, a binary, a submodule), no hunks to leave a
+    // gap between, or hunks the record itself cut - which `gapsOf` refuses
+    // for the same reason, and each of them would cost a subprocess.
     if (held.file.binary || held.file.submodule || held.file.status === 'deleted') return;
+    if (held.file.truncated || held.file.hunks.length === 0) return;
     const key = contentKeyOf(path);
     if (contents.has(key) || askedFrom.has(key)) return;
     const open = connection;
@@ -442,21 +461,31 @@
     const ask = focusComment;
     if (ask === null) return;
     void ask.seq;
-    jumpTo(ask.path);
-    let tries = 0;
-    const look = (): void => {
-      const el = canvases[ask.path];
-      const at = el === undefined ? null : anchorRow(el, ask.side, ask.line, mode);
-      if (at !== null) {
-        at.scrollIntoView({ block: 'center' });
-        return;
-      }
-      if (tries < 8) {
-        tries += 1;
-        requestAnimationFrame(look);
-      }
-    };
-    requestAnimationFrame(look);
+    // **Everything but the ask is untracked.** The jump reads the built
+    // files, the list and the folded set, so tracking them would re-run this
+    // on any rebuild - a scope or mode switch, an opened gap - and yank the
+    // canvas back to the last-stepped comment while the reader was somewhere
+    // else.
+    untrack(() => {
+      // A folded file is unfolded for the step: the card cannot come into
+      // view while the section that draws it is closed.
+      closedFiles.delete(ask.path);
+      jumpTo(ask.path);
+      let tries = 0;
+      const look = (): void => {
+        const el = canvases[ask.path];
+        const at = el === undefined ? null : anchorRow(el, ask.side, ask.line, mode);
+        if (at !== null) {
+          at.scrollIntoView({ block: 'center' });
+          return;
+        }
+        if (tries < 8) {
+          tries += 1;
+          requestAnimationFrame(look);
+        }
+      };
+      requestAnimationFrame(look);
+    });
   });
 
   /** One drawn section, tracked for the reading mark. */
@@ -538,20 +567,22 @@
   /** Open the comment box on a line, which is where a take's words will land. */
   function openBox(spot: ReviewSpot): void {
     // The box is already open on this very line - the reader clicked it
-    // again - so no row is rebuilt and the ask would never be spent: the
-    // caret goes to the field that is there.
+    // again - so it is the box the words are in: the click puts the caret
+    // back in it and changes nothing else. A row is not rebuilt, so the ask
+    // a fresh open leaves would never be spent, and clearing the draft here
+    // would take words the reader had already typed.
     const same =
       box.spot !== null &&
       box.spot.path === spot.path &&
       box.spot.side === spot.side &&
       box.spot.line === spot.line;
+    if (same) {
+      commentField?.focus();
+      return;
+    }
     box.spot = spot;
     box.draft = '';
     box.line = null;
-    if (same && commentField !== null) {
-      commentField.focus();
-      return;
-    }
     focusPending = true;
   }
 
