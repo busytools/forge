@@ -3519,8 +3519,12 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review .rv-gapbtn { display: flex; align-items: center; justify-content: center;
   width: 100%; flex: 1 1 0; min-height: 20px; background: none; border: 0;
   padding: 0; cursor: pointer; color: var(--dim); }
-/* A lone strip takes GitHub's own 28px height for its single expander. */
-.review .rv-hunkcell > button.rv-gapbtn:only-of-type { min-height: 28px; }
+/* A lone strip takes GitHub's own 28px height for its single expander -
+   desktop shape only, because this selector outranks the coarse-pointer
+   block below and would otherwise hold a finger-driven row at 28. */
+@media (pointer: fine) {
+  .review .rv-hunkcell > button.rv-gapbtn:only-of-type { min-height: 28px; }
+}
 .review .rv-gapbtn:hover, .review .rv-gapbtn:focus-visible {
   background: var(--s3); color: var(--text); outline: none; }
 

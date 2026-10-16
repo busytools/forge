@@ -976,13 +976,12 @@
     button.className = 'rv-gapbtn';
     button.title = way === 'all' ? 'Expand All' : way === 'down' ? 'Expand Down' : 'Expand Up';
     const step = Math.min(GAP_STEP, remaining);
-    const opens =
-      way === 'all'
-        ? `all ${remaining} hidden`
-        : way === 'down'
-          ? `the next ${step} hidden`
-          : `the previous ${step} hidden`;
-    button.setAttribute('aria-label', `show ${opens} lines of ${path}`);
+    const opens = way === 'all' ? remaining : step;
+    const which = way === 'all' ? 'all' : way === 'down' ? 'the next' : 'the previous';
+    button.setAttribute(
+      'aria-label',
+      `show ${which} ${opens} hidden ${opens === 1 ? 'line' : 'lines'} of ${path}`,
+    );
     const glyph = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     glyph.setAttribute('class', 'ic');
     const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');

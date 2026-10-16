@@ -1325,6 +1325,59 @@ describe('the lines a diff left out', () => {
   });
 
   /**
+   * **A one-line gap is named in the singular.** The accessible name is the
+   * only place the count is spelled, and a lone remaining line is the case a
+   * builder that concatenates a numeral and a fixed plural gets wrong - the
+   * plausible regression is dropping the singular branch while simplifying
+   * the label into one template.
+   */
+  it('names a one-line gap in the singular', async () => {
+    // The hunks carry lines 1 and 2, then 4: the gap holds line 3 alone. The
+    // rows are the stood-in viewer's own, so the anchor the control hangs off
+    // is one it has drawn.
+    await draw([], [], true, {
+      state: 'populated',
+      files: [
+        {
+          ...TWO_HUNKS.files[0],
+          hunks: [
+            {
+              oldStart: 1,
+              oldCount: 2,
+              newStart: 1,
+              newCount: 2,
+              lines: [
+                { kind: 'context', text: 'one', oldLine: 1, newLine: 1 },
+                { kind: 'context', text: 'two', oldLine: 2, newLine: 2 },
+              ],
+            },
+            {
+              oldStart: 4,
+              oldCount: 1,
+              newStart: 4,
+              newCount: 1,
+              lines: [{ kind: 'context', text: 'four', oldLine: 4, newLine: 4 }],
+            },
+          ],
+        },
+      ],
+    });
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: ['one', 'two', 'three', 'four'], truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+
+    expect(
+      document.querySelector('.rv-gapbtn')?.getAttribute('aria-label'),
+      'one hidden line, named as one line',
+    ).toBe('show all 1 hidden line of src/a.rs');
+  });
+
+  /**
    * **A long gap wears GitHub's own pair of strips, one per end, and steps
    * open a screenful a press.** Ved, 2026-10-16, from the look: between two
    * hunks GitHub draws the down strip at the top of the header's gutter and
