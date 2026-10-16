@@ -3419,6 +3419,10 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   background: none; border: 0; font: inherit; text-align: left; cursor: pointer;
   text-decoration: none; color: inherit; }
 .review .rv-frow:hover { background: rgba(27,33,48,.5); }
+/* The file the reader is inside: the tree's own reading mark, following the
+   canvas's scroll. The tint plus the bar, because hover and "here" would
+   otherwise read the same at rest. */
+.review .rv-frow.here { background: rgba(27,33,48,.5); box-shadow: inset 2px 0 0 var(--accent); }
 .review .rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .review .rv-frow.renamed .rv-fpath { color: var(--muted); }

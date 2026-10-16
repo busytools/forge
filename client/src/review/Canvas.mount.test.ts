@@ -251,6 +251,92 @@ function chip(): string | null {
   return document.querySelector('.rv-insert .rv-at')?.textContent ?? null;
 }
 
+/** Two files, so the tree can carry a reading mark on one of them. */
+const twoFiles: DiffLayerRecord = {
+  state: 'populated',
+  files: [
+    {
+      path: 'src/a.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'one', oldLine: 1, newLine: 1 }],
+        },
+      ],
+    },
+    {
+      path: 'src/b.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 1,
+          newStart: 1,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'one', oldLine: 1, newLine: 1 }],
+        },
+      ],
+    },
+  ],
+};
+
+/** The tree rows the reading mark is on, by basename. */
+function marked(): string[] {
+  return [...document.querySelectorAll('.rv-frow.here')].map(
+    (row) => row.querySelector('.rv-fpath')?.textContent ?? '',
+  );
+}
+
+describe('the file the reader is inside', () => {
+  /**
+   * **The mark follows the scroll.** The tree names the file whose region
+   * holds the reading edge, and a mark that only moved on a click (or never
+   * moved at all) would leave the reader's place in the list lying about
+   * where they are.
+   */
+  it('marks the file the reading edge sits in, and moves the mark with the scroll', async () => {
+    // The sections' own geometry, which jsdom does not lay out: file A's
+    // region runs past the reading edge (the window's top at the narrow
+    // width this harness mounts), file B's begins below it.
+    let aTop = -200;
+    let bTop = 100;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const top = this.id === 'src/b.rs' ? bTop : aTop;
+      return { top, bottom: top + 100, height: 100 } as DOMRect;
+    });
+
+    draw(thread, twoFiles);
+    await settle();
+    expect(marked(), 'the edge sits inside a').toEqual(['a.rs']);
+
+    // The scroll: a's region is now above the edge and b's holds it.
+    aTop = -300;
+    bTop = -20;
+    window.dispatchEvent(new Event('scroll'));
+    paint();
+
+    expect(marked(), 'the mark moved to the file the reader scrolled into').toEqual(['b.rs']);
+    expect(
+      document.querySelector('.rv-frow.here')?.getAttribute('aria-current'),
+      'and it is a current-row mark, not only a class',
+    ).toBe('true');
+  });
+});
+
 describe('the clock a mounted row draws', () => {
   it('moves the age chip on the tick, as the conversation half does', async () => {
     draw();

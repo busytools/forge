@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DiffFileRecord } from '../session/wire';
-import { filesOf, findLine, lineCounts, synthesizeFileDiff, treeRows } from './diff';
+import {
+  currentFileAt,
+  filesOf,
+  findLine,
+  lineCounts,
+  synthesizeFileDiff,
+  treeRows,
+} from './diff';
 
 function file(overrides: Partial<DiffFileRecord> = {}): DiffFileRecord {
   return {
@@ -111,5 +118,31 @@ describe('the canvas derivations', () => {
     expect(addition?.index, 'and the added one on the new side').toBe(2);
     expect(findLine(held, 'new', 2)?.hunk.newStart).toBe(1);
     expect(findLine(held, 'new', 99), 'a line the diff does not carry').toBeNull();
+  });
+
+  it('names the file the reading edge sits in, not the one merely drawn', () => {
+    // The plausible regression is picking the first drawn section, or the
+    // last: the boxes arrive in draw order but only their geometry says
+    // which file the reader is inside, and a section the list has scrolled
+    // past is not among the boxes at all.
+    const sections = [
+      { path: 'src/a.rs', top: -200, bottom: -40 },
+      { path: 'src/b.rs', top: -40, bottom: 300 },
+      { path: 'src/c.rs', top: 300, bottom: 500 },
+    ];
+    expect(currentFileAt(sections, 0), 'the reader is inside b').toBe('src/b.rs');
+    expect(currentFileAt(sections, -100), "above b's top: the reader is inside a").toBe('src/a.rs');
+    expect(currentFileAt(sections, 320), 'and inside c near its top').toBe('src/c.rs');
+    expect(
+      currentFileAt(sections, -500),
+      'above every drawn section: no file is being read',
+    ).toBeNull();
+    expect(
+      currentFileAt(
+        [{ path: 'src/c.rs', top: 300, bottom: 500 }],
+        -500,
+      ),
+      'a virtualised list holds only what it drew, and the edge above all of it names none',
+    ).toBeNull();
   });
 });

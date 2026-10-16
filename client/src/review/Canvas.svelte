@@ -30,6 +30,7 @@
   import type { SessionSlot } from '../wire/types';
   import {
     anchorRow,
+    currentFileAt,
     doorSpot,
     filesOf,
     findLine,
@@ -289,6 +290,71 @@
     // target - without this the rows were dead controls at that width.
     if (list !== null) list.scrollToIndex(at, { align: 'start' });
     else document.getElementById(path)?.scrollIntoView({ block: 'start' });
+    scheduleMark();
+  }
+
+  /**
+   * The file the reader is inside, as the tree marks it: the section whose
+   * region holds the canvas's own top edge, following the scroll.
+   */
+  let current = $state<string | null>(null);
+  /** The drawn sections by path, tracked so the mark can measure them. */
+  const sections = new SvelteMap<string, HTMLElement>();
+  let canvasEl = $state<HTMLElement | null>(null);
+
+  function markCurrent(): void {
+    const canvas = canvasEl;
+    if (canvas === null) return;
+    // The edge is the canvas's own top at the wide width, where the list
+    // scrolls inside it, and the window's at the narrow one, where the page
+    // is the scroller.
+    const edge = narrow ? 0 : canvas.getBoundingClientRect().top;
+    const boxes = [...sections].map(([path, el]) => {
+      const rect = el.getBoundingClientRect();
+      return { path, top: rect.top, bottom: rect.bottom };
+    });
+    const at = currentFileAt(boxes, edge);
+    if (at !== current) current = at;
+  }
+
+  /** One mark a frame: a scroll asks once per burst rather than per event. */
+  let markFrame = 0;
+  function scheduleMark(): void {
+    if (markFrame !== 0) return;
+    markFrame = requestAnimationFrame(() => {
+      markFrame = 0;
+      markCurrent();
+    });
+  }
+
+  $effect(() => {
+    const onScroll = (): void => scheduleMark();
+    // Capture phase: a scroll of the list does not bubble, and this is the
+    // one listener that hears both scrollers.
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      if (markFrame !== 0) cancelAnimationFrame(markFrame);
+    };
+  });
+
+  // A change of scope, mode or set of drawn files moves the sections
+  // without a scroll of its own.
+  $effect(() => {
+    void scopeCommit;
+    void mode;
+    void built;
+    void narrow;
+    scheduleMark();
+  });
+
+  /** One drawn section, tracked for the reading mark. */
+  function trackSection(node: HTMLElement, path: string): () => void {
+    sections.set(path, node);
+    return () => {
+      sections.delete(path);
+      scheduleMark();
+    };
   }
 
   /**
@@ -748,6 +814,8 @@
           type="button"
           class="rv-frow"
           class:renamed={file.oldPath !== null}
+          class:here={current === file.path}
+          aria-current={current === file.path}
           style="--d:{row.depth}"
           title={row.path}
           onclick={() => jumpTo(file.path)}
@@ -766,7 +834,7 @@
   {/each}
 </nav>
 
-<main class="rv-canvas">
+<main class="rv-canvas" bind:this={canvasEl}>
   {#if scopeLayer === null}
     <p class="rv-quiet">Reading the commit...</p>
   {:else if scopeLayer.state === 'scan_failed'}
@@ -811,6 +879,7 @@
   <section
     class="rv-file"
     id={file.path}
+    {@attach (node: HTMLElement) => trackSection(node, file.path)}
     style:min-height={heights.get(heightKey(file.path)) === undefined
       ? undefined
       : `${heights.get(heightKey(file.path))}px`}

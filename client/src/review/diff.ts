@@ -145,6 +145,32 @@ interface RowSide {
   line: number;
 }
 
+/** One drawn file's own box, as the reading edge reads the canvas. */
+interface SectionBox {
+  path: string;
+  top: number;
+  bottom: number;
+}
+
+/**
+ * The file the reader is inside: the drawn section whose region holds the
+ * reading edge - the last one whose top has passed it - or `null` when the
+ * edge sits above every drawn section.
+ *
+ * The boxes are the sections the canvas has actually drawn (the list is
+ * virtualised, so a section the reader has scrolled past is gone, and the
+ * one at the edge is by definition among those drawn). Order-independent:
+ * the box with the greatest top at or above the edge wins.
+ */
+export function currentFileAt(sections: SectionBox[], edge: number): string | null {
+  let best: SectionBox | null = null;
+  for (const section of sections) {
+    if (section.top > edge + 1) continue;
+    if (best === null || section.top > best.top) best = section;
+  }
+  return best === null ? null : best.path;
+}
+
 /**
  * The viewer's own DOM, read back: the line numbers and cell geometry its
  * two modes draw, as the page's own decisions about them.
