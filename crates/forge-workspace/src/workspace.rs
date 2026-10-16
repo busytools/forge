@@ -203,9 +203,12 @@ pub enum PendingInteractionKind {
 }
 
 /// The dedupe key for a delivered Slack message: one destination is
-/// (project, owner, conversation, ts), so a lead and a worker in one
-/// project never starve each other as "already delivered".
-pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String);
+/// (project, owner, conversation, ts, edited), so a lead and a worker in
+/// one project never starve each other as "already delivered". The edit
+/// ts is part of the identity because an edit keeps the message's own
+/// `ts`: without it a correction reads as a re-run of the delivery it
+/// corrects and never reaches the session.
+pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String, Option<String>);
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
@@ -10900,6 +10903,7 @@ already completed."
             text: text.to_owned(),
             parent_user_id: None,
             latest_reply: None,
+            edited: None,
             files: Vec::new(),
         }
     }
