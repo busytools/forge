@@ -90,6 +90,10 @@
     padding: 3px 11px; }
   .rv-mode span + span { border-left: 1px solid var(--line); }
   .rv-mode span.on { color: var(--text); background: var(--s2); }
+  /* The comments' stepper, beside the scope's: the arrows and the N/M count
+     between them. */
+  .rv-cstep-n { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+    border: 1px solid var(--line); border-left: 0; padding: 3px 8px; white-space: nowrap; }
 
   /* ---------- the diff half: the tree, then the canvas ---------- */
   .rv-body { display: grid; grid-template-columns: 296px minmax(0, 1fr); gap: 18px; }
@@ -140,6 +144,11 @@
 
   .rv-insert td { padding: 0; background: var(--s1); }
   .rv-inline { padding: 3px 10px 6px; }
+  /* The between-hunk control: the lines the diff left out, one press away. */
+  .rv-expand { display: block; width: 100%; text-align: center;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    background: var(--s2); border: 1px solid var(--line); border-radius: 6px;
+    padding: 2px 8px; }
   .rv-thread { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2);
     padding: 8px 10px 9px; }
   .rv-tops { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
@@ -231,6 +240,10 @@
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
 
   .rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
+  /* The diff half's finish, under its canvas: the collapsed control at the
+     row's end, and the page's own finish row filling it once it opens. */
+  .rv-finishbar { display: flex; align-items: center; justify-content: flex-end;
+    gap: 9px; padding-top: 4px; }
   .rv-finishrow { display: flex; gap: 9px; align-items: center; }
   .rv-summary { flex: 1; background: var(--s1); color: var(--dim); border: 1px solid var(--line);
     border-radius: 8px; font-family: var(--ui); font-size: var(--fs-base); padding: 6px 9px; }
@@ -263,7 +276,7 @@
     <span class="loop">1 reply to read<span class="sep">&#183;</span>1 open</span>
   </header>
 
-  <div class="fig">the Files changed half, all changes: the tree, the diff, a thread on its line, the composer</div>
+  <div class="fig">the Files changed half, all changes: the tree with the file being read marked, the comments' stepper, the diff, a thread on its line, the composer, a between-hunk control, and the half's own finish</div>
 
   <nav class="rv-tabs" aria-label="review sections">
     <span class="tab">Conversation</span>
@@ -277,6 +290,9 @@
       <span class="rv-step"><span>&#8249;</span><span>&#8250;</span></span>
     </span>
     <span class="rv-mode"><span>unified</span><span class="on">split</span></span>
+    <span class="rv-step">
+      <span>&#8249;</span><span class="rv-cstep-n">2/5</span><span>&#8250;</span>
+    </span>
   </nav>
 
   <!-- The keys, where they act: the arrows a hand reaches for, and the one
@@ -284,6 +300,8 @@
        accepts are not advertised beside them. -->
   <p class="rv-hint">
     <kbd>&#8592;</kbd><kbd>&#8594;</kbd> step commits
+    <span class="sep">&#183;</span>
+    <kbd>shift</kbd><kbd>&#8592;</kbd><kbd>&#8594;</kbd> step comments
     <span class="sep">&#183;</span>
     <kbd>a</kbd> all changes
     <span class="sep">&#183;</span>
@@ -447,10 +465,34 @@
                 </div>
               </td>
             </tr>
+            <!-- The lines the diff left out, one press away - and, below it,
+                 the second hunk the gap sat between. -->
+            <tr class="rv-insert">
+              <td colspan="4">
+                <div class="rv-inline">
+                  <button type="button" class="rv-expand">show 14 lines</button>
+                </div>
+              </td>
+            </tr>
+            <tr><td class="hunk" colspan="4">@@ -240,5 +242,5 @@</td></tr>
+            <tr>
+              <td class="num">242</td><td>  const held = read.wire;</td>
+              <td class="num">242</td><td>  const held = read.wire;</td>
+            </tr>
+            <tr>
+              <td class="num">&nbsp;</td><td class="gap">&nbsp;</td>
+              <td class="num">243</td><td>  const reviews = held.reviews;</td>
+            </tr>
           </tbody>
         </table>
       </section>
     </main>
+  </div>
+
+  <!-- The diff half's own way to finish: collapsed to its control until a
+       press opens the page's finish row in place. -->
+  <div class="rv-finishbar">
+    <span class="rv-finish">finish review (1)</span>
   </div>
 
   <div class="fig">the Conversation half: what cannot be placed, the rounds, and the finish</div>
