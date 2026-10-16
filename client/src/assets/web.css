@@ -3463,12 +3463,20 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    the look): a strip across the hunk header's own gutter cell - the column
    the line numbers sit in - whose whole box lights up under the pointer. A
    hunk between two others carries two strips, one per end of the gap it
-   sits under, so the cell stacks them. */
+   sits under, and each takes half the row: the down strip runs along the
+   row's top and the up strip along its bottom, the way GitHub spreads its
+   own pair. */
 .review .rv-hunkcell { display: flex; flex-direction: column; align-items: center;
-  justify-content: center; padding: 0; }
+  height: 100%; padding: 0; }
+/* The viewer's own expander slot, an empty div it leaves in the header cell:
+   with our strips in the cell it is dead space, and the 28px it reserves is
+   what pushed the pair to the row's bottom edge rather than its two ends. */
+.review .rv-hunkcell > div { display: none; }
 .review .rv-gapbtn { display: flex; align-items: center; justify-content: center;
-  width: 100%; min-height: 20px; background: none; border: 0; padding: 0;
-  cursor: pointer; color: var(--dim); }
+  width: 100%; flex: 1 1 0; min-height: 20px; background: none; border: 0;
+  padding: 0; cursor: pointer; color: var(--dim); }
+/* A lone strip takes GitHub's own 28px height for its single expander. */
+.review .rv-hunkcell > button.rv-gapbtn:only-of-type { min-height: 28px; }
 .review .rv-gapbtn:hover, .review .rv-gapbtn:focus-visible {
   background: var(--s3); color: var(--text); outline: none; }
 
