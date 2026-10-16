@@ -213,11 +213,13 @@ history is the record.
 2. **The build stamp follows a worktree's HEAD now** (#1829): `build.rs`
    resolves its watch paths through `git rev-parse --git-path`, so the stale
    stamp this entry used to warn about (a worktree's file-shaped `.git`
-   keeping the watches from arming) is gone on current main; only a checkout
-   predating the fix still needs the `touch` on
-   `crates/forge-server/build.rs` (mtime only) before a rebuild in a
-   worktree. Either way, never bare-touch any other `build.rs` path: the
-   Rust workspace has exactly one, and an empty file breaks the build.
+   keeping the watches from arming) is gone on current main with git 2.31+.
+   On older git the script falls back to the literal paths, which arm a
+   plain checkout but not a worktree - so there, and on any checkout
+   predating the fix, a worktree rebuild still needs the `touch` on
+   `crates/forge-server/build.rs` (mtime only). Either way, never bare-touch
+   any other `build.rs` path: the Rust workspace has exactly one, and an
+   empty file breaks the build.
 3. The store follows HOME, not the config dir - see the mandatory redirect
    above and #1826.
 4. Both default ports are the live forge's (8790/8787). A taken gateway port
