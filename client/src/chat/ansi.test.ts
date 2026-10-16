@@ -57,6 +57,15 @@ describe('the command output a box draws', () => {
   });
 
   /**
+   * #1296: a bell inside a DCS payload is payload, not a terminator - only
+   * OSC ends at one (ECMA-48), so cutting there would draw the tail as text.
+   */
+  it('runs a DCS through a bell to its string terminator', () => {
+    expect(ansiRuns('a\u001bPq~xyz\u0007b\u001b\\c')).toEqual([{ text: 'ac', cls: '' }]);
+    expect(ansiRuns('a\u001bPq~xyz\u0007b')).toEqual([{ text: 'a', cls: '' }]);
+  });
+
+  /**
    * **Extended colour is the cut's own boundary, and its payload is a unit.**
    * `38;5;n` and `38;2;r;g;b` are read as the one sequence they are (so
    * nothing leaks onto the page) and leave the current colour alone. The
@@ -110,6 +119,15 @@ describe('the command output a box draws', () => {
       '\u001b_app\u001b\\after',
       'text\u001bPq~payload',
       '\u001b_a\u0007after',
+      // The #1296 boundary in both directions: a bell inside a DCS, SOS, PM
+      // or APC payload is payload (and with no string terminator behind it,
+      // the payload eats the rest), where an OSC still ends at one.
+      'before \u001bPpay\u0007load\u001b\\after',
+      '\u001bXpay\u0007load\u001b\\after',
+      '\u001b^pay\u0007load\u001b\\after',
+      '\u001b_pay\u0007load\u001b\\after',
+      'text\u001bPpay\u0007tail',
+      '\u001b]pay\u0007load\u001b\\after',
       'before \u001b(B\u001b[m after',
       '\u001b)0plain',
       '\u001b#8',

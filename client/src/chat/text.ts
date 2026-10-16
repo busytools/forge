@@ -43,18 +43,16 @@ function endOfSequence(text: string, at: number): number {
   // query, a graphics payload - and reading them as the escape and one
   // character puts `q~xyz` on the page where a terminal drew nothing.
   //
-  // **One arm serves all five, and that is a deliberate simplification.**
-  // Strictly, only OSC ends at a bell; the other four end at a string
-  // terminator alone (ECMA-48, and xterm agrees). So a bell inside a DCS
-  // payload cuts it there and its tail prints as text - narrow, and the same
-  // simplification the view this client replaced carried, which is the
-  // property worth more here than the four bytes: two strippers that disagree
-  // about what to strip are two pages that draw the same conversation
-  // differently.
+  // **Only OSC ends at a bell.** The other four end at a string terminator
+  // alone (ECMA-48, and xterm agrees), so a bell inside one is payload and
+  // cutting there prints its tail as text. The reverse is that one carrying a
+  // bell and no terminator eats the text after it - what an unterminated OSC
+  // already does, and the safe direction.
   if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
+    const endsAtBell = next === 0x5d;
     for (let scan = at + 2; scan < text.length; scan += 1) {
       const code = text.charCodeAt(scan);
-      if (code === BELL) return scan + 1;
+      if (endsAtBell && code === BELL) return scan + 1;
       if (code === ESCAPE && text.charCodeAt(scan + 1) === 0x5c) return scan + 2;
     }
     return text.length;
