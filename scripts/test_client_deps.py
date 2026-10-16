@@ -78,25 +78,30 @@ class ClientDepsTest(unittest.TestCase):
             env=self.env,
         )
 
-    def release_plan(self, name: str) -> "subprocess.CompletedProcess[str]":
-        # The bodies need the release machine, so the edge is read off the
-        # dry-run plan instead: just echoes it (to stderr, so both streams are
-        # read) with dependency bodies included.
-        return subprocess.run(
+    def shown_deps(self, name: str) -> list[str]:
+        # `just --show`'s column-0 header line carries the dependency list; the
+        # pin is on the NAME, so re-pointing the recipe reds here.
+        result = subprocess.run(
             [
                 "just",
                 "--justfile",
                 str(JUSTFILE),
                 "--working-directory",
                 str(self.root),
-                "--dry-run",
+                "--show",
                 name,
-                "0.0.0",
             ],
             capture_output=True,
             text=True,
             env=self.env,
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        header = next(
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith(name + " ") or line.startswith(name + ":")
+        )
+        return header.split(":", 1)[1].split()
 
     def calls(self) -> list[str]:
         return self.log.read_text().splitlines() if self.log.exists() else []
@@ -139,23 +144,16 @@ class ClientDepsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("--prefix client ci", self.calls())
 
-    def test_each_release_recipe_installs_unconditionally(self) -> None:
+    def test_each_release_recipe_takes_the_release_install(self) -> None:
         for name in RELEASE_STEPS:
             with self.subTest(step=name):
-                result = self.release_plan(name)
+                deps = self.shown_deps(name)
 
-                self.assertEqual(result.returncode, 0, result.stderr)
-                plan = result.stdout + result.stderr
                 self.assertIn(
-                    "npm --prefix client ci",
-                    plan,
-                    "the release recipe would build without the install",
-                )
-                self.assertNotIn(
-                    "if [ ! -d client/node_modules ]",
-                    plan,
-                    "the release recipe settled for the mtime-keyed install, "
-                    "which a stale tree can read as current",
+                    "client-release-deps",
+                    deps,
+                    f"{name} takes {deps}, not client-release-deps - the release "
+                    "would build from the checkout's tree",
                 )
 
     def test_the_release_install_runs_even_on_a_current_tree(self) -> None:
