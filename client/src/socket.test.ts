@@ -801,6 +801,40 @@ describe('the connection', () => {
   });
 
   /**
+   * **A re-ask supersedes the ask it replaces.** A lost answer leaves its
+   * entry in the outstanding queue; the retry adds another, and `refuse` -
+   * which carries no subject and takes the OLDEST key - would then hand a
+   * later refusal to the subject of the lost ask rather than to the
+   * subscription the server actually refused. The refresh pair is net-zero
+   * on the wire, so the bookkeeping is net-zero too.
+   */
+  it('sends a later refusal to the subscription the server refused', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const seats = { org: 'TestOrg', project: 'proj' };
+    const w1: Subject = { session: { ...seats, label: 'w1' } };
+    const w2: Subject = { session: { ...seats, label: 'w2' } };
+    const conn = connect(server.url, 120);
+    opened.push(conn);
+
+    const recovered = conn.subscribe(w1);
+    await until(() => server.received.length === 1, 'the first subscribe');
+    // The first answer is lost, so the bound re-asks; that answer lands.
+    await until(() => server.received.length === 3, 'the re-ask pair');
+    server.send({ kind: 'snapshot', subject: w1, data: { who: 'w1' } });
+    await until(() => recovered.state().kind === 'ready', 'the re-ask to answer');
+
+    // A second subscription, still loading, and then the refusal: it is w2's.
+    const second = conn.subscribe(w2);
+    await until(() => server.received.length === 4, 'the second subscribe');
+    server.send({ kind: 'error', what: 'subscribe', why: 'forge holds no session for that seat' });
+
+    await until(() => second.state().kind === 'refused', 'the refusal to land on w2');
+    expect(recovered.state(), 'the recovered seat keeps its answer').toEqual({ kind: 'ready' });
+  });
+
+
+  /**
    * One unsubscribe drops one entry: a second subscribe to one subject adds
    * a second entry rather than replacing the first, because two
    * subscriptions to one seat are one seat still being shown.

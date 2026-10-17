@@ -467,6 +467,24 @@ export function connect(url: string, boundMs: number = READ_BOUND_MS): Connectio
     bounds.clear(what);
   }
 
+  /**
+   * Every outstanding ask for one subject, dropped.
+   *
+   * A refresh re-asks the SAME subscription - the server counts the pair
+   * evenly - so the bookkeeping has to be net-zero too. Left alone, an ask
+   * whose answer was lost keeps its entry, the re-ask adds another, and a
+   * later refusal (which carries no subject and takes the oldest key) would
+   * flip the store of the ask that is already spent rather than the one the
+   * server refused. The Rust half's own `unhold` before `hold` is this same
+   * rule, one layer down.
+   */
+  function forget(what: Subject): void {
+    const key = subjectKey(what);
+    for (let at = awaiting.length - 1; at >= 0; at -= 1) {
+      if (awaiting[at] === key) awaiting.splice(at, 1);
+    }
+  }
+
   function handle(message: ServerMessage): void {
     switch (message.kind) {
       case 'greeting': {
@@ -773,6 +791,7 @@ export function connect(url: string, boundMs: number = READ_BOUND_MS): Connectio
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
     if (!isOpen()) return;
+    forget(what);
     sendNow({ kind: 'unsubscribe', what });
     const declaration = held.get(subjectKey(what));
     askFor(what, declaration?.answering ?? false, declaration?.browser ?? false);
