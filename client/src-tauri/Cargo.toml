@@ -53,6 +53,19 @@ forge-capture = { path = "../../crates/forge-capture" }
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
 
+# The embed-capture spike (option B), scratch: ScreenCaptureKit from the
+# client's own GUI context. Never merges - see the spike plan.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSResponder", "NSEvent", "NSWindow", "NSGraphics"] }
+objc2-core-media = { version = "0.3", features = ["objc2-core-video"] }
+objc2-core-video = "0.3"
+objc2-foundation = "0.3"
+objc2-quartz-core = "0.3"
+objc2-screen-capture-kit = "0.3"
+dispatch2 = "0.3"
+
 [dev-dependencies]
 tempfile = "3"
 # `start_paused`, for the launch lock's wait path under a clock the test drives.

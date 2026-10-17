@@ -29,6 +29,36 @@
 
 #[cfg(target_os = "android")]
 pub mod android;
+#[cfg(target_os = "macos")]
+pub mod capture;
+#[cfg(not(target_os = "macos"))]
+pub mod capture {
+    //! The embed-capture spike is ScreenCaptureKit, macOS only; this stub
+    //! keeps every other target compiling with the commands registered.
+
+    #[tauri::command]
+    pub async fn capture_pick() -> Result<String, String> {
+        Err("the capture spike is macOS only".to_owned())
+    }
+
+    #[tauri::command]
+    pub async fn capture_show() -> Result<(), String> {
+        Err("the capture spike is macOS only".to_owned())
+    }
+
+    #[tauri::command]
+    pub async fn capture_hide() -> Result<(), String> {
+        Err("the capture spike is macOS only".to_owned())
+    }
+
+    #[tauri::command]
+    pub fn capture_perf(_enabled: bool) {}
+
+    #[tauri::command]
+    pub async fn capture_grant() -> Result<String, String> {
+        Err("the capture spike is macOS only".to_owned())
+    }
+}
 pub mod chromium;
 pub mod custom;
 pub mod driver;

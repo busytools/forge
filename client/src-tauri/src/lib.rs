@@ -369,6 +369,11 @@ pub fn run() {
             browser::browser_show,
             browser::browser_hide,
             browser::browser_used,
+            browser::capture::capture_pick,
+            browser::capture::capture_show,
+            browser::capture::capture_hide,
+            browser::capture::capture_perf,
+            browser::capture::capture_grant,
             check_update,
             install_update,
             restart_app,
@@ -447,7 +452,32 @@ pub fn run() {
 
     let run = builder
         .setup(|app| {
+            // Scratch (embed-capture spike): a panic anywhere must land in
+            // the app's own log - an `open`ed app's stderr goes nowhere a
+            // reader can find.
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                tauri_plugin_log::log::error!(
+                    "PANIC (event_name embed_spike_panic): {info}"
+                );
+                previous(info);
+            }));
             tauri_plugin_log::log::info!("forge client started");
+            #[cfg(target_os = "macos")]
+            {
+                // Scratch (embed-capture spike): the window joins every space
+                // and floats over fullscreen apps, so the person finds it
+                // wherever he is - no space switch for the look.
+                if let Some(window) = app.get_webview_window("main") {
+                    browser::capture::join_every_space(&window);
+                }
+                // Scratch: ask for the picker shortly after launch - the one
+                // machine-side way to fire it on a launchd-launched instance.
+                browser::capture::autopresent(app.handle().clone());
+                // Scratch: and prove the overlay half of the capture alone,
+                // no person and no pick needed - the bisect for a crash.
+                browser::capture::selftest(app.handle().clone());
+            }
             #[cfg(not(desktop))]
             let _ = &app;
             // **The desktop host, built and started here.** The phone's own
