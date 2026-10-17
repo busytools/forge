@@ -52,6 +52,20 @@ pub(crate) enum GotifyReadError {
     Fetch(String),
 }
 
+/// Why `gotify__unsubscribe` failed. The last two are the two cases a
+/// refusal keeps apart: an id the project holds under another session
+/// reads differently from one the project never had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GotifyUnsubscribeError {
+    /// The caller couldn't be mapped to a project (transient race, or the
+    /// session isn't attached to a forge.toml project).
+    UnknownCallerProject,
+    /// No subscription with that id in the caller's project.
+    NoSuchSubscription,
+    /// The id is in the caller's project but belongs to another owner.
+    NotOwnedByCaller,
+}
+
 /// The Gotify tools' view of the workspace. The subscription mutations
 /// are synchronous state writes; the read-only `apps` / `recent` lookups
 /// hit the server's REST API and are async.
@@ -74,9 +88,15 @@ pub(crate) trait GotifyFacade: Send + Sync {
     fn list(&self, caller: &SessionSlot) -> Vec<GotifySubscription>;
 
     /// Remove one of the caller's OWN subscriptions by id within its
-    /// project, returning the row as it stood. `None` both when no such
-    /// id exists and when it belongs to another owner.
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<GotifySubscription>;
+    /// project, returning the row as it stood. A refusal says which case
+    /// it is: [`GotifyUnsubscribeError::NoSuchSubscription`] when the
+    /// project has no such id, [`GotifyUnsubscribeError::NotOwnedByCaller`]
+    /// when it has one under another owner.
+    fn unsubscribe(
+        &self,
+        caller: &SessionSlot,
+        id: Uuid,
+    ) -> Result<GotifySubscription, GotifyUnsubscribeError>;
 
     /// The application NAMEs on the configured server (`GET /application`)
     /// so a session can self-discover what it may subscribe to.
@@ -156,16 +176,30 @@ impl GotifyFacade for ProdGotifyFacade {
             .collect()
     }
 
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<GotifySubscription> {
-        let ws = self.workspace.upgrade()?;
-        let cx = caller_context(&ws, caller)?;
+    fn unsubscribe(
+        &self,
+        caller: &SessionSlot,
+        id: Uuid,
+    ) -> Result<GotifySubscription, GotifyUnsubscribeError> {
+        let ws = self.workspace.upgrade().ok_or(GotifyUnsubscribeError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(GotifyUnsubscribeError::UnknownCallerProject)?;
         let removed = ws.remove_gotify_subscription_owned_by(
             &cx.project_name,
             id,
             cx.worker_label.as_deref(),
         );
         ws.stop_gotify_subsystem_if_idle();
-        removed
+        if let Some(removed) = removed {
+            return Ok(removed);
+        }
+        // The owner-scoped removal matched nothing, which is either an id
+        // the project never had or one another session owns; the caller is
+        // told which.
+        if ws.gotify_subscriptions_for_project(&cx.project_name).iter().any(|s| s.id == id) {
+            Err(GotifyUnsubscribeError::NotOwnedByCaller)
+        } else {
+            Err(GotifyUnsubscribeError::NoSuchSubscription)
+        }
     }
 
     async fn apps(&self) -> Result<Vec<String>, GotifyReadError> {
@@ -255,7 +289,8 @@ pub(crate) struct MockGotifyFacade {
     pub subscribe_result:
         parking_lot::Mutex<Option<Result<SubscribeOutcome, GotifySubscribeError>>>,
     pub unsubscribe_calls: parking_lot::Mutex<Vec<(SessionSlot, Uuid)>>,
-    pub unsubscribe_result: parking_lot::Mutex<Option<GotifySubscription>>,
+    pub unsubscribe_result:
+        parking_lot::Mutex<Option<Result<GotifySubscription, GotifyUnsubscribeError>>>,
     pub apps_result: parking_lot::Mutex<Option<Result<Vec<String>, GotifyReadError>>>,
     pub recent_calls: parking_lot::Mutex<Vec<RecentCall>>,
     pub recent_result: parking_lot::Mutex<Option<Result<Vec<GotifyRecent>, GotifyReadError>>>,
@@ -295,9 +330,16 @@ impl GotifyFacade for MockGotifyFacade {
         self.subs.lock().clone()
     }
 
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<GotifySubscription> {
+    fn unsubscribe(
+        &self,
+        caller: &SessionSlot,
+        id: Uuid,
+    ) -> Result<GotifySubscription, GotifyUnsubscribeError> {
         self.unsubscribe_calls.lock().push((caller.clone(), id));
-        self.unsubscribe_result.lock().clone()
+        self.unsubscribe_result
+            .lock()
+            .clone()
+            .unwrap_or(Err(GotifyUnsubscribeError::NoSuchSubscription))
     }
 
     async fn apps(&self) -> Result<Vec<String>, GotifyReadError> {
@@ -319,9 +361,12 @@ impl GotifyFacade for MockGotifyFacade {
 mod tests {
     use super::*;
     use crate::WorkerEntry;
+    use crate::mcp::gotify::Unsubscribe;
+    use crate::mcp::test_support::text_of;
     use crate::target::ProjectKey;
     use forge_connectors::gotify::GotifyHost as _;
     use forge_primitives::WorkerLiveness;
+    use forge_sdk::mcp::tool::{Tool as _, ToolInput};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -586,16 +631,19 @@ client_token = "Ctest"
         let worker_id = seed_sub(&ws, Some("reviewer"));
         let sibling_id = seed_sub(&ws, Some("analyst"));
 
-        assert!(
-            facade.unsubscribe(&worker, lead_id).is_none(),
-            "a worker cannot unsubscribe the lead's",
+        assert_eq!(
+            facade.unsubscribe(&worker, lead_id),
+            Err(GotifyUnsubscribeError::NotOwnedByCaller),
+            "a worker cannot unsubscribe the lead's, and the refusal says which case it is",
         );
-        assert!(
-            facade.unsubscribe(&worker, sibling_id).is_none(),
+        assert_eq!(
+            facade.unsubscribe(&worker, sibling_id),
+            Err(GotifyUnsubscribeError::NotOwnedByCaller),
             "a worker cannot unsubscribe a sibling worker's",
         );
-        assert!(
-            facade.unsubscribe(&lead, worker_id).is_none(),
+        assert_eq!(
+            facade.unsubscribe(&lead, worker_id),
+            Err(GotifyUnsubscribeError::NotOwnedByCaller),
             "a lead cannot unsubscribe a worker's",
         );
         assert_eq!(
@@ -609,11 +657,80 @@ client_token = "Ctest"
             .expect("a worker unsubscribes its own, and gets the row back");
         assert_eq!(removed.id, worker_id, "the echoed row is the one that went");
         assert_eq!(removed.applications, ["alerts"], "carrying its effective filter");
-        assert!(facade.unsubscribe(&lead, lead_id).is_some(), "a lead unsubscribes its own");
+        facade.unsubscribe(&lead, lead_id).expect("a lead unsubscribes its own");
         assert_eq!(
             ws.gotify_subscriptions_for_project("myproj").iter().map(|s| s.id).collect::<Vec<_>>(),
             vec![sibling_id],
             "only the untouched sibling subscription remains",
+        );
+    }
+
+    /// The other half of the refusal: an id the project never had is a
+    /// different answer from one that exists under another session.
+    #[test]
+    fn unsubscribe_refuses_an_id_the_project_never_had() {
+        let (_ws, facade, _key, lead, _worker) = fixture();
+
+        assert_eq!(
+            facade.unsubscribe(&lead, Uuid::from_u128(0xdead)),
+            Err(GotifyUnsubscribeError::NoSuchSubscription),
+            "an id with no entry in the project is reported as absent",
+        );
+    }
+
+    /// Both clauses of that message are about the caller's own project:
+    /// an id living in another project is not "in this project but not
+    /// subscribed by you", it is not in this project at all.
+    #[test]
+    fn unsubscribe_refuses_an_id_from_another_project_as_absent() {
+        let (ws, facade, _key, lead, _worker) = fixture();
+        ws.seed_test_project("otherproj", "/tmp/gotify-scope-other");
+        let other = GotifySubscription {
+            id: Uuid::new_v4(),
+            project: "otherproj".to_owned(),
+            team_role: None,
+            applications: vec!["alerts".to_owned()],
+            min_priority: None,
+            created_at: SystemTime::UNIX_EPOCH,
+        };
+        let other_id = other.id;
+        ws.add_gotify_subscription(other, true);
+
+        assert_eq!(
+            facade.unsubscribe(&lead, other_id),
+            Err(GotifyUnsubscribeError::NoSuchSubscription),
+            "an id that lives in another project is absent here, not a subscription of this project's",
+        );
+    }
+
+    /// The refusal is what a caller acts on, so it has to name the case:
+    /// a row the project holds under another session reads as *not
+    /// yours*, an id the project never had as *not there*. One string
+    /// for both lets a caller take its own refused unsubscribe as proof
+    /// the subscription is gone.
+    #[tokio::test]
+    async fn unsubscribe_refusals_name_the_case_through_the_tool() {
+        let (ws, facade, _key, _lead, worker) = fixture();
+        let lead_id = seed_sub(&ws, None);
+        let tool = Unsubscribe { facade, slot: worker };
+
+        let not_yours =
+            tool.call(ToolInput { value: serde_json::json!({ "id": lead_id.to_string() }) }).await;
+        assert!(not_yours.is_error, "a refused unsubscribe is an error");
+        assert_eq!(
+            text_of(&not_yours),
+            format!("subscription {lead_id} exists in this project but was not subscribed by you"),
+            "a live subscription owned by another session must say so, not report it missing",
+        );
+
+        let ghost = Uuid::from_u128(0xdead);
+        let not_there =
+            tool.call(ToolInput { value: serde_json::json!({ "id": ghost.to_string() }) }).await;
+        assert!(not_there.is_error, "an unknown id is an error");
+        assert_eq!(
+            text_of(&not_there),
+            format!("no subscription with id {ghost} in this project"),
+            "an id the project never had must not read as another session's subscription",
         );
     }
 

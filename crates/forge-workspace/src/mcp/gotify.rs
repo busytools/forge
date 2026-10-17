@@ -23,7 +23,9 @@ use forge_primitives::GotifySubscription;
 use uuid::Uuid;
 
 use crate::SessionSlot;
-use crate::mcp::gotify::facade::{GotifyFacade, GotifyReadError, GotifySubscribeError};
+use crate::mcp::gotify::facade::{
+    GotifyFacade, GotifyReadError, GotifySubscribeError, GotifyUnsubscribeError,
+};
 
 pub(crate) mod facade;
 pub mod types;
@@ -252,14 +254,22 @@ impl Tool for Unsubscribe {
             return tool_error(format!("not a valid subscription id: {}", args.id));
         };
         match self.facade.unsubscribe(&self.slot, id) {
-            Some(removed) => {
+            Ok(removed) => {
                 let envelope = crate::mcp::deleted::removed_record(&sub_to_json(&removed));
                 match serde_json::to_string_pretty(&envelope) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("response serialization failed: {err}")),
                 }
             }
-            None => tool_error(format!("no subscription with id {id} in your project")),
+            Err(GotifyUnsubscribeError::UnknownCallerProject) => {
+                tool_error("couldn't resolve your project".to_owned())
+            }
+            Err(GotifyUnsubscribeError::NoSuchSubscription) => {
+                tool_error(format!("no subscription with id {id} in this project"))
+            }
+            Err(GotifyUnsubscribeError::NotOwnedByCaller) => tool_error(format!(
+                "subscription {id} exists in this project but was not subscribed by you"
+            )),
         }
     }
 }
@@ -506,7 +516,7 @@ mod tests {
         let id = Uuid::from_u128(0xc1);
         let removed = sample_sub(id, "p");
         let mock = Arc::new(MockGotifyFacade::new());
-        *mock.unsubscribe_result.lock() = Some(removed.clone());
+        *mock.unsubscribe_result.lock() = Some(Ok(removed.clone()));
         let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "id": id.to_string() }))).await;
@@ -523,17 +533,34 @@ mod tests {
         assert_eq!(mock.unsubscribe_calls.lock()[0].1, id);
     }
 
-    /// The facade reports `None` both for an unknown id and for one
-    /// owned by another session, so reaching for someone else's
-    /// subscription gets exactly what a bad id gets.
+    /// A refusal has to say which case it is: an id that exists in the
+    /// project but is not the caller's own reads as *not yours*, an id
+    /// the project never had reads as *not there*. One string for both
+    /// lets a caller take its own refused unsubscribe as proof the
+    /// subscription is gone.
     #[tokio::test]
-    async fn unsubscribe_unowned_or_missing_id_is_error() {
+    async fn unsubscribe_refusals_name_the_case() {
+        let id = Uuid::from_u128(0xc1);
         let mock = Arc::new(MockGotifyFacade::new());
         let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
-        let out =
-            tool.call(input(serde_json::json!({ "id": Uuid::from_u128(0x9).to_string() }))).await;
-        assert!(out.is_error, "an unremovable id signals an error to the LLM");
+        *mock.unsubscribe_result.lock() = Some(Err(GotifyUnsubscribeError::NotOwnedByCaller));
+        let not_yours = tool.call(input(serde_json::json!({ "id": id.to_string() }))).await;
+        assert!(not_yours.is_error, "a refused unsubscribe is an error");
+        assert_eq!(
+            text_of(&not_yours),
+            format!("subscription {id} exists in this project but was not subscribed by you"),
+            "a subscription that exists but is not the caller's own must say so",
+        );
+
+        *mock.unsubscribe_result.lock() = Some(Err(GotifyUnsubscribeError::NoSuchSubscription));
+        let not_there = tool.call(input(serde_json::json!({ "id": id.to_string() }))).await;
+        assert!(not_there.is_error, "an unknown id is an error");
+        assert_eq!(
+            text_of(&not_there),
+            format!("no subscription with id {id} in this project"),
+            "an id the project never had must not read as another session's subscription",
+        );
     }
 
     #[tokio::test]
