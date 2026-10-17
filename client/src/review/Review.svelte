@@ -356,11 +356,14 @@
   $effect(() => {
     for (const at of ['comment', 'reply'] as const) {
       const held = at === 'comment' ? box : reply;
+      const mine = phaseIn(at);
       held.busy = busy;
       held.take = composer.take;
       held.wire = rowWire;
-      held.phase = phaseIn(at);
-      held.silent = rowSilent;
+      held.phase = mine;
+      // The sentence follows the phase's own rule: a take begun at one mic
+      // says the capture is silent THERE, not at the box beside it.
+      held.silent = mine === null ? null : rowSilent;
       held.panel = dictate.panel && panelIn === at;
     }
   });
