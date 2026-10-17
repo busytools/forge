@@ -779,12 +779,14 @@ pub enum Command {
     /// **A browser profile on this client has sat idle**: the client's own
     /// clock asks that the owning seat be told, or - with `at_close` - asks
     /// the one question the close needs answered, nothing delivered. The
-    /// answer is an [`IdleVerdict`]; a parked hand-off on the seat holds the
-    /// profile and nothing is sent. App-level command (`key()` returns
-    /// `None`): the registry and the forged prompt both belong to the
-    /// workspace, not to the seat's task.
+    /// answer is an [`IdleVerdict`]; a parked hand-off **on the profile**
+    /// holds it whoever asked (`Held`), and nothing is sent. `key` is the
+    /// seat to warn, `None` when no seat is known - the close's question
+    /// needs no seat. App-level command (`key()` returns `None`): the
+    /// registry and the forged prompt both belong to the workspace, not to
+    /// the seat's task.
     BrowserIdleWarning {
-        key: SessionSlot,
+        key: Option<SessionSlot>,
         profile: String,
         idle_minutes: u64,
         grace_minutes: u64,

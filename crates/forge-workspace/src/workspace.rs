@@ -5147,34 +5147,44 @@ impl Workspace {
                 } => {
                     let span = tracing::info_span!(
                         "browser_idle_warning",
-                        slot = %key.display(),
+                        seat = ?key,
                         profile = %profile,
                         at_close,
                     );
                     let _enter = span.enter();
-                    // **A hand-off waiting on the person holds the profile**:
-                    // the seat is already busy with it and its window must
-                    // never be idle-closed, so nothing is delivered and the
-                    // answer says why. `at_close` asks the verdict alone - the
-                    // warning has landed, and a close must never re-nudge.
-                    let verdict_value = if self.browser_handoff_holds(&key, &profile) {
+                    // **A parked hand-off holds the profile, whoever asked
+                    // it**: the shared browser's warned seat can be any
+                    // caller, so the hold is the profile's and never the
+                    // seat's - nothing is delivered and the answer says why.
+                    // `at_close` asks the verdict alone: the warning has
+                    // landed, and a close must never re-nudge.
+                    let verdict_value = if self.browser_handoff_holds(&profile) {
                         IdleVerdict::Held
                     } else if at_close {
                         IdleVerdict::Clear
                     } else {
-                        let text = format!(
-                            "the '{profile}' browser has sat idle for {idle_minutes} minutes; it \
-                             closes in {grace_minutes} unless a browser call of yours uses it. \
-                             Nothing prepared survives the close: the next call brings the \
-                             browser back, and raising it brings the pages back.",
-                        );
-                        match self.dispatch_forged_prompt_under(
-                            &key,
-                            text,
-                            forge_sdk::request_id::next_prompt_id(),
-                        ) {
-                            Ok(()) => IdleVerdict::Delivered,
-                            Err(_) => IdleVerdict::NoSession,
+                        match key {
+                            Some(key) => {
+                                let text = format!(
+                                    "the '{profile}' browser has sat idle for {idle_minutes} \
+                                     minutes; it closes in {grace_minutes} unless a browser call \
+                                     of yours uses it. Nothing prepared survives the close: the \
+                                     next call brings the browser back, and raising it brings the \
+                                     pages back.",
+                                );
+                                match self.dispatch_forged_prompt_under(
+                                    &key,
+                                    text,
+                                    forge_sdk::request_id::next_prompt_id(),
+                                ) {
+                                    Ok(()) => IdleVerdict::Delivered,
+                                    Err(_) => IdleVerdict::NoSession,
+                                }
+                            }
+                            // No seat to warn: nothing to deliver, and the
+                            // hold above was still consulted - the close's
+                            // own call is the keyless `at_close` one.
+                            None => IdleVerdict::NoSession,
                         }
                     };
                     if let Some(verdict) = verdict {
@@ -10848,16 +10858,17 @@ provider = "anthropic"
         assert_eq!(delivered.len(), 3, "all three prompts still reached the seat");
     }
 
-    /// Ask one idle warning and read the arm's own answer.
+    /// Ask one idle warning and read the arm's own answer. `key` is the seat
+    /// to warn, `None` for the close's seatless question.
     async fn warn(
         ws: &Arc<Workspace>,
-        key: &SessionSlot,
+        key: Option<&SessionSlot>,
         profile: &str,
         at_close: bool,
     ) -> IdleVerdict {
         let (tx, rx) = tokio::sync::oneshot::channel();
         ws.dispatch(Command::BrowserIdleWarning {
-            key: key.clone(),
+            key: key.cloned(),
             profile: profile.to_owned(),
             idle_minutes: 30,
             grace_minutes: 10,
@@ -10870,9 +10881,11 @@ provider = "anthropic"
 
     /// **A parked hand-off holds the profile**: the idle warning answers
     /// `Held` and draws no turn - and once the hand-off resolves, the
-    /// warning delivers like any other. A hand-off that named no profile
-    /// holds every browser of its seat; a seat with no live session has
-    /// nobody to tell.
+    /// warning delivers like any other. The hold is the PROFILE's, never the
+    /// asking seat's: the shared browser's warned seat can be any caller,
+    /// and a hand-off parked by one of them must hold it against every
+    /// seat's close, including the keyless one. A hand-off that named no
+    /// profile holds every browser.
     #[tokio::test]
     async fn a_parked_hand_off_holds_the_idle_warning() {
         use forge_primitives::browser::{HandOff, HandOffEnding};
@@ -10884,50 +10897,65 @@ provider = "anthropic"
         // needs to land (the chase's own delivery machinery, unchanged).
         let _stub = ws.install_testing_stub(&key);
         ws.mark_session_connected_for_test(&key, "lead");
+        // A second live seat, for the shared browser's warned-seat case.
+        let other = SessionSlot::worker("TestOrg", "proj", "other");
+        let _other_stub = ws.install_testing_stub(&other);
+        ws.mark_session_connected_for_test(&other, "other");
 
         let handoff = HandOff {
             id: uuid::Uuid::new_v4(),
             reason: "sign in".to_owned(),
-            profile: Some("hunt".to_owned()),
+            profile: Some("shared".to_owned()),
         };
         let (id, _ending) = ws.register_browser_hand_off(&key, handoff);
 
         assert_eq!(
-            warn(&ws, &key, "hunt", false).await,
+            warn(&ws, Some(&key), "shared", false).await,
             IdleVerdict::Held,
             "the hand-off holds the profile it named",
         );
         assert_eq!(
-            warn(&ws, &key, "printables", false).await,
+            warn(&ws, Some(&other), "shared", false).await,
+            IdleVerdict::Held,
+            "and it holds it against ANOTHER seat's warning - the shared browser's last \
+             caller is not the hand-off's owner",
+        );
+        assert_eq!(
+            warn(&ws, None, "shared", true).await,
+            IdleVerdict::Held,
+            "the close's keyless question is still held",
+        );
+        assert_eq!(
+            warn(&ws, Some(&key), "printables", false).await,
             IdleVerdict::Delivered,
-            "another profile of the same seat is not held by it",
+            "another profile is not held by it",
         );
         assert!(ws.resolve_browser_hand_off(id, &key, HandOffEnding::NotNow), "it resolves");
         assert_eq!(
-            warn(&ws, &key, "hunt", false).await,
+            warn(&ws, Some(&key), "shared", false).await,
             IdleVerdict::Delivered,
             "and the profile is free to warn again",
         );
         assert_eq!(
-            warn(&ws, &key, "hunt", true).await,
+            warn(&ws, Some(&key), "hunt", true).await,
             IdleVerdict::Clear,
             "the close's own ask never delivers, only answers",
+        );
+
+        let quiet = SessionSlot::lead("TestOrg", "quiet");
+        assert_eq!(
+            warn(&ws, Some(&quiet), "hunt", false).await,
+            IdleVerdict::NoSession,
+            "a seat with no live session has nobody to tell",
         );
 
         let unnamed =
             HandOff { id: uuid::Uuid::new_v4(), reason: "anything".to_owned(), profile: None };
         let (_id, _ending) = ws.register_browser_hand_off(&key, unnamed);
         assert_eq!(
-            warn(&ws, &key, "hunt", false).await,
+            warn(&ws, Some(&key), "hunt", false).await,
             IdleVerdict::Held,
-            "a hand-off that named no profile holds every browser of its seat",
-        );
-
-        let quiet = SessionSlot::lead("TestOrg", "quiet");
-        assert_eq!(
-            warn(&ws, &quiet, "hunt", false).await,
-            IdleVerdict::NoSession,
-            "a seat with no live session has nobody to tell",
+            "a hand-off that named no profile holds every browser",
         );
     }
 

@@ -113,17 +113,21 @@ fn verdict_of(body: Option<&serde_json::Value>) -> Verdict {
     }
 }
 
-/// The wire command: the tag and fields the protocol's census pins.
+/// The wire command: the tag and fields the protocol's census pins. `seat`
+/// is the seat to warn, `None` for the close's seatless question - the key
+/// crosses as null then.
 fn warning(
     candidate: &Candidate,
-    seat: &Seat,
+    seat: Option<&Seat>,
     idle_minutes: u64,
     grace_minutes: u64,
     at_close: bool,
 ) -> serde_json::Value {
     json!({
         "browser_idle_warning": {
-            "key": { "org": seat.org, "project": seat.project, "label": seat.label },
+            "key": seat.map(|seat| {
+                json!({ "org": seat.org, "project": seat.project, "label": seat.label })
+            }),
             "profile": candidate.name.clone().unwrap_or_else(|| "shared".to_owned()),
             "idle_minutes": idle_minutes,
             "grace_minutes": grace_minutes,
@@ -172,26 +176,38 @@ async fn sweep(bridge: &Arc<Bridge>) {
             Step::Warn => false,
             Step::Close => true,
         };
-        // **No one to tell closes now, quietly** - the shared browser never
-        // called, a profile whose seat is gone.
-        let Some(seat) = candidate.touch.caller.as_ref() else {
-            close_guarded(&host, &candidate, idle, grace).await;
-            continue;
-        };
+        // **The seat to warn, when there is one.** With none - the shared
+        // browser never called, a profile whose seat a restart forgot - the
+        // warning has nowhere to go, and the close's own question is asked
+        // anyway: the hold belongs to the profile and is the server's, so
+        // **no candidate is closed without it consulted**.
+        let seat = candidate.touch.caller.as_ref();
+        let at_close = at_close || seat.is_none();
         let command = warning(&candidate, seat, idle_minutes, grace_minutes, at_close);
         let verdict = verdict_of(socket.dispatch(command, true).await.ok().flatten().as_ref());
-        match verdict {
-            // **Delivered, or Held (a hand-off waiting on the person - nothing
-            // delivered, nothing to close), or a reply lost in flight (not a
-            // reason to ask twice)**: the grace arms, and the close's own ask
-            // re-checks the hold - so an abandoned hand-off (the session gone,
-            // the browser parked) closes on a later round rather than never.
-            Verdict::Delivered | Verdict::Held | Verdict::Unanswered => {
+        match (at_close, verdict) {
+            // **Held**: a hand-off is waiting on the person; nothing was
+            // delivered and nothing may close. The streak stays armed, and
+            // the close's own ask re-checks once per grace - so an abandoned
+            // hand-off (the session gone, the browser parked) closes on a
+            // later round rather than never.
+            (_, Verdict::Held) => host.note_warned(&candidate.dir, now).await,
+            // The warning landed, or a reply was lost in flight (not a
+            // reason to ask twice): the grace arms.
+            (false, Verdict::Delivered | Verdict::Unanswered) => {
                 host.note_warned(&candidate.dir, now).await;
             }
-            Verdict::NoSession | Verdict::Clear => {
+            // No live seat: nobody to warn - and the hold was consulted
+            // above, so the profile is the close's. The close's own ask
+            // succeeding settles it the same way.
+            (false, Verdict::NoSession) | (true, Verdict::Clear) => {
                 close_guarded(&host, &candidate, idle, grace).await;
             }
+            // Shapes that cannot come back right (a warn answering Clear, a
+            // close's ask answering Delivered): nothing is concluded, and
+            // nothing is closed on them.
+            (false, Verdict::Clear)
+            | (true, Verdict::Delivered | Verdict::NoSession | Verdict::Unanswered) => {}
         }
     }
 }
@@ -332,15 +348,20 @@ mod tests {
             dir: PathBuf::from("/tmp/hunt"),
             touch: Touch { at: Instant::now(), warned: None, caller: None },
         };
-        let sent = warning(&named, &seat, 30, 10, false);
+        let sent = warning(&named, Some(&seat), 30, 10, false);
         assert_eq!(sent["browser_idle_warning"]["profile"], json!("hunt"));
         assert_eq!(sent["browser_idle_warning"]["idle_minutes"], json!(30));
         assert_eq!(sent["browser_idle_warning"]["at_close"], json!(false));
         assert_eq!(sent["browser_idle_warning"]["key"]["org"], json!("Busytools"));
 
         let shared = Candidate { name: None, ..named };
-        let sent = warning(&shared, &seat, 30, 10, true);
+        let sent = warning(&shared, Some(&seat), 30, 10, true);
         assert_eq!(sent["browser_idle_warning"]["profile"], json!("shared"));
         assert_eq!(sent["browser_idle_warning"]["at_close"], json!(true));
+
+        // No seat: the close's keyless question - the key crosses as null,
+        // never as a made-up one.
+        let sent = warning(&shared, None, 30, 10, true);
+        assert!(sent["browser_idle_warning"]["key"].is_null(), "{sent}");
     }
 }

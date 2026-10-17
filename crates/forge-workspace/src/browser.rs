@@ -403,14 +403,17 @@ impl Workspace {
         self.browser_handoffs.lock().get(&id).is_some_and(|(owner, _, _)| owner == caller)
     }
 
-    /// Whether a parked hand-off holds this profile of this seat: one that
-    /// named the profile itself, or - a hand-off that named none - any
-    /// browser of the seat. The read the idle warning makes before anything
-    /// is delivered or closed.
-    pub(crate) fn browser_handoff_holds(&self, caller: &SessionSlot, profile: &str) -> bool {
-        self.browser_handoffs.lock().values().any(|(owner, handoff, _)| {
-            owner == caller && handoff.profile.as_deref().is_none_or(|named| named == profile)
-        })
+    /// Whether a parked hand-off holds this profile: one that named it, or -
+    /// a hand-off that named none - any browser. **Keyed to the profile and
+    /// never to the seat**: the shared browser's last caller can be any seat,
+    /// and a hand-off parked by one of them must hold the profile against
+    /// every seat's close. The read the idle warning makes before anything is
+    /// delivered or closed.
+    pub(crate) fn browser_handoff_holds(&self, profile: &str) -> bool {
+        self.browser_handoffs
+            .lock()
+            .values()
+            .any(|(_, handoff, _)| handoff.profile.as_deref().is_none_or(|named| named == profile))
     }
 
     /// Remove a parked hand-off, answer its waiter, and tell every view it is
