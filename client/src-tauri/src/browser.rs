@@ -369,7 +369,16 @@ impl BrowserHost {
                     // **The shared browser is in use from here on**: the touch
                     // is the idle release's clock, and it lands before any
                     // work that can fail - a slow call is not an idle one.
-                    self.touch(&paths.user_data, Some(seat)).await;
+                    // **Under the launch lock**, which is the critical
+                    // section the idle release's own verdict-and-kill takes:
+                    // a call landing while the sweep asked its question
+                    // blocks here, so the sweep re-reads a clock that already
+                    // carries this touch rather than killing the browser this
+                    // call is about to drive.
+                    {
+                        let _launching = self.launch.lock().await;
+                        self.touch(&paths.user_data, Some(seat)).await;
+                    }
                     // **The seat's auto profile is ensured on its first
                     // unnamed reach**, before anything is driven: the record
                     // is what keeps the name the seat's across restarts. The
@@ -420,8 +429,13 @@ impl BrowserHost {
                 }
                 Some(name) => {
                     let named = self.named_profile(seat, &name).await?;
-                    // The idle release's clock: the named profile is in use.
-                    self.touch(&named.dir, Some(seat)).await;
+                    // The idle release's clock: the named profile is in use -
+                    // under the launch lock, the same critical section the
+                    // sweep's verdict-and-kill takes (see the shared arm).
+                    {
+                        let _launching = self.launch.lock().await;
+                        self.touch(&named.dir, Some(seat)).await;
+                    }
                     let active = self.browser_for(&named.dir).await?;
                     self.used.store(true, std::sync::atomic::Ordering::Release);
                     let endpoint = format!("http://127.0.0.1:{}", active.port);

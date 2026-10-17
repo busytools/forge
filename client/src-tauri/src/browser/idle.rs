@@ -175,7 +175,7 @@ async fn sweep(bridge: &Arc<Bridge>) {
         // **No one to tell closes now, quietly** - the shared browser never
         // called, a profile whose seat is gone.
         let Some(seat) = candidate.touch.caller.as_ref() else {
-            close_guarded(&host, &candidate).await;
+            close_guarded(&host, &candidate, idle, grace).await;
             continue;
         };
         let command = warning(&candidate, seat, idle_minutes, grace_minutes, at_close);
@@ -189,14 +189,43 @@ async fn sweep(bridge: &Arc<Bridge>) {
             Verdict::Delivered | Verdict::Held | Verdict::Unanswered => {
                 host.note_warned(&candidate.dir, now).await;
             }
-            Verdict::NoSession | Verdict::Clear => close_guarded(&host, &candidate).await,
+            Verdict::NoSession | Verdict::Clear => {
+                close_guarded(&host, &candidate, idle, grace).await;
+            }
         }
     }
 }
 
-/// The kill, re-checked: the verdict that allowed it is a round trip old, so
-/// a window raised meanwhile is not closed.
-async fn close_guarded(host: &crate::browser::BrowserHost, candidate: &Candidate) {
+/// The kill, re-checked **under the one critical section the raise and every
+/// touch take**: `show`, `hide` and each call hold the host's launch lock,
+/// and a call's touch is wrapped in it - so a raise or a call landing while
+/// the verdict was being asked blocks here, the clock and the window are
+/// re-read under the lock, and only a still-idle, still-windowless browser is
+/// killed. The verdict that got here is a round trip old; nothing here trusts
+/// it.
+///
+/// **What remains outside**: another CLIENT's raise, which holds its own
+/// process's lock rather than this one and does not take the file lock the
+/// chromium close does. This cannot see it, and neither could a re-check
+/// without a lock shared across clients.
+async fn close_guarded(
+    host: &crate::browser::BrowserHost,
+    candidate: &Candidate,
+    idle: Duration,
+    grace: Duration,
+) {
+    let _launching = host.launch.lock().await;
+    let fresh = {
+        let touches = host.touches.lock().await;
+        touches.get(&candidate.dir).cloned()
+    };
+    let Some(fresh) = fresh else {
+        // The entry went with a close: there is nothing left to release.
+        return;
+    };
+    if step(fresh.at, fresh.warned, Instant::now(), idle, grace) != Step::Close {
+        return;
+    }
     if crate::browser::chromium::windowed(&candidate.dir).await {
         return;
     }
