@@ -156,6 +156,23 @@
     return () => removeEventListener('keydown', onkey);
   });
 
+  // Escape closes the open comment box, as its own hint says - and takes
+  // the reader's target marks with it - and it closes an open reply the
+  // same way.
+  $effect(() => {
+    if (comment.spot === null && reply.thread === null) return;
+    const onkey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (comment.spot !== null) closeComposer();
+      if (reply.thread !== null) {
+        reply.thread = null;
+        reply.draft = '';
+      }
+    };
+    addEventListener('keydown', onkey);
+    return () => removeEventListener('keydown', onkey);
+  });
+
   $effect(() => {
     const tick = setInterval(() => (now = Date.now()), 30_000);
     return () => clearInterval(tick);
@@ -197,6 +214,18 @@
     }
   }
 
+  /**
+   * Put the composer away and take the reader's target with it: the tint,
+   * the gutter `+` and the orange rule belong to the open box, and closing
+   * one without the other left the marks behind (measured live, Ved
+   * 2026-10-17).
+   */
+  function closeComposer(): void {
+    comment.spot = null;
+    comment.draft = '';
+    reader?.targetLine(null);
+  }
+
   /** A line was pressed in the reader: the composer opens on it. */
   function commentOn(line: number): void {
     if (open === null) return;
@@ -224,8 +253,7 @@
     comment.busy = false;
     if (!went) return;
     drafts.add(thread.id);
-    comment.spot = null;
-    comment.draft = '';
+    closeComposer();
   }
 
   async function replied(thread: ReviewThreadRecord, text: string): Promise<void> {
@@ -334,10 +362,7 @@
               sendLabel: 'comment',
               box: comment,
               onsend: (text: string) => void commented(text),
-              oncancel: () => {
-                comment.spot = null;
-                comment.draft = '';
-              },
+              oncancel: closeComposer,
               field: (el: HTMLElement | null) => {
                 // The caret goes in with the box (Ved, 2026-10-15).
                 el?.focus();

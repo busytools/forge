@@ -3583,6 +3583,12 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-reader .cm-line:hover { background: rgba(27,33,48,.5); }
 .files-hint { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   padding: 6px 2px 6px; }
+/* A folded run's placeholder and the fold gutter's markers: CodeMirror's
+   stock rules paint the placeholder a light gray that breaks the surface
+   (measured live, Ved 2026-10-17). */
+.files-reader .cm-foldPlaceholder { background: var(--s2); border: 1px solid var(--line);
+  border-radius: 4px; color: var(--dim); padding: 0 4px; }
+.files-reader .cm-foldGutter .cm-gutterElement { color: var(--dim); }
 /* The reader's target line: the same tint and bar the tree's current row
    carries, and its gutter door (the press that opens the composer). */
 .files-reader .files-target { background: rgba(27,33,48,.5);
