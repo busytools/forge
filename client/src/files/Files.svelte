@@ -48,7 +48,7 @@
   import { hrefForSlot } from '../routes';
   import type { CommentBox, ReplyBox, Voice, Words } from '../review/boxes';
   import Conversation from '../review/Conversation.svelte';
-  import { latestRound, roundHasWork } from '../review/view';
+  import { latestRound, roundHasWork, roundsNewestFirst } from '../review/view';
   import WordsBox from '../review/WordsBox.svelte';
   import {
     finishRound,
@@ -110,7 +110,9 @@
     record?.tree_reviews.threads.outcome === 'read' ? record.tree_reviews.threads.value : [],
   );
   const treeRounds = $derived(
-    record?.tree_reviews.reviews.outcome === 'read' ? record.tree_reviews.reviews.value : [],
+    record?.tree_reviews.reviews.outcome === 'read'
+      ? roundsNewestFirst(record.tree_reviews.reviews.value)
+      : [],
   );
   const rows = $derived(railRows(treeThreads));
   /** Threads the worker has answered and nobody read yet - the header count. */
