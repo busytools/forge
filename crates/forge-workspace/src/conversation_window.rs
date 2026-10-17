@@ -13,7 +13,9 @@
 //!
 //! **A window is bounded by frames and by bytes.** The count alone let a giant
 //! seat's window weigh 319 MiB (measured 2026-10-17 on the seat #1637 was
-//! filed from) - and it is not the window's own weight that bites: a page is
+//! filed from, in the frames a read serves - [`CONVERSATION_CAP_BYTES`] names
+//! the basis, and why the file's own lines read as about half of it) - and it
+//! is not the window's own weight that bites: a page is
 //! cut from the window, so a ceiling ABOVE the newest twenty turns changes
 //! nothing a reader feels. [`CONVERSATION_CAP_BYTES`] carries where the byte
 //! ceiling's number comes from and what it deliberately changes on the seats
@@ -78,6 +80,14 @@ pub const CONVERSATION_SLACK: usize = 1_000;
 /// than the newest twenty turns, and the rest of the history is reached the
 /// way any window's is - a `more` below the floor, answered from the
 /// transcript.
+///
+/// **Every figure above weighs the frames a read serves, the shape a page
+/// carries.** A served frame runs byte-for-byte with the transcript row it
+/// came from (measured at ratio 1.00 over the newest four thousand), while
+/// roughly half of a giant transcript's LINES are sidechain rows no reader is
+/// served - so the same measurement taken from the file's newest lines finds
+/// about half the frames and about half the bytes, which is the disagreement
+/// a re-measurement from disk runs into.
 pub const CONVERSATION_CAP_BYTES: usize = 64 << 20;
 
 /// How far past the byte cap a copy may grow before the drop runs. A quarter
