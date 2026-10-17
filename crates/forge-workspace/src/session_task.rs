@@ -8286,6 +8286,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         let held = crate::mcp::peers::types::WrappedPrompt {
             id: crate::mcp::peers::types::MessageId::mint(),
@@ -8345,6 +8346,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         let held = crate::mcp::peers::types::WrappedPrompt {
             id: crate::mcp::peers::types::MessageId::mint(),
