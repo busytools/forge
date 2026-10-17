@@ -229,6 +229,11 @@
    * The box a key-begun take belongs to: the one the reader's caret is in,
    * else the one drawing, else the summary - whose box is always in the
    * rail. The review page's own rule, so the hold behaves the same on both.
+   *
+   * **The rail's box counts only while the rail is up**: it is the third
+   * column when the width allows, and a sheet that must be raised when it
+   * does not - a take whose words landed in a box behind a closed sheet
+   * would be a take the reader loses.
    */
   function pttBox(): BoxName | null {
     const active = document.activeElement;
@@ -241,7 +246,9 @@
     if (reply.thread !== null) return 'reply';
     // A take already running keeps its box, so the key's release can end it.
     if (takeIn !== null) return takeIn;
-    return record !== null && entries.length > 0 ? 'summary' : null;
+    if (record === null || entries.length === 0) return null;
+    const railUp = sheet === 'comments' || !window.matchMedia('(max-width: 980px)').matches;
+    return railUp ? 'summary' : null;
   }
 
   // The push-to-talk key, once for the page: a hold begins a take in the box
