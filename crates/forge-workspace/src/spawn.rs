@@ -8649,4 +8649,27 @@ mod lead_charter_tests {
             "the fresh-install guard is pinned: {DEFAULT_LEAD_CHARTER}",
         );
     }
+
+    /// Two PRs each green on its own base merged in sequence composed red
+    /// on main (measured 2026-08, again 2026-10-17, from a branch that
+    /// predated the other's merge), so the merge-gate bullet carries the
+    /// moved-main rule: origin/main merged in before the final gate, and
+    /// main's CI read after the merge. Pinned with both halves, because
+    /// either alone reads as a caveat with no action.
+    #[test]
+    fn lead_charter_carries_the_composed_main_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("A branch green on its own base can compose red on a moved main"),
+            "the composed-red fact is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("merge origin/main in before the final gate"),
+            "the remedy is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("after the merge main's CI is the only truth"),
+            "the post-merge read is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
 }
