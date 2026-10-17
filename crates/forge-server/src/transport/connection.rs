@@ -914,7 +914,7 @@ async fn handle_client(
             };
             // Where a command's answer goes, decided before anything acts.
             //
-            // Four commands report through the reply and have no update behind
+            // Five commands report through the reply and have no update behind
             // them, so omitting `reply_to` on one of those is not a client
             // declining a reply - it is a client declining to learn whether
             // the work happened. Every other command is fire-and-forget: its
@@ -1926,9 +1926,10 @@ async fn dispatch_answering(
     // The five reply-carrying commands take a sender the wire deliberately
     // does not carry, and each carries its OWN reply type - a spawned worker
     // answers with a `WorkerSpawnReply`, a despawn with a `DespawnResult`,
-    // and the review pair with a `bool` and a `ReviewSet`. So the channel is
+    // the review pair with a `bool` and a `ReviewSet`, and an idle warning
+    // with an `IdleVerdict`. So the channel is
     // built per arm and handed to the shared helper with its own receiver:
-    // one channel cannot carry four different answers.
+    // one channel cannot carry five different answers.
     match command {
         Command::SpawnWorker {
             project_key,
@@ -2096,7 +2097,7 @@ fn dispatch_refusal(refusal: &DispatchError, dispatch_id: Option<u64>) -> Server
 /// Whether a command reports its outcome through the reply rather than
 /// through an update on the subscription.
 ///
-/// These four are the ones with nothing behind them on the wire: a client that
+/// These five are the ones with nothing behind them on the wire: a client that
 /// omits `reply_to` for one of them has no second way to learn what happened.
 fn answers_through_a_reply(command: &Command) -> bool {
     matches!(
