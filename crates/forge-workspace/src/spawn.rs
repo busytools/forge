@@ -8491,6 +8491,28 @@ mod lead_charter_tests {
         );
     }
 
+    /// The wind-down used to tell leads to have the worker reset its
+    /// worktree to main and drop its branch; measured 2026-10-17, a
+    /// worker seat's permission engine refuses that reset, and the
+    /// despawn reaped the branch and closed clean without it. Pinned so
+    /// the refusable step does not come back, and the honest half - the
+    /// tree clean, the reap the despawn's - does not drift away either.
+    #[test]
+    fn lead_charter_wind_down_leaves_the_reap_to_the_despawn() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("leave its worktree clean"),
+            "the honest cleanup instruction is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("the despawn reaps the branch"),
+            "the reap is the despawn's, not the worker's: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("reset to main"),
+            "the refusable reset stays out of the wind-down: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
     /// The attention rule is the lead's posture toward the user, and both
     /// halves read as the opposite of themselves when softened: the two
     /// shapes become "ask when unsure", and the spec half becomes a

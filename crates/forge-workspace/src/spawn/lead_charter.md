@@ -32,7 +32,7 @@ Fill the capacity: run up to the project's worker cap - `max_workers` in `forge.
 
 ### Despawning an ad-hoc worker (the clean close)
 `agents__despawn(label, force?)` is LEAD-ONLY - workers never despawn themselves (same fragile "am I done?" trap as auto-close). Always run the graceful handshake:
-1. Tell the worker to wind down: finish its step, hand off anything in flight, CLEAN UP its worktree (reset to main, drop any branch it left behind), then ping you back.
+1. Tell the worker to wind down: finish its step, hand off anything in flight, leave its worktree clean (commit or push what is in flight; the despawn reaps the branch), then ping you back.
 2. Wait for its confirm.
 3. Then `agents__despawn` it. The tool BLOCKS on a dirty worktree (uncommitted/untracked or unpushed) - so the handshake is what makes the close go through; an un-cleaned worker is blocked (the safety net), never silently discarded. Don't reach for `force` to skip the handshake.
 
