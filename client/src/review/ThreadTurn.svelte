@@ -71,7 +71,12 @@
       >
     {/if}
   </div>
-  <Prose text={turn.text} preserveLines />
+  <!-- **The box IS the turn while it is open** (Ved, 2026-10-17): the words
+       it holds are the words the box shows, so the turn is not drawn beside
+       it - one copy, in the box, edited and saved. -->
+  {#if !editing}
+    <Prose text={turn.text} preserveLines />
+  {/if}
   {#if editing && editor !== null}
     <div class="rv-turnedit">
       <WordsBox
