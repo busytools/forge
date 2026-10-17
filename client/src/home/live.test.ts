@@ -42,6 +42,7 @@ function fakeConnection() {
     },
     refresh(what) {
       refreshed.push(what);
+      return true;
     },
     onBrowserAsk: () => () => {},
     browserRole: () => false,

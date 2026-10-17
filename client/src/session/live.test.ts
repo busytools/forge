@@ -1244,6 +1244,7 @@ function drivable(refusedAtFirst = false): Driveable {
     },
     refresh: () => {
       reads += 1;
+      return true;
     },
     dispatch: () => {
       throw new Error('this page dispatched a command the case did not expect');

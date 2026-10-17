@@ -186,6 +186,44 @@ describe('frames from the bridge', () => {
       why: 'no session there',
     });
   });
+
+  /**
+   * **A read the server never answers is asked again**: on the phone the
+   * socket lives in the Rust half, and a first snapshot lost between the
+   * server and the page left the store loading with nothing behind it. The
+   * re-ask is `client_refresh`, which the Rust half sends as the pair the
+   * server counts evenly.
+   */
+  it('asks the shell again for a read the bound finds still loading', async () => {
+    vi.useFakeTimers();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      return Promise.resolve(undefined);
+    });
+    const connection = connectRust('ws://127.0.0.1:7777/socket', 1_000);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const store = connection.subscribe(subject);
+    expect(invoke, 'the first ask crossed').toHaveBeenCalledWith('client_subscribe', {
+      what: subject,
+      answering: false,
+      browser: false,
+    });
+
+    vi.advanceTimersByTime(1_000);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
+    expect(store.state(), 'nothing has answered it').toEqual({ kind: 'loading' });
+
+    // And an answer clears it: a read that landed owes no re-ask.
+    fire('client://inbound', { kind: 'snapshot', subject, data: { header: {} } });
+    await vi.waitFor(() => expect(store.state().kind).toBe('ready'));
+    invoke.mockClear();
+    vi.advanceTimersByTime(5_000);
+    expect(invoke, 'an answered read is not re-asked').not.toHaveBeenCalledWith('client_refresh', {
+      what: subject,
+    });
+  });
 });
 
 describe("the connection's own facts", () => {
