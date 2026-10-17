@@ -151,7 +151,9 @@ seat's conversation), so its line is the words `a turn failed`.
   project's working tree, so the window is not instant, and it is its own
   state rather than the connect form handed back - a form here would re-render
   with the address reset and a live button, and a second Enter would open a
-  second socket.
+  second socket. A read the server does not answer is asked again once its
+  bound runs out, so the state ends on its own rather than only when
+  something else moves.
 - **The home was refused**: the server turned the subscription down and its
   own words are drawn. The address is not the thing that is wrong, so the
   door is not what is shown.

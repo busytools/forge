@@ -752,6 +752,55 @@ describe('the connection', () => {
   });
 
   /**
+   * **A read that goes unanswered is asked again.** Every re-ask the client
+   * makes is driven by something ARRIVING - an update, a reconnect - so a
+   * first snapshot lost on a live socket left the store loading for the life
+   * of the connection: the page sat at "Reading the fleet..." over LAN and
+   * WireGuard alike, and only exit-and-re-enter ever cleared it. The bound is
+   * what asks unprompted, and it re-arms with each ask.
+   */
+  it('asks a read again when the bound runs out with nothing answered', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    // A short bound, injected: the shipping figure is five seconds, and the
+    // rule being tested is the re-ask rather than the number.
+    const conn = connect(server.url, 40);
+    opened.push(conn);
+    const store = conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the first subscribe');
+
+    // The pair a refresh sends: the subject is asked for again without a
+    // second watch left behind on the server's count.
+    await until(() => server.received.length === 3, 'the re-ask pair');
+    expect(
+      server.received.map((message) => message.kind),
+      'the re-ask is the refresh pair rather than a bare subscribe',
+    ).toEqual(['subscribe', 'unsubscribe', 'subscribe']);
+    expect(server.received[2], 'and it is the same subject').toMatchObject({ what: HOME });
+    expect(store.state(), 'the store still waits for its answer').toEqual({ kind: 'loading' });
+
+    // The re-ask is bounded like the first read: a loss buys a retry loop,
+    // not one retry and then silence.
+    await until(() => server.received.length >= 6, 'the re-ask to be bounded too');
+  });
+
+  it('asks nothing again for a read that was answered', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const conn = connect(server.url, 40);
+    opened.push(conn);
+    const store = conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe');
+    server.send({ kind: 'snapshot', subject: HOME, data: { fleet: [] } });
+    await until(() => store.state().kind === 'ready', 'the answer to land');
+
+    // Two bounds of quiet: an answered read owes nothing.
+    await settle();
+    await settle();
+    expect(server.received.length, 'an answered read is not re-asked').toBe(1);
+  });
+
+  /**
    * One unsubscribe drops one entry: a second subscribe to one subject adds
    * a second entry rather than replacing the first, because two
    * subscriptions to one seat are one seat still being shown.

@@ -10,6 +10,7 @@
  * refilling on every blip.
  */
 
+import { READ_BOUND_MS, ReadBounds } from './read-bound';
 import { refused } from './refusals';
 import { StreamGate } from './session/stream';
 import {
@@ -305,8 +306,14 @@ export function report(what: string, why: unknown): void {
   console.warn(`forge client: ${what}`, why);
 }
 
-export function connect(url: string): Connection {
+export function connect(url: string, boundMs: number = READ_BOUND_MS): Connection {
   const stores = new Stores();
+  /**
+   * The bound on a subscription's first read: a subject still loading when
+   * it runs out is asked again, so a snapshot lost on a live socket is not
+   * a wait with nothing behind it.
+   */
+  const bounds = new ReadBounds(stores, (what) => refresh(what), boundMs);
   /** What to ask for again on a reconnect, in the order it was first asked. */
   const held = new Map<string, { subject: Subject; answering: boolean; browser: boolean }>();
   const listeners = new Set<(message: ServerMessage) => void>();
@@ -420,6 +427,8 @@ export function connect(url: string): Connection {
       report(`the server refused ${key}, which this client no longer holds`, why);
       return;
     }
+    // A refusal is an answer: nothing is owed on that subject any more.
+    bounds.clearKey(key);
     store.refuse(why);
     report(`the subscription to ${key} was refused`, why);
   }
@@ -428,6 +437,9 @@ export function connect(url: string): Connection {
   function askFor(what: Subject, answering: boolean, browser: boolean, declare = false): void {
     sendNow({ kind: 'subscribe', what, answering, browser, declare });
     awaiting.push(subjectKey(what));
+    // The read this ask owes is bounded from here: nothing else would ask
+    // again for a snapshot that simply never came.
+    bounds.arm(what);
   }
 
   /**
@@ -452,6 +464,7 @@ export function connect(url: string): Connection {
   function answered(what: Subject): void {
     const at = awaiting.indexOf(subjectKey(what));
     if (at >= 0) awaiting.splice(at, 1);
+    bounds.clear(what);
   }
 
   function handle(message: ServerMessage): void {
@@ -910,6 +923,8 @@ export function connect(url: string): Connection {
     },
     close() {
       move('closed');
+      // A closed connection has nothing to ask on.
+      bounds.stop();
       if (retry !== null) clearTimeout(retry);
       retry = null;
       failPending('the connection was closed');
