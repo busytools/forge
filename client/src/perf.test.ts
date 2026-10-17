@@ -248,6 +248,26 @@ describe('the open a conversation begins', () => {
   });
 
   /**
+   * **One drawn mark per open, and none after the open has settled.** The
+   * dedupe lives in the probe, and removing it is silent: the column draws
+   * on every update it holds, so each redraw would write its own mark and
+   * the log would read as a burst of opens that never happened.
+   */
+  it('writes one drawn mark per open, whatever the column redraws', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.frame(16);
+
+    h.probe.noteDrawn();
+    h.probe.noteDrawn();
+    h.frame(16);
+    h.probe.noteDrawn(); // the open already settled: a stray redraw marks nothing
+
+    expect(h.records.flat().filter((record) => record.kind === 'drawn')).toHaveLength(1);
+  });
+
+  /**
    * **A mark names the seat that opened, not where the page moved to.** The
    * route can move on while the seat's drawing is still on its way - to a
    * view of the same seat, whose whole point is that it is not a switch.
