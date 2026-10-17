@@ -86,6 +86,11 @@ mod commands {
             .map(|state| Arc::clone(state.inner()));
         let (events, rx) = tokio::sync::mpsc::unbounded_channel();
         let bridge = Bridge::new(host, events);
+        // **The idle release starts with the bridge**: its clock is the
+        // host's, its warning rides the bridge's socket, and a client with
+        // no host or no connection simply has nothing to sweep.
+        #[cfg(desktop)]
+        crate::browser::idle::start(&bridge);
         app.manage(Arc::clone(&bridge));
         app.manage(Arc::new(crate::mic::Mic::default()));
         pump(app.clone(), rx);
@@ -462,46 +467,12 @@ pub fn run() {
             // this block and its macOS-shaped start stay desktop-only.
             #[cfg(desktop)]
             {
-                // The host is handed to the frontend whether or not its
-                // directories resolve: a client that cannot host says so when
-                // it is asked, rather than refusing to start.
-                let host = match browser::StackPaths::resolve(app.handle()) {
-                    Ok(paths) => {
-                        tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
-                        std::sync::Arc::new(browser::BrowserHost::new(paths))
-                    }
-                    Err(why) => {
-                        tauri_plugin_log::log::warn!("browser host unavailable: {why}");
-                        std::sync::Arc::new(browser::BrowserHost::unavailable(why))
-                    }
-                };
-                // **The browser comes up with the app**, so it is there
-                // before any session asks for it: the launch takes seconds
-                // and a tool call should not pay for it, and a browser that
-                // cannot start says so here, in the client's log, rather than
-                // as a failed tool call nobody can attribute. Spawned rather
-                // than awaited - the window does not wait on a browser - and
-                // the driver stays lazy, since it exists to serve calls.
-                let starting = std::sync::Arc::clone(&host);
-                tauri::async_runtime::spawn(async move {
-                    match starting.start().await {
-                        Ok(active) => tauri_plugin_log::log::info!(
-                            "the browser is up on port {}",
-                            active.port
-                        ),
-                        Err(why) => {
-                            tauri_plugin_log::log::warn!("the browser did not start: {why}")
-                        }
-                    }
-                    // **After the start, never before**: the launch above
-                    // claims the shared profile, and the sweep must read that
-                    // claim rather than reap the browser this client just
-                    // brought up. This is also the only cover for a client
-                    // that never ran its exit - a crash, a SIGKILL, or the
-                    // update restart, whose main-thread path skips
-                    // `RunEvent::Exit` by design.
-                    starting.reap_orphans().await;
-                });
+                // The whole browser act is one call (spam-control A4): the
+                // boot brings no browser up, and `boot_browser` is what the
+                // pin drives, so a launch moved back in here is the closure's
+                // own diff rather than a silent regression.
+                let host =
+                    browser::BrowserHost::boot_browser(browser::StackPaths::resolve(app.handle()));
                 app.manage(host);
             }
             // The bridge, over whatever host this target has: the desktop's

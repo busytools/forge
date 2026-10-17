@@ -489,16 +489,34 @@ Like `[dictate]`, an unrecognised key here fails the load rather than
 being ignored. Keys an older forge read here (`trusted_marketplaces`,
 `pins`) are rejected the same way: remove them.
 
-## `[tasks]`
+## The task board's chase
 
-Optional. Absent leaves the defaults, which are the values below. These
-govern the task board's chase and its clocks.
+**Fixed behaviour, not configuration.** There is no `[tasks]` section:
+`forge.toml` refuses one - and any key like `stale_hours` - as an unknown
+key, and the chase has no switch: the sweep runs every 30 seconds,
+always. What it asks, and on what clock, is a constant in the code:
 
-| Key           | Type    | Default | Notes                                                                                                                                                                                                                                                                                                            |
-| ------------- | ------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stale_hours` | integer | `4`     | The no-movement window: a row with no update for this long draws the `no movement` mark, a ready row with no owner this long asks the lead once, and a dependency or resource wait this long does too. The estimate is what arms the chase for a row that has one; this is the fallback for rows that have none. |
-| `escalate_at` | number  | `1.5`   | The multiplier on a row's estimate at which the chase tells the LEAD - once - that the row is past its estimate. The escalation is authority: rescope, reassign, take over, or restate the expectation.                                                                                                          |
-| `chase`       | boolean | `true`  | Whether the chase runs at all. `false` leaves the board's marks and silences every message - the estimate nudge, the escalation, and the queue and wait reports.                                                                                                                                                 |
+- **The no-movement window is 4 hours.** A row with no update for that
+  long draws the `no movement` mark; a ready row with no owner, and a
+  dependency or resource wait, ask the lead every 30 minutes once they
+  pass it. The estimate is what arms the chase for a row that has one;
+  this is the fallback for rows that have none.
+- **A row past its estimate asks its owner once**, and a restated
+  estimate arms the nudge again; a wait that resolved asks its waiter
+  once to resume it.
+- **A row past 1.5x its estimate tells the lead every 5 minutes** while
+  it stays over. The escalation is authority: rescope, reassign, take
+  over, or restate the expectation.
+- **A failed row, one whose owner is gone, an epic still owing its retro,
+  and one ready to close each tell the lead every 30 minutes** while the
+  state holds.
+- **A worker holding no row is named when it drifts, again every 5
+  minutes while it stays drifted**, and at once after it accounts and
+  drifts again.
+- **Rows waiting on the user, untouched for 30 minutes, get one digest
+  per project every 30 minutes** - one message, however many rows - which
+  asks the lead to filter them; a touch or a move takes that row back
+  out.
 
 ## `[server]`
 
@@ -531,6 +549,8 @@ name unset, which is the built-in.
 | `mark`  | string | unset, drawing panes                              | The mark a client draws, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn.                                |
 | `theme` | string | unset, drawing dark                               | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background.                                                                                               |
 | `font`  | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, bundled with the client and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
+| `browser_idle_minutes` | integer | unset, meaning 20                      | The idle release: after this many minutes with no browser call, raise or lower, a named profile's creator is sent a heads-up over the socket's prompt channel. A live session gets the heads-up as a turn; a seat with no live session has nobody to tell, and its browser closes quietly instead. **The shared browser is never announced** - it closes quietly at the grace. **A hand-off waiting on the person always holds the profile** - it is neither warned about nor closed, and neither is a profile whose window is up. |
+| `browser_grace_minutes` | integer | unset, meaning 10                     | How long the browser lives past its idle bound unless it is used - for a named profile, after its heads-up. The close is a real close: logins and the profile stay; the next call brings the browser back blank and raising it brings the pages back, but a filled form does not. **The clocks live in the client's memory**, so a client restart grants every browser a fresh window. |
 
 ## `[documents]`
 
@@ -555,10 +575,10 @@ nothing forge ships; this key picks by name, never by path`), because a
 setting that is quietly ignored reads as the key not working. Like the
 port checks, none of them run while the socket is disabled.
 
-`mark`, `theme` and `font` are a client's settings rather than the
-server's, and the socket carries them to a client on connect, so a client
-never reads `forge.toml` for itself and the file stays the one source of
-truth. The server draws none of them: the socket serves no page.
+`mark`, `theme`, `font` and the idle pair are a client's settings rather
+than the server's, and the socket carries them to a client on connect, so a
+client never reads `forge.toml` for itself and the file stays the one
+source of truth. The server draws none of them: the socket serves no page.
 
 ## `[usage]`
 

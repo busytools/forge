@@ -35,7 +35,9 @@
      A run of peer messages is a tool run, and a thought is one too: each is a
      details.leaf row - .mk, .k and .org for a counterparty, the bubble for the
      thinking - so traffic, reasoning and work read as one system rather than
-     three. */
+     three. A nudge is one as well (details.leaf.nudge): the machinery's own
+     words under the board's mark, never .mine, opening on the whole of what
+     it said where the summary line clamps it. */
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
     --sel:#20140a; --line:#222a3c; --ctl:#516590;
@@ -587,8 +589,8 @@
   /* A thought's expansion is reasoning, not the turn's own words: it reads as a
      quiet block off the column - a hairline and the muted tone - instead of
      more prose. Both folds draw through this one row. */
-  details.leaf.think > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
-  details.leaf.think > .body .prose { color: var(--muted); }
+  details.leaf.think > .body, details.leaf.nudge > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+  details.leaf.think > .body .prose, details.leaf.nudge > .body .prose { color: var(--muted); }
   details.leaf[open] > summary { color: var(--text); }
   details.leaf[open] > summary .arw { color: var(--accent); }
 
@@ -1732,6 +1734,24 @@ Set `service_key` per environment in the bot's own config.</pre>
             <div class="body"><div class="prose">
               <h2>one group</h2>
               <p>Both of them landed while I was in the tree, so the reader gets one <strong>group</strong> instead of the wall. The alternative is a run of <code>read</code>/<code>search</code> rows with no shape to it.</p>
+            </div></div>
+          </details>
+
+          <!-- A nudge - a chase warning, a browser's idle message, a kick -
+               is the machinery's own words, not the reader's: it leads with
+               the board's own mark and never wears .mine, and a long one
+               opens on the whole of what it said. -->
+          <details class="leaf nudge">
+            <summary><svg class="ic gl"><use href="#i-tasks"/></svg><span class="tn">task board: worker etsy-datadome holds no row - feed it or despawn it.</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="prose">
+              <p>task board: worker etsy-datadome holds no row - feed it or despawn it.</p>
+            </div></div>
+          </details>
+
+          <details class="leaf nudge" open>
+            <summary><svg class="ic gl"><use href="#i-tasks"/></svg><span class="tn">task board: 2 rows are waiting on the user: "settle the deploy cut" (2h), "pick the chart palette" (40m) - confirm it's really theirs, or re-plan.</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="prose">
+              <p>task board: 2 rows are waiting on the user: "settle the deploy cut" (2h), "pick the chart palette" (40m) - confirm it's really theirs, or re-plan.</p>
             </div></div>
           </details>
 

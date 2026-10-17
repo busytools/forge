@@ -163,6 +163,39 @@ impl Bridge {
         let _ = self.events.send(event);
     }
 
+    /// The host this bridge drives, for the idle release's sweep.
+    #[cfg(desktop)]
+    pub(crate) fn host(&self) -> Option<Arc<BrowserHost>> {
+        self.host.clone()
+    }
+
+    /// The connection as it stands, for the idle release's asks: a fresh
+    /// clone per pass, so a reconnect mid-sweep is simply picked up next
+    /// time.
+    #[cfg(desktop)]
+    pub(crate) fn socket(&self) -> Option<Socket> {
+        self.lock().socket.clone()
+    }
+
+    /// The two idle numbers, off the greeting this client was sent -
+    /// `[client] browser_idle_minutes` and `browser_grace_minutes`; absent
+    /// means the built-in pair.
+    #[cfg(desktop)]
+    pub(crate) fn browser_idle_minutes(&self) -> (u64, u64) {
+        let state = self.lock();
+        let settings = state.greeting.as_ref().and_then(|greeting| greeting.get("settings"));
+        let read = |key: &str, fallback: u64| {
+            settings
+                .and_then(|settings| settings.get(key))
+                .and_then(Value::as_u64)
+                .unwrap_or(fallback)
+        };
+        (
+            read("browser_idle_minutes", crate::browser::idle::IDLE_MINUTES),
+            read("browser_grace_minutes", crate::browser::idle::GRACE_MINUTES),
+        )
+    }
+
     /// Dial the server, replacing any connection this bridge had. Whatever
     /// the page already watches is re-asked on the new socket, so a
     /// reconnect from the connect screen lands the subscriptions it had.
@@ -797,6 +830,25 @@ mod tests {
             "kind": "update",
             "update": { "context_usage_snapshot": { "percentage": percentage, "key": seat()["session"] } },
         })
+    }
+
+    /// **The idle numbers come off the greeting**, and an absent pair is the
+    /// built-in 30/10 - the same unset-means-built-in rule the names keep.
+    #[tokio::test]
+    async fn the_idle_numbers_come_off_the_greeting() {
+        let (bridge, _rx) = bridge();
+        sent(
+            &bridge,
+            json!({ "kind": "greeting", "version": 8,
+                    "settings": { "browser_idle_minutes": 45, "browser_grace_minutes": 15 } }),
+        );
+        assert_eq!(bridge.browser_idle_minutes(), (45, 15), "the config's pair crosses intact");
+
+        sent(&bridge, json!({ "kind": "greeting", "version": 8, "settings": {} }));
+        assert_eq!(bridge.browser_idle_minutes(), (20, 10), "absent means the built-in pair");
+
+        sent(&bridge, json!({ "kind": "greeting", "version": 8 }));
+        assert_eq!(bridge.browser_idle_minutes(), (20, 10), "and no settings at all is the same");
     }
 
     /// Every frame reaches the page as itself, an unknown kind included

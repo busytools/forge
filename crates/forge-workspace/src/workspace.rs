@@ -25,7 +25,7 @@ use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
 use crate::protocol::{
-    Command, DispatchError, NoticeSeverity, PromptOrigin, PromptSource, SessionUpdate,
+    Command, DispatchError, IdleVerdict, NoticeSeverity, PromptOrigin, PromptSource, SessionUpdate,
 };
 use crate::session_task::SessionTask;
 use crate::spawn;
@@ -4060,7 +4060,10 @@ impl Workspace {
             key,
             text,
             source,
-            forge_sdk::request_id::next_prompt_id(),
+            match source {
+                PromptSource::Forge => forge_sdk::request_id::next_forged_prompt_id(),
+                _ => forge_sdk::request_id::next_prompt_id(),
+            },
         )
     }
 
@@ -4110,7 +4113,7 @@ impl Workspace {
             // the same tick's fold cannot have moved it - so a replacement
             // drained ahead of it is not handed words about a history it
             // does not have; the check is where the queued prompt runs.
-            let uuid = forge_sdk::request_id::next_prompt_id();
+            let uuid = forge_sdk::request_id::next_forged_prompt_id();
             guard.auto_continue_queued = Some((uuid.clone(), guard.session_id.clone()));
             (pending.reason, uuid)
         };
@@ -4143,7 +4146,7 @@ impl Workspace {
         key: &SessionSlot,
         text: String,
     ) -> Result<(), DispatchError> {
-        self.dispatch_forged_prompt_under(key, text, forge_sdk::request_id::next_prompt_id())
+        self.dispatch_forged_prompt_under(key, text, forge_sdk::request_id::next_forged_prompt_id())
     }
 
     /// [`Self::dispatch_forged_prompt`] with the id supplied by the caller,
@@ -5148,6 +5151,60 @@ impl Workspace {
                             &thread_ids,
                             origin,
                         ));
+                    }
+                }
+                Command::BrowserIdleWarning {
+                    key,
+                    profile,
+                    idle_minutes,
+                    grace_minutes,
+                    at_close,
+                    verdict,
+                } => {
+                    let span = tracing::info_span!(
+                        "browser_idle_warning",
+                        seat = ?key,
+                        profile = %profile,
+                        at_close,
+                    );
+                    let _enter = span.enter();
+                    // **A parked hand-off holds the profile, whoever asked
+                    // it**: the shared browser's warned seat can be any
+                    // caller, so the hold is the profile's and never the
+                    // seat's - nothing is delivered and the answer says why.
+                    // `at_close` asks the verdict alone: the warning has
+                    // landed, and a close must never re-nudge.
+                    let verdict_value = if self.browser_handoff_holds(&profile) {
+                        IdleVerdict::Held
+                    } else if at_close {
+                        IdleVerdict::Clear
+                    } else {
+                        match key {
+                            Some(key) => {
+                                let text = format!(
+                                    "the '{profile}' browser has sat idle for {idle_minutes} \
+                                     minutes; it closes in {grace_minutes} unless a browser call \
+                                     of yours uses it. Nothing prepared survives the close: the \
+                                     next call brings the browser back, and raising it brings the \
+                                     pages back.",
+                                );
+                                match self.dispatch_forged_prompt_under(
+                                    &key,
+                                    text,
+                                    forge_sdk::request_id::next_forged_prompt_id(),
+                                ) {
+                                    Ok(()) => IdleVerdict::Delivered,
+                                    Err(_) => IdleVerdict::NoSession,
+                                }
+                            }
+                            // No seat to warn: nothing to deliver, and the
+                            // hold above was still consulted - the close's
+                            // own call is the keyless `at_close` one.
+                            None => IdleVerdict::NoSession,
+                        }
+                    };
+                    if let Some(verdict) = verdict {
+                        let _ = verdict.send(verdict_value);
                     }
                 }
                 // The board's edits are the user's own moves: stamped
@@ -10670,7 +10727,7 @@ provider = "anthropic"
             matches!(source, Some(PromptSource::Forge)),
             "a forged machinery turn is nobody's send, and the frame says whose it is: {source:?}",
         );
-        let Message::User { message, .. } = msg else {
+        let Message::User { message, uuid, .. } = msg else {
             panic!("a forged prompt draws as the user turn the model received, got {msg:?}")
         };
         assert!(
@@ -10680,12 +10737,35 @@ provider = "anthropic"
             ),
             "the frame carries the prose the model received: {message:?}",
         );
+        // **The id says whose words they are**: it is the one fact about the
+        // sender the CLI carries into the transcript, so a view draws a
+        // reloaded row as the machinery's own - never the reader's - by its
+        // prefix alone.
+        assert!(
+            uuid.as_deref().is_some_and(|id| id.starts_with("forge_nudge_")),
+            "a forged dispatch mints the machinery's own id: {uuid:?}",
+        );
 
         ws.dispatch_workspace_prompt(&key, "[Cron]\n\nrun the summary".to_owned())
             .expect("delivery dispatch");
         assert!(
             !drain_updates(&mut rx).iter().any(|u| matches!(u, SessionUpdate::ChatAppended { .. })),
             "a delivery's words are drawn by its own envelope update, so this path forges no frame",
+        );
+        // Both dispatches wire one prompt each, and both are the machinery's
+        // own words: the source `Forge` is what the prefix follows.
+        let ids: Vec<String> = ws
+            .drain_test_dispatch_buffer()
+            .iter()
+            .filter_map(|command| match command {
+                Command::PromptUnder { uuid, .. } => Some(uuid.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids.len(), 2, "both dispatches wired one prompt: {ids:?}");
+        assert!(
+            ids.iter().all(|id| id.starts_with("forge_nudge_")),
+            "a machinery dispatch carries the marker whatever door it took: {ids:?}",
         );
     }
 
@@ -10815,6 +10895,130 @@ provider = "anthropic"
 
         let delivered: Vec<Command> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
         assert_eq!(delivered.len(), 3, "all three prompts still reached the seat");
+    }
+
+    /// Ask one idle warning and read the arm's own answer. `key` is the seat
+    /// to warn, `None` for the close's seatless question.
+    async fn warn(
+        ws: &Arc<Workspace>,
+        key: Option<&SessionSlot>,
+        profile: &str,
+        at_close: bool,
+    ) -> IdleVerdict {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        ws.dispatch(Command::BrowserIdleWarning {
+            key: key.cloned(),
+            profile: profile.to_owned(),
+            idle_minutes: 30,
+            grace_minutes: 10,
+            at_close,
+            verdict: Some(tx),
+        })
+        .expect("the warning dispatches");
+        rx.await.expect("the arm answers")
+    }
+
+    /// **A parked hand-off holds the profile**: the idle warning answers
+    /// `Held` and draws no turn - and once the hand-off resolves, the
+    /// warning delivers like any other. The hold is the PROFILE's, never the
+    /// asking seat's: the shared browser's warned seat can be any caller,
+    /// and a hand-off parked by one of them must hold it against every
+    /// seat's close, including the keyless one. A hand-off that named no
+    /// profile holds every browser.
+    #[tokio::test]
+    async fn a_parked_hand_off_holds_the_idle_warning() {
+        use forge_primitives::browser::{HandOff, HandOffEnding};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let key = SessionSlot::lead("TestOrg", "proj");
+        // The stub task plus a connected session id: what a forged prompt
+        // needs to land (the chase's own delivery machinery, unchanged).
+        let _stub = ws.install_testing_stub(&key);
+        ws.mark_session_connected_for_test(&key, "lead");
+        // A second live seat, for the shared browser's warned-seat case.
+        let other = SessionSlot::worker("TestOrg", "proj", "other");
+        let _other_stub = ws.install_testing_stub(&other);
+        ws.mark_session_connected_for_test(&other, "other");
+
+        let handoff = HandOff {
+            id: uuid::Uuid::new_v4(),
+            reason: "sign in".to_owned(),
+            profile: Some("shared".to_owned()),
+        };
+        let (id, _ending) = ws.register_browser_hand_off(&key, handoff);
+
+        assert_eq!(
+            warn(&ws, Some(&key), "shared", false).await,
+            IdleVerdict::Held,
+            "the hand-off holds the profile it named",
+        );
+        assert_eq!(
+            warn(&ws, Some(&other), "shared", false).await,
+            IdleVerdict::Held,
+            "and it holds it against ANOTHER seat's warning - the shared browser's last \
+             caller is not the hand-off's owner",
+        );
+        assert_eq!(
+            warn(&ws, None, "shared", true).await,
+            IdleVerdict::Held,
+            "the close's keyless question is still held",
+        );
+        assert_eq!(
+            warn(&ws, Some(&key), "printables", false).await,
+            IdleVerdict::Delivered,
+            "another profile is not held by it",
+        );
+        // **The delivered warning is the authored sentence, drawn as a
+        // turn**: the verdict alone would pass with any text at all.
+        let warned = std::iter::from_fn(|| rx.try_recv().ok())
+            .find_map(|update| match update.update {
+                SessionUpdate::ChatAppended { msg, .. } => {
+                    Some(serde_json::to_string(&msg).expect("the frame encodes"))
+                }
+                _ => None,
+            })
+            .expect("the warning's frame reached the stream");
+        assert!(
+            warned.contains(
+                "the 'printables' browser has sat idle for 30 minutes; it closes in 10 unless \
+                 a browser call of yours uses it. Nothing prepared survives the close: the next \
+                 call brings the browser back, and raising it brings the pages back."
+            ),
+            "the authored sentence is what crosses: {warned}",
+        );
+        assert!(
+            warned.contains("\"uuid\":\"forge_nudge_"),
+            "the warning's id is the machinery's own, which is what a reloaded row keys on: \
+             {warned}",
+        );
+        assert!(ws.resolve_browser_hand_off(id, &key, HandOffEnding::NotNow), "it resolves");
+        assert_eq!(
+            warn(&ws, Some(&key), "shared", false).await,
+            IdleVerdict::Delivered,
+            "and the profile is free to warn again",
+        );
+        assert_eq!(
+            warn(&ws, Some(&key), "hunt", true).await,
+            IdleVerdict::Clear,
+            "the close's own ask never delivers, only answers",
+        );
+
+        let quiet = SessionSlot::lead("TestOrg", "quiet");
+        assert_eq!(
+            warn(&ws, Some(&quiet), "hunt", false).await,
+            IdleVerdict::NoSession,
+            "a seat with no live session has nobody to tell",
+        );
+
+        let unnamed =
+            HandOff { id: uuid::Uuid::new_v4(), reason: "anything".to_owned(), profile: None };
+        let (_id, _ending) = ws.register_browser_hand_off(&key, unnamed);
+        assert_eq!(
+            warn(&ws, Some(&key), "hunt", false).await,
+            IdleVerdict::Held,
+            "a hand-off that named no profile holds every browser",
+        );
     }
 
     /// A seat with a live domain session whose dispatch is captured rather

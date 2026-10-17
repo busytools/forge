@@ -34,6 +34,19 @@ pub fn next_prompt_id() -> String {
     mint("forge_prompt")
 }
 
+/// Generate a new prompt id for a prompt forge's own machinery dispatches: a
+/// chase nudge, a browser warning, a kick, an auto-continue.
+///
+/// **The distinct prefix is a marker, not decoration.** The id is the only
+/// fact about the sender the CLI carries into the transcript - as a row's
+/// `uuid`, or the `source_uuid` of its queued attachment - so a view keys on
+/// the prefix to draw the machinery's words as a work row rather than as the
+/// reader's own, and a reloaded row draws what the live one did. The CLI
+/// treats ids as opaque, so the prefix has no wire-protocol effect.
+pub fn next_forged_prompt_id() -> String {
+    mint("forge_nudge")
+}
+
 /// The mint itself: `<prefix>_<counter>_<hex8>`, with the counter-derived
 /// suffix standing in when the entropy source is unreachable.
 fn mint(prefix: &str) -> String {
@@ -50,4 +63,18 @@ fn mint(prefix: &str) -> String {
         bytes.copy_from_slice(&n.to_le_bytes()[..4]);
     }
     format!("{prefix}_{n}_{}", hex::encode(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two namespaces are a view's marker: it tells the machinery's
+    /// prompts from the reader's own by the prefix alone, so a renamed
+    /// mint silently redraws one as the other.
+    #[test]
+    fn the_minted_prefixes_separate_the_machinery_from_the_reader() {
+        assert!(next_prompt_id().starts_with("forge_prompt_"), "a reader's send");
+        assert!(next_forged_prompt_id().starts_with("forge_nudge_"), "the machinery's own");
+    }
 }

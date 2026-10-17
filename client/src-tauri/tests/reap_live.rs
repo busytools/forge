@@ -80,7 +80,7 @@ async fn the_sweep_never_reaps_a_browser_this_client_claimed() {
     let paths = stack_paths(dir.path());
     let host = BrowserHost::new(paths.clone());
 
-    let mine = host.start().await.expect("the browser comes up with the app");
+    let mine = host.start().await.expect("the browser comes up");
     let browser = Launched::new(mine.pid, mine.port, paths.user_data.clone());
 
     let reaped = host.reap_orphans().await;
@@ -98,7 +98,7 @@ async fn the_exit_reap_closes_the_browser_this_client_claimed() {
     let paths = stack_paths(dir.path());
     let host = BrowserHost::new(paths.clone());
 
-    let mine = host.start().await.expect("the browser comes up with the app");
+    let mine = host.start().await.expect("the browser comes up");
     let browser = Launched::new(mine.pid, mine.port, paths.user_data.clone());
 
     let reaped = host.reap_owned().await;

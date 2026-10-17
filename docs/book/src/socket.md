@@ -33,6 +33,8 @@ for anything:
     "mark": null,
     "theme": null,
     "font": null,
+    "browser_idle_minutes": null,
+    "browser_grace_minutes": null,
     "dictate": {
       "styling": "semi_formal",
       "structure": "prose",
@@ -61,8 +63,10 @@ socket, in the two forms the header draws. They ride here because the
 greeting is the only channel both halves are guaranteed to have, so a skew
 that could name only a number would name nothing a person can act on.
 
-`settings` is three of `forge.toml`'s `[client]` keys - `mark`, `theme` and
-`font` - which are a client's settings rather than this server's. They
+`settings` carries `forge.toml`'s `[client]` keys: the three names -
+`mark`, `theme` and `font` - and the idle release's pair,
+`browser_idle_minutes` and `browser_grace_minutes`. They are a client's
+settings rather than this server's. They
 arrive on connect so a client is configured before it draws anything and
 never reads `forge.toml` itself, which keeps the file the one source of
 truth. A `null` is not a failure: it means the built-in.
@@ -104,8 +108,8 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 54
-variants, 50 of them struct variants; the four unit variants,
+A command's variant is its name around its field bag - `Command` has 55
+variants, 51 of them struct variants; the four unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `plugin_update_all` and
 `plugin_check_updates`, cross as the name alone. An update is the same
 shape one level in,
@@ -395,10 +399,12 @@ writes it at all - because the command is fire-and-forget: its effect
 arrives through the subscription, which is why a client subscribes before
 it acts.
 
-**`reply_to` is required on exactly four of them**: a worker spawn, a
-despawn, and the review pair. Their outcome rides the reply and no update
-carries it, so a client that omitted `reply_to` would not be declining a
-reply - it would be declining to learn whether the work happened.
+**`reply_to` is required on exactly six of them**: a worker spawn, a
+despawn, the three review writes, and an idle warning (whose verdict rides
+the reply - the prompt it may deliver is separate). Their outcome rides the
+reply and no update carries it, so a client that omitted `reply_to` would
+not be declining a reply - it would be declining to learn whether the work
+happened.
 
 **Both mismatches are refused, with a sentence naming the field**, and
 refused before the command runs: a required field left off, and a
@@ -406,12 +412,13 @@ refused before the command runs: a required field left off, and a
 for the same reason the first does - a client that set it is waiting on a
 channel nothing will ever come down.
 
-**Each of the four answers with its own type**: a spawn with a
-worker-spawn reply, a despawn with a despawn result, and the review pair
-with a `bool` and a review set. One channel cannot carry four different
+**Each of the six answers with its own type**: a spawn with a
+worker-spawn reply, a despawn with a despawn result, the review writes
+with a `bool` and a review set, and an idle warning with an idle verdict.
+One channel cannot carry six different
 answers, so the reply type follows the command. A refusal arrives in that
 same reply, as the body of the answer rather than as an `error` - which is
-what the four are for. A command that is _not_ one of the four refuses as
+what the six are for. A command that is _not_ one of the six refuses as
 an `error` like anything else the core declines, whether or not a reply
 was asked for.
 

@@ -164,7 +164,7 @@ pub enum ClientMessage {
         what: Subject,
     },
     /// `reply_to` is set only when the client wants an answer - which is the
-    /// four commands whose reply rides a oneshot, and nothing else.
+    /// five commands whose reply rides a oneshot, and nothing else.
     ///
     /// Boxed because a command is 360 bytes and every other variant here is
     /// a fraction of that (clippy::large_enum_variant). Serde writes a box
@@ -461,6 +461,13 @@ pub struct ClientSettings {
     pub mark: Option<String>,
     pub theme: Option<String>,
     pub font: Option<String>,
+    /// The idle release's two numbers, off the same `[client]` keys: how
+    /// many minutes a named profile may sit untouched before its creator is
+    /// warned, and how long it lives past that bound. The shared browser is
+    /// never warned - it closes at the same total, quietly. `None` is the
+    /// built-in pair.
+    pub browser_idle_minutes: Option<u64>,
+    pub browser_grace_minutes: Option<u64>,
     /// The axes a client that captures starts on and resets to: the
     /// `[dictate]` keys, over the crate's own defaults. A client that
     /// captures sends the values in force with each take, so this is the
@@ -476,6 +483,8 @@ impl ClientSettings {
             mark: client.mark.clone(),
             theme: client.theme.clone(),
             font: client.font.clone(),
+            browser_idle_minutes: client.browser_idle_minutes,
+            browser_grace_minutes: client.browser_grace_minutes,
             dictate,
         }
     }
@@ -995,6 +1004,8 @@ mod tests {
             mark: Some("strike".to_owned()),
             theme: Some("dark".to_owned()),
             font: Some("system".to_owned()),
+            browser_idle_minutes: Some(45),
+            browser_grace_minutes: Some(15),
         };
         let axes = DictateAxes {
             styling: forge_dictate::normalize::Styling::Formal,
@@ -1007,6 +1018,8 @@ mod tests {
         assert_eq!(settings.mark.as_deref(), Some("strike"));
         assert_eq!(settings.theme.as_deref(), Some("dark"));
         assert_eq!(settings.font.as_deref(), Some("system"));
+        assert_eq!(settings.browser_idle_minutes, Some(45), "the idle release's bound rides too");
+        assert_eq!(settings.browser_grace_minutes, Some(15));
         assert_eq!(settings.dictate, axes, "and the axes a capturing client starts on");
     }
 }

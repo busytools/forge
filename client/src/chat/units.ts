@@ -178,6 +178,20 @@ export interface ThoughtLeaf {
   text: string;
 }
 
+/**
+ * One message forge's own machinery dispatched - a chase nudge, a browser
+ * warning, a kick - as a row of the work.
+ *
+ * It is not the reader's row: nobody typed it, so it never wears `.mine` and
+ * its mark is the board's own - one drawing for every automated nudge, board
+ * and browser alike.
+ */
+export interface NudgeLeaf {
+  /** The frame and block it came from, which is what the row is keyed by. */
+  key: string;
+  text: string;
+}
+
 /** One hook run, as a row of the work. */
 export interface HookLeaf {
   /** The run's own id, or the frame it arrived on where the wire gave none. */
@@ -197,7 +211,8 @@ export type WorkRow =
   | { tag: 'card'; card: PeerCard }
   | ({ tag: 'thought' } & ThoughtLeaf)
   | ({ tag: 'hook' } & HookLeaf)
-  | ({ tag: 'inbound' } & InboundLeaf);
+  | ({ tag: 'inbound' } & InboundLeaf)
+  | ({ tag: 'nudge' } & NudgeLeaf);
 
 /** What one turn's hooks did. */
 export interface HookInfo {
@@ -418,6 +433,34 @@ interface Frame {
     stop_reason?: unknown;
     usage?: unknown;
   };
+}
+
+/**
+ * The prefix forge's own machinery mints its prompts under
+ * (`next_forged_prompt_id` in `crates/forge-sdk/src/request_id.rs`).
+ *
+ * **The id is the only fact about the sender the CLI carries into the
+ * transcript** - as a row's `uuid`, or the `source_uuid` of its queued
+ * attachment - so it is what lets a reloaded row draw as the machinery's own
+ * rather than as the reader's words. The mint pins the same string on the
+ * other side; renaming one redraws every nudge as the reader's own.
+ */
+const NUDGE_ID_PREFIX = 'forge_nudge_';
+
+/** Whether `id` is one forge's own machinery minted for its own prose. */
+function isNudgeId(id: string | null): boolean {
+  return id !== null && id.startsWith(NUDGE_ID_PREFIX);
+}
+
+/**
+ * The prompt id a row was written under: the block's own `source_uuid` where
+ * the prompt reached the transcript as a queued attachment (the row's `uuid`
+ * there is the CLI's own), the frame's `uuid` otherwise.
+ */
+function promptIdOf(frame: Frame, block: Block): string | null {
+  const carried = block.source_uuid;
+  if (typeof carried === 'string' && carried !== '') return carried;
+  return typeof frame.uuid === 'string' && frame.uuid !== '' ? frame.uuid : null;
 }
 
 /** Whether a frame came from a dispatched agent rather than the session's own. */
@@ -2168,6 +2211,15 @@ export function fold(
             });
             continue;
           }
+          // A message forge's own machinery dispatched, which none of the
+          // claims above took - a chase nudge, a browser warning, a kick -
+          // draws as a work row of its own kind, never as the reader's:
+          // nobody typed it. The id says so on both paths, so a reloaded row
+          // draws what the live one did.
+          if (isNudgeId(promptIdOf(frame, block))) {
+            pending.push({ tag: 'nudge', key: keyOf(at, frame, blockAt), text: stripped });
+            continue;
+          }
         }
         if (frame.type === 'user') {
           // The attachments ride the frame's first turn of words: a second
@@ -2249,6 +2301,20 @@ export function fold(
           } else {
             push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
           }
+          continue;
+        }
+        // The machinery's own words can ride this carrier too: a nudge the
+        // CLI buffered mid-turn draws as the same work row its idle dispatch
+        // draws, keyed by the prompt's own id off the block. Escapes stripped,
+        // the way the text arm above strips them: one transform per row, or
+        // the same words draw two ways depending on which carrier brought
+        // them.
+        if (isNudgeId(promptIdOf(frame, block))) {
+          pending.push({
+            tag: 'nudge',
+            key: keyOf(at, frame, blockAt),
+            text: stripEscapes(words),
+          });
           continue;
         }
         // Otherwise it is a turn the reader took, so what the frame attached

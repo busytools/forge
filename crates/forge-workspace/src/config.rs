@@ -1700,7 +1700,8 @@ max_size_mib = 0
         write_config(
             dir.path(),
             &format!(
-                "{}\n[client]\nmark = \"klin\"\ntheme = \"dark\"\nfont = \"system\"\n",
+                "{}\n[client]\nmark = \"klin\"\ntheme = \"dark\"\nfont = \"system\"\n\
+                 browser_idle_minutes = 45\nbrowser_grace_minutes = 15\n",
                 minimal_config()
             ),
         );
@@ -1708,6 +1709,12 @@ max_size_mib = 0
         assert_eq!(config.client.mark.as_deref(), Some("klin"));
         assert_eq!(config.client.theme.as_deref(), Some("dark"));
         assert_eq!(config.client.font.as_deref(), Some("system"));
+        assert_eq!(
+            config.client.browser_idle_minutes,
+            Some(45),
+            "the idle release's keys ride too"
+        );
+        assert_eq!(config.client.browser_grace_minutes, Some(15));
 
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
@@ -1715,6 +1722,11 @@ max_size_mib = 0
         assert_eq!(config.client.mark, None, "an unset key is the built-in, not a pinned value");
         assert_eq!(config.client.theme, None);
         assert_eq!(config.client.font, None, "and the built-in face is what an unset font draws");
+        assert_eq!(
+            config.client.browser_idle_minutes, None,
+            "an unset idle bound is the built-in half hour",
+        );
+        assert_eq!(config.client.browser_grace_minutes, None);
     }
 
     /// A section that never binds cannot stop the boot: a stale port on a

@@ -66,6 +66,14 @@ read as one system.
   delivery's own reason, and `whoami` and `list` open onto their facts.
 - **A delivery** - a cron fire, a Slack message, a Gotify push - is a row
   of its own kind, a cron fire titled by the schedule that fired it.
+- **A nudge** - a chase warning, a browser's idle message, a worker's
+  kick - is the machinery's own words, so it draws as a work row under
+  the board's own mark rather than as the reader's: nobody typed it, and
+  it never wears `.mine`. A long one - the user-wait digest, a browser
+  sentence - opens on the whole of what it said, the way a thought row
+  does. The row is found by the id the machinery minted for the prompt,
+  which survives into the transcript, so a reloaded row draws what the
+  live one did.
 - **An edit** draws its diff: the hunks with both line numbers, and the
   marks that say how each line moved.
 - **A backgrounded call** is held open by its task fact, its result

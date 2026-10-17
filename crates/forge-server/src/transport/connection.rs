@@ -914,7 +914,7 @@ async fn handle_client(
             };
             // Where a command's answer goes, decided before anything acts.
             //
-            // Four commands report through the reply and have no update behind
+            // Five commands report through the reply and have no update behind
             // them, so omitting `reply_to` on one of those is not a client
             // declining a reply - it is a client declining to learn whether
             // the work happened. Every other command is fire-and-forget: its
@@ -927,7 +927,10 @@ async fn handle_client(
             // pressed last.
             let dispatch_id = command.dispatch_id();
             match (reply_to, answers_through_a_reply(&command)) {
-                (Some(to), true) => dispatch_answering(socket, state, command, to).await,
+                (Some(to), true) => {
+                    dispatched(me, &command);
+                    dispatch_answering(socket, state, command, to).await
+                }
                 (None, true) => {
                     send(
                         socket,
@@ -955,28 +958,31 @@ async fn handle_client(
                     )
                     .await
                 }
-                (None, false) => match state.surface.dispatch(command) {
-                    Ok(()) => {
-                        // Claimed as soon as the dispatch answers - Ok for a
-                        // refusal too, whose reason rides the stream as its
-                        // own `DictateEnded` - so the frame that follows a
-                        // start finds the seat, which is what makes the claim
-                        // run AFTER the dispatch rather than before it. The
-                        // generation stays unknown until the take's own
-                        // `DictateStarted` stamps it, and only an end naming
-                        // that generation retires it.
-                        if let Some(seat) = streamed {
-                            dictate.claim(&seat);
+                (None, false) => {
+                    dispatched(me, &command);
+                    match state.surface.dispatch(command) {
+                        Ok(()) => {
+                            // Claimed as soon as the dispatch answers - Ok for a
+                            // refusal too, whose reason rides the stream as its
+                            // own `DictateEnded` - so the frame that follows a
+                            // start finds the seat, which is what makes the claim
+                            // run AFTER the dispatch rather than before it. The
+                            // generation stays unknown until the take's own
+                            // `DictateStarted` stamps it, and only an end naming
+                            // that generation retires it.
+                            if let Some(seat) = streamed {
+                                dictate.claim(&seat);
+                            }
+                            if let Some(recording) = recording {
+                                dictate.read_aloud = recording;
+                            }
+                            Ok(())
                         }
-                        if let Some(recording) = recording {
-                            dictate.read_aloud = recording;
+                        Err(refusal) => {
+                            send(socket, dispatch_refusal(&refusal, dispatch_id)).await
                         }
-                        Ok(())
                     }
-                    Err(refusal) => {
-                        send(socket, dispatch_refusal(&refusal, dispatch_id)).await
-                    }
-                },
+                }
             }
         }
         ClientMessage::More { conversation, before, turns } => {
@@ -1923,15 +1929,16 @@ async fn dispatch_answering(
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
     //
-    // The reply-carrying commands take a sender the wire deliberately does
-    // not carry, and each carries its OWN reply type - a spawned worker
+    // The six reply-carrying commands take a sender the wire deliberately
+    // does not carry, and each carries its OWN reply type - a spawned worker
     // answers with a `WorkerSpawnReply`, a despawn with a `DespawnResult`,
-    // and the review writes with a `bool` and a `ReviewSet`. So the channel
-    // is built per arm and handed to the shared helper with its own receiver:
-    // one channel cannot carry different answers. **A variant missing here
-    // hangs its caller**: it falls to the fire-and-forget arm below with no
-    // sender, the workspace answers nobody, and the client waits for ever
-    // (measured live on the delete, 2026-10-17).
+    // the review writes with a `bool` and a `ReviewSet`, and an idle warning
+    // with an `IdleVerdict`. So the channel is
+    // built per arm and handed to the shared helper with its own receiver:
+    // one channel cannot carry six different answers. **A variant missing
+    // here hangs its caller**: it falls to the fire-and-forget arm below
+    // with no sender, the workspace answers nobody, and the client waits for
+    // ever (measured live on the delete, 2026-10-17).
     match command {
         Command::SpawnWorker {
             project_key,
@@ -1990,6 +1997,20 @@ async fn dispatch_answering(
                 thread_ids,
                 origin,
                 respond: Some(tx),
+            };
+            answered(socket, state, command, to, rx).await
+        }
+        Command::BrowserIdleWarning {
+            key, profile, idle_minutes, grace_minutes, at_close, ..
+        } => {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::BrowserIdleWarning {
+                key,
+                profile,
+                idle_minutes,
+                grace_minutes,
+                at_close,
+                verdict: Some(tx),
             };
             answered(socket, state, command, to, rx).await
         }
@@ -2084,6 +2105,20 @@ fn dispatch_refusal(refusal: &DispatchError, dispatch_id: Option<u64>) -> Server
     }
 }
 
+/// **Which hand sent what** (issue #2372: a parked hand-off's answer arrived
+/// over the socket and could not be attributed - no dispatch named its
+/// connection). Logged where a command is actually dispatched: a refusal
+/// never was.
+fn dispatched(me: u64, command: &Command) {
+    tracing::debug!(
+        target: "forge_server::transport",
+        event_name = "command_dispatched",
+        client = me,
+        command = ?command,
+        "a client command reached the dispatch",
+    );
+}
+
 /// Dispatch a reply-carrying command, and answer the client that asked.
 ///
 /// A client that asked for an answer always hears one - INCLUDING a refusal,
@@ -2091,7 +2126,7 @@ fn dispatch_refusal(refusal: &DispatchError, dispatch_id: Option<u64>) -> Server
 /// Whether a command reports its outcome through the reply rather than
 /// through an update on the subscription.
 ///
-/// These four are the ones with nothing behind them on the wire: a client that
+/// These five are the ones with nothing behind them on the wire: a client that
 /// omits `reply_to` for one of them has no second way to learn what happened.
 fn answers_through_a_reply(command: &Command) -> bool {
     matches!(
@@ -2101,10 +2136,11 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::UpsertReviewThread { .. }
             | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
+            | Command::BrowserIdleWarning { .. }
     )
 }
 
-/// Dispatch one of those four, and send back the answer it carries.
+/// Dispatch one of those six, and send back the answer it carries.
 async fn answered<T: serde::Serialize>(
     socket: &mut WebSocket,
     state: &TransportState,

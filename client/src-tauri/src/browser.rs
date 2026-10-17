@@ -32,6 +32,8 @@ pub mod android;
 pub mod chromium;
 pub mod custom;
 pub mod driver;
+#[cfg(desktop)]
+pub(crate) mod idle;
 pub mod profiles;
 pub mod window;
 
@@ -167,6 +169,16 @@ pub struct BrowserHost {
     /// reap closes, and what the boot sweep must never read as an orphan.
     #[cfg(desktop)]
     owned: Mutex<HashMap<PathBuf, chromium::ClientLock>>,
+    /// The idle release's clock per profile: when a seat last used it, when
+    /// its seat was last warned, and who that seat was. In-memory on purpose
+    /// (see [`idle`]): a client restart grants every browser a fresh window.
+    #[cfg(desktop)]
+    touches: Mutex<HashMap<PathBuf, idle::Touch>>,
+    /// When this client's host came up: an untouched profile's clock starts
+    /// here rather than at the epoch, so a restart spares what the last run
+    /// left.
+    #[cfg(desktop)]
+    boot: std::time::Instant,
     /// The seats whose auto-profile refusal this run has already told a
     /// session about: the create is retried on every unnamed call, and the
     /// note belongs on the first one, not on each.
@@ -194,6 +206,10 @@ impl BrowserHost {
             named: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
             owned: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            touches: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            boot: std::time::Instant::now(),
             #[cfg(desktop)]
             auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
@@ -227,11 +243,49 @@ impl BrowserHost {
             #[cfg(desktop)]
             owned: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
+            touches: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            boot: std::time::Instant::now(),
+            #[cfg(desktop)]
             auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "android")]
             engine: None,
         }
+    }
+
+    /// The boot's browser act (spam-control A4): build the host over the
+    /// resolved paths, say where its stack lives, and set the reap going for
+    /// whatever a dead client left behind.
+    ///
+    /// **It launches nothing** - a browser comes up on the first real need (a
+    /// call, a raise) and never at app start. A fn rather than lines in the
+    /// setup closure so the invariant is drivable: a launch re-added inside
+    /// it fails `the_boot_launches_nothing`.
+    #[cfg(desktop)]
+    pub fn boot_browser(paths: Result<StackPaths, String>) -> Arc<Self> {
+        // The host is handed to the frontend whether or not its directories
+        // resolve: a client that cannot host says so when it is asked, rather
+        // than refusing to start.
+        let host = match paths {
+            Ok(paths) => {
+                tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
+                Arc::new(Self::new(paths))
+            }
+            Err(why) => {
+                tauri_plugin_log::log::warn!("browser host unavailable: {why}");
+                Arc::new(Self::unavailable(why))
+            }
+        };
+        // The reap is the only cover for a client that never ran its exit - a
+        // crash, a SIGKILL, or the update restart, whose main-thread path
+        // skips `RunEvent::Exit` by design. It launches nothing, and with no
+        // launch to mistake for one, it reaps only what a previous run left.
+        let reap = Arc::clone(&host);
+        tauri::async_runtime::spawn(async move {
+            reap.reap_orphans().await;
+        });
+        host
     }
 
     /// Run one browser tool for a session.
@@ -346,6 +400,19 @@ impl BrowserHost {
             let cli = driver::cli_path(&paths.stack);
             match profile {
                 None => {
+                    // **The shared browser is in use from here on**: the touch
+                    // is the idle release's clock, and it lands before any
+                    // work that can fail - a slow call is not an idle one.
+                    // **Under the launch lock**, which is the critical
+                    // section the idle release's own verdict-and-kill takes:
+                    // a call landing while the sweep asked its question
+                    // blocks here, so the sweep re-reads a clock that already
+                    // carries this touch rather than killing the browser this
+                    // call is about to drive.
+                    {
+                        let _launching = self.launch.lock().await;
+                        self.touch(&paths.user_data).await;
+                    }
                     // **The seat's auto profile is ensured on its first
                     // unnamed reach**, before anything is driven: the record
                     // is what keeps the name the seat's across restarts. The
@@ -353,7 +420,7 @@ impl BrowserHost {
                     // ensure never changes it - and a refused create is said
                     // once on the answer below.
                     let auto = self.ensure_auto_profile(seat).await;
-                    let active = self.browser_for(&paths.user_data).await?;
+                    let active = self.start().await?;
                     // **The browser has been driven**, which the strip's row
                     // draws: a session's call is the only way a browser of this
                     // client's is used. Set after the profile is resolved, so a
@@ -396,6 +463,13 @@ impl BrowserHost {
                 }
                 Some(name) => {
                     let named = self.named_profile(seat, &name).await?;
+                    // The idle release's clock: the named profile is in use -
+                    // under the launch lock, the same critical section the
+                    // sweep's verdict-and-kill takes (see the shared arm).
+                    {
+                        let _launching = self.launch.lock().await;
+                        self.touch(&named.dir).await;
+                    }
                     let active = self.browser_for(&named.dir).await?;
                     self.used.store(true, std::sync::atomic::Ordering::Release);
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
@@ -537,6 +611,113 @@ impl BrowserHost {
         Ok(())
     }
 
+    /// Record that `dir` was just used. **A touch clears the streak**:
+    /// whatever warning stood, the browser is in use again, and its seat will
+    /// be told afresh if it idles again.
+    #[cfg(desktop)]
+    pub(crate) async fn touch(&self, dir: &Path) {
+        let mut touches = self.touches.lock().await;
+        let entry = touches.entry(dir.to_path_buf()).or_insert(idle::Touch {
+            at: self.boot,
+            warned: None,
+            caller: None,
+        });
+        entry.at = std::time::Instant::now();
+        entry.warned = None;
+    }
+
+    /// Note that this profile's seat was just warned (or that its close's own
+    /// ask came back held): the grace runs from here.
+    #[cfg(desktop)]
+    pub(crate) async fn note_warned(&self, dir: &Path, at: std::time::Instant) {
+        let mut touches = self.touches.lock().await;
+        if let Some(entry) = touches.get_mut(dir) {
+            entry.warned = Some(at);
+        }
+    }
+
+    /// Every profile the idle release may act on, with its clock: the named
+    /// profiles (the seat to warn is their **creator** - the profile's owner,
+    /// whoever called it last) and the shared browser (whoever last called
+    /// it, `None` when no one has).
+    ///
+    /// **A browser that is not there is not idle, and a window that is up is
+    /// in use.** A dead profile has nothing to release, and a raised
+    /// window - the marker over a live launch with a page - is the
+    /// person's: never warned about, never closed.
+    #[cfg(desktop)]
+    pub(crate) async fn idle_candidates(&self) -> Vec<idle::Candidate> {
+        let Ok(paths) = self.paths.clone() else { return Vec::new() };
+        let touches = {
+            let touches = self.touches.lock().await;
+            touches.clone()
+        };
+        let untouched = idle::Touch { at: self.boot, warned: None, caller: None };
+        // **The registry lock is not held across the probes** - the same
+        // discipline the strip's list keeps: a devtools read parks an open
+        // behind every profile it has to ask about.
+        let rows: Vec<(String, PathBuf, Seat)> = {
+            let named = self.named.lock().await;
+            named
+                .iter()
+                .map(|(name, entry)| (name.clone(), entry.dir.clone(), entry.owner.clone()))
+                .collect()
+        };
+        let mut out = Vec::new();
+        for (name, dir, owner) in rows {
+            if chromium::verified(&dir).await.is_none() || chromium::windowed(&dir).await {
+                continue;
+            }
+            let touch = touches.get(&dir).cloned().unwrap_or_else(|| untouched.clone());
+            out.push(idle::Candidate {
+                name: Some(name),
+                dir,
+                // **The creator, not the last caller** (spam-control A1): a
+                // named profile's warning belongs to the seat that made it.
+                // The distinction is structural rather than observed - a
+                // non-owner cannot drive a named profile at all
+                // (`profiles::verdict` refuses another seat's name), so the
+                // recorded caller could only ever be the owner; naming the
+                // owner here is what makes the targeting explicit.
+                touch: idle::Touch { caller: Some(owner), ..touch },
+            });
+        }
+        if chromium::verified(&paths.user_data).await.is_some()
+            && !chromium::windowed(&paths.user_data).await
+        {
+            let touch = touches.get(&paths.user_data).cloned().unwrap_or(untouched);
+            out.push(idle::Candidate { name: None, dir: paths.user_data.clone(), touch });
+        }
+        out
+    }
+
+    /// The idle release closing one profile: the named path takes the row's
+    /// own close (the name is given up and the next call relaunches), and the
+    /// shared browser is closed where it stands - it is not a profile to
+    /// remove. **The clock goes with it**: the entry a closed profile leaves
+    /// would otherwise re-nudge and re-close a dead browser every pass.
+    #[cfg(desktop)]
+    pub(crate) async fn close_idle(&self, name: Option<&str>) {
+        match name {
+            Some(name) => {
+                let dir = {
+                    let named = self.named.lock().await;
+                    named.get(name).map(|entry| entry.dir.clone())
+                };
+                let _ = self.close(name).await;
+                if let Some(dir) = dir {
+                    self.touches.lock().await.remove(&dir);
+                }
+            }
+            None => {
+                if let Ok(paths) = self.paths.clone() {
+                    chromium::close(&paths.user_data).await;
+                    self.touches.lock().await.remove(&paths.user_data);
+                }
+            }
+        }
+    }
+
     /// The phone holds no named profiles, so the row's close has nothing to
     /// close and says exactly that.
     #[cfg(target_os = "android")]
@@ -608,16 +789,15 @@ impl BrowserHost {
         Err(format!("no profile named '{name}' on this client"))
     }
 
-    /// Bring the browser up, without any driver.
+    /// Ensure the SHARED browser is up, without any driver.
     ///
-    /// **The app's own start, so the browser is there before anything asks
-    /// for it** rather than being launched under the first tool call: a
-    /// session's call should not pay a cold launch, and a browser that cannot
-    /// start at all says so in the app's log at startup instead of as a
-    /// failed tool call. The drivers stay lazy - they exist to serve calls,
-    /// and one with no calls to serve is a child process held for nothing.
-    /// The launched browser's id comes back with its port, so a caller that
-    /// must reap it (a test that launched it) can; the app ignores both.
+    /// **On demand, never at app start** (spam-control A4): the boot brings
+    /// no browser up, and this is the door the call path takes for the shared
+    /// browser - a second ensure attaches to the launch that is already
+    /// there. The drivers stay lazy: they exist to serve calls, and one with
+    /// no calls to serve is a child process held for nothing. The launched
+    /// browser's id comes back with its port, so a caller that must reap it
+    /// (a live test that launched it) can; the call path ignores both.
     #[cfg(desktop)]
     pub async fn start(&self) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
@@ -851,6 +1031,9 @@ impl BrowserHost {
         };
         let _launching = self.launch.lock().await;
         self.claim(&dir).await;
+        // A raise is use: the person is being shown this browser, so the
+        // idle release's clock restarts and any standing warning is spent.
+        self.touch(&dir).await;
         let binary = chromium::browser_binary()?;
         chromium::show(&binary, &dir).await
     }
@@ -896,6 +1079,9 @@ impl BrowserHost {
         // no-op against a browser not yet up - Open then Done would leave the
         // window raised after the answer crossed.
         let _launching = self.launch.lock().await;
+        // A lower is the same use a raise is: the browser was just in front
+        // of someone, and the clock restarts with it.
+        self.touch(&dir).await;
         chromium::hide(&dir).await;
         Ok(())
     }
@@ -1016,10 +1202,11 @@ impl BrowserHost {
     /// client is gone: every profile directory whose port answers while no
     /// client holds its claim.
     ///
-    /// **The boot door, and the only cover for a client that never ran its
+    /// **The boot sweep, and the only cover for a client that never ran its
     /// exit** - a crash, a SIGKILL, the update restart's main-thread path.
-    /// Runs after [`BrowserHost::start`] has claimed the shared profile, so
-    /// this client's own launch is never read as an orphan. Scoped to this
+    /// **It launches nothing** (spam-control A4: the client start brings no
+    /// browser up): run at boot, before anything this run has claimed, so
+    /// only what a previous run left can read as an orphan. Scoped to this
     /// app's own root: another app's browsers (a scratch rig's, the person's
     /// own) are never touched.
     #[cfg(desktop)]
@@ -1651,8 +1838,55 @@ mod tests {
         assert_eq!(
             host.start().await,
             Err("the browser stack was never vendored".to_owned()),
-            "the start says why rather than panicking at the app's boot",
+            "the ensure says why rather than launching anything",
         );
+    }
+
+    /// **No browser launches at client start** (spam-control A4), driven the
+    /// way the setup closure drives it: the boot's browser act runs under a
+    /// mock Tauri app over a scratch stack, and nothing may come up. A launch
+    /// re-added inside `boot_browser` fails here; only one added in the
+    /// closure around the call is beyond a test that cannot start a real app.
+    #[tokio::test]
+    async fn the_boot_launches_nothing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let watched = paths.user_data.clone();
+        // The setup closure's own shape, driven directly: a registered setup
+        // only runs on an event loop (the mock's `run` blocks until a window
+        // closes), and the actions are what this pin is about.
+        let setup = move |app: &mut tauri::App<tauri::test::MockRuntime>| {
+            let host = BrowserHost::boot_browser(Ok(paths));
+            app.manage(host);
+            Ok::<(), Box<dyn std::error::Error>>(())
+        };
+        let mut app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("the mock app builds");
+        setup(&mut app).expect("the boot's browser act runs");
+        let host = app.state::<Arc<BrowserHost>>();
+        assert!(
+            host.idle_candidates().await.is_empty(),
+            "nothing is a candidate before anything launches",
+        );
+        // A launch re-added as a spawn (the launcher's API is async) answers
+        // a beat later, so the absence is believed over a bounded wait: the
+        // port file shows within a second or so of Brave starting, and three
+        // is generous - a real launch fails somewhere in here.
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while tokio::time::Instant::now() < until {
+            assert!(
+                !watched.join("DevToolsActivePort").exists(),
+                "the boot's browser act launches nothing",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(chromium::verified(&watched).await.is_none(), "and no browser answers for it",);
     }
 
     /// **A name that cannot be a profile is refused before any directory is
@@ -2026,6 +2260,82 @@ mod tests {
             None,
             "no URL line, nothing landed",
         );
+    }
+
+    /// **The idle release's clock resets on every touch, and the candidates
+    /// name the seat to warn** - while a browser that is not there, and a
+    /// window that is up, are never candidates at all.
+    #[tokio::test]
+    async fn the_idle_clock_resets_and_dead_or_raised_browsers_are_no_candidates() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        let who = seat();
+        let named = Named::open(who.clone(), "hunt", &paths).expect("the open");
+        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
+        let hunt = paths.profiles.join("hunt");
+        host.touch(&hunt).await;
+
+        // No endpoint: a browser that is not there is not idle.
+        assert!(
+            host.idle_candidates().await.is_empty(),
+            "a dead profile and the unlaunched shared browser are no candidates",
+        );
+
+        // A live endpoint, no raise marker: the candidate appears, and the
+        // clock carries the seat.
+        let identity = "/devtools/browser/idle";
+        let (port, in_flight, release) = stalling_devtools(identity).await;
+        std::fs::write(hunt.join("DevToolsActivePort"), format!("{port}\n{identity}\n"))
+            .expect("the port file");
+        let first = tokio::spawn({
+            let host = Arc::clone(&host);
+            async move { host.idle_candidates().await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), in_flight)
+            .await
+            .expect("the probe reaches the endpoint")
+            .expect("the endpoint signals the request");
+        release.send(()).expect("the endpoint releases");
+        let candidates = first.await.expect("the candidates");
+        let row = candidates
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("hunt"))
+            .expect("the named row with a live launch");
+        // **The profile's creator, and the seat the warning goes to**: the
+        // seat under test is both creator and caller - no other seat can
+        // drive a named profile - so what this holds is the targeting, not a
+        // discrimination against a last caller (see `idle_candidates`).
+        assert_eq!(
+            row.touch.caller,
+            Some(who.clone()),
+            "the candidate carries the profile's creator",
+        );
+        assert!(row.touch.warned.is_none(), "a fresh touch carries no warning");
+
+        let warned_at = std::time::Instant::now();
+        host.note_warned(&hunt, warned_at).await;
+        host.touch(&hunt).await;
+        let candidates = host.idle_candidates().await;
+        let row = candidates
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("hunt"))
+            .expect("the named row");
+        assert!(row.touch.warned.is_none(), "a touch clears the warning");
+        assert_eq!(row.touch.caller, Some(who.clone()), "and keeps the seat it had");
+
+        // Marker over the live launch: the window is up, and a raised window
+        // is never a candidate - it is the person's.
+        std::fs::write(hunt.join("windowed"), b"https://example.com/x").expect("the marker");
+        assert!(host.idle_candidates().await.is_empty(), "a raised window is in use, not idle",);
+
+        let shared = candidates.iter().find(|candidate| candidate.name.is_none());
+        assert!(shared.is_none(), "the shared browser has not launched at all");
     }
 
     /// **Two leads, two projects, two auto profiles.** Every lead carries

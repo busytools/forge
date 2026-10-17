@@ -71,10 +71,11 @@ async fn a_session_drives_a_page() {
     };
     let host = BrowserHost::new(paths.clone());
 
-    // **The app's own start**: the browser is up before any call asks for it,
-    // and a second start ATTACHES to that launch rather than making another
-    // one - one browser for the app, however many times it is ensured.
-    let launched = host.start().await.expect("the browser comes up with the app");
+    // **The on-demand ensure** (spam-control A4): the browser comes up when
+    // something asks for it, and a second ensure ATTACHES to that launch
+    // rather than making another one - one browser for the app, however many
+    // times it is ensured.
+    let launched = host.start().await.expect("the browser comes up");
     let browser = Launched::new(launched.pid, launched.port, paths.user_data.clone());
     let attached = host.start().await.expect("a second start attaches");
     assert_eq!(
@@ -935,7 +936,7 @@ async fn a_session_call_rewrites_the_carry() {
         profiles: dir.path().join("profiles"),
     };
     let host = BrowserHost::new(paths.clone());
-    let launched = host.start().await.expect("the browser comes up with the app");
+    let launched = host.start().await.expect("the browser comes up");
     let browser = Launched::new(launched.pid, launched.port, paths.user_data.clone());
     let who = seat();
 

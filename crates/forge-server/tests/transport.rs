@@ -2516,7 +2516,7 @@ async fn a_turn_that_finished_unwatched_marks_its_row() {
     assert!(marked, "the seat whose turn went unwatched is marked");
 }
 
-/// Four commands report through `reply_to` and have no update behind them, so
+/// Six commands report through `reply_to` and have no update behind them, so
 /// a client that omits it is not opting out of a reply - it is opting out of
 /// knowing whether the work happened. The refusal names the field rather than
 /// leaving the client to work out why a fire-and-forget command is different.
@@ -2604,6 +2604,67 @@ async fn a_refusal_echoes_the_dispatch_its_press_named() {
     assert_eq!(what, "reply_to", "the refusal names what was wrong");
     assert_eq!(dispatch_id, Some(41), "and the dispatch the press named rides it back");
     assert!(fleet.dispatched().is_empty(), "the refused command did not run");
+}
+
+/// **A dispatch names the connection that sent it** (spam-control A5, issue
+/// #2372): a parked hand-off's answer arrived over the socket with no way to
+/// attribute it, so every dispatched command logs the client and the command
+/// variant. The client id is the socket's own, minted per connection.
+#[tokio::test]
+async fn a_dispatched_command_is_logged_with_its_connection_and_variant() {
+    let (url, fleet) = a_server().await;
+    fleet.intercept_dispatch();
+    let (mut socket, _home) = a_page_on(&url, Subject::Home).await;
+    let (written, _guard) = catch_records();
+
+    send(
+        &mut socket,
+        ClientMessage::Command { command: Box::new(Command::PluginUpdateAll), reply_to: None },
+    )
+    .await;
+    // The dispatch runs behind the read that answers it, so the read is
+    // repeated and bounded rather than taken once.
+    for _ in 0..200 {
+        if caught(&written).contains("command_dispatched") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let records = caught(&written);
+    let Some(line) = records.lines().find(|line| line.contains("command_dispatched")) else {
+        panic!("a dispatched command is logged with its connection: {records}");
+    };
+    assert!(line.contains("PluginUpdateAll"), "the command variant is named: {line}");
+    assert!(line.contains("client="), "and the connection that sent it: {line}");
+}
+
+/// **A refused command never logs as dispatched** (spam-control B3f): the
+/// attribution line must mean the command reached the core, so the
+/// `reply_to` refusals - which run before any dispatch - leave it silent.
+#[tokio::test]
+async fn a_refused_command_is_not_logged_as_dispatched() {
+    let (url, fleet) = a_server().await;
+    fleet.intercept_dispatch();
+    let (mut socket, _home) = a_page_on(&url, Subject::Home).await;
+    let (written, _guard) = catch_records();
+
+    // A fire-and-forget command sent WITH a reply id is refused before
+    // dispatch.
+    send(
+        &mut socket,
+        ClientMessage::Command { command: Box::new(Command::PluginUpdateAll), reply_to: Some(3) },
+    )
+    .await;
+    let ServerMessage::Error { .. } = next_server(&mut socket).await else {
+        panic!("a refused dispatch is answered with an error");
+    };
+    let records = caught(&written);
+    assert!(
+        !records.contains("command_dispatched"),
+        "a command refused before dispatch never logs as dispatched: {records}",
+    );
+    assert!(fleet.dispatched().is_empty(), "and nothing was dispatched");
 }
 
 /// **The refusal a page's own add press actually gets.** The add is
