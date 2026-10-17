@@ -1970,9 +1970,10 @@ describe('one turn folded into the units a view draws', () => {
       ]),
     ]);
 
-    expect(read[0]?.kind === 'user' ? read[0].files : []).toEqual([
-      { kind: 'image', mime: 'image/png', bytes: 180207 },
-    ]);
+    expect(
+      read[0]?.kind === 'user' ? read[0].files : [],
+      'the row states the size the read path measured for it',
+    ).toEqual([{ kind: 'image', mime: 'image/png', bytes: 180207 }]);
   });
 
   it('draws what a user turn attached', () => {

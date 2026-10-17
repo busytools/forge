@@ -12,9 +12,14 @@ use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 /// identically to live messages, unifying replay + live code paths.
 ///
 /// Replay-specific transforms applied here:
-/// - Image content blocks keep their mime and the size their payload
-///   weighed, and lose the payload: the view draws a named row for one, and
-///   the bytes are what the row never shows.
+/// - A TOP-LEVEL image block keeps its mime and the size its payload weighed,
+///   and loses that payload: the read draws the same attachment row the live
+///   path draws for it, and that row shows no bytes.
+///
+///   **Top-level blocks only, by choice.** A `Document` block and an image
+///   nested in a tool result are passed through untouched - payload and all -
+///   because a call row draws a result's image from its own data URL, and
+///   nothing here should change what that gets.
 ///
 /// **Thinking blocks are kept.** A thinking block is the row the chat draws
 /// for a thought, and the live path draws it (a `thinking` block in an
@@ -151,11 +156,11 @@ fn transform_replay_content(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
 /// An image block as the read path keeps it.
 ///
 /// The block stays an image so the view's own attachment row draws it, as the
-/// live path already does. **The payload does not ride to the page**: nothing
-/// there draws those bytes, and a transcript can hold tens of megabytes of
-/// them. What the row prints instead is the size measured here, under the
-/// `forge_bytes` name - forge's own, so it cannot be read as a field the CLI
-/// wrote.
+/// live path already does. The payload dropped here is the block's OWN: the
+/// attachment row prints the size and nothing else, so those bytes would ride
+/// to a page that never draws them. What the block carries instead is that
+/// size, under the `forge_bytes` name - forge's own, so it cannot be read as a
+/// field the CLI wrote.
 fn attachment(source: Value, extras: Extras) -> ContentBlock {
     let Some(data) = source.get("data").and_then(Value::as_str) else {
         return ContentBlock::Image { source, extras };
