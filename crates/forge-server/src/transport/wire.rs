@@ -1136,11 +1136,13 @@ pub const SUBSCRIBE_TURNS: u32 = 20;
 /// **What splits a slow switch between this server and the client.** A
 /// client's own marks say when its click happened and when the first row
 /// drew; these are what the server was doing in between, so a gap the two
-/// artefacts have to explain is placed by them rather than guessed at. The
-/// seed is the transcript read only a cold seat pays; the rest are on every
-/// open. What they do not name - the queued flush, the copy's catch-up and
-/// the record's own reads - is the remainder between their sum and the
-/// transport's `session_open` line.
+/// artefacts have to explain is placed by them rather than guessed at.
+///
+/// **The four slices are disjoint.** The seed is the transcript read only a
+/// cold seat pays, and the conversation total excludes it, so their sum is
+/// time the open spent and the remainder between it and the transport's
+/// `session_open` line - the queued flush, the copy's catch-up and the
+/// record's own reads - is never short.
 #[derive(Debug, Default)]
 pub struct OpenTimings {
     pub seed_ms: f64,
@@ -1500,7 +1502,12 @@ async fn session(
     // conversation is answered with the empty one.
     let at = std::time::Instant::now();
     let conversation = conversation_for(state, slot, timings).await;
-    timings.conversation_ms = at.elapsed().as_secs_f64() * 1000.0;
+    // **The slices are DISJOINT, and the seed is taken out of this total.**
+    // The transcript read a cold seat pays is timed inside `conversation_for`,
+    // so a total over the whole call would carry it twice: the sum the line's
+    // remainder is read against would go short by the whole read - worst on
+    // exactly the slow cold open the line exists to explain.
+    timings.conversation_ms = at.elapsed().as_secs_f64() * 1000.0 - timings.seed_ms;
     let (turns, compaction_count, page_ms) = match conversation {
         Some(held) => {
             let seat = slot.clone();
