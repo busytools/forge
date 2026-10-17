@@ -215,8 +215,9 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
         "asr": model_identity(&take.models.asr),
         "normalizer": take.models.normalizer.as_ref().map(model_identity),
         // Whether this take's text went through a completed cleanup pass:
-        // false with none configured, on a failed pass, and with no text
-        // to clean. A completed pass can still have rewritten nothing.
+        // false with none configured, on a failed pass, and on a take whose
+        // recognition failed, so the pass never ran. A completed pass can
+        // still have rewritten nothing.
         "normalizer_ran": take.stages.normalize.is_some(),
         // The language hint the engine was configured with; null
         // autodetects. Not the language a take turned out to be in.
