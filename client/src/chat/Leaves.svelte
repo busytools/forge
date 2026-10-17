@@ -3,6 +3,7 @@
   import Hook from './Hook.svelte';
   import Inbound from './Inbound.svelte';
   import { opensByDefault, type ToolLeaf } from './leaves';
+  import Nudge from './Nudge.svelte';
   import PeerRow from './PeerRow.svelte';
   import Thought from './Thought.svelte';
   import type { WorkRow } from './units';
@@ -56,6 +57,8 @@
       <Inbound {row} />
     {:else if row.tag === 'thought'}
       <Thought text={row.text} />
+    {:else if row.tag === 'nudge'}
+      <Nudge text={row.text} />
     {:else if row.tag === 'card'}
       <PeerRow card={row.card} />
     {/if}
