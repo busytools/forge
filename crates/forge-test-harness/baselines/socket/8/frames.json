@@ -99,6 +99,7 @@
     "CancelQueuedPrompt": "cancel_queued_prompt",
     "CloseSession": "close_session",
     "CloseWorker": "close_worker",
+    "DeleteReviewThread": "delete_review_thread",
     "DeliverGotifyMessage": "deliver_gotify_message",
     "DeliverPeerPrompt": "deliver_peer_prompt",
     "DeliverWorkerPrompt": "deliver_worker_prompt",
