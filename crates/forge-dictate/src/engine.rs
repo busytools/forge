@@ -1086,11 +1086,12 @@ fn worker(
                 }
             }
         }
-        // The diagnostics record snapshots the stages, since the
-        // transcript the answer carries takes the original.
-        let diag_stages = stages.clone();
-        let answer = if let Some(error) = failure {
-            Err(error)
+        // The diagnostics record's copy of the stages is taken beside
+        // the answer rather than before it: the cleanup pass sets
+        // `Stages::normalize` on the way, so a clone made first would
+        // report `normalizer_ran` false for a take that ran it.
+        let (diag_stages, answer) = if let Some(error) = failure {
+            (stages.clone(), Err(error))
         } else {
             let (asr, text) = finalize_transcript(&asr_parts, |raw| match &job.normalize {
                 // A normalizer that fails mid-session must not cost the
@@ -1105,7 +1106,8 @@ fn worker(
             // error or a cancel discards the stages, and taking the
             // load cost there would lose it for the process.
             first = false;
-            Ok(Outcome::Transcript(Transcript { text, asr, stages, truncated }))
+            let transcript = Transcript { text, asr, stages, truncated };
+            (transcript.stages.clone(), Ok(Outcome::Transcript(transcript)))
         };
         let diag = diagnostic_outcome(&answer);
         in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
@@ -2533,6 +2535,49 @@ mod tests_real_recognition {
             "the capture is stored at the model rate"
         );
         assert_eq!(reader.samples::<i16>().count(), pcm.len(), "the whole capture is stored");
+    }
+
+    /// The direct path's record is built AFTER the cleanup pass:
+    /// `Stages::normalize` is set by the pass itself, so a snapshot taken
+    /// before it reports `normalizer_ran` false on a take that was
+    /// cleaned.
+    #[test]
+    #[ignore = "needs both models; run with --run-ignored all after `--example fetch`"]
+    fn a_direct_take_records_the_cleanup_pass_it_ran() {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
+        let (pcm, rate) = read_wav(&clip);
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().language("en").diagnostics_dir(dir.path()).build();
+        let engine = Engine::new(cfg).expect("engine must start");
+        let outcome = engine
+            .transcribe(Samples::new(pcm, rate, 1))
+            .expect("queued")
+            .recv()
+            .expect("recognition must succeed");
+        let Outcome::Transcript(transcript) = outcome else {
+            panic!("a spoken take must not read as silence: {outcome:?}");
+        };
+        assert!(
+            transcript.stages.normalize.is_some(),
+            "the default config runs cleanup, or this test pins nothing"
+        );
+        // The write lands after the reply, on the worker the engine drop
+        // joins.
+        drop(engine);
+
+        let take = std::fs::read_dir(dir.path())
+            .expect("store dir")
+            .flatten()
+            .next()
+            .expect("the take wrote its record")
+            .path();
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(take.join("meta.json")).unwrap())
+                .expect("meta.json parses");
+        assert_eq!(
+            meta["normalizer_ran"], true,
+            "the record carries the pass that ran, not a pre-pass snapshot"
+        );
     }
 
     /// The `Config` -> `Engine` settings leg, which is a DIFFERENT path
