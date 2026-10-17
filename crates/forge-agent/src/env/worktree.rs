@@ -270,17 +270,28 @@ pub enum WorktreeEnsure {
 /// a fresh `--worktree <label>` would use, which cuts from
 /// `origin/<default-branch>`; local HEAD is that base only with
 /// `baseRef` set to `head`, or with no local `origin/<default>` ref and
-/// a fetch that fails. An
-/// existing `path` is a no-op; an out-of-band `rm -rf` defeats this
-/// (git's stale registration makes `worktree add` fail with git's
-/// message, surfaced here).
+/// a fetch that fails.
+///
+/// A `path` that exists is judged by its REGISTRATION, not its presence:
+/// a worktree git still lists is reused as it stands, while a leftover
+/// directory git no longer tracks - a despawn's removal failed part-way,
+/// and git deregisters a path before it walks the tree - is cleared
+/// deliberately before the add below, because `worktree add` refuses a
+/// path that exists and a resume that died on git's refusal surfaced as
+/// the transport's message rather than git's (#1767). The dirty check
+/// that admitted the removal already ruled out authored work in it. An
+/// out-of-band `rm -rf` still defeats this (git's stale registration
+/// makes `worktree add` fail with git's message, surfaced here).
 pub fn ensure_worker_worktree(
     repo: &Path,
     label: &str,
     path: &Path,
 ) -> Result<WorktreeEnsure, WorktreeError> {
     if path.exists() {
-        return Ok(WorktreeEnsure::AlreadyPresent);
+        if worktree_registered(repo, path) {
+            return Ok(WorktreeEnsure::AlreadyPresent);
+        }
+        remove_orphaned_worktree_dir(repo, path)?;
     }
     let branch = format!("worktree-{label}");
     let mut cmd = git_command::command("git");
@@ -1673,6 +1684,16 @@ mod tests {
         run_git(repo, &["worktree", "remove", "--force", wt.to_str().expect("utf8 path")]);
     }
 
+    /// The shape a despawn's failed removal leaves: the directory survives
+    /// with no registration at all, because git deregisters a worktree
+    /// before it walks the tree. `git worktree remove` cannot reach this
+    /// state itself (it deletes the directory too), so the registration's
+    /// admin dir is what the fixture drops.
+    fn deregister_worktree(repo: &Path, name: &str) {
+        fs::remove_dir_all(repo.join(".git").join("worktrees").join(name))
+            .expect("drop the registration");
+    }
+
     #[test]
     fn reaps_a_pristine_worker_branch() {
         let (dir, wt, branch) = init_repo_with_worker_worktree("lbl");
@@ -1826,6 +1847,55 @@ mod tests {
         assert!(wt.exists(), "the worktree exists again");
         assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
         assert!(wt.join("work.txt").exists(), "reattaching the branch restores its content");
+    }
+
+    /// The incident (#1767): a despawn's removal failed part-way, leaving
+    /// the directory with NO registration - a late write into the dir
+    /// makes `git worktree remove` fail after git has already deregistered
+    /// the path - and `ensure` then answered `AlreadyPresent` over it, so
+    /// the resumed child ran `--worktree` and git refused the occupied
+    /// path before the initialize handshake. The leftover must be cleared
+    /// deliberately and the worktree recreated.
+    #[test]
+    fn ensure_worker_worktree_clears_a_leftover_dir_git_no_longer_tracks() {
+        let (dir, wt, branch) = init_repo_with_worker_worktree("lbl");
+        deregister_worktree(dir.path(), "lbl");
+        fs::write(wt.join("late-write.txt"), "wrote while dying").expect("late write");
+        assert!(wt.exists(), "fixture precondition: the directory is still there");
+        assert!(
+            !worktree_registered(dir.path(), &wt),
+            "fixture precondition: git no longer lists the path",
+        );
+
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("the leftover clears");
+
+        assert_eq!(
+            outcome,
+            WorktreeEnsure::AttachedExistingBranch,
+            "the branch predates the call and may hold real work, so it is reused",
+        );
+        assert!(wt.exists(), "the worktree stands again");
+        assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
+        assert!(!wt.join("late-write.txt").exists(), "the leftover's death-throes write is gone");
+    }
+
+    /// A path that is not a plain directory cannot be cleared as a
+    /// leftover, and answering `AlreadyPresent` over it is what let the
+    /// resumed child die behind the transport's message. The refusal names
+    /// the path instead of pretending the worktree is there.
+    #[test]
+    fn ensure_worker_worktree_refuses_a_leftover_that_is_not_a_directory() {
+        let dir = init_repo_with_commit();
+        let wt = dir.path().join(".claude").join("worktrees").join("lbl");
+        fs::create_dir_all(wt.parent().expect("worktrees dir")).expect("mkdir worktrees");
+        fs::write(&wt, "a file where the worktree goes").expect("write a file at the path");
+
+        let err = ensure_worker_worktree(dir.path(), "lbl", &wt).expect_err("a file is refused");
+
+        assert!(
+            matches!(err, WorktreeError::NotAPlainDirectory(ref at) if at.ends_with("lbl")),
+            "the refusal names the occupied path: {err:?}",
+        );
     }
 
     /// The despawn-reaped-branch shape: nothing on the branch was
