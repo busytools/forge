@@ -14,13 +14,16 @@ use crate::mcp::peers::types::{PeerFailureReason, WrappedPrompt};
 #[derive(Default)]
 pub(crate) struct ParkedForSlot {
     pub peer: Vec<ParkedPeer>,
+    /// Prompts held because the slot's session was mid-turn when they
+    /// arrived, drained at that turn's end rather than at a connect.
+    pub turn_held: Vec<ParkedPeer>,
     pub cron: Vec<crate::crons::PendingCron>,
     pub gotify: Vec<GotifyNotification>,
     pub slack: Vec<forge_primitives::slack::SlackMessage>,
 }
 
-/// One peer message waiting for its slot to connect, with the seat that
-/// sent it.
+/// One peer message waiting for its slot to connect, or held for its
+/// turn to end, with the seat that sent it.
 ///
 /// The sender rides here for the DELIVERY ACK alone: if the spawn this
 /// waited on fails, the bucket is dropped and the sender is told. It is
@@ -84,13 +87,56 @@ impl crate::Workspace {
         self.parked_by_slot.lock().entry(slot.clone()).or_default().slack.extend(messages);
     }
 
+    /// Hold a peer prompt for `slot` until the turn it arrived under ends,
+    /// when the seat is idle again and the prompt can start a turn of its
+    /// own - unless the turn has already ended, in which case the prompt
+    /// comes back for delivery now.
+    ///
+    /// `turn_running` is read while the bucket's own lock is held, and the
+    /// turn-end drain ends the turn's markers before it takes the bucket:
+    /// the take's lock is what orders the two, so a delivery is either
+    /// enqueued before a drain (and delivered by it) or reads the ended turn
+    /// after that drain's take (and is delivered by its caller) - never left
+    /// behind a drain that already passed.
+    pub(crate) fn hold_peer_prompt_unless_turn_ended(
+        &self,
+        slot: &SessionSlot,
+        sender: &SessionSlot,
+        wrapped: WrappedPrompt,
+        turn_running: impl FnOnce() -> bool,
+    ) -> Option<WrappedPrompt> {
+        let mut map = self.parked_by_slot.lock();
+        if !turn_running() {
+            return Some(wrapped);
+        }
+        map.entry(slot.clone())
+            .or_default()
+            .turn_held
+            .push(ParkedPeer { sender: sender.clone(), wrapped });
+        None
+    }
+
+    /// Take (and clear) the prompts held for `slot`'s running turn, in
+    /// the order they arrived.
+    pub(crate) fn take_turn_held_for_slot(&self, slot: &SessionSlot) -> Vec<ParkedPeer> {
+        let mut map = self.parked_by_slot.lock();
+        let Some(bucket) = map.get_mut(slot) else { return Vec::new() };
+        std::mem::take(&mut bucket.turn_held)
+    }
+
     /// Take (and clear) everything parked for the connecting session's
     /// slot. The caller passes the triple it was spawned with, rather
     /// than resolving one from its cwd: a cwd under no configured
     /// project would resolve to nothing and leave the payloads parked
     /// forever, silently.
+    ///
+    /// A prompt held for a turn end rides the peer list: the slot that
+    /// connected is a different, idle session, and dropping the hold with
+    /// the bucket would lose it silently.
     pub(crate) fn take_parked_for_slot(&self, slot: &SessionSlot) -> ParkedForSlot {
-        self.parked_by_slot.lock().remove(slot).unwrap_or_default()
+        let mut taken = self.parked_by_slot.lock().remove(slot).unwrap_or_default();
+        taken.peer.append(&mut taken.turn_held);
+        taken
     }
 
     /// Drop everything parked for `slot`, acknowledging each peer message
@@ -104,7 +150,7 @@ impl crate::Workspace {
         reason: PeerFailureReason,
     ) {
         let Some(parked) = self.parked_by_slot.lock().remove(slot) else { return };
-        for entry in parked.peer {
+        for entry in parked.peer.into_iter().chain(parked.turn_held) {
             self.notice_undelivered_message(&entry.sender, slot, reason);
         }
         for notification in parked.gotify {
@@ -244,6 +290,43 @@ mod tests {
         assert!(
             ws.take_parked_for_slot(&slot(None)).peer.is_empty(),
             "TestOrg's slot does not take OtherOrg's bucket",
+        );
+    }
+
+    /// A prompt held for a turn end that never comes - the session died
+    /// first - is told to its sender rather than dropped with the bucket.
+    /// The hold is a wait, not a promise: only the turn ending delivers it.
+    #[test]
+    fn expiring_a_slot_acknowledges_its_turn_held_prompts_to_the_sender() {
+        let (ws, mut rx) = crate::Workspace::testing_stub();
+        let target = slot(Some("planner"));
+        let id = MessageId::mint();
+        ws.hold_peer_prompt_unless_turn_ended(
+            &target,
+            &sender(),
+            wrapped(&id, "while you work"),
+            || true,
+        );
+
+        // Nothing else is parked for this slot, so the notice below can only
+        // have come from the held entry.
+        ws.expire_parked_for_slot(&target, PeerFailureReason::TargetConnectionFailed);
+
+        let mut echo = None;
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
+                echo = Some((key, wrapped));
+            }
+        }
+        let (key, notice) = echo.expect("the notice is painted for the sender");
+        assert_eq!(key, sender(), "the notice lands on the sender, not the target");
+        assert!(
+            matches!(notice.kind, WrappedKind::DeliveryFailureNotice),
+            "the held prompt's sender hears it never landed: {notice:?}",
+        );
+        assert!(
+            ws.take_turn_held_for_slot(&target).is_empty(),
+            "and the hold is gone with the bucket",
         );
     }
 

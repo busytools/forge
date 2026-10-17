@@ -33,8 +33,10 @@ use crate::options::{Options, WireTee};
 /// Default upper bound on `close()` wait-for-exit. After this elapses,
 /// the child is SIGKILL'd. 5s is generous for a CLI that's draining
 /// in-flight turns; tests that want to verify the kill path drive
-/// against a process that ignores stdin EOF.
-const CLOSE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// against a process that ignores stdin EOF. Public so a consumer
+/// timing a wait over a session's teardown can derive it from this
+/// budget rather than guess.
+pub const CLOSE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Name what actually failed. A spawn that cannot find the program and
 /// one that cannot enter `current_dir` both surface as `ENOENT`, so the

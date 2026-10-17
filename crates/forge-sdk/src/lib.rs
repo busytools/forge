@@ -70,6 +70,7 @@ pub use hooks::{
 pub use options::{Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind};
 pub use paths::{app_support_dir, config_dir_hash, projects_dir_for};
 pub use permissions::CanUseToolCallback;
+pub use transport::process::CLOSE_WAIT_TIMEOUT;
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;

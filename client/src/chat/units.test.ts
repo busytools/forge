@@ -1955,6 +1955,27 @@ describe('one turn folded into the units a view draws', () => {
     ]);
   });
 
+  it('states the size a read turn measured for an attachment', () => {
+    // A turn read off the transcript carries no payload - the page draws no
+    // bytes - and the read path records the size it measured instead, under
+    // forge's own name. The row a read turn draws states the size the live
+    // one does.
+    const read = fold([
+      heard([
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png' },
+          forge_bytes: 180207,
+        },
+      ]),
+    ]);
+
+    expect(
+      read[0]?.kind === 'user' ? read[0].files : [],
+      'the row states the size the read path measured for it',
+    ).toEqual([{ kind: 'image', mime: 'image/png', bytes: 180207 }]);
+  });
+
   it('draws what a user turn attached', () => {
     // The live capture's own frame (user_message_blocks.jsonl, the scenario
     // that sends a one-pixel PNG with its words): a user turn's attachment has

@@ -41,6 +41,12 @@ pub use agent::{Agent, AgentError, AgentHandle};
 pub use client::{AgentEvent, SessionLaunchSettings};
 pub use forge_primitives::permission::PermissionMode;
 
+/// Point every session spawn this process makes at a mock binary, so a
+/// cross-crate fixture can drive the real spawn path against a child it
+/// controls; `None` restores the real one. Process-wide - see its own doc.
+#[cfg(any(test, feature = "testing"))]
+pub use forge_sdk_worker::set_test_sdk_binary;
+
 /// The messages a session's transcript holds and the compactions it
 /// records. The same read the spawn performs, available for a session that
 /// is already running.
