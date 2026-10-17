@@ -380,6 +380,11 @@ pub struct SessionWire {
     /// itself.
     pub file_index: Arc<FileIndex>,
     pub reviews: ReviewsWire,
+    /// The seat-tree review half, beside the branch's: the files page's
+    /// comments, each thread placed against the seat's working files. Same
+    /// wire shape as `reviews` so a page parses one thing; the scope is
+    /// the seat, not a branch, which is what the files page keys to.
+    pub tree_reviews: ReviewsWire,
     /// The working tree behind the git section: the branch, how much has
     /// changed, and the gate. The changed files themselves ride `diff`
     /// below.
@@ -675,6 +680,24 @@ fn resolution_wire(
             // place.
             moved_from: if trusted { moved_from } else { None },
         },
+        AnchorPlacement::Outdated(reason) => ThreadResolutionWire::Outdated {
+            reason: match reason {
+                OutdatedReason::Gone => OutdatedReasonWire::Gone,
+                OutdatedReason::Ambiguous { matches } => OutdatedReasonWire::Ambiguous { matches },
+            },
+        },
+    }
+}
+
+/// [`resolution_wire`]'s twin for the seat tree: the placement the surface
+/// already resolved against the seat's own working file crosses as-is -
+/// the numbering is the anchor's home, so `moved_from` is always named
+/// when there is one.
+fn placement_wire(placement: AnchorPlacement) -> ThreadResolutionWire {
+    match placement {
+        AnchorPlacement::Placed { line, moved_from } => {
+            ThreadResolutionWire::Placed { line, moved_from }
+        }
         AnchorPlacement::Outdated(reason) => ThreadResolutionWire::Outdated {
             reason: match reason {
                 OutdatedReason::Gone => OutdatedReasonWire::Gone,
@@ -1481,6 +1504,30 @@ async fn session(
     let diff = scan_content(&held.cwd, &held.diff).await;
     let branch = work.branch.clone().unwrap_or_default();
     let reviews = surface.reviews(slot.project(), &branch);
+    // The seat's tree half, placed against the working files: the reads
+    // are files off disk, so they run off the reactor like the walk below.
+    // Zero tree threads means zero reads. A panicked read answers Err, so
+    // the page draws the failure as itself rather than as an empty review.
+    let tree_reviews = {
+        let surface = std::sync::Arc::clone(&state.surface);
+        let seat = slot.clone();
+        tokio::task::spawn_blocking(move || surface.tree_reviews(&seat)).await.unwrap_or_else(
+            |error| {
+                tracing::warn!(
+                    event_name = "tree_reviews_read_failed",
+                    %error,
+                    slot = %slot.display(),
+                    "the seat-tree review read did not finish; the record answers the failure",
+                );
+                let why = "the seat tree's reviews could not be read".to_owned();
+                crate::surface::reviews::TreeReviewsView {
+                    scope: forge_primitives::review::tree_scope_ref(slot),
+                    threads: Err(why.clone()),
+                    reviews: Err(why),
+                }
+            },
+        )
+    };
     let state_at = surface.session(slot, cwd);
     // The seat's own loop walks the index and pushes the movement, so this
     // answers that store - and a seat nothing has walked yet is walked here,
@@ -1539,6 +1586,18 @@ async fn session(
                 reviewed_threads(threads, &diff, held.diff.default_branch.as_deref())
             })),
             reviews: ReadWire::from(reviews.reviews),
+        },
+        tree_reviews: ReviewsWire {
+            threads: ReadWire::from(tree_reviews.threads.map(|threads| {
+                threads
+                    .into_iter()
+                    .map(|held| ReviewedThreadWire {
+                        thread: held.thread,
+                        resolution: held.placement.map(placement_wire),
+                    })
+                    .collect()
+            })),
+            reviews: ReadWire::from(tree_reviews.reviews),
         },
         state: SessionStateWire {
             slot: state_at.slot,
