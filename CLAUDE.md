@@ -717,7 +717,14 @@ inspected.
     `cargo check --target aarch64-linux-android` with warnings
     denied, the thing that catches desktop-only code going dead on
     Android) - so one command decides both stacks and its
-    verdict line names the first failing step. **The shell under
+    verdict line names the first failing step. **A step change here owes
+    a falsifier sweep.** Nothing derives these lists from the justfile,
+    so grep `reach it`, `reaches it through` and the new step's name
+    over the book's `install.md`, `contributing.md` and
+    `architecture.md`, plus `CONTRIBUTING.md`, this file,
+    `client/README.md` and `ci.yml`'s client-job comment - each carries
+    the step list and the CI-reach claim - and keep every list in the
+    real recipe order. **The shell under
     `client/src-tauri/` is its own workspace root**, so the workspace's
     cargo steps never reach it; CI compiles it in the `client-tauri` job
     (its clippy and tests), and the `cargo fmt --check` job's second
