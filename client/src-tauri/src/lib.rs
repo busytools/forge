@@ -465,9 +465,8 @@ pub fn run() {
                 // boot brings no browser up, and `boot_browser` is what the
                 // pin drives, so a launch moved back in here is the closure's
                 // own diff rather than a silent regression.
-                let host = browser::BrowserHost::boot_browser(browser::StackPaths::resolve(
-                    app.handle(),
-                ));
+                let host =
+                    browser::BrowserHost::boot_browser(browser::StackPaths::resolve(app.handle()));
                 app.manage(host);
             }
             // The bridge, over whatever host this target has: the desktop's

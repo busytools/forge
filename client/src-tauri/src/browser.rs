@@ -1886,10 +1886,7 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        assert!(
-            chromium::verified(&watched).await.is_none(),
-            "and no browser answers for it",
-        );
+        assert!(chromium::verified(&watched).await.is_none(), "and no browser answers for it",);
     }
 
     /// **A name that cannot be a profile is refused before any directory is
