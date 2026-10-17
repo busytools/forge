@@ -156,6 +156,100 @@
     return () => removeEventListener('keydown', onkey);
   });
 
+  /**
+   * The tree's keyboard (Ved, 2026-10-17): the arrows walk the rows WITHOUT
+   * a prior focus - pressing one from anywhere on the page marks the row it
+   * lands on (the tree's own mark, never the browser's ring) and moving
+   * onto a file opens it. Home and End go to the ends, left and right fold
+   * a directory, Enter opens or folds. The code pane and any text box keep
+   * their own arrows.
+   */
+  let keyRow = $state<string | null>(null);
+
+  $effect(() => {
+    const typingSomewhere = (target: EventTarget | null): boolean =>
+      target instanceof HTMLElement &&
+      (target.closest('.cm-editor') !== null ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target.isContentEditable);
+    const land = (row: TreeRow<unknown> | undefined): void => {
+      if (row === undefined) return;
+      keyRow = row.path;
+      if (row.kind === 'file') open = row.path;
+    };
+    const step = (delta: number): void => {
+      const paths = tree.map((row) => row.path);
+      if (paths.length === 0) return;
+      const from = keyRow === null ? paths.indexOf(open ?? '') : paths.indexOf(keyRow);
+      const at = Math.min(Math.max((from === -1 ? -1 : from) + delta, 0), paths.length - 1);
+      land(tree[at]);
+    };
+    const onkey = (event: KeyboardEvent): void => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (typingSomewhere(event.target)) return;
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          step(1);
+          break;
+        case 'ArrowUp':
+          event.preventDefault();
+          step(-1);
+          break;
+        case 'Home':
+          event.preventDefault();
+          land(tree[0]);
+          break;
+        case 'End':
+          event.preventDefault();
+          land(tree.at(-1));
+          break;
+        case 'ArrowLeft':
+        case 'ArrowRight': {
+          const row = tree.find((held) => held.path === keyRow);
+          if (row?.kind !== 'dir') return;
+          event.preventDefault();
+          const isClosed = closed.has(row.path);
+          if (
+            (event.key === 'ArrowRight' && isClosed) ||
+            (event.key === 'ArrowLeft' && !isClosed)
+          ) {
+            toggleClosed(closed, row.path);
+          }
+          break;
+        }
+        case 'Enter': {
+          const row = tree.find((held) => held.path === keyRow);
+          if (row === undefined) return;
+          event.preventDefault();
+          if (row.kind === 'dir') toggleClosed(closed, row.path);
+          else open = row.path;
+          break;
+        }
+        default:
+          break;
+      }
+    };
+    addEventListener('keydown', onkey);
+    return () => removeEventListener('keydown', onkey);
+  });
+
+  // A row the Tab key lands on becomes the keyboard's row, so the mark
+  // follows real focus too.
+  $effect(() => {
+    const onfocus = (event: FocusEvent): void => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const row = target.closest('button.rv-dir, button.rv-frow');
+      if (row instanceof HTMLElement && row.dataset.path !== undefined) {
+        keyRow = row.dataset.path;
+      }
+    };
+    addEventListener('focusin', onfocus);
+    return () => removeEventListener('focusin', onfocus);
+  });
+
   // Escape closes the open comment box, as its own hint says - and takes
   // the reader's target marks with it - and it closes an open reply the
   // same way.
@@ -446,6 +540,7 @@
             count={entries.length}
             {closed}
             here={open}
+            active={keyRow}
             ondir={(path) => toggleClosed(closed, path)}
             onfile={(path) => (open = path)}
           >
