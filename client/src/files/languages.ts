@@ -17,7 +17,7 @@ export interface Language {
   cm: boolean;
 }
 
-const LANGS: Record<string, Language> = {
+export const LANGS: Record<string, Language> = {
   rs: { shiki: 'rust', cm: true },
   ts: { shiki: 'typescript', cm: true },
   mts: { shiki: 'typescript', cm: true },

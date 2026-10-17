@@ -97,13 +97,19 @@ pub fn read(
     Ok(DocumentRead { path: resolved, kind, bytes, reviewable: can_review, content_hash })
 }
 
-/// The extensions whose files read as reviewable text: the ones the
-/// client's files page colours, mirrored by `client/src/chat/code.ts`'s
-/// `NAMED` table - the two lists are one set named twice, so a language
-/// added there is added here in the same change.
+/// The extensions whose files read as reviewable text: **one set named
+/// twice** with `client/src/files/languages.ts`'s `LANGS` table, which is
+/// the reader's own list - the table the files page actually colours by,
+/// not the chat's `NAMED`. The two cannot share a constant across the wire,
+/// so each side pins its own list against a literal of the other's in a
+/// test; a language added on one side is added here in the same change (the
+/// lead's gate, 2026-10-17: the comment named `chat/code.ts`, which itself
+/// lacked `svelte` and `kt` this list already carried, and eight client
+/// extensions opened to a refusal).
 const TEXT_EXTENSIONS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "svelte", "py", "go", "json", "toml", "yaml", "yml",
-    "sh", "bash", "zsh", "css", "html", "xml", "sql", "kt", "md", "txt",
+    "rs", "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "svelte", "py", "go", "json",
+    "toml", "yaml", "yml", "sh", "bash", "zsh", "css", "html", "htm", "xml", "svg", "sql", "kt",
+    "kts", "md", "markdown", "ini", "txt",
 ];
 
 /// Whether a kind can carry a review at all: markdown, text and the code
@@ -188,6 +194,30 @@ mod tests {
 
     /// 1 MiB, so the over-ceiling case is small rather than a 10 MiB fixture.
     const CEILING: u64 = 1024 * 1024;
+
+    /// **The two language lists are one set named twice.** This literal is
+    /// the CLIENT's table, `client/src/files/languages.ts`'s `LANGS`, copied
+    /// by hand because a constant cannot cross the wire - so a language
+    /// added there is added to `TEXT_EXTENSIONS` in the same change, and the
+    /// client's own test pins the same set from its side (the lead's gate,
+    /// 2026-10-17: these eight - mts, cts, cjs, htm, svg, markdown, ini,
+    /// kts - opened to a refusal because nothing compared the two).
+    const CLIENT_LANGS: &[&str] = &[
+        "rs", "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "svelte", "py", "go", "json",
+        "yaml", "yml", "css", "html", "htm", "xml", "svg", "sql", "md", "markdown", "toml", "ini",
+        "sh", "bash", "zsh", "kt", "kts", "txt",
+    ];
+
+    /// Every extension the reader colours is reviewable, and nothing more:
+    /// both directions, so neither a hole nor a kind the client cannot draw.
+    #[test]
+    fn the_reviewable_extensions_are_the_clients_language_table() {
+        let mut ours = super::TEXT_EXTENSIONS.to_vec();
+        ours.sort_unstable();
+        let mut theirs = CLIENT_LANGS.to_vec();
+        theirs.sort_unstable();
+        assert_eq!(ours, theirs, "TEXT_EXTENSIONS and the client's LANGS are one set named twice");
+    }
 
     fn fixture() -> TempDir {
         tempfile::tempdir().expect("a tempdir")
