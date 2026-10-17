@@ -8,8 +8,11 @@
 //! The cadences are the settled two: five minutes for a state burning a
 //! resource (a drifting worker, a row at 1.5x its estimate), thirty for
 //! one parked and stuck (a dead row, a stalled queue, a stuck wait, a
-//! retro or a close owed). Every naming is deduped durably by the chase
-//! log, so a restart re-reads it rather than re-firing.
+//! retro or a close owed). **The chase log is the whole slate**: every
+//! naming is deduped by it, so a restart re-reads it rather than
+//! re-firing, and a state that clears has its naming forgotten - off the
+//! log, where a fresh process reads - so a recurrence is named at once,
+//! whatever happened in between.
 //!
 //! Delivery degrades, never wakes: a live owner is asked; with a dead
 //! owner the lead is; with every seat asleep the mark alone stands. A
@@ -69,60 +72,6 @@ pub struct Crossing {
     /// lead for everything else. The ladder falls back to the lead.
     pub seat: Option<SessionSlot>,
     pub text: String,
-}
-
-/// In-memory dedup for the rung with no row to stamp: a worker holding
-/// nothing is named when it drifts, again only at the rung's cadence
-/// while it keeps drifting, and at once after it accounts and drifts
-/// again. The log holds the naming, so a fresh process re-reads the
-/// slate rather than re-firing inside the cadence.
-#[derive(Default)]
-pub struct ChaseMemory {
-    /// Per (project, worker): when the sweep last named it - `None` once
-    /// it accounted, which is what resets the slate.
-    named: std::collections::HashMap<(String, String), Option<SystemTime>>,
-}
-
-impl ChaseMemory {
-    /// The drifted workers due a naming, and the bookkeeping that makes
-    /// this naming the once for the occurrence.
-    fn take_new(
-        &mut self,
-        project: &str,
-        unaccounted: &[String],
-        fired: &[TaskChase],
-        now: SystemTime,
-    ) -> Vec<String> {
-        // A worker that accounted resets its slate; anything still
-        // drifted keeps its naming. Only this project's entries are in
-        // reach: one sweep walks every project through this memory, so
-        // clearing another's here would make its workers fresh on every
-        // pass.
-        for ((entry_project, label), named) in &mut self.named {
-            if entry_project == project && !unaccounted.contains(label) {
-                *named = None;
-            }
-        }
-        let mut fresh = Vec::new();
-        for label in unaccounted {
-            let entry = (project.to_owned(), label.clone());
-            // A cleared slate is this process's knowledge and outranks
-            // the log; one the process never held is seeded from the log,
-            // so a restart inside the cadence stays quiet.
-            let last = match self.named.get(&entry) {
-                Some(slot) => *slot,
-                None => durable_last_named(fired, label),
-            };
-            let cadence_elapsed = last.is_none_or(|at| since_secs(at, now) >= CADENCE_BURNING_SECS);
-            if cadence_elapsed {
-                self.named.insert(entry, Some(now));
-                fresh.push(label.clone());
-            } else {
-                self.named.insert(entry, last);
-            }
-        }
-        fresh
-    }
 }
 
 /// The log's most recent naming of `label` by the seat-level rung.
@@ -222,13 +171,11 @@ fn fmt_secs(secs: u64) -> String {
 
 /// The crossings one project's board implies, given what already fired.
 pub(crate) fn crossings(
-    project: &str,
     lead: &SessionSlot,
     rows: &[BoardRow],
     history: &[TaskTransition],
     unaccounted: &[String],
     fired: &[TaskChase],
-    memory: &mut ChaseMemory,
     now: SystemTime,
 ) -> Vec<Crossing> {
     let mut out = Vec::new();
@@ -427,14 +374,23 @@ pub(crate) fn crossings(
         });
     }
 
-    for label in memory.take_new(project, unaccounted, fired, now) {
-        out.push(Crossing {
-            rung: ChaseRung::Unaccounted,
-            task_id: None,
-            subject: Some(label.clone()),
-            seat: Some(lead.clone()),
-            text: format!("task board: worker {label} holds no row - feed it or despawn it."),
-        });
+    for label in unaccounted {
+        // **The log is the whole slate**, this rung's included: the newest
+        // naming for the worker, and the cadence is what a repeat waits. A
+        // worker whose state cleared had its naming forgotten - the sweep
+        // does that, durably - so its next drift is named at once, across a
+        // restart too.
+        if durable_last_named(fired, label)
+            .is_none_or(|at| since_secs(at, now) >= CADENCE_BURNING_SECS)
+        {
+            out.push(Crossing {
+                rung: ChaseRung::Unaccounted,
+                task_id: None,
+                subject: Some(label.clone()),
+                seat: Some(lead.clone()),
+                text: format!("task board: worker {label} holds no row - feed it or despawn it."),
+            });
+        }
     }
     out
 }
@@ -526,15 +482,34 @@ impl Workspace {
         }
     }
 
+    /// Forget one worker's naming: its slate cleared, so the record goes
+    /// with the state and the next drift is named at once.
+    fn forget_drift(&self, project: &str, label: &str) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(error) = crate::store::task_chases::forget(
+            db,
+            project,
+            ChaseRung::Unaccounted,
+            None,
+            Some(label),
+        ) {
+            tracing::error!(
+                target: "forge_workspace::chase",
+                event_name = "chase_slate_forget_failed",
+                %project,
+                %label,
+                %error,
+                "forgetting a cleared worker's naming failed; its next drift may wait out \
+                 the cadence",
+            );
+        }
+    }
+
     /// One pass of the chase over every project: derive the crossings,
     /// walk the ladder for each, deliver, and record what fired. Returns
     /// how many messages reached a session.
-    pub fn chase_sweep(
-        &self,
-        deliver: &dyn Deliver,
-        memory: &mut ChaseMemory,
-        now: SystemTime,
-    ) -> usize {
+    pub fn chase_sweep(&self, deliver: &dyn Deliver, now: SystemTime) -> usize {
         let mut delivered = 0;
         for view in self.list_projects() {
             let project = view.name.clone();
@@ -543,8 +518,19 @@ impl Workspace {
             let history = self.history_for_project(&project);
             let unaccounted = self.unaccounted(&project);
             let fired = self.chases_for_project(&project);
-            let crossings =
-                crossings(&project, &lead, &rows, &history, &unaccounted, &fired, memory, now);
+            // A worker that accounted clears its slate here and not in some
+            // process's memory: the naming goes durably, so a recurrence
+            // after a restart is named at once rather than waiting out the
+            // cadence.
+            for chase in &fired {
+                if chase.rung == ChaseRung::Unaccounted
+                    && let Some(label) = chase.subject.as_deref()
+                    && !unaccounted.iter().any(|held| held == label)
+                {
+                    self.forget_drift(&project, label);
+                }
+            }
+            let crossings = crossings(&lead, &rows, &history, &unaccounted, &fired, now);
             for crossing in crossings {
                 let target = ladder(&crossing, &lead, |seat| self.seat_is_live(seat));
                 if let Some(target) = &target
@@ -581,7 +567,6 @@ impl Workspace {
                 let mut interval =
                     tokio::time::interval_at(tokio::time::Instant::now() + period, period);
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                let mut memory = ChaseMemory::default();
                 loop {
                     interval.tick().await;
                     let Some(workspace) = weak.upgrade() else {
@@ -589,7 +574,6 @@ impl Workspace {
                     };
                     let delivered = workspace.chase_sweep(
                         &PromptDeliver { workspace: Arc::clone(&workspace) },
-                        &mut memory,
                         SystemTime::now(),
                     );
                     if delivered > 0 {
@@ -712,13 +696,8 @@ mod tests {
         }
     }
 
-    fn sweep(
-        ws: &Arc<Workspace>,
-        deliver: &dyn Deliver,
-        memory: &mut ChaseMemory,
-        now: u64,
-    ) -> usize {
-        ws.chase_sweep(deliver, memory, epoch(now))
+    fn sweep(ws: &Arc<Workspace>, deliver: &dyn Deliver, now: u64) -> usize {
+        ws.chase_sweep(deliver, epoch(now))
     }
 
     /// A lead seat behind a live session, so lead-addressed rungs have
@@ -792,9 +771,8 @@ mod tests {
         worker_holding_no_row(&ws, PROJECT, "w-1");
         worker_holding_no_row(&ws, "other", "w-2");
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 2, "one nudge per project");
+        assert_eq!(sweep(&ws, &deliver, 100), 2, "one nudge per project");
         let seen = deliver.seen.lock();
         assert!(
             seen.iter().any(|(_, text)| text.contains("worker w-1 holds no row")),
@@ -806,7 +784,7 @@ mod tests {
         );
         drop(seen);
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 140), 0, "and neither repeats");
+        assert_eq!(sweep(&ws, &deliver, 140), 0, "and neither repeats");
         assert_eq!(deliver.seen.lock().len(), 2, "still exactly the two namings");
     }
 
@@ -821,10 +799,9 @@ mod tests {
         let _lead_rx = live_lead(&ws);
         worker_holding_no_row(&ws, PROJECT, "w-1");
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "the worker is named");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 140), 0, "the empty pass says nothing");
+        assert_eq!(sweep(&ws, &deliver, 100), 1, "the worker is named");
+        assert_eq!(sweep(&ws, &deliver, 140), 0, "the empty pass says nothing");
         assert_eq!(deliver.seen.lock().len(), 1, "and the naming stands");
     }
 
@@ -837,17 +814,18 @@ mod tests {
         let _lead_rx = live_lead(&ws);
         worker_holding_no_row(&ws, PROJECT, "w-1");
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "named on appearance");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 399), 0, "quiet inside the cadence");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 400), 1, "named again at it");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 500), 0, "quiet again");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 701), 1, "and again at the next one");
+        assert_eq!(sweep(&ws, &deliver, 100), 1, "named on appearance");
+        assert_eq!(sweep(&ws, &deliver, 399), 0, "quiet inside the cadence");
+        assert_eq!(sweep(&ws, &deliver, 400), 1, "named again at it");
+        assert_eq!(sweep(&ws, &deliver, 500), 0, "quiet again");
+        assert_eq!(sweep(&ws, &deliver, 701), 1, "and again at the next one");
     }
 
-    /// A worker that accounts resets its slate: its next drift is named
-    /// at once rather than at the old cadence.
+    /// A worker that accounts resets its slate, durably: the naming goes
+    /// off the log with the state, so a recurrence inside the old cadence
+    /// is named at once - after a restart included, since the log is the
+    /// only slate there is.
     #[test]
     fn a_cleared_unaccounted_worker_is_named_at_once_on_its_next_drift() {
         let dir = tempdir().expect("tempdir");
@@ -855,20 +833,26 @@ mod tests {
         let _lead_rx = live_lead(&ws);
         worker_holding_no_row(&ws, PROJECT, "w-1");
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "named on appearance");
-        // The worker despawns: the state cleared.
+        assert_eq!(sweep(&ws, &deliver, 100), 1, "named on appearance");
+        // The worker despawns: the state cleared, and the clearing pass
+        // takes its naming off the log rather than off a process's memory.
         ws.remove_latest_worker(&project_key(&ws, PROJECT), "w-1");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 150), 0, "nothing drifted");
+        assert_eq!(sweep(&ws, &deliver, 150), 0, "nothing drifted");
+        assert!(
+            !ws.chases_for_project(PROJECT)
+                .iter()
+                .any(|chase| chase.rung == ChaseRung::Unaccounted),
+            "the cleared worker's naming is gone from the log",
+        );
         // It drifts again, inside the old cadence.
         worker_holding_no_row(&ws, PROJECT, "w-1");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 200), 1, "the clear reset the slate");
+        assert_eq!(sweep(&ws, &deliver, 200), 1, "the clear reset the slate");
     }
 
-    /// The naming is durable: a restart inside the cadence does not name
-    /// the worker again, and the cadence still runs off the logged
-    /// naming.
+    /// The naming is durable: it lives on the log alone, so any pass - a
+    /// fresh process's first included - reads it rather than re-firing
+    /// inside the cadence.
     #[test]
     fn a_restart_inside_the_cadence_does_not_rename_the_worker() {
         let dir = tempdir().expect("tempdir");
@@ -876,17 +860,15 @@ mod tests {
         let _lead_rx = live_lead(&ws);
         worker_holding_no_row(&ws, PROJECT, "w-1");
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "named");
-        // The process restarts: a fresh memory, the log standing.
-        let mut memory = ChaseMemory::default();
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 200), 0, "the restart does not re-name it");
-        assert_eq!(
-            sweep(&ws, &deliver, &mut memory, 401),
-            1,
-            "the cadence runs off the logged naming",
+        assert_eq!(sweep(&ws, &deliver, 100), 1, "named");
+        assert!(
+            ws.chases_for_project(PROJECT).iter().any(|chase| chase.rung == ChaseRung::Unaccounted
+                && chase.subject.as_deref() == Some("w-1")),
+            "and the naming is on the log, where a fresh process would read it",
         );
+        assert_eq!(sweep(&ws, &deliver, 200), 0, "no pass re-names it inside the cadence");
+        assert_eq!(sweep(&ws, &deliver, 401), 1, "the cadence runs off the logged naming");
     }
 
     /// The 30-minute class on a rung with no floor: a stalled queue
@@ -900,11 +882,10 @@ mod tests {
         row.updated_at = epoch(0);
         ws.seed_test_task(row);
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, WINDOW + 1), 1, "stalled: named");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, WINDOW + 1001), 0, "quiet inside the cadence");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, WINDOW + 1801), 1, "named again at it");
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 1, "stalled: named");
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1001), 0, "quiet inside the cadence");
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1801), 1, "named again at it");
     }
 
     /// A failed row is named at the cadence while it stays failed, and a
@@ -920,15 +901,14 @@ mod tests {
         ws.seed_test_task(row);
         append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::Failed, 100);
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "the death is named");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 1000), 0, "quiet inside the cadence");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 1901), 1, "named again at it");
+        assert_eq!(sweep(&ws, &deliver, 100), 1, "the death is named");
+        assert_eq!(sweep(&ws, &deliver, 1000), 0, "quiet inside the cadence");
+        assert_eq!(sweep(&ws, &deliver, 1901), 1, "named again at it");
         // Re-dispatched and failed again: a new occurrence.
         append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 5000);
         append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Failed, 5000);
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 5010), 1, "the new failure is named at once");
+        assert_eq!(sweep(&ws, &deliver, 5010), 1, "the new failure is named at once");
     }
 
     /// The 1x overrun nudge is once per estimate: a restated estimate
@@ -940,11 +920,10 @@ mod tests {
         let _lead_rx = live_lead(&ws);
         running_over_estimate(&ws, "t-1", None);
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        sweep(&ws, &deliver, &mut memory, 200);
+        sweep(&ws, &deliver, 200);
         assert_eq!(says(&deliver, "has worked"), 1, "named once: {:?}", deliver.seen.lock());
-        sweep(&ws, &deliver, &mut memory, 400);
+        sweep(&ws, &deliver, 400);
         assert_eq!(says(&deliver, "has worked"), 1, "never twice for one estimate");
         // The owner restates the estimate; the row is still over it.
         ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
@@ -952,14 +931,14 @@ mod tests {
         })
         .expect("no refusal")
         .expect("the row is there");
-        sweep(&ws, &deliver, &mut memory, 500);
+        sweep(&ws, &deliver, 500);
         assert_eq!(
             says(&deliver, "has worked"),
             2,
             "the restated estimate is a new occurrence: {:?}",
             deliver.seen.lock(),
         );
-        sweep(&ws, &deliver, &mut memory, 700);
+        sweep(&ws, &deliver, 700);
         assert_eq!(says(&deliver, "has worked"), 2, "once per estimate, not per sweep");
     }
 
@@ -972,13 +951,12 @@ mod tests {
         let _lead_rx = live_lead(&ws);
         running_over_estimate(&ws, "t-1", None);
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        sweep(&ws, &deliver, &mut memory, 200);
+        sweep(&ws, &deliver, 200);
         assert_eq!(says(&deliver, "is at"), 1, "escalated once: {:?}", deliver.seen.lock());
-        sweep(&ws, &deliver, &mut memory, 400);
+        sweep(&ws, &deliver, 400);
         assert_eq!(says(&deliver, "is at"), 1, "quiet inside the cadence");
-        sweep(&ws, &deliver, &mut memory, 501);
+        sweep(&ws, &deliver, 501);
         assert_eq!(says(&deliver, "is at"), 2, "escalated again at it");
     }
 
@@ -1007,10 +985,9 @@ mod tests {
             waiting_on_user(&ws, id, 0, false);
         }
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
         let now = WINDOW + 1;
-        assert_eq!(sweep(&ws, &deliver, &mut memory, now), 1, "one message, not three");
+        assert_eq!(sweep(&ws, &deliver, now), 1, "one message, not three");
         let seen = deliver.seen.lock();
         let text = &seen[0].1;
         assert!(text.contains("3 rows are waiting on the user"), "{text}");
@@ -1020,8 +997,8 @@ mod tests {
         assert_eq!(seen[0].0, SessionSlot::lead("TestOrg", PROJECT), "it goes to the lead");
         drop(seen);
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, now + 1799), 0, "quiet inside the window");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, now + 1800), 1, "one more at the cadence");
+        assert_eq!(sweep(&ws, &deliver, now + 1799), 0, "quiet inside the window");
+        assert_eq!(sweep(&ws, &deliver, now + 1800), 1, "one more at the cadence");
     }
 
     /// The lead's touch takes exactly that row out of the digest; a
@@ -1034,10 +1011,9 @@ mod tests {
         waiting_on_user(&ws, "t-1", 0, false);
         waiting_on_user(&ws, "t-2", 0, true);
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
         let now = WINDOW + 1;
-        assert_eq!(sweep(&ws, &deliver, &mut memory, now), 1, "one digest");
+        assert_eq!(sweep(&ws, &deliver, now), 1, "one digest");
         let seen = deliver.seen.lock();
         assert!(seen[0].1.contains("2 rows are waiting on the user"), "{}", seen[0].1);
         assert!(seen[0].1.contains("\"subject t-2\""), "the park joins it: {}", seen[0].1);
@@ -1049,7 +1025,7 @@ mod tests {
         })
         .expect("no refusal")
         .expect("the row is there");
-        assert_eq!(sweep(&ws, &deliver, &mut memory, now + 1800), 1, "the digest repeats");
+        assert_eq!(sweep(&ws, &deliver, now + 1800), 1, "the digest repeats");
         let seen = deliver.seen.lock();
         let text = &seen.last().expect("a digest").1;
         assert!(text.contains("1 row is waiting on the user"), "{text}");
@@ -1065,9 +1041,8 @@ mod tests {
         let ws = fixture(dir.path());
         waiting_on_user(&ws, "t-1", 0, false);
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, WINDOW + 1), 0, "nothing delivered");
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 0, "nothing delivered");
         assert!(deliver.seen.lock().is_empty(), "no seat was reached");
         assert!(
             ws.chases_for_project(PROJECT)
@@ -1105,9 +1080,8 @@ mod tests {
         );
         running_over_estimate(&ws, "t-1", Some("w-1"));
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "one nudge");
+        assert_eq!(sweep(&ws, &deliver, 100), 1, "one nudge");
         let seen = deliver.seen.lock();
         assert_eq!(seen.len(), 1, "exactly one message: {seen:?}");
         assert_eq!(seen[0].0, SessionSlot::worker("TestOrg", PROJECT, "w-1"));
@@ -1119,7 +1093,7 @@ mod tests {
         );
         drop(seen);
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 140), 0, "the rung never repeats");
+        assert_eq!(sweep(&ws, &deliver, 140), 0, "the rung never repeats");
         assert_eq!(deliver.seen.lock().len(), 1, "and nothing more was said");
     }
 
@@ -1131,9 +1105,8 @@ mod tests {
         let _lead_rx = live_lead(&ws);
         running_over_estimate(&ws, "t-1", Some("gone"));
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        sweep(&ws, &deliver, &mut memory, 100);
+        sweep(&ws, &deliver, 100);
         let seen = deliver.seen.lock();
         assert!(
             seen.iter().any(|(seat, _)| seat == &SessionSlot::lead("TestOrg", PROJECT)),
@@ -1149,9 +1122,8 @@ mod tests {
         let ws = fixture(dir.path());
         running_over_estimate(&ws, "t-1", Some("gone"));
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 0, "nothing delivered");
+        assert_eq!(sweep(&ws, &deliver, 100), 0, "nothing delivered");
         assert!(deliver.seen.lock().is_empty(), "no seat was reached");
         assert!(
             !ws.chases_for_project(PROJECT).is_empty(),
@@ -1177,9 +1149,8 @@ mod tests {
         row.updated_at = epoch(0);
         ws.seed_test_task(row);
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        sweep(&ws, &deliver, &mut memory, WINDOW + 1);
+        sweep(&ws, &deliver, WINDOW + 1);
         let seen = deliver.seen.lock();
         assert!(
             !seen.iter().any(|(_, text)| text.contains("estimate")),
@@ -1236,9 +1207,8 @@ mod tests {
             .expect("history");
         }
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        sweep(&ws, &deliver, &mut memory, 100);
+        sweep(&ws, &deliver, 100);
         let seen = deliver.seen.lock();
         assert!(
             seen.iter().any(|(seat, text)| seat == &SessionSlot::worker("TestOrg", PROJECT, "w-1")
@@ -1247,7 +1217,7 @@ mod tests {
         );
         let before = seen.len();
         drop(seen);
-        sweep(&ws, &deliver, &mut memory, 130);
+        sweep(&ws, &deliver, 130);
         assert_eq!(deliver.seen.lock().len(), before, "and it never repeats");
     }
 
@@ -1261,14 +1231,13 @@ mod tests {
         row.updated_at = epoch(0);
         ws.seed_test_task(row);
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        sweep(&ws, &deliver, &mut memory, WINDOW + 1);
+        sweep(&ws, &deliver, WINDOW + 1);
         let seen = deliver.seen.lock();
         assert_eq!(seen.len(), 1, "one message: {seen:?}");
         assert!(seen[0].1.contains("queue is stalling"), "{}", seen[0].1);
         drop(seen);
-        sweep(&ws, &deliver, &mut memory, WINDOW + 10);
+        sweep(&ws, &deliver, WINDOW + 10);
         assert_eq!(deliver.seen.lock().len(), 1, "and never twice");
     }
 
@@ -1284,9 +1253,8 @@ mod tests {
         child.parent = Some(TaskId::from("epic"));
         ws.seed_test_task(child);
         let deliver = Recording::default();
-        let mut memory = ChaseMemory::default();
 
-        sweep(&ws, &deliver, &mut memory, 100);
+        sweep(&ws, &deliver, 100);
         let seen = deliver.seen.lock();
         assert!(
             seen.iter().any(|(_, text)| {
@@ -1314,7 +1282,7 @@ mod tests {
         )
         .expect("no refusal")
         .expect("the epic is there");
-        sweep(&ws, &deliver, &mut memory, 140);
+        sweep(&ws, &deliver, 140);
         let seen = deliver.seen.lock();
         assert!(
             seen.iter().any(|(_, text)| text.contains("close it when you agree")),
@@ -1322,7 +1290,7 @@ mod tests {
         );
         let before = seen.len();
         drop(seen);
-        sweep(&ws, &deliver, &mut memory, 180);
+        sweep(&ws, &deliver, 180);
         assert_eq!(deliver.seen.lock().len(), before, "neither rung repeats");
     }
 
