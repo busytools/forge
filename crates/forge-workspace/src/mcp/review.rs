@@ -21,7 +21,10 @@ use forge_sdk::mcp::server::McpServer;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
-use forge_primitives::review::{ReviewAuthor, ReviewSet, ReviewSide, ReviewStatus, ReviewThread};
+use forge_primitives::review::{
+    ReviewAuthor, ReviewSet, ReviewSide, ReviewStatus, ReviewThread, is_doc_scope, is_tree_scope,
+    tree_scope_ref,
+};
 
 use crate::SessionSlot;
 use crate::mcp::review::facade::{ReviewFacade, ReviewScope};
@@ -305,6 +308,34 @@ async fn scope_or_error(
     facade.resolve_scope(slot, scope).await.map_err(|err| tool_error(err.message()))
 }
 
+/// The caller's seat-tree scope, derived from its resolved branch scope:
+/// project, author label and caller carry over; the key is the seat's own
+/// tree (a worker's worktree, the lead's checkout), which is where the
+/// files page's reviews live. The tools consult it beside the branch on
+/// their default (no `scope` argument) path.
+fn seat_tree_scope(scope: &ReviewScope) -> ReviewScope {
+    ReviewScope {
+        project: scope.project.clone(),
+        branch: tree_scope_ref(&scope.caller),
+        author_label: scope.author_label.clone(),
+        caller: scope.caller.clone(),
+    }
+}
+
+/// Branch rows and seat-tree rows as one list, newest first. Review ids are
+/// uuids, so none collide across the two scopes; `number` is per-scope and
+/// CAN repeat, which is why the tree's rows come with the scope note
+/// beside them.
+fn merge_newest(
+    branch_rows: Vec<ReviewSummary>,
+    tree_rows: Vec<ReviewSummary>,
+) -> Vec<ReviewSummary> {
+    let mut rows = branch_rows;
+    rows.extend(tree_rows);
+    rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    rows
+}
+
 /// `review__list` - the submitted reviews on the caller's (project,
 /// branch), or on an explicit `scope`.
 pub(crate) struct ReviewList {
@@ -325,11 +356,12 @@ impl Tool for ReviewList {
 
     fn description(&self) -> &'static str {
         "List the review sets the reviewer submitted on your current branch, \
-         newest first. Each entry has a review_id, its 1-based number, the \
-         optional overview summary, when it was created, and a per-state \
-         tally of its comments (open / addressed / resolved / outdated). \
-         Start here when you get a 'review #N ready' nudge, then call \
-         review__get with a review_id to read the individual comments. \
+         newest first - plus any filed against your seat's own file tree \
+         (the files page's comments). Each entry has a review_id, its 1-based \
+         number, the optional overview summary, when it was created, and a \
+         per-state tally of its comments (open / addressed / resolved / \
+         outdated). Start here when you get a 'review #N ready' nudge, then \
+         call review__get with a review_id to read the individual comments. \
          Pass `scope` to address a review filed elsewhere: one left on a \
          document hand-off is filed under the document's own scope, \
          doc:<resolved path>, which the hand-off answer names."
@@ -360,7 +392,40 @@ impl Tool for ReviewList {
             Err(out) => return out,
         };
         match self.facade.list(&scope) {
-            Ok(rows) => list_output(&self.facade, &scope, &rows),
+            Ok(rows) => {
+                // The seat's tree rides beside the branch (files-page
+                // reviews follow the seat), unless an explicit scope asked
+                // for one scope alone. A tree read that failed never folds
+                // into an empty answer: the branch rows still return, with
+                // the failure stated beside them.
+                let mut note = None;
+                let rows = match args.scope.is_none().then(|| seat_tree_scope(&scope)) {
+                    Some(tree) => match self.facade.list(&tree) {
+                        Ok(tree_rows) => {
+                            if !tree_rows.is_empty() {
+                                note = Some(format!(
+                                    "your seat tree's reviews are included (scope {}).",
+                                    tree.branch,
+                                ));
+                            }
+                            merge_newest(rows, tree_rows)
+                        }
+                        Err(err) => {
+                            note =
+                                Some(format!("your seat tree's reviews could not be read: {err}"));
+                            rows
+                        }
+                    },
+                    None => rows,
+                };
+                let mut out = list_output(&self.facade, &scope, &rows);
+                if !out.is_error
+                    && let Some(note) = note
+                {
+                    out.blocks.push(ToolOutputBlock::Text { text: note });
+                }
+                out
+            }
             Err(err) => tool_error(err),
         }
     }
@@ -378,7 +443,13 @@ fn list_output(
     let others: Vec<String> = facade
         .branches_with_reviews(scope)
         .into_iter()
-        .filter(|branch| *branch != scope.branch)
+        // Scope keys stored in the branch column are not branches. A tree
+        // scope (the seat's own) or a document's would read as something
+        // to check out; the tree's reviews already ride the list above,
+        // and a document's are addressed through its hand-off.
+        .filter(|branch| {
+            *branch != scope.branch && !is_tree_scope(branch) && !is_doc_scope(branch)
+        })
         .collect();
     if others.is_empty() {
         return json_or_error(&rows);
@@ -463,10 +534,27 @@ impl Tool for ReviewGet {
         };
         match self.facade.get(&scope, &args.review_id) {
             Ok(Some(detail)) => json_or_error(&detail),
-            Ok(None) => tool_error(format!(
-                "no review {} on your branch - call review__list for the valid ids.",
-                args.review_id,
-            )),
+            Ok(None) => {
+                // An id the branch does not hold may live on the seat's
+                // tree (the files page); the fallback runs only on the
+                // default path, so an explicit scope still means that
+                // scope alone.
+                match args.scope.is_none().then(|| seat_tree_scope(&scope)) {
+                    Some(tree) => match self.facade.get(&tree, &args.review_id) {
+                        Ok(Some(detail)) => json_or_error(&detail),
+                        Ok(None) => tool_error(format!(
+                            "no review {} on your branch or your seat tree - call \
+                             review__list for the valid ids.",
+                            args.review_id,
+                        )),
+                        Err(err) => tool_error(err),
+                    },
+                    None => tool_error(format!(
+                        "no review {} on your branch - call review__list for the valid ids.",
+                        args.review_id,
+                    )),
+                }
+            }
             Err(err) => tool_error(err),
         }
     }
@@ -540,7 +628,18 @@ impl Tool for ReviewReply {
         };
         match self.facade.reply(&scope, &args.comment_id, &args.text, &rfc3339_now()) {
             Ok(anchor) => json_or_error(&anchor),
-            Err(err) => tool_error(err),
+            Err(err) => {
+                // A comment the branch's scope does not hold may live on
+                // the seat's tree (the files page); the branch's own error
+                // is what returns when the tree does not hold it either.
+                if let Some(tree) = args.scope.is_none().then(|| seat_tree_scope(&scope))
+                    && let Ok(anchor) =
+                        self.facade.reply(&tree, &args.comment_id, &args.text, &rfc3339_now())
+                {
+                    return json_or_error(&anchor);
+                }
+                tool_error(err)
+            }
         }
     }
 }
@@ -604,7 +703,17 @@ impl Tool for ReviewResolve {
         };
         match self.facade.resolve(&scope, &args.comment_id) {
             Ok(anchor) => json_or_error(&anchor),
-            Err(err) => tool_error(err),
+            Err(err) => {
+                // The seat-tree fallback, as in review__reply: the
+                // branch's own error returns when the tree does not hold
+                // the comment either.
+                if let Some(tree) = args.scope.is_none().then(|| seat_tree_scope(&scope))
+                    && let Ok(anchor) = self.facade.resolve(&tree, &args.comment_id)
+                {
+                    return json_or_error(&anchor);
+                }
+                tool_error(err)
+            }
         }
     }
 }
@@ -839,6 +948,168 @@ mod tests {
         let hint = out.blocks.get(1).map_or("", block_text);
         assert!(hint.contains("worktree-impl"), "{hint}");
         assert!(!hint.contains("feat"), "the caller's own branch is not listed back: {hint}");
+    }
+
+    /// The seat's tree rides the list beside the branch: files-page
+    /// reviews follow the seat, so one call returns both - the branch
+    /// scope first, then the tree - with the tree's scope named so its
+    /// rows can be told apart (`number` repeats across scopes; ids do
+    /// not).
+    #[tokio::test]
+    async fn review_list_includes_the_seat_trees_reviews_beside_the_branchs() {
+        let mock = Arc::new(MockReviewFacade::new());
+        mock.summaries.lock().push(summary("branch-r1", 1));
+        mock.tree_summaries.lock().push(summary("tree-r1", 1));
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let tool = ReviewList { facade, slot: caller_slot() };
+        let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!out.is_error, "both scopes' rows are a healthy list: {:?}", out.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&out)).expect("json");
+        let ids: Vec<&str> = parsed
+            .as_array()
+            .expect("rows")
+            .iter()
+            .filter_map(|row| row["review_id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&"branch-r1") && ids.contains(&"tree-r1"),
+            "both scopes' rows are present: {ids:?}",
+        );
+        assert_eq!(
+            mock.scopes_seen.lock().clone(),
+            vec!["feat".to_owned(), "tree:TestOrg/test-project/caller".to_owned()],
+            "the branch scope first, then the seat's tree",
+        );
+        let note = out.blocks.get(1).map_or("", block_text);
+        assert!(note.contains("tree:TestOrg/test-project/caller"), "{note}");
+    }
+
+    /// An explicit scope means that scope alone: a document's hand-off
+    /// asks for the document, never the branch-and-tree pair.
+    #[tokio::test]
+    async fn review_list_with_an_explicit_scope_does_not_consult_the_seat_tree() {
+        let mock = Arc::new(MockReviewFacade::new());
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let tool = ReviewList { facade, slot: caller_slot() };
+        let out = tool
+            .call(ToolInput { value: serde_json::json!({ "scope": "doc:/proj/plan.md" }) })
+            .await;
+        assert!(!out.is_error, "an empty document scope is a healthy empty list");
+        assert_eq!(
+            mock.scopes_seen.lock().clone(),
+            vec!["doc:/proj/plan.md".to_owned()],
+            "the tree is not consulted beside an explicit scope",
+        );
+    }
+
+    /// A tree read that failed never folds into an empty answer: the
+    /// branch's rows still return, with the failure stated beside them.
+    #[tokio::test]
+    async fn review_list_states_a_failed_tree_read_beside_the_branch_rows() {
+        let mock = Arc::new(MockReviewFacade::new());
+        mock.summaries.lock().push(summary("branch-r1", 1));
+        *mock.tree_list_error.lock() = Some("the store row would not decode".to_owned());
+        let facade: Arc<dyn ReviewFacade> = mock;
+        let tool = ReviewList { facade, slot: caller_slot() };
+        let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!out.is_error, "the branch's rows still return: {:?}", out.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&out)).expect("json");
+        assert_eq!(parsed[0]["review_id"], "branch-r1");
+        let note = out.blocks.get(1).map_or("", block_text);
+        assert!(note.contains("could not be read"), "{note}");
+        assert!(note.contains("would not decode"), "{note}");
+    }
+
+    /// A review the branch does not hold is found on the seat's tree.
+    #[tokio::test]
+    async fn review_get_falls_back_to_the_seat_tree() {
+        let mock = Arc::new(MockReviewFacade::new());
+        *mock.tree_detail.lock() = detail(&[review("tree-r1", 1, None)], &[], "tree-r1");
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let tool = ReviewGet { facade, slot: caller_slot() };
+        let out =
+            tool.call(ToolInput { value: serde_json::json!({ "review_id": "tree-r1" }) }).await;
+        assert!(!out.is_error, "the tree's review is found: {:?}", out.blocks);
+        assert!(text_of(&out).contains("tree-r1"), "{}", text_of(&out));
+        assert_eq!(
+            mock.scopes_seen.lock().clone(),
+            vec!["feat".to_owned(), "tree:TestOrg/test-project/caller".to_owned()],
+            "the branch is tried first, then the tree",
+        );
+    }
+
+    /// Not on the branch AND not on the tree names both, so the absence
+    /// is stated rather than guessed at.
+    #[tokio::test]
+    async fn review_get_not_found_names_branch_and_tree() {
+        let mock = Arc::new(MockReviewFacade::new());
+        let facade: Arc<dyn ReviewFacade> = mock;
+        let tool = ReviewGet { facade, slot: caller_slot() };
+        let out = tool.call(ToolInput { value: serde_json::json!({ "review_id": "nope" }) }).await;
+        assert!(out.is_error);
+        assert!(text_of(&out).contains("or your seat tree"), "{}", text_of(&out));
+    }
+
+    /// A reply to a comment the branch's scope does not hold lands on the
+    /// seat's tree instead - the files page's comments are answered the
+    /// same way the branch's are.
+    #[tokio::test]
+    async fn review_reply_falls_back_to_the_seat_tree() {
+        let mock = Arc::new(MockReviewFacade::new());
+        *mock.fail_non_tree.lock() = true;
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let tool = ReviewReply { facade, slot: caller_slot() };
+        let out = tool
+            .call(ToolInput { value: serde_json::json!({ "comment_id": "c1", "text": "done" }) })
+            .await;
+        assert!(!out.is_error, "the tree holds the comment: {:?}", out.blocks);
+        assert_eq!(mock.reply_calls.lock().clone(), vec![("c1".to_owned(), "done".to_owned())],);
+        assert_eq!(
+            mock.scopes_seen.lock().clone(),
+            vec!["feat".to_owned(), "tree:TestOrg/test-project/caller".to_owned()],
+        );
+    }
+
+    /// review__resolve gets the same fallback, and a comment held by
+    /// neither scope still answers with the branch's own error.
+    #[tokio::test]
+    async fn review_resolve_falls_back_and_keeps_the_branch_error_otherwise() {
+        let mock = Arc::new(MockReviewFacade::new());
+        *mock.fail_non_tree.lock() = true;
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let tool = ReviewResolve { facade, slot: caller_slot() };
+        let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c1" }) }).await;
+        assert!(!out.is_error, "the tree holds the comment: {:?}", out.blocks);
+        assert_eq!(mock.resolve_calls.lock().clone(), vec!["c1".to_owned()]);
+
+        // A second mock where NEITHER scope holds it: the error returns.
+        let mock = Arc::new(MockReviewFacade::new());
+        mock.force_error.lock().replace("comment c9 is not in this scope".to_owned());
+        let facade: Arc<dyn ReviewFacade> = mock;
+        let tool = ReviewResolve { facade, slot: caller_slot() };
+        let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c9" }) }).await;
+        assert!(out.is_error);
+        assert!(text_of(&out).contains("not in this scope"), "{}", text_of(&out));
+    }
+
+    /// The other-branches hint never lists scope keys as branches: a tree
+    /// or document scope in it would read as something to check out.
+    #[tokio::test]
+    async fn review_list_hint_never_lists_scope_keys_as_branches() {
+        let mock = Arc::new(MockReviewFacade::new());
+        *mock.review_branches.lock() = vec![
+            "feat".to_owned(),
+            "tree:TestOrg/test-project/caller".to_owned(),
+            "doc:/proj/plan.md".to_owned(),
+            "worktree-impl".to_owned(),
+        ];
+        let facade: Arc<dyn ReviewFacade> = mock;
+        let tool = ReviewList { facade, slot: caller_slot() };
+        let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        let text = text_of(&out);
+        assert!(text.contains("worktree-impl"), "{text}");
+        assert!(!text.contains("tree:"), "a scope key is not a branch: {text}");
+        assert!(!text.contains("doc:"), "a scope key is not a branch: {text}");
     }
 
     #[tokio::test]
