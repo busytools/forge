@@ -22,6 +22,8 @@
   import type { SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
+  import Reader from './Reader.svelte';
+  import type { ReaderHandle } from './reader';
   import { indexTreeRows, matchedEntries } from './tree';
 
   let { connection, slot }: { connection: Connection; slot: SessionSlot } = $props();
@@ -42,6 +44,8 @@
   const closed = new SvelteSet<string>();
   /** The file the reader shows, which the tree marks as current. */
   let open = $state<string | null>(null);
+  /** The live reader, so the rail's jump-backs can reach its lines. */
+  let reader = $state<ReaderHandle | null>(null);
 
   const shown = $derived(matchedEntries(entries, query));
   const tree = $derived(indexTreeRows(shown, closed));
@@ -108,102 +112,9 @@
         {#if open === null}
           <p class="files-quiet">Pick a file from the tree.</p>
         {:else}
-          <p class="files-quiet">Reading {open}...</p>
+          <Reader {connection} {slot} path={open} bind:handle={reader} />
         {/if}
       </main>
     </div>
   {/if}
 </div>
-
-<style>
-  /* The page's own pieces, scoped here as the review page's are: the sheet
-     carries only what the pages share (the tree). */
-  .files {
-    display: flex;
-    flex-direction: column;
-    height: 100dvh;
-    padding: 22px 26px 0;
-  }
-  .files-top {
-    display: flex;
-    align-items: baseline;
-    gap: 14px;
-    flex-wrap: wrap;
-    padding-bottom: 14px;
-    border-bottom: 1px solid var(--line);
-  }
-  .files-back {
-    font-family: var(--mono);
-    font-size: var(--fs-data);
-    color: var(--dim);
-    text-decoration: none;
-  }
-  .files-back:hover {
-    color: var(--text);
-  }
-  h1 {
-    font-size: var(--fs-title);
-    font-weight: 650;
-    letter-spacing: -0.01em;
-  }
-  .files-facts {
-    font-family: var(--mono);
-    font-size: var(--fs-data);
-    color: var(--dim);
-  }
-  .files-sep {
-    color: var(--line);
-    margin: 0 7px;
-  }
-  .files-body {
-    display: grid;
-    grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
-    gap: 18px;
-    flex: 1;
-    min-height: 0;
-    padding: 12px 0 0;
-  }
-  .files-side {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  .files-filter {
-    background: none;
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    color: var(--text);
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    padding: 4px 2px 8px;
-    margin-bottom: 8px;
-  }
-  .files-main {
-    min-height: 0;
-    overflow: auto;
-  }
-  .files-quiet {
-    font-size: var(--fs-base);
-    color: var(--dim);
-  }
-  .files-main .files-quiet {
-    margin-top: 12vh;
-    text-align: center;
-  }
-  /* Narrow: the tree stacks over the reader, the page the one scroller. */
-  @media (max-width: 980px) {
-    .files {
-      height: auto;
-      min-height: 100dvh;
-      padding: 18px 16px 0;
-    }
-    .files-body {
-      grid-template-columns: minmax(0, 1fr);
-    }
-  }
-  @media (pointer: coarse) {
-    .files-filter {
-      min-height: 44px;
-    }
-  }
-</style>
