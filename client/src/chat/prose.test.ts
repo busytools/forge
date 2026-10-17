@@ -31,6 +31,8 @@ describe('the markdown a message carries, as the sheet draws it', () => {
       '',
       'a paragraph with `code` and a [link](https://example.test).',
       '',
+      '![a picture](https://example.test/x.png)',
+      '',
       '- one',
       '- two',
       '',
@@ -136,6 +138,54 @@ describe('markdown, as the maintained module renders it', () => {
 
     expect(html).not.toContain('<img');
     expect(html).toContain('&lt;img');
+  });
+
+  it('draws an image as a row naming it, and makes no request', () => {
+    // The module's own `image` rule draws an `<img>`, so `![](url)` in a
+    // message was fetched from whatever host the text named. The row names
+    // the picture and prints its source instead.
+    const html = renderProse('before ![a picture](https://example.test/x.png) after');
+
+    expect(html, 'nothing is fetched').not.toContain('<img');
+    expect(html, 'the picture is named').toContain('a picture');
+    expect(html, 'and its source is readable').toContain('https://example.test/x.png');
+  });
+
+  it('names an image that carries no alt by its source, once', () => {
+    const html = renderProse('![](https://example.test/x.png)');
+
+    expect(html, 'nothing is fetched').not.toContain('<img');
+    expect(html.match(/https:\/\/example\.test\/x\.png/g), 'the source is the name').toHaveLength(
+      1,
+    );
+  });
+
+  it("draws the image row as the page's own attachment row", () => {
+    // The row reuses the piece the chat draws for what a turn attached, so the
+    // class and the glyph are what make it that row rather than a bare span the
+    // sheet does not stylise.
+    const html = renderProse('![a picture](https://example.test/x.png)');
+
+    expect(html, 'the row takes the attachment class').toContain('class="attrow"');
+    expect(html, 'and the glyph that marks it an image').toContain('href="#i-read"');
+  });
+
+  it('escapes the source it prints in the row', () => {
+    // `&` is what a markdown destination gives the row raw, and the row prints
+    // its source as text - so it comes out escaped rather than as the start of
+    // an entity the page would resolve.
+    const html = renderProse('![a picture](https://example.test/a.png?x=1&y=2)');
+
+    expect(html, 'the source draws escaped').toContain('?x=1&amp;y=2');
+  });
+
+  it('escapes what an image names rather than drawing it as markup', () => {
+    // The alt and the source are the message's own text, so neither may open
+    // a tag of its own inside the row.
+    const html = renderProse('![<img src=x onerror="alert(1)">](https://example.test/a.png)');
+
+    expect(html, 'the alt cannot open a tag').not.toContain('<img');
+    expect(html, 'it draws escaped').toContain('&lt;img');
   });
 
   it('refuses a link that is not a link', () => {
