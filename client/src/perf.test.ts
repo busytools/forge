@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { perfProbe, perfSurface, startPerfProbe, type PerfRecord } from './perf';
+import { perfProbe, perfSurface, seatLabel, startPerfProbe, type PerfRecord } from './perf';
 
 /**
  * The probe's clock and frame source, driven by the test.
@@ -319,6 +319,17 @@ describe('the surface a record names', () => {
     expect(
       perfSurface({ name: 'session', slot: { org: 'Busytools', project: 'forge', label: 'lead' } }),
     ).toEqual({ surface: 'session', session: 'Busytools/forge/lead' });
+  });
+
+  /**
+   * **One builder, one spelling.** The surface a frame carries and the seat
+   * an open's marks name are paired by this string, so a second hand-rolled
+   * join is exactly how that pairing silently stops finding anything.
+   */
+  it('names a seat the same way for a frame and for an open', () => {
+    const slot = { org: 'Busytools', project: 'forge', label: 'lead' };
+    expect(seatLabel(slot)).toBe('Busytools/forge/lead');
+    expect(perfSurface({ name: 'session', slot }).session).toBe(seatLabel(slot));
   });
 
   it('names the project on a board', () => {

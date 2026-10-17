@@ -1504,7 +1504,7 @@ describe('the drawn mark', () => {
     expect(
       openedMark,
       'taking a seat on is the conversation opening, marked where it happens',
-    ).toHaveBeenCalledWith('Busytools/forge/lead');
+    ).toHaveBeenCalledWith(LEAD);
     expect(drawnMark, 'nothing is drawn before a page lands').not.toHaveBeenCalled();
 
     server.answer([turn('t1')]);
@@ -1517,9 +1517,11 @@ describe('the drawn mark', () => {
     openedMark.mockClear();
     column.flip();
     flushSync();
-    expect(openedMark, 'the switched-to seat opens its own conversation').toHaveBeenCalledWith(
-      'Busytools/forge/w1',
-    );
+    expect(openedMark, 'the switched-to seat opens its own conversation').toHaveBeenCalledWith({
+      org: 'Busytools',
+      project: 'forge',
+      label: 'w1',
+    });
     expect(
       drawnMark,
       'the seat just switched to has not drawn its answer yet',

@@ -25,6 +25,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { CLIENT_VERSION } from './protocol';
 import type { Route } from './routes';
 import { mintPromptId } from './wire/ids';
+import type { SessionSlot } from './wire/types';
 
 /** The record schema, shared with the log the shell writes. */
 const SCHEMA = 'forge-perf/v1';
@@ -348,14 +349,24 @@ export function notePerfSurface(surface: string | null, session: string | null):
 }
 
 /**
- * A conversation has opened for `seat`. **The open is written where the
- * column takes the seat on**, not where a route changed: a click, a deep
+ * The seat as the perf log names it. **The ONE place the string is built**:
+ * a frame's surface pair and the marks a conversation's open carries must
+ * name the seat identically, or a reader pairing them by it finds nothing
+ * (#2374).
+ */
+export function seatLabel(slot: SessionSlot): string {
+  return `${slot.org}/${slot.project}/${slot.label}`;
+}
+
+/**
+ * A conversation has opened for the seat `slot`. **The open is written where
+ * the column takes the seat on**, not where a route changed: a click, a deep
  * link, a reload, a reconnect and a palette move all pass through the
  * column, and a route change alone is no conversation - a board is not a
  * seat and a board route must write nothing (#2374).
  */
-export function noteConversationOpened(seat: string): void {
-  running?.noteConversationOpened(seat);
+export function noteConversationOpened(slot: SessionSlot): void {
+  running?.noteConversationOpened(seatLabel(slot));
 }
 
 /**
@@ -376,10 +387,7 @@ export function noteDrawn(): void {
  */
 export function perfSurface(route: Route): { surface: string; session: string | null } {
   if ('slot' in route) {
-    return {
-      surface: route.name,
-      session: `${route.slot.org}/${route.slot.project}/${route.slot.label}`,
-    };
+    return { surface: route.name, session: seatLabel(route.slot) };
   }
   if (route.name === 'board') return { surface: 'board', session: `${route.org}/${route.project}` };
   return { surface: route.name, session: null };

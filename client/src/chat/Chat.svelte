@@ -645,9 +645,11 @@
     held = untrack(() => kept.get(which)) ?? NOTHING;
     // After `held`, so the open's own start and the conversation it names
     // land in one flush - the drawn mark below reads `held` and must never
-    // time the seat that is going.
+    // time the seat that is going. The seat is handed over as the slot and
+    // named by the log's own builder, so this column and a frame's surface
+    // pair can never spell one seat two ways.
     if (switched) {
-      noteConversationOpened(`${slot.org}/${slot.project}/${slot.label}`);
+      noteConversationOpened(slot);
     }
     // Leaving the seat: its store notifications stop with its frames.
     return () => {
