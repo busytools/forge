@@ -2,8 +2,9 @@
 //! `forge_primitives::Message` envelopes the live wire stream produces, so
 //! consumers read replay and live messages identically.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
+use forge_primitives::messages::Extras;
 use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 
 /// Synthesise on-disk transcript JSONL into the `forge_primitives::Message`
@@ -11,8 +12,14 @@ use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 /// identically to live messages, unifying replay + live code paths.
 ///
 /// Replay-specific transforms applied here:
-/// - Image content blocks are replaced with a `[image]` text placeholder
-///   - the binary payload isn't preserved on disk.
+/// - A TOP-LEVEL image block keeps its mime and the size its payload weighed,
+///   and loses that payload: the read draws the same attachment row the live
+///   path draws for it, and that row shows no bytes.
+///
+///   **Top-level blocks only, by choice.** A `Document` block and an image
+///   nested in a tool result are passed through untouched - payload and all -
+///   because a call row draws a result's image from its own data URL, and
+///   nothing here should change what that gets.
 ///
 /// **Thinking blocks are kept.** A thinking block is the row the chat draws
 /// for a thought, and the live path draws it (a `thinking` block in an
@@ -133,19 +140,46 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
     out
 }
 
-/// Apply the replay-specific content-block transform: replace `Image` blocks
-/// with a text `[image]` placeholder. Other variants pass through unchanged.
+/// Apply the replay-specific content-block transform: an `Image` block keeps
+/// its mime and the size its payload weighed, and loses the payload itself.
+/// Other variants pass through unchanged.
 fn transform_replay_content(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
     content
         .into_iter()
         .map(|block| match block {
-            ContentBlock::Image { .. } => ContentBlock::Text {
-                text: "[image]".to_owned(),
-                extras: forge_primitives::messages::Extras::new(),
-            },
+            ContentBlock::Image { source, extras } => attachment(source, extras),
             other => other,
         })
         .collect()
+}
+
+/// An image block as the read path keeps it.
+///
+/// The block stays an image so the view's own attachment row draws it, as the
+/// live path already does. The payload dropped here is the block's OWN: the
+/// attachment row prints the size and nothing else, so those bytes would ride
+/// to a page that never draws them. What the block carries instead is that
+/// size, under the `forge_bytes` name - forge's own, so it cannot be read as a
+/// field the CLI wrote.
+fn attachment(source: Value, extras: Extras) -> ContentBlock {
+    let Some(data) = source.get("data").and_then(Value::as_str) else {
+        return ContentBlock::Image { source, extras };
+    };
+    let size = payload_bytes(data);
+    let mut keeps = source;
+    if let Some(fields) = keeps.as_object_mut() {
+        fields.remove("data");
+    }
+    let mut kept = extras;
+    kept.insert("forge_bytes".to_owned(), json!(size));
+    ContentBlock::Image { source: keeps, extras: kept }
+}
+
+/// The bytes a base64 payload stands for, by the same arithmetic the view's
+/// own row uses: four characters carry three bytes, and padding is not a byte.
+fn payload_bytes(data: &str) -> u64 {
+    let padding = if data.ends_with("==") { 2 } else { u64::from(data.ends_with('=')) };
+    (data.len() as u64 * 3 / 4).saturating_sub(padding)
 }
 
 #[cfg(test)]
@@ -231,12 +265,21 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_image_blocks_become_text_placeholder() {
+    fn synthesize_keeps_an_attachment_the_live_path_draws() {
+        // The block stays an image: the view's attachment row is what the live
+        // path draws from the same block, and a text `[image]` drew the words
+        // instead of it. The payload itself does not ride to the page - the row
+        // prints the size, not the picture - so the block carries the size this
+        // side measured.
+        let data = "A".repeat(400);
         let messages = vec![json!({
             "type": "user",
             "message": {
                 "role": "user",
-                "content": [{"type":"image","source":{"type":"base64","data":"..."}}]
+                "content": [
+                    {"type":"text","text":"the mock I mean"},
+                    {"type":"image","source":{"type":"base64","media_type":"image/png","data": data}}
+                ]
             }
         })];
         let synthesized = synthesize_replay_messages(&messages);
@@ -244,11 +287,52 @@ mod tests {
         let Message::User { message, .. } = &synthesized[0] else {
             panic!("expected Message::User");
         };
-        assert_eq!(message.content.len(), 1);
-        let ContentBlock::Text { text, .. } = &message.content[0] else {
-            panic!("expected image block to become a Text content block");
+        assert_eq!(message.content.len(), 2);
+        let ContentBlock::Image { source, extras } = &message.content[1] else {
+            panic!("expected the image block to stay an image");
         };
-        assert_eq!(text, "[image]");
+        assert_eq!(
+            source.get("media_type").and_then(Value::as_str),
+            Some("image/png"),
+            "the row names the mime the block carried",
+        );
+        assert_eq!(
+            source.get("data"),
+            None,
+            "the payload does not ride to a page that draws no bytes",
+        );
+        assert_eq!(
+            extras.get("forge_bytes").and_then(Value::as_u64),
+            Some(300),
+            "the size the block weighed is what the row prints",
+        );
+    }
+
+    #[test]
+    fn synthesize_leaves_an_attachment_it_weighed_nothing_for_alone() {
+        // A source with no base64 payload - a URL, or a block the CLI wrote
+        // without data - has no size this side can measure, and the row draws
+        // what it does have.
+        let messages = vec![json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type":"image","source":{"type":"url","url":"https://example.test/a.png"}}]
+            }
+        })];
+        let synthesized = synthesize_replay_messages(&messages);
+        let Message::User { message, .. } = &synthesized[0] else {
+            panic!("expected Message::User");
+        };
+        let ContentBlock::Image { source, extras } = &message.content[0] else {
+            panic!("expected the image block to stay an image");
+        };
+        assert_eq!(
+            source.get("url").and_then(Value::as_str),
+            Some("https://example.test/a.png"),
+            "a source with no payload is left as it came",
+        );
+        assert!(extras.is_empty(), "and nothing is invented for it");
     }
 
     #[test]
