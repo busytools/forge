@@ -3521,6 +3521,10 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-body { display: grid;
   grid-template-columns: minmax(0, 300px) minmax(0, 1fr) minmax(0, 320px);
   gap: 18px; flex: 1; min-height: 0; padding: 12px 0 0; }
+/* The conversation half: the rounds take the tree's and the reader's room,
+   and the rail stays - it carries the finish on both halves. */
+.files-body.conv { grid-template-columns: minmax(0, 1fr) minmax(0, 320px); }
+.files-conv { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .files-side { display: flex; flex-direction: column; min-height: 0; }
 .files-filter { background: none; border: 0; border-bottom: 1px solid var(--line);
   color: var(--text); font-family: var(--mono); font-size: var(--fs-label);
@@ -3785,6 +3789,16 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .rv-mk.outdated { border: 1.4px solid var(--dim); border-radius: 50%; }
 .rv-st { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
   border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; flex: none; }
+
+/* The tab strip: one row of buttons, the half that is up underlined in the
+   accent - drawn by the review page and the files page, so the sheet's. */
+.rv-tabs { display: flex; align-items: center; gap: 2px; padding: 0 0 6px; }
+.rv-tabs > button { font-size: var(--fs-base); color: var(--dim); background: none;
+  border: 0; border-bottom: 2px solid transparent; padding: 5px 12px 6px;
+  cursor: pointer; }
+.rv-tabs > button:hover { color: var(--muted); }
+.rv-tabs > button.on { color: var(--text); border-bottom-color: var(--accent); }
+.rv-tn { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 
 /* The finish row: the summary's field, its own wordline, and the sealing
    button - the REVIEW page's own shape, on its diff and its files halves;

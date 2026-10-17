@@ -21,24 +21,18 @@
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
   import { watchSession, type SessionRead } from '../session/live';
-  import type { SessionRecord } from '../session/wire';
+  import type { ReviewThreadRecord, SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Canvas from './Canvas.svelte';
   import type { CommentBox, ReplyBox } from './boxes';
-  import ThreadTurn from './ThreadTurn.svelte';
-  import WordsBox from './WordsBox.svelte';
+  import Conversation from './Conversation.svelte';
   import {
-    ageOf,
     commentsInScope,
     latestRound,
     loopState,
-    outdatedThreads,
-    parkedReason,
     roundHasWork,
-    roundTally,
     roundsNewestFirst,
-    statusName,
     threadsInRound,
   } from './view';
   import {
@@ -102,9 +96,6 @@
     reviews?.reviews.outcome === 'read' ? roundsNewestFirst(reviews.reviews.value) : [],
   );
   const loop = $derived(loopState(threads));
-  /** The parked section: code that cannot be drawn and is not resolved, the
-   *  fresh landing over the store's own status. */
-  const outdated = $derived(outdatedThreads(threads));
   /** Whether both reads answered, which is what an empty copy needs to be
    *  true: a half that failed draws its own line and no "nothing filed". */
   const bothRead = $derived(
@@ -799,16 +790,6 @@
     const tick = setInterval(() => (now = Date.now()), 30_000);
     return () => clearInterval(tick);
   });
-
-  function tallyChips(tally: ReturnType<typeof roundTally>): [string, number][] {
-    const rows: [string, number][] = [
-      ['open', tally.open],
-      ['addressed', tally.addressed],
-      ['resolved', tally.resolved],
-      ['outdated', tally.outdated],
-    ];
-    return rows.filter(([, count]) => count > 0);
-  }
 </script>
 
 <!-- The round's finish, drawn by both halves: the conversation half's Finish
@@ -1067,157 +1048,7 @@
     {/if}
 
     {#if tab === 'conversation'}
-      <div class="rv-conv">
-        {#if outdated.length > 0}
-          <section class="group">
-            <h2>Outdated <span class="n">{outdated.length}</span></h2>
-            {#each outdated as thread (thread.id)}
-              {@const inRound = rounds.some((round) =>
-                threadsInRound(threads, round.id).some((held) => held.id === thread.id),
-              )}
-              <article class="thread parked">
-                <div class="heads">
-                  <span class="rv-state outdated">outdated</span>
-                  <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
-                </div>
-                {#if parkedReason(thread) !== ''}
-                  <p class="rv-why">{parkedReason(thread)}</p>
-                {/if}
-                <div class="captured">
-                  <div class="caphead">captured when the comment was written</div>
-                  <pre>{thread.anchor.context.join('\n')}</pre>
-                </div>
-                {#each thread.comments as turn, i (i)}
-                  <ThreadTurn {turn} {rounds} {now} index={i} />
-                {/each}
-                <div class="acts">
-                  {#if inRound}
-                    <!-- Only a thread a round holds draws a reply box on this
-                         half, so the door is offered only where the box is. -->
-                    <button
-                      type="button"
-                      class="rv-a"
-                      disabled={busy}
-                      onclick={() => {
-                        reply.thread = reply.thread === thread.id ? null : thread.id;
-                        reply.draft = '';
-                      }}>respond</button
-                    >
-                  {/if}
-                  <button
-                    type="button"
-                    class="rv-a"
-                    disabled={busy}
-                    onclick={() => void resolved(thread)}>resolve</button
-                  >
-                  {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
-                </div>
-              </article>
-            {/each}
-          </section>
-        {/if}
-
-        <section class="group">
-          <h2>Rounds <span class="n">newest first</span></h2>
-          {#if bothRead && rounds.length === 0 && threads.length === 0}
-            <p class="rv-empty">Nothing has been reviewed on this branch yet.</p>
-          {:else if bothRead && rounds.length === 0}
-            <p class="rv-empty">
-              No round has been filed. {threads.length}
-              {threads.length === 1 ? 'thread is' : 'threads are'} drafted on this branch.
-            </p>
-          {/if}
-          {#each rounds as round (round.id)}
-            {@const tally = roundTally(threads, round)}
-            <article class="round">
-              <div class="heads">
-                <span class="rn">R{round.number}</span>
-                <span class="age">{ageOf(round.created_at, now)}</span>
-                <span class="tally">
-                  {#each tallyChips(tally) as [state, count] (state)}
-                    <span class="chip {state}">{count} {state}</span>
-                  {/each}
-                  {#if tally.named > 0}
-                    <span class="chip">{tally.named} unnamed</span>
-                  {/if}
-                </span>
-              </div>
-              {#if round.summary !== null}<p class="summary">{round.summary}</p>{/if}
-              {#each threadsInRound(threads, round.id) as thread (thread.id)}
-                {@const name = statusName(thread.status)}
-                <div class="thread">
-                  <div class="heads">
-                    <span class="rv-state {name}">{name}</span>
-                    <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
-                  </div>
-                  {#each thread.comments as turn, i (i)}
-                    <ThreadTurn {turn} {rounds} {now} index={i} />
-                  {/each}
-                  <div class="acts">
-                    <button
-                      type="button"
-                      class="rv-a"
-                      disabled={busy}
-                      onclick={() => {
-                        reply.thread = reply.thread === thread.id ? null : thread.id;
-                        reply.draft = '';
-                      }}>respond</button
-                    >
-                    {#if name === 'resolved'}
-                      <button
-                        type="button"
-                        class="rv-a"
-                        disabled={busy}
-                        onclick={() => void reopened(thread)}>reopen</button
-                      >
-                    {:else}
-                      <button
-                        type="button"
-                        class="rv-a"
-                        disabled={busy}
-                        onclick={() => void resolved(thread)}>resolve</button
-                      >
-                    {/if}
-                    {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
-                  </div>
-                  {#if reply.thread === thread.id}
-                    <!-- The same box the canvas mounts under its threads: one
-                         component, so a reply reads and dictates the same in
-                         both halves. -->
-                    <WordsBox
-                      class="rv-reply"
-                      rows={2}
-                      placeholder="Respond to this thread..."
-                      label="your response"
-                      sendLabel="send"
-                      box={reply}
-                      {voice}
-                      onsend={(text: string) => {
-                        void replied(thread, text).then((filed) => {
-                          // A refusal keeps the words: the reply is the
-                          // reader's until the server took it.
-                          if (!filed) return;
-                          reply.thread = null;
-                          reply.draft = '';
-                        });
-                      }}
-                      oncancel={() => {
-                        reply.thread = null;
-                        reply.draft = '';
-                      }}
-                      onpress={() => (pressedIn = 'reply')}
-                      onhold={() => (panelIn = 'reply')}
-                      field={(el: HTMLElement | null) => {
-                        elements.reply = el;
-                      }}
-                    />
-                  {/if}
-                </div>
-              {/each}
-            </article>
-          {/each}
-        </section>
-
+      {#snippet convFooter()}
         <section class="group">
           <h2>Finish</h2>
           <p class="rv-quiet">
@@ -1225,7 +1056,26 @@
           </p>
           {@render roundFinish()}
         </section>
-      </div>
+      {/snippet}
+      <!-- The conversation is one draw for both pages (`Conversation.svelte`):
+           the branch's rounds here, the seat tree's on the files page. -->
+      <Conversation
+        {threads}
+        {rounds}
+        {drafts}
+        {busy}
+        {now}
+        {voice}
+        {reply}
+        known={bothRead}
+        onreply={replied}
+        onresolve={(thread: ReviewThreadRecord) => void resolved(thread)}
+        onreopen={(thread: ReviewThreadRecord) => void reopened(thread)}
+        onpress={() => (pressedIn = 'reply')}
+        onhold={() => (panelIn = 'reply')}
+        onfield={(el: HTMLElement | null) => (elements.reply = el)}
+        footer={convFooter}
+      />
     {:else}
       <div class="rv-body rv-filesbody">
         <Canvas
@@ -1288,45 +1138,9 @@
     overflow: hidden;
     padding: var(--ins);
   }
-  /* The rounds read as a column, centred: a measure cap that is not centred
-     is a hole. */
-  .rv-conv {
-    max-width: 820px;
-    margin: 0 auto;
-    width: 100%;
-    overflow-y: auto;
-    min-height: 0;
-    scrollbar-gutter: stable;
-  }
-  .rv-tabs {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    padding: 0 0 6px;
-  }
-  .rv-tabs > button {
-    font-size: var(--fs-base);
-    color: var(--dim);
-    background: none;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    padding: 5px 12px 6px;
-    cursor: pointer;
-  }
-  .rv-tabs > button:hover {
-    color: var(--muted);
-  }
-  .rv-tabs > button.on {
-    color: var(--text);
-    border-bottom-color: var(--accent);
-  }
-  .rv-tn {
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--dim);
-  }
-  /* The scope control: one button naming the scope on screen, the list
-     behind it, and a stepper beside it. */
+  /* The tab strip itself lives in the sheet now (the files page draws one
+     too); what stays here is the scope control - one button naming the scope
+     on screen, the list behind it, and a stepper beside it. */
   .rv-scope {
     position: relative;
     display: flex;
@@ -1464,9 +1278,6 @@
     .rv-hint {
       display: none;
     }
-    .rv-conv {
-      overflow: visible;
-    }
     /* The one column scrolls far past a refusal written above it - the
        reader 231k px down saw nothing at all - so at this width the line
        rides the top of the viewport instead. */
@@ -1573,12 +1384,6 @@
     flex: 1;
     min-width: 0;
   }
-  .acts {
-    display: flex;
-    gap: 8px;
-    padding-top: 6px;
-    align-items: center;
-  }
   .top {
     align-items: baseline;
   }
@@ -1638,124 +1443,6 @@
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--dim);
-  }
-  .n {
-    font-family: var(--mono);
-    letter-spacing: 0;
-  }
-  .rv-empty {
-    font-size: var(--fs-base);
-    color: var(--dim);
-    margin: 2px 0 8px;
-  }
-
-  .round {
-    border: 1px solid var(--line);
-    border-radius: var(--r);
-    background: var(--s1);
-    padding: 9px 11px 10px;
-    margin-bottom: 10px;
-  }
-  .heads {
-    display: flex;
-    align-items: baseline;
-    gap: 9px;
-  }
-  .rn {
-    font-family: var(--mono);
-    font-size: var(--fs-base);
-    font-weight: 600;
-    color: var(--accent);
-  }
-  .age {
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--dim);
-  }
-  .tally {
-    margin-left: auto;
-    display: flex;
-    gap: 6px;
-  }
-  /* The `.chip` set lives in the sheet (web.css): the strip's review panel
-     wears the same chips, and one definition is the rule. */
-  .summary {
-    font-size: var(--fs-base);
-    color: var(--muted);
-    margin: 6px 0 2px;
-  }
-
-  .thread {
-    border-top: 1px solid rgba(34, 42, 60, 0.55);
-    margin-top: 8px;
-    padding-top: 8px;
-  }
-  .thread:first-of-type {
-    border-top: 0;
-    margin-top: 4px;
-    padding-top: 4px;
-  }
-  .thread.parked {
-    border: 1px solid rgba(120, 130, 148, 0.35);
-    border-radius: var(--r);
-    padding: 9px 11px 10px;
-    margin: 0 0 10px;
-    background: var(--s1);
-  }
-  .rv-state {
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--muted);
-    border: 1px solid var(--line);
-    border-radius: 99px;
-    padding: 0 8px;
-  }
-  .rv-state.open {
-    color: var(--text);
-    border-color: var(--ctl);
-  }
-  .rv-state.addressed {
-    color: var(--warn);
-    border-color: rgba(201, 161, 59, 0.4);
-  }
-  .rv-state.resolved {
-    color: var(--ok);
-    border-color: rgba(130, 199, 107, 0.35);
-  }
-  .rv-state.outdated {
-    color: var(--dim);
-  }
-  .where {
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--dim);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .captured {
-    margin: 7px 0;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--s2);
-    overflow: hidden;
-  }
-  .caphead {
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--dim);
-    padding: 4px 10px;
-    border-bottom: 1px solid var(--line);
-  }
-  .captured pre {
-    margin: 0;
-    padding: 6px 10px;
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--muted);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
   }
 
   /* The turn's own rules live in the sheet (`ThreadTurn.svelte` draws the

@@ -7,6 +7,12 @@ header, and by the strip's files slip on the seat's own page - one place,
 and the tree follows the seat. The drawing it is held against is
 [web-files.html](./web-files.html), beside this page.
 
+**Two halves, like the review page's**: the **Files** tab is the tree and
+the reader, and the **Conversation** tab is the seat-tree scope's rounds,
+newest first - the same conversation the review page draws of a branch,
+through one component both pages use. The rail stays drawn on both, because
+it carries the finish.
+
 It lives at `/session/{org}/{project}/{label}/files`. **The tree is the
 seat's own**: a worker's worktree when the seat is a worker, the lead's
 checkout on the lead, which is the directory the record already reports as
@@ -31,7 +37,8 @@ review page's own line.
 
 | Region        | Shows                                                                                                                                                                                                                       | Read from                                                                              |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Header        | the back link to the seat, `Files`, the seat's resolved tree and its file count, `N to read` while any thread waits on the reader, and the narrow doors                                                                     | the record's `state.scan_cwd`, its `file_index`, and the seat-tree threads             |
+| Header        | the back link to the seat, `Files`, the seat's resolved tree and its file count, `N to read` while any thread waits on the reader, the `Conversation` / `Files` tabs, and the narrow doors                                    | the record's `state.scan_cwd`, its `file_index`, and the seat-tree threads             |
+| Conversation  | the rounds newest first, each with its age, tally chips, summary and threads - state chip, `path:line`, the turns, and `respond` / `resolve` / `reopen`; parked threads above in an Outdated group with their captured lines | the record's `tree_reviews`; the page's own drafts and reply box                       |
 | Tree          | the seat's whole index as its own hierarchy - a row per directory and per file, folders before files at every level, indented by depth - with the current file marked, a pill per file carrying its comment count, and a filter | the record's `file_index`; the filter ranks by the `@` list's own matching             |
 | Reader        | the file's head - path, language, line count - and the file's text, read-only, colour and structure as the language set allows, wrapped at the box's edge; the target line carries the tint and the gutter `+`                | the `document_read` answer for the open path: kind and bytes                           |
 | A thread      | under the line it was written on: its state chip, where it is, its turns through the review page's own turn renderer, and `respond` / `resolve` / `reopen`                                                                     | the record's `tree_reviews` threads and their landings, and the page's own drafts      |
@@ -82,6 +89,8 @@ cwd, is carried with no landing and parks.
 worker; `resolve` marks it read; `reopen` returns it and nudges the seat.
 Every write re-reads the record, because a review change is not pushed -
 the reviews ride the record, and a record re-read is what carries them.
+The Conversation tab answers over the same calls a diff review does - reply,
+resolve, reopen - and a rail row jumps back to its line from either tab.
 
 ## The two widths
 

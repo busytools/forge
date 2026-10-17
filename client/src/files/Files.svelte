@@ -47,6 +47,7 @@
   import { composerFrom, filesFrom, filesOnly } from '../composer/wire';
   import { hrefForSlot } from '../routes';
   import type { CommentBox, ReplyBox, Voice, Words } from '../review/boxes';
+  import Conversation from '../review/Conversation.svelte';
   import { latestRound, roundHasWork } from '../review/view';
   import WordsBox from '../review/WordsBox.svelte';
   import {
@@ -242,8 +243,11 @@
         if (elements[at] === active) return at;
       }
     }
-    if (comment.spot !== null) return 'comment';
-    if (reply.thread !== null) return 'reply';
+    // The reader's boxes count only while the reader is the half that is up.
+    if (tab === 'files') {
+      if (comment.spot !== null) return 'comment';
+      if (reply.thread !== null) return 'reply';
+    }
     // A take already running keeps its box, so the key's release can end it.
     if (takeIn !== null) return takeIn;
     if (record === null || entries.length === 0) return null;
@@ -395,6 +399,24 @@
   let now = $state(Date.now());
 
   /**
+   * Which half of the page is up: the tree and the reader, or the
+   * conversation - the seat-tree scope's rounds, newest first (Ved,
+   * 2026-10-17: "just like how the git diff"). Defaults to the files, which
+   * is what the page is for; the rail stays drawn on both.
+   */
+  let tab = $state<'files' | 'conversation'>('files');
+
+  /** The threads carrying a turn nobody filed, for the conversation's rows. */
+  const draftIds = $derived(new Set(unsealed.map((thread) => thread.id)));
+
+  /** Whether both tree_reviews halves landed - what the empty copy waits for. */
+  const treeRead = $derived(
+    record !== null &&
+      record.tree_reviews.threads.outcome === 'read' &&
+      record.tree_reviews.reviews.outcome === 'read',
+  );
+
+  /**
    * Which side panel a narrow screen has raised, or null. The tree and the
    * comments are columns when the width is there and sheets when it is not,
    * and every raising takes a history entry so Android's Back closes what
@@ -471,6 +493,7 @@
       land(tree[at]);
     };
     const onkey = (event: KeyboardEvent): void => {
+      if (tab !== 'files') return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (typingSomewhere(event.target)) return;
       switch (event.key) {
@@ -635,13 +658,14 @@
     closeComposer();
   }
 
-  async function replied(thread: ReviewThreadRecord, text: string): Promise<void> {
+  async function replied(thread: ReviewThreadRecord, text: string): Promise<boolean> {
     reply.busy = true;
     const { went } = await write(upsertCommand(slot, treeScope(slot), withReply(thread, text)));
     reply.busy = false;
-    if (!went) return;
+    if (!went) return false;
     reply.thread = null;
     reply.draft = '';
+    return true;
   }
 
   async function resolved(thread: ReviewThreadRecord): Promise<void> {
@@ -669,8 +693,10 @@
     summary.draft = '';
   }
 
-  /** A rail row: open its file and put the reader on its line. */
+  /** A rail row: open its file and put the reader on its line - from the
+   *  conversation too, where the reader is not the tab that is up. */
   function jump(row: (typeof rows)[number]): void {
+    tab = 'files';
     open = row.thread.anchor.path;
     pendingLine = row.line ?? row.thread.anchor.line;
   }
@@ -802,12 +828,14 @@
     <!-- The narrow doors: real buttons at every width, hidden by the sheet
          rules while the columns are there (never hover-only). -->
     <span class="files-sheets">
-      <button
-        class="files-sheetbtn"
-        type="button"
-        aria-expanded={sheet === 'tree'}
-        onclick={() => (sheet === 'tree' ? closeSheet() : openSheet('tree'))}>tree</button
-      >
+      {#if tab === 'files'}
+        <button
+          class="files-sheetbtn"
+          type="button"
+          aria-expanded={sheet === 'tree'}
+          onclick={() => (sheet === 'tree' ? closeSheet() : openSheet('tree'))}>tree</button
+        >
+      {/if}
       <button
         class="files-sheetbtn"
         type="button"
@@ -829,47 +857,81 @@
   {:else if entries.length === 0}
     <main class="files-main"><p class="files-quiet">The seat's tree has no files.</p></main>
   {:else}
-    <div class="files-body">
-      <div class="files-side" class:sheet={sheet === 'tree'}>
-        <button class="files-sheetclose" type="button" onclick={closeSheet}>done</button>
-        <input
-          class="files-filter"
-          type="text"
-          placeholder="filter files"
-          aria-label="filter files"
-          data-editor="nowhere"
-          bind:value={query}
-        />
-        {#if tree.length === 0}
-          <p class="files-quiet">No file matches this filter.</p>
-        {:else}
-          <FileTree
-            rows={tree}
-            heading="Tree"
-            label="the seat's tree"
-            count={entries.length}
-            {closed}
-            here={open}
-            active={keyRow}
-            ondir={(path) => toggleClosed(closed, path)}
-            onfile={(path) => (open = path)}
-          >
-            {#snippet trailing(row: TreeRow<unknown>)}
-              {@const dropped = droppedCount(row.path)}
-              {#if dropped > 0}
-                <span class="rv-fcount"><span class="rv-ccnum">{dropped}</span></span>
-              {/if}
-            {/snippet}
-          </FileTree>
-        {/if}
-      </div>
-      <main class="files-main" aria-label="the file">
-        {#if open === null}
-          <p class="files-quiet">Pick a file from the tree.</p>
-        {:else}
-          <Reader {connection} {slot} path={open} oncomment={commentOn} bind:handle={reader} />
-        {/if}
-      </main>
+    <nav class="rv-tabs" aria-label="files sections">
+      <button
+        type="button"
+        class:on={tab === 'conversation'}
+        onclick={() => (tab = 'conversation')}
+      >
+        Conversation
+      </button>
+      <button type="button" class:on={tab === 'files'} onclick={() => (tab = 'files')}>
+        Files <span class="rv-tn">{entries.length}</span>
+      </button>
+    </nav>
+    <div class="files-body" class:conv={tab === 'conversation'}>
+      {#if tab === 'files'}
+        <div class="files-side" class:sheet={sheet === 'tree'}>
+          <button class="files-sheetclose" type="button" onclick={closeSheet}>done</button>
+          <input
+            class="files-filter"
+            type="text"
+            placeholder="filter files"
+            aria-label="filter files"
+            data-editor="nowhere"
+            bind:value={query}
+          />
+          {#if tree.length === 0}
+            <p class="files-quiet">No file matches this filter.</p>
+          {:else}
+            <FileTree
+              rows={tree}
+              heading="Tree"
+              label="the seat's tree"
+              count={entries.length}
+              {closed}
+              here={open}
+              active={keyRow}
+              ondir={(path) => toggleClosed(closed, path)}
+              onfile={(path) => (open = path)}
+            >
+              {#snippet trailing(row: TreeRow<unknown>)}
+                {@const dropped = droppedCount(row.path)}
+                {#if dropped > 0}
+                  <span class="rv-fcount"><span class="rv-ccnum">{dropped}</span></span>
+                {/if}
+              {/snippet}
+            </FileTree>
+          {/if}
+        </div>
+        <main class="files-main" aria-label="the file">
+          {#if open === null}
+            <p class="files-quiet">Pick a file from the tree.</p>
+          {:else}
+            <Reader {connection} {slot} path={open} oncomment={commentOn} bind:handle={reader} />
+          {/if}
+        </main>
+      {:else}
+        <main class="files-main files-conv" aria-label="the conversation">
+          <Conversation
+            threads={treeThreads}
+            rounds={treeRounds}
+            drafts={draftIds}
+            {busy}
+            {now}
+            {voice}
+            {reply}
+            noun="tree"
+            known={treeRead}
+            onreply={replied}
+            onresolve={(thread: ReviewThreadRecord) => void resolved(thread)}
+            onreopen={(thread: ReviewThreadRecord) => void reopened(thread)}
+            onpress={() => (pressedIn = 'reply')}
+            onhold={() => (panelIn = 'reply')}
+            onfield={(el: HTMLElement | null) => (elements.reply = el)}
+          />
+        </main>
+      {/if}
       <div class="files-railhold" class:sheet={sheet === 'comments'}>
         <button class="files-sheetclose" type="button" onclick={closeSheet}>done</button>
         <Rail

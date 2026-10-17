@@ -43,6 +43,41 @@
   .files-sep { color: var(--line); margin: 0 7px; }
   .files-loop { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data);
     color: var(--warn); }
+  /* The tab strip (the sheet's shared rules), and the conversation's own. */
+  .rv-tabs { display: flex; align-items: center; gap: 2px; padding: 0 0 6px; }
+  .rv-tabs > button { font-size: var(--fs-base); color: var(--dim); background: none;
+    border: 0; border-bottom: 2px solid transparent; padding: 5px 12px 6px; cursor: pointer; }
+  .rv-tabs > button.on { color: var(--text); border-bottom-color: var(--accent); }
+  .rv-tn { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .conv { max-width: 820px; margin: 0 auto; width: 100%; }
+  .conv .group { margin: 14px 0 8px; }
+  .conv .group h2 { display: flex; gap: 8px; align-items: baseline; margin: 0 0 6px;
+    font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); }
+  .conv .n { font-family: var(--mono); letter-spacing: 0; }
+  .conv .round { border: 1px solid var(--line); border-radius: var(--r);
+    background: var(--s1); padding: 9px 11px 10px; margin-bottom: 10px; }
+  .conv .heads { display: flex; align-items: baseline; gap: 9px; }
+  .conv .rn { font-family: var(--mono); font-size: var(--fs-base); font-weight: 600;
+    color: var(--accent); }
+  .conv .age { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .conv .tally { margin-left: auto; display: flex; gap: 6px; }
+  .conv .chip { font-family: var(--mono); font-size: var(--fs-label); border-radius: 99px;
+    padding: 0 8px; border: 1px solid var(--line); color: var(--muted); }
+  .conv .chip.open { color: var(--text); border-color: var(--ctl); }
+  .conv .chip.resolved { color: var(--ok); border-color: rgba(130,199,107,.35); }
+  .conv .summary { font-size: var(--fs-base); color: var(--muted); margin: 6px 0 2px; }
+  .conv .thread { border-top: 1px solid rgba(34,42,60,.55); margin-top: 8px; padding-top: 8px; }
+  .conv .rv-state { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+  .conv .rv-state.open { color: var(--text); border-color: var(--ctl); }
+  .conv .where { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conv .turn { display: flex; align-items: baseline; gap: 8px; margin: 7px 0;
+    border-left: 1px solid var(--accent); padding: 2px 0 2px 10px;
+    font-size: var(--fs-base); color: var(--muted); }
+  .conv .acts { display: flex; gap: 8px; padding-top: 6px; align-items: center; }
+
   .files-body { display: grid;
     grid-template-columns: minmax(0, 260px) minmax(0, 1fr) minmax(0, 280px);
     gap: 16px; padding: 12px 18px 18px; }
@@ -185,6 +220,11 @@
     <span class="files-facts">/Users/me/proj/.claude/worktrees/tree-review-survey<span class="files-sep">|</span>1,166 files</span>
     <span class="files-loop">1 to read</span>
   </header>
+
+  <nav class="rv-tabs" aria-label="files sections">
+    <button type="button">Conversation</button>
+    <button type="button" class="on">Files <span class="rv-tn">1,166</span></button>
+  </nav>
 
   <div class="files-body">
     <div class="files-side">
@@ -373,6 +413,31 @@
       </div>
     </div>
   </div>
+</div>
+
+<p class="fig"><b>Specimen 6 - the conversation.</b> The same rounds the review page draws of a branch, over the seat's tree scope (one component, both pages): newest first, each round with its age, tally chips and the threads it sealed - and the reply box under the thread being answered. Parked threads sit above in their own group with their captured lines. The rail stays beside it, because it carries the finish.</p>
+
+<div class="conv">
+  <section class="group">
+    <h2>Rounds <span class="n">newest first</span></h2>
+    <article class="round">
+      <div class="heads">
+        <span class="rn">R2</span>
+        <span class="age">2h ago</span>
+        <span class="tally"><span class="chip open">1 open</span><span class="chip resolved">1 resolved</span></span>
+      </div>
+      <p class="summary">The round's own summary sentence, as the finish took it.</p>
+      <div class="thread">
+        <div class="heads">
+          <span class="rv-state open">open</span>
+          <span class="where">crates/forge-server/src/surface.rs &#183; line 320</span>
+        </div>
+        <div class="turn you"><span class="rv-at">you</span><span class="prose">the tree scope rides the seat, so a rebase keeps them</span></div>
+        <div class="turn"><span class="rv-at">agent</span><span class="prose">kept - the scope is the seat and never the branch</span></div>
+        <div class="acts"><button class="rv-a" type="button">respond</button><button class="rv-a" type="button">resolve</button></div>
+      </div>
+    </article>
+  </section>
 </div>
 
 <footer class="fig" style="padding-top:34px">
