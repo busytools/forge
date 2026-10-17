@@ -253,8 +253,8 @@ pub(crate) fn crossings(
                 subject: Some(estimate.secs.to_string()),
                 seat: row.task.owner.clone(),
                 text: format!(
-                    "task board: \"{}\" has worked {} against its estimate of {} - status? An \
-                     update clears this.",
+                    "task board: \"{}\" has worked {} against its estimate of {} - status? A new \
+                     estimate, completing it, or parking it clears this.",
                     row.task.subject,
                     fmt_secs(row.worked_secs),
                     estimate.words,
@@ -1120,6 +1120,11 @@ mod tests {
         assert_eq!(seen.len(), 1, "exactly one message: {seen:?}");
         assert_eq!(seen[0].0, SessionSlot::worker("TestOrg", PROJECT, "w-1"));
         assert!(seen[0].1.contains("subject t-1"), "the message names the row: {}", seen[0].1);
+        assert!(
+            seen[0].1.contains("A new estimate, completing it, or parking it"),
+            "the ask names what actually clears the overrun, not an update: {}",
+            seen[0].1,
+        );
         drop(seen);
 
         assert_eq!(sweep(&ws, &deliver, &mut memory, 140), 0, "the rung never repeats");
