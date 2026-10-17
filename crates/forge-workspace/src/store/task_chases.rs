@@ -20,10 +20,7 @@ fn row_key(chase: &TaskChase) -> String {
         chase.at.duration_since(std::time::SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let task = chase.task_id.as_ref().map_or("-", forge_primitives::tasks::TaskId::as_str);
     let subject = chase.subject.as_deref().unwrap_or("-");
-    format!(
-        "{}\u{0}{task}\u{0}{subject}\u{0}{:?}\u{0}{nanos:040}",
-        chase.project_name, chase.rung
-    )
+    format!("{}\u{0}{task}\u{0}{subject}\u{0}{:?}\u{0}{nanos:040}", chase.project_name, chase.rung)
 }
 
 /// Append `chases`; never rewrites what is there.

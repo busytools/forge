@@ -2435,9 +2435,10 @@ describe('one turn folded into the units a view draws', () => {
         uuid: 'c9351772-2ce7-4c28-88e1-6fcad33c0905',
       }),
     ]);
-    expect(nudgesOf(reloaded[0]).map((row) => row.text), 'the reloaded row draws like the live one').toEqual(
-      nudgesOf(live[0]).map((row) => row.text),
-    );
+    expect(
+      nudgesOf(reloaded[0]).map((row) => row.text),
+      'the reloaded row draws like the live one',
+    ).toEqual(nudgesOf(live[0]).map((row) => row.text));
 
     // The reader's own send keeps its row: the id's prefix is what tells the
     // two apart, so a plain prompt id is still the reader's words.

@@ -240,12 +240,7 @@ pub(crate) fn crossings(
         if running
             && let Some(estimate) = estimate
             && row.worked_secs > estimate.secs
-            && !fired_already(
-                fired,
-                ChaseRung::EstimateNudge,
-                id,
-                Some(&estimate.secs.to_string()),
-            )
+            && !fired_already(fired, ChaseRung::EstimateNudge, id, Some(&estimate.secs.to_string()))
         {
             out.push(Crossing {
                 rung: ChaseRung::EstimateNudge,
@@ -355,8 +350,7 @@ pub(crate) fn crossings(
                 ),
             });
         }
-        if row.marks.to_close
-            && due(fired, ChaseRung::EpicClose, id, None, CADENCE_STUCK_SECS, now)
+        if row.marks.to_close && due(fired, ChaseRung::EpicClose, id, None, CADENCE_STUCK_SECS, now)
         {
             out.push(Crossing {
                 rung: ChaseRung::EpicClose,
@@ -407,11 +401,9 @@ pub(crate) fn crossings(
         .iter()
         .filter(|row| {
             row.task.status == TaskStatus::Waiting
-                && row
-                    .task
-                    .waiting_on
-                    .as_ref()
-                    .is_some_and(|wait| wait.verification || wait.kind == Some(WaitingKind::Decision))
+                && row.task.waiting_on.as_ref().is_some_and(|wait| {
+                    wait.verification || wait.kind == Some(WaitingKind::Decision)
+                })
                 && row.updated_secs_ago > CADENCE_STUCK_SECS
         })
         .collect();
