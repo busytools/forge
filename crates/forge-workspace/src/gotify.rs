@@ -875,6 +875,46 @@ mod tests {
         );
     }
 
+    /// A `Failed` entry is kept by design but is NOT live, so it is no more
+    /// of a delivery target than a label with no entry at all: routing to it
+    /// would park the notification in a bucket nothing drains. It falls
+    /// through to the lead exactly like the gone-worker case beside this one.
+    #[test]
+    fn deliver_gotify_message_failed_team_worker_falls_through_to_lead() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("forge", "/tmp/gotify-team");
+        let view_key = ws.project_key_for_name("forge").expect("seeded project");
+        let mut failed = live_worker_entry("forge", "reviewer");
+        failed.status = forge_primitives::WorkerLiveness::Failed;
+        failed.diagnostic = Some("connection closed".to_owned());
+        ws.insert_live_worker(&view_key, failed);
+
+        let notif = gotify_notif("Backups", "backup", "env", 5);
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), notif.clone());
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        assert_eq!(
+            parked_gotify(&ws, "forge", Some("reviewer")),
+            Vec::new(),
+            "nothing parks for a failed worker's slot",
+        );
+        let spawns = dispatched
+            .iter()
+            .filter(|c| {
+                matches!(c, crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "forge")
+            })
+            .count();
+        assert_eq!(spawns, 1, "the fall-through spawns the asleep project");
+        assert_eq!(
+            parked_gotify(&ws, "forge", None),
+            vec![notif],
+            "and the notification waits for the project's lead",
+        );
+    }
+
     /// A team-worker subscription whose worker is a live entry but still
     /// Spawning (session_id None) must buffer on the worker's own
     /// DomainSession for its Connected drain - not dispatch a bare

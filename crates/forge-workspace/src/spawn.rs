@@ -869,10 +869,12 @@ fn member_line(message: &SlackMessage) -> String {
 /// the session's own domain when it is still spawning. Mirrors
 /// [`deliver_gotify_message`], including its rule that a worker-owned
 /// subscription falls through to the lead only when the worker is gone
-/// entirely (teardown removed its subscriptions first, so this is the
-/// despawn race, not steady state) - and that fall-through commits under the
-/// worker's own dedupe key, so a durable worker that respawns later
-/// re-delivers what it missed.
+/// entirely: the despawn race (teardown removed its subscriptions first),
+/// or a `Failed` entry, which is kept by design and is not live - a bucket
+/// parked for one would never drain. The fall-through commits under the
+/// worker's own dedupe key, so the batch counts as delivered and stays
+/// with the lead: a durable worker that later respawns does not
+/// re-receive it.
 ///
 /// Returns whether the batch reached a destination it can be read from:
 /// dispatched, or buffered for one that will. `false` tells the pump the
@@ -1006,12 +1008,22 @@ pub(crate) fn deliver_slack_message(
     true
 }
 
-/// The team worker labelled `label` in `project`, if a live entry
+/// The team worker labelled `label` in `project`, if a LIVE entry
 /// exists - regardless of whether it has finished connecting. The
 /// caller checks connectedness to decide dispatch-vs-buffer.
+///
+/// A `Failed` entry is kept by design (its tombstone row stays
+/// visible) but is not live: the worker has no session to drain a
+/// bucket and no spawn coming to make one, so it is not a delivery
+/// target - parking for its slot is the bucket nothing drains, whose
+/// contents land as fresh turns whenever the worker is next opened.
 fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Option<SessionSlot> {
     let view = workspace.list_projects().into_iter().find(|v| v.name == project)?;
-    workspace.list_live_workers(&view.key).into_iter().find(|w| w.label == label).map(|w| w.slot)
+    crate::mcp::workers::types::live_worker_with_label(
+        &workspace.list_live_workers(&view.key),
+        label,
+    )
+    .map(|w| w.slot.clone())
 }
 
 /// Emit a typed `PeerEnvelopeAppended` so the target session's
@@ -3183,6 +3195,57 @@ provider = "anthropic"
                 .map_or(0, |parked| parked.slack.len()),
             0,
             "a worker-owned subscription never falls through to the lead",
+        );
+    }
+
+    /// A `Failed` entry is kept by design (its tombstone row stays visible),
+    /// but it is NOT live: the worker has no session to drain a bucket and no
+    /// spawn coming to make one. So it must not be a delivery target - the
+    /// batch would park forever and land as fresh user turns whenever the
+    /// worker is next opened, however long that takes (#1208). Routing as if
+    /// the worker were gone sends the message to the lead, which wakes the
+    /// project the way the lead path always has.
+    #[test]
+    fn a_slack_message_for_a_failed_worker_goes_to_the_lead_not_a_frozen_bucket() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("forge", "/tmp/slack-failed-worker");
+        let project_key =
+            ws.list_projects().into_iter().find(|v| v.name == "forge").expect("seeded").key;
+        // Delivery resolves the target through the live entry's slot, so the
+        // fixture carries the one production derives for this worker.
+        let worker_key = crate::SessionSlot::worker("TestOrg", "forge", "tester");
+        let mut failed = fake_worker_entry("tester", "worker-uuid");
+        failed.slot = worker_key.clone();
+        failed.status = forge_primitives::WorkerLiveness::Failed;
+        failed.diagnostic = Some("connection closed".to_owned());
+        ws.insert_live_worker(&project_key, failed);
+        ws.enable_test_dispatch_intercept();
+
+        deliver_slack_message(&ws, "forge", Some("tester"), vec![slack_msg("hello")]);
+
+        assert_eq!(
+            ws.parked_by_slot.lock().get(&worker_key).map_or(0, |parked| parked.slack.len()),
+            0,
+            "a failed worker's slot is not a destination: nothing parks for a bucket nothing \
+             will drain",
+        );
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|c| matches!(
+                c,
+                crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "forge"
+            )),
+            "the message wakes the project: {dispatched:?}",
+        );
+        assert_eq!(
+            ws.parked_by_slot
+                .lock()
+                .get(&crate::SessionSlot::lead("TestOrg", "forge"))
+                .map_or(0, |parked| parked.slack.len()),
+            1,
+            "and waits for the lead the spawn brings up",
         );
     }
 
