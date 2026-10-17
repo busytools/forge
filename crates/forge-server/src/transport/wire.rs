@@ -1008,7 +1008,11 @@ const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 /// No lock is held across the wait, and two callers on two cold seats do not
 /// serialise: each waits on its own seat's arrival, and the notice only says
 /// that some seat was seeded.
-pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Option<Arc<Held>> {
+pub async fn conversation_for(
+    state: &TransportState,
+    slot: &SessionSlot,
+    timings: &mut OpenTimings,
+) -> Option<Arc<Held>> {
     // **A copy of another occupant is no copy.** A seal the fold has not
     // applied yet leaves the previous run's conversation standing, and
     // answering with it would pair the new epoch's count with rows it never
@@ -1023,7 +1027,7 @@ pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Opt
     // rows - the very answer this function exists to refuse. A mismatch goes
     // straight to the replay, whose reseed replaces the copy in place.
     if state.conversations.get(slot).is_none()
-        && let Some(held) = seed_from_transcript(state, slot).await
+        && let Some(held) = seed_from_transcript(state, slot, timings).await
     {
         // **The seed must be the seat's copy too.** Its occupant is the
         // read's own resolution, which can lag a header that already moved
@@ -1083,7 +1087,12 @@ pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Opt
 /// is already written. `None` when the seat records no session at all, or
 /// its file holds nothing yet: a seat that has never run has no history, and
 /// an empty conversation would claim exactly that.
-async fn seed_from_transcript(state: &TransportState, slot: &SessionSlot) -> Option<Arc<Held>> {
+async fn seed_from_transcript(
+    state: &TransportState,
+    slot: &SessionSlot,
+    timings: &mut OpenTimings,
+) -> Option<Arc<Held>> {
+    let at = std::time::Instant::now();
     let surface = Arc::clone(&state.surface);
     let seat = slot.clone();
     let read =
@@ -1095,6 +1104,9 @@ async fn seed_from_transcript(state: &TransportState, slot: &SessionSlot) -> Opt
     let mut conversation =
         // A file read, whole: the cap's own drop is what the floor counts.
         Conversation::new(read.messages, read.compaction_count, 0);
+    // The read is the cold open's cost and nothing else's, so it is timed
+    // where it runs rather than inferred from the conversation's total.
+    timings.seed_ms = at.elapsed().as_secs_f64() * 1000.0;
     // **The copy says which run it holds** (#2256). A transcript seeded while
     // the seat ran one occupant must not answer under another: the seal the
     // fold has not applied yet leaves this copy standing while the header
@@ -1118,6 +1130,25 @@ async fn seed_from_transcript(state: &TransportState, slot: &SessionSlot) -> Opt
 /// drops by turn key.
 pub const SUBSCRIBE_TURNS: u32 = 20;
 
+/// The slices of one session open, in milliseconds, gathered as its read
+/// runs (#2374).
+///
+/// **What splits a slow switch between this server and the client.** A
+/// client's own marks say when its click happened and when the first row
+/// drew; these are what the server was doing in between, so a gap the two
+/// artefacts have to explain is placed by them rather than guessed at. The
+/// seed is the transcript read only a cold seat pays; the rest are on every
+/// open. What they do not name - the queued flush, the copy's catch-up and
+/// the record's own reads - is the remainder between their sum and the
+/// transport's `session_open` line.
+#[derive(Debug, Default)]
+pub struct OpenTimings {
+    pub seed_ms: f64,
+    pub conversation_ms: f64,
+    pub page_ms: f64,
+    pub encode_ms: f64,
+}
+
 /// A subject's wire form. The ONE place it is produced.
 ///
 /// Async because a session's git section is a filesystem read, so the
@@ -1132,9 +1163,22 @@ pub const SUBSCRIBE_TURNS: u32 = 20;
 /// fields empty and a working tree read per read, since no held seat has a
 /// store to keep one in.
 pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result<Value> {
+    encode_subject_timed(state, subject).await.map(|(value, _)| value)
+}
+
+/// [`encode_subject`], carrying the session's own open timings.
+///
+/// **Split from the plain encode so the thirty readers that want only the
+/// value keep their call**: a session's timeline is the open path's own
+/// business, and it is the only arm that fills one.
+pub(crate) async fn encode_subject_timed(
+    state: &TransportState,
+    subject: &Subject,
+) -> Result<(Value, OpenTimings)> {
     let surface = &state.surface;
+    let mut timings = OpenTimings::default();
     match subject {
-        Subject::Home => Ok(serde_json::to_value(home(state, surface).await)?),
+        Subject::Home => Ok((serde_json::to_value(home(state, surface).await)?, timings)),
         Subject::Session(slot) => {
             let roster = surface.roster();
             let Some(cwd) = roster.cwd_for(slot) else {
@@ -1146,19 +1190,25 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
             // fresh for as long as somebody is showing it.
             request_context_usage_if_unreported(surface, slot);
             request_mcp_snapshot_if_unreported(surface, slot);
-            Ok(serde_json::to_value(session(state, surface, slot, &cwd).await?)?)
+            let wire = session(state, surface, slot, &cwd, &mut timings).await?;
+            // The record's own serialisation, and nothing else: what the
+            // measurement pass timed as the encode, so the numbers line up.
+            let at = std::time::Instant::now();
+            let value = serde_json::to_value(&wire)?;
+            timings.encode_ms = at.elapsed().as_secs_f64() * 1000.0;
+            Ok((value, timings))
         }
         // The pool's own report, scanned here rather than carried in another
         // snapshot: it belongs to no seat, and a home snapshot that scanned
         // the pool would pay for the walk on every subscribe.
-        Subject::Usage => Ok(serde_json::to_value(surface.usage().await?)?),
+        Subject::Usage => Ok((serde_json::to_value(surface.usage().await?)?, timings)),
         // The models page's read, off the workspace's own state: no walk,
         // no lock held across a scan - the fetch that changes it runs
         // elsewhere and lands as its own update.
-        Subject::DictateModels => Ok(serde_json::to_value(surface.dictate_models())?),
+        Subject::DictateModels => Ok((serde_json::to_value(surface.dictate_models())?, timings)),
         // The Extensions page's read: one disk scan of the plugin
         // inventory per read, plus the PATH checks and the last run.
-        Subject::Extensions => Ok(serde_json::to_value(extensions(state).await)?),
+        Subject::Extensions => Ok((serde_json::to_value(extensions(state).await)?, timings)),
     }
 }
 
@@ -1424,6 +1474,7 @@ async fn session(
     surface: &ViewSurface,
     slot: &SessionSlot,
     cwd: &Path,
+    timings: &mut OpenTimings,
 ) -> Result<SessionWire> {
     let header = surface.header(slot);
     // **The number is read BEFORE the copy's frames are.** Every frame minted
@@ -1447,12 +1498,15 @@ async fn session(
     // The conversation's share of the record, taken through one blocking task
     // so the fold never runs on the reactor or under the lock. A seat with no
     // conversation is answered with the empty one.
-    let conversation = conversation_for(state, slot).await;
-    let (turns, compaction_count) = match conversation {
+    let at = std::time::Instant::now();
+    let conversation = conversation_for(state, slot, timings).await;
+    timings.conversation_ms = at.elapsed().as_secs_f64() * 1000.0;
+    let (turns, compaction_count, page_ms) = match conversation {
         Some(held) => {
             let seat = slot.clone();
             tokio::task::spawn_blocking(move || {
-                held.read(|held| {
+                let at = std::time::Instant::now();
+                let (turns, count) = held.read(|held| {
                     (
                         page(
                             held.messages(),
@@ -1464,7 +1518,8 @@ async fn session(
                         .turns,
                         held.compaction_count(),
                     )
-                })
+                });
+                (turns, count, at.elapsed().as_secs_f64() * 1000.0)
             })
             .await
             .unwrap_or_else(|error| {
@@ -1474,11 +1529,12 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), 0)
+                (Vec::new(), 0, 0.0)
             })
         }
-        None => (Vec::new(), 0),
+        None => (Vec::new(), 0, 0.0),
     };
+    timings.page_ms = page_ms;
     // The instance list crosses from the fold that ANNOUNCES it rather than
     // from a second walk here: the session task folds a card per frame and
     // pushes `SubagentCardsChanged` off the same walk, so this is what that
@@ -3040,6 +3096,53 @@ mod tests {
         assert!(
             encoded.get("pricing_available").is_some(),
             "and the flag that blanks costs rather than reading a misleading zero: {encoded}"
+        );
+    }
+
+    /// **The open path carries its own numbers (#2374).** A session encode is
+    /// where a client's switch waits on this half, so the slices of that wait
+    /// - the page's cut and the record's encode - ride back with the value;
+    /// with the client's own marks, a slow switch is then placed from the
+    /// artefacts rather than guessed at.
+    #[tokio::test]
+    async fn the_open_path_carries_its_own_timings() {
+        let root = tempfile::tempdir().expect("a temp dir");
+        let state = fixture_state(root.path()).await;
+
+        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
+            .await
+            .expect("the seat encodes");
+
+        assert!(timings.page_ms > 0.0, "the page's cut is work on the path: {timings:?}");
+        assert!(timings.encode_ms > 0.0, "the record's encode is work on the path: {timings:?}");
+        assert_eq!(timings.seed_ms, 0.0, "a HELD copy pays no transcript read: {timings:?}");
+    }
+
+    /// The other half: a seat the transport holds nothing for pays the
+    /// transcript read, and the number says so rather than leaving it folded
+    /// into the conversation total.
+    #[tokio::test]
+    async fn a_cold_seat_reports_its_seed_read() {
+        let root = tempfile::tempdir().expect("a temp dir");
+        let state = fixture_state(root.path()).await;
+        // The same fleet with an empty transport: the seed path is what a
+        // seat nobody holds takes.
+        let cold = TransportState {
+            surface: Arc::clone(&state.surface),
+            work: Arc::clone(&state.work),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::clone(&state.browser),
+        };
+
+        let (_, timings) = encode_subject_timed(&cold, &Subject::Session(fixture_seat()))
+            .await
+            .expect("the seat encodes");
+
+        assert!(
+            timings.seed_ms > 0.0,
+            "the transcript read a cold seat takes is timed: {timings:?}"
         );
     }
 

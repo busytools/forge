@@ -22,7 +22,9 @@ use super::PROTOCOL_VERSION;
 use super::TransportState;
 use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
-use super::wire::{FileContentWire, conversation_for, encode_subject, page};
+use super::wire::{
+    FileContentWire, OpenTimings, conversation_for, encode_subject, encode_subject_timed, page,
+};
 use crate::live::Live;
 use crate::surface::{DictateOutcome, ViewSurface};
 use crate::{Command, DispatchError, SeatUpdate, SessionUpdate};
@@ -705,6 +707,11 @@ async fn handle_client(
     };
     match client {
         ClientMessage::Subscribe { what, answering, browser, declare } => {
+            // **The open path's own clock (#2374).** From this message being
+            // read to the snapshot being written - the span a client's seat
+            // switch waits on this half for, whatever subject it names; the
+            // line below is emitted for a session, which is where the wait is.
+            let open_at = Instant::now();
             // **The browser role, offered once per connection.** A capable
             // client declares it on every subscribe it makes; the first
             // declaration while the role is free takes it, and a later one
@@ -764,8 +771,8 @@ async fn handle_client(
                 holds.take(slot);
             }
             batch::flush(socket, queued).await?;
-            match encode_subject(state, &what).await {
-                Ok(data) => {
+            match encode_subject_timed(state, &what).await {
+                Ok((data, timings)) => {
                     // Watched only once the subject is one this server can
                     // answer for: a refused subscribe leaves nothing to hear.
                     //
@@ -802,7 +809,30 @@ async fn handle_client(
                     if !declare {
                         watched.push(what.clone());
                     }
-                    send(socket, ServerMessage::Snapshot { subject: what, data }).await?;
+                    let bytes =
+                        send_frame(socket, ServerMessage::Snapshot { subject: what, data }).await?;
+                    if let Some(slot) = &seat {
+                        // The session's open, in its own slices: the numbers a
+                        // reader places a slow switch with, beside the
+                        // client's own marks. Debug, and for one session's
+                        // work rather than a problem of forge's - but a record
+                        // a reader acts on, so it names what its remainder is.
+                        tracing::debug!(
+                            event_name = "session_open",
+                            slot = %slot.display(),
+                            open_ms = open_at.elapsed().as_secs_f64() * 1000.0,
+                            seed_ms = timings.seed_ms,
+                            conversation_ms = timings.conversation_ms,
+                            page_ms = timings.page_ms,
+                            encode_ms = timings.encode_ms,
+                            bytes,
+                            "the subscribe's own work: seed is the transcript read a cold \
+                             seat pays, conversation is the copy's arrival, page its cut and \
+                             fold, and encode the record's serialisation; the rest of \
+                             open_ms is the queued flush, the copy's catch-up and the \
+                             record's reads",
+                        );
+                    }
                     // Rather than keeping a spent mark until the next unrelated
                     // redraw, which can be half a minute away.
                     if let Some(slot) = &seat
@@ -1016,7 +1046,12 @@ async fn handle_client(
             // socket folds the core's stream in one task for every seat, so a
             // fold holding a seat's lock would stall update delivery for every
             // client on every seat rather than for a second reader of this one.
-            let Some(held) = conversation_for(state, &conversation).await else {
+            // A page is not the open path, so the timings a subscribing read
+            // reports are not this one's to gather: the throwaway goes with
+            // the call.
+            let Some(held) =
+                conversation_for(state, &conversation, &mut OpenTimings::default()).await
+            else {
                 // **A question that cannot be answered is REFUSED rather than
                 // answered with a value that looks like one.** An empty page
                 // carries `cursor: null`, and a client reads that as "nothing
@@ -1681,9 +1716,19 @@ fn fail_awaiting_images(hosting: &mut Option<Hosting>, why: &str) {
 }
 
 async fn send(socket: &mut WebSocket, message: ServerMessage) -> anyhow::Result<()> {
+    send_frame(socket, message).await.map(|_| ())
+}
+
+/// [`send`], answering how many bytes the frame carried.
+///
+/// **Only the open path reports a size** (#2374), and a return every other
+/// caller would drop is noise in thirty of them - so the size is answered
+/// here and the plain write wraps it.
+async fn send_frame(socket: &mut WebSocket, message: ServerMessage) -> anyhow::Result<usize> {
     let text = serde_json::to_string(&message)?;
+    let bytes = text.len();
     socket.send(Message::Text(text.into())).await?;
-    Ok(())
+    Ok(bytes)
 }
 
 /// What a `more` asks for, out of the cursor it was sent.
