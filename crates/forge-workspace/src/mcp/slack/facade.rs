@@ -44,6 +44,19 @@ pub(crate) enum SlackSubscribeError {
     UnknownCallerProject,
 }
 
+/// Why `slack__unsubscribe` failed. The last two are the two cases a
+/// refusal keeps apart: an id the project holds under another session
+/// reads differently from one the project never had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SlackUnsubscribeError {
+    /// The caller couldn't be mapped to a project.
+    UnknownCallerProject,
+    /// No subscription with that id in the caller's project.
+    NoSuchSubscription,
+    /// The id is in the caller's project but belongs to another owner.
+    NotOwnedByCaller,
+}
+
 /// What a caller asked to post. Composed here, not in the connector, so
 /// the draft can be held for the user's decision before anything is sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,10 +356,16 @@ pub(crate) trait SlackFacade: Send + Sync {
         request: SlackSubscribeRequest,
     ) -> Result<Vec<SlackSubscription>, SlackSubscribeError>;
 
-    /// Remove one of the caller's OWN subscriptions by id, returning the
-    /// row as it stood. `None` both when no such id exists and when it
-    /// belongs to another owner.
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<SlackSubscription>;
+    /// Remove one of the caller's OWN subscriptions by id within its
+    /// project, returning the row as it stood. A refusal says which case
+    /// it is: [`SlackUnsubscribeError::NoSuchSubscription`] when the
+    /// project has no such id, [`SlackUnsubscribeError::NotOwnedByCaller`]
+    /// when it has one under another owner.
+    fn unsubscribe(
+        &self,
+        caller: &SessionSlot,
+        id: Uuid,
+    ) -> Result<SlackSubscription, SlackUnsubscribeError>;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -854,13 +873,27 @@ impl SlackFacade for ProdSlackFacade {
         Ok(created)
     }
 
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<SlackSubscription> {
-        let ws = self.workspace.upgrade()?;
-        let cx = caller_context(&ws, caller)?;
+    fn unsubscribe(
+        &self,
+        caller: &SessionSlot,
+        id: Uuid,
+    ) -> Result<SlackSubscription, SlackUnsubscribeError> {
+        let ws = self.workspace.upgrade().ok_or(SlackUnsubscribeError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(SlackUnsubscribeError::UnknownCallerProject)?;
         let removed =
             ws.remove_slack_subscription_owned_by(&cx.project_name, id, cx.worker_label.as_deref());
         ws.stop_slack_subsystem_if_idle();
-        removed
+        if let Some(removed) = removed {
+            return Ok(removed);
+        }
+        // The owner-scoped removal matched nothing, which is either an id
+        // the project never had or one another session owns; the caller is
+        // told which.
+        if ws.slack_subscriptions_for_project(&cx.project_name).iter().any(|s| s.id == id) {
+            Err(SlackUnsubscribeError::NotOwnedByCaller)
+        } else {
+            Err(SlackUnsubscribeError::NoSuchSubscription)
+        }
     }
 }
 
@@ -896,7 +929,8 @@ pub(crate) struct MockSlackFacade {
     pub subscribe_result:
         parking_lot::Mutex<Option<Result<Vec<SlackSubscription>, SlackSubscribeError>>>,
     pub unsubscribe_calls: parking_lot::Mutex<Vec<Uuid>>,
-    pub unsubscribe_result: parking_lot::Mutex<Option<SlackSubscription>>,
+    pub unsubscribe_result:
+        parking_lot::Mutex<Option<Result<SlackSubscription, SlackUnsubscribeError>>>,
 }
 
 #[cfg(test)]
@@ -1027,9 +1061,16 @@ impl SlackFacade for MockSlackFacade {
         self.subscribe_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
     }
 
-    fn unsubscribe(&self, _caller: &SessionSlot, id: Uuid) -> Option<SlackSubscription> {
+    fn unsubscribe(
+        &self,
+        _caller: &SessionSlot,
+        id: Uuid,
+    ) -> Result<SlackSubscription, SlackUnsubscribeError> {
         self.unsubscribe_calls.lock().push(id);
-        self.unsubscribe_result.lock().clone()
+        self.unsubscribe_result
+            .lock()
+            .clone()
+            .unwrap_or(Err(SlackUnsubscribeError::NoSuchSubscription))
     }
 }
 
@@ -1037,10 +1078,13 @@ impl SlackFacade for MockSlackFacade {
 mod tests {
     use super::*;
     use crate::config::LoadedConfig;
+    use crate::mcp::slack::Unsubscribe;
+    use crate::mcp::test_support::text_of;
     use forge_connectors::slack::{AuthTest, MessagePage, SearchPage, SlackApi, SlackError};
     use forge_primitives::slack::{
         SlackBookmark, SlackConfig, SlackFile, SlackPin, SlackPinMessage,
     };
+    use forge_sdk::mcp::tool::{Tool as _, ToolInput};
     use std::collections::{BTreeMap, HashMap};
     use tempfile::tempdir;
 
@@ -2074,6 +2118,133 @@ mod tests {
         let left = ws.slack_subscriptions_for_project("forge");
         assert_eq!(left.len(), 1, "only the untouched subscription remains");
         assert_eq!(left[0].id, first[0].id, "and it is the one the call did not name");
+    }
+
+    /// The refusal names the case: a row another session owns reads as
+    /// *not yours*, never as absent.
+    #[tokio::test]
+    async fn unsubscribe_refuses_another_owners_row() {
+        let (facade, ws, _api, _rx) = facade_with_recording_slack();
+        let worker = live_worker(&ws, "forge", "tester");
+        let owned = facade
+            .subscribe(&caller(), Some("acme"), SlackSubscribeRequest::Mentions)
+            .expect("the lead subscribes");
+
+        assert_eq!(
+            facade.unsubscribe(&worker, owned[0].id),
+            Err(SlackUnsubscribeError::NotOwnedByCaller),
+            "the lead's subscription is not the worker's to remove, and the refusal says which case it is",
+        );
+        assert_eq!(
+            ws.slack_subscriptions_for_project("forge").len(),
+            1,
+            "a refused unsubscribe removes nothing",
+        );
+    }
+
+    /// The other half of the refusal: an id the project never had is a
+    /// different answer from one that exists under another session.
+    #[test]
+    fn unsubscribe_refuses_an_id_the_project_never_had() {
+        let (facade, _ws, _api, _rx) = facade_with_recording_slack();
+
+        assert_eq!(
+            facade.unsubscribe(&caller(), Uuid::from_u128(0xdead)),
+            Err(SlackUnsubscribeError::NoSuchSubscription),
+            "an id with no entry in the project is reported as absent",
+        );
+    }
+
+    /// Both clauses of that message are about the caller's own project:
+    /// an id living in another project is not "in this project but not
+    /// subscribed by you", it is not in this project at all.
+    #[test]
+    fn unsubscribe_refuses_an_id_from_another_project_as_absent() {
+        let (facade, ws, _api, _rx) = facade_with_recording_slack();
+        let other = SlackSubscription {
+            id: Uuid::new_v4(),
+            workspace: "acme".to_owned(),
+            project: "otherproj".to_owned(),
+            team_role: None,
+            target: SlackSubscriptionTarget::Mentions,
+            created_at: SystemTime::UNIX_EPOCH,
+        };
+        let other_id = other.id;
+        ws.add_slack_subscription(other, false);
+
+        assert_eq!(
+            facade.unsubscribe(&caller(), other_id),
+            Err(SlackUnsubscribeError::NoSuchSubscription),
+            "an id that lives in another project is absent here, not a subscription of this project's",
+        );
+    }
+
+    /// A live worker row with `label`, so a caller on that slot resolves
+    /// to the project and owns subscriptions under its label.
+    fn live_worker(ws: &Workspace, project: &str, label: &str) -> SessionSlot {
+        let slot = SessionSlot::worker("TestOrg", project, label);
+        let project_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == project)
+            .expect("the seeded project")
+            .key;
+        ws.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: label.into(),
+                charter: "c".into(),
+                slot: slot.clone(),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", project),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        slot
+    }
+
+    /// The refusal is what a caller acts on, so it has to name the case:
+    /// a row the project holds under another session reads as *not
+    /// yours*, an id the project never had as *not there*. One string
+    /// for both lets a caller take its own refused unsubscribe as proof
+    /// the subscription is gone.
+    #[tokio::test]
+    async fn unsubscribe_refusals_name_the_case_through_the_tool() {
+        let (ws, facade) = workspace_with_one_slack_workspace("acme");
+        let worker = live_worker(&ws, "forge", "tester");
+        let lead_sub = facade
+            .subscribe(&caller(), Some("acme"), SlackSubscribeRequest::Mentions)
+            .expect("the lead subscribes");
+        let tool = Unsubscribe { facade, slot: worker };
+
+        let not_yours = tool
+            .call(ToolInput { value: serde_json::json!({ "id": lead_sub[0].id.to_string() }) })
+            .await;
+        assert!(not_yours.is_error, "a refused unsubscribe is an error");
+        assert_eq!(
+            text_of(&not_yours),
+            format!(
+                "subscription {} exists in this project but was not subscribed by you",
+                lead_sub[0].id
+            ),
+            "a live subscription owned by another session must say so, not report it missing",
+        );
+
+        let ghost = Uuid::from_u128(0xdead);
+        let not_there =
+            tool.call(ToolInput { value: serde_json::json!({ "id": ghost.to_string() }) }).await;
+        assert!(not_there.is_error, "an unknown id is an error");
+        assert_eq!(
+            text_of(&not_there),
+            format!("no subscription with id {ghost} in this project"),
+            "an id the project never had must not read as another session's subscription",
+        );
     }
 
     #[tokio::test]
