@@ -2639,6 +2639,34 @@ async fn a_dispatched_command_is_logged_with_its_connection_and_variant() {
     assert!(line.contains("client="), "and the connection that sent it: {line}");
 }
 
+/// **A refused command never logs as dispatched** (spam-control B3f): the
+/// attribution line must mean the command reached the core, so the
+/// `reply_to` refusals - which run before any dispatch - leave it silent.
+#[tokio::test]
+async fn a_refused_command_is_not_logged_as_dispatched() {
+    let (url, fleet) = a_server().await;
+    fleet.intercept_dispatch();
+    let (mut socket, _home) = a_page_on(&url, Subject::Home).await;
+    let (written, _guard) = catch_records();
+
+    // A fire-and-forget command sent WITH a reply id is refused before
+    // dispatch.
+    send(
+        &mut socket,
+        ClientMessage::Command { command: Box::new(Command::PluginUpdateAll), reply_to: Some(3) },
+    )
+    .await;
+    let ServerMessage::Error { .. } = next_server(&mut socket).await else {
+        panic!("a refused dispatch is answered with an error");
+    };
+    let records = caught(&written);
+    assert!(
+        !records.contains("command_dispatched"),
+        "a command refused before dispatch never logs as dispatched: {records}",
+    );
+    assert!(fleet.dispatched().is_empty(), "and nothing was dispatched");
+}
+
 /// **The refusal a page's own add press actually gets.** The add is
 /// fire-and-forget - sent without `reply_to`, the way the page sends it - so
 /// its refusals travel the fire-and-forget arm, not the mismatch arm above: a

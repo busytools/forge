@@ -926,18 +926,11 @@ async fn handle_client(
             // attribute the refusal to itself rather than to whatever was
             // pressed last.
             let dispatch_id = command.dispatch_id();
-            // **Which hand sent what** (issue #2372: a parked hand-off's
-            // answer arrived over the socket and could not be attributed -
-            // no dispatch named its connection).
-            tracing::debug!(
-                target: "forge_server::transport",
-                event_name = "command_dispatched",
-                client = me,
-                command = ?command,
-                "a client command reached the dispatch",
-            );
             match (reply_to, answers_through_a_reply(&command)) {
-                (Some(to), true) => dispatch_answering(socket, state, command, to).await,
+                (Some(to), true) => {
+                    dispatched(me, &command);
+                    dispatch_answering(socket, state, command, to).await
+                }
                 (None, true) => {
                     send(
                         socket,
@@ -965,28 +958,31 @@ async fn handle_client(
                     )
                     .await
                 }
-                (None, false) => match state.surface.dispatch(command) {
-                    Ok(()) => {
-                        // Claimed as soon as the dispatch answers - Ok for a
-                        // refusal too, whose reason rides the stream as its
-                        // own `DictateEnded` - so the frame that follows a
-                        // start finds the seat, which is what makes the claim
-                        // run AFTER the dispatch rather than before it. The
-                        // generation stays unknown until the take's own
-                        // `DictateStarted` stamps it, and only an end naming
-                        // that generation retires it.
-                        if let Some(seat) = streamed {
-                            dictate.claim(&seat);
+                (None, false) => {
+                    dispatched(me, &command);
+                    match state.surface.dispatch(command) {
+                        Ok(()) => {
+                            // Claimed as soon as the dispatch answers - Ok for a
+                            // refusal too, whose reason rides the stream as its
+                            // own `DictateEnded` - so the frame that follows a
+                            // start finds the seat, which is what makes the claim
+                            // run AFTER the dispatch rather than before it. The
+                            // generation stays unknown until the take's own
+                            // `DictateStarted` stamps it, and only an end naming
+                            // that generation retires it.
+                            if let Some(seat) = streamed {
+                                dictate.claim(&seat);
+                            }
+                            if let Some(recording) = recording {
+                                dictate.read_aloud = recording;
+                            }
+                            Ok(())
                         }
-                        if let Some(recording) = recording {
-                            dictate.read_aloud = recording;
+                        Err(refusal) => {
+                            send(socket, dispatch_refusal(&refusal, dispatch_id)).await
                         }
-                        Ok(())
                     }
-                    Err(refusal) => {
-                        send(socket, dispatch_refusal(&refusal, dispatch_id)).await
-                    }
-                },
+                }
             }
         }
         ClientMessage::More { conversation, before, turns } => {
@@ -2109,6 +2105,20 @@ fn dispatch_refusal(refusal: &DispatchError, dispatch_id: Option<u64>) -> Server
 ///
 /// These five are the ones with nothing behind them on the wire: a client that
 /// omits `reply_to` for one of them has no second way to learn what happened.
+/// **Which hand sent what** (issue #2372: a parked hand-off's answer arrived
+/// over the socket and could not be attributed - no dispatch named its
+/// connection). Logged where a command is actually dispatched: a refusal
+/// never was.
+fn dispatched(me: u64, command: &Command) {
+    tracing::debug!(
+        target: "forge_server::transport",
+        event_name = "command_dispatched",
+        client = me,
+        command = ?command,
+        "a client command reached the dispatch",
+    );
+}
+
 fn answers_through_a_reply(command: &Command) -> bool {
     matches!(
         command,
