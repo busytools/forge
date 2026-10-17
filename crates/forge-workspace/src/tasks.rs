@@ -81,10 +81,10 @@ fn parked_on_look(task: &Task) -> bool {
 }
 
 /// Whether a row presents as waiting on the user: a decision wait or a
-/// verification park. The fleet's count and the board's waiting strip
-/// both read this set, and so do the removal guards and the withdraw
-/// door - an ask on the user leaves by the user's own answer or approve,
-/// or by a reasoned withdraw.
+/// verification park. The removal guards and the withdraw door read this
+/// set - an ask on the user leaves by the user's own answer or approve,
+/// or by a reasoned withdraw. The fleet count and the board's waiting
+/// strip derive the same set from the stored fields.
 ///
 /// `verification` is checked alongside the kind: today's only setter tags
 /// `decision` too, and the arm keeps a verification park on-user however
