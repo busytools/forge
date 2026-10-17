@@ -46,9 +46,9 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use forge_primitives::{Message, SessionSlot};
 // The window this copy is kept in, which is the session task's window too: the
 // two hold the same conversation, and a source kept shorter than the copy that
-// reads it is a page that cannot reach its cap. The cap's why, and what the
-// drop costs, are stated there.
-use forge_workspace::conversation_window::{CONVERSATION_CAP, CONVERSATION_SLACK, drop_past_cap};
+// reads it is a page that cannot reach its cap. The ceilings' why, and what
+// the drop costs, are stated there.
+use forge_workspace::conversation_window::Window;
 
 use crate::SessionUpdate;
 use crate::transcript::Rendered;
@@ -83,7 +83,7 @@ pub enum Reseed {
 /// turn begins, and the count cannot describe a different conversation than
 /// the one held.
 pub struct Conversation {
-    messages: Vec<Message>,
+    window: Window,
     /// The fold's boundaries and task endings, which a page is cut on.
     ///
     /// **Nothing but those is held**, because the transport draws nothing: a
@@ -154,13 +154,16 @@ impl Conversation {
     /// came from left behind a window that was taken before the history
     /// crossed (see [`Conversation::seed`]), so a window handed over on its
     /// own still tells the whole conversation's numbering.
-    pub fn new(mut messages: Vec<Message>, compaction_count: u32, carried: usize) -> Self {
-        // **The drop runs before the conversion**, so a resume's transient
-        // cost is the history it handed over plus a window, rather than two
-        // transcripts.
-        let dropped = carried.saturating_add(drop_past_cap(&mut messages));
+    pub fn new(messages: Vec<Message>, compaction_count: u32, carried: usize) -> Self {
+        // **The history is converted in place before the cut**, so what is
+        // weighed and kept is the shape this copy holds rather than the shape
+        // the wire carried; and the cut is still what bounds what the copy
+        // costs, so a resume's transient is the history it handed over plus a
+        // window rather than two transcripts.
+        let (window, dropped) = Window::tail_of(&as_blocks(messages));
+        let dropped = carried.saturating_add(dropped);
         Self {
-            messages: as_blocks(messages),
+            window,
             rendered: Rendered { turns: Vec::new(), endings: HashMap::new() },
             compaction_count,
             dropped,
@@ -205,17 +208,19 @@ impl Conversation {
     /// crossing into the transcript.
     pub fn seed(
         &mut self,
-        mut messages: Vec<Message>,
+        messages: Vec<Message>,
         compaction_count: u32,
         route: Reseed,
         carried: usize,
     ) {
-        let seeded = carried.saturating_add(drop_past_cap(&mut messages));
         // **Converted before the comparison.** The copy a seat already holds
         // went through `as_blocks` at its own seed, so a `<task-notification>`
         // row and the block it converts to are one frame - and compared raw
-        // they would read a reseed of the same window as a different one.
-        let kept = as_blocks(messages);
+        // they would read a reseed of the same window as a different one. The
+        // cut then runs over the converted history, so the window it keeps is
+        // the one weighed.
+        let (kept, left) = Window::tail_of(&as_blocks(messages));
+        let seeded = carried.saturating_add(left);
         // **The numbering is carried over a replay, and only when the window
         // did not move.** The replay is the seat's own stream: the same frames
         // in the same order, ending at the same one, so a client's cursors
@@ -230,12 +235,12 @@ impl Conversation {
         // off by however the two diverged.
         let shifted = self
             .dropped
-            .saturating_sub(kept.len().saturating_sub(self.messages.len()))
-            .saturating_add(self.messages.len().saturating_sub(kept.len()));
+            .saturating_sub(kept.len().saturating_sub(self.window.len()))
+            .saturating_add(self.window.len().saturating_sub(kept.len()));
         let carried = route == Reseed::Replay
-            && self.messages.last().is_some()
-            && self.messages.last() == kept.last();
-        self.messages = kept;
+            && self.window.messages().last().is_some()
+            && self.window.messages().last() == kept.messages().last();
+        self.window = kept;
         // **The boundaries go with the messages they describe.** The fold's
         // turns name a prefix of the messages, and a reader that saw the new
         // list under the old boundaries would slice off the end of it.
@@ -246,7 +251,7 @@ impl Conversation {
         self.dropped = if carried { shifted } else { seeded };
         // A frame whose id is no longer held cannot be met again, so the set
         // that answers "did forge forge this" holds only what the seat keeps.
-        self.forged.retain(|id| self.messages.iter().any(|m| frame_id(m) == Some(id)));
+        self.forged.retain(|id| self.window.messages().iter().any(|m| frame_id(m) == Some(id)));
         self.compaction_count = compaction_count;
         self.dirty = true;
     }
@@ -294,38 +299,32 @@ impl Conversation {
         }
         // **Before the push, so the drop pays for the room it makes.** After
         // it, this one frame is what tips the store into a doubling the drop
-        // is about to throw away.
-        if self.messages.len() >= CONVERSATION_CAP + CONVERSATION_SLACK {
-            self.drop_to_cap();
+        // is about to throw away. Both ceilings are the window's own.
+        let dropped = self.window.push(message);
+        if dropped > 0 {
+            self.dropped = self.dropped.saturating_add(dropped);
+            // A forged row the seat no longer holds cannot be met again, so
+            // the set that answers "did forge forge this" keeps only what it
+            // keeps.
+            let held: std::collections::HashSet<&str> =
+                self.window.messages().iter().filter_map(frame_id).collect();
+            self.forged.retain(|id| held.contains(id.as_str()));
+            // The same reason a seed clears them: the boundaries name message
+            // indices, and the drop has just moved every one of them.
+            self.rendered.turns.clear();
+            self.rendered.endings.clear();
         }
-        self.messages.push(message);
-        self.dirty = true;
-    }
-
-    /// Drop the oldest messages once the held list has outgrown the cap's
-    /// slack, and leave the seat due a fold.
-    fn drop_to_cap(&mut self) {
-        self.dropped = self.dropped.saturating_add(drop_past_cap(&mut self.messages));
-        // A forged row the seat no longer holds cannot be met again, so the
-        // set that answers "did forge forge this" keeps only what it keeps.
-        let held: std::collections::HashSet<&str> =
-            self.messages.iter().filter_map(frame_id).collect();
-        self.forged.retain(|id| held.contains(id.as_str()));
-        // The same reason a seed clears them: the boundaries name message
-        // indices, and the drop has just moved every one of them.
-        self.rendered.turns.clear();
-        self.rendered.endings.clear();
         self.dirty = true;
     }
 
     /// The messages if the fold is behind them, taken in O(1).
-    fn take_dirty(&mut self) -> Option<Vec<Message>> {
+    fn take_dirty(&mut self) -> Option<Window> {
         if !self.dirty {
             return None;
         }
         self.dirty = false;
         self.folding = true;
-        Some(std::mem::take(&mut self.messages))
+        Some(std::mem::take(&mut self.window))
     }
 
     /// Put a fold back, with whatever arrived while it ran appended.
@@ -333,23 +332,23 @@ impl Conversation {
     /// `complete` is false when the render did not reach its end, which is the
     /// guard's path: the messages are back but the boundaries installed with
     /// them describe nothing.
-    fn merge_fold(&mut self, mut folded: Vec<Message>, rendered: Rendered, complete: bool) {
+    fn merge_fold(&mut self, mut folded: Window, rendered: Rendered, complete: bool) {
         let folded_len = folded.len();
-        folded.append(&mut self.messages);
-        self.messages = folded;
+        folded.append(&mut self.window);
+        self.window = folded;
         self.rendered = rendered;
         self.folding = false;
         // The tail arrived while the fold ran and is not in those spans, and a
         // fold that did not finish has no spans at all - either way the next
         // reader folds again rather than cutting a turn on a list that has
         // moved.
-        if !complete || self.messages.len() != folded_len {
+        if !complete || self.window.len() != folded_len {
             self.dirty = true;
         }
     }
 
     pub fn messages(&self) -> &[Message] {
-        &self.messages
+        self.window.messages()
     }
 
     pub fn rendered(&self) -> &Rendered {
@@ -436,9 +435,9 @@ impl Held {
     }
 
     /// Put a fold's result back and wake every reader waiting on it.
-    fn install(&self, messages: Vec<Message>, rendered: Rendered, complete: bool) {
+    fn install(&self, window: Window, rendered: Rendered, complete: bool) {
         let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
-        conversation.merge_fold(messages, rendered, complete);
+        conversation.merge_fold(window, rendered, complete);
         self.folded.notify_all();
     }
 
@@ -493,11 +492,11 @@ impl Held {
 /// boundaries are left for the next fold to rebuild, and the readers wake.
 struct Folding<'a> {
     held: &'a Held,
-    messages: Option<Vec<Message>>,
+    window: Option<Window>,
 }
 
 impl<'a> Folding<'a> {
-    /// Take the messages if a fold is due, or `None` when there is nothing to
+    /// Take the window if a fold is due, or `None` when there is nothing to
     /// do - a fold already running, or nothing moved.
     fn begin(held: &'a Held) -> Option<Self> {
         let mut conversation = held.conversation.lock().unwrap_or_else(PoisonError::into_inner);
@@ -507,19 +506,19 @@ impl<'a> Folding<'a> {
         if conversation.folding {
             return None;
         }
-        let messages = conversation.take_dirty()?;
-        Some(Self { held, messages: Some(messages) })
+        let window = conversation.take_dirty()?;
+        Some(Self { held, window: Some(window) })
     }
 
     /// The messages this fold took.
     fn messages(&self) -> &[Message] {
-        self.messages.as_deref().unwrap_or(&[])
+        self.window.as_ref().map_or(&[], Window::messages)
     }
 
     /// Put the fold back and wake the readers.
     fn finish(mut self, rendered: Rendered) {
-        let messages = self.messages.take().unwrap_or_default();
-        self.held.install(messages, rendered, true);
+        let window = self.window.take().unwrap_or_default();
+        self.held.install(window, rendered, true);
     }
 }
 
@@ -527,11 +526,11 @@ impl Drop for Folding<'_> {
     /// Unwinding out of the render: the messages go back, and the seat stays
     /// due a fold so the next read rebuilds the boundaries.
     fn drop(&mut self) {
-        let Some(messages) = self.messages.take() else {
+        let Some(window) = self.window.take() else {
             return;
         };
         self.held.install(
-            messages,
+            window,
             // No boundaries: the fold did not reach its end, so the next one
             // rebuilds them rather than this leaving half of one behind.
             Rendered { turns: Vec::new(), endings: HashMap::new() },
@@ -548,8 +547,8 @@ impl Drop for Folding<'_> {
 /// have no answer. What it holds is therefore proportional to what is
 /// RUNNING plus the sleeping seats someone has opened: a sleeping seat's
 /// copy is seeded from its transcript and kept, which is what makes the
-/// read land before any spawn. What one seat costs is the cap's window
-/// rather than its transcript, and the window is the bound.
+/// read land before any spawn. What one seat costs is the window the
+/// ceilings keep rather than its transcript, and the window is the bound.
 #[derive(Default)]
 pub struct Conversations {
     held: Mutex<HashMap<SessionSlot, Arc<Held>>>,
@@ -817,6 +816,7 @@ impl Conversations {
 #[cfg(test)]
 mod tests {
     use forge_primitives::{ContentBlock, SessionId};
+    use forge_workspace::conversation_window::{CONVERSATION_CAP, CONVERSATION_SLACK};
 
     use super::*;
 
@@ -1337,13 +1337,11 @@ mod tests {
         );
     }
 
-    /// **The store the drop frees is the point of it.** A `Vec` keeps the
-    /// capacity it grew to, so a drop that drained rather than rebuilt would
-    /// leave the seat holding a transcript's worth of buffer with a window's
-    /// worth of messages in it - which is what the live heap's large
-    /// contiguous blocks look like from the inside.
+    /// **A seed over the cap keeps the window and reports the cut** - the
+    /// store's own shape is the window module's to pin, and this is the seat's
+    /// half: what it keeps and what it counts as left behind.
     #[test]
-    fn a_conversation_over_the_cap_is_held_in_a_window_sized_store() {
+    fn a_conversation_over_the_cap_keeps_the_window_and_reports_the_cut() {
         let one = a_frame("a message");
         let history = vec![one; CONVERSATION_CAP * 4];
 
@@ -1351,13 +1349,6 @@ mod tests {
 
         assert_eq!(conversation.messages().len(), CONVERSATION_CAP, "a seed keeps the cap");
         assert_eq!(conversation.dropped(), CONVERSATION_CAP * 3, "and reports what it left behind");
-        assert!(
-            conversation.messages.capacity() <= CONVERSATION_CAP + CONVERSATION_SLACK,
-            "the store it left is the window's rather than the history's: capacity for {} \
-             messages over a history of {}",
-            conversation.messages.capacity(),
-            CONVERSATION_CAP * 4,
-        );
     }
 
     /// **The drop does not touch the window.** `SUBSCRIBE_TURNS` is what every

@@ -6807,8 +6807,8 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     assert_transcript_free(&frame, "replacement");
 
     // A replay carries the task's own window rather than the read, and that
-    // window is still not a client's to receive: on the seat this was filed
-    // from it weighs 382MB, past the same cap.
+    // window is still not a client's to receive: a window is bounded by the
+    // ceilings a seat keeps it in, not by the frame a client carries.
     fleet.emit(SessionUpdate::HistoryReplayed {
         key: seat.clone(),
         history: window,
