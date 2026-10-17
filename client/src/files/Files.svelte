@@ -1,29 +1,53 @@
 <script lang="ts">
   /**
-   * The files page: one seat's whole working tree, walked file by file.
+   * The files page: one seat's whole working tree, walked file by file, with
+   * comments droppable on any line and the dropped set listed beside the
+   * reader.
    *
    * It subscribes the seat itself, as the review page does, and answers
    * nothing. **The tree follows the SEAT** - a worker's own worktree, the
-   * lead's checkout - so the page is keyed to the slot and never to a
-   * branch the tree happens to be on.
+   * lead's checkout - so the page is keyed to the slot and never to a branch
+   * the tree happens to be on.
    *
-   * Its states are drawn here rather than left to a neighbour: nothing yet
-   * (reading), a seat the server refused (its own sentence), and a tree
-   * with no files. The reader and the comments rail land in this page's own
-   * later commits of the same cut.
+   * **The writes are the review page's own** (`review/write.ts`): a comment
+   * is an `upsert_review_thread` under the seat's TREE scope, a reply the
+   * same with the reviewer's turn appended, a resolve a
+   * `set_review_thread_status`, and `finish review` a `submit_review` that
+   * seals the sitting into one round and nudges the seat with `Review #N
+   * ready`. After every write the record is re-read, because the reviews
+   * ride the record and nothing pushes a review change.
+   *
+   * Its states are drawn here: nothing yet (reading), a seat the server
+   * refused, and a tree with no files.
    */
   import { SvelteSet } from 'svelte/reactivity';
+  import { mount, unmount } from 'svelte';
 
   import FileTree from '../components/FileTree.svelte';
   import { toggleClosed, type TreeRow } from '../components/tree';
   import { filesFrom } from '../composer/wire';
   import { hrefForSlot } from '../routes';
+  import {
+    finishRound,
+    newThread,
+    reopenThread,
+    statusCommand,
+    upsertCommand,
+    withReply,
+    type Sends,
+    type SendOutcome,
+  } from '../review/write';
+  import { latestRound, roundHasWork } from '../review/view';
   import { watchSession, type SessionRead } from '../session/live';
-  import type { SessionRecord } from '../session/wire';
+  import type { ReviewThreadRecord, SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
+  import Box from './Box.svelte';
+  import Inline from './Inline.svelte';
+  import Rail from './Rail.svelte';
   import Reader from './Reader.svelte';
-  import type { ReaderHandle } from './reader';
+  import { contextForComment, railRows, treeScope, type CommentSpot, type Shelf } from './comments';
+  import type { ReaderBlock, ReaderHandle } from './reader';
   import { indexTreeRows, matchedEntries } from './tree';
 
   let { connection, slot }: { connection: Connection; slot: SessionSlot } = $props();
@@ -46,16 +70,244 @@
   let open = $state<string | null>(null);
   /** The live reader, so the rail's jump-backs can reach its lines. */
   let reader = $state<ReaderHandle | null>(null);
+  /** A jump's line, applied once the reader for its file is in hand. */
+  let pendingLine = $state<number | null>(null);
+
+  /** The seat-tree half of the record: the files page's threads and rounds. */
+  const treeThreads = $derived(
+    record?.tree_reviews.threads.outcome === 'read' ? record.tree_reviews.threads.value : [],
+  );
+  const treeRounds = $derived(
+    record?.tree_reviews.reviews.outcome === 'read' ? record.tree_reviews.reviews.value : [],
+  );
+  const rows = $derived(railRows(treeThreads));
+  /** Threads the worker has answered and nobody read yet - the header count. */
+  const repliesToRead = $derived(
+    treeThreads.filter(
+      (thread) =>
+        (thread.status === 'addressed' || thread.status === 'outdated') &&
+        thread.comments[thread.comments.length - 1]?.author.kind === 'agent',
+    ).length,
+  );
+
+  // The page's boxes, held here because the reader is re-mounted under them.
+  const comment = $state<Shelf & { spot: CommentSpot | null }>({
+    spot: null,
+    draft: '',
+    busy: false,
+  });
+  const reply = $state<Shelf & { thread: string | null }>({
+    thread: null,
+    draft: '',
+    busy: false,
+  });
+  /** The unfiled turns of this sitting: what `finish review` seals. */
+  const drafts = new SvelteSet<string>();
+  let busy = $state(false);
+  let refusal = $state<string | null>(null);
+  let finishOpen = $state(false);
+  let now = $state(Date.now());
+
+  $effect(() => {
+    const tick = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(tick);
+  });
+
+  // The reader re-mounts on a file change; the jump's line applies once its
+  // handle is in hand.
+  $effect(() => {
+    const held = reader;
+    const line = pendingLine;
+    if (held === null || line === null) return;
+    held.targetLine(line);
+    pendingLine = null;
+  });
+
+  const sends: Sends = {
+    write,
+    dispatch: (command) => connection.dispatch(command as never, slot),
+  };
+
+  /**
+   * One write, and the re-read that carries its outcome: a refusal is drawn
+   * where the reader acted, and only a landed write settles the drafts - a
+   * refused one keeps the words.
+   */
+  async function write(command: unknown): Promise<SendOutcome> {
+    busy = true;
+    try {
+      const body = await connection.dispatch(command as never, slot);
+      refusal = null;
+      return { went: true, body };
+    } catch (why) {
+      refusal = why instanceof Error ? why.message : String(why);
+      return { went: false, body: null };
+    } finally {
+      busy = false;
+      // The reviews ride the record: a re-read is what carries a change.
+      connection.refresh({ session: slot });
+    }
+  }
+
+  /** A line was pressed in the reader: the composer opens on it. */
+  function commentOn(line: number): void {
+    if (open === null) return;
+    comment.spot = { path: open, line };
+    comment.draft = '';
+  }
+
+  async function commented(text: string): Promise<void> {
+    const spot = comment.spot;
+    const held = reader;
+    if (spot === null || held === null) return;
+    const lines = held.lines();
+    const thread = newThread({
+      path: spot.path,
+      side: 'new',
+      line: spot.line,
+      text,
+      context: contextForComment(lines, spot.line),
+      lineText: lines[spot.line - 1] ?? '',
+      baseRef: treeScope(slot),
+      commit: null,
+    });
+    comment.busy = true;
+    const { went } = await write(upsertCommand(slot, treeScope(slot), thread));
+    comment.busy = false;
+    if (!went) return;
+    drafts.add(thread.id);
+    comment.spot = null;
+    comment.draft = '';
+  }
+
+  async function replied(thread: ReviewThreadRecord, text: string): Promise<void> {
+    reply.busy = true;
+    const { went } = await write(upsertCommand(slot, treeScope(slot), withReply(thread, text)));
+    reply.busy = false;
+    if (!went) return;
+    drafts.add(thread.id);
+    reply.thread = null;
+    reply.draft = '';
+  }
+
+  async function resolved(thread: ReviewThreadRecord): Promise<void> {
+    await write(statusCommand(slot, treeScope(slot), thread.id, 'Resolved'));
+  }
+
+  async function reopened(thread: ReviewThreadRecord): Promise<void> {
+    await reopenThread(sends, slot, treeScope(slot), thread.id, latestRound(treeRounds, thread));
+  }
+
+  async function finished(summary: string | null): Promise<void> {
+    if (drafts.size === 0) return;
+    const sealed = await finishRound(
+      sends,
+      slot,
+      treeScope(slot),
+      [...drafts],
+      summary,
+      roundHasWork(treeThreads, drafts),
+    );
+    if (!sealed) return;
+    drafts.clear();
+    finishOpen = false;
+  }
+
+  /** A rail row: open its file and put the reader on its line. */
+  function jump(row: (typeof rows)[number]): void {
+    open = row.thread.anchor.path;
+    pendingLine = row.line ?? row.thread.anchor.line;
+  }
 
   const shown = $derived(matchedEntries(entries, query));
   const tree = $derived(indexTreeRows(shown, closed));
 
   /** Comments dropped on one file, from the seat-tree half - the row's pill. */
   function droppedCount(path: string): number {
-    const held = record?.tree_reviews.threads;
-    if (held?.outcome !== 'read') return 0;
-    return held.value.filter((thread) => thread.anchor.path === path).length;
+    return treeThreads.filter((thread) => thread.anchor.path === path).length;
   }
+
+  /**
+   * The blocks drawn under the open file's lines: its threads, and the
+   * composer when one is open. A blocked key carries the reply state, so
+   * opening a reply row re-mounts its thread's card with the box in it.
+   */
+  const blocks = $derived.by(() => {
+    const out: ReaderBlock[] = [];
+    if (open === null) return out;
+    for (const row of rows) {
+      if (row.thread.anchor.path !== open || row.line === null) continue;
+      const id = row.thread.id;
+      out.push({
+        line: row.line,
+        key: `thread:${id}:${reply.thread === id ? 'reply' : 'shut'}`,
+        mount: (host) => {
+          const held = mount(Inline, {
+            target: host,
+            props: {
+              row,
+              rounds: treeRounds,
+              get now() {
+                return now;
+              },
+              get busy() {
+                return busy;
+              },
+              get replying() {
+                return reply.thread === id;
+              },
+              replyBox: reply,
+              onrespond: () => {
+                reply.thread = reply.thread === id ? null : id;
+                reply.draft = '';
+              },
+              onreply: (text: string) => void replied(row.thread, text),
+              onresolve: () => void resolved(row.thread),
+              onreopen: () => void reopened(row.thread),
+            },
+          });
+          return () => void unmount(held);
+        },
+      });
+    }
+    const spot = comment.spot;
+    if (spot !== null && spot.path === open) {
+      out.push({
+        line: spot.line,
+        key: `comment:${spot.path}:${spot.line}`,
+        mount: (host) => {
+          const held = mount(Box, {
+            target: host,
+            props: {
+              class: 'rv-thread comment',
+              headline: `${spot.path.split('/').pop() ?? ''} · line ${spot.line}`,
+              placeholder: 'Comment on this line...',
+              label: 'your comment',
+              sendLabel: 'comment',
+              box: comment,
+              onsend: (text: string) => void commented(text),
+              oncancel: () => {
+                comment.spot = null;
+                comment.draft = '';
+              },
+              field: (el: HTMLElement | null) => {
+                // The caret goes in with the box (Ved, 2026-10-15).
+                el?.focus();
+              },
+            },
+          });
+          return () => void unmount(held);
+        },
+      });
+    }
+    return out;
+  });
+
+  $effect(() => {
+    const held = reader;
+    if (held === null) return;
+    held.setBlocks(blocks);
+  });
 </script>
 
 <div class="files">
@@ -67,7 +319,14 @@
         {record.state.scan_cwd}<span class="files-sep">|</span>{entries.length} files
       </span>
     {/if}
+    {#if repliesToRead > 0}
+      <span class="files-loop">{repliesToRead} to read</span>
+    {/if}
   </header>
+
+  {#if refusal !== null}
+    <p class="files-said">{refusal}</p>
+  {/if}
 
   {#if read.refused !== null}
     <main class="files-main"><p class="files-quiet">{read.refused}</p></main>
@@ -112,9 +371,18 @@
         {#if open === null}
           <p class="files-quiet">Pick a file from the tree.</p>
         {:else}
-          <Reader {connection} {slot} path={open} bind:handle={reader} />
+          <Reader {connection} {slot} path={open} oncomment={commentOn} bind:handle={reader} />
         {/if}
       </main>
+      <Rail
+        {rows}
+        {repliesToRead}
+        bind:finishOpen
+        canFinish={drafts.size > 0}
+        {busy}
+        onjump={jump}
+        onfinish={(summary) => void finished(summary)}
+      />
     </div>
   {/if}
 </div>

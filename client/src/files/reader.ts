@@ -21,7 +21,14 @@
 import { shikiToCodeMirror } from '@cmshiki/shiki';
 import { foldGutter, foldKeymap } from '@codemirror/language';
 import { searchKeymap } from '@codemirror/search';
-import { EditorState, RangeSet, StateEffect, StateField, type Extension } from '@codemirror/state';
+import {
+  EditorState,
+  RangeSet,
+  StateEffect,
+  StateField,
+  type Extension,
+  type Range,
+} from '@codemirror/state';
 import {
   Decoration,
   drawSelection,
@@ -30,6 +37,7 @@ import {
   gutter,
   keymap,
   lineNumbers,
+  WidgetType,
 } from '@codemirror/view';
 import { createHighlighterCore } from 'shiki/core';
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
@@ -57,11 +65,27 @@ import githubDark from '@shikijs/themes/github-dark';
 
 import { languageForPath } from './languages';
 
+/** One block the page wants drawn under a line: the reader makes the host
+ *  element, the page mounts what goes inside it (its own components), and
+ *  the returned teardown releases them. */
+export interface ReaderBlock {
+  /** The 1-based line the block draws under; past the end clamps to the last. */
+  line: number;
+  /** Unique among the blocks: a rebuild re-mounts only what changed. */
+  key: string;
+  mount: (host: HTMLElement) => () => void;
+}
+
 export interface ReaderHandle {
   /** Let the instance and its listeners go. */
   destroy(): void;
   /** Mark `line` as the reader's target - the tint and the gutter `+`. */
   targetLine(line: number | null): void;
+  /** Replace the page's blocks (thread cards, the open composer). */
+  setBlocks(blocks: ReaderBlock[]): void;
+  /** The file's own lines, as the read carried them - what an anchor
+   *  captures its hash and context from. */
+  lines(): string[];
 }
 
 const cmRust = async (): Promise<Extension> => (await import('@codemirror/lang-rust')).rust();
@@ -184,6 +208,75 @@ const targetField = StateField.define<number | null>({
   ],
 });
 
+/** The page's blocks under lines: host elements the page fills with its own
+ *  components. Replaced wholesale by `setBlocks`; a block whose key is
+ *  unchanged keeps its DOM (and so its mounted component). */
+const setBlocks = StateEffect.define<ReaderBlock[]>();
+
+class BlockWidget extends WidgetType {
+  private dispose: (() => void) | null = null;
+
+  constructor(readonly block: ReaderBlock) {
+    super();
+  }
+
+  eq(other: BlockWidget): boolean {
+    return other.block.key === this.block.key;
+  }
+
+  toDOM(): HTMLElement {
+    const host = document.createElement('div');
+    host.className = 'files-block';
+    host.dataset.block = this.block.key;
+    this.dispose = this.block.mount(host);
+    return host;
+  }
+
+  destroy(): void {
+    this.dispose?.();
+    this.dispose = null;
+  }
+
+  ignoreEvent(): boolean {
+    // The page's components live in here: their presses are theirs, not the
+    // editor's.
+    return false;
+  }
+}
+
+const blocksField = StateField.define<ReaderBlock[]>({
+  create: () => [],
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setBlocks)) return effect.value;
+    }
+    return value;
+  },
+  provide: (field) =>
+    // The doc is read inside but is not a dependency: a reader's document
+    // never changes (read-only, one file per instance), so block positions
+    // stay valid and only `setBlocks` recomputes.
+    EditorView.decorations.compute([field], (state) => {
+      const blocks = state.field(field);
+      if (blocks.length === 0) return Decoration.none;
+      // Sorted by line, and two blocks under one line (a thread and the
+      // composer) sit at the same position, which the widget's `side`
+      // tells apart - so the ranges come out ordered as required.
+      const sides = new Map<number, number>();
+      const ranges: Range<Decoration>[] = [];
+      for (const block of [...blocks].sort((a, b) => a.line - b.line)) {
+        const line = Math.min(Math.max(1, block.line), state.doc.lines);
+        const at = state.doc.line(line).to;
+        const side = 1 + (sides.get(at) ?? 0);
+        sides.set(at, side);
+        ranges.push(
+          Decoration.widget({ widget: new BlockWidget(block), block: true, side }).range(at),
+        );
+      }
+      return Decoration.set(ranges);
+    }),
+});
+
 /** The line a mousedown landed on, or `null` for a press that missed lines. */
 function lineOfEvent(view: EditorView, event: MouseEvent): number | null {
   const target = event.target;
@@ -229,6 +322,7 @@ export async function buildReader(
       extensions: [
         lineNumbers(),
         targetField,
+        blocksField,
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
         // Wrapped, never sideways: the sheet's own canon (a long line ends
@@ -252,6 +346,10 @@ export async function buildReader(
     }),
   });
 
+  // The file's own lines, the way the crate reads them (`str::lines`: no
+  // trailing empty line for a final newline) - what an anchor captures.
+  const fileLines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
+
   return {
     destroy: () => view.destroy(),
     targetLine: (line) => {
@@ -260,5 +358,9 @@ export async function buildReader(
         view.dispatch({ effects: EditorView.scrollIntoView(view.state.doc.line(line).from) });
       }
     },
+    setBlocks: (blocks) => {
+      view.dispatch({ effects: setBlocks.of(blocks) });
+    },
+    lines: () => fileLines,
   };
 }
