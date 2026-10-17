@@ -3432,7 +3432,10 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    else is the diff's. */
 .review .rv-body { display: grid; grid-template-columns: minmax(0, 296px) minmax(0, 1fr);
   gap: 14px; flex: 1; min-height: 0; }
-.review .rv-files { overflow-y: auto; min-height: 0; padding: 0 2px 12px;
+/* The tree's own column - the review page's left side and the files page's
+   rail. Shared with the tree rows below, which both pages draw through one
+   component (`components/FileTree.svelte`). */
+.rv-files { overflow-y: auto; min-height: 0; padding: 0 2px 12px;
   scrollbar-gutter: stable; }
 /* The list draws its own scroll viewport, so the scroll rules go on THAT
    element and the wrapper only holds its states. */
@@ -3441,55 +3444,58 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review .rv-canvas-list { flex: 1; min-height: 0; overflow-y: auto;
   overflow-x: hidden; padding: 0 0 40px; scrollbar-gutter: stable; }
 .review .rv-canvas-list::-webkit-scrollbar,
-.review .rv-files::-webkit-scrollbar,
+.rv-files::-webkit-scrollbar,
 .review .rv-menu::-webkit-scrollbar { width: 8px; }
 .review .rv-canvas-list::-webkit-scrollbar-track,
-.review .rv-files::-webkit-scrollbar-track,
+.rv-files::-webkit-scrollbar-track,
 .review .rv-menu::-webkit-scrollbar-track { background: transparent; }
 .review .rv-canvas-list::-webkit-scrollbar-thumb,
-.review .rv-files::-webkit-scrollbar-thumb,
+.rv-files::-webkit-scrollbar-thumb,
 .review .rv-menu::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
 .review .rv-canvas-list::-webkit-scrollbar-thumb:hover,
-.review .rv-files::-webkit-scrollbar-thumb:hover,
+.rv-files::-webkit-scrollbar-thumb:hover,
 .review .rv-menu::-webkit-scrollbar-thumb:hover { background: var(--line); }
 
-/* The file tree. It draws the scope's own hierarchy - a row per directory
-   and per file, indented by depth with folders before files at every level -
-   rather than a flat list of full-path headings, which reads as neither one
-   at 56 files. A directory names its basename and carries the files beneath
-   it, which is what its collapsed row is hiding. */
-.review .rv-dir { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
+/* The file tree. It draws the hierarchy - a row per directory and per file,
+   indented by depth with folders before files at every level - rather than a
+   flat list of full-path headings, which reads as neither one at 56 files. A
+   directory names its basename and carries the files beneath it, which is
+   what its collapsed row is hiding.
+   **Unscoped on purpose**: the review page and the files page draw ONE tree
+   (`components/FileTree.svelte`), so these rules are the tree's own rather
+   than one page's. */
+.rv-dir { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
   background: none; border: 0; padding: 5px 6px 2px calc(4px + var(--d, 0) * 12px);
   cursor: pointer; font: inherit; }
-.review .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
+.rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
   transition: transform .12s ease; }
-.review .rv-arw.open { transform: rotate(90deg); }
-.review .rv-dirname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+.rv-arw.open { transform: rotate(90deg); }
+.rv-dirname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
   font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
-.review .rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+.rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 /* The stats and the badge size to their own content rather than a reserved
    62px: a fixed column costs every row the widest row's width, which is what
    turned long names into stubs at depth. */
-.review .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
+.rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
   align-items: baseline; width: 100%;
   padding: 3px 8px 3px calc(19px + var(--d, 0) * 12px); border-radius: 7px;
   background: none; border: 0; font: inherit; text-align: left; cursor: pointer;
   text-decoration: none; color: inherit; }
-.review .rv-frow:hover { background: rgba(27,33,48,.5); }
+.rv-frow:hover { background: rgba(27,33,48,.5); }
 /* The file the reader is inside: the tree's own reading mark, following the
-   canvas's scroll. The tint plus the bar, because hover and "here" would
-   otherwise read the same at rest. */
-.review .rv-frow.here { background: rgba(27,33,48,.5); box-shadow: inset 2px 0 0 var(--accent); }
-.review .rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+   reader. The tint plus the bar, because hover and "here" would otherwise
+   read the same at rest. */
+.rv-frow.here { background: rgba(27,33,48,.5); box-shadow: inset 2px 0 0 var(--accent); }
+.rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.review .rv-frow.renamed .rv-fpath { color: var(--muted); }
-.review .rv-fstat { font-family: var(--mono); font-size: var(--fs-label); text-align: right;
+.rv-frow.renamed .rv-fpath { color: var(--muted); }
+.rv-fstat { font-family: var(--mono); font-size: var(--fs-label); text-align: right;
   white-space: nowrap; }
-.review .rv-fcount { text-align: right; }
-.review .rv-plus { color: var(--ok); }
-.review .rv-minus { color: var(--bad); }
+.rv-fcount { text-align: right; }
+.rv-plus { color: var(--ok); }
+.rv-minus { color: var(--bad); }
 
 /* One file in the canvas. */
 .review .rv-file { margin-bottom: 16px; }
@@ -3681,7 +3687,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   .review .rv-body { grid-template-columns: minmax(0, 1fr); }
   .review .rv-canvas,
   .review .rv-canvas-list,
-  .review .rv-files { overflow: visible; }
+  .rv-files { overflow: visible; }
 }
 
 @media (pointer: coarse) {
@@ -3703,7 +3709,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
      smaller for it: the tab line and a file's fold chevron. */
   .review .rv-tabs > button { min-height: 44px; display: inline-flex; align-items: center; }
   .review .rv-fold { min-width: 44px; min-height: 44px; justify-content: center; }
-  .review .rv-frow, .review .rv-dir { padding-top: 10px; padding-bottom: 10px; }
+  .rv-frow, .rv-dir { padding-top: 10px; padding-bottom: 10px; }
   /* No pointer to arrive with: the line's `+` rests visible so a tap can
      find it. */
   .review .rv-add { opacity: 1; color: var(--dim); }

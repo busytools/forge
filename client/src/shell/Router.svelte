@@ -7,6 +7,7 @@
   import { dictationOffered } from '../composer/view';
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
+  import Files from '../files/Files.svelte';
   import Board from '../board/Board.svelte';
   import Extensions from '../extensions/Extensions.svelte';
   import Document from '../doc/Document.svelte';
@@ -200,6 +201,15 @@
          comment box carries the same dictation control the composer does, so
          the install's own answer comes down with it. -->
     <Review {connection} slot={route.slot} dictation={dictate} />
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
+{:else if route.name === 'files'}
+  {#if connection !== null}
+    <!-- The page subscribes the seat itself, as the review page does: its
+         tree follows the seat - a worker's worktree, the lead's checkout -
+         and its states belong to it. -->
+    <Files {connection} slot={route.slot} />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

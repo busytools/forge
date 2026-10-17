@@ -279,8 +279,10 @@ function files(sources: () => Sources): (query: string) => Row[] {
   };
 }
 
-/** How well a file matches, smaller being better, or `null` when it does not. */
-function fileTier(file: FileEntry, query: string): number | null {
+/** How well a file matches, smaller being better, or `null` when it does not.
+ *  Exported because the files page's filter narrows by the same rule - one
+ *  matching for the `@` list and the tree alike. */
+export function fileTier(file: FileEntry, query: string): number | null {
   if (file.basenameLower.startsWith(query)) return 0;
   if (file.relPathLower.startsWith(query)) return 1;
   if (file.basenameLower.includes(query)) return 2;

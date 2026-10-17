@@ -356,6 +356,11 @@ export interface SessionRecord {
   /** The seat's review threads and submitted rounds, each half with its own
    *  read outcome - the review page's rounds half. */
   reviews: ReviewsRecord;
+  /** The seat-TREE review half, beside the branch's: the files page's
+   *  comments, each thread's landing resolved against the seat's working
+   *  files. Same shape as `reviews`, keyed to the seat rather than a
+   *  branch. */
+  tree_reviews: ReviewsRecord;
   /** The working tree's bounded content, which the review page's canvas
    *  draws and its threads' landings were resolved against. */
   diff: DiffRecord;
@@ -589,6 +594,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     pr: prFrom(held['pr']),
     closes: issuesFrom(held['closes']),
     reviews: reviewsFrom(held['reviews']),
+    tree_reviews: reviewsFrom(held['tree_reviews']),
     diff: diffFrom(held['diff']),
   };
 }

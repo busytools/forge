@@ -68,6 +68,27 @@ export default tseslint.config(
     files: ['src/chat/Chat.svelte'],
     rules: { '@typescript-eslint/no-unsafe-call': 'off' },
   },
+  {
+    // `FileTree`'s `trailing` snippet: the parameter IS annotated in the
+    // markup (`row: TreeRow<unknown>`), but this config's type service does
+    // not read annotations inside `{#snippet}`, so `row` stays `any` here
+    // while tsc and svelte-check - which gate these files too - infer it
+    // from the component's own `Snippet<[TreeRow<unknown>]>` prop.
+    files: ['src/review/Canvas.svelte'],
+    rules: {
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+    },
+  },
+  {
+    // The same snippet, with the `{@const}` reads its body makes.
+    files: ['src/files/Files.svelte'],
+    rules: {
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+    },
+  },
   // LAST, because it has to override the blocks above rather than be
   // overridden by them: the client's own config files are Node scripts
   // outside the TypeScript project, so the project service refuses them and

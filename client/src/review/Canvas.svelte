@@ -20,6 +20,8 @@
   import { mount, unmount, untrack, type ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
+  import FileTree from '../components/FileTree.svelte';
+  import { toggleClosed, type TreeRow } from '../components/tree';
   import type { Dictation } from '../composer/dictate.svelte';
   import type { Connection } from '../socket';
   import type { CommentBox, ReplyBox, Voice } from './boxes';
@@ -129,8 +131,7 @@
   const fetched = new SvelteMap<string, DiffLayerRecord>();
 
   function toggle(set: SvelteSet<string>, key: string): void {
-    if (set.has(key)) set.delete(key);
-    else set.add(key);
+    toggleClosed(set, key);
   }
 
   let now = $state(Date.now());
@@ -166,6 +167,9 @@
   const scopeLayer = $derived(scopeCommit === null ? layer : (fetched.get(scopeCommit) ?? null));
   const scopeFiles = $derived(scopeLayer === null ? [] : filesOf(scopeLayer));
   const tree = $derived(treeRows(scopeFiles, closedDirs));
+  /** One file by its path, so the tree's trailing snippet looks up what it
+   *  draws in constant time rather than scanning the scope per row. */
+  const fileByPath = $derived(new Map(scopeFiles.map((file) => [file.path, file])));
   const scoped = $derived(threadsInScope(threads, scopeCommit));
 
   /** The socket's own state, which is when a dropped ask is worth repeating. */
@@ -1256,51 +1260,34 @@
   }
 </script>
 
-<nav class="rv-files" aria-label="files in this scope">
-  <h2 class="rv-h">Files <span class="rv-n">{scopeFiles.length}</span></h2>
-  {#each tree as row (row.kind + ':' + row.path)}
-    {#if row.kind === 'dir'}
-      <button
-        type="button"
-        class="rv-dir"
-        style="--d:{row.depth}"
-        aria-expanded={!closedDirs.has(row.path)}
-        onclick={() => toggle(closedDirs, row.path)}
-      >
-        <span class="rv-arw" class:open={!closedDirs.has(row.path)}>&#9656;</span>
-        <span class="rv-dirname">{row.name}/</span>
-        <span class="rv-dircount">{row.count}</span>
-      </button>
-    {:else}
-      {@const file = row.file}
-      {#if file !== null}
-        {@const at = lineCounts(file)}
-        {@const mine = scoped.filter(
-          (thread) => thread.anchor.path === file.path && canvasLine(thread, scopeCommit) !== null,
-        )}
-        <button
-          type="button"
-          class="rv-frow"
-          class:renamed={file.oldPath !== null}
-          class:here={current === file.path}
-          aria-current={current === file.path}
-          style="--d:{row.depth}"
-          title={row.path}
-          onclick={() => jumpTo(file.path)}
-        >
-          <span class="rv-fpath">{row.name}</span>
-          <span class="rv-fstat">
-            {#if at.plus > 0}<span class="rv-plus">+{at.plus}</span>{/if}
-            {#if at.minus > 0}<span class="rv-minus">-{at.minus}</span>{/if}
-          </span>
-          <span class="rv-fcount">
-            {#if mine.length}<span class="rv-ccnum">{mine.length}</span>{/if}
-          </span>
-        </button>
-      {/if}
+<FileTree
+  rows={tree}
+  heading="Files"
+  label="files in this scope"
+  count={scopeFiles.length}
+  closed={closedDirs}
+  here={current}
+  renamed={(path) => (fileByPath.get(path)?.oldPath ?? null) !== null}
+  ondir={(path) => toggle(closedDirs, path)}
+  onfile={jumpTo}
+>
+  {#snippet trailing(row: TreeRow<unknown>)}
+    {@const file = fileByPath.get(row.path)}
+    {#if file !== undefined}
+      {@const at = lineCounts(file)}
+      {@const mine = scoped.filter(
+        (thread) => thread.anchor.path === file.path && canvasLine(thread, scopeCommit) !== null,
+      )}
+      <span class="rv-fstat">
+        {#if at.plus > 0}<span class="rv-plus">+{at.plus}</span>{/if}
+        {#if at.minus > 0}<span class="rv-minus">-{at.minus}</span>{/if}
+      </span>
+      <span class="rv-fcount">
+        {#if mine.length}<span class="rv-ccnum">{mine.length}</span>{/if}
+      </span>
     {/if}
-  {/each}
-</nav>
+  {/snippet}
+</FileTree>
 
 <main class="rv-canvas" bind:this={canvasEl}>
   {#if scopeLayer === null}
