@@ -835,8 +835,66 @@ describe('a landing', () => {
     expect(go, 'and the act asks before anything is written').not.toBeNull();
     go?.click();
     await settle(() => sent.some(hasDelete));
+
     const cut = sent.find(hasDelete) as { delete_review_thread: { thread_id: string } } | undefined;
     expect(cut?.delete_review_thread.thread_id, 'the confirm deletes that thread').toBe('t-edit');
+  });
+
+  /**
+   * **A resolved thread collapses to its marker line, everywhere** (Ved,
+   * 2026-10-17: "git diff also does not show the resolve expansion like the
+   * file view does"): the conversation draws the marker, a press opens the
+   * card back up, and its acts are the hand-back and the fold.
+   */
+  it('collapses a resolved thread to its marker and opens it again', async () => {
+    const thread = {
+      id: 't-done',
+      anchor: {
+        path: 'src/a.rs',
+        side: 'New',
+        line: 3,
+        content_hash: '1',
+        context: ['ctx'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { kind: 'user' },
+          text: 'settled in the end',
+          at: '2026-01-01T00:00:00Z',
+          review_id: 'r1',
+        },
+      ],
+      status: 'resolved',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+      resolution: { state: 'placed', line: 3, moved_from: null },
+    };
+    await draw([thread], [ROUND]);
+    await openConversation();
+
+    const marker = document.querySelector<HTMLButtonElement>('.rv-conv .rv-marker');
+    expect(marker, 'the resolved thread collapsed').not.toBeNull();
+    expect(marker?.textContent, 'and the marker reads its first words').toContain(
+      'settled in the end',
+    );
+    expect(
+      document.querySelector('.rv-conv .thread'),
+      'and the card is not drawn beside it',
+    ).toBeNull();
+
+    marker?.click();
+    flushSync();
+    const acts = [...document.querySelectorAll('.rv-conv .thread .acts .rv-a')].map((button) =>
+      button.textContent?.trim(),
+    );
+    expect(acts, 'a press opens it back up, with the hand-back and the fold').toEqual([
+      'respond',
+      'reopen',
+      'collapse',
+      'delete',
+    ]);
   });
 
   /**

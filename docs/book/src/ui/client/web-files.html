@@ -146,6 +146,16 @@
     border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; flex: none; }
   .rv-st.open { color: var(--text); border-color: var(--ctl); }
   .rv-st.outdated { color: var(--dim); }
+  /* A resolved thread's marker line: collapsed to one press target, opened
+     again by it. */
+  .rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
+    padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--s1); font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .rv-mk.resolved { border-radius: 50%; background: var(--ok); }
+  .rv-mk-word { color: var(--muted); flex: none; }
+  .rv-mk-first { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
   .rv-turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
   .rv-turn.you { border-left-color: var(--accent); }
   .rv-who { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
@@ -328,6 +338,12 @@
               <button class="rv-a" type="button">resolve</button>
               <button class="rv-a" type="button">delete</button>
             </div>
+          </div>
+          <div class="rv-marker">
+            <span class="rv-mk resolved"></span>
+            <span class="rv-mk-word">resolved</span>
+            <span class="rv-mk-first">that resolves it - the scope stays the seat.</span>
+            <span class="rv-where">lib.rs &#183; line 12</span>
           </div>
         </div>
         <div class="files-block">

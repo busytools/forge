@@ -236,6 +236,16 @@
      chip's own box is what separates it from the name. */
   .rv-turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
   .rv-turn.you { border-left-color: var(--accent); }
+  /* A resolved thread's marker line: collapsed to one press target, the
+     shape the files reader draws too. */
+  .rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
+    padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--s1); font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .rv-mk.resolved { border-radius: 50%; background: var(--ok); }
+  .rv-mk-word { color: var(--muted); flex: none; }
+  .rv-mk-first { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
   /* The edit act rides the who-row, small: a per-turn verb, not one of the
      card's. */
   .rv-edit { margin-left: auto; padding: 0 7px; }
@@ -591,6 +601,13 @@
           <span class="rv-a">resolve</span>
           <span class="rv-a">delete</span>
         </div>
+      </div>
+
+      <div class="rv-marker">
+        <span class="rv-mk resolved"></span>
+        <span class="rv-mk-word">resolved</span>
+        <span class="rv-mk-first">That resolves it - the count comes from the round itself.</span>
+        <span class="where">client/src/review/view.ts &#183; line 76</span>
       </div>
 
       <div class="thread">

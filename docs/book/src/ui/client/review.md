@@ -157,8 +157,10 @@ reads in the conversation, and lines typed into a comment stay lines.
 The four states are the server's own: `open`, answered by nobody yet;
 `addressed`, the agent has answered and the ball is with the reader;
 `resolved`, read and accepted; `outdated`, the anchored code moved too far
-to place. A resolved thread on the canvas collapses to its marker line; in
-the conversation it draws in full like every other thread. The set of
+to place. **A resolved thread collapses to its marker line - on the canvas,
+in the conversation and in the files reader alike** (Ved, 2026-10-17: "git
+diff also does not show the resolve expansion like the file view does"): a
+press opens it again, where its reopen and collapse acts are. The set of
 threads the Outdated section lists is the page's own reading of the record:
 a thread whose landing says outdated parks, and so does one whose read
 carried no landing at all - whether the store's status agrees is not the

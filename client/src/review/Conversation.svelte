@@ -12,8 +12,11 @@
    */
   import type { Snippet } from 'svelte';
 
+  import { SvelteSet } from 'svelte/reactivity';
+
   import type { ReviewSetRecord, ReviewThreadRecord } from '../session/wire';
   import type { ReplyBox, TurnEditor, Voice } from './boxes';
+  import ResolvedMarker from './ResolvedMarker.svelte';
   import ThreadDelete from './ThreadDelete.svelte';
   import ThreadTurn from './ThreadTurn.svelte';
   import WordsBox from './WordsBox.svelte';
@@ -77,6 +80,10 @@
   } = $props();
 
   const outdated = $derived(outdatedThreads(threads));
+
+  /** The resolved threads the reader opened back up: collapsed by default,
+   *  the way the files reader collapses them (Ved, 2026-10-17). */
+  const opened = new SvelteSet<string>();
 
   function tallyChips(tally: ReturnType<typeof roundTally>): [string, number][] {
     const rows: [string, number][] = [
@@ -168,70 +175,87 @@
         {#if round.summary !== null}<p class="summary">{round.summary}</p>{/if}
         {#each threadsInRound(threads, round.id) as thread (thread.id)}
           {@const name = statusName(thread.status)}
-          <div class="thread">
-            <div class="heads">
-              <span class="rv-state {name}">{name}</span>
-              <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
-            </div>
-            {#each thread.comments as turn, i (i)}
-              <ThreadTurn {turn} {rounds} {now} index={i} thread={thread.id} {editor} />
-            {/each}
-            <div class="acts">
-              <button
-                type="button"
-                class="rv-a"
-                disabled={busy}
-                onclick={() => {
-                  reply.thread = reply.thread === thread.id ? null : thread.id;
-                  reply.index = null;
-                  reply.draft = '';
-                }}>respond</button
-              >
-              {#if name === 'resolved'}
-                <button type="button" class="rv-a" disabled={busy} onclick={() => onreopen(thread)}
-                  >reopen</button
+          {#if name === 'resolved' && !opened.has(thread.id)}
+            <ResolvedMarker
+              first={thread.comments[0]?.text ?? ''}
+              where={`${thread.anchor.path} · line ${thread.anchor.line}`}
+              onopen={() => opened.add(thread.id)}
+            />
+          {:else}
+            <div class="thread">
+              <div class="heads">
+                <span class="rv-state {name}">{name}</span>
+                <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
+              </div>
+              {#each thread.comments as turn, i (i)}
+                <ThreadTurn {turn} {rounds} {now} index={i} thread={thread.id} {editor} />
+              {/each}
+              <div class="acts">
+                <button
+                  type="button"
+                  class="rv-a"
+                  disabled={busy}
+                  onclick={() => {
+                    reply.thread = reply.thread === thread.id ? null : thread.id;
+                    reply.index = null;
+                    reply.draft = '';
+                  }}>respond</button
                 >
-              {:else}
-                <button type="button" class="rv-a" disabled={busy} onclick={() => onresolve(thread)}
-                  >resolve</button
-                >
-              {/if}
-              {#if ondelete !== null}
-                <ThreadDelete {busy} ondelete={() => ondelete(thread)} />
-              {/if}
-              {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
-            </div>
-            {#if reply.thread === thread.id && reply.index === null}
-              <!-- The same box the canvas mounts under its threads: one
+                {#if name === 'resolved'}
+                  <button
+                    type="button"
+                    class="rv-a"
+                    disabled={busy}
+                    onclick={() => onreopen(thread)}>reopen</button
+                  >
+                  <button type="button" class="rv-a" onclick={() => opened.delete(thread.id)}
+                    >collapse</button
+                  >
+                {:else}
+                  <button
+                    type="button"
+                    class="rv-a"
+                    disabled={busy}
+                    onclick={() => onresolve(thread)}>resolve</button
+                  >
+                {/if}
+                {#if ondelete !== null}
+                  <ThreadDelete {busy} ondelete={() => ondelete(thread)} />
+                {/if}
+                {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
+              </div>
+              {#if reply.thread === thread.id && reply.index === null}
+                <!-- The same box the canvas mounts under its threads: one
                    component, so a reply reads and dictates the same wherever
                    it is drawn. -->
-              <WordsBox
-                class="rv-reply"
-                rows={2}
-                placeholder="Respond to this thread..."
-                label="your response"
-                sendLabel="send"
-                box={reply}
-                {voice}
-                onsend={(text: string) => {
-                  void onreply(thread, text).then((filed) => {
-                    // A refusal keeps the words: the reply is the reader's
-                    // until the server took it.
-                    if (!filed) return;
+                <WordsBox
+                  class="rv-reply"
+                  rows={2}
+                  placeholder="Respond to this thread..."
+                  label="your response"
+                  sendLabel="send"
+                  box={reply}
+                  {voice}
+                  onsend={(text: string) => {
+                    void onreply(thread, text).then((filed) => {
+                      // A refusal keeps the words: the reply is the reader's
+                      // until the server took it.
+                      if (!filed) return;
+                      reply.thread = null;
+                      reply.draft = '';
+                    });
+                  }}
+                  oncancel={() => {
                     reply.thread = null;
                     reply.draft = '';
-                  });
-                }}
-                oncancel={() => {
-                  reply.thread = null;
-                  reply.draft = '';
-                }}
-                {onpress}
-                {onhold}
-                field={onfield}
-              />
-            {/if}
-          </div>
+                  }}
+                  {onpress}
+                  {onhold}
+                  field={onfield}
+                />
+              {/if}
+            </div>
+          {/if}
         {/each}
       </article>
     {/each}

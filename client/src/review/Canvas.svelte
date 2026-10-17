@@ -57,6 +57,7 @@
   import { canvasLine, statusName, threadsInScope } from './view';
   import { captureContext, type ComposedComment, type ReviewSpot } from './write';
   import { Mounts } from './mounts';
+  import ResolvedMarker from './ResolvedMarker.svelte';
   import ThreadDelete from './ThreadDelete.svelte';
   import ThreadTurn from './ThreadTurn.svelte';
   import WordsBox from './WordsBox.svelte';
@@ -789,7 +790,7 @@
             thread.updated_at
           }:${reply.thread === thread.id ? 'open' : ''}:${
             reply.thread === thread.id && reply.index !== null ? `edit-${reply.index}` : ''
-          }`;
+          }:${openedResolved.has(thread.id) ? 'opened' : ''}`;
           want.push({
             key,
             side,
@@ -918,6 +919,10 @@
    *  swept where one leaves without the reconciler seeing it. */
   const mounts = new Mounts();
 
+  /** The resolved rows the reader opened back up: collapsed by default, the
+   *  files reader's own rule. */
+  const openedResolved = new SvelteSet<string>();
+
   /** One turn, drawn by the piece both halves of the page draw. */
   function turnBlock(
     thread: ReviewThreadRecord,
@@ -948,6 +953,24 @@
     thread: ReviewThreadRecord,
     placed: { line: number; movedFrom: number | null },
   ): HTMLElement {
+    // **A resolved thread collapses to its marker line**, the files reader's
+    // own shape (Ved, 2026-10-17: "git diff also does not show the resolve
+    // expansion like the file view does"): a press opens it again, where its
+    // reopen and collapse acts are - the row's key carries the opened set,
+    // so the press rebuilds it in place.
+    if (statusName(thread.status) === 'resolved' && !openedResolved.has(thread.id)) {
+      const host = document.createElement('div');
+      const held = mount(ResolvedMarker, {
+        target: host,
+        props: {
+          first: thread.comments[0]?.text ?? '',
+          where: `${thread.anchor.path.split('/').pop() ?? ''} · line ${placed.line}`,
+          onopen: () => openedResolved.add(thread.id),
+        },
+      });
+      mounts.hold(host, () => void unmount(held));
+      return host;
+    }
     const card = document.createElement('article');
     card.className = 'rv-thread compact';
     const tops = document.createElement('div');
@@ -983,6 +1006,13 @@
       reopen.disabled = busy;
       reopen.addEventListener('click', () => void onreopen(thread));
       acts.append(reopen);
+      // Fold it back to the marker it came from, as the files reader does.
+      const fold = document.createElement('button');
+      fold.type = 'button';
+      fold.className = 'rv-a';
+      fold.textContent = 'collapse';
+      fold.addEventListener('click', () => openedResolved.delete(thread.id));
+      acts.append(fold);
     } else {
       const resolve = document.createElement('button');
       resolve.type = 'button';

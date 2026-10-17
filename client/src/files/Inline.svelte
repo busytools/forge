@@ -9,6 +9,7 @@
    * component draws what it is handed and reports presses.
    */
   import type { ReplyBox, TurnEditor, Voice } from '../review/boxes';
+  import ResolvedMarker from '../review/ResolvedMarker.svelte';
   import ThreadDelete from '../review/ThreadDelete.svelte';
   import ThreadTurn from '../review/ThreadTurn.svelte';
   import { statusName } from '../review/view';
@@ -77,12 +78,11 @@
 </script>
 
 {#if collapsed}
-  <button class="rv-marker" type="button" onclick={() => (opened = true)}>
-    <span class="rv-mk resolved" aria-hidden="true"></span>
-    <span class="rv-mk-word">resolved</span>
-    <span class="rv-mk-first">{row.thread.comments[0]?.text ?? ''}</span>
-    <span class="rv-where">{where}</span>
-  </button>
+  <ResolvedMarker
+    first={row.thread.comments[0]?.text ?? ''}
+    {where}
+    onopen={() => (opened = true)}
+  />
 {:else}
   <article class="rv-thread compact">
     <div class="rv-tops">
