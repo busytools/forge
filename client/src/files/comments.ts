@@ -45,21 +45,6 @@ export function contextForComment(lines: string[], line: number): string[] {
   return captured;
 }
 
-/** One comment being written: the file, the line, and nothing else - the
- *  words live on the page's own box. */
-export interface CommentSpot {
-  path: string;
-  line: number;
-}
-
-/** A box's words and its write-in-flight, held on the page: the reader can
- *  be re-mounted under the box, and a draft the component owned would go
- *  with it. */
-export interface Shelf {
-  draft: string;
-  busy: boolean;
-}
-
 /** One thread as the rail lists it, with where it draws now. */
 export interface RailRow {
   thread: ReviewThreadRecord;
