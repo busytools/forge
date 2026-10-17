@@ -8491,6 +8491,40 @@ mod lead_charter_tests {
         );
     }
 
+    /// The wind-down used to tell leads to have the worker reset its
+    /// worktree to main and drop its branch; measured 2026-10-17, a
+    /// worker seat's permission engine refuses that reset, and the
+    /// despawn reaped the branch and closed clean without it. Pinned so
+    /// the refusable step does not come back, and the honest half - the
+    /// tree clean, the reap the despawn's - does not drift away either.
+    #[test]
+    fn lead_charter_wind_down_leaves_the_reap_to_the_despawn() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("leave its worktree clean"),
+            "the honest cleanup instruction is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("commit and push what is in flight"),
+            "the dirty bar is commit AND push, not either: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("the despawn reaps the worktree branch"),
+            "the reap is the despawn's, not the worker's: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("once its commits are reachable elsewhere"),
+            "the reap's reachability bar is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("names any it must keep"),
+            "a kept branch is named, not silently left: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("reset to main"),
+            "the refusable reset stays out of the wind-down: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
     /// The attention rule is the lead's posture toward the user, and both
     /// halves read as the opposite of themselves when softened: the two
     /// shapes become "ask when unsure", and the spec half becomes a
@@ -8625,6 +8659,29 @@ mod lead_charter_tests {
             DEFAULT_LEAD_CHARTER
                 .contains("nothing here mandates tooling a fresh install does not have"),
             "the fresh-install guard is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
+    /// Two PRs each green on its own base merged in sequence composed red
+    /// on main (measured 2026-08, again 2026-10-17, from a branch that
+    /// predated the other's merge), so the merge-gate bullet carries the
+    /// moved-main rule: origin/main merged in before the final gate, and
+    /// main's CI read after the merge. Pinned with both halves, because
+    /// either alone reads as a caveat with no action.
+    #[test]
+    fn lead_charter_carries_the_composed_main_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("A branch green on its own base can compose red on a moved main"),
+            "the composed-red fact is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("have the worker merge origin/main into its branch"),
+            "the remedy's actor and its merge are pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("after the PR merges main's CI is the only truth"),
+            "the post-merge read is pinned: {DEFAULT_LEAD_CHARTER}",
         );
     }
 }
