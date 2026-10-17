@@ -872,8 +872,9 @@ fn member_line(message: &SlackMessage) -> String {
 /// entirely: the despawn race (teardown removed its subscriptions first),
 /// or a `Failed` entry, which is kept by design and is not live - a bucket
 /// parked for one would never drain. The fall-through commits under the
-/// worker's own dedupe key, so a durable worker that respawns later
-/// re-delivers what it missed.
+/// worker's own dedupe key, so the batch counts as delivered and stays
+/// with the lead: a durable worker that later respawns does not
+/// re-receive it.
 ///
 /// Returns whether the batch reached a destination it can be read from:
 /// dispatched, or buffered for one that will. `false` tells the pump the
