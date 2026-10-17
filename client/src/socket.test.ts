@@ -820,15 +820,17 @@ describe('the connection', () => {
     opened.push(conn);
 
     const recovered = conn.subscribe(w1);
-    await until(() => server.received.length === 1, 'the first subscribe');
+    // Floors rather than exact counts: the bound is 120 ms and the poll is
+    // 10 ms, so a slow pass can have asked more than once before this runs.
+    await until(() => server.received.length >= 1, 'the first subscribe');
     // The first answer is lost, so the bound re-asks; that answer lands.
-    await until(() => server.received.length === 3, 'the re-ask pair');
+    await until(() => server.received.length >= 3, 'the re-ask pair');
     server.send({ kind: 'snapshot', subject: w1, data: { who: 'w1' } });
     await until(() => recovered.state().kind === 'ready', 'the re-ask to answer');
 
     // A second subscription, still loading, and then the refusal: it is w2's.
     const second = conn.subscribe(w2);
-    await until(() => server.received.length === 4, 'the second subscribe');
+    await until(() => server.received.length >= 4, 'the second subscribe');
     server.send({ kind: 'error', what: 'subscribe', why: 'forge holds no session for that seat' });
 
     await until(() => second.state().kind === 'refused', 'the refusal to land on w2');
