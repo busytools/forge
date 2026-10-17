@@ -154,7 +154,8 @@ impl std::fmt::Display for MoveError {
             Self::WithdrawNeedsReason => write!(
                 f,
                 "this row is waiting on the user; withdrawing it needs `detail`, the reason the \
-                 ask is withdrawn, which lands on the row, and a bare status flip is refused"
+                 ask is withdrawn, and a cancel stating none - or only what the row already \
+                 says - is refused"
             ),
             Self::DeletingLook(subject) => write!(
                 f,
