@@ -461,31 +461,13 @@ pub fn run() {
             // this block and its macOS-shaped start stay desktop-only.
             #[cfg(desktop)]
             {
-                // The host is handed to the frontend whether or not its
-                // directories resolve: a client that cannot host says so when
-                // it is asked, rather than refusing to start.
-                let host = match browser::StackPaths::resolve(app.handle()) {
-                    Ok(paths) => {
-                        tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
-                        std::sync::Arc::new(browser::BrowserHost::new(paths))
-                    }
-                    Err(why) => {
-                        tauri_plugin_log::log::warn!("browser host unavailable: {why}");
-                        std::sync::Arc::new(browser::BrowserHost::unavailable(why))
-                    }
-                };
-                // **No browser launches here** (spam-control A4): the first
-                // real need - a call or a raise - brings one up on demand, so
-                // a client start costs nothing for browsers nobody asked for.
-                // What still runs is the reap, the only cover for a client
-                // that never ran its exit - a crash, a SIGKILL, or the update
-                // restart, whose main-thread path skips `RunEvent::Exit` by
-                // design; it launches nothing, and with no launch to mistake
-                // for one, it reaps only what a previous run left.
-                let reap = std::sync::Arc::clone(&host);
-                tauri::async_runtime::spawn(async move {
-                    reap.reap_orphans().await;
-                });
+                // The whole browser act is one call (spam-control A4): the
+                // boot brings no browser up, and `boot_browser` is what the
+                // pin drives, so a launch moved back in here is the closure's
+                // own diff rather than a silent regression.
+                let host = browser::BrowserHost::boot_browser(browser::StackPaths::resolve(
+                    app.handle(),
+                ));
                 app.manage(host);
             }
             // The bridge, over whatever host this target has: the desktop's

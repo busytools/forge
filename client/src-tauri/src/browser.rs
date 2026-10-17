@@ -254,6 +254,40 @@ impl BrowserHost {
         }
     }
 
+    /// The boot's browser act (spam-control A4): build the host over the
+    /// resolved paths, say where its stack lives, and set the reap going for
+    /// whatever a dead client left behind.
+    ///
+    /// **It launches nothing** - a browser comes up on the first real need (a
+    /// call, a raise) and never at app start. A fn rather than lines in the
+    /// setup closure so the invariant is drivable: a launch re-added inside
+    /// it fails `the_boot_launches_nothing`.
+    #[cfg(desktop)]
+    pub fn boot_browser(paths: Result<StackPaths, String>) -> Arc<Self> {
+        // The host is handed to the frontend whether or not its directories
+        // resolve: a client that cannot host says so when it is asked, rather
+        // than refusing to start.
+        let host = match paths {
+            Ok(paths) => {
+                tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
+                Arc::new(Self::new(paths))
+            }
+            Err(why) => {
+                tauri_plugin_log::log::warn!("browser host unavailable: {why}");
+                Arc::new(Self::unavailable(why))
+            }
+        };
+        // The reap is the only cover for a client that never ran its exit - a
+        // crash, a SIGKILL, or the update restart, whose main-thread path
+        // skips `RunEvent::Exit` by design. It launches nothing, and with no
+        // launch to mistake for one, it reaps only what a previous run left.
+        let reap = Arc::clone(&host);
+        tauri::async_runtime::spawn(async move {
+            reap.reap_orphans().await;
+        });
+        host
+    }
+
     /// Run one browser tool for a session.
     ///
     /// No `profile` argument drives the browser's own profile. A name drives
@@ -1804,13 +1838,13 @@ mod tests {
         );
     }
 
-    /// **No browser launches at client start** (spam-control A4): the boot's
-    /// own acts are building the host and reaping what a dead client left,
-    /// and neither brings a browser up. The first call or raise is what
-    /// launches - the raise's door is pinned by
-    /// `a_show_with_nothing_running_brings_a_window_up`.
+    /// **No browser launches at client start** (spam-control A4), driven the
+    /// way the setup closure drives it: the boot's browser act runs under a
+    /// mock Tauri app over a scratch stack, and nothing may come up. A launch
+    /// re-added inside `boot_browser` fails here; only one added in the
+    /// closure around the call is beyond a test that cannot start a real app.
     #[tokio::test]
-    async fn a_boot_launches_nothing() {
+    async fn the_boot_launches_nothing() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let paths = StackPaths {
             stack: dir.path().join("stack"),
@@ -1818,12 +1852,39 @@ mod tests {
             output: dir.path().join("output"),
             profiles: dir.path().join("profiles"),
         };
-        let host = BrowserHost::new(paths.clone());
-        assert!(!paths.user_data.exists(), "building the host launches nothing");
-        assert!(host.reap_orphans().await.is_empty(), "nothing of ours outlives a boot");
+        let watched = paths.user_data.clone();
+        // The setup closure's own shape, driven directly: a registered setup
+        // only runs on an event loop (the mock's `run` blocks until a window
+        // closes), and the actions are what this pin is about.
+        let setup = move |app: &mut tauri::App<tauri::test::MockRuntime>| {
+            let host = BrowserHost::boot_browser(Ok(paths));
+            app.manage(host);
+            Ok::<(), Box<dyn std::error::Error>>(())
+        };
+        let mut app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("the mock app builds");
+        setup(&mut app).expect("the boot's browser act runs");
+        let host = app.state::<Arc<BrowserHost>>();
         assert!(
-            chromium::verified(&paths.user_data).await.is_none(),
-            "and the boot's acts launch no browser",
+            host.idle_candidates().await.is_empty(),
+            "nothing is a candidate before anything launches",
+        );
+        // A launch re-added as a spawn (the launcher's API is async) answers
+        // a beat later, so the absence is believed over a bounded wait: the
+        // port file shows within a second or so of Brave starting, and three
+        // is generous - a real launch fails somewhere in here.
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while tokio::time::Instant::now() < until {
+            assert!(
+                !watched.join("DevToolsActivePort").exists(),
+                "the boot's browser act launches nothing",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            chromium::verified(&watched).await.is_none(),
+            "and no browser answers for it",
         );
     }
 
