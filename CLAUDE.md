@@ -385,7 +385,11 @@ inspected.
 7. **Clippy pedantic + deny `unwrap_used` / `expect_used` / `panic` /
    `exit` / `todo` / `unimplemented`** in non-test code. The workspace
    lint tables in `Cargo.toml` are the source of truth, including which
-   pedantic lints are exempted and why.
+   pedantic lints are exempted and why. `cfg(any(test, feature =
+   "testing"))` code is non-test to clippy: `clippy.toml`'s
+   `allow-*-in-tests` does not reach it, so no `expect`/`panic` there -
+   and moving an item to `#[cfg(test)]` then meets `dead_code`, which is
+   the gate being accurate rather than asking for a marker.
 8. **`cargo nextest run`, not `cargo test`.** `just check` runs fmt,
    the unicode-punctuation gate, clippy, nextest and docs in one shot,
    ending on a verdict line that names the first failing step. It must
@@ -393,7 +397,12 @@ inspected.
    compiles the configuration `install.sh` builds: `just check` runs
    with `--all-features`, so it turns every feature on regardless and
    never exercises which configuration enables what. Read that line, not
-   a pipeline's exit status - `just check | tail` reports tail's.
+   a pipeline's exit status - `just check | tail` reports tail's. A test
+   that needs a real `SessionTask` over a controllable `claude` child
+   points the spawn at `crates/forge-sdk/tests/fixtures/mock_claude.sh`
+   through `forge_agent::set_test_sdk_binary` (process-wide; clear it
+   after; absolute paths in a wrapper; rendezvous on the workspace's
+   `Connected`).
 9. **Wire-conformance harness is mandatory for new wire surface.** New
    control_request subtypes, message types, hook events and tool
    integrations ship with: (a) a live-capture scenario, (b) the captured
