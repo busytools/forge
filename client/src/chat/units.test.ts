@@ -2440,6 +2440,26 @@ describe('one turn folded into the units a view draws', () => {
       'the reloaded row draws like the live one',
     ).toEqual(nudgesOf(live[0]).map((row) => row.text));
 
+    // **One transform per row.** The live arm strips escapes, and the read
+    // arm runs the same one: a producer that starts stamping a sequence onto
+    // the machinery's words must not split the two carriers into two
+    // drawings.
+    const escaped = '\u{1b}[2Ktask board: worker w-1 holds no row - feed it or despawn it.';
+    const escapedLive = fold([heard([text(escaped)], { uuid: id })]);
+    const escapedRead = fold([
+      heard([{ type: 'queued_command', commandMode: 'prompt', prompt: escaped, source_uuid: id }], {
+        uuid: 'c9351772-2ce7-4c28-88e1-6fcad33c0905',
+      }),
+    ]);
+    expect(
+      nudgesOf(escapedLive[0]).map((row) => row.text),
+      'the live arm strips',
+    ).toEqual([words]);
+    expect(
+      nudgesOf(escapedRead[0]).map((row) => row.text),
+      'and the read arm strips',
+    ).toEqual([words]);
+
     // The reader's own send keeps its row: the id's prefix is what tells the
     // two apart, so a plain prompt id is still the reader's words.
     const typed = fold([heard([text(words)], { uuid: 'forge_prompt_8_5e6f7a8b' })]);

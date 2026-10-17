@@ -2305,9 +2305,16 @@ export function fold(
         }
         // The machinery's own words can ride this carrier too: a nudge the
         // CLI buffered mid-turn draws as the same work row its idle dispatch
-        // draws, keyed by the prompt's own id off the block.
+        // draws, keyed by the prompt's own id off the block. Escapes stripped,
+        // the way the text arm above strips them: one transform per row, or
+        // the same words draw two ways depending on which carrier brought
+        // them.
         if (isNudgeId(promptIdOf(frame, block))) {
-          pending.push({ tag: 'nudge', key: keyOf(at, frame, blockAt), text: words });
+          pending.push({
+            tag: 'nudge',
+            key: keyOf(at, frame, blockAt),
+            text: stripEscapes(words),
+          });
           continue;
         }
         // Otherwise it is a turn the reader took, so what the frame attached
