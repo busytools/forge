@@ -155,7 +155,17 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let last: number | null = null;
   let cancelFrame: (() => void) | null = null;
   let cancelObserver: (() => void) | null = null;
-  /** When a conversation opened, and whether its state has drawn (#2374). */
+  /**
+   * The open conversation's own seat, when it started, and whether its state
+   * has drawn (#2374).
+   *
+   * **The marks name the seat that OPENED, not whatever the page shows
+   * next**: a reader who leaves the seat before its first normal frame would
+   * otherwise read the seat's own delta attributed to the home they moved
+   * to. And the open is dropped the moment the page leaves that seat: a mark
+   * left armed across the move would land on an unrelated moment.
+   */
+  let openSeat: string | null = null;
   let openAt: number | null = null;
   let drawnSeen = false;
 
@@ -206,19 +216,20 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           session,
         });
       } else if (openAt !== null && drawnSeen) {
-        // **The open seat's work is done**: its rows are drawn and the
-        // frame loop is back to a normal cadence, which is the quiet the
-        // switch's own timing is measured to.
+        // **The open seat's work is done**: its state is drawn and the frame
+        // loop is back to a normal cadence, which is the quiet the switch's
+        // own timing is measured to.
         emit({
           schema: SCHEMA,
           kind: 'quiet',
           run_id: runId,
           ts_ms: Date.now(),
           ms: at - openAt,
-          surface,
-          session,
+          surface: 'session',
+          session: openSeat,
         });
         openAt = null;
+        openSeat = null;
       }
     }
     last = at;
@@ -233,6 +244,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       slow = 0;
       maxMs = 0;
       openAt = null;
+      openSeat = null;
       drawnSeen = false;
       windowStart = now();
       // Boot's own reading: the router has usually not wired a route yet,
@@ -276,8 +288,17 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     setSurface(next: string | null, seat: string | null): void {
       surface = next;
       session = seat;
+      // **An open belongs to the seat that opened it.** Leaving that seat -
+      // to the home, a board, a view that opens no conversation, or another
+      // seat - ends an unfinished open rather than letting its quiet land
+      // under whatever came next.
+      if (openAt !== null && seat !== openSeat) {
+        openAt = null;
+        openSeat = null;
+      }
     },
     noteConversationOpened(seat: string): void {
+      openSeat = seat;
       openAt = now();
       drawnSeen = false;
       emit({
@@ -298,8 +319,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         run_id: runId,
         ts_ms: Date.now(),
         ms: now() - openAt,
-        surface,
-        session,
+        surface: 'session',
+        session: openSeat,
       });
     },
   };

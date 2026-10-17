@@ -246,6 +246,52 @@ describe('the open a conversation begins', () => {
     h.probe.noteConversationOpened('Busytools/forge/lead');
     expect(h.records.flat().filter((record) => record.kind === 'switch')).toHaveLength(2);
   });
+
+  /**
+   * **A mark names the seat that opened, not where the page moved to.** The
+   * route can move on while the seat's drawing is still on its way - to a
+   * view of the same seat, whose whole point is that it is not a switch.
+   */
+  it('attributes the marks to the seat that opened, not the live route', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.setSurface('review', 'Busytools/forge/lead');
+    h.frame(16); // a normal frame while the seat's answer is still on its way
+
+    h.probe.noteDrawn();
+    h.frame(16);
+
+    const marks = h.records
+      .flat()
+      .filter((record) => record.kind === 'drawn' || record.kind === 'quiet');
+    expect(marks).toHaveLength(2);
+    for (const mark of marks) {
+      expect(mark.session, 'the seat itself is what the mark names').toBe('Busytools/forge/lead');
+      expect(mark.surface).toBe('session');
+    }
+    expect(marks[1]?.ms, 'the quiet measures from the open too').toBe(32);
+  });
+
+  /**
+   * **An open the page leaves is dropped, not carried.** Home between the
+   * open and its first normal frame would otherwise write the seat's own
+   * delta under a route that never opened anything.
+   */
+  it('drops an unfinished open when the page leaves its seat', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.setSurface('home', null);
+
+    h.probe.noteDrawn();
+    h.frame(16);
+    h.frame(16);
+
+    const kinds = h.records.flat().map((record) => record.kind);
+    expect(kinds, 'a dropped open leaves no late drawn mark').not.toContain('drawn');
+    expect(kinds, 'and no quiet under the route that came next').not.toContain('quiet');
+  });
 });
 
 describe('the surface a record names', () => {
