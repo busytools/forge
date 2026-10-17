@@ -85,6 +85,10 @@ fn parked_on_look(task: &Task) -> bool {
 /// both read this set, and so do the removal guards and the withdraw
 /// door - an ask on the user leaves by the user's own answer or approve,
 /// or by a reasoned withdraw.
+///
+/// `verification` is checked alongside the kind: today's only setter tags
+/// `decision` too, and the arm keeps a verification park on-user however
+/// it was built.
 fn parked_on_user(task: &Task) -> bool {
     task.waiting_on
         .as_ref()
