@@ -15,7 +15,7 @@
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
   import { emptyComposer } from '../composer/view';
-  import { filesFrom } from '../composer/wire';
+  import { filesFrom, filesOnly } from '../composer/wire';
   import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
   import { files } from '../chat/files.svelte';
@@ -174,7 +174,7 @@
    *  its count the seat's own index and its tree the resolved cwd. */
   $effect(() => {
     files.sync(
-      record === null ? null : filesFrom(record.file_index).length,
+      record === null ? null : filesOnly(filesFrom(record.file_index)).length,
       record === null ? null : record.state.scan_cwd,
     );
   });

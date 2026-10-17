@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { FileEntry } from '../composer/wire';
+import { filesOnly, type FileEntry } from '../composer/wire';
 import { indexTreeRows, matchedEntries } from './tree';
 
 function entry(relPath: string): FileEntry {
@@ -50,6 +50,23 @@ describe('the seat index as a tree', () => {
     expect(rows.some((row) => row.path === 'src')).toBe(true);
     expect(rows.some((row) => row.path === 'src/sub' || row.path === 'src/a.ts')).toBe(false);
     expect(rows.some((row) => row.path === 'src/sub/deep.rs')).toBe(false);
+  });
+
+  /**
+   * **The walk lists directories too** (a `rel_path` ending in `/`, measured
+   * on the live scratch), and a directory entry reaching the tree would
+   * draw an empty-named row beside the real one. The page's input drops
+   * them first, and the tree derives its own directories.
+   */
+  it('drops the directory entries the walk lists', () => {
+    const withDirs = [entry('src/'), entry('src/lib.rs'), entry('.claude/'), entry('README.md')];
+    expect(filesOnly(withDirs).map((file) => file.relPath)).toEqual(['src/lib.rs', 'README.md']);
+    const rows = indexTreeRows(filesOnly(withDirs), new Set());
+    expect(rows.map((row) => `${row.kind} ${row.path}`)).toEqual([
+      'dir src',
+      'file src/lib.rs',
+      'file README.md',
+    ]);
   });
 });
 

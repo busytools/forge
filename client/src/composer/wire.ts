@@ -414,6 +414,13 @@ export interface FileEntry {
   depth: number;
 }
 
+/** The FILE entries of an index: the walk lists its directories too (a
+ *  `rel_path` ending in `/`), and a directory is not a row a file list
+ *  draws - the tree derives its own. */
+export function filesOnly(entries: FileEntry[]): FileEntry[] {
+  return entries.filter((entry) => !entry.relPath.endsWith('/'));
+}
+
 /** The seat's file index, keyed by path relative to the session's own root. */
 export function filesFrom(value: unknown): FileEntry[] {
   const entries = record(record(value)['entries']);

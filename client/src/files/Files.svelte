@@ -25,7 +25,7 @@
 
   import FileTree from '../components/FileTree.svelte';
   import { toggleClosed, type TreeRow } from '../components/tree';
-  import { filesFrom } from '../composer/wire';
+  import { filesFrom, filesOnly } from '../composer/wire';
   import { hrefForSlot } from '../routes';
   import {
     finishRound,
@@ -61,8 +61,9 @@
   });
 
   const record: SessionRecord | null = $derived(read.wire);
-  /** The seat's whole index; a floor for a record whose read has no files. */
-  const entries = $derived(record === null ? [] : filesFrom(record.file_index));
+  /** The seat's files, directories dropped: the walk lists both, and the
+   *  tree derives its own directories. */
+  const entries = $derived(record === null ? [] : filesOnly(filesFrom(record.file_index)));
 
   let query = $state('');
   const closed = new SvelteSet<string>();
