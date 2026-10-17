@@ -256,7 +256,7 @@ impl Tool for Update {
         "Change a task in YOUR project by id, stating only the fields to move - everything else \
          is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
          failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
-         label of a worker. The board shows what is RUNNING: a row whose work has landed is \
+         label of a worker. The board is for running work: a row whose work has landed is \
          DELETED in the same pass (tasks__delete), never left completed. Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
@@ -521,7 +521,7 @@ impl Tool for Delete {
     fn description(&self) -> &'static str {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
-         that is over: the board shows what is RUNNING, so a landed row - its work merged, \
+         that is over: the board is for running work, so a landed row - its work merged, \
          delivered or concluded - is deleted in the same pass, never left completed. Nothing \
          is archived. A row waiting on the user is not a delete's to \
          take - the board's answer or approve settles it, and deleting it (or a tree holding \
@@ -1245,10 +1245,10 @@ mod tests {
         }
     }
 
-    /// Delete-on-landing is shipped text (#2377): the board shows what is
-    /// RUNNING, so a landed row is deleted in the same pass rather than
-    /// left completed. The update's status property is where the caller
-    /// picks the terminal state, so it carries the rule too.
+    /// Delete-on-landing is shipped text (#2377): the board is for running
+    /// work, so a landed row is deleted in the same pass rather than left
+    /// completed. The update's status property is where the caller picks
+    /// the terminal state, so it carries the rule too.
     #[test]
     fn the_task_descriptions_state_delete_on_landing() {
         let facade = MockTasksFacade::new().into_arc();
@@ -1259,13 +1259,13 @@ mod tests {
             (
                 "tasks__update",
                 update.description(),
-                "The board shows what is RUNNING: a row whose work has landed is DELETED in \
+                "The board is for running work: a row whose work has landed is DELETED in \
                  the same pass (tasks__delete), never left completed",
             ),
             (
                 "tasks__delete",
                 delete.description(),
-                "the board shows what is RUNNING, so a landed row - its work merged, delivered \
+                "the board is for running work, so a landed row - its work merged, delivered \
                  or concluded - is deleted in the same pass, never left completed",
             ),
         ] {
