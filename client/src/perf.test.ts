@@ -184,7 +184,7 @@ describe('the frame probe', () => {
 });
 
 describe('the open a seat switch begins', () => {
-  it('marks the switch, then measures the first row and the quiet from it', () => {
+  it('marks the switch, then measures the drawn and the quiet from it', () => {
     const h = harness();
     // Boot reads the route first: that wiring is the run line's own moment,
     // not a switch.
@@ -196,18 +196,18 @@ describe('the open a seat switch begins', () => {
     expect(switches).toHaveLength(1);
     expect(switches[0]?.session).toBe('Busytools/forge/lead');
 
-    // A normal frame while the rows are still on their way must not read as
-    // the open being done: the quiet needs the rows first.
+    // A normal frame while the seat's answer is still on its way must not
+    // read as the open being done: the quiet needs the drawing first.
     h.frame(16);
     expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
 
-    h.probe.noteFirstRow();
-    const rows = h.records.flat().filter((record) => record.kind === 'first_row');
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.ms, 'the row mark measures from the switch').toBe(16);
+    h.probe.noteDrawn();
+    const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]?.ms, 'the drawn mark measures from the switch').toBe(16);
 
-    // A slow frame after the rows is the switch still being paid for, so the
-    // open stays running.
+    // A slow frame after the drawing is the switch still being paid for, so
+    // the open stays running.
     h.frame(120);
     expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
 

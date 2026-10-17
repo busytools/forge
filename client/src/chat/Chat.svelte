@@ -5,7 +5,7 @@
   import { heldReserve, sizes } from './row-sizes';
 
   import Icon from '../components/Icon.svelte';
-  import { noteFirstRow } from '../perf';
+  import { noteDrawn } from '../perf';
   import { subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
@@ -670,15 +670,26 @@
   });
 
   /**
-   * **The seat's first drawn row (#2374).** The effect runs after the update
-   * that first puts this seat's rows in the DOM, which is what the switch's
-   * own timing is measured to - the mark is written where the row landed,
-   * not where the click happened. Declared after the seat effect above, so a
-   * switch has put the new seat's conversation in `held` before this reads
-   * it: a mark written off the seat that is going would time the wrong open.
+   * **The seat's terminal drawing (#2374).** The effect runs after the
+   * update that first puts this seat's answer on screen, which is what the
+   * switch's own timing is measured to - the mark is written where the
+   * drawing landed, not where the click happened. Declared after the seat
+   * effect above, so a switch has put the new seat's conversation in `held`
+   * before this reads it: a mark written off the seat that is going would
+   * time the wrong open.
+   *
+   * **Every terminal state completes the open, and only a terminal one.**
+   * The condition mirrors the column's own state chain below: a loaded
+   * conversation (its rows, or the empty state), or the seat's own waking,
+   * not-running or refused line - those are the column's answer, while
+   * `Reading the conversation` is the wait. An open left armed through one
+   * of the terminal states would land on the next real turn minutes later
+   * and read as a stall nothing was slow for.
    */
   $effect(() => {
-    if (held.turns.length > 0) noteFirstRow();
+    const settled =
+      held.loaded || (held.turns.length === 0 && (waking || spawning || held.refused !== null));
+    if (settled) noteDrawn();
   });
 
   // The first page is drawn at the end rather than the start, and that is not

@@ -43,15 +43,15 @@ const SUMMARY_INTERVAL_MS = 10_000;
 /** One line of the perf log, as the shell writes it. */
 export interface PerfRecord {
   schema: string;
-  kind: 'run_started' | 'frame' | 'longtask' | 'summary' | 'switch' | 'first_row' | 'quiet';
+  kind: 'run_started' | 'frame' | 'longtask' | 'summary' | 'switch' | 'drawn' | 'quiet';
   run_id: string;
   ts_ms: number;
   version?: string;
   /** The frame's own counter within the run, for a frame record. */
   frame?: number;
   /**
-   * The frame's gap, or the long task's duration, or - for a `first_row` and
-   * a `quiet` - the time since the switch record the mark belongs to.
+   * The frame's gap, or the long task's duration, or - for a `drawn` and a
+   * `quiet` - the time since the switch record the mark belongs to.
    */
   ms?: number;
   /** A long task's own name. */
@@ -78,8 +78,9 @@ interface PerfProbe {
   stop(): void;
   /** The page the probe is looking at; nulls for a route with no seat. */
   setSurface(surface: string | null, session: string | null): void;
-  /** One row of the open seat's conversation has drawn (#2374). */
-  noteFirstRow(): void;
+  /** The open seat's terminal drawing has landed: its conversation, or the
+   *  seat's own empty/waking/refused line (#2374). */
+  noteDrawn(): void;
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
@@ -160,9 +161,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
    */
   let shown: string | null = null;
   let wired = false;
-  /** When the open seat came on screen, and whether its rows have drawn. */
+  /** When the open seat came on screen, and whether its state has drawn. */
   let openAt: number | null = null;
-  let firstRowSeen = false;
+  let drawnSeen = false;
 
   function emit(record: PerfRecord): void {
     sink([record]);
@@ -210,7 +211,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           surface,
           session,
         });
-      } else if (openAt !== null && firstRowSeen) {
+      } else if (openAt !== null && drawnSeen) {
         // **The open seat's work is done**: its rows are drawn and the
         // frame loop is back to a normal cadence, which is the quiet the
         // switch's own timing is measured to.
@@ -238,7 +239,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       slow = 0;
       maxMs = 0;
       openAt = null;
-      firstRowSeen = false;
+      drawnSeen = false;
       windowStart = now();
       // Boot's own reading: the router has usually not wired a route yet,
       // so null here is the honest answer rather than a gap.
@@ -283,7 +284,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       session = seat;
       if (wired && seat !== null && seat !== shown) {
         openAt = now();
-        firstRowSeen = false;
+        drawnSeen = false;
         emit({
           schema: SCHEMA,
           kind: 'switch',
@@ -296,12 +297,12 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       shown = seat;
       wired = true;
     },
-    noteFirstRow(): void {
-      if (openAt === null || firstRowSeen) return;
-      firstRowSeen = true;
+    noteDrawn(): void {
+      if (openAt === null || drawnSeen) return;
+      drawnSeen = true;
       emit({
         schema: SCHEMA,
-        kind: 'first_row',
+        kind: 'drawn',
         run_id: runId,
         ts_ms: Date.now(),
         ms: now() - openAt,
@@ -334,12 +335,13 @@ export function notePerfSurface(surface: string | null, session: string | null):
 }
 
 /**
- * One row of the open seat's conversation has drawn: the mark a seat
- * switch's own timing is measured to, written where the rows land rather
- * than where the click happened (#2374).
+ * The open seat's terminal drawing has landed - its conversation, or the
+ * seat's own empty/waking/refused line. The mark a switch's own timing is
+ * measured to, written where the drawing lands rather than where the click
+ * happened (#2374).
  */
-export function noteFirstRow(): void {
-  running?.noteFirstRow();
+export function noteDrawn(): void {
+  running?.noteDrawn();
 }
 
 /**

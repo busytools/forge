@@ -141,10 +141,11 @@ seconds (frames, how many were slow, the worst gap), and a `frame` line
 for each frame at or over 50 ms with the surface and seat it happened
 on, plus `longtask` lines naming the work that blocked. A seat switch
 writes its own open beside those: `switch` when a seat comes on screen,
-`first_row` when its conversation first draws a row, and `quiet` when
-the frame loop is back to a normal cadence, the last two carrying the
-time since the switch. Slow frames are what the file is for; a quiet
-log is a client that is keeping up.
+`drawn` when the seat's terminal state is on screen (its conversation,
+the empty state, or the seat's own waking or refused line), and `quiet`
+when the frame loop is back to a normal cadence, the last two carrying
+the time since the switch. Slow frames are what the file is for; a
+quiet log is a client that is keeping up.
 
 The icon is the `panes` mark from `src/brand.ts`, on the `--bg` ground in
 the `--accent` colour. Render the mark to a 1024 PNG and pass that to
