@@ -33,6 +33,7 @@
     openCapture,
     takeCounts,
     takePhase,
+    takeSilenceLine,
     type TakeLine,
   } from '../composer/dictate.svelte';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from '../composer/dictation';
@@ -238,6 +239,8 @@
 
   const rowPhase = $derived(takePhase(dictate, composer.take, slot));
   const rowWire = $derived(takeCounts(dictate, slot));
+  /** What the row says when the device is feeding this page's capture nothing. */
+  const rowSilent = $derived(takeSilenceLine(dictate, slot)?.text ?? null);
 
   /**
    * A landed take puts its words at the end of the box that began it, once.
@@ -598,6 +601,7 @@
                     dictate.act('cancel');
                   }}
                   spread
+                  silent={rowSilent}
                 />
               {:else}
                 <Field

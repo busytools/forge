@@ -26,6 +26,7 @@
     onabandon = () => {},
     onmic = () => {},
     dictation = false,
+    silent = null,
     takeline = null,
     answered = false,
   }: {
@@ -75,6 +76,11 @@
      * nothing a reader can act on.
      */
     dictation?: boolean;
+    /**
+     * What the row says when the device is feeding this page's capture
+     * nothing, read by the composer - which owns the take - rather than here.
+     */
+    silent?: string | null;
     /**
      * What became of a take this page started: a failure the server never saw,
      * or a refusal it sent back.
@@ -845,7 +851,7 @@
       {#if take !== null}
         <!-- A take the dock watches is one the record already has: its own
              phase is all there is to say about it here. -->
-        <TakeCard {take} phase={take.phase} {wire} oncancel={onabandon} spread />
+        <TakeCard {take} phase={take.phase} {wire} oncancel={onabandon} {silent} spread />
       {:else}
         <Field
           editor="dock"

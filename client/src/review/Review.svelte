@@ -7,6 +7,7 @@
     openCapture,
     takeCounts,
     takePhase,
+    takeSilenceLine,
     type RowPhase,
     type TakeLine,
   } from '../composer/dictate.svelte';
@@ -161,6 +162,7 @@
     busy: false,
     line: null,
     phase: null,
+    silent: null,
     panel: false,
     take: null,
     wire: null,
@@ -171,6 +173,7 @@
     busy: false,
     line: null,
     phase: null,
+    silent: null,
     panel: false,
     take: null,
     wire: null,
@@ -292,6 +295,8 @@
   /** What the take's row is doing, read the way every surface reads it. */
   const rowPhase = $derived(takePhase(dictate, composer.take, slot));
   const rowWire = $derived(takeCounts(dictate, slot));
+  /** What the row says when the device is feeding this page's capture nothing. */
+  const rowSilent = $derived(takeSilenceLine(dictate, slot)?.text ?? null);
 
   /**
    * What dictation means to this page, built once and handed to every box.
@@ -355,6 +360,7 @@
       held.take = composer.take;
       held.wire = rowWire;
       held.phase = phaseIn(at);
+      held.silent = rowSilent;
       held.panel = dictate.panel && panelIn === at;
     }
   });
@@ -826,6 +832,7 @@
           take={composer.take}
           wire={rowWire}
           phase={phaseIn('summary') ?? 'recording'}
+          silent={rowSilent}
           oncancel={() => {
             landing.drop();
             dictate.act('cancel');

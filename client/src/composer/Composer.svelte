@@ -1115,6 +1115,7 @@
           onabandon={abandon}
           onmic={() => dictate.toggle()}
           {dictation}
+          silent={silentLine}
           takeline={box.dictateLine}
           answered={box.answeredKey !== null &&
             box.answeredKey === ownKeyOf(dockAsk) &&

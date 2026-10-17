@@ -29,6 +29,12 @@ export interface Words {
   line: TakeLine | null;
   /** What this box's take row says, or `null` when the take is another box's. */
   phase: RowPhase | null;
+  /**
+   * What the row says when the device is feeding this page's capture nothing,
+   * read by the page like the phase beside it. `null` while the take speaks,
+   * while another box's is showing, or once the take is over.
+   */
+  silent: string | null;
   /** Whether the settings panel was opened from this box's mic. */
   panel: boolean;
   /** The record's take, and the counts this page produced for it. */

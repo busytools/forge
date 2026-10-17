@@ -100,6 +100,7 @@
         take={box.take}
         wire={box.wire}
         phase={box.phase}
+        silent={box.silent}
         oncancel={() => voice.dictate.act('cancel')}
         spread
       />
