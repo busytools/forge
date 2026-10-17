@@ -89,9 +89,7 @@ pub fn read(
     if bytes.len() as u64 > ceiling_bytes {
         return Err(DocumentRefusal::OverCeiling { size_bytes: bytes.len() as u64, ceiling_bytes });
     }
-    if matches!(kind, DocumentKind::Markdown | DocumentKind::Text)
-        && std::str::from_utf8(&bytes).is_err()
-    {
+    if reviewable_kind(&kind) && std::str::from_utf8(&bytes).is_err() {
         return Err(DocumentRefusal::NotUtf8 { path: path.to_owned() });
     }
     let content_hash = crate::env::git_diff::resolver::content_hash_bytes(&bytes);
@@ -99,10 +97,24 @@ pub fn read(
     Ok(DocumentRead { path: resolved, kind, bytes, reviewable: can_review, content_hash })
 }
 
-/// Whether a kind can carry a review at all: markdown and text draw as
-/// comment targets, and a PDF or an unrecognised kind opens read-only.
+/// The extensions whose files read as reviewable text: the ones the
+/// client's files page colours, mirrored by `client/src/chat/code.ts`'s
+/// `NAMED` table - the two lists are one set named twice, so a language
+/// added there is added here in the same change.
+const TEXT_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "svelte", "py", "go", "json", "toml", "yaml", "yml",
+    "sh", "bash", "zsh", "css", "html", "xml", "sql", "kt", "md", "txt",
+];
+
+/// Whether a kind can carry a review at all: markdown, text and the code
+/// kinds draw as comment targets (the files page's comments ride a
+/// document read), and a PDF or an image kind opens read-only.
 fn reviewable_kind(kind: &DocumentKind) -> bool {
-    matches!(kind, DocumentKind::Markdown | DocumentKind::Text)
+    match kind {
+        DocumentKind::Markdown | DocumentKind::Text => true,
+        DocumentKind::Other(ext) => TEXT_EXTENSIONS.contains(&ext.as_str()),
+        DocumentKind::Pdf => false,
+    }
 }
 
 /// The canonical target of `path` under `root`. A missing file has no
@@ -234,10 +246,10 @@ mod tests {
     }
 
     /// **The read answers whether the DOCUMENT is reviewable, not what the
-    /// caller asked.** A markdown or text document a viewer opened cold -
-    /// the request flag false - is reviewable all the same, so the page
-    /// draws its review however the reader reached it; a PDF and an
-    /// unrecognised kind are not, whatever the caller asked for.
+    /// caller asked.** A markdown, text or code document a viewer opened
+    /// cold - the request flag false - is reviewable all the same, so the
+    /// files page draws its comments however the reader reached it; a PDF
+    /// and an image kind are not, whatever the caller asked for.
     #[test]
     fn the_read_answers_the_documents_own_reviewability_not_the_callers_flag() {
         let dir = fixture();
@@ -245,12 +257,13 @@ mod tests {
         write(dir.path(), "notes.txt", b"x");
         write(dir.path(), "paper.pdf", b"%PDF-1.4 fake");
         write(dir.path(), "sketch.rs", b"fn main() {}");
+        write(dir.path(), "blob.png", b"\x89PNG fake");
 
-        for probe in ["plan.md", "notes.txt"] {
+        for probe in ["plan.md", "notes.txt", "sketch.rs"] {
             let cold = read(dir.path(), probe, false, CEILING).expect("reads");
             assert!(cold.reviewable, "{probe}: reviewable however the reader got there");
         }
-        for probe in ["paper.pdf", "sketch.rs"] {
+        for probe in ["paper.pdf", "blob.png"] {
             let read_only = read(dir.path(), probe, false, CEILING).expect("reads");
             assert!(!read_only.reviewable, "{probe}: read-only whatever the caller asked");
         }
@@ -387,27 +400,28 @@ mod tests {
         assert!(document.bytes.is_empty());
     }
 
-    /// A text kind that is not UTF-8 is refused at the read rather than
-    /// handed on: a viewer that decoded it would draw replacement
+    /// A text-bearing kind that is not UTF-8 is refused at the read rather
+    /// than handed on: a viewer that decoded it would draw replacement
     /// characters, and the agent asked for a document it cannot show. An
-    /// `Other` kind is never checked - its bytes are drawn as the kind's
-    /// own name, not as text.
+    /// image kind is never checked - its bytes are drawn as the kind's own
+    /// name, not as text.
     #[test]
     fn a_non_utf8_text_document_is_refused_and_other_kinds_are_not() {
         let dir = fixture();
         let bytes = [0xff, 0xfe, 0x00, 0x01];
         write(dir.path(), "broken.md", &bytes);
         write(dir.path(), "broken.txt", &bytes);
+        write(dir.path(), "broken.rs", &bytes);
         write(dir.path(), "blob.png", &bytes);
 
-        for probe in ["broken.md", "broken.txt"] {
+        for probe in ["broken.md", "broken.txt", "broken.rs"] {
             let refusal = read(dir.path(), probe, false, CEILING).expect_err("not text");
             assert!(matches!(refusal, DocumentRefusal::NotUtf8 { .. }), "{probe}: {refusal:?}");
             assert!(refusal.to_string().contains("UTF-8"), "{probe}: names the reason: {refusal}");
         }
 
         let other =
-            read(dir.path(), "blob.png", false, CEILING).expect("an Other kind is not text");
+            read(dir.path(), "blob.png", false, CEILING).expect("an image kind is not text");
         assert_eq!(other.kind, DocumentKind::Other("png".to_owned()));
     }
 }
