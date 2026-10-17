@@ -3626,18 +3626,20 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-reader .rv-marker { width: 100%; cursor: pointer; font: inherit;
   text-align: left; background: var(--s2); }
 /* The reader's thread cards draw the page's own type, not the code's, and
-   they read as a COLUMN, not a full-bleed box: the reader is wide and the
-   card stretched with it (Ved, 2026-10-17: "super wide for no reason,
-   super spacey for no reason"). The measure is the prose's own 72ch, and
-   the spacing comes in with it.
+   they take the reader's whole width: the diff's card only LOOKS narrower
+   because its half opens split - the unified view fills it too (Ved,
+   2026-10-17: "make it full, like how it was before").
 
-   **And the whitespace normalizes.** CM's content is `white-space:
-   pre-wrap`, so every newline in this markup rendered as a real blank line
-   INSIDE the card - Ved's "big multiple rows of gaps" against the diff's
-   card, which sits in ordinary HTML. The rendered prose carries its own
-   blocks, so collapsing the markup's whitespace loses nothing. */
+   **The whitespace normalizes.** CM's content is `white-space: pre-wrap`,
+   so every newline in this markup rendered as a real blank line INSIDE the
+   card - Ved's "big multiple rows of gaps" against the diff's card, which
+   sits in ordinary HTML. The rendered prose carries its own blocks, so
+   collapsing the markup's whitespace loses nothing.
+
+   The spacing comes in with it, which is the density he asked the diff's
+   card for. */
 .files-reader .rv-thread,
-.files-reader .rv-marker { max-width: 72ch; white-space: normal; }
+.files-reader .rv-marker { white-space: normal; }
 .files-reader .rv-thread { font-size: var(--fs-base); line-height: 1.4; }
 .files-reader .rv-thread .rv-turn { margin: 5px 0; }
 .files-reader .rv-thread .rv-turn .prose p + p { margin-top: 10px; }
