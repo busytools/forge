@@ -69,10 +69,22 @@ describe('the shipped bundle', () => {
     // first cut of this guard matched exactly that). The POSITIVE half is
     // asserted too: a build that simply dropped the machinery would
     // otherwise pass in silence.
+    //
+    // **And the negative half cannot pass while checking nothing** (the
+    // delta's N1): a bundler that renames or preloads differently leaves the
+    // regex matching nothing, an empty `booted`, and both `.not.toContain`
+    // assertions green - a control proving the classifier, never that the
+    // parse ran. The coverage assertion below refuses that, and the scope is
+    // stated: this guards "the entries the page names do not inline the
+    // machinery", not "the machinery is reachable only lazily".
     const entrySources = [...entry.matchAll(/src="([^"]+\.js)"/g)].map((match) =>
       readFileSync(path.join(dist, (match[1] ?? '').replace(/^\//, '')), 'utf8'),
     );
+    expect(entrySources.length, 'the built page names at least one entry script').toBeGreaterThan(
+      0,
+    );
     const booted = entrySources.join('\n');
+    expect(booted.length, 'and the entry the check reads is not empty').toBeGreaterThan(0);
     expect(booted, 'CodeMirror reached the entry the app boots from').not.toContain(
       'Unrecognized extension value',
     );
