@@ -146,8 +146,14 @@
   .files-cnote { grid-column: 2; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); }
   .files-finish { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px;
-    display: grid; gap: 6px; justify-items: start; }
-  .files-finishsub { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  /* The summary: its own row, room to write, resizable on the real page. */
+  .files-finishbox { background: var(--s1); border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 8px; min-height: 58px; font-size: var(--fs-base); color: var(--dim); }
+  .files-finishacts { display: flex; gap: 9px; align-items: center; }
+  .files-finishacts .mic { flex: none; margin-left: auto; width: 24px; height: 24px;
+    display: grid; place-items: center; color: var(--dim); }
+  .files-finishacts .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
 
   /* ---------- the narrow doors and the states specimen ---------- */
   .files-sheets { display: inline-flex; gap: 8px; }
@@ -170,7 +176,7 @@
 <body>
 <div class="wrap">
 
-<p class="fig"><b>Specimen 1 - the page at width.</b> The tree (the seat's whole index, filter behind a hairline, a pill per file carrying its comment count), the reader (read-only, shiki-coloured, wrapped, the target line tinted with its gutter <span class="files-door">+</span>, a thread drawn under its own line and the composer under the line being written), and the comments rail (every dropped thread by path and line, the finish row at its bottom). The reader's own lane scrolls; nothing scrolls sideways.</p>
+<p class="fig"><b>Specimen 1 - the page at width.</b> The tree (the seat's whole index, filter behind a hairline, a pill per file carrying its comment count), the reader (read-only, shiki-coloured, wrapped, the target line tinted with its gutter <span class="files-door">+</span>, a thread drawn under its own line and the composer under the line being written), and the comments rail (every dropped thread by path and line, the finish stack at its bottom: the summary box over the door). The reader's own lane scrolls; nothing scrolls sideways.</p>
 
 <div class="files">
   <header class="files-top">
@@ -312,8 +318,11 @@
         <span class="files-cnote">the code moved under this - captured lines kept</span>
       </button>
       <div class="files-finish">
-        <button class="rv-a on" type="button">finish review (2)</button>
-        <div class="files-finishsub">seals the sitting into a round; the seat hears Review #N ready.</div>
+        <div class="files-finishbox">summary (optional)</div>
+        <div class="files-finishacts">
+          <button class="rv-a on" type="button">finish review (2)</button>
+          <span class="mic" title="dictation"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        </div>
       </div>
     </aside>
   </div>

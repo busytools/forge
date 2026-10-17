@@ -158,7 +158,13 @@
   let commentText = $state('');
   /** The block whose box began the current take, stamped when the take starts:
    *  it is what says the take goes with that box and lands only there. */
-  let takeIn = $state<number | null>(null);
+  let takeIn = $state<number | 'summary' | null>(null);
+  /** Whether the take being attempted began at the SUMMARY's mic - the box
+   *  its words are owed to. */
+  let pressedSummary = $state(false);
+  /** The review's own words, the round's description (Ved, 2026-10-17). */
+  let summaryText = $state('');
+  let summaryField = $state<HTMLElement | null>(null);
 
   /**
    * The seat's own record, read as an observer: the take's phase and the
@@ -218,7 +224,7 @@
     onStart: () => {
       // The take belongs to the box the press came from, which is the open
       // one: the mic is drawn only inside a box.
-      takeIn = composing;
+      takeIn = pressedSummary ? 'summary' : composing;
       dictateLine = null;
       // The arm this take's landing waits on, set at the press, on the seat
       // the take belongs to, with the notice the record was already showing -
@@ -269,6 +275,11 @@
     // the same notice over on every write.
     landing.placed(composer.notice);
     if (takeIn === null) return;
+    if (takeIn === 'summary') {
+      summaryText = joined(summaryText, words);
+      summaryField?.focus();
+      return;
+    }
     // The words were submitted: a box closed or moved between the release
     // and the landing is opened again at the row that began the take, where
     // the reader sees them, rather than the drop being silent.
@@ -284,7 +295,7 @@
    * another block, one press from being filed against the wrong part.
    */
   $effect(() => {
-    if (takeIn === null || composing === takeIn) return;
+    if (takeIn === null || takeIn === 'summary' || composing === takeIn) return;
     // A take already SUBMITTED is not this effect's to cancel: the server
     // would read the stop as an abandon and drop words the reader kept.
     const live = dictate.take;
@@ -331,7 +342,8 @@
         event.preventDefault();
         event.stopPropagation();
         dictate.panel = false;
-        field?.focus();
+        // Back to the box the panel was opened off, whichever mic it was.
+        (pressedSummary ? summaryField : field)?.focus();
       }
     };
     window.addEventListener('keydown', onDown, true);
@@ -404,8 +416,12 @@
     if (held.path !== null && drafts.length > 0) {
       const ids = drafts.map((draft) => draft.id);
       let answer: unknown;
+      const summary = summaryText.trim();
       try {
-        answer = await connection.dispatch(submitCommand(slot, scope, ids, null), slot);
+        answer = await connection.dispatch(
+          submitCommand(slot, scope, ids, summary === '' ? null : summary),
+          slot,
+        );
       } catch (why) {
         finishState = { kind: 'refused', why: reasonOf(why) };
         return;
@@ -627,13 +643,17 @@
               >
               <button class="doc-cancel-btn" onclick={() => openComposer(row)}>cancel</button>
               {#if dictation}
-                <DictateControl {dictate} />
+                <DictateControl
+                  {dictate}
+                  onpress={() => (pressedSummary = false)}
+                  onhold={() => (pressedSummary = false)}
+                />
               {/if}
             </div>
             {#if blockLine !== null}
               <div class="doc-dictateline {blockLine.tone}">{blockLine.text}</div>
             {/if}
-            {#if dictate.panel}
+            {#if dictate.panel && !pressedSummary}
               <DictationPanel
                 {connection}
                 {axes}
@@ -694,11 +714,71 @@
             : ' - the agent has it.'}
         </p>
       {:else}
-        <button
-          class="doc-finish-btn"
-          disabled={finishState.kind === 'busy'}
-          onclick={() => void done()}>done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
-        >
+        <!-- The round's description sits ABOVE the door, its own row and room
+             to write - and it is the review's description only when there is
+             a review to file (Ved, 2026-10-17: "the summary can be available
+             already right above the finish review button"). -->
+        {#if held.path !== null && drafts.length > 0}
+          {@const summaryPhase = takeIn === 'summary' ? rowPhase : null}
+          <div class="doc-wordline line" class:takeline={summaryPhase !== null}>
+            {#if summaryPhase !== null}
+              <TakeCard
+                take={composer.take}
+                wire={rowWire}
+                phase={summaryPhase}
+                oncancel={() => {
+                  landing.drop();
+                  dictate.act('cancel');
+                }}
+                spread
+              />
+            {:else}
+              <Field
+                editor="nowhere"
+                class="rv-txarea"
+                rows={3}
+                placeholder="summary (optional)"
+                aria={{ label: 'the round summary' }}
+                bind:value={summaryText}
+                field={(el: HTMLElement | null) => {
+                  summaryField = el;
+                }}
+              />
+            {/if}
+          </div>
+        {/if}
+        <div class="doc-exitacts">
+          <button
+            class="doc-finish-btn"
+            disabled={finishState.kind === 'busy'}
+            onclick={() => void done()}>done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
+          >
+          <!-- The mic lives with the box, not with the door: it draws only
+               when there is a summary to dictate into. -->
+          {#if dictation && held.path !== null && drafts.length > 0}
+            <DictateControl
+              {dictate}
+              onpress={() => (pressedSummary = true)}
+              onhold={() => (pressedSummary = true)}
+            />
+          {/if}
+          {#if dictate.panel && pressedSummary}
+            <DictationPanel
+              {connection}
+              {axes}
+              {defaults}
+              bind={composer.bind}
+              mode={composer.mode}
+              {device}
+              onaxes={setAxes}
+              ondevice={setDevice}
+              onclose={() => {
+                dictate.panel = false;
+                summaryField?.focus();
+              }}
+            />
+          {/if}
+        </div>
         {#if finishState.kind === 'refused'}
           <p class="doc-said">{finishState.why}</p>
         {/if}

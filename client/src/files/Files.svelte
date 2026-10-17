@@ -273,12 +273,13 @@
 
   /** A take goes with its box: the box that began a LIVE take going - the
    *  reader's cancel, a move to another spot or thread - ends the take. Only
-   *  a live take; one already submitted carries its words to the landing. */
+   *  a live take; one already submitted carries its words to the landing.
+   *  The summary's box is always on the page, so its takes never go with it. */
   $effect(() => {
     if (takeIn === null) return;
     const gone =
       takeIn === 'summary'
-        ? !finishOpen
+        ? false
         : takeIn === 'comment'
           ? comment.spot === null ||
             takeSpot === null ||
@@ -292,8 +293,7 @@
     }
   });
 
-  /** A landed take puts its words in the box that began it, once - opening a
-   *  box that has gone, so the words land where the reader sees them. */
+  /** A landed take puts its words in the box that began it, once. */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.notice);
     if (words === null) return;
@@ -322,7 +322,6 @@
       if (reply.thread === null) return;
       reply.draft = joined(reply.draft, words);
     } else {
-      finishOpen = true;
       summary.draft = joined(summary.draft, words);
     }
     elements[takeIn]?.focus();
@@ -351,7 +350,6 @@
   );
   let busy = $state(false);
   let refusal = $state<string | null>(null);
-  let finishOpen = $state(false);
   let now = $state(Date.now());
 
   /**
@@ -626,7 +624,6 @@
     );
     summary.busy = false;
     if (!sealed) return;
-    finishOpen = false;
     summary.draft = '';
   }
 
@@ -837,7 +834,6 @@
           {rows}
           {repliesToRead}
           finishCount={unsealed.length}
-          bind:finishOpen
           {busy}
           summaryBox={summary}
           {voice}

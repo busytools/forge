@@ -72,7 +72,13 @@ const DOWN = 'the document could not be opened: the connection is down';
  * relative one, which the resolved path ends with.
  */
 function sameDocument(answered: string, asked: string): boolean {
-  return answered === asked || answered.endsWith(`/${asked}`);
+  // **The answer is canonical, the route need not be**: the server resolves
+  // the path, so a route carrying `/tmp/...` is answered `/private/tmp/...`
+  // on macOS - and comparing the spellings literally left the page opening
+  // for good (measured on the look stack, 2026-10-17).
+  const bare = (path: string): string =>
+    path.startsWith('/private/') ? path.slice('/private'.length) : path;
+  return bare(answered) === bare(asked) || answered.endsWith(`/${asked}`);
 }
 
 /**

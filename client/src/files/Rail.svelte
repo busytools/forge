@@ -15,16 +15,18 @@
    * branch review. Its box is the page's `WordsBox` over the page's take,
    * so the summary dictates like every other box (Ved's hard rule).
    */
+  import DictateControl from '../composer/DictateControl.svelte';
+  import DictationPanel from '../composer/DictationPanel.svelte';
+  import Field from '../composer/Field.svelte';
+  import TakeCard from '../composer/TakeCard.svelte';
   import type { Voice, Words } from '../review/boxes';
   import { statusName } from '../review/view';
-  import WordsBox from '../review/WordsBox.svelte';
   import type { RailRow } from './comments';
 
   let {
     rows,
     repliesToRead,
     finishCount,
-    finishOpen = $bindable(false),
     busy,
     summaryBox,
     voice,
@@ -40,7 +42,6 @@
     /** The unfiled turns a round would seal: the button's own count, and
      *  whether it is live at all. */
     finishCount: number;
-    finishOpen?: boolean;
     busy: boolean;
     /** The summary box, held on the page so a take's words land in it. */
     summaryBox: Words;
@@ -51,6 +52,12 @@
     onhold: () => void;
     onfield: (el: HTMLElement | null) => void;
   } = $props();
+
+  /** The seal itself: the summary as written, or none. */
+  function seal(): void {
+    if (finishCount === 0 || busy) return;
+    onfinish(summaryBox.draft.trim() === '' ? null : summaryBox.draft.trim());
+  }
 </script>
 
 <aside class="files-rail" aria-label="comments dropped">
@@ -78,37 +85,65 @@
       </button>
     {/each}
   {/if}
+  <!-- The finish: the summary's own box FIRST - present by default, roomy
+       and expandable - and the finish button on its own row under it, with
+       the mic beside the button (Ved, 2026-10-17: the row shape crammed
+       them together). -->
   <div class="files-finish">
-    {#if !finishOpen}
-      <button
-        class="rv-a on"
-        type="button"
-        disabled={finishCount === 0 || busy}
-        onclick={() => (finishOpen = true)}>finish review ({finishCount})</button
-      >
-      <div class="files-finishsub">
-        {#if finishCount === 0}
-          comment first; sealing happens when there is something to seal.
-        {:else}
-          seals the sitting into a round; the seat hears Review #N ready.
-        {/if}
-      </div>
-    {:else}
-      <WordsBox
-        class="rv-thread comment"
-        headline="finish review"
-        placeholder="what is this round about?"
-        label="the round's summary"
-        rows={2}
-        sendLabel="seal the round"
-        box={summaryBox}
-        {voice}
-        onsend={(text: string) => onfinish(text)}
-        oncancel={() => (finishOpen = false)}
-        {onpress}
-        {onhold}
-        field={onfield}
-      />
+    <div class="rv-wordline line" class:takeline={summaryBox.phase !== null}>
+      {#if summaryBox.phase !== null}
+        <TakeCard
+          take={summaryBox.take}
+          wire={summaryBox.wire}
+          phase={summaryBox.phase}
+          oncancel={() => voice.dictate.act('cancel')}
+          spread
+        />
+      {:else}
+        <Field
+          editor="nowhere"
+          class="rv-txarea"
+          rows={4}
+          placeholder="summary (optional)"
+          aria={{ label: 'the round summary' }}
+          bind:value={summaryBox.draft}
+          onkeydown={(event: KeyboardEvent) => {
+            // **Enter finishes the review**, as its own button does.
+            if (event.key !== 'Enter' || event.shiftKey) return;
+            event.preventDefault();
+            if (!busy && finishCount > 0) seal();
+          }}
+          field={onfield}
+        />
+      {/if}
+    </div>
+    <div class="files-finishacts">
+      <button class="rv-finish" type="button" disabled={busy || finishCount === 0} onclick={seal}>
+        {finishCount > 0 ? `finish review (${finishCount})` : 'finish review'}
+      </button>
+      {#if voice.offered}
+        <DictateControl dictate={voice.dictate} {onpress} {onhold} />
+      {/if}
+      {#if summaryBox.panel}
+        <div>
+          <DictationPanel
+            connection={voice.connection}
+            axes={voice.axes}
+            defaults={voice.defaults}
+            bind={voice.bind}
+            mode={voice.mode}
+            device={voice.device}
+            onaxes={voice.onaxes}
+            ondevice={voice.ondevice}
+            onclose={() => {
+              voice.dictate.panel = false;
+            }}
+          />
+        </div>
+      {/if}
+    </div>
+    {#if summaryBox.line !== null}
+      <div class="rv-dictateline {summaryBox.line.tone}">{summaryBox.line.text}</div>
     {/if}
   </div>
 </aside>

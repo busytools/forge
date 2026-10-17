@@ -499,12 +499,39 @@
         white-space: pre-wrap;
       }
       .strip .doc-finish {
-        display: flex;
-        align-items: center;
-        gap: 12px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
         margin-top: 18px;
         padding-top: 12px;
         border-top: 1px solid var(--line);
+      }
+      /* The round's description, its own row above the door (roomy and
+         resizable on the real page). */
+      .strip .doc-finishbox {
+        background: var(--s1);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 6px 8px;
+        min-height: 52px;
+        font-size: var(--fs-base);
+        color: var(--dim);
+      }
+      .strip .doc-finishacts { display: flex; align-items: center; gap: 12px; }
+      .strip .doc-finishacts .mic {
+        flex: none;
+        margin-left: auto;
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        color: var(--dim);
+      }
+      .strip .doc-finishacts .ic {
+        width: 15px;
+        height: 15px;
+        flex: 0 0 15px;
+        display: block;
       }
       .strip .doc-left {
         color: var(--ok);
@@ -734,7 +761,11 @@ max_size_mib = 10</pre>
             </div>
           </div>
           <div class="doc-finish">
-            <button class="doc-finish-btn">done (2)</button>
+            <div class="doc-finishbox">summary (optional)</div>
+            <div class="doc-finishacts">
+              <button class="doc-finish-btn">done (2)</button>
+              <span class="mic" title="dictation"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+            </div>
           </div>
         </div>
       </section>

@@ -38,7 +38,7 @@ review page's own line.
 | A comment box | under the line a press landed on, the caret already in it; **Enter comments**, Shift+Enter keeps the newline                                                                                                                | the page's own comment shelf                                                           |
 | Comments      | every thread in the scope as one list, by path and then by line: the state chip, `path:line`, the first words; a row jumps back to its line                                                                                 | the record's `tree_reviews` threads                                                    |
 | Parked        | a thread whose landing could not place it - the code moved too far, or no landing was carried - says so on its row, its captured lines kept; it is never dropped                                                             | the landing's `outdated` word, or none carried                                         |
-| Finish        | `finish review (N)` opens the summary box and seals the sitting into one round; a refusal keeps the words                                                                                                                    | `submit_review`'s reply, and the round's number                                        |
+| Finish        | the round's summary - a roomy, resizable box, present by default in the rail's bottom, its own mic like every box - over `finish review (N)`, which seals the sitting into one round; a refusal keeps the words                | `submit_review`'s reply, and the round's number                                        |
 | States        | reading; a seat the server refused, in its own words; a tree with no files; no match for the filter; a kind this page draws no text for; a file read refused with its own sentence                                              | the record's and the read's own outcomes                                               |
 
 ## Reading
@@ -94,7 +94,9 @@ other doors.
 ## The slip
 
 The seat's own page carries a **files slip** in the strip above the
-composer, before the tree row: its toggle reads the file count, its panel
-names the tree, and its panel carries `open files`. It is the one
+composer, before the tree row: a bare door, the files mark and the label
+naming the tree it opens - `walk · files` for a seat in a worktree of its
+own, plain `files` for the project's checkout. A press opens the page, and
+there is no count and no panel: the slip IS the door. It is the one
 **mandatory** segment - every seat has a tree - where the tree row beside
 it keeps its rule of staying away when nothing has moved.

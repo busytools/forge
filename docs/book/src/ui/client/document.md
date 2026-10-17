@@ -126,6 +126,11 @@ door, and the chat line is the confirmation. A refusal files nothing and
 answers nothing: the call stays parked, the drafts stay where they were, and
 the refusal's words are what the page draws.
 
+**The round keeps a description.** Once there is a review to file, a summary
+box sits above the done - its own row, room to write, resizable - and its
+words ride the submit as the round's summary, the same one the review page's
+finish takes. It dictates like every box in the client.
+
 ## The states the page can be in
 
 - **The ask waiting**: the dock's card, ahead of the other prompts the way

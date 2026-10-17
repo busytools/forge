@@ -373,6 +373,15 @@ describe('the reviewable document', () => {
     buttonByText('comment').click();
     flushSync();
 
+    // The round's description, written above the door, rides the submit.
+    const summary = document.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="summary (optional)"]',
+    );
+    if (summary === null) throw new Error('no summary box');
+    summary.value = 'the doc reads well, one note';
+    summary.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
     page.submitAnswer = { body: { id: 'r9', number: 4, summary: null, created_at: 'x' } };
     buttonByText('done (1)').click();
     await vi.waitFor(() => {
@@ -381,9 +390,14 @@ describe('the reviewable document', () => {
 
     const submit = (page.sent as Record<string, unknown>[]).find(
       (command) => 'submit_review' in command,
-    ) as { submit_review: { branch: string; thread_ids: string[] } } | undefined;
+    ) as
+      | { submit_review: { branch: string; thread_ids: string[]; summary: string | null } }
+      | undefined;
     expect(submit?.submit_review.branch).toBe(`doc:${PATH}`);
     expect(submit?.submit_review.thread_ids).toHaveLength(1);
+    expect(submit?.submit_review.summary, 'the description is the round summary').toBe(
+      'the doc reads well, one note',
+    );
 
     const answered = (page.sent as Record<string, unknown>[]).find(
       (command) => 'answer_document_hand_off' in command,

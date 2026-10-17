@@ -1557,15 +1557,10 @@
   .rv-viewmode {
     flex: none;
   }
-  .rv-finishrow {
-    display: flex;
-    gap: 9px;
-    align-items: center;
-    /* The settings panel opens from this row, so this is what it hangs off. */
-    position: relative;
-  }
-  /* The files half's finish, under its canvas: the collapsed button at the
-     row's end, and the page's own finish row filling it once it opens. */
+  /* The finish row itself - `.rv-finishrow`, `.rv-summary` and `.rv-finish`
+     - lives in the sheet now: this page's diff and files halves both draw
+     it, and one set of rules over both is the point. What stays here is the
+     page's own bar around it. */
   .rv-finishbar {
     display: flex;
     align-items: center;
@@ -1577,52 +1572,6 @@
   .rv-finishbar .rv-finishrow {
     flex: 1;
     min-width: 0;
-  }
-  /* The summary's field, or the bar that takes its place: the row's room,
-     the same one the composer's own line takes. */
-  .rv-wordline {
-    flex: 1;
-    min-width: 0;
-  }
-  /* The field is `Field`'s, and that component's root is the input itself -
-     so these reach into it through :global, or they never match it and the
-     reader gets the browser's raw box (Ved's screenshot, 2026-10-15). */
-  .rv-finishrow :global(.rv-summary) {
-    flex: 1;
-    /* The wordline is the flex item; the input fills it - a bare `flex: 1`
-       here is inert inside a plain block and the box keeps its ~20ch
-       intrinsic width. */
-    width: 100%;
-    min-width: 0;
-    background: var(--s1);
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    font-family: var(--ui);
-    font-size: var(--fs-base);
-    padding: 6px 9px;
-  }
-  .rv-finishrow :global(.rv-summary:focus) {
-    outline: none;
-    border-color: var(--ctl);
-  }
-  .rv-finish {
-    font-family: var(--mono);
-    font-size: var(--fs-data);
-    color: var(--bg);
-    background: var(--accent);
-    border: 0;
-    border-radius: 8px;
-    padding: 6px 14px;
-    cursor: pointer;
-    flex: none;
-  }
-  .rv-finish:hover {
-    background: var(--hot);
-  }
-  .rv-finish:disabled {
-    opacity: 0.45;
-    cursor: default;
   }
   .acts {
     display: flex;
