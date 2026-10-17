@@ -163,6 +163,11 @@ impl Window {
     }
 
     /// Take everything `other` holds onto this window's end.
+    ///
+    /// **Not re-cut.** What a fold took out plus what arrived while it ran, so
+    /// until the next push sheds them a merged window may sit past a ceiling's
+    /// slack by whatever the fold's run carried - the split the fold has always
+    /// had, and the push that follows it is what brings the ceilings back.
     pub fn append(&mut self, other: &mut Window) {
         self.bytes = self.bytes.saturating_add(other.bytes);
         self.messages.append(&mut other.messages);
