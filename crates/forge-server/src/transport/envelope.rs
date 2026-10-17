@@ -462,8 +462,9 @@ pub struct ClientSettings {
     pub theme: Option<String>,
     pub font: Option<String>,
     /// The idle release's two numbers, off the same `[client]` keys: how
-    /// many minutes a browser profile may sit untouched before its seat is
-    /// warned, and how long it lives after the warning. `None` is the
+    /// many minutes a named profile may sit untouched before its creator is
+    /// warned, and how long it lives past that bound. The shared browser is
+    /// never warned - it closes at the same total, quietly. `None` is the
     /// built-in pair.
     pub browser_idle_minutes: Option<u64>,
     pub browser_grace_minutes: Option<u64>,

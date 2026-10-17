@@ -29,10 +29,12 @@ use serde_json::json;
 use super::profiles::Seat;
 use crate::bridge::Bridge;
 
-/// How many minutes a browser may sit untouched before its seat is told.
-pub const IDLE_MINUTES: u64 = 30;
+/// How many minutes a named profile may sit untouched before its creator is
+/// told. **The shared browser is never told about**: it closes at the same
+/// total, quietly, with no message on the way.
+pub const IDLE_MINUTES: u64 = 20;
 
-/// How long after the warning the browser lives unless it is used.
+/// How long the browser lives past its idle bound unless it is used.
 pub const GRACE_MINUTES: u64 = 10;
 
 /// How often the sweep looks. The clock is coarse on purpose: a browser
@@ -312,12 +314,12 @@ mod tests {
     const IDLE: Duration = Duration::from_secs(30 * 60);
     const GRACE: Duration = Duration::from_secs(10 * 60);
 
-    /// The book (`docs/book/src/configuration.md`) documents 30 and 10 as
-    /// what an unset pair means; a drift here must fail a test, not the
-    /// user's expectation.
+    /// The book (`docs/book/src/configuration.md`) documents 20 and 10 as
+    /// what an unset pair means - a half hour of total idle life; a drift
+    /// here must fail a test, not the user's expectation.
     #[test]
-    fn the_defaults_are_the_documents_thirty_and_ten() {
-        assert_eq!(IDLE_MINUTES, 30);
+    fn the_defaults_are_the_documents_twenty_and_ten() {
+        assert_eq!(IDLE_MINUTES, 20);
         assert_eq!(GRACE_MINUTES, 10);
     }
 

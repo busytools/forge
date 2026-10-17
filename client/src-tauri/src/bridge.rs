@@ -845,10 +845,10 @@ mod tests {
         assert_eq!(bridge.browser_idle_minutes(), (45, 15), "the config's pair crosses intact");
 
         sent(&bridge, json!({ "kind": "greeting", "version": 8, "settings": {} }));
-        assert_eq!(bridge.browser_idle_minutes(), (30, 10), "absent means the built-in pair");
+        assert_eq!(bridge.browser_idle_minutes(), (20, 10), "absent means the built-in pair");
 
         sent(&bridge, json!({ "kind": "greeting", "version": 8 }));
-        assert_eq!(bridge.browser_idle_minutes(), (30, 10), "and no settings at all is the same");
+        assert_eq!(bridge.browser_idle_minutes(), (20, 10), "and no settings at all is the same");
     }
 
     /// Every frame reaches the page as itself, an unknown kind included
