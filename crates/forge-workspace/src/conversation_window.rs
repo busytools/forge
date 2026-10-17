@@ -82,12 +82,15 @@ pub const CONVERSATION_SLACK: usize = 1_000;
 /// transcript.
 ///
 /// **Every figure above weighs the frames a read serves, the shape a page
-/// carries.** A served frame runs byte-for-byte with the transcript row it
-/// came from (measured at ratio 1.00 over the newest four thousand), while
-/// roughly half of a giant transcript's LINES are sidechain rows no reader is
-/// served - so the same measurement taken from the file's newest lines finds
-/// about half the frames and about half the bytes, which is the disagreement
-/// a re-measurement from disk runs into.
+/// carries.** A served frame runs within a percent of the transcript row it
+/// came from (measured over the newest four thousand), while roughly half of a
+/// giant transcript's LINES are rows no reader is served: control bookkeeping
+/// (`worktree-state`, `tag`, `last-prompt`, `mode`, `queue-operation` and the
+/// like - about 32,000 of 114,000 on the seat measured) and attachment rows
+/// that are not queued commands (`hook_success`, `total_tokens_reminder` and
+/// the like). A measurement taken from the file's newest lines therefore finds
+/// about half the frames and about half the bytes, which is the disagreement a
+/// re-measurement from disk runs into.
 pub const CONVERSATION_CAP_BYTES: usize = 64 << 20;
 
 /// How far past the byte cap a copy may grow before the drop runs. A quarter

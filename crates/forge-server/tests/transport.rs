@@ -6705,7 +6705,7 @@ fn a_giant_history(messages: usize, body: usize) -> Vec<forge_primitives::Messag
 /// What `messages` weigh as the JSON a page carries them as - the test's own
 /// scales, so the ceiling is checked against the frames rather than itself.
 fn weigh(messages: &[forge_primitives::Message]) -> usize {
-    messages.iter().map(|message| serde_json::to_vec(message).unwrap_or_default().len()).sum()
+    messages.iter().map(|message| serde_json::to_vec(message).expect("a frame encodes").len()).sum()
 }
 
 /// The seat's session facts, as every history-carrying update carries them.
