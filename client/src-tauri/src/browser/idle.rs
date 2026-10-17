@@ -382,7 +382,11 @@ mod tests {
             Crossing::Warn,
             "a named profile's warn is the message"
         );
-        assert_eq!(crossing(true, Step::Close), Crossing::Close, "a named profile closes at the grace");
+        assert_eq!(
+            crossing(true, Step::Close),
+            Crossing::Close,
+            "a named profile closes at the grace"
+        );
         assert_eq!(crossing(false, Step::Close), Crossing::Close, "so does the shared browser");
         assert_eq!(crossing(true, Step::Nothing), Crossing::Nothing, "a fresh touch is quiet");
         assert_eq!(crossing(false, Step::Nothing), Crossing::Nothing, "the shared's too");
