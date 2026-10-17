@@ -1923,12 +1923,15 @@ async fn dispatch_answering(
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
     //
-    // The four reply-carrying commands take a sender the wire deliberately
-    // does not carry, and each carries its OWN reply type - a spawned worker
+    // The reply-carrying commands take a sender the wire deliberately does
+    // not carry, and each carries its OWN reply type - a spawned worker
     // answers with a `WorkerSpawnReply`, a despawn with a `DespawnResult`,
-    // and the review pair with a `bool` and a `ReviewSet`. So the channel is
-    // built per arm and handed to the shared helper with its own receiver:
-    // one channel cannot carry four different answers.
+    // and the review writes with a `bool` and a `ReviewSet`. So the channel
+    // is built per arm and handed to the shared helper with its own receiver:
+    // one channel cannot carry different answers. **A variant missing here
+    // hangs its caller**: it falls to the fire-and-forget arm below with no
+    // sender, the workspace answers nobody, and the client waits for ever
+    // (measured live on the delete, 2026-10-17).
     match command {
         Command::SpawnWorker {
             project_key,
@@ -1970,6 +1973,12 @@ async fn dispatch_answering(
             let (tx, rx) = oneshot::channel();
             let command =
                 Command::UpsertReviewThread { project, branch, thread, respond: Some(tx) };
+            answered(socket, state, command, to, rx).await
+        }
+        Command::DeleteReviewThread { project, branch, thread_id, .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command =
+                Command::DeleteReviewThread { project, branch, thread_id, respond: Some(tx) };
             answered(socket, state, command, to, rx).await
         }
         Command::SubmitReview { project, branch, summary, thread_ids, origin, .. } => {
@@ -2090,6 +2099,7 @@ fn answers_through_a_reply(command: &Command) -> bool {
         Command::SpawnWorker { .. }
             | Command::DespawnWorker { .. }
             | Command::UpsertReviewThread { .. }
+            | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
     )
 }

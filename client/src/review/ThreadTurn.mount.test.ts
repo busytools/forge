@@ -53,7 +53,10 @@ function draw(held: Turn, rounds: ReviewSetRecord[] = [], index = 0): HTMLElemen
   const page = document.createElement('div');
   page.className = 'review';
   document.body.append(page);
-  app = mount(ThreadTurn, { target: page, props: { turn: held, rounds, index, now: NOW } });
+  app = mount(ThreadTurn, {
+    target: page,
+    props: { turn: held, rounds, index, now: NOW, thread: 't1' },
+  });
   flushSync();
   return page;
 }

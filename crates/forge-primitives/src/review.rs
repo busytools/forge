@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::session_slot::SessionSlot;
+
 /// Lifecycle state of a review thread. A worker reply flips `Open` ->
 /// `Addressed`; only the user ever `Resolved`s; `Outdated` marks a
 /// thread whose anchored line drifted out from under it.
@@ -215,9 +217,48 @@ pub fn doc_scope_path(base_ref: &str) -> Option<&str> {
     base_ref.strip_prefix(DOC_SCOPE_PREFIX)
 }
 
+/// A tree scope's scope prefix: a seat's own tree as the scope key, so the
+/// files page's comments follow the SEAT (a worker's worktree, the lead's
+/// checkout) rather than any branch the tree happens to be on.
+pub const TREE_SCOPE_PREFIX: &str = "tree:";
+
+/// The scope ref a seat's tree's threads are stored under. Built from the
+/// slot's accessors, never from `display()`: that string is for reading,
+/// not for parsing or keying.
+pub fn tree_scope_ref(slot: &SessionSlot) -> String {
+    format!("{TREE_SCOPE_PREFIX}{}/{}/{}", slot.org(), slot.project(), slot.label())
+}
+
+/// Whether a scope ref spells a seat's tree rather than a branch. **The one
+/// predicate**, like its doc-scope sibling: the branch sweep and any reader
+/// that must skip tree scopes all ask this.
+pub fn is_tree_scope(base_ref: &str) -> bool {
+    base_ref.starts_with(TREE_SCOPE_PREFIX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_slot::SessionSlot;
+
+    /// The tree scope: a ref that spells a SEAT's tree, not a branch. The
+    /// branch named `trees/rewrite` is the control - it starts with the same
+    /// letters and is still not a tree scope - and so is the bare prefix
+    /// without its colon.
+    #[test]
+    fn a_tree_scope_ref_is_recognised_and_carries_its_seat() {
+        let lead = SessionSlot::lead("Busytools", "forge");
+        assert_eq!(tree_scope_ref(&lead), "tree:Busytools/forge/lead");
+        assert!(is_tree_scope(&tree_scope_ref(&lead)));
+
+        let worker = SessionSlot::worker("Busytools", "forge", "tree-review-survey");
+        assert_eq!(tree_scope_ref(&worker), "tree:Busytools/forge/tree-review-survey");
+
+        assert!(!is_tree_scope("trees/rewrite"), "a branch is not a tree scope");
+        assert!(!is_tree_scope("tree"), "the bare prefix is not one");
+        assert!(!is_tree_scope("doc:/proj/docs/plan.md"), "nor is a document");
+        assert!(!is_tree_scope(""), "nor is nothing a scope");
+    }
 
     /// The doc scope: a ref that spells a document, not a branch. The
     /// branch named `docs/fix` is the control - it starts with the same

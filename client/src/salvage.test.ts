@@ -117,8 +117,9 @@ describe('the salvage copies', () => {
     // 191 after the residue cut's two unreferenced home drawings left this
     // sweep, the queue drawing's own `--violet` adding one back. 192 after the
     // connect drawing declared the `--ctl` its button's rule draws, the
-    // address field's rule staying borderless in that drawing.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(192);
+    // address field's rule staying borderless in that drawing. 205 after the
+    // files page's drawing landed, which declares the palette's thirteen.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(205);
   });
 
   /**
@@ -200,8 +201,9 @@ describe('the salvage copies', () => {
     // drawing's two add to both: this is the merged tree's count. The
     // document viewer's drawing declares both too; 30, the usage page's
     // drawing having gone with its page. 26, the residue cut's two
-    // unreferenced home drawings having gone with theirs.
-    expect(compared, 'the sweep no longer reaches every stack').toBe(26);
+    // unreferenced home drawings having gone with theirs. 28, the files
+    // page's drawing declaring both.
+    expect(compared, 'the sweep no longer reaches every stack').toBe(28);
   });
 });
 

@@ -207,6 +207,7 @@ function draw(held: ReviewThreadRecord = thread, at: DiffLayerRecord = layer): v
       },
       reply: {
         thread: null,
+        index: null,
         draft: '',
         busy: false,
         line: null,
@@ -369,5 +370,44 @@ describe('the clock a mounted row draws', () => {
     expect(where, 'the card names the row it sits on').toContain('line 4');
     const origin = document.querySelector('.rv-insert .rv-moved')?.textContent ?? '';
     expect(origin, 'and where it was written').toBe('moved from 7');
+  });
+
+  /**
+   * **A resolved thread collapses to its marker, and a press opens it back
+   * up** (Ved, 2026-10-17: "the resolved comment, if I click on it, it
+   * should expand... right now I cannot even expand it"): the card draws
+   * with the reopen and fold acts once opened.
+   */
+  it('collapses a resolved thread and opens it again on a press', async () => {
+    const done: ReviewThreadRecord = { ...thread, status: 'resolved' };
+    draw(done, layer);
+    await settle();
+
+    const marker = document.querySelector<HTMLButtonElement>('button.rv-marker');
+    expect(marker, 'the resolved thread collapsed').not.toBeNull();
+    expect(marker?.tagName, 'and the marker is a press target').toBe('BUTTON');
+    expect(document.querySelector('.rv-insert .rv-thread'), 'with no card drawn').toBeNull();
+
+    marker?.click();
+    // `settle` waits for an insert row, which the marker's own row already
+    // is: this waits for the CARD the press rebuilds instead.
+    for (let round = 0; round < 50; round += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      paint();
+      if (document.querySelector('.rv-insert .rv-thread') !== null) break;
+    }
+    expect(
+      document.querySelector('button.rv-marker'),
+      'the marker gave way to the card',
+    ).toBeNull();
+
+    const acts = [...document.querySelectorAll('.rv-insert .rv-acts .rv-a')].map((button) =>
+      button.textContent?.trim(),
+    );
+    // No `respond` on an accepted thread, and no `delete` here: this
+    // harness wires no ondelete, and the act draws only where the surface
+    // offers it.
+    expect(acts, 'opened, with the hand-back and the fold').toEqual(['reopen', 'collapse']);
   });
 });

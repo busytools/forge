@@ -1717,7 +1717,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 }
 .sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
   border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
-  font: inherit; color: var(--muted); }
+  font: inherit; color: var(--muted); text-decoration: none; }
 .sg-seg .sg-tog:hover, .sg-seg.open .sg-tog { border-color: var(--line); color: var(--text); }
 .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
 .sg-seg .sg-tog .ic.ok { color: var(--ok); }
@@ -3433,7 +3433,10 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    else is the diff's. */
 .review .rv-body { display: grid; grid-template-columns: minmax(0, 296px) minmax(0, 1fr);
   gap: 14px; flex: 1; min-height: 0; }
-.review .rv-files { overflow-y: auto; min-height: 0; padding: 0 2px 12px;
+/* The tree's own column - the review page's left side and the files page's
+   rail. Shared with the tree rows below, which both pages draw through one
+   component (`components/FileTree.svelte`). */
+.rv-files { overflow-y: auto; min-height: 0; padding: 0 2px 12px;
   scrollbar-gutter: stable; }
 /* The list draws its own scroll viewport, so the scroll rules go on THAT
    element and the wrapper only holds its states. */
@@ -3442,55 +3445,248 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review .rv-canvas-list { flex: 1; min-height: 0; overflow-y: auto;
   overflow-x: hidden; padding: 0 0 40px; scrollbar-gutter: stable; }
 .review .rv-canvas-list::-webkit-scrollbar,
-.review .rv-files::-webkit-scrollbar,
+.rv-files::-webkit-scrollbar,
 .review .rv-menu::-webkit-scrollbar { width: 8px; }
 .review .rv-canvas-list::-webkit-scrollbar-track,
-.review .rv-files::-webkit-scrollbar-track,
+.rv-files::-webkit-scrollbar-track,
 .review .rv-menu::-webkit-scrollbar-track { background: transparent; }
 .review .rv-canvas-list::-webkit-scrollbar-thumb,
-.review .rv-files::-webkit-scrollbar-thumb,
+.rv-files::-webkit-scrollbar-thumb,
 .review .rv-menu::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
 .review .rv-canvas-list::-webkit-scrollbar-thumb:hover,
-.review .rv-files::-webkit-scrollbar-thumb:hover,
+.rv-files::-webkit-scrollbar-thumb:hover,
 .review .rv-menu::-webkit-scrollbar-thumb:hover { background: var(--line); }
 
-/* The file tree. It draws the scope's own hierarchy - a row per directory
-   and per file, indented by depth with folders before files at every level -
-   rather than a flat list of full-path headings, which reads as neither one
-   at 56 files. A directory names its basename and carries the files beneath
-   it, which is what its collapsed row is hiding. */
-.review .rv-dir { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
+/* The file tree. It draws the hierarchy - a row per directory and per file,
+   indented by depth with folders before files at every level - rather than a
+   flat list of full-path headings, which reads as neither one at 56 files. A
+   directory names its basename and carries the files beneath it, which is
+   what its collapsed row is hiding.
+   **Unscoped on purpose**: the review page and the files page draw ONE tree
+   (`components/FileTree.svelte`), so these rules are the tree's own rather
+   than one page's. */
+.rv-dir { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
   background: none; border: 0; padding: 5px 6px 2px calc(4px + var(--d, 0) * 12px);
   cursor: pointer; font: inherit; }
-.review .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
+.rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
   transition: transform .12s ease; }
-.review .rv-arw.open { transform: rotate(90deg); }
-.review .rv-dirname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+.rv-arw.open { transform: rotate(90deg); }
+.rv-dirname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
   font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
-.review .rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+.rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 /* The stats and the badge size to their own content rather than a reserved
    62px: a fixed column costs every row the widest row's width, which is what
    turned long names into stubs at depth. */
-.review .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
+.rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
   align-items: baseline; width: 100%;
   padding: 3px 8px 3px calc(19px + var(--d, 0) * 12px); border-radius: 7px;
   background: none; border: 0; font: inherit; text-align: left; cursor: pointer;
   text-decoration: none; color: inherit; }
-.review .rv-frow:hover { background: rgba(27,33,48,.5); }
+.rv-frow:hover { background: rgba(27,33,48,.5); }
 /* The file the reader is inside: the tree's own reading mark, following the
-   canvas's scroll. The tint plus the bar, because hover and "here" would
-   otherwise read the same at rest. */
-.review .rv-frow.here { background: rgba(27,33,48,.5); box-shadow: inset 2px 0 0 var(--accent); }
-.review .rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+   reader. The tint plus the bar, because hover and "here" would otherwise
+   read the same at rest. */
+.rv-frow.here { background: rgba(27,33,48,.5); box-shadow: inset 2px 0 0 var(--accent); }
+/* The row the page's keyboard is on wears the same mark (Ved, 2026-10-17):
+   one visual language for "this row", never the browser's ring on top of
+   it - the tree's rows carry no outline, because the mark IS the indicator
+   and focus moves it. */
+.rv-dir.key, .rv-frow.key { background: rgba(27,33,48,.5);
+  box-shadow: inset 2px 0 0 var(--accent); }
+.rv-dir:focus, .rv-frow:focus, .rv-dir:focus-visible, .rv-frow:focus-visible { outline: none; }
+.rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.review .rv-frow.renamed .rv-fpath { color: var(--muted); }
-.review .rv-fstat { font-family: var(--mono); font-size: var(--fs-label); text-align: right;
+.rv-frow.renamed .rv-fpath { color: var(--muted); }
+.rv-fstat { font-family: var(--mono); font-size: var(--fs-label); text-align: right;
   white-space: nowrap; }
-.review .rv-fcount { text-align: right; }
-.review .rv-plus { color: var(--ok); }
-.review .rv-minus { color: var(--bad); }
+.rv-fcount { text-align: right; }
+.rv-plus { color: var(--ok); }
+.rv-minus { color: var(--bad); }
+
+/* ---------- the files page ----------
+   The page is two components (Files.svelte + Reader.svelte) and CodeMirror
+   mounts its own DOM, so its rules live in the sheet, the way the review
+   canvas's do. */
+.files { display: flex; flex-direction: column; height: 100dvh;
+  padding: 22px 26px 0; }
+.files-top { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.files-back { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+  text-decoration: none; }
+.files-back:hover { color: var(--text); }
+.files-top h1 { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
+.files-facts { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.files-sep { color: var(--line); margin: 0 7px; }
+.files-body { display: grid;
+  grid-template-columns: minmax(0, 300px) minmax(0, 1fr) minmax(0, 320px);
+  gap: 18px; flex: 1; min-height: 0; padding: 12px 0 0; }
+/* The conversation half: the rounds take the whole row - no rail, and the
+   component's own `wide` drops its measure cap - because there is nothing
+   the space is being kept for (Ved, 2026-10-17: the comments rail is the
+   files tab's, and "use as much space as you can"). */
+.files-body.conv { grid-template-columns: minmax(0, 1fr); }
+.files-conv { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.files-side { display: flex; flex-direction: column; min-height: 0; }
+.files-filter { background: none; border: 0; border-bottom: 1px solid var(--line);
+  color: var(--text); font-family: var(--mono); font-size: var(--fs-label);
+  padding: 4px 2px 8px; margin-bottom: 8px; }
+.files-main { min-height: 0; overflow-y: auto; }
+.files-quiet { font-size: var(--fs-base); color: var(--dim); }
+.files-main > .files-quiet { margin-top: 12vh; text-align: center; }
+.files-said { font-family: var(--mono); font-size: var(--fs-label); color: var(--bad);
+  padding: 6px 2px 0; }
+.files-loop { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data);
+  color: var(--warn); }
+/* The narrow doors and the sheets they raise: the buttons are real at every
+   width and the sheet rules hide them while the columns are there. */
+.files-sheets { display: none; gap: 8px; }
+.files-sheetbtn { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+  background: none; border: 1px solid var(--line); border-radius: 99px; padding: 4px 12px;
+  cursor: pointer; }
+.files-railhold { display: contents; }
+.files-sheetclose { display: none; }
+
+/* The dropped-comments rail: one row per thread, and the finish row. */
+.files-rail { display: flex; flex-direction: column; min-height: 0;
+  overflow-y: auto; padding: 0 2px 12px; scrollbar-gutter: stable; }
+.files-railhead { display: flex; gap: 8px; align-items: baseline; margin-bottom: 8px;
+  font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--dim); }
+.files-railen { font-family: var(--mono); letter-spacing: 0; }
+.files-replies { margin-left: auto; font-family: var(--mono); letter-spacing: 0;
+  text-transform: none; color: var(--warn); }
+/* The row is one column, not a grid: the chip and the path ride the first
+   line, the words take the whole width, and a note gets a line of its own -
+   a two-column grid squeezed the note into a one-word column beside the
+   retraction button (Ved's screenshot, 2026-10-17). */
+.files-crow { display: block; width: 100%; text-align: left; background: none;
+  border: 0; padding: 7px 8px; border-radius: 7px; cursor: pointer;
+  color: inherit; font: inherit; }
+.files-crow > .rv-st { margin-right: 8px; }
+.files-crowwrap { display: flex; align-items: start; gap: 6px; }
+.files-crowwrap .files-crow { flex: 1; min-width: 0; }
+.files-crowwrap + .files-crowwrap { border-top: 1px solid var(--line); }
+.files-crow:hover { background: rgba(27,33,48,.5); }
+.files-cwhere { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  display: inline-block; max-width: 100%; vertical-align: baseline;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-cwords { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; font-size: var(--fs-base); color: var(--text); }
+.files-cnote { display: block; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+/* The rail's finish wrapper: the hairline that separates it from the rows;
+   the stack itself is the sheet's `.rv-finishstack`. */
+.files-finish { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+
+/* The reader. */
+.files-reader { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.files-filehead { display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  background: var(--s1); border: 1px solid var(--line); border-bottom: 0;
+  border-radius: 9px 9px 0 0; }
+.files-path { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.files-filehead .files-fact { margin-left: auto; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--dim); }
+.files-editor { flex: 1; min-height: 0; border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 9px 9px; overflow: hidden; }
+/* The reader's ground is the head's own tone (Ved, 2026-10-17): the module
+   theme carries GitHub Dark's legacy `#24292e`, which sat far lighter than
+   every surface around it. The override needs `!important` because the
+   theme's own rules carry it; the two-class selector outranks them. */
+.files-reader .cm-editor { height: 100%; background: var(--s1) !important; }
+.files-reader .cm-scroller { font-family: var(--mono); font-size: var(--fs-label); }
+.files-reader .cm-gutters { background: transparent; border-right: 1px solid var(--line);
+  color: var(--dim); }
+/* Lines take comments, and that is visible: the pointer says pressable and
+   the hover tints the line under it. */
+.files-reader .cm-line { cursor: pointer; }
+.files-reader .cm-line:hover { background: rgba(27,33,48,.5); }
+.files-hint { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  padding: 6px 2px 6px; }
+/* A folded run's placeholder and the fold gutter's markers: CodeMirror's
+   stock rules paint the placeholder a light gray that breaks the surface
+   (measured live, Ved 2026-10-17). */
+.files-reader .cm-foldPlaceholder { background: var(--s2); border: 1px solid var(--line);
+  border-radius: 4px; color: var(--dim); padding: 0 4px; }
+.files-reader .cm-foldGutter .cm-gutterElement { color: var(--dim); }
+/* The door's own column keeps its width whether or not a `+` is in it: an
+   empty gutter collapses, and the marker's arrival shifted the code a
+   character right (measured live, Ved 2026-10-17). */
+.files-reader .files-doors { min-width: 16px; }
+.files-reader .files-doors .cm-gutterElement { width: 16px; text-align: center; }
+/* The reader's target line: the same tint and bar the tree's current row
+   carries, and its gutter door (the press that opens the composer). */
+.files-reader .files-target { background: rgba(27,33,48,.5);
+  box-shadow: inset 2px 0 0 var(--accent); }
+.files-reader .files-door { color: var(--accent); }
+/* The resolved marker is a press target in the reader, and it takes the row's
+   whole width AND the expanded card's own ground (Ved, 2026-10-17), so a
+   folded thread and an open one are one surface. */
+.files-reader .rv-marker { width: 100%; cursor: pointer; font: inherit;
+  text-align: left; background: var(--s2); }
+/* The reader's thread cards draw the page's own type, not the code's, and
+   they take the reader's whole width: the diff's card only LOOKS narrower
+   because its half opens split - the unified view fills it too (Ved,
+   2026-10-17: "make it full, like how it was before").
+
+   **The whitespace normalizes.** CM's content is `white-space: pre-wrap`,
+   so every newline in this markup rendered as a real blank line INSIDE the
+   card - Ved's "big multiple rows of gaps" against the diff's card, which
+   sits in ordinary HTML. The rendered prose carries its own blocks, so
+   collapsing the markup's whitespace loses nothing.
+
+   The spacing comes in with it, which is the density he asked the diff's
+   card for. */
+.files-reader .rv-thread,
+.files-reader .rv-marker { white-space: normal; }
+.files-reader .rv-thread { font-size: var(--fs-base); line-height: 1.4; }
+.files-reader .rv-thread .rv-turn { margin: 5px 0; }
+.files-reader .rv-thread .rv-turn .prose p + p { margin-top: 10px; }
+.files-reader .rv-thread .rv-acts { padding-top: 4px; }
+
+@media (max-width: 980px) {
+  .files { height: auto; min-height: 100dvh; padding: 18px 16px 0; }
+  .files-body { grid-template-columns: minmax(0, 1fr); }
+  /* The reader is the page; the tree and the comments are sheets behind the
+     two doors, each pushed onto history so Back closes what it opened. */
+  .files-sheets { display: flex; }
+  .files-side,
+  .files-railhold { display: none; }
+  .files-side.sheet,
+  .files-railhold.sheet {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: var(--bg);
+    padding: 18px 16px 12px;
+    overflow-y: auto;
+  }
+  .files-sheetclose {
+    display: block;
+    align-self: flex-end;
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--text);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 5px 12px;
+    margin-bottom: 10px;
+    cursor: pointer;
+  }
+  /* The tree's sheet scrolls inside the sheet, not the sheet itself. */
+  .files-side.sheet .rv-files { overflow-y: auto; }
+}
+
+@media (pointer: coarse) {
+  .files-filter { min-height: 44px; }
+  .files-reader .cm-line { padding-top: 3px; padding-bottom: 3px; }
+  .files-crow { min-height: 44px; }
+  .files-sheetbtn { min-height: 44px; padding: 0 16px; }
+}
 
 /* One file in the canvas. */
 .review .rv-file { margin-bottom: 16px; }
@@ -3544,84 +3740,120 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review .rv-gapbtn:hover, .review .rv-gapbtn:focus-visible {
   background: var(--s3); color: var(--text); outline: none; }
 
-/* The thread card. */
-.review .rv-thread { border: 1px solid var(--line); border-radius: var(--r);
+/* The thread card, the turn and the state chips. **Unscoped on purpose**:
+   the review page and the files page draw the same cards through the same
+   pieces (`review/ThreadTurn.svelte` and the boxes both pages mount), so
+   these are the thread's names rather than one page's. */
+.rv-thread { border: 1px solid var(--line); border-radius: var(--r);
   background: var(--s1); padding: 8px 10px 9px; margin: 8px 0; }
-.review .rv-thread.compact { margin: 0; background: var(--s2); }
-.review .rv-tops { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
+.rv-thread.compact { margin: 0; background: var(--s2); }
+.rv-tops { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
   font-size: var(--fs-label); color: var(--dim); }
-.review .rv-where { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+.rv-where { min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
-.review .rv-moved { flex: none; color: var(--warn); }
-.review .rv-why { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn);
+.rv-moved { flex: none; color: var(--warn); }
+.rv-why { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn);
   padding: 2px 0 0; }
-.review .rv-acts { display: flex; gap: 8px; padding-top: 6px; align-items: center; }
-.review .rv-a { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+.rv-acts { display: flex; gap: 8px; padding-top: 6px; align-items: center; }
+.rv-a { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
   background: none; border: 1px solid var(--line); border-radius: 6px; padding: 2px 9px;
   cursor: pointer; }
-.review .rv-a:hover { color: var(--text); border-color: var(--ctl); }
-.review .rv-a.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
-.review .rv-a.on:hover { background: var(--hot); }
-.review .rv-a:disabled { opacity: .45; cursor: default; }
-.review .rv-reply { padding-top: 6px; }
-.review .rv-txarea { width: 100%; box-sizing: border-box; background: var(--s1);
+.rv-a:hover { color: var(--text); border-color: var(--ctl); }
+.rv-a.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+.rv-a.on:hover { background: var(--hot); }
+/* The one act that cannot be undone wears the error tone at its confirm. */
+.rv-a.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.rv-a.danger:hover { border-color: var(--bad); }
+.rv-a:disabled { opacity: .45; cursor: default; }
+.rv-reply { padding-top: 6px; }
+.rv-txarea { width: 100%; box-sizing: border-box; background: var(--s1);
   color: var(--text); border: 1px solid var(--line); border-radius: 7px;
   font-family: var(--ui); font-size: var(--fs-base); padding: 6px 8px; resize: vertical; }
-.review .rv-txarea:focus { outline: none; border-color: var(--ctl); }
+.rv-txarea:focus { outline: none; border-color: var(--ctl); }
 /* The comment box holds a take's settings panel, so it is the card the panel
    hangs off - the composer's own arrangement, over a box of this page's. */
-.review .rv-thread.comment { position: relative; }
+.rv-thread.comment { position: relative; }
 /* The mic sits where the composer's does: at the far end of the controls. */
-.review .rv-acts .mic { margin-left: auto; }
+.rv-acts .mic { margin-left: auto; }
 /* What became of a take the box could not start, in the composer's own tones. */
-.review .rv-dictateline { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+.rv-dictateline { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   padding-top: 6px; }
-.review .rv-dictateline.bad { color: var(--bad); }
-.review .rv-dictateline.warn { color: var(--warn); }
-.review .rv-cc { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+.rv-dictateline.bad { color: var(--bad); }
+.rv-dictateline.warn { color: var(--warn); }
+.rv-cc { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
   border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
 
-/* One turn of a thread, drawn by both halves of the page - the conversation's
-   template and the canvas's mounted rows - so these are the page's names
-   rather than a component's. */
-.review .rv-turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
-.review .rv-turn.you { border-left-color: var(--accent); }
-.review .rv-who { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
+/* One turn of a thread, drawn by both halves of the review page and by the
+   files page - so these are the thread's names rather than a page's. */
+.rv-turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
+.rv-turn.you { border-left-color: var(--accent); }
+.rv-who { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
   font-size: var(--fs-label); color: var(--dim); }
-.review .rv-turn.you .rv-who { color: var(--muted); }
+.rv-turn.you .rv-who { color: var(--muted); }
 /* The chip's own box is what separates it: a tag as bare text welds to the
    word before it whichever container it sits in, and the next chip added to
    the row would weld too. */
-.review .rv-at { border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+.rv-at { border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
 /* The words, through the chat's renderer: the sheet's prose rules carry the
    marks, and this carries the turn's measure and tone. */
-.review .rv-turn .prose { margin: 1px 0 0; font-size: var(--fs-base); color: var(--muted);
+.rv-turn .prose { margin: 1px 0 0; font-size: var(--fs-base); color: var(--muted);
   max-width: 72ch; }
-.review .rv-turn.you .prose { color: var(--text); }
+.rv-turn.you .prose { color: var(--text); }
 
 /* A resolved thread collapses to one line in the canvas. */
-.review .rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
+.rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
+  max-width: 100%; min-width: 0; box-sizing: border-box;
   padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--s1); font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
-.review .rv-mk-word { color: var(--muted); flex: none; }
-.review .rv-mk-first { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+.rv-mk-word { color: var(--muted); flex: none; }
+.rv-mk-first { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
 
 /* The four state marks: the sheet's shapes, the sheet's tones. */
-.review .rv-mk { width: 10px; height: 10px; flex: 0 0 10px; }
-.review .rv-mk.open { border-radius: 50%; background: var(--accent); }
-.review .rv-mk.addressed { background: var(--warn);
+.rv-mk { width: 10px; height: 10px; flex: 0 0 10px; }
+.rv-mk.open { border-radius: 50%; background: var(--accent); }
+.rv-mk.addressed { background: var(--warn);
   clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
-.review .rv-mk.resolved { border-radius: 50%; background: var(--ok); }
-.review .rv-mk.outdated { border: 1.4px solid var(--dim); border-radius: 50%; }
-.review .rv-st { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+.rv-mk.resolved { border-radius: 50%; background: var(--ok); }
+.rv-mk.outdated { border: 1.4px solid var(--dim); border-radius: 50%; }
+.rv-st { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
   border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; flex: none; }
-.review .rv-st.open { color: var(--text); border-color: var(--ctl); }
-.review .rv-st.addressed { color: var(--warn); border-color: rgba(201,161,59,.4); }
-.review .rv-st.resolved { color: var(--ok); border-color: rgba(130,199,107,.35); }
-.review .rv-st.outdated { color: var(--dim); }
-.review .rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
+
+/* The tab strip: one row of buttons, the half that is up underlined in the
+   accent - drawn by the review page and the files page, so the sheet's.
+   The family is stated because a `button` does not inherit one and the UA's
+   own font leaked in (measured live: Arial, Ved 2026-10-17 - "looks a little
+   off... font or style"); the drawings' tabs are spans of the page's font. */
+.rv-tabs { display: flex; align-items: center; gap: 2px; padding: 0 0 6px; }
+.rv-tabs > button { font-family: var(--ui); font-size: var(--fs-base); color: var(--dim);
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  padding: 5px 12px 6px; cursor: pointer; }
+.rv-tabs > button:hover { color: var(--muted); }
+.rv-tabs > button.on { color: var(--text); border-bottom-color: var(--accent); }
+.rv-tn { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+
+/* The finish stack: the round's summary over the sealing button, each on its
+   own row, room to write and the mic at the row's end - one shape for the
+   review page's two finishes, the files rail and the document's exit (Ved,
+   2026-10-17). */
+.rv-finishstack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+/* The review half's bar keeps the stack filling it, wherever the stack is
+   drawn from (its own component's scoped root). */
+.rv-finishbar .rv-finishstack { flex: 1; min-width: 0; }
+.rv-finishacts { display: flex; gap: 9px; align-items: center; position: relative; }
+.rv-finishacts .mic { margin-left: auto; }
+.rv-wordline { flex: 1; min-width: 0; }
+.rv-finish { font-family: var(--mono); font-size: var(--fs-data); color: var(--bg);
+  background: var(--accent); border: 0; border-radius: 8px; padding: 6px 14px;
+  cursor: pointer; flex: none; }
+.rv-finish:hover { background: var(--hot); }
+.rv-finish:disabled { opacity: 0.45; cursor: default; }
+.rv-st.open { color: var(--text); border-color: var(--ctl); }
+.rv-st.addressed { color: var(--warn); border-color: rgba(201,161,59,.4); }
+.rv-st.resolved { color: var(--ok); border-color: rgba(130,199,107,.35); }
+.rv-st.outdated { color: var(--dim); }
+.rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
 
 /* The viewer's own palette, restated in forge's tokens. The values ride the
    inner `.diff-style-root` (the theme block sets them there), so the rule
@@ -3682,15 +3914,15 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   .review .rv-body { grid-template-columns: minmax(0, 1fr); }
   .review .rv-canvas,
   .review .rv-canvas-list,
-  .review .rv-files { overflow: visible; }
+  .rv-files { overflow: visible; }
 }
 
 @media (pointer: coarse) {
   /* Every control a finger reaches takes a real target, the way back and
      the canvas's doors and buttons alike. */
   .review .back { min-height: 44px; display: inline-flex; align-items: center; }
-  .review .rv-a { min-height: 44px; padding: 0 14px; }
-  .review .rv-finish, .review .rv-gapbtn { min-height: 44px; }
+  .rv-a { min-height: 44px; padding: 0 14px; }
+  .rv-finish, .review .rv-gapbtn { min-height: 44px; }
   /* The scope row's controls, top to bottom: the scope button and its
      stepper arrows (both steppers' - the scope's and the comments'), the
      picker's rows behind the button, and the mode pair. The rows that lay
@@ -3704,7 +3936,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
      smaller for it: the tab line and a file's fold chevron. */
   .review .rv-tabs > button { min-height: 44px; display: inline-flex; align-items: center; }
   .review .rv-fold { min-width: 44px; min-height: 44px; justify-content: center; }
-  .review .rv-frow, .review .rv-dir { padding-top: 10px; padding-bottom: 10px; }
+  .rv-frow, .rv-dir { padding-top: 10px; padding-bottom: 10px; }
   /* No pointer to arrive with: the line's `+` rests visible so a tap can
      find it. */
   .review .rv-add { opacity: 1; color: var(--dim); }
@@ -4065,7 +4297,7 @@ details[open] > summary .arw { opacity: 1; }
    that files the round and answers the parked hand-off (a PDF or a
    read-only document included), and the way back to the session when
    there is nothing to release. */
-.doc .doc-exit { display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+.doc .doc-exit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
   margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
 .doc .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
 

@@ -229,6 +229,39 @@ export function withReply(thread: ReviewThreadRecord, text: string): ThreadPaylo
 }
 
 /** The upsert command, as the socket carries it. */
+/**
+ * The same thread with one turn's words replaced - an edit is an upsert
+ * like every other write, so the store keeps the turn's own identity (its
+ * round, its author, its clock) and only the text moves.
+ */
+export function withEditedTurn(
+  thread: ReviewThreadRecord,
+  index: number,
+  text: string,
+): ThreadPayload {
+  return {
+    id: thread.id,
+    anchor: {
+      path: thread.anchor.path,
+      side: thread.anchor.side === 'old' ? 'Old' : 'New',
+      line: thread.anchor.line,
+      content_hash: thread.anchor.content_hash,
+      context: thread.anchor.context,
+      base_ref: thread.anchor.base_ref,
+    },
+    comments: thread.comments.map((turn, at) => ({
+      author: authorPayload(turn.author),
+      text: at === index ? text : turn.text,
+      at: turn.at,
+      review_id: turn.review_id,
+    })),
+    status: statusWord(thread.status),
+    created_at: thread.created_at,
+    updated_at: thread.updated_at,
+    commit: thread.commit,
+  };
+}
+
 export function upsertCommand(slot: SessionSlot, branch: string, thread: ThreadPayload) {
   return { upsert_review_thread: { project: slot.project, branch, thread } };
 }
@@ -247,6 +280,11 @@ export function submitCommand(
 
 /** The resolve (or reopen) command for one thread; `Outdated` is the
  *  document viewer aging a comment against a changed document. */
+/** The reviewer's retraction of one thread, wherever its card is drawn. */
+export function deleteCommand(slot: SessionSlot, branch: string, threadId: string) {
+  return { delete_review_thread: { project: slot.project, branch, thread_id: threadId } };
+}
+
 export function statusCommand(
   slot: SessionSlot,
   branch: string,

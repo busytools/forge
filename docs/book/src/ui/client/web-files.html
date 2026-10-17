@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge - the files page (drawing)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* The same token set the client ships (theme.ts), so the drawing is held
+     against the real page rather than against a lookalike. The rules below
+     are the sheet's own for the pieces this page draws (the tree rows, the
+     thread card, the chips, the reader's CodeMirror skin), transcribed. */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --ctl:#516590; --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --ok:#82c76b; --warn:#c9a13b; --bad:#e0683e;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+    --fs-prose: 15.5px; --fs-base: 15.5px;
+    --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
+  }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--text); font-family: var(--ui);
+    font-size: 15.5px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: none; margin: 0 auto; padding: 26px 30px 64px; }
+  .fig { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    padding: 26px 0 10px; }
+  .fig b { color: var(--muted); font-weight: 500; }
+
+  /* ---------- the page shell (the sheet's files block) ---------- */
+  .files { display: flex; flex-direction: column; padding: 0; border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden; background: var(--bg); }
+  .files-top { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 16px 18px 14px; border-bottom: 1px solid var(--line); }
+  .files-back { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+    text-decoration: none; }
+  .files-top h1 { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
+  .files-facts { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+  .files-sep { color: var(--line); margin: 0 7px; }
+  .files-loop { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data);
+    color: var(--warn); }
+  /* The tab strip (the sheet's shared rules), and the conversation's own. */
+  .rv-tabs { display: flex; align-items: center; gap: 2px; padding: 0 0 6px; }
+  .rv-tabs > button { font-family: var(--ui); font-size: var(--fs-base); color: var(--dim);
+    background: none; border: 0; border-bottom: 2px solid transparent;
+    padding: 5px 12px 6px; cursor: pointer; }
+  .rv-tabs > button.on { color: var(--text); border-bottom-color: var(--accent); }
+  .rv-tn { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .conv { width: 100%; }
+  .conv .group { margin: 14px 0 8px; }
+  .conv .group h2 { display: flex; gap: 8px; align-items: baseline; margin: 0 0 6px;
+    font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); }
+  .conv .n { font-family: var(--mono); letter-spacing: 0; }
+  .conv .round { border: 1px solid var(--line); border-radius: var(--r);
+    background: var(--s1); padding: 9px 11px 10px; margin-bottom: 10px; }
+  .conv .heads { display: flex; align-items: baseline; gap: 9px; }
+  .conv .rn { font-family: var(--mono); font-size: var(--fs-base); font-weight: 600;
+    color: var(--accent); }
+  .conv .age { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .conv .tally { margin-left: auto; display: flex; gap: 6px; }
+  .conv .chip { font-family: var(--mono); font-size: var(--fs-label); border-radius: 99px;
+    padding: 0 8px; border: 1px solid var(--line); color: var(--muted); }
+  .conv .chip.open { color: var(--text); border-color: var(--ctl); }
+  .conv .chip.resolved { color: var(--ok); border-color: rgba(130,199,107,.35); }
+  .conv .summary { font-size: var(--fs-base); color: var(--muted); margin: 6px 0 2px; }
+  .conv .thread { border-top: 1px solid rgba(34,42,60,.55); margin-top: 8px; padding-top: 8px; }
+  .conv .rv-state { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+  .conv .rv-state.open { color: var(--text); border-color: var(--ctl); }
+  .conv .where { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conv .turn { display: flex; align-items: baseline; gap: 8px; margin: 7px 0;
+    border-left: 1px solid var(--accent); padding: 2px 0 2px 10px;
+    font-size: var(--fs-base); color: var(--muted); }
+  .conv .acts { display: flex; gap: 8px; padding-top: 6px; align-items: center; }
+
+  .files-body { display: grid;
+    grid-template-columns: minmax(0, 260px) minmax(0, 1fr) minmax(0, 280px);
+    gap: 16px; padding: 12px 18px 18px; }
+
+  /* ---------- the tree (the sheet's shared .rv- tree rules) ---------- */
+  .rv-files { overflow: hidden; }
+  .files-filter { display: block; width: 100%; background: none; border: 0;
+    border-bottom: 1px solid var(--line); color: var(--text); font-family: var(--mono);
+    font-size: var(--fs-label); padding: 4px 2px 8px; margin-bottom: 8px; }
+  .rv-dir { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
+    background: none; border: 0; padding: 5px 6px 2px calc(4px + var(--d, 0) * 12px);
+    cursor: pointer; font: inherit; color: var(--text); }
+  .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim); }
+  .rv-arw.open { transform: rotate(90deg); }
+  .rv-dirname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+    font-weight: 500; }
+  .rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
+    align-items: baseline; width: 100%;
+    padding: 3px 8px 3px calc(19px + var(--d, 0) * 12px); border-radius: 7px;
+    background: none; border: 0; font: inherit; text-align: left; cursor: pointer;
+    color: inherit; }
+  .rv-frow:hover { background: rgba(27,33,48,.5); }
+  .rv-frow.here { background: rgba(27,33,48,.5); box-shadow: inset 2px 0 0 var(--accent); }
+  .rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rv-mk.open { border-radius: 50%; background: var(--accent); }
+  .rv-mk { width: 10px; height: 10px; flex: 0 0 10px; }
+  .rv-fcount { text-align: right; }
+  .rv-ccnum { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; }
+
+  /* ---------- the reader ---------- */
+  .files-reader { display: flex; flex-direction: column; min-height: 0; }
+  .files-filehead { display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+    background: var(--s1); border: 1px solid var(--line); border-bottom: 0;
+    border-radius: 9px 9px 0 0; }
+  .files-path { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+  .files-filehead .files-fact { margin-left: auto; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); }
+  .files-editor { border: 1px solid var(--line); border-top: 0;
+    border-radius: 0 0 9px 9px; overflow: hidden; background: var(--s2); }
+  .cm { display: grid; grid-template-columns: 44px minmax(0, 1fr); font-family: var(--mono);
+    font-size: var(--fs-label); }
+  .cm-gut { border-right: 1px solid var(--line); color: var(--dim); padding: 8px 8px 10px 0;
+    text-align: right; user-select: none; }
+  .cm-body { padding: 8px 10px 10px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cm-gut div, .cm-body div { min-height: 1.55em; }
+  .files-target { background: rgba(27,33,48,.5); box-shadow: inset 2px 0 0 var(--accent); }
+  .files-door { color: var(--accent); }
+  .k { color:#ff7b72; } .s { color:#a5d6ff; } .c { color:#8b949e; font-style: italic; }
+  .f { color:#d2a8ff; } .t { color:#79c0ff; } .v { color:#ffa657; }
+
+  /* ---------- the thread card and chips (the sheet's shared rules) ---------- */
+  .files-block { border: 1px solid var(--line); border-radius: var(--r); background: var(--s1); }
+  .rv-thread.compact { margin: 0; background: var(--s2); padding: 8px 10px 9px;
+    border: 1px solid var(--line); border-radius: var(--r); }
+  .rv-tops { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); }
+  .rv-where { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .rv-moved { flex: none; color: var(--warn); }
+  .rv-st { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; flex: none; }
+  .rv-st.open { color: var(--text); border-color: var(--ctl); }
+  .rv-st.outdated { color: var(--dim); }
+  /* A resolved thread's marker line: collapsed to one press target, opened
+     again by it. */
+  .rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
+    padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--s1); font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .rv-mk.resolved { border-radius: 50%; background: var(--ok); }
+  .rv-mk-word { color: var(--muted); flex: none; }
+  .rv-mk-first { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .rv-turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
+  .rv-turn.you { border-left-color: var(--accent); }
+  .rv-who { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); }
+  .rv-turn.you .rv-who { color: var(--muted); }
+  .rv-at { border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+  .rv-turn .prose { margin: 1px 0 0; font-size: var(--fs-base); color: var(--muted);
+    max-width: 72ch; }
+  .rv-turn.you .prose { color: var(--text); }
+  .rv-acts { display: flex; gap: 8px; padding-top: 6px; align-items: center; }
+  .rv-a { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    background: none; border: 1px solid var(--line); border-radius: 6px; padding: 2px 9px;
+    cursor: pointer; }
+  .rv-a.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+  .rv-txarea { width: 100%; box-sizing: border-box; background: var(--s1);
+    color: var(--text); border: 1px solid var(--line); border-radius: 7px;
+    font-family: var(--ui); font-size: var(--fs-base); padding: 6px 8px; }
+
+  /* ---------- the rail ---------- */
+  .files-rail { display: flex; flex-direction: column; min-height: 0; }
+  .files-railhead { display: flex; gap: 8px; align-items: baseline; margin-bottom: 8px;
+    font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); }
+  .files-railen { font-family: var(--mono); letter-spacing: 0; }
+  .files-replies { margin-left: auto; font-family: var(--mono); letter-spacing: 0;
+    text-transform: none; color: var(--warn); }
+  /* One column, not a grid: the chip and the path ride the first line, the
+     words take the whole width, a note gets its own line - the shape the
+     shipped sheet carries (the lead's gate, 2026-10-17; the drawing had the
+     two-column grid Ved's screenshot fixed). */
+  .files-crow { display: block; width: 100%; text-align: left; background: none;
+    border: 0; padding: 7px 8px; border-radius: 7px; cursor: pointer;
+    color: inherit; font: inherit; }
+  .files-crow > .rv-st { margin-right: 8px; }
+  .files-crowwrap { display: flex; align-items: start; gap: 6px; }
+  .files-crowwrap .files-crow { flex: 1; min-width: 0; }
+  .files-crowwrap + .files-crowwrap { border-top: 1px solid var(--line); }
+  .files-crow:hover { background: rgba(27,33,48,.5); }
+  .files-cwhere { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    display: inline-block; max-width: 100%; vertical-align: baseline;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .files-cwords { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; font-size: var(--fs-base); color: var(--text); }
+  .files-cnote { display: block; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .files-finish { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px;
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  /* The summary: its own row, room to write, resizable on the real page. */
+  .files-finishbox { background: var(--s1); border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 8px; min-height: 58px; font-size: var(--fs-base); color: var(--dim); }
+  .files-finishacts { display: flex; gap: 9px; align-items: center; }
+  .files-finishacts .mic { flex: none; margin-left: auto; width: 24px; height: 24px;
+    display: grid; place-items: center; color: var(--dim); }
+  .files-finishacts .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
+
+  /* ---------- the narrow doors and the states specimen ---------- */
+  .files-sheets { display: inline-flex; gap: 8px; }
+  .files-sheetbtn { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+    background: none; border: 1px solid var(--line); border-radius: 99px; padding: 4px 12px; }
+  .files-said { font-family: var(--mono); font-size: var(--fs-label); color: var(--bad);
+    padding: 6px 2px 0; }
+  .states { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .state { border: 1px solid var(--line); border-radius: 9px; background: var(--s1);
+    padding: 14px 16px; font-size: var(--fs-base); color: var(--muted); }
+  .state .head { font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 8px; }
+  .state .say { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .phone { width: 430px; border: 1px solid var(--line); border-radius: 18px; padding: 14px;
+    background: var(--bg); }
+  .phone .ptop { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="fig"><b>Specimen 1 - the page at width.</b> The tree (the seat's whole index, filter behind a hairline, a pill per file carrying its comment count), the reader (read-only, shiki-coloured, wrapped, the target line tinted with its gutter <span class="files-door">+</span>, a thread drawn under its own line and the composer under the line being written), and the comments rail (every dropped thread by path and line, the finish stack at its bottom: the summary box over the door). The reader's own lane scrolls; nothing scrolls sideways.</p>
+
+<div class="files">
+  <header class="files-top">
+    <a class="files-back" href="#">&lt;- session</a>
+    <h1>Files</h1>
+    <span class="files-facts">/Users/me/proj/.claude/worktrees/tree-review-survey<span class="files-sep">|</span>1,166 files</span>
+    <span class="files-loop">1 to read</span>
+  </header>
+
+  <nav class="rv-tabs" aria-label="files sections">
+    <button type="button">Conversation</button>
+    <button type="button" class="on">Files <span class="rv-tn">1,166</span></button>
+  </nav>
+
+  <div class="files-body">
+    <div class="files-side">
+      <input class="files-filter" type="text" placeholder="filter files">
+      <nav class="rv-files" aria-label="the seat's tree">
+        <div class="rv-dir" style="--d:0">
+          <span class="rv-arw open">&#9656;</span>
+          <span class="rv-dirname">crates/</span><span class="rv-dircount">11</span>
+        </div>
+        <div class="rv-dir" style="--d:1">
+          <span class="rv-arw open">&#9656;</span>
+          <span class="rv-dirname">forge-server/</span><span class="rv-dircount">31</span>
+        </div>
+        <div class="rv-frow" style="--d:2">
+          <span class="rv-fpath">lib.rs</span>
+        </div>
+        <div class="rv-dir" style="--d:2">
+          <span class="rv-arw open">&#9656;</span>
+          <span class="rv-dirname">src/</span><span class="rv-dircount">27</span>
+        </div>
+        <div class="rv-frow here" style="--d:3">
+          <span class="rv-fpath">surface.rs</span>
+          <span class="rv-fcount"><span class="rv-ccnum">1</span></span>
+        </div>
+        <div class="rv-frow" style="--d:3">
+          <span class="rv-fpath">reviews.rs</span>
+        </div>
+        <div class="rv-frow" style="--d:3">
+          <span class="rv-fpath">transport.rs</span>
+        </div>
+        <div class="rv-dir" style="--d:0">
+          <span class="rv-arw open">&#9656;</span>
+          <span class="rv-dirname">client/</span><span class="rv-dircount">114</span>
+        </div>
+        <div class="rv-dir" style="--d:1">
+          <span class="rv-arw open">&#9656;</span>
+          <span class="rv-dirname">src/</span><span class="rv-dircount">103</span>
+        </div>
+        <div class="rv-frow" style="--d:2">
+          <span class="rv-fpath">App.svelte</span>
+        </div>
+        <div class="rv-frow" style="--d:2">
+          <span class="rv-fpath">main.ts</span><span class="rv-fcount"><span class="rv-ccnum">1</span></span>
+        </div>
+        <div class="rv-dir" style="--d:0">
+          <span class="rv-arw">&#9656;</span>
+          <span class="rv-dirname">docs/</span><span class="rv-dircount">123</span>
+        </div>
+        <div class="rv-frow" style="--d:0"><span class="rv-fpath">CLAUDE.md</span></div>
+        <div class="rv-frow" style="--d:0"><span class="rv-fpath">justfile</span></div>
+      </nav>
+    </div>
+
+    <section class="files-reader" aria-label="the file">
+      <div class="files-filehead">
+        <span class="files-path">crates/forge-server/src/surface.rs</span>
+        <span class="files-fact">rust<span class="files-sep">|</span>1,406 lines</span>
+      </div>
+      <div class="files-editor">
+        <div class="cm">
+          <div class="cm-gut">
+            <div>308</div><div>309</div><div>310</div><div>311</div><div>312</div>
+            <div>313</div><div>314</div><div>315</div><div>316</div><div>317</div>
+            <div>318</div><div class="files-door">+320</div><div>321</div><div>322</div>
+            <div>323</div><div>324</div>
+          </div>
+          <div class="cm-body">
+            <div><span class="c">/// One file's whole content at a revision, for a review page's</span></div>
+            <div><span class="c">/// between-hunk expansion.</span></div>
+            <div><span class="k">pub async fn</span> <span class="f">file_content</span>(</div>
+            <div>    &amp;self,</div>
+            <div>    seat: &amp;<span class="t">SessionSlot</span>,</div>
+            <div>    path: &amp;<span class="t">str</span>,</div>
+            <div>    sha: <span class="t">Option</span>&lt;&amp;<span class="t">str</span>&gt;,</div>
+            <div>) -&gt; <span class="t">Result</span>&lt;<span class="t">FileLines</span>, <span class="t">String</span>&gt; {</div>
+            <div>    <span class="k">let</span> <span class="t">Some</span>(cwd) = <span class="k">self</span>.roster().<span class="f">cwd_for</span>(seat) <span class="k">else</span> {</div>
+            <div>        <span class="k">return</span> <span class="t">Err</span>(<span class="f">format!</span>(<span class="s">"forge holds no session for {}"</span>, seat.<span class="f">display</span>()));</div>
+            <div>    };</div>
+            <div class="files-target">    env::git_diff::file::<span class="f">read_file_lines</span>(</div>
+            <div>        &amp;cwd,</div>
+            <div>        sha.<span class="f">unwrap_or</span>(<span class="s">"HEAD"</span>),</div>
+            <div>        path,</div>
+            <div>        <span class="k">self</span>.workspace.<span class="f">document_max_bytes</span>(),</div>
+          </div>
+        </div>
+        <div class="files-block">
+          <div class="rv-thread compact">
+            <div class="rv-tops">
+              <span class="rv-st open">open</span>
+              <span class="rv-where">surface.rs · line 320</span>
+            </div>
+            <div class="rv-turn you">
+              <div class="rv-who"><span>you</span><span class="rv-a rv-edit">edit</span></div>
+              <div class="prose">HEAD reads the tip NOW. On this page the read is the working tree, so the line I am on is the line the worker has - good.</div>
+            </div>
+            <div class="rv-acts">
+              <button class="rv-a" type="button">respond</button>
+              <button class="rv-a" type="button">resolve</button>
+              <button class="rv-a" type="button">delete</button>
+            </div>
+          </div>
+          <div class="rv-marker">
+            <span class="rv-mk resolved"></span>
+            <span class="rv-mk-word">resolved</span>
+            <span class="rv-mk-first">that resolves it - the scope stays the seat.</span>
+            <span class="rv-where">lib.rs &#183; line 12</span>
+          </div>
+        </div>
+        <div class="files-block">
+          <div class="rv-thread compact comment">
+            <div class="rv-tops"><span class="rv-where">surface.rs · line 323</span></div>
+            <div class="line">
+              <div class="rv-txarea">The reader's ceiling should be its own key, not the document one<span style="border-right:1px solid var(--accent)">&nbsp;</span></div>
+            </div>
+            <div class="rv-acts">
+              <button class="rv-a on" type="button">comment</button>
+              <button class="rv-a" type="button">cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="files-rail" aria-label="comments dropped">
+      <h2 class="files-railhead">
+        Comments <span class="files-railen">2</span>
+        <span class="files-replies">1 to read</span>
+      </h2>
+      <div class="files-crowwrap">
+        <button class="files-crow" type="button">
+          <span class="rv-st open">open</span>
+          <span class="files-cwhere">crates/forge-server/src/surface.rs:320</span>
+          <span class="files-cwords">HEAD reads the tip NOW. On this page the read is the working tree...</span>
+        </button>
+        <button class="rv-a" type="button">delete</button>
+      </div>
+      <div class="files-crowwrap">
+        <button class="files-crow" type="button">
+          <span class="rv-st outdated">outdated</span>
+          <span class="files-cwhere">client/src/main.ts:9</span>
+          <span class="files-cwords">anchor this on the boot line</span>
+          <span class="files-cnote">the code moved under this - captured lines kept</span>
+        </button>
+        <button class="rv-a" type="button">delete</button>
+      </div>
+      <div class="files-finish">
+        <div class="files-finishbox">summary (optional)</div>
+        <div class="files-finishacts">
+          <button class="rv-a on" type="button">finish review (2)</button>
+          <span class="mic" title="dictation"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<p class="fig"><b>Specimen 2 - the states.</b> A refused read owns its sentence where the file would sit; a tree with no files, and a filter with no match, say so in the tree's own place; a thread the landing could not place parks in the rail with its captured lines kept, never dropped.</p>
+
+<div class="states">
+  <div class="state">
+    <div class="head">a refused read</div>
+    the document is 24 MiB, over the 10 MiB ceiling
+    <div class="say">- the read's own words, where the file would sit</div>
+  </div>
+  <div class="state">
+    <div class="head">no files / no match</div>
+    The seat's tree has no files.
+    <div class="say">- or: No file matches this filter.</div>
+  </div>
+  <div class="state">
+    <div class="head">not text</div>
+    This page draws no text for this kind of file.
+    <div class="say">- an image's bytes are not a rendering to invent</div>
+  </div>
+</div>
+
+<p class="fig"><b>Specimen 3 - the narrow page.</b> The reader is the page; the tree and the comments are sheets behind two real buttons, each raising a history entry so the hardware Back closes what it opened, with <span class="files-sheetbtn">done</span> and Escape as the other doors. The strip's files slip (the door onto this page) is drawn on the session page's own drawing.</p>
+
+<div class="phone">
+  <div class="ptop">
+    <a class="files-back" href="#">&lt;-</a>
+    <h1 style="font-size:16px">Files</h1>
+    <span class="files-facts">1,166 files</span>
+    <span class="files-sheets">
+      <span class="files-sheetbtn">tree</span>
+      <span class="files-sheetbtn">comments (2)</span>
+    </span>
+  </div>
+  <div class="files-filehead" style="border-radius:9px 9px 0 0">
+    <span class="files-path">crates/forge-server/src/surface.rs</span>
+  </div>
+  <div class="files-editor">
+    <div class="cm" style="grid-template-columns: 34px minmax(0,1fr)">
+      <div class="cm-gut"><div>319</div><div class="files-door">+320</div><div>321</div></div>
+      <div class="cm-body">
+        <div>    env::git_diff::file::<span class="f">read_file_lines</span>(</div>
+        <div class="files-target">        &amp;cwd,</div>
+        <div>        sha.<span class="f">unwrap_or</span>(<span class="s">"HEAD"</span>),</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="fig"><b>Specimen 6 - the conversation.</b> The same rounds the review page draws of a branch, over the seat's tree scope (one component, both pages): newest first, each round with its age, tally chips and the threads it sealed - and the reply box under the thread being answered. Parked threads sit above in their own group with their captured lines. It takes the whole row; the rail, with the finish, is the Files tab's.</p>
+
+<div class="conv">
+  <section class="group">
+    <h2>Rounds <span class="n">newest first</span></h2>
+    <article class="round">
+      <div class="heads">
+        <span class="rn">R2</span>
+        <span class="age">2h ago</span>
+        <span class="tally"><span class="chip open">1 open</span><span class="chip resolved">1 resolved</span></span>
+      </div>
+      <p class="summary">The round's own summary sentence, as the finish took it.</p>
+      <div class="thread">
+        <div class="heads">
+          <span class="rv-state open">open</span>
+          <span class="where">crates/forge-server/src/surface.rs &#183; line 320</span>
+        </div>
+        <div class="turn you"><span class="rv-at">you</span><span class="rv-a rv-edit">edit</span><span class="prose">the tree scope rides the seat, so a rebase keeps them</span></div>
+        <div class="turn"><span class="rv-at">agent</span><span class="prose">kept - the scope is the seat and never the branch</span></div>
+        <div class="acts"><button class="rv-a" type="button">respond</button><button class="rv-a" type="button">resolve</button><button class="rv-a" type="button">delete</button></div>
+      </div>
+    </article>
+  </section>
+</div>
+
+<footer class="fig" style="padding-top:34px">
+  The page's prose, its region table and its states: <a href="./files.html" style="color:var(--dim)">files.md</a>.
+</footer>
+
+</div>
+</body>
+</html>

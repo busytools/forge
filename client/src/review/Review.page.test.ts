@@ -453,7 +453,7 @@ async function openConversation(): Promise<void> {
   );
   if (tabButton === undefined) throw new Error('the page drew no Conversation tab');
   tabButton.click();
-  await settle(() => document.querySelector('.rv-finishrow') !== null);
+  await settle(() => document.querySelector('.rv-finishstack') !== null);
 }
 
 /** The reply box under the diff's thread, opened by its own respond. */
@@ -564,10 +564,10 @@ describe('a landing', () => {
     await draw();
     await openConversation();
 
-    await dictateInto('.rv-finishrow');
+    await dictateInto('.rv-finishstack');
 
     expect(
-      document.querySelector<HTMLInputElement>('.rv-summary')?.value,
+      document.querySelector<HTMLTextAreaElement>('.rv-finishstack .rv-txarea')?.value,
       'the round summary, where the mic was pressed',
     ).toBe('this read is the whole input');
   });
@@ -692,7 +692,10 @@ describe('a landing', () => {
     const acts = [...(row?.querySelectorAll('.acts .rv-a') ?? [])].map((button) =>
       button.textContent?.trim(),
     );
-    expect(acts, 'with resolve, and no respond the page could not honour').toEqual(['resolve']);
+    expect(
+      acts,
+      'with resolve and the retraction, and no respond the page could not honour',
+    ).toEqual(['resolve', 'delete']);
 
     sent = [];
     [...(row?.querySelectorAll<HTMLButtonElement>('.acts .rv-a') ?? [])][0]?.click();
@@ -747,6 +750,7 @@ describe('a landing', () => {
     expect(acts, 'respond rides along where the round draws the box').toEqual([
       'respond',
       'resolve',
+      'delete',
     ]);
 
     [...(row?.querySelectorAll<HTMLButtonElement>('.acts .rv-a') ?? [])][0]?.click();
@@ -755,6 +759,141 @@ describe('a landing', () => {
       document.querySelector('.rv-reply'),
       'and the reply box opens under the round that holds it',
     ).not.toBeNull();
+  });
+
+  /**
+   * **A comment is editable and retractable, wherever its card is drawn**
+   * (Ved, 2026-10-17): the edit act opens the page's own box on that turn
+   * with its words in it and save upserts the text, and delete asks before
+   * anything is written.
+   */
+  it("edits a turn's words and deletes a thread from the conversation", async () => {
+    const hasDelete = (command: unknown): boolean =>
+      typeof command === 'object' && command !== null && 'delete_review_thread' in command;
+    const hasUpsert = (command: unknown): boolean =>
+      typeof command === 'object' && command !== null && 'upsert_review_thread' in command;
+    const thread = {
+      id: 't-edit',
+      anchor: {
+        path: 'src/a.rs',
+        side: 'New',
+        line: 2,
+        content_hash: '1',
+        context: ['ctx'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { kind: 'user' },
+          text: 'the first words',
+          at: '2026-01-01T00:00:00Z',
+          review_id: null,
+        },
+      ],
+      status: 'Open',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+      resolution: null,
+    };
+    await draw([thread]);
+    await openConversation();
+
+    const edit = document.querySelector<HTMLButtonElement>('.rv-turn .rv-edit');
+    expect(edit, 'a turn the reader wrote draws the edit act').not.toBeNull();
+    edit?.click();
+    flushSync();
+
+    const box = document.querySelector<HTMLTextAreaElement>('.rv-turnedit .rv-txarea');
+    expect(box, 'the box opens under the turn it changes').not.toBeNull();
+    expect(box?.value, "and it holds the turn's words").toBe('the first words');
+    if (box !== null) {
+      box.value = 'the better words';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+    }
+    [...document.querySelectorAll<HTMLButtonElement>('.rv-turnedit .rv-acts button')]
+      .find((button) => button.textContent?.trim() === 'save')
+      ?.click();
+    await settle(() => sent.some(hasUpsert));
+
+    const upsert = sent.find(hasUpsert) as
+      { upsert_review_thread: { thread: { comments: { text: string }[] } } } | undefined;
+    expect(upsert?.upsert_review_thread.thread.comments[0]?.text, 'save files the edit').toBe(
+      'the better words',
+    );
+
+    const del = [...document.querySelectorAll<HTMLButtonElement>('.thread .acts .rv-a')].find(
+      (button) => button.textContent?.trim() === 'delete',
+    );
+    expect(del, 'the card carries the retraction').not.toBeNull();
+    del?.click();
+    flushSync();
+    const go = [...document.querySelectorAll<HTMLButtonElement>('.rv-delask .rv-a')].find(
+      (button) => button.textContent?.trim() === 'delete',
+    );
+    expect(go, 'and the act asks before anything is written').not.toBeNull();
+    go?.click();
+    await settle(() => sent.some(hasDelete));
+
+    const cut = sent.find(hasDelete) as { delete_review_thread: { thread_id: string } } | undefined;
+    expect(cut?.delete_review_thread.thread_id, 'the confirm deletes that thread').toBe('t-edit');
+  });
+
+  /**
+   * **A resolved thread collapses to its marker line, everywhere** (Ved,
+   * 2026-10-17: "git diff also does not show the resolve expansion like the
+   * file view does"): the conversation draws the marker, a press opens the
+   * card back up, and its acts are the hand-back and the fold.
+   */
+  it('collapses a resolved thread to its marker and opens it again', async () => {
+    const thread = {
+      id: 't-done',
+      anchor: {
+        path: 'src/a.rs',
+        side: 'New',
+        line: 3,
+        content_hash: '1',
+        context: ['ctx'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { kind: 'user' },
+          text: 'settled in the end',
+          at: '2026-01-01T00:00:00Z',
+          review_id: 'r1',
+        },
+      ],
+      status: 'resolved',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+      resolution: { state: 'placed', line: 3, moved_from: null },
+    };
+    await draw([thread], [ROUND]);
+    await openConversation();
+
+    const marker = document.querySelector<HTMLButtonElement>('.rv-conv .rv-marker');
+    expect(marker, 'the resolved thread collapsed').not.toBeNull();
+    expect(marker?.textContent, 'and the marker reads its first words').toContain(
+      'settled in the end',
+    );
+    expect(
+      document.querySelector('.rv-conv .thread'),
+      'and the card is not drawn beside it',
+    ).toBeNull();
+
+    marker?.click();
+    flushSync();
+    const acts = [...document.querySelectorAll('.rv-conv .thread .acts .rv-a')].map((button) =>
+      button.textContent?.trim(),
+    );
+    expect(acts, 'a press opens it back up, with the hand-back and the fold').toEqual([
+      'reopen',
+      'collapse',
+      'delete',
+    ]);
   });
 
   /**
@@ -814,7 +953,7 @@ describe('a landing', () => {
       'precondition: the reply box is open on the conversation half',
     ).not.toBeNull();
 
-    const summaryField = document.querySelector<HTMLInputElement>('.rv-summary');
+    const summaryField = document.querySelector<HTMLTextAreaElement>('.rv-finishstack .rv-txarea');
     if (summaryField === null) throw new Error('the round drew no summary field');
     summaryField.value = 'the round summary';
     summaryField.dispatchEvent(new Event('input', { bubbles: true }));
@@ -829,7 +968,7 @@ describe('a landing', () => {
     ).toBe(true);
     expect(document.querySelector('.rv-reply'), 'the reply box closed with the round').toBeNull();
     expect(
-      document.querySelector<HTMLInputElement>('.rv-summary')?.value ?? '',
+      document.querySelector<HTMLTextAreaElement>('.rv-finishstack .rv-txarea')?.value ?? '',
       'and the summary is cleared',
     ).toBe('');
     // The comment box's own clears in `finish()` are not observable from
@@ -1148,7 +1287,7 @@ describe('the files half finishes the round too', () => {
     await draft();
     const button = document.querySelector<HTMLButtonElement>('.rv-finishbar .rv-finish');
     button?.click();
-    await settle(() => document.querySelector('.rv-finishbar .rv-summary') !== null);
+    await settle(() => document.querySelector('.rv-finishbar .rv-txarea') !== null);
 
     window.dispatchEvent(
       new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
@@ -1177,7 +1316,7 @@ describe('the files half finishes the round too', () => {
     );
 
     expect(
-      document.querySelector<HTMLInputElement>('.rv-finishbar .rv-summary')?.value,
+      document.querySelector<HTMLTextAreaElement>('.rv-finishbar .rv-txarea')?.value,
       'the key take went somewhere the reader cannot see',
     ).toBe('this read is the whole input');
   });
@@ -1197,21 +1336,21 @@ describe('the files half finishes the round too', () => {
     expect(button?.textContent?.trim(), 'naming the drafts it would seal').toContain('(1)');
 
     button?.click();
-    await settle(() => document.querySelector('.rv-finishbar .rv-summary') !== null);
+    await settle(() => document.querySelector('.rv-finishbar .rv-txarea') !== null);
 
     expect(document.activeElement, 'the field a press opened takes the caret').toBe(
-      document.querySelector('.rv-finishbar .rv-summary'),
+      document.querySelector('.rv-finishbar .rv-txarea'),
     );
 
     sent = [];
-    const field = document.querySelector<HTMLInputElement>('.rv-finishbar .rv-summary');
+    const field = document.querySelector<HTMLTextAreaElement>('.rv-finishbar .rv-txarea');
     if (field === null) throw new Error('the files half drew no summary field');
     field.value = 'the round summary';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     field.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
     );
-    await settle(() => document.querySelector('.rv-finishbar .rv-summary') === null);
+    await settle(() => document.querySelector('.rv-finishbar .rv-txarea') === null);
 
     expect(
       sent.some((held) => typeof held === 'object' && held !== null && 'submit_review' in held),
@@ -1702,7 +1841,7 @@ describe("a take's end", () => {
     await draw();
     await openConversation();
 
-    micIn('.rv-finishrow').click();
+    micIn('.rv-finishstack').click();
     await opened();
     push({ wire: record(TAKE), refused: null });
     flushSync();
@@ -2032,7 +2171,7 @@ describe("the key's box", () => {
     await vi.waitFor(
       () => {
         expect(
-          document.querySelector('.rv-finishrow .takeline'),
+          document.querySelector('.rv-finishstack .takeline'),
           'the bar goes with the take',
         ).toBeNull();
       },
@@ -2040,7 +2179,7 @@ describe("the key's box", () => {
     );
 
     expect(
-      document.querySelector<HTMLInputElement>('.rv-summary')?.value,
+      document.querySelector<HTMLTextAreaElement>('.rv-finishstack .rv-txarea')?.value,
       'the key take went into a reply box the half does not draw',
     ).toBe('this read is the whole input');
   });
@@ -2072,7 +2211,7 @@ describe("the key's box", () => {
     await vi.waitFor(
       () => {
         expect(
-          document.querySelector('.rv-finishrow .takeline'),
+          document.querySelector('.rv-finishstack .takeline'),
           'the bar goes with the take',
         ).toBeNull();
       },
@@ -2080,7 +2219,7 @@ describe("the key's box", () => {
     );
 
     expect(
-      document.querySelector<HTMLInputElement>('.rv-summary')?.value,
+      document.querySelector<HTMLTextAreaElement>('.rv-finishstack .rv-txarea')?.value,
       'the key take went somewhere the reader cannot see',
     ).toBe('this read is the whole input');
   });

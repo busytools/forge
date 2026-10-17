@@ -1,5 +1,6 @@
 <script lang="ts">
   import ConnectorsSegment from './ConnectorsSegment.svelte';
+  import FilesSegment from './FilesSegment.svelte';
   import GitSegment from './GitSegment.svelte';
   import McpSegment from './McpSegment.svelte';
   import MonitorsSegment from './MonitorsSegment.svelte';
@@ -11,6 +12,7 @@
   import SubagentSegment from './SubagentSegment.svelte';
   import TasksSegment from './TasksSegment.svelte';
   import { connectors } from './connectors.svelte';
+  import { files } from './files.svelte';
   import { git } from './git.svelte';
   import { mcp } from './mcp.svelte';
   import { monitors } from './monitors.svelte';
@@ -55,6 +57,7 @@
 
   const rows = $derived(
     subagents.all().length > 0 ||
+      files.anything() ||
       processes.anything() ||
       connectors.anything() ||
       schedules.anything() ||
@@ -74,7 +77,9 @@
       {#if info !== null}<Strip {info} />{/if}
       <span class="sg-fill"
         ><BrowserSegment {connection} {slot} /><SubagentSegment /><ProcessesSegment
-        /><ConnectorsSegment /><SchedulesSegment /><McpSegment /><GitSegment /><ReviewSegment
+        /><ConnectorsSegment /><SchedulesSegment /><McpSegment /><FilesSegment
+          href={slot === null ? null : hrefFor({ name: 'files', slot })}
+        /><GitSegment /><ReviewSegment
           href={slot === null ? null : hrefFor({ name: 'review', slot })}
         /><TasksSegment
           href={slot === null

@@ -156,6 +156,33 @@ describe('the document read', () => {
     expect(get(view).state, "neither answer is this page's").toBe('reading');
   });
 
+  /**
+   * **The answer's path is the resolved one, and the read canonicalizes**:
+   * the server answers `/private/tmp/...` for a route carrying `/tmp/...`
+   * (macOS's own symlink), and comparing the spellings literally left the
+   * page opening for good - measured on the look stack, 2026-10-17.
+   */
+  it('lands when the answer carries the canonical spelling of the asked path', () => {
+    const socket = fakeSocket();
+    const view = hold(watchDocument(socket.connection, LEAD, '/tmp/proj/docs/plan.md', false));
+
+    socket.emit({
+      kind: 'document_read',
+      session: LEAD,
+      path: '/private/tmp/proj/docs/plan.md',
+      document_kind: 'markdown',
+      bytes: btoa('# hi\n'),
+      reviewable: false,
+      content_hash: '3',
+      threads: [],
+      reviews: [],
+    });
+
+    const held = get(view);
+    expect(held.state).toBe('landed');
+    expect(held.path, 'the answer names where it really is').toBe('/private/tmp/proj/docs/plan.md');
+  });
+
   it("draws the server's refusal in its own words", () => {
     const socket = fakeSocket();
     const view = hold(watchDocument(socket.connection, LEAD, 'gone.md', false));
