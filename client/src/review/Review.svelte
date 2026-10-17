@@ -651,12 +651,19 @@
     await write(statusCommand(slot, branch, thread.id, 'Resolved'));
   }
 
-  /** Replace one turn's words - the same upsert, the turn's identity kept. */
+  /** Replace one turn's words - the same upsert, the turn's identity kept.
+   *  A save that landed closes the box, as cancel does (Ved, 2026-10-17:
+   *  "the save is saving, but it is not changing the state like how cancel
+   *  does, instead just stays there"). */
   async function editedTurn(thread: { id: string }, index: number, text: string): Promise<boolean> {
     const full = threads.find((held) => held.id === thread.id);
     if (full === undefined) return false;
     const { went } = await write(upsertCommand(slot, branch, withEditedTurn(full, index, text)));
-    return went;
+    if (!went) return false;
+    reply.thread = null;
+    reply.index = null;
+    reply.draft = '';
+    return true;
   }
 
   /** The retraction, wherever its card is: a refused delete says so. */

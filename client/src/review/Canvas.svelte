@@ -266,7 +266,11 @@
     const scope = scopeLayer;
     const files = scopeFiles;
     const key = scopeCommit ?? 'all';
-    if (scope === null || builtKey === key) return;
+    // **An empty pass must not claim the key.** A layer can be present while
+    // its files are still filling; a build that lands `built = []` AND
+    // stamps the key would wedge the canvas, because the filled pass then
+    // returns at the guard and the diff never draws.
+    if (scope === null || builtKey === key || files.length === 0) return;
     void (async () => {
       const { DiffFile } = await import('@git-diff-view/core');
       const next = files.map((file) => {
