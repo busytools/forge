@@ -192,11 +192,12 @@ async fn sweep(bridge: &Arc<Bridge>) {
             // hand-off (the session gone, the browser parked) closes on a
             // later round rather than never.
             (_, Verdict::Held) => host.note_warned(&candidate.dir, now).await,
-            // The warning landed, or a reply was lost in flight (not a
-            // reason to ask twice): the grace arms.
-            (false, Verdict::Delivered | Verdict::Unanswered) => {
-                host.note_warned(&candidate.dir, now).await;
-            }
+            // The warning landed: the grace arms.
+            (false, Verdict::Delivered) => host.note_warned(&candidate.dir, now).await,
+            // **A warning that never went is never armed.** The streak stays
+            // unwarned and the next pass asks again - a duplicate warning is
+            // acceptable, a close nobody was warned about is not.
+            (false, Verdict::Unanswered) => {}
             // No live seat: nobody to warn - and the hold was consulted
             // above, so the profile is the close's. The close's own ask
             // succeeding settles it the same way.
