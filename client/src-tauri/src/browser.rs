@@ -597,9 +597,9 @@ impl BrowserHost {
     /// the shared browser (whoever last called it, `None` when no one has).
     ///
     /// **A browser that is not there is not idle, and a window that is up is
-    /// in use.** A dead profile has nothing to release, and a raised window
-    /// - the marker over a live launch with a page - is the person's: it is
-    /// never warned about and never closed.
+    /// in use.** A dead profile has nothing to release, and a raised
+    /// window - the marker over a live launch with a page - is the
+    /// person's: never warned about, never closed.
     #[cfg(desktop)]
     pub(crate) async fn idle_candidates(&self) -> Vec<idle::Candidate> {
         let Ok(paths) = self.paths.clone() else { return Vec::new() };
@@ -627,10 +627,7 @@ impl BrowserHost {
             out.push(idle::Candidate {
                 name: Some(name),
                 dir,
-                touch: idle::Touch {
-                    caller: touch.caller.clone().or_else(|| Some(owner)),
-                    ..touch
-                },
+                touch: idle::Touch { caller: touch.caller.clone().or(Some(owner)), ..touch },
             });
         }
         if chromium::verified(&paths.user_data).await.is_some()

@@ -134,13 +134,17 @@ fn warning(
 
 /// Start the sweep, once per client run. The loop owns its interval; each
 /// pass is one read of the clocks and, at most, one command per candidate.
+///
+/// **The tauri runtime's spawner, not `tokio::spawn`**: this is called from
+/// the app's setup, where no tokio reactor is running and a bare spawn
+/// panics - measured the hard way, the walk's first launch aborted 1.8 s in.
 pub fn start(bridge: &Arc<Bridge>) {
     static STARTED: AtomicBool = AtomicBool::new(false);
     if STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
     let bridge = Arc::clone(bridge);
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(SWEEP_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -213,6 +217,18 @@ mod tests {
     fn the_defaults_are_the_documents_thirty_and_ten() {
         assert_eq!(IDLE_MINUTES, 30);
         assert_eq!(GRACE_MINUTES, 10);
+    }
+
+    /// **The start survives a context with no reactor**, which is the app's
+    /// setup: a bare `tokio::spawn` there aborted a real boot 1.8 s in (the
+    /// walk, 2026-10-17), and this test runs in exactly that context - a
+    /// plain `#[test]`, no runtime.
+    #[test]
+    fn the_sweep_starts_outside_a_runtime() {
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let bridge = Bridge::new(None, events);
+        start(&bridge);
+        start(&bridge);
     }
 
     /// The whole clock, one case per arm: a fresh touch sits quiet, an idle
