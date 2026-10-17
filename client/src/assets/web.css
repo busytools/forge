@@ -3625,11 +3625,15 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    folded thread and an open one are one surface. */
 .files-reader .rv-marker { width: 100%; cursor: pointer; font: inherit;
   text-align: left; background: var(--s2); }
-/* The reader's thread cards draw the page's own type, not the code's: the
-   CM context carries `--fs-label` and a 1.4 line-height, so the same card
-   read tighter here than the diff's (Ved's screenshots, 2026-10-17: "these
-   two are a little different... that needs to be similar"). */
-.files-reader .rv-thread { font-size: var(--fs-base); line-height: 1.5; }
+/* The reader's thread cards draw the page's own type, not the code's, and
+   they sit DENSER than the wide diff's cards (Ved, 2026-10-17: "the space
+   on the comments is very spacious... borrow this one from the git diff"):
+   the words keep their 15.5px, the gaps between turns, the paragraph
+   spacing and the acts' room come in. */
+.files-reader .rv-thread { font-size: var(--fs-base); line-height: 1.4; }
+.files-reader .rv-thread .rv-turn { margin: 5px 0; }
+.files-reader .rv-thread .rv-turn .prose p + p { margin-top: 10px; }
+.files-reader .rv-thread .rv-acts { padding-top: 4px; }
 
 @media (max-width: 980px) {
   .files { height: auto; min-height: 100dvh; padding: 18px 16px 0; }
