@@ -738,12 +738,11 @@ describe('the app grid', () => {
 
   /**
    * **The end of a conversation reads like the middle of one.** The last row's
-   * own trailing space and the surface's edge are the whole of the space
-   * between them: the column draws no bottom padding, and the foot's own
-   * padding is all the surface adds. The composer used to cancel the grid's
-   * row gap for itself, because the strip and the box were two adjacent
-   * pieces that had to touch; they are one surface now, so the gap is back -
-   * `row-gap: 0` on the app is gone with it.
+   * own trailing space is the whole of the space between them: the column
+   * draws no bottom padding, the composer adds none of its own above the
+   * surface, and it cancels the grid's row gap for its own row alone, because
+   * a `row-gap` the app drops for one row is a gap it drops for every row
+   * added later.
    */
   it('ends the conversation at the composer, with the foot as one row', () => {
     // Every rule the sheet writes for `.composer`, not the last one: the
@@ -753,8 +752,12 @@ describe('the app grid', () => {
     );
     expect(
       composer.some((rule) => rule.includes('margin-top: calc(-1 * var(--ins))')),
-      'the composer still cancels the grid gap for a strip it no longer holds',
-    ).toBe(false);
+      'the grid row gap is back above the composer',
+    ).toBe(true);
+    expect(
+      composer.some((rule) => rule.includes('padding: 0 0 2px')),
+      'the surface adds padding above itself, so the foot reads looser than the rows',
+    ).toBe(true);
     expect(body('.conv'), 'the column reserves bottom padding again').toContain(
       'padding: 2px 8px 0 0',
     );
