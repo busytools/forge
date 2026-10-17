@@ -95,7 +95,19 @@
    */
   $effect(() => {
     if (!dictate) return;
-    if (route.name !== 'session' && route.name !== 'review' && route.name !== 'doc') return;
+    // Every page whose boxes carry a mic: the session's composer, the review
+    // page's two halves, the document viewer, and the files page - whose
+    // comment, reply, edit and summary boxes all wear one (the lead's gate,
+    // 2026-10-17: the files route was missing and its first press opened a
+    // device under the box).
+    if (
+      route.name !== 'session' &&
+      route.name !== 'review' &&
+      route.name !== 'doc' &&
+      route.name !== 'files'
+    ) {
+      return;
+    }
     holdDeviceFor(boxKey(route.slot));
   });
 </script>
