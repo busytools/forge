@@ -1929,13 +1929,13 @@ async fn dispatch_answering(
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
     //
-    // The five reply-carrying commands take a sender the wire deliberately
+    // The six reply-carrying commands take a sender the wire deliberately
     // does not carry, and each carries its OWN reply type - a spawned worker
     // answers with a `WorkerSpawnReply`, a despawn with a `DespawnResult`,
-    // the review pair with a `bool` and a `ReviewSet`, and an idle warning
+    // the review writes with a `bool` and a `ReviewSet`, and an idle warning
     // with an `IdleVerdict`. So the channel is
     // built per arm and handed to the shared helper with its own receiver:
-    // one channel cannot carry five different answers. **A variant missing
+    // one channel cannot carry six different answers. **A variant missing
     // here hangs its caller**: it falls to the fire-and-forget arm below
     // with no sender, the workspace answers nobody, and the client waits for
     // ever (measured live on the delete, 2026-10-17).
@@ -2140,7 +2140,7 @@ fn answers_through_a_reply(command: &Command) -> bool {
     )
 }
 
-/// Dispatch one of those five, and send back the answer it carries.
+/// Dispatch one of those six, and send back the answer it carries.
 async fn answered<T: serde::Serialize>(
     socket: &mut WebSocket,
     state: &TransportState,

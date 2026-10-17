@@ -2516,7 +2516,7 @@ async fn a_turn_that_finished_unwatched_marks_its_row() {
     assert!(marked, "the seat whose turn went unwatched is marked");
 }
 
-/// Four commands report through `reply_to` and have no update behind them, so
+/// Six commands report through `reply_to` and have no update behind them, so
 /// a client that omits it is not opting out of a reply - it is opting out of
 /// knowing whether the work happened. The refusal names the field rather than
 /// leaving the client to work out why a fire-and-forget command is different.

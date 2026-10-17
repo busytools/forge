@@ -399,9 +399,9 @@ writes it at all - because the command is fire-and-forget: its effect
 arrives through the subscription, which is why a client subscribes before
 it acts.
 
-**`reply_to` is required on exactly five of them**: a worker spawn, a
-despawn, the review pair, and an idle warning (whose verdict rides the
-reply - the prompt it may deliver is separate). Their outcome rides the
+**`reply_to` is required on exactly six of them**: a worker spawn, a
+despawn, the three review writes, and an idle warning (whose verdict rides
+the reply - the prompt it may deliver is separate). Their outcome rides the
 reply and no update carries it, so a client that omitted `reply_to` would
 not be declining a reply - it would be declining to learn whether the work
 happened.
@@ -412,13 +412,13 @@ refused before the command runs: a required field left off, and a
 for the same reason the first does - a client that set it is waiting on a
 channel nothing will ever come down.
 
-**Each of the five answers with its own type**: a spawn with a
-worker-spawn reply, a despawn with a despawn result, the review pair
+**Each of the six answers with its own type**: a spawn with a
+worker-spawn reply, a despawn with a despawn result, the review writes
 with a `bool` and a review set, and an idle warning with an idle verdict.
-One channel cannot carry five different
+One channel cannot carry six different
 answers, so the reply type follows the command. A refusal arrives in that
 same reply, as the body of the answer rather than as an `error` - which is
-what the five are for. A command that is _not_ one of the five refuses as
+what the six are for. A command that is _not_ one of the six refuses as
 an `error` like anything else the core declines, whether or not a reply
 was asked for.
 
