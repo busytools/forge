@@ -672,9 +672,13 @@ impl BrowserHost {
             out.push(idle::Candidate {
                 name: Some(name),
                 dir,
-                // **The creator, not the last caller**: a named profile's
-                // warning belongs to the seat that made it, so another seat's
-                // call never moves the message.
+                // **The creator, not the last caller** (spam-control A1): a
+                // named profile's warning belongs to the seat that made it.
+                // The distinction is structural rather than observed - a
+                // non-owner cannot drive a named profile at all
+                // (`profiles::verdict` refuses another seat's name), so the
+                // recorded caller could only ever be the owner; naming the
+                // owner here is what makes the targeting explicit.
                 touch: idle::Touch { caller: Some(owner), ..touch },
             });
         }
@@ -2306,7 +2310,15 @@ mod tests {
             .iter()
             .find(|candidate| candidate.name.as_deref() == Some("hunt"))
             .expect("the named row with a live launch");
-        assert_eq!(row.touch.caller, Some(who.clone()), "the owner is the seat to warn");
+        // **The profile's creator, and the seat the warning goes to**: the
+        // seat under test is both creator and caller - no other seat can
+        // drive a named profile - so what this holds is the targeting, not a
+        // discrimination against a last caller (see `idle_candidates`).
+        assert_eq!(
+            row.touch.caller,
+            Some(who.clone()),
+            "the candidate carries the profile's creator",
+        );
         assert!(row.touch.warned.is_none(), "a fresh touch carries no warning");
 
         let warned_at = std::time::Instant::now();
