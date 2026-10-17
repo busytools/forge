@@ -1700,6 +1700,43 @@ describe('the key', () => {
   });
 
   /**
+   * A release inside the bound is not the row's to speak into.
+   *
+   * The take is still non-null while it drains, and `flowing` is still false
+   * on a take that never spoke, so the bound firing mid-drain would flash the
+   * sentence over a take that is already ending.
+   */
+  it('never says it for a take released at the bound', async () => {
+    mic.held.gated = true;
+    try {
+      vi.useFakeTimers();
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      mic.held.release?.();
+      await opened();
+      mic.held.onFrame?.(new Uint8Array(641));
+      flushSync();
+
+      vi.advanceTimersByTime(SILENT_NOTICE_MS - 100);
+      key('ControlRight', 'keyup');
+      flushSync();
+      vi.advanceTimersByTime(100);
+      flushSync();
+      expect(
+        document.querySelector('.tc .silent'),
+        'the bound landing mid-drain must not say the capture is silent',
+      ).toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+      vi.useRealTimers();
+    }
+  });
+
+  /**
    * What the guards together buy, rather than either one alone: the bound
    * never sets its flag over a take that spoke (the timer's check), and the
    * line never draws over a take that is speaking (its own check, which is

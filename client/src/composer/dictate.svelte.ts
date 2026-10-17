@@ -350,7 +350,10 @@ export class Dictation {
       this.nothingHeard = false;
       this.silence = null;
       this.#quiet = setTimeout(() => {
-        if (this.take !== null && !this.take.wire.flowing) {
+        // Not a take that is already ending: a release drains the capture for
+        // a moment with the take still live and no sample in it, and the bound
+        // landing there would flash the sentence over a take that is over.
+        if (this.take !== null && !this.take.closing && !this.take.wire.flowing) {
           this.nothingHeard = true;
           void this.#readSilence();
         }
