@@ -2272,6 +2272,46 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
+   * **The same occupant framed past the cap still drops, on a named id.**
+   * The case above runs with no occupant named on either side, where the
+   * record and the answer agree trivially - and the id is the fix's own
+   * operand (#2276), so the arm that compares two REAL ids has to be pinned
+   * too: same seat, same answer, still the frames' record.
+   */
+  it('keeps the frames record at the cap when the answer names the same occupant', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'one', seq: 1 },
+      ),
+    );
+
+    for (let round = 1; round <= 4; round += 1) {
+      page.land(
+        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
+      );
+      page.land(
+        snapshotOf(
+          LEAD,
+          { conversation: { turns: [], compaction_count: 0 } },
+          { epoch: 'one', seq: 1 },
+        ),
+      );
+    }
+    paint();
+
+    expect(page.reads(), 'the cap never stopped the re-ask').toBe(3);
+    expect(
+      page.read().wire?.conversation.turns,
+      "the same occupant's answer was taken past the cap, so the frames' record was rolled back",
+    ).toHaveLength(4);
+    page.stop();
+  });
+
+  /**
    * **The drop's premise is a record of the answer's OWN epoch, and a swap's
    * read is not one** (#2276). A wipe starts the count again without clearing
    * the record, so the new epoch's frames merge onto the PREVIOUS occupant's
