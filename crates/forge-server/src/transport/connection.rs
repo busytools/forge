@@ -828,9 +828,9 @@ async fn handle_client(
                             bytes,
                             "the subscribe's own work: seed is the transcript read a cold \
                              seat pays, conversation is the copy's arrival, page its cut and \
-                             fold, and encode the record's serialisation; the rest of \
-                             open_ms is the queued flush, the copy's catch-up and the \
-                             record's reads",
+                             fold, and encode the record's value; the rest of open_ms is the \
+                             queued flush, the copy's catch-up, the record's reads and the \
+                             frame's own serialisation into the bytes it carries",
                         );
                     }
                     // Rather than keeping a spent mark until the next unrelated
