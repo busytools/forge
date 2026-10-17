@@ -3126,30 +3126,44 @@ mod tests {
     }
 
     /// The other half: a seat the transport holds nothing for pays the
-    /// transcript read, and the number says so rather than leaving it folded
-    /// into the conversation total.
+    /// transcript read, and the number says so.
+    ///
+    /// **A transcript big enough that the read dominates its own call**, so
+    /// the assertion below has teeth: the seed is a whole file's read and the
+    /// rest of `conversation_for` is a lookup and an ask, and the two must
+    /// not overlap - a total that swallowed the read is short by the whole
+    /// read on exactly the slow cold open the line exists to explain.
     #[tokio::test]
-    async fn a_cold_seat_reports_its_seed_read() {
-        let root = tempfile::tempdir().expect("a temp dir");
-        let state = fixture_state(root.path()).await;
-        // The same fleet with an empty transport: the seed path is what a
-        // seat nobody holds takes.
-        let cold = TransportState {
-            surface: Arc::clone(&state.surface),
-            work: Arc::clone(&state.work),
+    async fn a_cold_seats_seed_is_timed_outside_the_conversation_total() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let rows: Vec<String> = (0..3_000).map(a_turns_rows).collect();
+        let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+        fleet.seed_transcript("TestOrg", "proj", "lead", &rows).expect("the transcript seeds");
+        // An empty transport over that fleet: the seed path is what a seat
+        // nobody holds takes.
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::clone(&state.browser),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
-        let (_, timings) = encode_subject_timed(&cold, &Subject::Session(fixture_seat()))
+        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
             .await
             .expect("the seat encodes");
 
         assert!(
             timings.seed_ms > 0.0,
             "the transcript read a cold seat takes is timed: {timings:?}"
+        );
+        assert!(
+            timings.conversation_ms < timings.seed_ms,
+            "the conversation total EXCLUDES the seed, so a read that took real time must \
+             dominate the lookup around it - the two overlapping is the bug this pins: {timings:?}"
         );
     }
 
