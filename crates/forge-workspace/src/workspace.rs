@@ -10714,7 +10714,7 @@ provider = "anthropic"
             matches!(source, Some(PromptSource::Forge)),
             "a forged machinery turn is nobody's send, and the frame says whose it is: {source:?}",
         );
-        let Message::User { message, .. } = msg else {
+        let Message::User { message, uuid, .. } = msg else {
             panic!("a forged prompt draws as the user turn the model received, got {msg:?}")
         };
         assert!(
@@ -10724,12 +10724,35 @@ provider = "anthropic"
             ),
             "the frame carries the prose the model received: {message:?}",
         );
+        // **The id says whose words they are**: it is the one fact about the
+        // sender the CLI carries into the transcript, so a view draws a
+        // reloaded row as the machinery's own - never the reader's - by its
+        // prefix alone.
+        assert!(
+            uuid.as_deref().is_some_and(|id| id.starts_with("forge_nudge_")),
+            "a forged dispatch mints the machinery's own id: {uuid:?}",
+        );
 
         ws.dispatch_workspace_prompt(&key, "[Cron]\n\nrun the summary".to_owned())
             .expect("delivery dispatch");
         assert!(
             !drain_updates(&mut rx).iter().any(|u| matches!(u, SessionUpdate::ChatAppended { .. })),
             "a delivery's words are drawn by its own envelope update, so this path forges no frame",
+        );
+        // Both dispatches wire one prompt each, and both are the machinery's
+        // own words: the source `Forge` is what the prefix follows.
+        let ids: Vec<String> = ws
+            .drain_test_dispatch_buffer()
+            .iter()
+            .filter_map(|command| match command {
+                Command::PromptUnder { uuid, .. } => Some(uuid.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids.len(), 2, "both dispatches wired one prompt: {ids:?}");
+        assert!(
+            ids.iter().all(|id| id.starts_with("forge_nudge_")),
+            "a machinery dispatch carries the marker whatever door it took: {ids:?}",
         );
     }
 
@@ -10950,6 +10973,11 @@ provider = "anthropic"
                  call brings the browser back, and raising it brings the pages back."
             ),
             "the authored sentence is what crosses: {warned}",
+        );
+        assert!(
+            warned.contains("\"uuid\":\"forge_nudge_"),
+            "the warning's id is the machinery's own, which is what a reloaded row keys on: \
+             {warned}",
         );
         assert!(ws.resolve_browser_hand_off(id, &key, HandOffEnding::NotNow), "it resolves");
         assert_eq!(
