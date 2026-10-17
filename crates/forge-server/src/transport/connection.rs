@@ -2096,15 +2096,6 @@ fn dispatch_refusal(refusal: &DispatchError, dispatch_id: Option<u64>) -> Server
     }
 }
 
-/// Dispatch a reply-carrying command, and answer the client that asked.
-///
-/// A client that asked for an answer always hears one - INCLUDING a refusal,
-/// so it is never left watching a channel that stays empty.
-/// Whether a command reports its outcome through the reply rather than
-/// through an update on the subscription.
-///
-/// These five are the ones with nothing behind them on the wire: a client that
-/// omits `reply_to` for one of them has no second way to learn what happened.
 /// **Which hand sent what** (issue #2372: a parked hand-off's answer arrived
 /// over the socket and could not be attributed - no dispatch named its
 /// connection). Logged where a command is actually dispatched: a refusal
@@ -2119,6 +2110,15 @@ fn dispatched(me: u64, command: &Command) {
     );
 }
 
+/// Dispatch a reply-carrying command, and answer the client that asked.
+///
+/// A client that asked for an answer always hears one - INCLUDING a refusal,
+/// so it is never left watching a channel that stays empty.
+/// Whether a command reports its outcome through the reply rather than
+/// through an update on the subscription.
+///
+/// These five are the ones with nothing behind them on the wire: a client that
+/// omits `reply_to` for one of them has no second way to learn what happened.
 fn answers_through_a_reply(command: &Command) -> bool {
     matches!(
         command,
