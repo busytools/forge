@@ -48,7 +48,7 @@
   import { hrefForSlot } from '../routes';
   import type { CommentBox, ReplyBox, TurnEditor, Voice, Words } from '../review/boxes';
   import Conversation from '../review/Conversation.svelte';
-  import { latestRound, roundHasWork, roundsNewestFirst } from '../review/view';
+  import { awaitsReviewer, latestRound, roundHasWork, roundsNewestFirst } from '../review/view';
   import Tabs from '../review/Tabs.svelte';
   import WordsBox from '../review/WordsBox.svelte';
   import {
@@ -71,7 +71,7 @@
   import Inline from './Inline.svelte';
   import Rail from './Rail.svelte';
   import Reader from './Reader.svelte';
-  import { contextForComment, railRows, treeScope, type RailRow } from './comments';
+  import { contextForComment, railRows, threadsOnPath, treeScope, type RailRow } from './comments';
   import type { ReaderBlock, ReaderHandle } from './reader';
   import { indexTreeRows, matchedEntries } from './tree';
 
@@ -124,13 +124,7 @@
   );
   const rows = $derived(railRows(treeThreads));
   /** Threads the worker has answered and nobody read yet - the header count. */
-  const repliesToRead = $derived(
-    treeThreads.filter(
-      (thread) =>
-        (thread.status === 'addressed' || thread.status === 'outdated') &&
-        thread.comments[thread.comments.length - 1]?.author.kind === 'agent',
-    ).length,
-  );
+  const repliesToRead = $derived(treeThreads.filter(awaitsReviewer).length);
 
   /**
    * The three boxes, held on the page as the review page holds its own: a
@@ -781,7 +775,7 @@
 
   /** Comments dropped on one file, from the seat-tree half - the row's pill. */
   function droppedCount(path: string): number {
-    return treeThreads.filter((thread) => thread.anchor.path === path).length;
+    return threadsOnPath(treeThreads, path);
   }
 
   /** A status as a block-key segment: the named states as themselves, an
