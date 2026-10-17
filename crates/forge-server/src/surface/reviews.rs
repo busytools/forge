@@ -45,8 +45,9 @@ impl ViewSurface {
         }
     }
 
-    /// The seat's tree-scope reviews, each thread placed against the
-    /// seat's working files (see [`Self::place_tree_threads`]).
+    /// The seat's tree-scope reviews, each thread placed against the seat's
+    /// working files by line content and neighbours - one bounded read per
+    /// commented file, zero threads meaning zero reads.
     pub fn tree_reviews(&self, seat: &SessionSlot) -> TreeReviewsView {
         let scope = forge_primitives::review::tree_scope_ref(seat);
         let view = self.reviews(seat.project(), &scope);
