@@ -3525,6 +3525,14 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   padding: 6px 2px 0; }
 .files-loop { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data);
   color: var(--warn); }
+/* The narrow doors and the sheets they raise: the buttons are real at every
+   width and the sheet rules hide them while the columns are there. */
+.files-sheets { display: none; gap: 8px; }
+.files-sheetbtn { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+  background: none; border: 1px solid var(--line); border-radius: 99px; padding: 4px 12px;
+  cursor: pointer; }
+.files-railhold { display: contents; }
+.files-sheetclose { display: none; }
 
 /* The dropped-comments rail: one row per thread, and the finish row. */
 .files-rail { display: flex; flex-direction: column; min-height: 0;
@@ -3574,12 +3582,44 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 @media (max-width: 980px) {
   .files { height: auto; min-height: 100dvh; padding: 18px 16px 0; }
   .files-body { grid-template-columns: minmax(0, 1fr); }
+  /* The reader is the page; the tree and the comments are sheets behind the
+     two doors, each pushed onto history so Back closes what it opened. */
+  .files-sheets { display: flex; }
+  .files-side,
+  .files-railhold { display: none; }
+  .files-side.sheet,
+  .files-railhold.sheet {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: var(--bg);
+    padding: 18px 16px 12px;
+    overflow-y: auto;
+  }
+  .files-sheetclose {
+    display: block;
+    align-self: flex-end;
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--text);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 5px 12px;
+    margin-bottom: 10px;
+    cursor: pointer;
+  }
+  /* The tree's sheet scrolls inside the sheet, not the sheet itself. */
+  .files-side.sheet .rv-files { overflow-y: auto; }
 }
 
 @media (pointer: coarse) {
   .files-filter { min-height: 44px; }
   .files-reader .cm-line { padding-top: 3px; padding-bottom: 3px; }
   .files-crow { min-height: 44px; }
+  .files-sheetbtn { min-height: 44px; padding: 0 16px; }
 }
 
 /* One file in the canvas. */

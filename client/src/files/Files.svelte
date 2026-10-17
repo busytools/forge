@@ -108,6 +108,53 @@
   let finishOpen = $state(false);
   let now = $state(Date.now());
 
+  /**
+   * Which side panel a narrow screen has raised, or null. The tree and the
+   * comments are columns when the width is there and sheets when it is not,
+   * and every raising takes a history entry so Android's Back closes what
+   * it opened (the board's drawer is the pattern).
+   */
+  let sheet = $state<'tree' | 'comments' | null>(null);
+  const SHEET_ENTRY = 'forgeFilesSheet';
+
+  function heldState(): Record<string, unknown> {
+    const held: unknown = history.state;
+    return typeof held === 'object' && held !== null ? (held as Record<string, unknown>) : {};
+  }
+
+  function openSheet(which: 'tree' | 'comments'): void {
+    if (sheet === null) {
+      history.pushState({ ...heldState(), [SHEET_ENTRY]: true }, '', location.href);
+    }
+    sheet = which;
+  }
+
+  /** Close it; the entry on top is stepped back through, one close path. */
+  function closeSheet(): void {
+    if (heldState()[SHEET_ENTRY] === true) {
+      history.back();
+      return;
+    }
+    sheet = null;
+  }
+
+  $effect(() => {
+    const restore = () => {
+      if (sheet !== null) sheet = null;
+    };
+    addEventListener('popstate', restore);
+    return () => removeEventListener('popstate', restore);
+  });
+
+  $effect(() => {
+    if (sheet === null) return;
+    const onkey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeSheet();
+    };
+    addEventListener('keydown', onkey);
+    return () => removeEventListener('keydown', onkey);
+  });
+
   $effect(() => {
     const tick = setInterval(() => (now = Date.now()), 30_000);
     return () => clearInterval(tick);
@@ -322,6 +369,23 @@
     {#if repliesToRead > 0}
       <span class="files-loop">{repliesToRead} to read</span>
     {/if}
+    <!-- The narrow doors: real buttons at every width, hidden by the sheet
+         rules while the columns are there (never hover-only). -->
+    <span class="files-sheets">
+      <button
+        class="files-sheetbtn"
+        type="button"
+        aria-expanded={sheet === 'tree'}
+        onclick={() => (sheet === 'tree' ? closeSheet() : openSheet('tree'))}>tree</button
+      >
+      <button
+        class="files-sheetbtn"
+        type="button"
+        aria-expanded={sheet === 'comments'}
+        onclick={() => (sheet === 'comments' ? closeSheet() : openSheet('comments'))}
+        >comments ({rows.length})</button
+      >
+    </span>
   </header>
 
   {#if refusal !== null}
@@ -336,7 +400,8 @@
     <main class="files-main"><p class="files-quiet">The seat's tree has no files.</p></main>
   {:else}
     <div class="files-body">
-      <div class="files-side">
+      <div class="files-side" class:sheet={sheet === 'tree'}>
+        <button class="files-sheetclose" type="button" onclick={closeSheet}>done</button>
         <input
           class="files-filter"
           type="text"
@@ -374,15 +439,18 @@
           <Reader {connection} {slot} path={open} oncomment={commentOn} bind:handle={reader} />
         {/if}
       </main>
-      <Rail
-        {rows}
-        {repliesToRead}
-        bind:finishOpen
-        canFinish={drafts.size > 0}
-        {busy}
-        onjump={jump}
-        onfinish={(summary) => void finished(summary)}
-      />
+      <div class="files-railhold" class:sheet={sheet === 'comments'}>
+        <button class="files-sheetclose" type="button" onclick={closeSheet}>done</button>
+        <Rail
+          {rows}
+          {repliesToRead}
+          bind:finishOpen
+          canFinish={drafts.size > 0}
+          {busy}
+          onjump={jump}
+          onfinish={(summary) => void finished(summary)}
+        />
+      </div>
     </div>
   {/if}
 </div>

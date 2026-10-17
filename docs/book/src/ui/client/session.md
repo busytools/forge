@@ -97,11 +97,18 @@ saying where.
 
 One lane of segments above the foot, in a fixed order: the browser, the
 agents, the processes, the connectors, the schedules, the MCP servers, the
-tree, the review, the tasks, the monitors. Each segment draws what it has
-and nothing else, and the strip stands whenever anything has something to
-say - a running turn is one of the things it may say, not the condition
-for it, because these rows are the home of what the inspector used to
-hold.
+files, the tree, the review, the tasks, the monitors. Each segment draws
+what it has and nothing else, and the strip stands whenever anything has
+something to say - a running turn is one of the things it may say, not the
+condition for it, because these rows are the home of what the inspector
+used to hold.
+
+**The files slip is the one mandatory segment** (Ved, 2026-10-17): every
+seat has a tree - a worker's own worktree, the lead's checkout - so it
+draws for every seat with a record, where the tree row beside it keeps its
+rule of staying away when nothing has moved. Its toggle reads the file
+count, its panel names the tree, and its panel carries `open files`, the
+door onto the page that reads the whole tree (`/session/<org>/<project>/<label>/files`).
 
 **Every cell is a read, not a computation.** The schedules row keeps the
 seat's own set - a cron names the seat that created it - and its

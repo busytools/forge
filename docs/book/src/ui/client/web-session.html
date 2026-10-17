@@ -1401,6 +1401,7 @@
   <symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></symbol>
   <symbol id="i-decide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><path d="M12 9 7.5 12.5V17"/><path d="M12 9l4.5 3.5V17"/><circle cx="7.5" cy="19" r="1.6"/><circle cx="16.5" cy="19" r="1.6"/></symbol>
   <symbol id="i-review" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><path d="M18 15V9a3 3 0 0 0-3-3h-3"/></symbol>
+  <symbol id="i-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-3a2 2 0 0 1-2-2V2"/><path d="M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 1-2 2Z"/><path d="M3 7.6v12.8A1.6 1.6 0 0 0 4.6 22h9.8"/></symbol>
   <symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
   <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></symbol>
 </svg>
@@ -2701,7 +2702,19 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-mcp"/></svg>
               3 MCPs</button>
           </span>
-          <!-- The tree row, sixth: this seat's branch and what moved in it.
+          <!-- The files slip, sixth, before the tree: the seat's whole tree -
+               a worker's own worktree, the lead's checkout (Ved's ruling,
+               2026-10-17). MANDATORY: it draws for every seat with a record,
+               where the tree row beside it keeps its rule of staying away
+               when nothing has moved. The toggle reads the file count; the
+               panel names the tree and carries `open files`, the door onto
+               the page that reads it. Drawn CLOSED here, like its siblings. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-files"/></svg>
+              1,166 files</button>
+          </span>
+          <!-- The tree row, seventh: this seat's branch and what moved in it.
                The hover opens on what the tree IS (the project's, a
                worker's worktree, or - when a lead pointed the worker at a
                tree of its own - that tree's name), then the pull request
@@ -2720,7 +2733,7 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-git"/></svg>
               web-home-layout &#183; 3 commits &#183; PR #1203 &#183; dirty</button>
           </span>
-          <!-- The review row, seventh: this seat's branch under review - the
+          <!-- The review row, eighth: this seat's branch under review - the
                answers waiting to be read on the toggle, the thread count
                otherwise - and the hover panel lists `open review` as its
                door onto the page, then the filed ROUNDS oldest first with
@@ -2735,7 +2748,7 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-review"/></svg>
               2 threads</button>
           </span>
-          <!-- The tasks row, eighth: the seat's own slice of the set - a
+          <!-- The tasks row, ninth: the seat's own slice of the set - a
                lead's top-level board, a worker's own rows, the terminal's
                own scoping - how much of it is done on the toggle, a mark per
                state in the open list, a running row leading with its active
@@ -2747,7 +2760,7 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-tasks"/></svg>
               1 of 3</button>
           </span>
-          <!-- The monitors row, ninth: the commands this session is
+          <!-- The monitors row, tenth: the commands this session is
                watching. A monitor's call draws in the chat as the call row
                it is; this row is the live watcher's surface - and the tail
                under a monitor stays uncarried, because a tail is read off

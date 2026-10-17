@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import Board from './board/Board.svelte';
 import Pinned from './chat/Pinned.svelte';
 import { connectors } from './chat/connectors.svelte';
+import { files } from './chat/files.svelte';
 import { git } from './chat/git.svelte';
 import { mcp } from './chat/mcp.svelte';
 import { monitors } from './chat/monitors.svelte';
@@ -27,6 +28,7 @@ import Turn from './chat/Turn.svelte';
 import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
 import Document from './doc/Document.svelte';
+import Files from './files/Files.svelte';
 import ExtensionsBody from './extensions/ExtensionsBody.svelte';
 import { extensionsWire, project, recorder } from './extensions/testing';
 import Home from './home/Home.svelte';
@@ -490,6 +492,21 @@ describe('axe over the rendered pages', () => {
   });
 
   /**
+   * The files page before its read lands, the review page's own shape: the
+   * populated states are the subscription's, which a server render does not
+   * run.
+   */
+  it('draws the files page with no violations', async () => {
+    const html = render(Files, {
+      props: {
+        slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
+        connection: untouched(),
+      },
+    }).body;
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
    * The strip with every row populated, which is where the inspector's
    * sections live now. Rendered with NO turn pinned, which is also the shape
    * an idle seat draws - the case the strip had no rendering for at all
@@ -926,4 +943,6 @@ function seedStrip(on: boolean): void {
         ]
       : null,
   );
+  // The files slip is mandatory (Ved, 2026-10-17), so a seeded strip draws it.
+  files.sync(on ? 1166 : null, on ? '/Users/me/proj' : null);
 }
