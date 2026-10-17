@@ -1318,7 +1318,7 @@ fn build_options_with_callback(
 
     // Swap tests drive the real spawn_session against forge-sdk's mock
     // fixture; production always runs the `claude` on PATH.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     if let Some(path) = test_sdk_binary() {
         b = b.binary(path);
     }
@@ -1366,17 +1366,24 @@ fn build_options_with_callback(
     b.build()
 }
 
-#[cfg(test)]
-static TEST_SDK_BINARY: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+#[cfg(any(test, feature = "testing"))]
+static TEST_SDK_BINARY: parking_lot::RwLock<Option<String>> = parking_lot::RwLock::new(None);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 fn test_sdk_binary() -> Option<String> {
-    TEST_SDK_BINARY.read().expect("test binary lock").clone()
+    TEST_SDK_BINARY.read().clone()
 }
 
-#[cfg(test)]
-pub(crate) fn set_test_sdk_binary(path: Option<String>) {
-    *TEST_SDK_BINARY.write().expect("test binary lock") = path;
+/// Point every `claude` spawn this process makes at `path` instead of the
+/// real binary; `None` restores the real one.
+///
+/// Process-wide, so a test holding it must span the whole spawn it drives
+/// (see the mock-binary guard in this file's tests). For cross-crate
+/// fixtures - a workspace test that drives the real spawn path against a
+/// mock child.
+#[cfg(any(test, feature = "testing"))]
+pub fn set_test_sdk_binary(path: Option<String>) {
+    *TEST_SDK_BINARY.write() = path;
 }
 
 async fn run_permission_request(

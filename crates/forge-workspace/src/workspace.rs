@@ -394,6 +394,13 @@ pub struct Workspace {
     pub(crate) command_senders: Mutex<HashMap<SessionSlot, mpsc::UnboundedSender<Command>>>,
     #[cfg(not(any(test, feature = "testing")))]
     command_senders: Mutex<HashMap<SessionSlot, mpsc::UnboundedSender<Command>>>,
+    /// Per-session teardown-completion signals, minted beside the command
+    /// channel. The task fires its sender as it drops - after its exit path
+    /// has reaped the subprocess - and the despawn takes the receiver and
+    /// holds its worktree removal until it resolves, so the removal comes
+    /// after the worker's child is dead (#1767). Absent for a slot with no
+    /// task behind it (a stranded row).
+    session_teardowns: Mutex<HashMap<SessionSlot, tokio::sync::oneshot::Receiver<()>>>,
     /// Per-project list of live worker sessions. In-memory only -
     /// wiped on forge restart by design (workers are ephemeral at the
     /// forge UI level; their JSONLs persist on disk). Mutated via
@@ -1718,6 +1725,7 @@ impl Workspace {
             test_read_aloud_dir: Mutex::new(None),
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
+            session_teardowns: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
@@ -2450,6 +2458,11 @@ impl Workspace {
             // round-trip after the spawn lands.
             domain_arc.lock().conn = Some(Arc::clone(&arc));
             let domain = Arc::clone(&domain_arc);
+            // Minted beside the command channel, on the same cold path:
+            // the despawn waits on the receiver before it removes the
+            // worker's worktree, so the removal comes after the child the
+            // task's exit path reaps (#1767).
+            let teardown_done = self.mint_session_teardown(&session_slot);
             let task = SessionTask {
                 key: session_slot,
                 handle: Arc::clone(&arc),
@@ -2464,6 +2477,7 @@ impl Workspace {
                 // Filled by the first `Connected`, which is where this task
                 // is handed the history it can later replay.
                 conversation: None,
+                teardown_done: Some(teardown_done),
             };
             let span = tracing::info_span!(
                 "session_task",
@@ -5726,6 +5740,7 @@ impl Workspace {
         // command channel close and exits cleanly; each task's exit
         // path then disconnects its subprocess (see the doc above).
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
+        let _ = self.session_teardowns.lock().drain().collect::<Vec<_>>();
         let _ = self.domain_handles.lock().drain().collect::<Vec<_>>();
         drop(self.pool.lock().drain().collect::<Vec<_>>());
     }
@@ -5822,12 +5837,40 @@ impl Workspace {
         let removed = self.pool.lock().remove(session_key);
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
+        // The task this signal belonged to is exiting (its command channel
+        // just closed); a receiver nobody took goes with the release. A
+        // despawn takes it BEFORE releasing, so its wait already holds the
+        // receiver by now and this removes nothing of its.
+        let _ = self.session_teardowns.lock().remove(session_key);
     }
 
     /// Whether a session task still exists for `key`, which is what
     /// makes it live: its command channel is registered and routable.
     pub(crate) fn session_is_live(&self, key: &SessionSlot) -> bool {
         self.command_senders.lock().contains_key(key)
+    }
+
+    /// Mint the slot's teardown signal: the receiver is kept here for the
+    /// despawn, the sender goes to the `SessionTask`, which fires it as it
+    /// drops. Called on `get_agent_handle`'s cold path, beside the command
+    /// channel it mirrors.
+    pub(crate) fn mint_session_teardown(
+        &self,
+        key: &SessionSlot,
+    ) -> tokio::sync::oneshot::Sender<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.session_teardowns.lock().insert(key.clone(), rx);
+        tx
+    }
+
+    /// Take the slot's teardown signal, if a session task is registered
+    /// behind it. `None` for a slot with no task - a stranded row - so a
+    /// caller waiting on it waits on nothing and moves on.
+    pub(crate) fn take_session_teardown(
+        &self,
+        key: &SessionSlot,
+    ) -> Option<tokio::sync::oneshot::Receiver<()>> {
+        self.session_teardowns.lock().remove(key)
     }
 
     /// Supersession-safe release: drop `session_key`'s pool entry,
@@ -5853,6 +5896,10 @@ impl Workspace {
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
         let _ = self.domain_handles.lock().remove(session_key);
+        // This task IS the current owner (the pool identity matched), so
+        // its teardown signal goes with it. A superseded predecessor
+        // stopped above, leaving the successor's signal untouched.
+        let _ = self.session_teardowns.lock().remove(session_key);
     }
 
     // ---- Live workers (project-internal child-agent coordination) ----
@@ -12804,6 +12851,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         task.run().await;
 
