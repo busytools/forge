@@ -6851,18 +6851,19 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    let held = state.conversations.get(&seat).expect("the handover holds the seat");
-    let held = held.lock();
-    assert_eq!(held.dropped(), dropped, "the seat's floor is the cut the window rode in with",);
-    assert!(
-        weigh(held.messages())
-            <= forge_workspace::conversation_window::CONVERSATION_CAP_BYTES
-                + forge_workspace::conversation_window::CONVERSATION_SLACK_BYTES,
-        "the held copy is inside the byte ceiling's slack: {} bytes over {} frames",
-        weigh(held.messages()),
-        held.messages().len(),
-    );
-    drop(held);
+    {
+        let held = state.conversations.get(&seat).expect("the handover holds the seat");
+        let seat_held = held.lock();
+        assert_eq!(seat_held.dropped(), dropped, "the seat's floor is the cut it rode in with");
+        assert!(
+            weigh(seat_held.messages())
+                <= forge_workspace::conversation_window::CONVERSATION_CAP_BYTES
+                    + forge_workspace::conversation_window::CONVERSATION_SLACK_BYTES,
+            "the held copy is inside the byte ceiling's slack: {} bytes over {} frames",
+            weigh(seat_held.messages()),
+            seat_held.messages().len(),
+        );
+    }
 
     // And the connection is still there: another read is answered on it,
     // which the client's own refusal of the frame took with it live.
