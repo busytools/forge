@@ -820,11 +820,21 @@ mod tests {
                 let held = warm.as_ref().expect("a held capture");
                 held.held.carry().held.lock().unwrap().at = Instant::now() - SILENT_LIMIT * 4;
             }
+            // The capture the hold keeps, by identity: a fresh open of the
+            // same input would carry the same id, so only the pointer proves
+            // it is the SAME capture rather than a new one.
+            let first = {
+                let warm = mic.warm.lock().unwrap();
+                Arc::clone(warm.as_ref().expect("a held capture").held.carry())
+            };
             let refused = mic.hold(&bridge, Some("one".to_owned()), "page");
             assert_eq!(refused.err().as_deref(), Some("the device is gone"));
             let warm = mic.warm.lock().unwrap();
             let held = warm.as_ref().expect("a capture is still held");
-            assert_eq!(held.held.device().id, "one", "the capture that was held is still standing");
+            assert!(
+                Arc::ptr_eq(held.held.carry(), &first),
+                "the capture that was held is still standing, not a fresh open of the same input"
+            );
         }
 
         #[test]
