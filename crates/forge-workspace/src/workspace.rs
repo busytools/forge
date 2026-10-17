@@ -4862,7 +4862,13 @@ impl Workspace {
                         respond.unwrap_or_else(crate::protocol::unanswerable),
                     );
                 }
-                Command::DeliverWorkerPrompt { caller, project_key, target_label, wrapped } => {
+                Command::DeliverWorkerPrompt {
+                    caller,
+                    project_key,
+                    target_label,
+                    wrapped,
+                    respond,
+                } => {
                     let span = tracing::info_span!(
                         "deliver_worker_prompt",
                         project = %project_key.as_str(),
@@ -4876,9 +4882,15 @@ impl Workspace {
                         &project_key,
                         &target_label,
                         wrapped,
+                        respond,
                     );
                 }
-                Command::DeliverWorkerPromptToLead { caller, target_lead_key, wrapped } => {
+                Command::DeliverWorkerPromptToLead {
+                    caller,
+                    target_lead_key,
+                    wrapped,
+                    respond,
+                } => {
                     let span = tracing::info_span!(
                         "deliver_worker_prompt_to_lead",
                         slot = %target_lead_key.display(),
@@ -4890,6 +4902,7 @@ impl Workspace {
                         &caller,
                         &target_lead_key,
                         wrapped,
+                        respond,
                     );
                 }
                 Command::DeliverGotifyMessage { project, team_role, notification } => {

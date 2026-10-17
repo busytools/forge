@@ -339,9 +339,17 @@ impl Tool for SendMessage {
          immediately and names the label. \
          \
          A `sent` status means the queue ACCEPTED the message, not that \
-         the target read it - a target that is down or wedged still \
+         the target read it - a target that is alive but wedged still \
          returns sent, so confirm real work happened by an answer or an \
-         observable artifact rather than by the ack. \
+         observable artifact rather than by the ack. For a worker (in \
+         your project or another) and for your own project's agent, a \
+         message that reached no session is an error naming what \
+         happened, never a `sent`, and a target mid-turn is not \
+         interrupted: the message is held and delivered the moment its \
+         turn ends, so it arrives as a turn of its own rather than an \
+         aside inside the work in flight. A message to another project's \
+         own agent goes through the peer path, which reports `sent` once \
+         the dispatch was issued and does not hold a mid-turn arrival. \
          \
          When the message you are about to send asserts that work is \
          done, reviewed, or verified, or hands over a pick where two or \
@@ -401,7 +409,7 @@ impl Tool for SendMessage {
             sender_org,
             body: args.message,
         };
-        match self.dispatcher.deliver(&self.slot, &target, wrapped) {
+        match self.dispatcher.deliver(&self.slot, &target, wrapped).await {
             Ok(()) => json_output(&serde_json::json!({
                 "status": "sent",
                 "id": id.as_str(),
