@@ -214,10 +214,15 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
         "outcome": take.outcome,
         "asr": model_identity(&take.models.asr),
         "normalizer": take.models.normalizer.as_ref().map(model_identity),
-        // The normalize stage exists only on a pass that rewrote the text,
-        // so its absence is the honest record of whether cleanup ran.
+        // Whether this take's text went through a completed cleanup pass:
+        // false with none configured, on a failed pass, and with no text
+        // to clean. A completed pass can still have rewritten nothing.
         "normalizer_ran": take.stages.normalize.is_some(),
+        // The language hint the engine was configured with; null
+        // autodetects. Not the language a take turned out to be in.
         "language": take.models.language,
+        // The release the take was made under: the workspace version, not
+        // build identity.
         "forge_version": env!("CARGO_PKG_VERSION"),
         "stages_ms": {
             "mel": ms(take.stages.mel),
@@ -260,8 +265,8 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
     prune(dir);
 }
 
-/// One role's model identity for `meta.json`: the three fields the bench's
-/// results header identifies a model by.
+/// One role's resolved spec as `meta.json` names it: the file, the digest
+/// it declares where it declares one, and the size.
 fn model_identity(spec: &ModelSpec) -> serde_json::Value {
     json!({ "file": spec.file, "sha256": spec.sha256, "size": spec.size })
 }
