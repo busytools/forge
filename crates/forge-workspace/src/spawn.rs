@@ -8504,8 +8504,20 @@ mod lead_charter_tests {
             "the honest cleanup instruction is pinned: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
-            DEFAULT_LEAD_CHARTER.contains("the despawn reaps the branch"),
+            DEFAULT_LEAD_CHARTER.contains("commit and push what is in flight"),
+            "the dirty bar is commit AND push, not either: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("the despawn reaps the worktree branch"),
             "the reap is the despawn's, not the worker's: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("once its commits are reachable elsewhere"),
+            "the reap's reachability bar is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("names any it must keep"),
+            "a kept branch is named, not silently left: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
             !DEFAULT_LEAD_CHARTER.contains("reset to main"),
@@ -8664,11 +8676,11 @@ mod lead_charter_tests {
             "the composed-red fact is pinned: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
-            DEFAULT_LEAD_CHARTER.contains("merge origin/main in before the final gate"),
-            "the remedy is pinned: {DEFAULT_LEAD_CHARTER}",
+            DEFAULT_LEAD_CHARTER.contains("have the worker merge origin/main into its branch"),
+            "the remedy's actor and its merge are pinned: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
-            DEFAULT_LEAD_CHARTER.contains("after the merge main's CI is the only truth"),
+            DEFAULT_LEAD_CHARTER.contains("after the PR merges main's CI is the only truth"),
             "the post-merge read is pinned: {DEFAULT_LEAD_CHARTER}",
         );
     }

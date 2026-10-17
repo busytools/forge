@@ -386,10 +386,10 @@ inspected.
    `exit` / `todo` / `unimplemented`** in non-test code. The workspace
    lint tables in `Cargo.toml` are the source of truth, including which
    pedantic lints are exempted and why. `cfg(any(test, feature =
-   "testing"))` code is non-test to clippy: `clippy.toml`'s
-   `allow-*-in-tests` does not reach it, so no `expect`/`panic` there -
-   and moving an item to `#[cfg(test)]` then meets `dead_code`, which is
-   the gate being accurate rather than asking for a marker.
+   "testing"))` code is non-test to clippy: `clippy.toml`'s in-tests
+   allowances do not reach it, so no `expect`/`panic` there - and moving
+   an item to `#[cfg(test)]` then meets `dead_code`, which is the gate
+   being accurate rather than asking for a marker.
 8. **`cargo nextest run`, not `cargo test`.** `just check` runs fmt,
    the unicode-punctuation gate, clippy, nextest and docs in one shot,
    ending on a verdict line that names the first failing step. It must
@@ -721,10 +721,10 @@ inspected.
     a falsifier sweep.** Nothing derives these lists from the justfile,
     so grep `reach it`, `reaches it through` and the new step's name
     over the book's `install.md`, `contributing.md` and
-    `architecture.md`, plus `CONTRIBUTING.md`, this file,
-    `client/README.md` and `ci.yml`'s client-job comment - each carries
-    the step list and the CI-reach claim - and keep every list in the
-    real recipe order. **The shell under
+    `architecture.md`, plus `CONTRIBUTING.md`, this file and
+    `client/README.md` - each states the step list and the CI-reach
+    claim - and over `ci.yml`'s comments, which carry the reach claim
+    too; keep every list in the real recipe order. **The shell under
     `client/src-tauri/` is its own workspace root**, so the workspace's
     cargo steps never reach it; CI compiles it in the `client-tauri` job
     (its clippy and tests), and the `cargo fmt --check` job's second

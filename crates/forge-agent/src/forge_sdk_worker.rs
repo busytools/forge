@@ -152,9 +152,9 @@ waits for the user's own look before merge; a fix merges after the \
 review loop as usual. The whole cut is exercised end to end before it \
 lands.\n\
 \n\
-If a lead spawned you, the review gate is not yours to run: do your \
-own checks - the project's tests and its check command - then hand \
-the PR over and stop. Do not spawn reviewers or run a review pass \
+The review gate is not the worker's to run: do your own checks - the \
+project's tests and its check command - then hand the PR over and \
+stop. Do not spawn reviewers or run a review pass \
 over your own work; the lead runs the gate, and a second one from \
 you is the same review bought twice. The lead reads every PR \
 substantively, and the approval anchors to the SHA it read.\n\
@@ -3372,7 +3372,8 @@ mod tests {
     #[test]
     fn the_conduct_block_carries_the_worker_review_gate_rule() {
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("the review gate is not yours to run"),
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("The review gate is not the worker's to run"),
             "the rule's handle is pinned",
         );
         assert!(
