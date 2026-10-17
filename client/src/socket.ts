@@ -480,8 +480,12 @@ export function connect(url: string, boundMs: number = READ_BOUND_MS): Connectio
    * whose answer was lost keeps its entry, the re-ask adds another, and a
    * later refusal (which carries no subject and takes the oldest key) would
    * flip the store of the ask that is already spent rather than the one the
-   * server refused. The Rust half's own `unhold` before `hold` is this same
-   * rule, one layer down.
+   * server refused.
+   *
+   * **The Rust half's purge is narrower than this rule**: its `unhold` drops
+   * the key only when the last unsubscribe takes a subject's hold count to
+   * zero, so a subject two callers hold keeps the surplus there - a gap of
+   * its own, filed separately, where this covers the web transport.
    */
   function forget(what: Subject): void {
     const key = subjectKey(what);
