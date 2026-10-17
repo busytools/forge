@@ -386,7 +386,7 @@ impl BrowserHost {
                     // ensure never changes it - and a refused create is said
                     // once on the answer below.
                     let auto = self.ensure_auto_profile(seat).await;
-                    let active = self.browser_for(&paths.user_data).await?;
+                    let active = self.start().await?;
                     // **The browser has been driven**, which the strip's row
                     // draws: a session's call is the only way a browser of this
                     // client's is used. Set after the profile is resolved, so a
@@ -751,16 +751,15 @@ impl BrowserHost {
         Err(format!("no profile named '{name}' on this client"))
     }
 
-    /// Bring the browser up, without any driver.
+    /// Ensure the SHARED browser is up, without any driver.
     ///
-    /// **The app's own start, so the browser is there before anything asks
-    /// for it** rather than being launched under the first tool call: a
-    /// session's call should not pay a cold launch, and a browser that cannot
-    /// start at all says so in the app's log at startup instead of as a
-    /// failed tool call. The drivers stay lazy - they exist to serve calls,
-    /// and one with no calls to serve is a child process held for nothing.
-    /// The launched browser's id comes back with its port, so a caller that
-    /// must reap it (a test that launched it) can; the app ignores both.
+    /// **On demand, never at app start** (spam-control A4): the boot brings
+    /// no browser up, and this is the door the call path takes for the shared
+    /// browser - a second ensure attaches to the launch that is already
+    /// there. The drivers stay lazy: they exist to serve calls, and one with
+    /// no calls to serve is a child process held for nothing. The launched
+    /// browser's id comes back with its port, so a caller that must reap it
+    /// (a live test that launched it) can; the call path ignores both.
     #[cfg(desktop)]
     pub async fn start(&self) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
@@ -1165,10 +1164,11 @@ impl BrowserHost {
     /// client is gone: every profile directory whose port answers while no
     /// client holds its claim.
     ///
-    /// **The boot door, and the only cover for a client that never ran its
+    /// **The boot sweep, and the only cover for a client that never ran its
     /// exit** - a crash, a SIGKILL, the update restart's main-thread path.
-    /// Runs after [`BrowserHost::start`] has claimed the shared profile, so
-    /// this client's own launch is never read as an orphan. Scoped to this
+    /// **It launches nothing** (spam-control A4: the client start brings no
+    /// browser up): run at boot, before anything this run has claimed, so
+    /// only what a previous run left can read as an orphan. Scoped to this
     /// app's own root: another app's browsers (a scratch rig's, the person's
     /// own) are never touched.
     #[cfg(desktop)]
@@ -1800,7 +1800,30 @@ mod tests {
         assert_eq!(
             host.start().await,
             Err("the browser stack was never vendored".to_owned()),
-            "the start says why rather than panicking at the app's boot",
+            "the ensure says why rather than launching anything",
+        );
+    }
+
+    /// **No browser launches at client start** (spam-control A4): the boot's
+    /// own acts are building the host and reaping what a dead client left,
+    /// and neither brings a browser up. The first call or raise is what
+    /// launches - the raise's door is pinned by
+    /// `a_show_with_nothing_running_brings_a_window_up`.
+    #[tokio::test]
+    async fn a_boot_launches_nothing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        assert!(!paths.user_data.exists(), "building the host launches nothing");
+        assert!(host.reap_orphans().await.is_empty(), "nothing of ours outlives a boot");
+        assert!(
+            chromium::verified(&paths.user_data).await.is_none(),
+            "and the boot's acts launch no browser",
         );
     }
 

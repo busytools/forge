@@ -474,32 +474,17 @@ pub fn run() {
                         std::sync::Arc::new(browser::BrowserHost::unavailable(why))
                     }
                 };
-                // **The browser comes up with the app**, so it is there
-                // before any session asks for it: the launch takes seconds
-                // and a tool call should not pay for it, and a browser that
-                // cannot start says so here, in the client's log, rather than
-                // as a failed tool call nobody can attribute. Spawned rather
-                // than awaited - the window does not wait on a browser - and
-                // the driver stays lazy, since it exists to serve calls.
-                let starting = std::sync::Arc::clone(&host);
+                // **No browser launches here** (spam-control A4): the first
+                // real need - a call or a raise - brings one up on demand, so
+                // a client start costs nothing for browsers nobody asked for.
+                // What still runs is the reap, the only cover for a client
+                // that never ran its exit - a crash, a SIGKILL, or the update
+                // restart, whose main-thread path skips `RunEvent::Exit` by
+                // design; it launches nothing, and with no launch to mistake
+                // for one, it reaps only what a previous run left.
+                let reap = std::sync::Arc::clone(&host);
                 tauri::async_runtime::spawn(async move {
-                    match starting.start().await {
-                        Ok(active) => tauri_plugin_log::log::info!(
-                            "the browser is up on port {}",
-                            active.port
-                        ),
-                        Err(why) => {
-                            tauri_plugin_log::log::warn!("the browser did not start: {why}")
-                        }
-                    }
-                    // **After the start, never before**: the launch above
-                    // claims the shared profile, and the sweep must read that
-                    // claim rather than reap the browser this client just
-                    // brought up. This is also the only cover for a client
-                    // that never ran its exit - a crash, a SIGKILL, or the
-                    // update restart, whose main-thread path skips
-                    // `RunEvent::Exit` by design.
-                    starting.reap_orphans().await;
+                    reap.reap_orphans().await;
                 });
                 app.manage(host);
             }

@@ -125,7 +125,6 @@ pub fn init() -> TauriPlugin<tauri::Wry> {
         .setup(|app, api| {
             let handle = api.register_android_plugin("dev.vedhavyas.forge", "BrowserPlugin")?;
             let engine = std::sync::Arc::new(Engine(handle));
-            let boot = std::sync::Arc::clone(&engine);
             let host = match super::StackPaths::android(app) {
                 Ok(paths) => {
                     tauri_plugin_log::log::info!("browser engine at {}", paths.stack.display());
@@ -137,15 +136,10 @@ pub fn init() -> TauriPlugin<tauri::Wry> {
                 }
             };
             app.manage(std::sync::Arc::new(host));
-            // **The engine comes up with the app**, so the WebView's devtools
-            // socket is there before any session asks for it (the desktop's
-            // `host.start()` does the same for its browser). Spawned rather
-            // than awaited - the window does not wait on a browser.
-            tauri::async_runtime::spawn(async move {
-                if let Err(why) = boot.ensure().await {
-                    tauri_plugin_log::log::warn!("the browser engine did not come up: {why}");
-                }
-            });
+            // **The engine comes up on the first real need** (spam-control
+            // A4), a call or a raise, exactly as the desktop's browser does -
+            // the shared arm's `host.start()` ensures it on Android. An app
+            // start costs nothing for a WebView nobody asked for.
             Ok(())
         })
         .build()
