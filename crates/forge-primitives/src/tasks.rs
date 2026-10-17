@@ -377,6 +377,14 @@ mod tests {
         let json = serde_json::to_vec(&chase).expect("serialize");
         let back: TaskChase = serde_json::from_slice(&json).expect("deserialize");
         assert_eq!(back, chase);
+        // **A row written before the field still reads.** The log's rows
+        // outlive the struct that wrote them, so a decode that demanded the
+        // key would unread every chase already stored.
+        let mut older: serde_json::Value = serde_json::from_slice(&json).expect("the row as data");
+        older.as_object_mut().expect("a row is an object").remove("subject");
+        let read: TaskChase =
+            serde_json::from_value(older).expect("a row written before the field decodes");
+        assert_eq!(read.subject, None, "and carries no subject");
         assert_eq!(
             serde_json::to_string(&ChaseRung::EstimateNudge).expect("serialize"),
             "\"estimate_nudge\"",

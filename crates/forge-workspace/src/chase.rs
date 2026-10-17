@@ -98,7 +98,7 @@ impl ChaseMemory {
         // reach: one sweep walks every project through this memory, so
         // clearing another's here would make its workers fresh on every
         // pass.
-        for ((entry_project, label), named) in self.named.iter_mut() {
+        for ((entry_project, label), named) in &mut self.named {
             if entry_project == project && !unaccounted.contains(label) {
                 *named = None;
             }
