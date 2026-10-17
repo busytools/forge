@@ -30,9 +30,15 @@ import type { Stores } from './stores';
  * The same figure as the greeting's own deadline (`attempt.ts`'s
  * `HANDSHAKE_MS`), which is this rule one step earlier: a socket that opened
  * and then said nothing. Far above a healthy read - the live fleet's whole
- * home encodes in 8-333 ms, measured across warm and cold reads - and the
- * re-ask of a read that WAS merely slow costs one more encode rather than a
- * wrong answer.
+ * home encodes in 8-333 ms, measured across warm and cold reads - so a read
+ * that was merely slow is asked again rather than waited out.
+ *
+ * **A pass costs the whole subject again.** A re-ask is a fresh subscribe, so
+ * the server re-reads, re-encodes and re-sends that subject - the live home
+ * is ~500 KB on the phone's path - and while a read stays unanswered every
+ * pass queues behind the encode before it. The cadence stays fixed rather
+ * than backing off: the loop ends the moment an answer lands, and a bound
+ * that stretched would only lengthen the wait it exists to end.
  */
 export const READ_BOUND_MS = 5_000;
 
