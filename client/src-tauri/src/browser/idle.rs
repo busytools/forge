@@ -1,15 +1,17 @@
-//! The idle release: a browser no seat has touched for a while is warned
-//! about, and then closed - unless a hand-off is waiting on the person.
+//! The idle release: a browser no seat has touched for a while is closed -
+//! unless a hand-off is waiting on the person. **A named profile's creator
+//! gets one message at the idle bound**; **the shared browser is never
+//! announced** - its only crossing is the close itself.
 //!
 //! **The clock is this client's** (the host owns the profiles, every touch -
 //! a session call, a raise, a lower - and the close), because the profiles
-//! are per-machine. The warning is the server's: one `browser_idle_warning`
-//! command goes out per candidate, the workspace phrases it and delivers it
-//! into a live seat's session over the chase's own channel, and answers with
-//! the verdict - `delivered` (the seat was told), `held` (a hand-off is
-//! waiting on the person: nothing was sent and nothing may close), `no_session`
-//! (no one to tell: the browser closes now, quietly) or, on the close's own
-//! ask, `clear` (nothing holds it, close).
+//! are per-machine. The message is the server's: one `browser_idle_warning`
+//! command goes out for a named profile, the workspace phrases it and
+//! delivers it into a live seat's session over the chase's own channel, and
+//! answers with the verdict - `delivered` (the seat was told), `held` (a
+//! hand-off is waiting on the person: nothing was sent and nothing may
+//! close), `no_session` (no one to tell: the browser closes now, quietly) or,
+//! on the close's own ask, `clear` (nothing holds it, close).
 //!
 //! **The two numbers are `[client]` keys** (`browser_idle_minutes`,
 //! `browser_grace_minutes`), read off the greeting this client was sent;
@@ -52,8 +54,9 @@ pub struct Touch {
     pub at: Instant,
     /// When its seat was last warned, `None` while the streak is fresh.
     pub warned: Option<Instant>,
-    /// The seat that last USED it: the owner of a named profile, or whoever
-    /// last called the shared browser. `None` means no one to tell.
+    /// The seat a named profile's warning goes to - its creator, set by the
+    /// host on the candidate it builds. `None` for the shared browser, which
+    /// is never warned.
     pub caller: Option<Seat>,
 }
 
@@ -62,7 +65,8 @@ pub struct Touch {
 pub enum Step {
     /// Nothing to do.
     Nothing,
-    /// Idle past the bound and not warned yet: tell the seat.
+    /// Idle past the bound and not warned yet: the warn step - a named
+    /// profile's message, or the shared browser's silent arm.
     Warn,
     /// Warned and past the grace: ask whether anything holds it, and close
     /// unless something does.
@@ -166,6 +170,31 @@ pub fn start(bridge: &Arc<Bridge>) {
     });
 }
 
+/// What one pass does for one candidate's clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Crossing {
+    Nothing,
+    /// Arm the grace without sending anything - the shared browser's warn.
+    Arm,
+    /// Tell the candidate's seat.
+    Warn,
+    /// Ask the server whether anything holds it, and close unless something does.
+    Close,
+}
+
+/// The clock plus the shape, as the decision: `named` says the candidate is a
+/// named profile rather than the shared browser. **The shared browser is
+/// never warned** (spam-control A2): no message exists for it, so its warn
+/// arms the grace in silence.
+fn crossing(named: bool, step: Step) -> Crossing {
+    match step {
+        Step::Nothing => Crossing::Nothing,
+        Step::Warn if named => Crossing::Warn,
+        Step::Warn => Crossing::Arm,
+        Step::Close => Crossing::Close,
+    }
+}
+
 /// One pass: every candidate's clock, and the verdicts the server gives.
 ///
 /// A warned-but-held profile re-asks once per grace, so an abandoned
@@ -179,18 +208,25 @@ async fn sweep(bridge: &Arc<Bridge>) {
     let grace = Duration::from_secs(grace_minutes.saturating_mul(60));
     let now = Instant::now();
     for candidate in host.idle_candidates().await {
-        let at_close = match step(candidate.touch.at, candidate.touch.warned, now, idle, grace) {
-            Step::Nothing => continue,
-            Step::Warn => false,
-            Step::Close => true,
+        let step = step(candidate.touch.at, candidate.touch.warned, now, idle, grace);
+        let at_close = match crossing(candidate.name.is_some(), step) {
+            Crossing::Nothing => continue,
+            // **The shared browser is never announced** (spam-control A2):
+            // its idle walk arms the grace in silence, and the close's own
+            // question below is its only crossing.
+            Crossing::Arm => {
+                host.note_warned(&candidate.dir, now).await;
+                continue;
+            }
+            Crossing::Warn => false,
+            Crossing::Close => true,
         };
-        // **The seat to warn, when there is one.** With none - the shared
-        // browser never called, a profile whose seat a restart forgot - the
-        // warning has nowhere to go, and the close's own question is asked
-        // anyway: the hold belongs to the profile and is the server's, so
-        // **no candidate is closed without it consulted**.
-        let seat = candidate.touch.caller.as_ref();
-        let at_close = at_close || seat.is_none();
+        // **A named profile's seat is its creator** (spam-control A1): the
+        // host hands the owner down on the candidate, whoever called it
+        // last. The shared browser has no seat - only the close's keyless
+        // question - and the hold is still the server's, so **no candidate
+        // is closed without it consulted**.
+        let seat = if candidate.name.is_some() { candidate.touch.caller.as_ref() } else { None };
         let command = warning(&candidate, seat, idle_minutes, grace_minutes, at_close);
         let verdict = match tokio::time::timeout(DISPATCH_TIMEOUT, socket.dispatch(command, true))
             .await
@@ -327,6 +363,27 @@ mod tests {
             Step::Close,
             "past the grace, close"
         );
+    }
+
+    /// **The shared browser is never warned** (spam-control A2): its warn
+    /// step arms the grace in silence, so the close's own question is its
+    /// only crossing; a named profile's warn is the message to its seat.
+    #[test]
+    fn the_shared_browsers_warn_is_an_arm_in_silence() {
+        assert_eq!(
+            crossing(false, Step::Warn),
+            Crossing::Arm,
+            "the shared browser's warn never crosses"
+        );
+        assert_eq!(
+            crossing(true, Step::Warn),
+            Crossing::Warn,
+            "a named profile's warn is the message"
+        );
+        assert_eq!(crossing(true, Step::Close), Crossing::Close, "a named profile closes at the grace");
+        assert_eq!(crossing(false, Step::Close), Crossing::Close, "so does the shared browser");
+        assert_eq!(crossing(true, Step::Nothing), Crossing::Nothing, "a fresh touch is quiet");
+        assert_eq!(crossing(false, Step::Nothing), Crossing::Nothing, "the shared's too");
     }
 
     /// A touch resets the whole streak: the warned flag is the caller's to

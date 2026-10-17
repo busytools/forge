@@ -377,7 +377,7 @@ impl BrowserHost {
                     // call is about to drive.
                     {
                         let _launching = self.launch.lock().await;
-                        self.touch(&paths.user_data, Some(seat)).await;
+                        self.touch(&paths.user_data).await;
                     }
                     // **The seat's auto profile is ensured on its first
                     // unnamed reach**, before anything is driven: the record
@@ -434,7 +434,7 @@ impl BrowserHost {
                     // sweep's verdict-and-kill takes (see the shared arm).
                     {
                         let _launching = self.launch.lock().await;
-                        self.touch(&named.dir, Some(seat)).await;
+                        self.touch(&named.dir).await;
                     }
                     let active = self.browser_for(&named.dir).await?;
                     self.used.store(true, std::sync::atomic::Ordering::Release);
@@ -577,12 +577,11 @@ impl BrowserHost {
         Ok(())
     }
 
-    /// Record that `dir` was just used: `caller` is the seat that did it, or
-    /// `None` for a raise or lower, where the seat is whoever last called.
-    /// **A touch clears the streak**: whatever warning stood, the browser is
-    /// in use again, and its seat will be told afresh if it idles again.
+    /// Record that `dir` was just used. **A touch clears the streak**:
+    /// whatever warning stood, the browser is in use again, and its seat will
+    /// be told afresh if it idles again.
     #[cfg(desktop)]
-    pub(crate) async fn touch(&self, dir: &Path, caller: Option<&Seat>) {
+    pub(crate) async fn touch(&self, dir: &Path) {
         let mut touches = self.touches.lock().await;
         let entry = touches.entry(dir.to_path_buf()).or_insert(idle::Touch {
             at: self.boot,
@@ -591,9 +590,6 @@ impl BrowserHost {
         });
         entry.at = std::time::Instant::now();
         entry.warned = None;
-        if let Some(caller) = caller {
-            entry.caller = Some(caller.clone());
-        }
     }
 
     /// Note that this profile's seat was just warned (or that its close's own
@@ -1000,7 +996,7 @@ impl BrowserHost {
         self.claim(&dir).await;
         // A raise is use: the person is being shown this browser, so the
         // idle release's clock restarts and any standing warning is spent.
-        self.touch(&dir, None).await;
+        self.touch(&dir).await;
         let binary = chromium::browser_binary()?;
         chromium::show(&binary, &dir).await
     }
@@ -1048,7 +1044,7 @@ impl BrowserHost {
         let _launching = self.launch.lock().await;
         // A lower is the same use a raise is: the browser was just in front
         // of someone, and the clock restarts with it.
-        self.touch(&dir, None).await;
+        self.touch(&dir).await;
         chromium::hide(&dir).await;
         Ok(())
     }
@@ -2198,7 +2194,7 @@ mod tests {
         let named = Named::open(who.clone(), "hunt", &paths).expect("the open");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
         let hunt = paths.profiles.join("hunt");
-        host.touch(&hunt, Some(&who)).await;
+        host.touch(&hunt).await;
 
         // No endpoint: a browser that is not there is not idle.
         assert!(
@@ -2231,7 +2227,7 @@ mod tests {
 
         let warned_at = std::time::Instant::now();
         host.note_warned(&hunt, warned_at).await;
-        host.touch(&hunt, None).await;
+        host.touch(&hunt).await;
         let candidates = host.idle_candidates().await;
         let row = candidates
             .iter()
@@ -2239,21 +2235,6 @@ mod tests {
             .expect("the named row");
         assert!(row.touch.warned.is_none(), "a touch clears the warning");
         assert_eq!(row.touch.caller, Some(who.clone()), "and keeps the seat it had");
-
-        // **The creator, not the last caller** (spam-control A1): another
-        // seat using the profile does not move the warning off its owner.
-        let other = Seat { org: "Other".to_owned(), ..who.clone() };
-        host.touch(&hunt, Some(&other)).await;
-        let candidates = host.idle_candidates().await;
-        let row = candidates
-            .iter()
-            .find(|candidate| candidate.name.as_deref() == Some("hunt"))
-            .expect("the named row after another seat's touch");
-        assert_eq!(
-            row.touch.caller,
-            Some(who),
-            "the owner is the seat to warn, not whoever called it last",
-        );
 
         // Marker over the live launch: the window is up, and a raised window
         // is never a candidate - it is the person's.
