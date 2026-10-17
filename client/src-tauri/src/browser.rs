@@ -368,7 +368,6 @@ impl BrowserHost {
                         identity: &active.path,
                         output: &paths.output,
                     };
-                    let led = named_page(tool, &args);
                     let outcome = shared.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
                         &paths.user_data,
@@ -384,7 +383,9 @@ impl BrowserHost {
                             // a tab, opened one, or navigated - the carry is
                             // rewritten from the browser as it is, best
                             // effort, before the answer goes out.
-                            chromium::note_pages(&paths.user_data, led.as_deref()).await;
+                            let led =
+                                (tool == "browser_navigate").then(|| landed_url(&parts)).flatten();
+                            self.refresh_carry(&paths.user_data, led.as_deref()).await;
                             if let Err(why) = auto {
                                 self.note_auto_failure(seat, why, &mut parts).await;
                             }
@@ -405,7 +406,6 @@ impl BrowserHost {
                         identity: &active.path,
                         output: &paths.output,
                     };
-                    let led = named_page(tool, &args);
                     let outcome = named.profile.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
                         &named.dir,
@@ -414,12 +414,18 @@ impl BrowserHost {
                         outcome.is_err(),
                     )
                     .await;
-                    if outcome.is_ok() {
-                        // The same refresh the shared arm makes, on this
-                        // profile's own directory: the carry follows the tabs.
-                        chromium::note_pages(&named.dir, led.as_deref()).await;
+                    match outcome {
+                        Ok(parts) => {
+                            // The same refresh the shared arm makes, on this
+                            // profile's own directory: the carry follows the
+                            // tabs.
+                            let led =
+                                (tool == "browser_navigate").then(|| landed_url(&parts)).flatten();
+                            self.refresh_carry(&named.dir, led.as_deref()).await;
+                            Ok(parts)
+                        }
+                        Err(why) => Err(why),
                     }
-                    outcome
                 }
             }
         }
@@ -475,6 +481,16 @@ impl BrowserHost {
             // fails with the reason, and a client restart is the repair.
             shared.call(&start, tool, args).await
         }
+    }
+
+    /// The carry refresh, **under the launch lock the show and hide take**: a
+    /// session call completing while a hide is taking the marker down must
+    /// not put it back, or the strip reads "hide" over an off-screen window
+    /// until the next flip. Best effort - see [`chromium::note_pages`].
+    #[cfg(desktop)]
+    async fn refresh_carry(&self, dir: &Path, led: Option<&str>) {
+        let _launching = self.launch.lock().await;
+        chromium::note_pages(dir, led).await;
     }
 
     /// A call failed: is it the browser that is gone, rather than the tool?
@@ -1190,15 +1206,19 @@ fn phone_profile_refusal(name: &str) -> String {
     )
 }
 
-/// The page a call NAMED, when it names one: a navigation carries the URL the
-/// session went to, and the carry a call refreshes should lead with it. A
-/// click or a type names no page - the refresh keeps the marker's own lead.
+/// The URL a navigation really landed on, read from the driver's own answer
+/// (its snapshot leads with `Page URL: <url>`): a redirect, or a
+/// normalisation the request never named - `example.com` against the
+/// reported `example.com/` - is caught by this rather than missed by an
+/// exact-string match against the browser's page list.
 #[cfg(desktop)]
-fn named_page(tool: &str, args: &Value) -> Option<String> {
-    if tool != "browser_navigate" {
-        return None;
-    }
-    args.get("url").and_then(Value::as_str).map(str::to_owned)
+fn landed_url(parts: &[ReplyPart]) -> Option<String> {
+    parts.iter().find_map(|part| match part {
+        ReplyPart::Text { text } => text
+            .lines()
+            .find_map(|line| line.split_once("Page URL: ").map(|(_, url)| url.trim().to_owned())),
+        ReplyPart::Image { .. } => None,
+    })
 }
 
 /// Take the `profile` argument off a call.
@@ -1948,6 +1968,63 @@ mod tests {
         assert!(
             !auto.join("DevToolsActivePort").exists(),
             "and nothing was driven through it - the browser waits for a call that names it",
+        );
+    }
+
+    /// **The carry refresh takes the launch lock.** A session call completing
+    /// while a hide is taking the marker down must not put it back: the strip
+    /// would read "hide" over an off-screen window until the next flip.
+    #[tokio::test]
+    async fn the_carry_refresh_takes_the_launch_lock() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        std::fs::create_dir_all(&paths.user_data).expect("the shared directory");
+        std::fs::write(paths.user_data.join("windowed"), b"https://one.example")
+            .expect("a raise marker");
+
+        // The lock a hide holds across its act, taken here in its place.
+        let held = host.launch.lock().await;
+        let refresh = {
+            let host = Arc::clone(&host);
+            let profile = paths.user_data.clone();
+            tokio::spawn(async move { host.refresh_carry(&profile, None).await })
+        };
+        // Every chance to run: it must still be waiting on the lock.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(!refresh.is_finished(), "the refresh wrote outside the launch lock");
+        drop(held);
+        refresh.await.expect("the refresh runs once the lock is free");
+
+        // Nothing answering on the port: the refresh left the carry as the
+        // raise wrote it - the point pinned here is the lock, not the write.
+        let marker = std::fs::read_to_string(paths.user_data.join("windowed")).expect("the marker");
+        assert_eq!(
+            marker, "https://one.example",
+            "the carry stays the raise's until a window answers",
+        );
+    }
+
+    /// **The landed URL comes from the driver's own answer**: the requested
+    /// URL is not trusted - a redirect, or a normalisation (`example.com`
+    /// against the reported `example.com/`), would miss an exact match and
+    /// the wrong page would lead the carry.
+    #[test]
+    fn the_landed_url_comes_from_the_drivers_answer() {
+        let parts = vec![ReplyPart::Text {
+            text: "- Page URL: https://example.com/\n- heading \"x\"".to_owned(),
+        }];
+        assert_eq!(landed_url(&parts), Some("https://example.com/".to_owned()));
+        assert_eq!(
+            landed_url(&[ReplyPart::Text { text: "no url here".to_owned() }]),
+            None,
+            "no URL line, nothing landed",
         );
     }
 

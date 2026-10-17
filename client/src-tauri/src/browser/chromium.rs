@@ -845,13 +845,17 @@ pub async fn windowed(profile: &Path) -> bool {
     let Some(active) = verified(profile).await else {
         return false;
     };
-    let Ok(mut cdp) = window::Cdp::connect(active.port, &active.path).await else {
-        return false;
-    };
-    let Ok(page) = cdp.page().await else {
-        return false;
-    };
-    window::window(&page, &mut cdp).await.is_ok()
+    // **Bounded like every sibling caller.** An endpoint that accepts a
+    // connection and then goes silent must read as "no window" - this feeds
+    // the strip's read and its show/hide toggle - never hang it.
+    tokio::time::timeout(WINDOW_TIMEOUT, async {
+        let mut cdp = window::Cdp::connect(active.port, &active.path).await?;
+        let page = cdp.page().await?;
+        window::window(&page, &mut cdp).await?;
+        Ok::<(), String>(())
+    })
+    .await
+    .is_ok_and(|answer| answer.is_ok())
 }
 
 /// The pages the last raise carried, when it carried any: what a launch - or

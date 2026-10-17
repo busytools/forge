@@ -722,6 +722,66 @@ async fn a_window_is_the_marker_a_live_launch_and_a_window() {
     );
 }
 
+/// **The window predicate is bounded, like every sibling caller.** An
+/// endpoint that answers its identity and then goes silent must read as "no
+/// window" rather than hang the strip's read and its toggle - and under a
+/// paused clock the bound costs no wall-clock time.
+#[tokio::test(start_paused = true)]
+async fn a_silent_endpoint_is_not_a_window() {
+    use tokio::io::AsyncWriteExt as _;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = listener.local_addr().expect("the bound port").port();
+    let identity = IDENTITY.to_owned();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else { continue };
+            let mut head = [0_u8; 2048];
+            let mut peeked;
+            loop {
+                peeked =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), socket.peek(&mut head))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(0);
+                let request = String::from_utf8_lossy(&head[..peeked]);
+                if request.contains("\r\n\r\n") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let request = String::from_utf8_lossy(&head[..peeked]).to_ascii_lowercase();
+            if request.contains("upgrade: websocket") {
+                // Accepted, then silent: the predicate must bound it.
+                if let Ok(ws) = tokio_tungstenite::accept_async(socket).await {
+                    held.push(ws);
+                }
+            } else {
+                let body =
+                    format!("{{\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}{identity}\"}}");
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                let _ = socket.write_all(answer.as_bytes()).await;
+            }
+        }
+    });
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    std::fs::write(dir.path().join("windowed"), b"").expect("the marker");
+    std::fs::write(dir.path().join("DevToolsActivePort"), format!("{port}\n{IDENTITY}\n"))
+        .expect("the port file");
+
+    assert!(
+        !chromium::windowed(dir.path()).await,
+        "an endpoint that goes silent after accepting is not a window",
+    );
+}
+
 /// **A tab closed after the raise stops being carried.** The marker is not a
 /// freeze-frame of the raise: a call that changes the window rewrites it, so
 /// a tab a session closed itself does not resurrect on the next launch.

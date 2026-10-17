@@ -922,7 +922,10 @@ async fn a_session_call_rewrites_the_carry() {
     // a navigation by URL): a trailing slash included, https over data: so
     // nothing is re-encoded under it.
     const ONE: &str = "https://example.com/";
-    const TWO: &str = "https://example.org/";
+    /// Asked WITHOUT its trailing slash: the refresh must follow what the
+    /// driver reports it landed on, not the exact string it was asked for.
+    const TWO_ASKED: &str = "https://example.org";
+    const TWO_LANDED: &str = "https://example.org/";
 
     let dir = tempfile::tempdir().expect("a temp dir");
     let paths = StackPaths {
@@ -943,18 +946,19 @@ async fn a_session_call_rewrites_the_carry() {
     let marker = std::fs::read_to_string(paths.user_data.join("windowed")).expect("the marker");
     assert!(marker.contains(ONE), "the raise carried the page it showed: {marker}");
 
-    // A second tab, navigated: the navigation leads the carry.
+    // A second tab, navigated: the carry leads with what the driver reports
+    // it landed on, not the exact string it was asked for.
     host.call(&who, "browser_tabs", json!({ "action": "new" }))
         .await
         .unwrap_or_else(|why| panic!("the new tab: {why}"));
-    host.call(&who, "browser_navigate", json!({ "url": TWO }))
+    host.call(&who, "browser_navigate", json!({ "url": TWO_ASKED }))
         .await
         .unwrap_or_else(|why| panic!("the second navigate: {why}"));
     let marker = std::fs::read_to_string(paths.user_data.join("windowed")).expect("the marker");
     assert_eq!(
         marker.lines().next(),
-        Some(TWO),
-        "the page the session navigated leads the carry: {marker}",
+        Some(TWO_LANDED),
+        "the page the session navigated leads the carry, as the driver reported it: {marker}",
     );
 
     // The second tab closed by the session: it must not resurrect.
@@ -962,7 +966,10 @@ async fn a_session_call_rewrites_the_carry() {
         .await
         .unwrap_or_else(|why| panic!("the close: {why}"));
     let marker = std::fs::read_to_string(paths.user_data.join("windowed")).expect("the marker");
-    assert!(!marker.contains(TWO), "a tab the session closed is gone from the carry: {marker}",);
+    assert!(
+        !marker.contains(TWO_LANDED),
+        "a tab the session closed is gone from the carry: {marker}",
+    );
     assert!(marker.contains(ONE), "and the page that is still open stays: {marker}");
 
     browser.reap();
