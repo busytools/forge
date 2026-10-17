@@ -266,6 +266,7 @@ export function fakeConnection() {
     },
     refresh(what) {
       refreshed.push(what);
+      return true;
     },
     dispatch(command: Command) {
       dispatched.push(command);

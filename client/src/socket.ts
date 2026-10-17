@@ -67,8 +67,13 @@ export interface Connection {
    * per subscribe and removes one per unsubscribe, and that count is what it
    * filters every update against, so a second subscribe with nothing given
    * back would grow the list for the life of the connection.
+   *
+   * **Answers whether the ask really went**, which a page's own refresh has
+   * no use for and the read bound has: a connection that is down or closed
+   * has nothing to ask on, and a bound must not re-arm for a read it did not
+   * ask.
    */
-  refresh(what: Subject): void;
+  refresh(what: Subject): boolean;
   /**
    * Send a core command.
    *
