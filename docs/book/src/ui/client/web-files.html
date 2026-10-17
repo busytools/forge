@@ -182,16 +182,22 @@
   .files-railen { font-family: var(--mono); letter-spacing: 0; }
   .files-replies { margin-left: auto; font-family: var(--mono); letter-spacing: 0;
     text-transform: none; color: var(--warn); }
-  .files-crow { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px;
-    align-items: baseline; width: 100%; text-align: left; background: none; border: 0;
-    padding: 7px 8px; border-radius: 7px; color: inherit; font: inherit; }
+  /* One column, not a grid: the chip and the path ride the first line, the
+     words take the whole width, a note gets its own line - the shape the
+     shipped sheet carries (the lead's gate, 2026-10-17; the drawing had the
+     two-column grid Ved's screenshot fixed). */
+  .files-crow { display: block; width: 100%; text-align: left; background: none;
+    border: 0; padding: 7px 8px; border-radius: 7px; color: inherit; font: inherit; }
+  .files-crow > .rv-st { margin-right: 8px; }
   .files-crowwrap { display: flex; align-items: start; gap: 6px; }
   .files-crowwrap .files-crow { flex: 1; min-width: 0; }
   .files-crowwrap + .files-crowwrap { border-top: 1px solid var(--line); }
   .files-cwhere { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .files-cwords { font-size: var(--fs-base); color: var(--text); }
-  .files-cnote { grid-column: 2; font-family: var(--mono); font-size: var(--fs-label);
+    display: inline-block; max-width: 100%; vertical-align: baseline;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .files-cwords { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; font-size: var(--fs-base); color: var(--text); }
+  .files-cnote { display: block; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); }
   .files-finish { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px;
     display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
