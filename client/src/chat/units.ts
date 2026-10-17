@@ -268,7 +268,8 @@ export interface TurnInfo {
  *
  * The wire carries no name: a pasted image is a mime type and a base64
  * payload, and a document the same. So the row draws the mime it does have,
- * with the size the payload's own length states.
+ * with the size the payload's own length states - or the size a turn read off
+ * the transcript carries in place of the payload, which the row never draws.
  */
 export interface AttachedFile {
   /** The block's own kind, which the row falls back to when there is no mime. */
@@ -448,18 +449,30 @@ function payloadBytes(data: unknown): number | null {
   return Math.floor((data.length * 3) / 4) - padding;
 }
 
+/**
+ * The size a read turn measured for an attachment it did not send.
+ *
+ * A turn read off the transcript carries the mime and this figure rather than
+ * the payload, which nothing on the page draws.
+ */
+function measuredBytes(block: Block): number | null {
+  const held = block.forge_bytes;
+  return typeof held === 'number' && Number.isFinite(held) ? held : null;
+}
+
 /** The attachments a frame's content carries, in the order it carries them. */
 function attachmentsOf(content: readonly unknown[]): AttachedFile[] {
   const out: AttachedFile[] = [];
   for (const block of blocksOf(content)) {
     if (block.type !== 'image' && block.type !== 'document') continue;
     // Both kinds nest their mime and their bytes under `source`, which is the
-    // shape a tool result's image is read in too.
+    // shape a tool result's image is read in too. A read turn sends the figure
+    // instead of the payload, so the size it measured stands in for it.
     const source = obj(block.source);
     out.push({
       kind: block.type,
       mime: str(source, 'media_type'),
-      bytes: payloadBytes(source['data']),
+      bytes: payloadBytes(source['data']) ?? measuredBytes(block),
     });
   }
   return out;

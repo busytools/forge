@@ -248,6 +248,8 @@ export interface Block {
   media_type?: unknown;
   url?: unknown;
   source?: unknown;
+  /** The size forge measured for an attachment whose payload it did not send. */
+  forge_bytes?: unknown;
   prompt?: unknown;
   commandMode?: unknown;
   thinking?: unknown;
