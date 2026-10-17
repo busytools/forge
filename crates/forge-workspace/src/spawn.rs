@@ -2424,20 +2424,30 @@ pub(crate) fn handle_deliver_worker_prompt(
     project_key: &ProjectKey,
     target_label: &str,
     wrapped: WrappedPrompt,
+    respond: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) {
     // Latest-spawned matching label wins (mirrors the addressing rule
-    // in agents__send_message).
+    // in agents__send_message). Failed entries are skipped, the same rule
+    // the spawn gate applies: a crashed worker keeps its row for the label
+    // to be respawnable, and a prompt addressed there would go nowhere.
     let Some(entry) = workspace
         .list_live_workers(project_key)
         .into_iter()
         .rev()
-        .find(|w| w.label == target_label)
+        .find(|w| w.label == target_label && w.is_live())
     else {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project_key.as_str(),
             label = %target_label,
             "deliver_worker_prompt: no matching live worker (target gone since dispatch)"
+        );
+        answer_delivery(
+            respond,
+            Err(format!(
+                "no live worker with label '{target_label}' in '{}' any more",
+                project_key.as_str()
+            )),
         );
         return;
     };
@@ -2451,6 +2461,23 @@ pub(crate) fn handle_deliver_worker_prompt(
     // below.
     let Some(wrapped) = buffer_prompt_until_connected(workspace, caller, &target_key, wrapped)
     else {
+        // Parked for the worker's connect, whose drain delivers it.
+        answer_delivery(respond, Ok(()));
+        return;
+    };
+
+    // A delivery that lands while the seat is mid-turn is folded into the
+    // running turn as a queued_command attachment with no standing of its
+    // own - the follow-up a working worker reads past (measured on
+    // 2.1.280). Hold it and deliver it at turn end, so it starts a turn.
+    let held = {
+        let domain = workspace.domain_session_for(&target_key);
+        workspace.hold_peer_prompt_unless_turn_ended(&target_key, caller, wrapped, || {
+            domain.as_ref().is_some_and(|domain| delivery_hold_signal(&domain.lock()))
+        })
+    };
+    let Some(wrapped) = held else {
+        answer_delivery(respond, Ok(()));
         return;
     };
 
@@ -2515,6 +2542,79 @@ pub(crate) fn handle_deliver_worker_prompt(
             "DeliverWorkerPrompt dispatch to worker failed"
         );
         send_dispatch_turn_error(workspace, target_key, &err);
+        answer_delivery(respond, Err(format!("the worker's session did not take it ({err:?})")));
+        return;
+    }
+    answer_delivery(respond, Ok(()));
+}
+
+/// The turn signal a delivery is held on: only what a `Result` clears.
+///
+/// Stricter than
+/// [`turn_in_flight`](crate::domain_session::DomainSession::turn_in_flight),
+/// which ORs in `runtime_state` for the in-flight guards - no `Result`
+/// clears that one, so a gate reading it could hold every later delivery
+/// with nothing left to release it. Both signals here are down once a
+/// Result has landed, which is what lets the hold and the turn-end drain
+/// pair up.
+fn delivery_hold_signal(domain: &crate::domain_session::DomainSession) -> bool {
+    domain.turn_pending || domain.turn_open
+}
+
+/// Answer a delivery's `respond` channel, if the caller asked for one:
+/// `Ok(())` once the prompt was accepted - handed to the target's session
+/// queue, held for its turn end, or parked for its connect - and
+/// `Err(reason)` when nothing could take it. The sender's ack is built
+/// from this answer alone, so it never claims a delivery that did not
+/// happen.
+fn answer_delivery(
+    respond: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    outcome: Result<(), String>,
+) {
+    if let Some(tx) = respond {
+        let _ = tx.send(outcome);
+    }
+}
+
+/// Deliver everything held for `slot` while a turn was in flight, in the
+/// order it arrived. Called where the turn's Result lands, so each held
+/// prompt starts a turn of its own instead of folding into the one that
+/// was running. A prompt the seat cannot take now - the session died
+/// between the hold and the turn end - is told to its sender rather than
+/// dropped, which is the whole point of holding it.
+///
+/// The turn's whole hold signal is ended here, before the bucket is taken:
+/// the take shares its lock with a concurrent hold's check-and-enqueue, so a
+/// delivery decides on `delivery_hold_signal` either before this drain (and
+/// is delivered by it) or after (and is delivered directly).
+pub(crate) fn drain_turn_held_for_slot(
+    workspace: &Arc<Workspace>,
+    domain: &Arc<parking_lot::Mutex<crate::domain_session::DomainSession>>,
+    slot: &SessionSlot,
+) {
+    let mut guard = domain.lock();
+    guard.turn_pending = false;
+    guard.turn_open = false;
+    drop(guard);
+    for crate::parked::ParkedPeer { sender, wrapped } in workspace.take_turn_held_for_slot(slot) {
+        let text = wrapped.to_prose();
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        push_peer_user_turn_into_chat(workspace, slot, &wrapped, &uuid);
+        if let Err(err) =
+            workspace.dispatch_workspace_prompt_under(slot, text, PromptSource::Peer, uuid)
+        {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                slot = %slot.display(),
+                error = ?err,
+                "a held prompt could not be delivered when the turn ended"
+            );
+            workspace.notice_undelivered_message(
+                &sender,
+                slot,
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+            );
+        }
     }
 }
 
@@ -2536,6 +2636,7 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     caller: &SessionSlot,
     target_lead_key: &SessionSlot,
     wrapped: WrappedPrompt,
+    respond: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) {
     // Defensive: confirm the lead session is still in the pool. If it
     // closed since the worker captured its `spawned_by_session_id`,
@@ -2547,6 +2648,7 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
             slot = %target_lead_key.display(),
             "deliver_worker_prompt_to_lead: lead session not in pool (closed since dispatch)"
         );
+        answer_delivery(respond, Err("the lead's session is no longer running".to_owned()));
         return;
     }
 
@@ -2555,6 +2657,21 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     // rather than dispatching a Command::Prompt that would be dropped.
     let Some(wrapped) = buffer_prompt_until_connected(workspace, caller, target_lead_key, wrapped)
     else {
+        // Parked for the lead's connect, whose drain delivers it.
+        answer_delivery(respond, Ok(()));
+        return;
+    };
+
+    // Same hold as the sibling-worker path: a lead mid-turn folds the
+    // message into its running turn, where it has no standing of its own.
+    let held = {
+        let domain = workspace.domain_session_for(target_lead_key);
+        workspace.hold_peer_prompt_unless_turn_ended(target_lead_key, caller, wrapped, || {
+            domain.as_ref().is_some_and(|domain| delivery_hold_signal(&domain.lock()))
+        })
+    };
+    let Some(wrapped) = held else {
+        answer_delivery(respond, Ok(()));
         return;
     };
 
@@ -2572,7 +2689,10 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
             "DeliverWorkerPromptToLead dispatch to lead failed"
         );
         send_dispatch_turn_error(workspace, target_lead_key.clone(), &err);
+        answer_delivery(respond, Err(format!("the lead's session did not take it ({err:?})")));
+        return;
     }
+    answer_delivery(respond, Ok(()));
 }
 
 #[cfg(test)]
@@ -6853,20 +6973,137 @@ provider = "anthropic"
         assert!(!wt.exists(), "worktree discarded under force");
     }
 
-    /// `handle_deliver_worker_prompt` is a no-op when the target
-    /// label has no live worker. Mirrors the close_worker_unknown
-    /// branch - the upstream Tool gate (agents__send_message facade)
-    /// rejects synchronously; the spawn handler is defence in depth.
+    /// A delivery that lands while the seat is mid-turn is held for the
+    /// turn's end rather than written into the running turn, where the CLI
+    /// would fold it in as a queued_command attachment with no standing of
+    /// its own.
     #[tokio::test]
-    async fn deliver_worker_prompt_unknown_label_is_noop() {
+    async fn a_mid_turn_delivery_is_held_for_the_turn_end() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("forge", "/tmp/forge");
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project")
+            .key;
+        let worker_key = SessionSlot::worker("TestOrg", "forge", "builder");
+        workspace
+            .insert_live_worker(&project, connected_worker_entry(&worker_key, "builder-session"));
+        workspace.mark_session_connected_for_test(&worker_key, "builder-session");
+        // The seat is mid-turn: a prompt is in flight at the CLI.
+        workspace
+            .domain_session_for(&worker_key)
+            .expect("connected worker has a domain")
+            .lock()
+            .turn_pending = true;
+        workspace.enable_test_dispatch_intercept();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_deliver_worker_prompt(
+            &workspace,
+            &SessionSlot::lead("TestOrg", "forge"),
+            &project,
+            "builder",
+            fixture_wrapped(),
+            Some(tx),
+        );
+
+        rx.await
+            .expect("the handler answers")
+            .expect("a held prompt is accepted: the turn it waits on will deliver it");
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "nothing is written into the running turn",
+        );
+        assert_eq!(
+            workspace.take_turn_held_for_slot(&worker_key).len(),
+            1,
+            "the prompt is held for the turn end instead",
+        );
+    }
+
+    /// The gate reads only what a `Result` clears: a session whose
+    /// `runtime_state` alone says Running (that mirror is cleared only on
+    /// Connected/ConnectionFailed) must not hold a delivery, or every later
+    /// message would wait on a turn-end signal that never comes.
+    #[tokio::test]
+    async fn a_sticky_runtime_state_does_not_hold_a_delivery() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("forge", "/tmp/forge");
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project")
+            .key;
+        let worker_key = SessionSlot::worker("TestOrg", "forge", "builder");
+        workspace
+            .insert_live_worker(&project, connected_worker_entry(&worker_key, "builder-session"));
+        workspace.mark_session_connected_for_test(&worker_key, "builder-session");
+        // No turn pending and no turn open - the Result-clearable signals
+        // are both down - but the sticky mirror reads Running.
+        workspace
+            .domain_session_for(&worker_key)
+            .expect("connected worker has a domain")
+            .lock()
+            .runtime_state = Some(forge_primitives::RuntimeSessionState::Running);
+        workspace.enable_test_dispatch_intercept();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_deliver_worker_prompt(
+            &workspace,
+            &SessionSlot::lead("TestOrg", "forge"),
+            &project,
+            "builder",
+            fixture_wrapped(),
+            Some(tx),
+        );
+
+        rx.await
+            .expect("the handler answers")
+            .expect("a delivery with no turn running is accepted");
+        assert_eq!(
+            workspace.drain_test_dispatch_buffer().len(),
+            1,
+            "the delivery is written now, not held behind a stale runtime_state",
+        );
+        assert!(
+            workspace.take_turn_held_for_slot(&worker_key).is_empty(),
+            "and nothing was held for a turn end that will not come",
+        );
+    }
+
+    /// `handle_deliver_worker_prompt` refuses a target label with no
+    /// live worker, and says so down the reply channel. Mirrors the
+    /// close_worker_unknown branch - the upstream Tool gate
+    /// (agents__send_message facade) rejects synchronously; the spawn
+    /// handler is defence in depth. Silence here is the defect this pins:
+    /// the sender's ack is built from this answer, so a drop nobody
+    /// hears is a delivery claimed that never happened.
+    #[tokio::test]
+    async fn deliver_worker_prompt_unknown_label_is_refused_down_the_reply_channel() {
         let (workspace, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
         let caller = SessionSlot::from_str_for_test("caller-1");
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
-        handle_deliver_worker_prompt(&workspace, &caller, &project, "missing", fixture_wrapped());
-        // No panic, no dispatch attempted. (We can't easily observe
-        // "no dispatch" without a stubbed dispatch; the absence of a
-        // panic + dropped channels is the test.)
+        handle_deliver_worker_prompt(
+            &workspace,
+            &caller,
+            &project,
+            "missing",
+            fixture_wrapped(),
+            Some(tx),
+        );
+        let answer = rx.await.expect("the handler answers");
+        let Err(reason) = answer else {
+            panic!("a label with no live worker must be refused, got {answer:?}");
+        };
+        assert!(
+            reason.contains("missing"),
+            "the refusal names the label the caller addressed: {reason}"
+        );
     }
 
     /// A worker addressed before it Connects (session_id still None)
@@ -6907,13 +7144,16 @@ provider = "anthropic"
         ));
         workspace.domain_handles.lock().insert(worker_key.clone(), domain.clone());
 
+        let (tx, rx) = tokio::sync::oneshot::channel();
         handle_deliver_worker_prompt(
             &workspace,
             &SessionSlot::lead("TestOrg", "forge"),
             &project,
             "builder",
             fixture_wrapped(),
+            Some(tx),
         );
+        rx.await.expect("the handler answers").expect("a parked prompt is accepted, not refused");
 
         assert_eq!(
             workspace
@@ -6987,6 +7227,7 @@ provider = "anthropic"
             &project,
             "builder",
             fixture_wrapped(),
+            None,
         );
 
         let (source, text) = drain_the_prompt(&workspace);
@@ -7015,6 +7256,7 @@ provider = "anthropic"
             &SessionSlot::worker("TestOrg", "forge", "builder"),
             &lead,
             fixture_wrapped(),
+            None,
         );
 
         let (source, text) = drain_the_prompt(&workspace);
@@ -7136,7 +7378,14 @@ provider = "anthropic"
         // It also dispatches Command::Prompt which the stub agent
         // accepts (the side-effect we don't assert on here).
         let caller = SessionSlot::from_str_for_test("caller-1");
-        handle_deliver_worker_prompt(&workspace, &caller, &project_key, "idle", fixture_wrapped());
+        handle_deliver_worker_prompt(
+            &workspace,
+            &caller,
+            &project_key,
+            "idle",
+            fixture_wrapped(),
+            None,
+        );
 
         // Wait briefly for the spawned task to finish the retry +
         // status update. The retry should succeed on first attempt
@@ -7252,7 +7501,14 @@ provider = "anthropic"
         fs::write(&jsonl_path, "").expect("seed jsonl");
 
         let caller = SessionSlot::from_str_for_test("caller-1");
-        handle_deliver_worker_prompt(&workspace, &caller, &project_key, "idle", fixture_wrapped());
+        handle_deliver_worker_prompt(
+            &workspace,
+            &caller,
+            &project_key,
+            "idle",
+            fixture_wrapped(),
+            None,
+        );
 
         let cleared = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {

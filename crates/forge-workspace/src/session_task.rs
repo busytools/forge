@@ -863,6 +863,18 @@ impl SessionTask {
                         guard.turn_pending = false;
                         guard.key.clone()
                     };
+                    // A delivery held off this turn goes out now, where it
+                    // starts a turn of its own rather than folding into the
+                    // one that just ended. Only a `Result` is a turn
+                    // ended on a live session: an `Error` is the transport
+                    // dying, and dispatching into it would drop the held
+                    // prompt where nobody hears - the death path's own
+                    // expiry tells its sender instead.
+                    if matches!(msg, forge_primitives::Message::Result { .. })
+                        && let Some(workspace) = self.workspace.upgrade()
+                    {
+                        crate::spawn::drain_turn_held_for_slot(&workspace, &self.domain, &self.key);
+                    }
                     // Turn end: flush this session's accumulated review
                     // actions into one batched notice per review, routed to
                     // each review's submit origin.
@@ -8201,6 +8213,124 @@ provider = "anthropic"
                     if announced == &rows[0].uuid && text == "the queued words"
             )),
             "the row's words ride the announcement, because no lifecycle frame carries them: {announced:?}",
+        );
+    }
+
+    /// A prompt held because it arrived mid-turn goes out when that turn's
+    /// Result lands: the seat is idle again, so it starts a turn of its own
+    /// instead of folding into the one that just ended.
+    #[tokio::test]
+    async fn a_turn_end_delivers_the_prompt_held_for_it() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("hp", "/tmp/hp");
+        let key = SessionSlot::from_str_for_test("hp-worker");
+        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(key.clone(), None)));
+        domain.lock().session_id = Some(forge_primitives::SessionId::new("hp-session"));
+        domain.lock().turn_pending = true;
+        let (handle, _agent_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+        let held = crate::mcp::peers::types::WrappedPrompt {
+            id: crate::mcp::peers::types::MessageId::mint(),
+            kind: crate::mcp::peers::types::WrappedKind::Message,
+            sender_name: "forge".to_owned(),
+            sender_org: "Busytools".to_owned(),
+            body: "the held words".to_owned(),
+        };
+        workspace.hold_peer_prompt_unless_turn_ended(
+            &key,
+            &SessionSlot::lead("Busytools", "hp"),
+            held,
+            || true,
+        );
+        workspace.enable_test_dispatch_intercept();
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "hp-session".to_owned(),
+            msg: result_message("success", false),
+        });
+
+        let dispatched = workspace.drain_test_dispatch_buffer().into_iter().any(|cmd| {
+            matches!(
+                cmd,
+                crate::protocol::Command::PromptUnder { text, source, .. }
+                    if source == PromptSource::Peer && text.contains("the held words")
+            )
+        });
+        assert!(dispatched, "the held prompt is delivered as the turn ends");
+        assert!(
+            workspace.take_turn_held_for_slot(&key).is_empty(),
+            "and the hold is spent, not redelivered next turn",
+        );
+    }
+
+    /// A transport death is NOT a turn end to deliver behind: the seat is
+    /// gone, so the hold stays where the death path's expiry can tell its
+    /// sender rather than being dispatched into a dying session, where it
+    /// would drop unheard.
+    #[tokio::test]
+    async fn a_transport_death_does_not_drain_the_hold() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("hd", "/tmp/hd");
+        let key = SessionSlot::from_str_for_test("hd-worker");
+        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(key.clone(), None)));
+        domain.lock().session_id = Some(forge_primitives::SessionId::new("hd-session"));
+        domain.lock().turn_pending = true;
+        let (handle, _agent_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+        let held = crate::mcp::peers::types::WrappedPrompt {
+            id: crate::mcp::peers::types::MessageId::mint(),
+            kind: crate::mcp::peers::types::WrappedKind::Message,
+            sender_name: "forge".to_owned(),
+            sender_org: "Busytools".to_owned(),
+            body: "while the transport dies".to_owned(),
+        };
+        workspace.hold_peer_prompt_unless_turn_ended(
+            &key,
+            &SessionSlot::lead("Busytools", "hd"),
+            held,
+            || true,
+        );
+        workspace.enable_test_dispatch_intercept();
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "hd-session".to_owned(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "error",
+                "error": "stream closed",
+            }))
+            .expect("parse error message"),
+        });
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "nothing is dispatched into a session whose transport just died",
+        );
+        assert_eq!(
+            workspace.take_turn_held_for_slot(&key).len(),
+            1,
+            "the hold stays for the death path's expiry to acknowledge",
         );
     }
 
