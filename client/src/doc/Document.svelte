@@ -21,6 +21,8 @@
    * filed, so the agent hears the reading's result and not merely that the
    * document opened.
    */
+  import { SvelteSet } from 'svelte/reactivity';
+
   import { report, type Connection } from '../socket';
   import { mintPromptId } from '../wire/ids';
   import { goTo } from '../routes';
@@ -45,8 +47,9 @@
   import { joined, noticeLine } from '../composer/view';
   import { composerFrom } from '../composer/wire';
   import type { ReplyBox, Voice } from '../review/boxes';
+  import ResolvedMarker from '../review/ResolvedMarker.svelte';
   import ThreadDelete from '../review/ThreadDelete.svelte';
-  import { authorName } from '../review/view';
+  import { authorName, statusName } from '../review/view';
   import {
     deleteCommand,
     statusCommand,
@@ -198,6 +201,10 @@
     wire: null,
   });
   let editField = $state<HTMLElement | null>(null);
+
+  /** The resolved comments the reader opened back up: collapsed by default,
+   *  the same rule every surface keeps. */
+  const opened = new SvelteSet<string>();
 
   /**
    * The seat's own record, read as an observer: the take's phase and the
@@ -572,6 +579,12 @@
     await put(deleteCommand(slot, scope, threadId));
   }
 
+  /** Open a resolved comment back up: the status write every surface's
+   *  reopen rides. */
+  async function reopenedThread(threadId: string): Promise<void> {
+    await put(statusCommand(slot, scope, threadId, 'Open'));
+  }
+
   /** The retraction of a local draft: off the shelf, and out of the store. */
   function deletedDraft(draftId: string): void {
     clearDrafts(scope, [draftId]);
@@ -770,29 +783,45 @@
           {/if}
         </div>
         {#each threadsUnder(row) as thread (thread.id)}
-          <div class="doc-note">
-            <span class="doc-who"
-              >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
-            >
-            <!-- The words go through the chat's renderer, the same
+          {#if statusName(thread.status) === 'resolved' && !opened.has(thread.id)}
+            <ResolvedMarker
+              first={thread.comments[0]?.text ?? ''}
+              where={`${thread.anchor.path.split('/').pop() ?? ''} · line ${thread.anchor.line}`}
+              onopen={() => opened.add(thread.id)}
+            />
+          {:else}
+            <div class="doc-note">
+              <span class="doc-who"
+                >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
+              >
+              <!-- The words go through the chat's renderer, the same
                  `Prose` the review page's turns draw with, so a comment's
                  marks and its author's own lines read here as they read
                  there. -->
-            <Prose text={thread.comments[0]?.text ?? ''} preserveLines />
-            <div class="rv-acts">
-              <button
-                class="rv-a"
-                type="button"
-                onclick={() => {
-                  edit.thread = thread.id;
-                  edit.index = 0;
-                  edit.draftId = null;
-                  edit.draft = thread.comments[0]?.text ?? '';
-                }}>edit</button
-              >
-              <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
+              <Prose text={thread.comments[0]?.text ?? ''} preserveLines />
+              <div class="rv-acts">
+                {#if statusName(thread.status) === 'resolved'}
+                  <button class="rv-a" type="button" onclick={() => void reopenedThread(thread.id)}
+                    >reopen</button
+                  >
+                  <button class="rv-a" type="button" onclick={() => opened.delete(thread.id)}
+                    >collapse</button
+                  >
+                {/if}
+                <button
+                  class="rv-a"
+                  type="button"
+                  onclick={() => {
+                    edit.thread = thread.id;
+                    edit.index = 0;
+                    edit.draftId = null;
+                    edit.draft = thread.comments[0]?.text ?? '';
+                  }}>edit</button
+                >
+                <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
+              </div>
             </div>
-          </div>
+          {/if}
           {#if edit.thread === thread.id}
             <WordsBox
               class="doc-note doc-editbox"

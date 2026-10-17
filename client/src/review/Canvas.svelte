@@ -754,6 +754,17 @@
     void scoped;
     void box.spot;
     void reply.thread;
+    // The row keys carry it too, so a press on a resolved marker (or an
+    // edit opening on a turn) is this pass's business - **and the read has
+    // to happen HERE, in the effect's tracked scope**: the key is computed
+    // in the rAF callback below, where nothing tracks it, so a bare
+    // `openedResolved.has()` there never re-runs the pass and the marker
+    // could never open (Ved, 2026-10-17; the contents map above is the same
+    // shape).
+    void reply.index;
+    for (const thread of scoped) {
+      void openedResolved.has(thread.id);
+    }
     void busy;
     void built;
     // A read landing, or a gap the reader opened, changes which controls are
@@ -953,24 +964,6 @@
     thread: ReviewThreadRecord,
     placed: { line: number; movedFrom: number | null },
   ): HTMLElement {
-    // **A resolved thread collapses to its marker line**, the files reader's
-    // own shape (Ved, 2026-10-17: "git diff also does not show the resolve
-    // expansion like the file view does"): a press opens it again, where its
-    // reopen and collapse acts are - the row's key carries the opened set,
-    // so the press rebuilds it in place.
-    if (statusName(thread.status) === 'resolved' && !openedResolved.has(thread.id)) {
-      const host = document.createElement('div');
-      const held = mount(ResolvedMarker, {
-        target: host,
-        props: {
-          first: thread.comments[0]?.text ?? '',
-          where: `${thread.anchor.path.split('/').pop() ?? ''} · line ${placed.line}`,
-          onopen: () => openedResolved.add(thread.id),
-        },
-      });
-      mounts.hold(host, () => void unmount(held));
-      return host;
-    }
     const card = document.createElement('article');
     card.className = 'rv-thread compact';
     const tops = document.createElement('div');
@@ -1091,13 +1084,22 @@
   ): HTMLTableRowElement {
     const wrap = document.createElement('div');
     wrap.className = 'rv-inline';
-    if (statusName(thread.status) === 'resolved') {
-      const marker = document.createElement('div');
-      marker.className = 'rv-marker';
-      marker.append(mark('resolved'));
-      marker.append(span('rv-mk-word', 'resolved'));
-      marker.append(span('rv-mk-first', thread.comments[0]?.text ?? ''));
-      wrap.append(marker);
+    if (statusName(thread.status) === 'resolved' && !openedResolved.has(thread.id)) {
+      // The marker used to be a plain div with no press: a resolved thread
+      // collapsed and could never be opened again (Ved, 2026-10-17: "I
+      // cannot even expand it... it never expands"). The shared marker is a
+      // real button, and its press lands the row back as the card.
+      const host = document.createElement('div');
+      const held = mount(ResolvedMarker, {
+        target: host,
+        props: {
+          first: thread.comments[0]?.text ?? '',
+          where: `${thread.anchor.path.split('/').pop() ?? ''} · line ${placed.line}`,
+          onopen: () => openedResolved.add(thread.id),
+        },
+      });
+      mounts.hold(host, () => void unmount(held));
+      wrap.append(host);
     } else {
       wrap.append(threadCard(thread, placed));
     }
