@@ -75,6 +75,13 @@ while the hold is on - the accepted cost - and macOS asks for the
 microphone as the page opens rather than at the first press. In a browser
 the capture is the webview's own, opened per take as it always was.
 
+**A held capture the device has stopped serving is opened again.** The
+audio layer under the client changes on its own - Android disconnects the
+app's input stream when the route moves, and a disconnected stream never
+delivers again - so the hold and the press open the device again when the
+held capture has gone half a second without a block. One such event does
+not leave every later press recording nothing.
+
 **An open that the device never answers is reported rather than waited
 on.**
 The open blocks on the hardware, and a device layer that is wedged - a
