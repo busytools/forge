@@ -7412,3 +7412,88 @@ async fn a_waiting_capable_client_takes_the_role_when_the_holder_goes() {
         "the role moved to the waiter, so the ask reached it",
     );
 }
+
+/// Every record this process's subscriber writes, installed on first use.
+///
+/// **One process per test under nextest**, so a global subscriber is this
+/// test's own; under a shared-process runner a second install is a no-op
+/// and the one buffer still receives this test's records, which is all the
+/// assertion below reads.
+static CAPTURED: std::sync::OnceLock<Arc<Mutex<Vec<u8>>>> = std::sync::OnceLock::new();
+
+struct CaptureSink(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for CaptureSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("the capture is not poisoned").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Install the capture and answer its buffer, shaped the way the shipped log
+/// is: one JSON line per record, the fields flattened.
+fn install_capture() -> Arc<Mutex<Vec<u8>>> {
+    let buffer = CAPTURED.get_or_init(|| {
+        let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let sink = Arc::clone(&buffer);
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_env_filter("forge_server=debug")
+            .with_writer(move || CaptureSink(Arc::clone(&sink)))
+            .with_ansi(false)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+        buffer
+    });
+    Arc::clone(buffer)
+}
+
+/// Everything the capture has written so far.
+fn captured() -> String {
+    let buffer = CAPTURED.get().expect("the capture was installed").lock().expect("not poisoned");
+    String::from_utf8(buffer.clone()).expect("the capture holds utf-8")
+}
+
+/// **The open path's line actually lands (#2374).** The wire tests pin the
+/// numbers the line carries; what this pins is the emission - the release
+/// reads a slow switch out of this one record, so a level or a field name
+/// that never reached the log would leave the artefacts empty with nothing
+/// failing anywhere.
+#[tokio::test]
+async fn a_session_subscribe_logs_its_own_open_timings() {
+    install_capture();
+    let (url, _fleet, _state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (subject, _data, _passed) = snapshot_answering(&mut socket).await;
+    assert!(matches!(subject, Subject::Session(_)), "the answer is the seat's own snapshot");
+
+    let caught = captured();
+    let line = caught
+        .lines()
+        .find(|line| line.contains("\"session_open\""))
+        .unwrap_or_else(|| panic!("a session subscribe must log its open; caught: {caught}"));
+    let parsed: serde_json::Value = serde_json::from_str(line).expect("the line is JSON");
+    assert_eq!(parsed["event_name"], "session_open");
+    assert_eq!(
+        parsed["level"], "DEBUG",
+        "a session's own work is information, not a warning: {line}",
+    );
+    assert_eq!(parsed["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
+    for field in ["open_ms", "seed_ms", "conversation_ms", "page_ms", "encode_ms", "bytes"] {
+        assert!(parsed.get(field).is_some(), "the line carries {field}: {line}");
+    }
+}

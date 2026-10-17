@@ -5,6 +5,7 @@
   import { heldReserve, sizes } from './row-sizes';
 
   import Icon from '../components/Icon.svelte';
+  import { noteConversationOpened, noteDrawn } from '../perf';
   import { subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
@@ -609,7 +610,14 @@
     // list unmounts and the new landing re-pins before any event can read the
     // old value. A swap that kept the list mounted across it would make this
     // stale.
-    if (fresh || which !== placedFor) {
+    // **The same predicate is what a conversation OPEN is** (#2374): a first
+    // visit, a seat reopened on another connection, or a kept seat coming
+    // back on screen. Every way into a seat - a click, a deep link, a reload,
+    // a reconnect, a palette move - passes through this effect, so the perf
+    // log's open is marked from here rather than from a route change: a route
+    // change alone is no conversation, and a board route must write nothing.
+    const switched = fresh || which !== placedFor;
+    if (switched) {
       placed = null;
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
@@ -635,6 +643,12 @@
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
     held = untrack(() => kept.get(which)) ?? NOTHING;
+    // After `held`, so the open's own start and the conversation it names
+    // land in one flush - the drawn mark below reads `held` and must never
+    // time the seat that is going.
+    if (switched) {
+      noteConversationOpened(`${slot.org}/${slot.project}/${slot.label}`);
+    }
     // Leaving the seat: its store notifications stop with its frames.
     return () => {
       unsubscribe();
@@ -666,6 +680,29 @@
     for (const entry of live.values()) entry.stop();
     live.clear();
     kept.clear();
+  });
+
+  /**
+   * **The seat's terminal drawing (#2374).** The effect runs after the
+   * update that first puts this seat's answer on screen, which is what the
+   * switch's own timing is measured to - the mark is written where the
+   * drawing landed, not where the click happened. Declared after the seat
+   * effect above, so a switch has put the new seat's conversation in `held`
+   * before this reads it: a mark written off the seat that is going would
+   * time the wrong open.
+   *
+   * **Every terminal state completes the open, and only a terminal one.**
+   * The condition mirrors the column's own state chain below: a loaded
+   * conversation (its rows, or the empty state), or the seat's own waking,
+   * not-running or refused line - those are the column's answer, while
+   * `Reading the conversation` is the wait. An open left armed through one
+   * of the terminal states would land on the next real turn minutes later
+   * and read as a stall nothing was slow for.
+   */
+  $effect(() => {
+    const settled =
+      held.loaded || (held.turns.length === 0 && (waking || spawning || held.refused !== null));
+    if (settled) noteDrawn();
   });
 
   // The first page is drawn at the end rather than the start, and that is not

@@ -33,6 +33,14 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
+// The switch marks (#2374) are the probe's to write; the column's half is
+// opening the mark where a conversation actually opens and calling the
+// drawn mark where its terminal state actually draws, which is what these
+// watch.
+const drawnMark = vi.hoisted(() => vi.fn());
+const openedMark = vi.hoisted(() => vi.fn());
+vi.mock('../perf', () => ({ noteDrawn: drawnMark, noteConversationOpened: openedMark }));
+
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
 /** The seat key the pinned-row store is read under, which is what the composer draws from. */
@@ -1456,5 +1464,97 @@ describe('the arrival mark', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * **The drawn mark lands where the seat's answer lands (#2374).** The probe
+ * writes the record; what this pins is the column's half - the mark is
+ * called when the column's terminal state for the seat draws (its rows, the
+ * empty state, or the seat's own waking line), never while it is still
+ * reading, and another seat's arrival marks again.
+ */
+describe('the drawn mark', () => {
+  const turn = (key: string): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'assistant',
+        message: {
+          id: `m-${key}`,
+          role: 'assistant',
+          model: 'claude-opus-5',
+          content: [{ type: 'text', text: `said ${key}` }],
+        },
+      },
+    ],
+  });
+
+  it('marks when a seat first draws rows, and again when another seat lands', async () => {
+    const server = stub();
+    drawnMark.mockClear();
+    openedMark.mockClear();
+    const column = mount(SeatSwitch, {
+      target: document.body,
+      props: { connection: server.connection, first: LEAD, second: { ...LEAD, label: 'w1' } },
+    }) as unknown as { flip: () => void };
+    app = column;
+    flushSync();
+
+    expect(
+      openedMark,
+      'taking a seat on is the conversation opening, marked where it happens',
+    ).toHaveBeenCalledWith('Busytools/forge/lead');
+    expect(drawnMark, 'nothing is drawn before a page lands').not.toHaveBeenCalled();
+
+    server.answer([turn('t1')]);
+    await painted();
+    expect(drawnMark, 'the rows a seat draws are the mark').toHaveBeenCalled();
+
+    // The switch: the new seat's own conversation opens, and its own page is
+    // what puts the drawn mark down for it.
+    drawnMark.mockClear();
+    openedMark.mockClear();
+    column.flip();
+    flushSync();
+    expect(openedMark, 'the switched-to seat opens its own conversation').toHaveBeenCalledWith(
+      'Busytools/forge/w1',
+    );
+    expect(
+      drawnMark,
+      'the seat just switched to has not drawn its answer yet',
+    ).not.toHaveBeenCalled();
+
+    server.send({
+      kind: 'page',
+      conversation: { ...LEAD, label: 'w1' },
+      turns: [turn('t2')],
+      cursor: null,
+    });
+    await painted();
+    expect(drawnMark, "the switched-to seat's own drawing is the second mark").toHaveBeenCalled();
+  });
+
+  it('marks a seat whose conversation is empty, once its own state has drawn', async () => {
+    const server = stub();
+    drawnMark.mockClear();
+    draw({}, server);
+
+    expect(drawnMark, 'the column is reading, and a wait is not the answer').not.toHaveBeenCalled();
+
+    server.answer([]);
+    await painted();
+    expect(drawnMark, 'the empty state is the column answering').toHaveBeenCalled();
+  });
+
+  it('marks a seat that is only waking, with nothing on its way yet', () => {
+    const server = stub();
+    drawnMark.mockClear();
+    draw({ waking: true }, server);
+
+    expect(
+      drawnMark,
+      'a waking seat draws its own line, and that is the answer',
+    ).toHaveBeenCalled();
   });
 });
