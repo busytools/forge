@@ -21,6 +21,8 @@
    * filed, so the agent hears the reading's result and not merely that the
    * document opened.
    */
+  import { SvelteSet } from 'svelte/reactivity';
+
   import { report, type Connection } from '../socket';
   import { mintPromptId } from '../wire/ids';
   import { goTo } from '../routes';
@@ -33,6 +35,7 @@
     openCapture,
     takeCounts,
     takePhase,
+    takeSilenceLine,
     type TakeLine,
   } from '../composer/dictate.svelte';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from '../composer/dictation';
@@ -43,8 +46,18 @@
   import TakeCard from '../composer/TakeCard.svelte';
   import { joined, noticeLine } from '../composer/view';
   import { composerFrom } from '../composer/wire';
-  import { authorName } from '../review/view';
-  import { statusCommand, submitCommand, upsertCommand } from '../review/write';
+  import type { ReplyBox, Voice } from '../review/boxes';
+  import ResolvedMarker from '../review/ResolvedMarker.svelte';
+  import ThreadDelete from '../review/ThreadDelete.svelte';
+  import { authorName, statusName } from '../review/view';
+  import {
+    deleteCommand,
+    statusCommand,
+    submitCommand,
+    upsertCommand,
+    withEditedTurn,
+  } from '../review/write';
+  import WordsBox from '../review/WordsBox.svelte';
   import { watchSession, type SessionRead } from '../session/live';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import type { SessionSlot } from '../wire/types';
@@ -54,6 +67,7 @@
     docScope,
     docThread,
     draftsFor,
+    editDraftText,
     rowsOf,
     placedThreads,
     threadsAgainstAnotherVersion,
@@ -158,7 +172,39 @@
   let commentText = $state('');
   /** The block whose box began the current take, stamped when the take starts:
    *  it is what says the take goes with that box and lands only there. */
-  let takeIn = $state<number | null>(null);
+  let takeIn = $state<number | 'summary' | 'edit' | null>(null);
+  /** Whether the take being attempted began at the SUMMARY's mic - the box
+   *  its words are owed to. */
+  let pressedSummary = $state(false);
+  /** Whether the take being attempted began at an EDIT box's mic. */
+  let pressedEdit = $state(false);
+  /** The review's own words, the round's description (Ved, 2026-10-17). */
+  let summaryText = $state('');
+  let summaryField = $state<HTMLElement | null>(null);
+
+  /**
+   * The box an EDIT opens, wherever a comment is drawn: the thread - or the
+   * local draft - it changes, over the page's own take, so editing wears the
+   * same mic, bar and panel as every other box here.
+   */
+  let edit = $state<ReplyBox & { draftId: string | null }>({
+    thread: null,
+    index: null,
+    draftId: null,
+    draft: '',
+    busy: false,
+    line: null,
+    phase: null,
+    silent: null,
+    panel: false,
+    take: null,
+    wire: null,
+  });
+  let editField = $state<HTMLElement | null>(null);
+
+  /** The resolved comments the reader opened back up: collapsed by default,
+   *  the same rule every surface keeps. */
+  const opened = new SvelteSet<string>();
 
   /**
    * The seat's own record, read as an observer: the take's phase and the
@@ -218,7 +264,7 @@
     onStart: () => {
       // The take belongs to the box the press came from, which is the open
       // one: the mic is drawn only inside a box.
-      takeIn = composing;
+      takeIn = pressedEdit ? 'edit' : pressedSummary ? 'summary' : composing;
       dictateLine = null;
       // The arm this take's landing waits on, set at the press, on the seat
       // the take belongs to, with the notice the record was already showing -
@@ -238,6 +284,45 @@
 
   const rowPhase = $derived(takePhase(dictate, composer.take, slot));
   const rowWire = $derived(takeCounts(dictate, slot));
+  /** What the row says when the device is feeding this page's capture nothing. */
+  const rowSilent = $derived(takeSilenceLine(dictate, slot)?.text ?? null);
+
+  /** What dictation means to this page, in the shape the shared boxes read. */
+  const voice: Voice = {
+    dictate,
+    get offered() {
+      return dictation;
+    },
+    get connection() {
+      return connection;
+    },
+    get bind() {
+      return composer.bind;
+    },
+    get mode() {
+      return composer.mode;
+    },
+    get axes() {
+      return axes;
+    },
+    get device() {
+      return device;
+    },
+    get defaults() {
+      return defaults;
+    },
+    onaxes: setAxes,
+    ondevice: setDevice,
+  };
+
+  /** What the edit box reads off the page's state, the way every box does. */
+  $effect(() => {
+    edit.take = composer.take;
+    edit.wire = rowWire;
+    edit.phase = takeIn === 'edit' ? rowPhase : null;
+    edit.panel = dictate.panel && pressedEdit;
+    edit.line = pressedEdit || takeIn === 'edit' ? blockLine : null;
+  });
 
   /**
    * A landed take puts its words at the end of the box that began it, once.
@@ -269,6 +354,16 @@
     // the same notice over on every write.
     landing.placed(composer.notice);
     if (takeIn === null) return;
+    if (takeIn === 'edit') {
+      edit.draft = joined(edit.draft, words);
+      editField?.focus();
+      return;
+    }
+    if (takeIn === 'summary') {
+      summaryText = joined(summaryText, words);
+      summaryField?.focus();
+      return;
+    }
     // The words were submitted: a box closed or moved between the release
     // and the landing is opened again at the row that began the take, where
     // the reader sees them, rather than the drop being silent.
@@ -284,7 +379,8 @@
    * another block, one press from being filed against the wrong part.
    */
   $effect(() => {
-    if (takeIn === null || composing === takeIn) return;
+    if (takeIn === null || takeIn === 'summary' || takeIn === 'edit' || composing === takeIn)
+      return;
     // A take already SUBMITTED is not this effect's to cancel: the server
     // would read the stop as an abandon and drop words the reader kept.
     const live = dictate.take;
@@ -302,14 +398,41 @@
     dictateLine ?? noticeLine(composer.notice, landing.holds(composer.notice)),
   );
 
-  // The push-to-talk key, offered only while the box is open: it is where a
-  // take's words land, and a page with no box has nowhere to put them.
+  /**
+   * The box a key-begun take belongs to: the one the reader's caret is in,
+   * else the open block composer, else the round's summary - the box the
+   * exit row draws once there is a review to describe.
+   */
+  function pttBox(): 'composing' | 'summary' | 'edit' | null {
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) {
+      if (active === field) return 'composing';
+      if (active === summaryField) return 'summary';
+      if (active === editField) return 'edit';
+    }
+    if (edit.thread !== null || edit.draftId !== null) return 'edit';
+    if (composing !== null) return 'composing';
+    // A take already running keeps its box, so the key's release can end it.
+    if (takeIn !== null) {
+      return takeIn === 'summary' ? 'summary' : takeIn === 'edit' ? 'edit' : 'composing';
+    }
+    return held.path !== null && drafts.length > 0 ? 'summary' : null;
+  }
+
+  // The push-to-talk key, once for the page: a hold begins a take in the box
+  // it belongs to, exactly as the composer's own box does.
   bindPushToTalk({
     dictate: () => dictate,
-    offered: () => dictation && composing !== null,
+    offered: () => dictation && pttBox() !== null,
     bind: () => composer.bind,
     mode: () => composer.mode,
-    onBegin: () => field?.focus(),
+    onBegin: () => {
+      const at = pttBox();
+      if (at === null) return;
+      pressedSummary = at === 'summary';
+      pressedEdit = at === 'edit';
+      (at === 'summary' ? summaryField : at === 'edit' ? editField : field)?.focus();
+    },
   });
 
   /**
@@ -331,7 +454,8 @@
         event.preventDefault();
         event.stopPropagation();
         dictate.panel = false;
-        field?.focus();
+        // Back to the box the panel was opened off, whichever mic it was.
+        (pressedSummary ? summaryField : field)?.focus();
       }
     };
     window.addEventListener('keydown', onDown, true);
@@ -386,6 +510,97 @@
     commentText = '';
   }
 
+  /** The page's refusal line for the edit and delete writes. */
+  let said = $state<string | null>(null);
+
+  /**
+   * One write off the reader's own press, with the refusal drawn where the
+   * press was: the edit and the delete answer through their reply, and a
+   * `false` body is the store saying it did not take.
+   */
+  async function put(command: unknown): Promise<boolean> {
+    const answer = connection.dispatch(command as never, slot);
+    if (answer === null) {
+      said = 'the connection is down';
+      return false;
+    }
+    try {
+      const body = await answer;
+      said = null;
+      if (body !== false) reread();
+      return body !== false;
+    } catch (why) {
+      said = reasonOf(why);
+      return false;
+    }
+  }
+
+  /**
+   * The document's own re-read: a write here rides the read the way a review
+   * change rides the record on the other pages - without it the card keeps
+   * the words the write replaced (measured live, Ved 2026-10-17, the edit
+   * landing in the store and the page still reading the old text).
+   */
+  function reread(): void {
+    connection.readDocument(slot, held.path ?? path, reviewable);
+  }
+
+  /** Replace one filed turn's words - the same upsert, identity kept. */
+  async function editedThread(threadId: string, index: number, text: string): Promise<boolean> {
+    const full = held.threads.find((thread) => thread.id === threadId);
+    if (full === undefined) return false;
+    const ok = await put(upsertCommand(slot, scope, withEditedTurn(full, index, text)));
+    if (!ok) return false;
+    edit.thread = null;
+    edit.index = null;
+    edit.draft = '';
+    return true;
+  }
+
+  /** Replace one local draft's words, its stored thread carried along. */
+  function editedDraft(draftId: string, text: string): void {
+    const next = editDraftText(scope, draftId, text);
+    if (next === null) return;
+    draftsVersion += 1;
+    if (held.path !== null && held.contentHash !== null) {
+      void connection
+        ?.dispatch(upsertCommand(slot, scope, docThread(next, held.path, held.contentHash)))
+        ?.catch((why: unknown) => {
+          report('an edited comment could not be stored', why);
+        });
+      reread();
+    }
+    edit.draftId = null;
+    edit.draft = '';
+  }
+
+  /** The retraction of a filed thread, wherever its card is drawn. */
+  async function deletedThread(threadId: string): Promise<void> {
+    await put(deleteCommand(slot, scope, threadId));
+  }
+
+  /** Open a resolved comment back up: the status write every surface's
+   *  reopen rides. */
+  async function reopenedThread(threadId: string): Promise<void> {
+    await put(statusCommand(slot, scope, threadId, 'Open'));
+  }
+
+  /** The retraction of a local draft: off the shelf, and out of the store. */
+  function deletedDraft(draftId: string): void {
+    clearDrafts(scope, [draftId]);
+    draftsVersion += 1;
+    void connection?.dispatch(deleteCommand(slot, scope, draftId))?.catch((why: unknown) => {
+      report('a deleted comment could not be removed from the store', why);
+    });
+    reread();
+  }
+
+  /** Send the open edit box: a filed thread's turn, or a local draft. */
+  function sendEdit(text: string): void {
+    if (edit.thread !== null) void editedThread(edit.thread, edit.index ?? 0, text);
+    else if (edit.draftId !== null) editedDraft(edit.draftId, text);
+  }
+
   /**
    * The reader is done: file the drafts as one review (through the same
    * command a code review rides), then release the parked hand-off with
@@ -404,8 +619,12 @@
     if (held.path !== null && drafts.length > 0) {
       const ids = drafts.map((draft) => draft.id);
       let answer: unknown;
+      const summary = summaryText.trim();
       try {
-        answer = await connection.dispatch(submitCommand(slot, scope, ids, null), slot);
+        answer = await connection.dispatch(
+          submitCommand(slot, scope, ids, summary === '' ? null : summary),
+          slot,
+        );
       } catch (why) {
         finishState = { kind: 'refused', why: reasonOf(why) };
         return;
@@ -564,23 +783,110 @@
           {/if}
         </div>
         {#each threadsUnder(row) as thread (thread.id)}
-          <div class="doc-note">
-            <span class="doc-who"
-              >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
-            >
-            <!-- The words go through the chat's renderer, the same
+          {#if statusName(thread.status) === 'resolved' && !opened.has(thread.id)}
+            <ResolvedMarker
+              first={thread.comments[0]?.text ?? ''}
+              where={`${thread.anchor.path.split('/').pop() ?? ''} · line ${thread.anchor.line}`}
+              onopen={() => opened.add(thread.id)}
+            />
+          {:else}
+            <div class="doc-note">
+              <span class="doc-who"
+                >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
+              >
+              <!-- The words go through the chat's renderer, the same
                  `Prose` the review page's turns draw with, so a comment's
                  marks and its author's own lines read here as they read
                  there. -->
-            <Prose text={thread.comments[0]?.text ?? ''} preserveLines />
-          </div>
+              <Prose text={thread.comments[0]?.text ?? ''} preserveLines />
+              <div class="rv-acts">
+                {#if statusName(thread.status) === 'resolved'}
+                  <button class="rv-a" type="button" onclick={() => void reopenedThread(thread.id)}
+                    >reopen</button
+                  >
+                  <button class="rv-a" type="button" onclick={() => opened.delete(thread.id)}
+                    >collapse</button
+                  >
+                {/if}
+                <button
+                  class="rv-a"
+                  type="button"
+                  onclick={() => {
+                    edit.thread = thread.id;
+                    edit.index = 0;
+                    edit.draftId = null;
+                    edit.draft = thread.comments[0]?.text ?? '';
+                  }}>edit</button
+                >
+                <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
+              </div>
+            </div>
+          {/if}
+          {#if edit.thread === thread.id}
+            <WordsBox
+              class="doc-note doc-editbox"
+              rows={2}
+              placeholder="the comment's words..."
+              label="edit this comment"
+              sendLabel="save"
+              box={edit}
+              {voice}
+              onsend={sendEdit}
+              oncancel={() => {
+                edit.thread = null;
+                edit.index = null;
+                edit.draft = '';
+              }}
+              onpress={() => (pressedEdit = true)}
+              onhold={() => (pressedEdit = true)}
+              field={(el: HTMLElement | null) => {
+                editField = el;
+                el?.focus();
+              }}
+            />
+          {/if}
         {/each}
         {#each drafts.filter((draft) => draft.line === row.line) as draft (draft.id)}
           <div class="doc-note doc-draft">
             <span class="doc-who">you</span>
             <Prose text={draft.text} preserveLines />
             <span class="doc-cc">drafted</span>
+            <div class="rv-acts">
+              <button
+                class="rv-a"
+                type="button"
+                onclick={() => {
+                  edit.draftId = draft.id;
+                  edit.thread = null;
+                  edit.index = null;
+                  edit.draft = draft.text;
+                }}>edit</button
+              >
+              <ThreadDelete ondelete={() => deletedDraft(draft.id)} />
+            </div>
           </div>
+          {#if edit.draftId === draft.id}
+            <WordsBox
+              class="doc-note doc-editbox"
+              rows={2}
+              placeholder="the comment's words..."
+              label="edit this comment"
+              sendLabel="save"
+              box={edit}
+              {voice}
+              onsend={sendEdit}
+              oncancel={() => {
+                edit.draftId = null;
+                edit.draft = '';
+              }}
+              onpress={() => (pressedEdit = true)}
+              onhold={() => (pressedEdit = true)}
+              field={(el: HTMLElement | null) => {
+                editField = el;
+                el?.focus();
+              }}
+            />
+          {/if}
         {/each}
         {#if composing === row.line}
           <div class="doc-compose">
@@ -598,6 +904,7 @@
                     dictate.act('cancel');
                   }}
                   spread
+                  silent={rowSilent}
                 />
               {:else}
                 <Field
@@ -627,13 +934,23 @@
               >
               <button class="doc-cancel-btn" onclick={() => openComposer(row)}>cancel</button>
               {#if dictation}
-                <DictateControl {dictate} />
+                <DictateControl
+                  {dictate}
+                  onpress={() => {
+                    pressedSummary = false;
+                    pressedEdit = false;
+                  }}
+                  onhold={() => {
+                    pressedSummary = false;
+                    pressedEdit = false;
+                  }}
+                />
               {/if}
             </div>
             {#if blockLine !== null}
               <div class="doc-dictateline {blockLine.tone}">{blockLine.text}</div>
             {/if}
-            {#if dictate.panel}
+            {#if dictate.panel && !pressedSummary && !pressedEdit}
               <DictationPanel
                 {connection}
                 {axes}
@@ -667,13 +984,53 @@
                 >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
               >
               <Prose text={thread.comments[0]?.text ?? ''} preserveLines />
+              <div class="rv-acts">
+                <button
+                  class="rv-a"
+                  type="button"
+                  onclick={() => {
+                    edit.thread = thread.id;
+                    edit.index = 0;
+                    edit.draftId = null;
+                    edit.draft = thread.comments[0]?.text ?? '';
+                  }}>edit</button
+                >
+                <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
+              </div>
             </div>
+            {#if edit.thread === thread.id}
+              <WordsBox
+                class="doc-note doc-editbox"
+                rows={2}
+                placeholder="the comment's words..."
+                label="edit this comment"
+                sendLabel="save"
+                box={edit}
+                {voice}
+                onsend={sendEdit}
+                oncancel={() => {
+                  edit.thread = null;
+                  edit.index = null;
+                  edit.draft = '';
+                }}
+                onpress={() => (pressedEdit = true)}
+                onhold={() => (pressedEdit = true)}
+                field={(el: HTMLElement | null) => {
+                  editField = el;
+                  el?.focus();
+                }}
+              />
+            {/if}
           {/each}
         </section>
       {/if}
     </article>
   {:else}
     <p class="doc-said">{otherLine(held.kind)}</p>
+  {/if}
+
+  {#if said !== null}
+    <p class="doc-said">{said}</p>
   {/if}
 
   <!-- **Every opened document carries ONE door**, drawn on the page itself
@@ -694,11 +1051,77 @@
             : ' - the agent has it.'}
         </p>
       {:else}
-        <button
-          class="doc-finish-btn"
-          disabled={finishState.kind === 'busy'}
-          onclick={() => void done()}>done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
-        >
+        <!-- The round's description sits ABOVE the door, its own row and room
+             to write - and it is the review's description only when there is
+             a review to file (Ved, 2026-10-17: "the summary can be available
+             already right above the finish review button"). -->
+        {#if held.path !== null && drafts.length > 0}
+          {@const summaryPhase = takeIn === 'summary' ? rowPhase : null}
+          <div class="doc-wordline line" class:takeline={summaryPhase !== null}>
+            {#if summaryPhase !== null}
+              <TakeCard
+                take={composer.take}
+                wire={rowWire}
+                phase={summaryPhase}
+                oncancel={() => {
+                  landing.drop();
+                  dictate.act('cancel');
+                }}
+                spread
+              />
+            {:else}
+              <Field
+                editor="nowhere"
+                class="rv-txarea"
+                rows={3}
+                placeholder="summary (optional)"
+                aria={{ label: 'the round summary' }}
+                bind:value={summaryText}
+                field={(el: HTMLElement | null) => {
+                  summaryField = el;
+                }}
+              />
+            {/if}
+          </div>
+        {/if}
+        <div class="rv-finishacts">
+          <button
+            class="doc-finish-btn"
+            disabled={finishState.kind === 'busy'}
+            onclick={() => void done()}>done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
+          >
+          <!-- The mic lives with the box, not with the door: it draws only
+               when there is a summary to dictate into. -->
+          {#if dictation && held.path !== null && drafts.length > 0}
+            <DictateControl
+              {dictate}
+              onpress={() => {
+                pressedSummary = true;
+                pressedEdit = false;
+              }}
+              onhold={() => {
+                pressedSummary = true;
+                pressedEdit = false;
+              }}
+            />
+          {/if}
+          {#if dictate.panel && pressedSummary}
+            <DictationPanel
+              {connection}
+              {axes}
+              {defaults}
+              bind={composer.bind}
+              mode={composer.mode}
+              {device}
+              onaxes={setAxes}
+              ondevice={setDevice}
+              onclose={() => {
+                dictate.panel = false;
+                summaryField?.focus();
+              }}
+            />
+          {/if}
+        </div>
         {#if finishState.kind === 'refused'}
           <p class="doc-said">{finishState.why}</p>
         {/if}

@@ -22,6 +22,7 @@ each with the drawing it is held against beside it.
 - [The queue pile](./ui/client/queue.md)
 - [Board](./ui/client/board.md)
 - [Review](./ui/client/review.md)
+- [The files](./ui/client/files.md)
 - [Dictation models](./ui/client/dictate-models.md)
 - [Extensions](./ui/client/extensions.md)
 - [A document](./ui/client/document.md)

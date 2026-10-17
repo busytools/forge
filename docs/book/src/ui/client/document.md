@@ -32,6 +32,8 @@ with no comment affordance anywhere.
 | The document          | markdown rendered by the chat's own renderer; plain text as text; a PDF in the surface's own viewer; any other kind named as itself                                                                                                                         | the `document_read` answer: `document_kind` and the bytes                                                                    |
 | A readable markdown or text document | its top-level blocks, each one a comment target: hover (or focus) marks the block, a press opens the composer under it                                                                                                                        | the answer's `threads` and the page's own drafts                                                                             |
 | Outdated comments     | written against an earlier version of this document: their captured lines kept, in their own section - nothing re-anchors them                                                                                                                              | each thread's anchor `content_hash` against the answer's                                                                     |
+| Editing and deleting  | `edit` on a comment - a filed thread's or a local draft's, wherever it is drawn - opens the page's own box over its words, mic and all, and `save` rewrites it; `delete` takes the thread or the draft away, asking first. Either way the document is re-read, so the card draws what the store now holds | `upsert_review_thread` and `delete_review_thread`; the reply, then the `document_read` re-ask                                                                                                 |
+| Resolved              | a resolved comment collapses to its marker line like every other surface's, opened by a press, where `reopen` and `collapse` sit                                                                                                                            | the thread's status, and the page's own opened set                                                                          |
 | The done              | the one door, in every state: `done (n)` files the drafts as one round, pushes the review-ready line into the chat, releases the parked hand-off with what was filed, and returns to the session; a refusal draws the core's own words and keeps the drafts | `submit_review`'s reply, then `answer_document_hand_off`                                                                     |
 | The chat line         | `Review #N ready on the document - address it via the review MCP (review__list, with the scope doc:<path>)`, the core's own nudge                                                                                                                       | the page's own dispatch after the finish                                                                                     |
 | A refusal             | the server's sentence as its own line - missing, unreadable, over the ceiling, outside the session's tree, a text kind that is not UTF-8                                                                                                                    | the `error` naming `document_read`                                                                                           |
@@ -125,6 +127,11 @@ page returns to the session the reader came through: the done is the one
 door, and the chat line is the confirmation. A refusal files nothing and
 answers nothing: the call stays parked, the drafts stay where they were, and
 the refusal's words are what the page draws.
+
+**The round keeps a description.** Once there is a review to file, a summary
+box sits above the done - its own row, room to write, resizable - and its
+words ride the submit as the round's summary, the same one the review page's
+finish takes. It dictates like every box in the client.
 
 ## The states the page can be in
 

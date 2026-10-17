@@ -311,9 +311,20 @@ pub struct MockReviewFacade {
     /// Resolved scope; an `Err` exercises the unresolved-scope path.
     pub scope: parking_lot::Mutex<Result<ReviewScope, ScopeError>>,
     pub summaries: parking_lot::Mutex<Vec<ReviewSummary>>,
+    /// Summaries answered for a seat-TREE scope (the files page's reviews),
+    /// so a test can tell the two scopes' rows apart.
+    pub tree_summaries: parking_lot::Mutex<Vec<ReviewSummary>>,
     /// Branches the scope's project holds reviews on.
     pub review_branches: parking_lot::Mutex<Vec<String>>,
     pub detail: parking_lot::Mutex<Option<ReviewDetail>>,
+    /// Detail answered for a seat-tree scope.
+    pub tree_detail: parking_lot::Mutex<Option<ReviewDetail>>,
+    /// When true, ops on a non-tree scope fail as "not in this scope" -
+    /// the state the tool's seat-tree fallback exists for.
+    pub fail_non_tree: parking_lot::Mutex<bool>,
+    /// When set, a LIST on a seat-tree scope fails with this error - the
+    /// state the tool's degrade-and-state path exists for.
+    pub tree_list_error: parking_lot::Mutex<Option<String>>,
     /// Captured `(comment_id, text)` reply calls.
     pub reply_calls: parking_lot::Mutex<Vec<(String, String)>>,
     /// Captured `comment_id` resolve calls.
@@ -329,6 +340,13 @@ pub struct MockReviewFacade {
     pub scopes_seen: parking_lot::Mutex<Vec<String>>,
 }
 
+/// Whether a scope is a seat-TREE scope: the one the mock's calls below
+/// answer differently.
+#[cfg(test)]
+fn on_seat_tree(scope: &ReviewScope) -> bool {
+    forge_primitives::review::is_tree_scope(&scope.branch)
+}
+
 #[cfg(test)]
 impl MockReviewFacade {
     pub fn new() -> Self {
@@ -340,8 +358,12 @@ impl MockReviewFacade {
                 caller: SessionSlot::from_str_for_test("caller"),
             })),
             summaries: parking_lot::Mutex::new(Vec::new()),
+            tree_summaries: parking_lot::Mutex::new(Vec::new()),
             review_branches: parking_lot::Mutex::new(Vec::new()),
             detail: parking_lot::Mutex::new(None),
+            tree_detail: parking_lot::Mutex::new(None),
+            fail_non_tree: parking_lot::Mutex::new(false),
+            tree_list_error: parking_lot::Mutex::new(None),
             reply_calls: parking_lot::Mutex::new(Vec::new()),
             resolve_calls: parking_lot::Mutex::new(Vec::new()),
             reply_anchor: parking_lot::Mutex::new(CommentAnchorView {
@@ -387,6 +409,12 @@ impl ReviewFacade for MockReviewFacade {
 
     fn list(&self, scope: &ReviewScope) -> Result<Vec<ReviewSummary>, String> {
         self.scopes_seen.lock().push(scope.branch.clone());
+        if on_seat_tree(scope) {
+            if let Some(err) = self.tree_list_error.lock().clone() {
+                return Err(err);
+            }
+            return Ok(self.tree_summaries.lock().clone());
+        }
         Ok(self.summaries.lock().clone())
     }
 
@@ -396,7 +424,8 @@ impl ReviewFacade for MockReviewFacade {
 
     fn get(&self, scope: &ReviewScope, review_id: &str) -> Result<Option<ReviewDetail>, String> {
         self.scopes_seen.lock().push(scope.branch.clone());
-        Ok(self.detail.lock().clone().filter(|d| d.review_id == review_id))
+        let held = if on_seat_tree(scope) { self.tree_detail.lock() } else { self.detail.lock() };
+        Ok(held.clone().filter(|d| d.review_id == review_id))
     }
 
     fn reply(
@@ -410,6 +439,9 @@ impl ReviewFacade for MockReviewFacade {
         if let Some(err) = self.force_error.lock().clone() {
             return Err(err);
         }
+        if *self.fail_non_tree.lock() && !on_seat_tree(scope) {
+            return Err(format!("comment {comment_id} is not in this scope"));
+        }
         self.reply_calls.lock().push((comment_id.to_owned(), text.to_owned()));
         Ok(self.reply_anchor.lock().clone())
     }
@@ -418,6 +450,9 @@ impl ReviewFacade for MockReviewFacade {
         self.scopes_seen.lock().push(scope.branch.clone());
         if let Some(err) = self.force_error.lock().clone() {
             return Err(err);
+        }
+        if *self.fail_non_tree.lock() && !on_seat_tree(scope) {
+            return Err(format!("comment {comment_id} is not in this scope"));
         }
         self.resolve_calls.lock().push(comment_id.to_owned());
         Ok(self.resolve_anchor.lock().clone())

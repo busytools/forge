@@ -334,6 +334,17 @@
         margin: 8px 0;
         line-height: 1.55;
       }
+      /* The card's own verbs: the edit and the retraction every surface
+         draws (Ved, 2026-10-17). */
+      .strip .rv-acts { display: flex; gap: 8px; padding-top: 6px; }
+      .strip .rv-a {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 2px 9px;
+      }
       .strip .doc-note {
         display: flex;
         flex-wrap: wrap;
@@ -499,12 +510,39 @@
         white-space: pre-wrap;
       }
       .strip .doc-finish {
-        display: flex;
-        align-items: center;
-        gap: 12px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
         margin-top: 18px;
         padding-top: 12px;
         border-top: 1px solid var(--line);
+      }
+      /* The round's description, its own row above the door (roomy and
+         resizable on the real page). */
+      .strip .doc-finishbox {
+        background: var(--s1);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 6px 8px;
+        min-height: 52px;
+        font-size: var(--fs-base);
+        color: var(--dim);
+      }
+      .strip .doc-finishacts { display: flex; align-items: center; gap: 12px; }
+      .strip .doc-finishacts .mic {
+        flex: none;
+        margin-left: auto;
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        color: var(--dim);
+      }
+      .strip .doc-finishacts .ic {
+        width: 15px;
+        height: 15px;
+        flex: 0 0 15px;
+        display: block;
       }
       .strip .doc-left {
         color: var(--ok);
@@ -666,6 +704,10 @@ max_size_mib = 10</pre>
             <div class="doc-note">
               <span class="doc-who">you</span>
               <div class="prose"><p>name which document this is</p></div>
+              <div class="rv-acts">
+                <span class="rv-a">edit</span>
+                <span class="rv-a">delete</span>
+              </div>
             </div>
             <div class="doc-block target">
               <p>
@@ -734,7 +776,11 @@ max_size_mib = 10</pre>
             </div>
           </div>
           <div class="doc-finish">
-            <button class="doc-finish-btn">done (2)</button>
+            <div class="doc-finishbox">summary (optional)</div>
+            <div class="doc-finishacts">
+              <button class="doc-finish-btn">done (2)</button>
+              <span class="mic" title="dictation"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+            </div>
           </div>
         </div>
       </section>

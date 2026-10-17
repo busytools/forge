@@ -319,8 +319,8 @@ census!(Command,
         DeliverGotifyMessage struct, DictateStream struct,
         DictateStop struct,
         SetReviewThreadStatus struct,
-        CloseSession struct, UpsertReviewThread struct, SubmitReview struct,
-        BrowserIdleWarning struct,
+        CloseSession struct, UpsertReviewThread struct, DeleteReviewThread struct,
+        SubmitReview struct, BrowserIdleWarning struct,
     ],
     command_census, COMMAND_VARIANTS);
 
@@ -520,6 +520,39 @@ fn the_review_commands_cross_as_their_names() {
             assert!(reply_to.is_none(), "a status change rides the subscription, not a reply");
         }
         other => panic!("a status change decoded as {other:?}"),
+    }
+
+    let written = serde_json::to_value(Command::DeleteReviewThread {
+        project: "proj".to_owned(),
+        branch: "b".to_owned(),
+        thread_id: "t1".to_owned(),
+        respond: None,
+    })
+    .expect("the variant encodes");
+    assert!(written.get("delete_review_thread").is_some(), "delete: {written}");
+    let delete = frame(
+        json!({
+            "delete_review_thread": {
+                "project": "proj",
+                "branch": "b",
+                "thread_id": "t1",
+            }
+        }),
+        json!(9),
+    );
+    let message: ClientMessage =
+        serde_json::from_value(delete).expect("the frame the review cards write parses");
+    let ClientMessage::Command { command, reply_to } = message else {
+        panic!("a command frame decoded as {message:?}");
+    };
+    match *command {
+        Command::DeleteReviewThread { project, branch, thread_id, .. } => {
+            assert_eq!(project, "proj");
+            assert_eq!(branch, "b");
+            assert_eq!(thread_id, "t1");
+            assert_eq!(reply_to, Some(9), "the delete answers through a reply");
+        }
+        other => panic!("a delete decoded as {other:?}"),
     }
 }
 

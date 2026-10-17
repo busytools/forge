@@ -265,6 +265,16 @@
       "value": []
     }
   },
+  "tree_reviews": {
+    "threads": {
+      "outcome": "read",
+      "value": []
+    },
+    "reviews": {
+      "outcome": "read",
+      "value": []
+    }
+  },
   "work": {
     "branch": "worktree-pr",
     "changed": 2,

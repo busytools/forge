@@ -57,9 +57,41 @@ describe('the shipped bundle', () => {
     expect(existsSync(path.join(dist, 'favicon.png')), 'the built bundle carries no favicon').toBe(
       true,
     );
-    expect(
-      readFileSync(path.join(dist, 'index.html'), 'utf8'),
-      'the built page carries no link to the mark',
-    ).toContain('/favicon.png');
+    const entry = readFileSync(path.join(dist, 'index.html'), 'utf8');
+    expect(entry, 'the built page carries no link to the mark').toContain('/favicon.png');
+
+    // **The reader's chunk stays lazy** - the book's own promise, so far
+    // checked by nothing: an eagerly inlined CodeMirror or shiki would ship
+    // on every page load and stay green here (the lead's gate, 2026-10-17).
+    // The markers live only in the machinery: CodeMirror's own error string
+    // and shiki's theme name - **not** `cm-editor` or `shiki`, which the
+    // page's own source spells (a typing check names `.cm-editor`, and the
+    // first cut of this guard matched exactly that). The POSITIVE half is
+    // asserted too: a build that simply dropped the machinery would
+    // otherwise pass in silence.
+    //
+    // **And the negative half cannot pass while checking nothing** (the
+    // delta's N1): a bundler that renames or preloads differently leaves the
+    // regex matching nothing, an empty `booted`, and both `.not.toContain`
+    // assertions green - a control proving the classifier, never that the
+    // parse ran. The coverage assertion below refuses that, and the scope is
+    // stated: this guards "the entries the page names do not inline the
+    // machinery", not "the machinery is reachable only lazily".
+    const entrySources = [...entry.matchAll(/src="([^"]+\.js)"/g)].map((match) =>
+      readFileSync(path.join(dist, (match[1] ?? '').replace(/^\//, '')), 'utf8'),
+    );
+    expect(entrySources.length, 'the built page names at least one entry script').toBeGreaterThan(
+      0,
+    );
+    const booted = entrySources.join('\n');
+    expect(booted.length, 'and the entry the check reads is not empty').toBeGreaterThan(0);
+    expect(booted, 'CodeMirror reached the entry the app boots from').not.toContain(
+      'Unrecognized extension value',
+    );
+    expect(booted, 'shiki reached the entry the app boots from').not.toContain('github-dark');
+    expect(bundle, 'and the machinery is still shipped, in its own chunk').toContain(
+      'Unrecognized extension value',
+    );
+    expect(bundle, 'and the theme with it').toContain('github-dark');
   }, 60_000);
 });

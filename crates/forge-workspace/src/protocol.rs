@@ -764,6 +764,16 @@ pub enum Command {
         #[serde(skip)]
         respond: Option<oneshot::Sender<bool>>,
     },
+    /// Delete one review thread from `(project, branch)` - the reviewer's
+    /// own retraction, wherever its card is drawn. `respond` carries
+    /// whether the store confirmed; `None` when the write failed.
+    DeleteReviewThread {
+        project: String,
+        branch: String,
+        thread_id: String,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<bool>>,
+    },
     /// Submit (seal) the listed threads as one review round.
     /// `respond` carries the minted review, `None` when the store
     /// write failed. App-level command (`key()` returns `None`).
@@ -856,6 +866,7 @@ impl Command {
             | Self::SetReviewThreadStatus { .. }
             | Self::CloseSession { .. }
             | Self::UpsertReviewThread { .. }
+            | Self::DeleteReviewThread { .. }
             | Self::RespondSlackPost { .. }
             | Self::RespondBrowserHandOff { .. }
             | Self::AnswerDocumentHandOff { .. }
@@ -1060,6 +1071,12 @@ impl std::fmt::Debug for Command {
                 .field("project", project)
                 .field("branch", branch)
                 .field("thread_id", &thread.id)
+                .finish_non_exhaustive(),
+            Self::DeleteReviewThread { project, branch, thread_id, .. } => f
+                .debug_struct("DeleteReviewThread")
+                .field("project", project)
+                .field("branch", branch)
+                .field("thread_id", thread_id)
                 .finish_non_exhaustive(),
             Self::SubmitReview { project, branch, thread_ids, .. } => f
                 .debug_struct("SubmitReview")

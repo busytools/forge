@@ -81,6 +81,28 @@ describe('the URLs the server serves', () => {
     });
   });
 
+  it('resolves a seat files path as a sub-path of the seat and round-trips it', () => {
+    // The same swallow the review case guards: the bare four-segment path
+    // must not eat the fifth.
+    const files = {
+      name: 'files',
+      slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+    } as const;
+    expect(parseRoute('/session/Busytools/forge/lead/files')).toEqual(files);
+    expect(parseRoute(hrefFor(files))).toEqual(files);
+    expect(titleFor(files)).toBe('forge \u{b7} files');
+    expect(titleFor({ name: 'files', slot: { org: 'O', project: 'forge', label: 'w1' } })).toBe(
+      'forge \u{b7} w1 \u{b7} files',
+    );
+  });
+
+  it('refuses a files path whose last segment is not `files`', () => {
+    expect(parseRoute('/session/Busytools/forge/lead/filez')).toEqual({ name: 'notFound' });
+    expect(parseRoute('/session/Busytools/forge/lead/files/extra')).toEqual({
+      name: 'notFound',
+    });
+  });
+
   it('refuses a path the server does not serve', () => {
     expect(parseRoute('/sessions')).toEqual({ name: 'notFound' });
     expect(parseRoute('/session/Busytools/forge/lead/extra')).toEqual({ name: 'notFound' });

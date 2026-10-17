@@ -20,9 +20,11 @@
   import { mount, unmount, untrack, type ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
+  import FileTree from '../components/FileTree.svelte';
+  import { toggleClosed, type TreeRow } from '../components/tree';
   import type { Dictation } from '../composer/dictate.svelte';
   import type { Connection } from '../socket';
-  import type { CommentBox, ReplyBox, Voice } from './boxes';
+  import type { CommentBox, ReplyBox, TurnEditor, Voice } from './boxes';
   import type {
     DiffFileRecord,
     DiffLayerRecord,
@@ -55,6 +57,8 @@
   import { canvasLine, statusName, threadsInScope } from './view';
   import { captureContext, type ComposedComment, type ReviewSpot } from './write';
   import { Mounts } from './mounts';
+  import ResolvedMarker from './ResolvedMarker.svelte';
+  import ThreadDelete from './ThreadDelete.svelte';
   import ThreadTurn from './ThreadTurn.svelte';
   import WordsBox from './WordsBox.svelte';
 
@@ -73,6 +77,9 @@
     reviews,
     busy,
     dictate,
+    keysOff = false,
+    editor = null,
+    ondelete = null,
     focusComment,
     box = $bindable(),
     reply = $bindable(),
@@ -97,6 +104,13 @@
     busy: boolean;
     /** The take this page owns, which every box's mic drives. */
     dictate: Dictation;
+    /** Hold the tree's keys: the page's picker takes the arrows while it is
+     *  open, and two walkers on one key are one too many. */
+    keysOff?: boolean;
+    /** The page's edit box, handed to every turn its cards draw. */
+    editor?: TurnEditor | null;
+    /** Remove a thread; absent where the surface offers no delete. */
+    ondelete?: ((thread: ReviewThreadRecord) => void | Promise<void>) | null;
     /** The comment the stepper moved to, and the step's own number: the
      *  canvas brings that card into view, a repeat of the same target
      *  included. */
@@ -129,8 +143,7 @@
   const fetched = new SvelteMap<string, DiffLayerRecord>();
 
   function toggle(set: SvelteSet<string>, key: string): void {
-    if (set.has(key)) set.delete(key);
-    else set.add(key);
+    toggleClosed(set, key);
   }
 
   let now = $state(Date.now());
@@ -166,6 +179,9 @@
   const scopeLayer = $derived(scopeCommit === null ? layer : (fetched.get(scopeCommit) ?? null));
   const scopeFiles = $derived(scopeLayer === null ? [] : filesOf(scopeLayer));
   const tree = $derived(treeRows(scopeFiles, closedDirs));
+  /** One file by its path, so the tree's trailing snippet looks up what it
+   *  draws in constant time rather than scanning the scope per row. */
+  const fileByPath = $derived(new Map(scopeFiles.map((file) => [file.path, file])));
   const scoped = $derived(threadsInScope(threads, scopeCommit));
 
   /** The socket's own state, which is when a dropped ask is worth repeating. */
@@ -251,7 +267,11 @@
     const scope = scopeLayer;
     const files = scopeFiles;
     const key = scopeCommit ?? 'all';
-    if (scope === null || builtKey === key) return;
+    // **An empty pass must not claim the key.** A layer can be present while
+    // its files are still filling; a build that lands `built = []` AND
+    // stamps the key would wedge the canvas, because the filled pass then
+    // returns at the guard and the diff never draws.
+    if (scope === null || builtKey === key || files.length === 0) return;
     void (async () => {
       const { DiffFile } = await import('@git-diff-view/core');
       const next = files.map((file) => {
@@ -449,6 +469,86 @@
       window.removeEventListener('scroll', onScroll, true);
       if (markFrame !== 0) cancelAnimationFrame(markFrame);
     };
+  });
+
+  /**
+   * The tree's keyboard, the files page's own walk (Ved, 2026-10-17): the
+   * arrows move the mark WITHOUT a prior focus, Home and End go to the ends,
+   * moving onto a file scrolls to it and Enter folds a directory. Only the
+   * vertical pair: on this page the horizontal arrows are the scope and
+   * comment stepper's, so folding stays a press here.
+   */
+  let keyRow = $state<string | null>(null);
+
+  $effect(() => {
+    const typingSomewhere = (target: EventTarget | null): boolean =>
+      target instanceof HTMLElement &&
+      (target.closest('.cm-editor') !== null ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target.isContentEditable);
+    const land = (row: TreeRow<unknown> | undefined): void => {
+      if (row === undefined) return;
+      keyRow = row.path;
+      if (row.kind === 'file') jumpTo(row.path);
+    };
+    const step = (delta: number): void => {
+      const paths = tree.map((row) => row.path);
+      if (paths.length === 0) return;
+      const from = keyRow === null ? paths.indexOf(current ?? '') : paths.indexOf(keyRow);
+      const at = Math.min(Math.max((from === -1 ? -1 : from) + delta, 0), paths.length - 1);
+      land(tree[at]);
+    };
+    const onkey = (event: KeyboardEvent): void => {
+      if (keysOff) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (typingSomewhere(event.target)) return;
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          step(1);
+          break;
+        case 'ArrowUp':
+          event.preventDefault();
+          step(-1);
+          break;
+        case 'Home':
+          event.preventDefault();
+          land(tree[0]);
+          break;
+        case 'End':
+          event.preventDefault();
+          land(tree.at(-1));
+          break;
+        case 'Enter': {
+          const row = tree.find((held) => held.path === keyRow);
+          if (row === undefined) return;
+          event.preventDefault();
+          if (row.kind === 'dir') toggle(closedDirs, row.path);
+          else jumpTo(row.path);
+          break;
+        }
+        default:
+          break;
+      }
+    };
+    addEventListener('keydown', onkey);
+    return () => removeEventListener('keydown', onkey);
+  });
+
+  // A row the Tab key lands on becomes the keyboard's row too, so the mark
+  // follows real focus.
+  $effect(() => {
+    const onfocus = (event: FocusEvent): void => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const row = target.closest('button.rv-dir, button.rv-frow');
+      if (row instanceof HTMLElement && row.dataset.path !== undefined) {
+        keyRow = row.dataset.path;
+      }
+    };
+    addEventListener('focusin', onfocus);
+    return () => removeEventListener('focusin', onfocus);
   });
 
   // A change of scope, mode or set of drawn files moves the sections
@@ -654,6 +754,17 @@
     void scoped;
     void box.spot;
     void reply.thread;
+    // The row keys carry it too, so a press on a resolved marker (or an
+    // edit opening on a turn) is this pass's business - **and the read has
+    // to happen HERE, in the effect's tracked scope**: the key is computed
+    // in the rAF callback below, where nothing tracks it, so a bare
+    // `openedResolved.has()` there never re-runs the pass and the marker
+    // could never open (Ved, 2026-10-17; the contents map above is the same
+    // shape).
+    void reply.index;
+    for (const thread of scoped) {
+      void openedResolved.has(thread.id);
+    }
     void busy;
     void built;
     // A read landing, or a gap the reader opened, changes which controls are
@@ -683,9 +794,14 @@
           const side = thread.anchor.side === 'old' ? 'old' : 'new';
           const placed = canvasLine(thread, scopeCommit);
           if (placed === null) continue;
+          // The key carries the thread's own state - an edited turn's stamp
+          // included, or the reconciler keeps a card whose words moved under
+          // it (the files reader measured the same trap live, 2026-10-17).
           const key = `t:${thread.id}:${statusName(thread.status)}:${thread.comments.length}:${
-            reply.thread === thread.id ? 'open' : ''
-          }`;
+            thread.updated_at
+          }:${reply.thread === thread.id ? 'open' : ''}:${
+            reply.thread === thread.id && reply.index !== null ? `edit-${reply.index}` : ''
+          }:${openedResolved.has(thread.id) ? 'opened' : ''}`;
           want.push({
             key,
             side,
@@ -814,8 +930,16 @@
    *  swept where one leaves without the reconciler seeing it. */
   const mounts = new Mounts();
 
+  /** The resolved rows the reader opened back up: collapsed by default, the
+   *  files reader's own rule. */
+  const openedResolved = new SvelteSet<string>();
+
   /** One turn, drawn by the piece both halves of the page draw. */
-  function turnBlock(turn: ReviewThreadRecord['comments'][number], index: number): HTMLElement {
+  function turnBlock(
+    thread: ReviewThreadRecord,
+    turn: ReviewThreadRecord['comments'][number],
+    index: number,
+  ): HTMLElement {
     const host = document.createElement('div');
     const held = mount(ThreadTurn, {
       target: host,
@@ -825,6 +949,8 @@
         turn,
         rounds: reviews,
         index,
+        thread: thread.id,
+        editor,
         get now() {
           return now;
         },
@@ -851,19 +977,25 @@
       tops.append(span('rv-moved', `moved from ${placed.movedFrom}`));
     }
     card.append(tops);
-    thread.comments.forEach((turn, index) => card.append(turnBlock(turn, index)));
+    thread.comments.forEach((turn, index) => card.append(turnBlock(thread, turn, index)));
     const acts = document.createElement('div');
     acts.className = 'rv-acts';
-    const respond = document.createElement('button');
-    respond.type = 'button';
-    respond.className = 'rv-a';
-    respond.textContent = 'respond';
-    respond.disabled = busy;
-    respond.addEventListener('click', () => {
-      reply.thread = reply.thread === thread.id ? null : thread.id;
-      reply.draft = '';
-    });
-    acts.append(respond);
+    // Resolved draws no respond: it is accepted, and answering an accepted
+    // thread is the reopen's job (Ved, 2026-10-17: "should only be reopen,
+    // collapse, and delete").
+    if (statusName(thread.status) !== 'resolved') {
+      const respond = document.createElement('button');
+      respond.type = 'button';
+      respond.className = 'rv-a';
+      respond.textContent = 'respond';
+      respond.disabled = busy;
+      respond.addEventListener('click', () => {
+        reply.thread = reply.thread === thread.id ? null : thread.id;
+        reply.index = null;
+        reply.draft = '';
+      });
+      acts.append(respond);
+    }
     if (statusName(thread.status) === 'resolved') {
       const reopen = document.createElement('button');
       reopen.type = 'button';
@@ -872,6 +1004,13 @@
       reopen.disabled = busy;
       reopen.addEventListener('click', () => void onreopen(thread));
       acts.append(reopen);
+      // Fold it back to the marker it came from, as the files reader does.
+      const fold = document.createElement('button');
+      fold.type = 'button';
+      fold.className = 'rv-a';
+      fold.textContent = 'collapse';
+      fold.addEventListener('click', () => openedResolved.delete(thread.id));
+      acts.append(fold);
     } else {
       const resolve = document.createElement('button');
       resolve.type = 'button';
@@ -881,8 +1020,23 @@
       resolve.addEventListener('click', () => void onresolve(thread));
       acts.append(resolve);
     }
+    if (ondelete !== null) {
+      // The retraction, drawn by the piece every surface draws it with.
+      const delHost = document.createElement('span');
+      const del = mount(ThreadDelete, {
+        target: delHost,
+        props: {
+          ondelete: () => ondelete?.(thread),
+          get busy() {
+            return busy;
+          },
+        },
+      });
+      mounts.hold(delHost, () => void unmount(del));
+      acts.append(delHost);
+    }
     card.append(acts);
-    if (reply.thread === thread.id) {
+    if (reply.thread === thread.id && reply.index === null) {
       // **The same words box the comment is, mounted the same way.** A reply
       // takes the mic, the take's bar and the settings panel exactly as the
       // comment box does, and one component draws both halves' boxes - the
@@ -935,13 +1089,22 @@
   ): HTMLTableRowElement {
     const wrap = document.createElement('div');
     wrap.className = 'rv-inline';
-    if (statusName(thread.status) === 'resolved') {
-      const marker = document.createElement('div');
-      marker.className = 'rv-marker';
-      marker.append(mark('resolved'));
-      marker.append(span('rv-mk-word', 'resolved'));
-      marker.append(span('rv-mk-first', thread.comments[0]?.text ?? ''));
-      wrap.append(marker);
+    if (statusName(thread.status) === 'resolved' && !openedResolved.has(thread.id)) {
+      // The marker used to be a plain div with no press: a resolved thread
+      // collapsed and could never be opened again (Ved, 2026-10-17: "I
+      // cannot even expand it... it never expands"). The shared marker is a
+      // real button, and its press lands the row back as the card.
+      const host = document.createElement('div');
+      const held = mount(ResolvedMarker, {
+        target: host,
+        props: {
+          first: thread.comments[0]?.text ?? '',
+          where: `${thread.anchor.path.split('/').pop() ?? ''} · line ${placed.line}`,
+          onopen: () => openedResolved.add(thread.id),
+        },
+      });
+      mounts.hold(host, () => void unmount(held));
+      wrap.append(host);
     } else {
       wrap.append(threadCard(thread, placed));
     }
@@ -1256,51 +1419,35 @@
   }
 </script>
 
-<nav class="rv-files" aria-label="files in this scope">
-  <h2 class="rv-h">Files <span class="rv-n">{scopeFiles.length}</span></h2>
-  {#each tree as row (row.kind + ':' + row.path)}
-    {#if row.kind === 'dir'}
-      <button
-        type="button"
-        class="rv-dir"
-        style="--d:{row.depth}"
-        aria-expanded={!closedDirs.has(row.path)}
-        onclick={() => toggle(closedDirs, row.path)}
-      >
-        <span class="rv-arw" class:open={!closedDirs.has(row.path)}>&#9656;</span>
-        <span class="rv-dirname">{row.name}/</span>
-        <span class="rv-dircount">{row.count}</span>
-      </button>
-    {:else}
-      {@const file = row.file}
-      {#if file !== null}
-        {@const at = lineCounts(file)}
-        {@const mine = scoped.filter(
-          (thread) => thread.anchor.path === file.path && canvasLine(thread, scopeCommit) !== null,
-        )}
-        <button
-          type="button"
-          class="rv-frow"
-          class:renamed={file.oldPath !== null}
-          class:here={current === file.path}
-          aria-current={current === file.path}
-          style="--d:{row.depth}"
-          title={row.path}
-          onclick={() => jumpTo(file.path)}
-        >
-          <span class="rv-fpath">{row.name}</span>
-          <span class="rv-fstat">
-            {#if at.plus > 0}<span class="rv-plus">+{at.plus}</span>{/if}
-            {#if at.minus > 0}<span class="rv-minus">-{at.minus}</span>{/if}
-          </span>
-          <span class="rv-fcount">
-            {#if mine.length}<span class="rv-ccnum">{mine.length}</span>{/if}
-          </span>
-        </button>
-      {/if}
+<FileTree
+  rows={tree}
+  heading="Files"
+  label="files in this scope"
+  count={scopeFiles.length}
+  closed={closedDirs}
+  here={current}
+  active={keyRow}
+  renamed={(path) => (fileByPath.get(path)?.oldPath ?? null) !== null}
+  ondir={(path) => toggle(closedDirs, path)}
+  onfile={jumpTo}
+>
+  {#snippet trailing(row: TreeRow<unknown>)}
+    {@const file = fileByPath.get(row.path)}
+    {#if file !== undefined}
+      {@const at = lineCounts(file)}
+      {@const mine = scoped.filter(
+        (thread) => thread.anchor.path === file.path && canvasLine(thread, scopeCommit) !== null,
+      )}
+      <span class="rv-fstat">
+        {#if at.plus > 0}<span class="rv-plus">+{at.plus}</span>{/if}
+        {#if at.minus > 0}<span class="rv-minus">-{at.minus}</span>{/if}
+      </span>
+      <span class="rv-fcount">
+        {#if mine.length}<span class="rv-ccnum">{mine.length}</span>{/if}
+      </span>
     {/if}
-  {/each}
-</nav>
+  {/snippet}
+</FileTree>
 
 <main class="rv-canvas" bind:this={canvasEl}>
   {#if scopeLayer === null}

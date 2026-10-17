@@ -10,6 +10,7 @@
  * refilling on every blip.
  */
 
+import { READ_BOUND_MS, ReadBounds } from './read-bound';
 import { refused } from './refusals';
 import { StreamGate } from './session/stream';
 import {
@@ -66,8 +67,13 @@ export interface Connection {
    * per subscribe and removes one per unsubscribe, and that count is what it
    * filters every update against, so a second subscribe with nothing given
    * back would grow the list for the life of the connection.
+   *
+   * **Answers whether the ask really went**, which a page's own refresh has
+   * no use for and the read bound has: a connection that is down or closed
+   * has nothing to ask on, and a bound must not re-arm for a read it did not
+   * ask.
    */
-  refresh(what: Subject): void;
+  refresh(what: Subject): boolean;
   /**
    * Send a core command.
    *
@@ -236,13 +242,14 @@ export interface Connection {
  * The commands that answer through a reply, mirroring the server's
  * `answers_through_a_reply`.
  *
- * These four are the ones with nothing behind them on the wire: a client that
+ * These are the ones with nothing behind them on the wire: a client that
  * omits `reply_to` for one of them has no second way to learn what happened.
  */
 const ANSWERS_THROUGH_A_REPLY = new Set([
   'spawn_worker',
   'despawn_worker',
   'upsert_review_thread',
+  'delete_review_thread',
   'submit_review',
 ]);
 
@@ -305,8 +312,14 @@ export function report(what: string, why: unknown): void {
   console.warn(`forge client: ${what}`, why);
 }
 
-export function connect(url: string): Connection {
+export function connect(url: string, boundMs: number = READ_BOUND_MS): Connection {
   const stores = new Stores();
+  /**
+   * The bound on a subscription's first read: a subject still loading when
+   * it runs out is asked again, so a snapshot lost on a live socket is not
+   * a wait with nothing behind it.
+   */
+  const bounds = new ReadBounds(stores, (what) => refresh(what), boundMs);
   /** What to ask for again on a reconnect, in the order it was first asked. */
   const held = new Map<string, { subject: Subject; answering: boolean; browser: boolean }>();
   const listeners = new Set<(message: ServerMessage) => void>();
@@ -420,6 +433,8 @@ export function connect(url: string): Connection {
       report(`the server refused ${key}, which this client no longer holds`, why);
       return;
     }
+    // A refusal is an answer: nothing is owed on that subject any more.
+    bounds.clearKey(key);
     store.refuse(why);
     report(`the subscription to ${key} was refused`, why);
   }
@@ -428,6 +443,9 @@ export function connect(url: string): Connection {
   function askFor(what: Subject, answering: boolean, browser: boolean, declare = false): void {
     sendNow({ kind: 'subscribe', what, answering, browser, declare });
     awaiting.push(subjectKey(what));
+    // The read this ask owes is bounded from here: nothing else would ask
+    // again for a snapshot that simply never came.
+    bounds.arm(what);
   }
 
   /**
@@ -452,6 +470,29 @@ export function connect(url: string): Connection {
   function answered(what: Subject): void {
     const at = awaiting.indexOf(subjectKey(what));
     if (at >= 0) awaiting.splice(at, 1);
+    bounds.clear(what);
+  }
+
+  /**
+   * Every outstanding ask for one subject, dropped.
+   *
+   * A refresh re-asks the SAME subscription - the server counts the pair
+   * evenly - so the bookkeeping has to be net-zero too. Left alone, an ask
+   * whose answer was lost keeps its entry, the re-ask adds another, and a
+   * later refusal (which carries no subject and takes the oldest key) would
+   * flip the store of the ask that is already spent rather than the one the
+   * server refused.
+   *
+   * **The Rust half's purge is narrower than this rule**: its `unhold` drops
+   * the key only when the last unsubscribe takes a subject's hold count to
+   * zero, so a subject two callers hold keeps the surplus there - a gap of
+   * its own, filed separately, where this covers the web transport.
+   */
+  function forget(what: Subject): void {
+    const key = subjectKey(what);
+    for (let at = awaiting.length - 1; at >= 0; at -= 1) {
+      if (awaiting[at] === key) awaiting.splice(at, 1);
+    }
   }
 
   function handle(message: ServerMessage): void {
@@ -497,6 +538,7 @@ export function connect(url: string): Connection {
       case 'page':
       case 'commit_diff':
       case 'file_content':
+      case 'document_read':
         return;
       // `seat_frames` is the conversation's too, and the same way: a repaired
       // stretch folds through the chat's own listener, so this switch knows
@@ -756,13 +798,16 @@ export function connect(url: string): Connection {
     }
   }
 
-  function refresh(what: Subject): void {
+  /** `true` when the pair went, which is what a bound re-arms on. */
+  function refresh(what: Subject): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
-    if (!isOpen()) return;
+    if (!isOpen()) return false;
+    forget(what);
     sendNow({ kind: 'unsubscribe', what });
     const declaration = held.get(subjectKey(what));
     askFor(what, declaration?.answering ?? false, declaration?.browser ?? false);
+    return true;
   }
 
   function dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null {
@@ -910,6 +955,8 @@ export function connect(url: string): Connection {
     },
     close() {
       move('closed');
+      // A closed connection has nothing to ask on.
+      bounds.stop();
       if (retry !== null) clearTimeout(retry);
       retry = null;
       failPending('the connection was closed');

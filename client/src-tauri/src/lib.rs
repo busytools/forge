@@ -40,6 +40,8 @@ pub mod asks;
 pub mod bridge;
 pub mod browser;
 pub mod mic;
+#[cfg(target_os = "android")]
+pub mod micstate;
 pub mod perf;
 pub mod records;
 pub mod socket;
@@ -391,6 +393,7 @@ pub fn run() {
             commands::client_mic_drain,
             commands::client_mic_stop,
             commands::client_mic_devices,
+            client_mic_state,
             commands::client_read_document,
             commands::client_file_content,
             commands::client_commit_diff,
@@ -414,8 +417,11 @@ pub fn run() {
     // engine, in-app libnode for the driver), so its command set is the
     // desktop's, served by `browser::android`'s engine bridge.
     #[cfg(target_os = "android")]
-    let builder = builder.plugin(android::init()).plugin(browser::android::init()).invoke_handler(
-        tauri::generate_handler![
+    let builder = builder
+        .plugin(android::init())
+        .plugin(micstate::init())
+        .plugin(browser::android::init())
+        .invoke_handler(tauri::generate_handler![
             browser::browser_call,
             browser::browser_profile_close,
             browser::browser_profile_delete,
@@ -440,6 +446,7 @@ pub fn run() {
             commands::client_mic_drain,
             commands::client_mic_stop,
             commands::client_mic_devices,
+            client_mic_state,
             commands::client_read_document,
             commands::client_file_content,
             commands::client_commit_diff,
@@ -447,8 +454,7 @@ pub fn run() {
             commands::client_heartbeat,
             commands::client_close,
             perf::client_perf
-        ],
-    );
+        ]);
 
     let run = builder
         .setup(|app| {
@@ -510,6 +516,34 @@ pub fn run() {
             mic.release();
         }
     });
+}
+
+/// What this platform is doing to the microphone right now, or `None` where
+/// it reports nothing of the kind - the desktop and the browser both draw the
+/// row's line without a cause.
+#[cfg(desktop)]
+#[tauri::command]
+async fn client_mic_state() -> Result<Option<crate::mic::MicState>, String> {
+    Ok(None)
+}
+
+/// [`client_mic_state`], answered by the phone's own readers.
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn client_mic_state(app: tauri::AppHandle) -> Result<Option<crate::mic::MicState>, String> {
+    let Some(reader) = app.try_state::<std::sync::Arc<crate::micstate::Reader>>() else {
+        // The row's line still draws without a cause, so this is the log's
+        // business rather than the page's.
+        tauri_plugin_log::log::warn!("the microphone's state readers are not up");
+        return Ok(None);
+    };
+    match reader.state().await {
+        Ok(state) => Ok(Some(state)),
+        Err(why) => {
+            tauri_plugin_log::log::warn!("the microphone's state could not be read: {why}");
+            Ok(None)
+        }
+    }
 }
 
 /// The version an update check found, or `None` when this build is current.

@@ -171,6 +171,7 @@
   .tc .ready { color: var(--muted); }
   .tc .fr, .tc .kb { color: var(--dim); }
   .tc .pace { color: var(--ok); }
+  .tc .silent { color: var(--dim); flex: 1 1 auto; min-width: 0; }
   .tc .count { color: var(--blue); }
   .tc .x { color: var(--dim); }
   .tc .bars { display: flex; align-items: flex-end; gap: 1px; width: 116px;
@@ -593,7 +594,8 @@ heading, and a query drops the headings and leaves the order.</p>
 into becomes the take, so nothing is added and nothing moves when a take starts or ends - the
 card keeps its readings and drops only its own chrome in this context, because the surface's
 ring already says recording or transcribing. The card is the dot, the clock, the level graph,
-the ready tally, the frames, the bytes, the pace and the way out &#8212; and while the take
+the ready tally, the sentence that says the device is feeding the capture nothing, the frames,
+the bytes, the pace and the way out &#8212; and while the take
 transcribes, the graph's slot becomes the section bar: a tick per section up to eight, then a
 fill with the count in words, because a section is a 30 to 60 second window and a take can hold
 sixty of them. As the surface narrows, one reading leaves at a time from the left &#8212; clock,
@@ -666,6 +668,8 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
             <div class="line takeline">
               <span class="tc"><span class="dot"></span><span class="clock">0:00</span>
                 <span class="count">ready</span>
+                <span class="silent">the capture is open and nothing is coming through it
+                  &middot; check the microphone is not muted, or held by another app</span>
                 <span class="x">&#10005;</span></span>
               <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
               <span class="stop"><svg class="ic"><use href="#i-stop"/></svg></span></span>
@@ -676,7 +680,10 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
       <p class="note" style="margin:8px 0 0">Recording begins at the first frame that carries a
       real sample, not at the open: a capture's first frames can be digital silence while the
       device settles, and a row that called that recording is the report this draws against.
-      Silence draws no graph and no counts, so the row never shows audio it does not have.</p>
+      Silence draws no graph and no counts, so the row never shows audio it does not have - and
+      past a few seconds of it the row says so out loud, withdrawn the moment a sample lands.
+      On the phone the shell names the cause where the platform reports one: the phone silencing
+      this app's microphone, or the device's own mute.</p>
     </div>
     <div class="col">
       <div class="lab">transcribing</div>

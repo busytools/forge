@@ -4,12 +4,14 @@ import type { DiffLineRecord, ReviewThreadRecord } from '../session/wire';
 import {
   anchorHash,
   captureContext,
+  deleteCommand,
   finishRound,
   newThread,
   reopenThread,
   statusCommand,
   submitCommand,
   upsertCommand,
+  withEditedTurn,
   withReply,
   type Sends,
   type SendOutcome,
@@ -197,6 +199,53 @@ describe('the commands the page writes', () => {
         thread_id: 't1',
         status: 'Resolved',
       },
+    });
+  });
+
+  it("replaces one turn's words and leaves the thread's identity alone", () => {
+    const thread: ReviewThreadRecord = {
+      id: 't1',
+      anchor: {
+        path: 'a.rs',
+        side: 'new',
+        line: 4,
+        content_hash: '12051066714322805831',
+        context: ['ctx'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { kind: 'user' },
+          text: 'why this?',
+          at: '2026-01-01T00:00:00Z',
+          review_id: 'r1',
+        },
+        {
+          author: { kind: 'agent', label: 'impl' },
+          text: 'fixed',
+          at: '2026-01-01T01:00:00Z',
+          review_id: null,
+        },
+      ],
+      status: 'addressed',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T01:00:00Z',
+      commit: null,
+      resolution: null,
+    };
+    const payload = withEditedTurn(thread, 0, 'why this, actually?');
+    expect(payload.comments.map((turn) => turn.text)).toEqual(['why this, actually?', 'fixed']);
+    expect(payload.comments[0]?.review_id, 'the edited turn keeps its round').toBe('r1');
+    expect(payload.comments[0]?.at, 'and its own clock').toBe('2026-01-01T00:00:00Z');
+    expect(payload.comments[1]?.author, 'the turns after it are untouched').toEqual({
+      Agent: { label: 'impl' },
+    });
+    expect(payload.id, "the thread's id is what makes the upsert a replace").toBe('t1');
+  });
+
+  it('builds the retraction the cards dispatch', () => {
+    expect(deleteCommand(SLOT, 'b', 't1')).toEqual({
+      delete_review_thread: { project: 'forge', branch: 'b', thread_id: 't1' },
     });
   });
 });

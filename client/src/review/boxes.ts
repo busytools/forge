@@ -29,6 +29,12 @@ export interface Words {
   line: TakeLine | null;
   /** What this box's take row says, or `null` when the take is another box's. */
   phase: RowPhase | null;
+  /**
+   * What the row says when the device is feeding this page's capture nothing,
+   * read by the page like the phase beside it. `null` while the take speaks,
+   * while another box's is showing, or once the take is over.
+   */
+  silent: string | null;
   /** Whether the settings panel was opened from this box's mic. */
   panel: boolean;
   /** The record's take, and the counts this page produced for it. */
@@ -44,6 +50,28 @@ export interface CommentBox extends Words {
 /** The reply box under a thread: which thread it answers, and the words. */
 export interface ReplyBox extends Words {
   thread: string | null;
+  /** The turn it EDITS rather than answers - the same box does both, because
+   *  a thread offers one or the other at a time and the dictation plumbing
+   *  (the take, its landing, the mic's panel) is per box, not per verb. */
+  index: number | null;
+}
+
+/**
+ * What a thread card needs to draw the edit box on one of its turns: the
+ * page's box when it targets that turn, and the verbs around it.
+ */
+export interface TurnEditor {
+  box: ReplyBox;
+  voice: Voice;
+  /** Open the box on one turn, its words loaded. */
+  begin: (thread: string, index: number, text: string) => void;
+  /** File the edited words. */
+  send: (thread: string, index: number, text: string) => void;
+  /** Close the box without writing. */
+  cancel: () => void;
+  press: () => void;
+  hold: () => void;
+  field: (el: HTMLElement | null) => void;
 }
 
 /** The counts this page's own capture produced, read live while a take runs. */

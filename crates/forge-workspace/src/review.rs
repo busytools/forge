@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use forge_primitives::review::is_doc_scope;
+use forge_primitives::review::{is_doc_scope, is_tree_scope};
 use forge_primitives::{ReviewStatus, ReviewThread};
 
 use crate::protocol::SessionUpdate;
@@ -72,6 +72,29 @@ impl Workspace {
                     project = %project,
                     branch = %branch,
                     "upserting a review thread failed",
+                );
+                false
+            }
+        }
+    }
+
+    /// Remove one review thread by id from `(project, branch)`. Returns
+    /// whether a thread was removed - `false` when the store isn't open,
+    /// the write failed, or no thread carried the id.
+    pub fn delete_review_thread(&self, project: &str, branch: &str, id: &str) -> bool {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return false;
+        };
+        match crate::store::review::remove_thread(db, project, branch, id) {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::review",
+                    %error,
+                    project = %project,
+                    branch = %branch,
+                    "deleting a review thread failed",
                 );
                 false
             }
@@ -195,9 +218,11 @@ impl Workspace {
             let dead: Vec<&String> = stored
                 .iter()
                 // A doc scope is stored in the branch column and has no ref
-                // by construction, so absence proves nothing about it.
+                // by construction, so absence proves nothing about it; a
+                // tree scope names a seat for the same reason.
                 .filter(|branch| {
                     !is_doc_scope(branch)
+                        && !is_tree_scope(branch)
                         && !repo.names.contains(*branch)
                         && !spawning.contains(*branch)
                 })
@@ -205,7 +230,17 @@ impl Workspace {
             if dead.is_empty() {
                 continue;
             }
-            if dead.len() * 2 > stored.len() && repo.ref_count < Self::MIN_POPULATED_REFS {
+            // **The denominator is the BRANCH-shaped entries only.** A doc
+            // or tree scope can never be dead, so counting one in `stored`
+            // waters down the majority-dead ratio and makes the shallow-
+            // clone guard harder to earn than it reads - a repo whose pile
+            // is half scopes is refused only at a much higher dead share
+            // (the lead's gate, 2026-10-17).
+            let branches = stored
+                .iter()
+                .filter(|branch| !is_doc_scope(branch) && !is_tree_scope(branch))
+                .count();
+            if dead.len() * 2 > branches && repo.ref_count < Self::MIN_POPULATED_REFS {
                 tracing::warn!(
                     target: "forge_workspace::review",
                     project = %view.name,
@@ -621,7 +656,7 @@ impl Workspace {
                 replied,
                 resolved,
                 summary.open,
-                forge_primitives::review::is_doc_scope(&branch),
+                &branch,
             );
             messages.push(((project, branch), waiting, message));
         }
@@ -1027,6 +1062,73 @@ mod tests {
         assert!(
             sweep_has_state(&ws, "docproj", &doc_scope),
             "the document's threads survive a boot",
+        );
+    }
+
+    /// **A scope does not count as a branch in the refusal's ratio** (the
+    /// lead's gate, 2026-10-17): two dead branches against a repo that
+    /// knows almost none is the shallow-clone shape the guard exists for,
+    /// and scopes sharing the branch column must not water the majority
+    /// down until it sweeps - which is exactly what they did: with the
+    /// scopes counted, `4 > 4` failed and the guard stayed silent.
+    #[test]
+    fn the_sweep_refusal_counts_branch_entries_only() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("scoped");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sweep_init_repo(&root, "main");
+        sweep_symref_head(&root, "main");
+
+        let (ws, _rx) = sweep_ws(dir.path(), "scoped", &root);
+        for branch in ["feat/gone-a", "feat/gone-b"] {
+            seed(&ws, "scoped", branch, &[sweep_thread("a")]);
+        }
+        let doc = forge_primitives::review::doc_scope_ref("/Users/me/proj/docs/plan.md");
+        seed(&ws, "scoped", &doc, &[sweep_thread("d")]);
+        let tree = forge_primitives::review::tree_scope_ref(&SessionSlot::from_str_for_test(
+            "Busytools/forge/lead",
+        ));
+        seed(&ws, "scoped", &tree, &[sweep_thread("t")]);
+
+        assert_eq!(
+            ws.sweep_dead_review_branches(),
+            0,
+            "every branch dead against a repo that knows almost none: refused",
+        );
+        for branch in ["feat/gone-a", "feat/gone-b"] {
+            assert!(sweep_has_state(&ws, "scoped", branch), "{branch} kept");
+        }
+        assert!(sweep_has_state(&ws, "scoped", &doc), "and the scopes, of course");
+        assert!(sweep_has_state(&ws, "scoped", &tree), "both of them");
+    }
+
+    /// **A tree scope names a SEAT, not a ref, and the sweep must not read
+    /// it as a dead branch.** A seat's tree threads follow the seat - a
+    /// worker's worktree, the lead's checkout - so no repo ref will ever
+    /// carry the scope's name; without the guard the sweep deletes the
+    /// files page's review the first time it runs.
+    #[test]
+    fn the_sweep_spares_a_tree_scope() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("treews");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sweep_init_repo(&root, "main");
+        sweep_git(&root, &["branch", "feat/live"]);
+
+        let (ws, _rx) = sweep_ws(dir.path(), "treews", &root);
+        seed(&ws, "treews", "feat/live", &[sweep_thread("a")]);
+        let slot = SessionSlot::worker("Busytools", "treews", "sweeper");
+        let tree_scope = forge_primitives::review::tree_scope_ref(&slot);
+        seed(&ws, "treews", &tree_scope, &[sweep_thread("t")]);
+
+        assert_eq!(
+            ws.sweep_dead_review_branches(),
+            0,
+            "one live branch and a seat's tree: nothing is dead",
+        );
+        assert!(
+            sweep_has_state(&ws, "treews", &tree_scope),
+            "the seat's tree threads survive a boot",
         );
     }
 

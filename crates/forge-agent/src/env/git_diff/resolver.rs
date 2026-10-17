@@ -108,19 +108,31 @@ fn text_matches(anchor: &ReviewAnchor, text: &str) -> bool {
 /// was left. Each side the candidate has neighbours on must carry one of
 /// the anchor's recorded lines within [`CONTEXT_RADIUS`], in any order. A
 /// line on its own matches far too easily - a closing brace, a short
-/// call - so a neighbour has to agree.
-fn neighbourhood_matches(anchor: &ReviewAnchor, hunk: &Hunk, line_idx: usize) -> bool {
+/// call - so a neighbour has to agree. One implementation over any
+/// line-addressable slice, so the hunk resolver and the seat-tree one
+/// cannot drift.
+fn neighbourhood_agrees<'a>(
+    anchor: &ReviewAnchor,
+    line_idx: usize,
+    len: usize,
+    line_at: impl Fn(usize) -> Option<&'a str>,
+) -> bool {
     let recorded: HashSet<String> = anchor.context.iter().map(|l| normalise_ws(l)).collect();
-    let agrees =
-        |i: usize| hunk.lines.get(i).is_some_and(|l| recorded.contains(&normalise_ws(&l.text)));
+    let agrees = |i: usize| line_at(i).is_some_and(|l| recorded.contains(&normalise_ws(l)));
     let before = (line_idx.saturating_sub(CONTEXT_RADIUS)..line_idx).any(agrees);
     let after = (line_idx.saturating_add(1)
-        ..line_idx.saturating_add(CONTEXT_RADIUS).saturating_add(1).min(hunk.lines.len()))
+        ..line_idx.saturating_add(CONTEXT_RADIUS).saturating_add(1).min(len))
         .any(agrees);
     // A hunk edge has no neighbour on that side, so nothing to agree with.
     let has_before = line_idx > 0;
-    let has_after = line_idx.saturating_add(1) < hunk.lines.len();
+    let has_after = line_idx.saturating_add(1) < len;
     (before || !has_before) && (after || !has_after) && (before || after)
+}
+
+fn neighbourhood_matches(anchor: &ReviewAnchor, hunk: &Hunk, line_idx: usize) -> bool {
+    neighbourhood_agrees(anchor, line_idx, hunk.lines.len(), |i| {
+        hunk.lines.get(i).map(|l| l.text.as_str())
+    })
 }
 
 /// Re-resolve `anchor` against a fresh `files` scan.
@@ -190,6 +202,34 @@ pub fn place_anchor_in_content(
             moved_from: Some(from),
         },
         AnchorResolution::Outdated(reason) => AnchorPlacement::Outdated(reason),
+    }
+}
+
+/// One seat-tree anchor placed against a file's whole current lines - the
+/// files page's resolution. The scope's numbering IS the file's own (the
+/// seat's tree is where the comment was written), so unlike a diff scope
+/// whose numbering may belong to another base, the recorded line is
+/// trusted: in place when it still carries the anchor's text, otherwise
+/// re-found by content plus neighbours, and `Gone` / `Ambiguous` as the
+/// diff resolver reports them.
+pub fn place_anchor_in_lines(anchor: &ReviewAnchor, lines: &[String]) -> AnchorPlacement {
+    let line_at = |i: usize| lines.get(i).map(String::as_str);
+    if let Some(idx) = anchor.line.checked_sub(1).and_then(|i| usize::try_from(i).ok())
+        && let Some(text) = line_at(idx)
+        && text_matches(anchor, text)
+    {
+        return AnchorPlacement::Placed { line: anchor.line, moved_from: None };
+    }
+    let mut found: Vec<u32> = Vec::new();
+    for (idx, text) in lines.iter().enumerate() {
+        if text_matches(anchor, text) && neighbourhood_agrees(anchor, idx, lines.len(), line_at) {
+            found.push(u32::try_from(idx + 1).unwrap_or(u32::MAX));
+        }
+    }
+    match found[..] {
+        [] => AnchorPlacement::Outdated(OutdatedReason::Gone),
+        [line] => AnchorPlacement::Placed { line, moved_from: Some(anchor.line) },
+        _ => AnchorPlacement::Outdated(OutdatedReason::Ambiguous { matches: found.len() }),
     }
 }
 
@@ -381,6 +421,85 @@ mod tests {
             place_anchor_in_content(&home, &content, true),
             AnchorPlacement::Placed { line: 9, moved_from: None },
             "in place draws no note",
+        );
+    }
+
+    /// A seat-tree anchor resolves against the file's whole current lines:
+    /// the recorded number is the file's own numbering (the tree WAS the
+    /// anchor's home when it was written), so the in-place shortcut
+    /// applies, and a shifted line is re-found by content plus neighbours
+    /// with the recorded line named as `moved_from`.
+    #[test]
+    fn a_tree_anchor_places_in_place_and_moved_against_file_lines() {
+        let lines =
+            |texts: &[&str]| -> Vec<String> { texts.iter().map(|t| (*t).to_owned()).collect() };
+        let home = lines(&["fn f() {", "    let a = 1;", "    let b = 2;", "}", "// tail"]);
+        let placed = anchor(
+            "src/x.rs",
+            ReviewSide::New,
+            2,
+            "    let a = 1;",
+            &["fn f() {", "    let b = 2;"],
+        );
+        assert_eq!(
+            place_anchor_in_lines(&placed, &home),
+            AnchorPlacement::Placed { line: 2, moved_from: None },
+        );
+
+        // The same content two lines down, neighbours intact: moved, and
+        // the recorded line is named.
+        let shifted = lines(&[
+            "// header",
+            "// header 2",
+            "fn f() {",
+            "    let a = 1;",
+            "    let b = 2;",
+            "}",
+            "// tail",
+        ]);
+        assert_eq!(
+            place_anchor_in_lines(&placed, &shifted),
+            AnchorPlacement::Placed { line: 4, moved_from: Some(2) },
+        );
+    }
+
+    /// The reasons match the diff resolver's: content gone is `Gone`;
+    /// content plus neighbours matching twice is `Ambiguous`, because
+    /// picking one would be the guess uniqueness refuses to make.
+    #[test]
+    fn a_tree_anchor_gone_and_ambiguous_read_as_the_diff_resolvers_reasons() {
+        let lines =
+            |texts: &[&str]| -> Vec<String> { texts.iter().map(|t| (*t).to_owned()).collect() };
+        let placed = anchor(
+            "src/x.rs",
+            ReviewSide::New,
+            2,
+            "    let a = 1;",
+            &["fn f() {", "    let b = 2;"],
+        );
+
+        let gone = lines(&["fn f() {", "    let a = 9;", "    let b = 2;", "}"]);
+        assert_eq!(
+            place_anchor_in_lines(&placed, &gone),
+            AnchorPlacement::Outdated(OutdatedReason::Gone),
+        );
+
+        // Both copies away from the recorded line, so the in-place
+        // shortcut cannot win: content plus neighbours match twice.
+        let twice = lines(&[
+            "// header",
+            "fn f() {",
+            "    let a = 1;",
+            "    let b = 2;",
+            "}",
+            "fn f() {",
+            "    let a = 1;",
+            "    let b = 2;",
+            "}",
+        ]);
+        assert_eq!(
+            place_anchor_in_lines(&placed, &twice),
+            AnchorPlacement::Outdated(OutdatedReason::Ambiguous { matches: 2 }),
         );
     }
 

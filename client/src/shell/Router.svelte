@@ -7,6 +7,7 @@
   import { dictationOffered } from '../composer/view';
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
+  import Files from '../files/Files.svelte';
   import Board from '../board/Board.svelte';
   import Extensions from '../extensions/Extensions.svelte';
   import Document from '../doc/Document.svelte';
@@ -94,7 +95,19 @@
    */
   $effect(() => {
     if (!dictate) return;
-    if (route.name !== 'session' && route.name !== 'review' && route.name !== 'doc') return;
+    // Every page whose boxes carry a mic: the session's composer, the review
+    // page's two halves, the document viewer, and the files page - whose
+    // comment, reply, edit and summary boxes all wear one (the lead's gate,
+    // 2026-10-17: the files route was missing and its first press opened a
+    // device under the box).
+    if (
+      route.name !== 'session' &&
+      route.name !== 'review' &&
+      route.name !== 'doc' &&
+      route.name !== 'files'
+    ) {
+      return;
+    }
     holdDeviceFor(boxKey(route.slot));
   });
 </script>
@@ -200,6 +213,15 @@
          comment box carries the same dictation control the composer does, so
          the install's own answer comes down with it. -->
     <Review {connection} slot={route.slot} dictation={dictate} />
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
+{:else if route.name === 'files'}
+  {#if connection !== null}
+    <!-- The page subscribes the seat itself, as the review page does: its
+         tree follows the seat - a worker's worktree, the lead's checkout -
+         and its states belong to it. -->
+    <Files {connection} slot={route.slot} dictation={dictate} />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

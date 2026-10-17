@@ -17,6 +17,7 @@
   import { emptyComposer } from '../composer/view';
   import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
+  import { files } from '../chat/files.svelte';
   import { git } from '../chat/git.svelte';
   import { mcp } from '../chat/mcp.svelte';
   import { monitors } from '../chat/monitors.svelte';
@@ -167,6 +168,20 @@
    */
   $effect(() => {
     git.sync(record === null ? null : gitStrip(record, slot, seatTree(wire, slot)));
+  });
+  /** The files slip is mandatory: it draws for every seat with a record,
+   *  naming the tree it opens - a worker's worktree by its own name, the
+   *  project's checkout as just the files. */
+  $effect(() => {
+    const cwd = record === null ? null : record.state.scan_cwd;
+    const base =
+      cwd === null
+        ? null
+        : (cwd
+            .split('/')
+            .filter((part) => part !== '')
+            .pop() ?? null);
+    files.sync(cwd, base !== null && base !== slot.project ? base : null);
   });
   $effect(() => {
     tasks.sync(

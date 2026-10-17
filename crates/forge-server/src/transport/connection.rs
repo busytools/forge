@@ -1935,7 +1935,10 @@ async fn dispatch_answering(
     // the review pair with a `bool` and a `ReviewSet`, and an idle warning
     // with an `IdleVerdict`. So the channel is
     // built per arm and handed to the shared helper with its own receiver:
-    // one channel cannot carry five different answers.
+    // one channel cannot carry five different answers. **A variant missing
+    // here hangs its caller**: it falls to the fire-and-forget arm below
+    // with no sender, the workspace answers nobody, and the client waits for
+    // ever (measured live on the delete, 2026-10-17).
     match command {
         Command::SpawnWorker {
             project_key,
@@ -1977,6 +1980,12 @@ async fn dispatch_answering(
             let (tx, rx) = oneshot::channel();
             let command =
                 Command::UpsertReviewThread { project, branch, thread, respond: Some(tx) };
+            answered(socket, state, command, to, rx).await
+        }
+        Command::DeleteReviewThread { project, branch, thread_id, .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command =
+                Command::DeleteReviewThread { project, branch, thread_id, respond: Some(tx) };
             answered(socket, state, command, to, rx).await
         }
         Command::SubmitReview { project, branch, summary, thread_ids, origin, .. } => {
@@ -2125,6 +2134,7 @@ fn answers_through_a_reply(command: &Command) -> bool {
         Command::SpawnWorker { .. }
             | Command::DespawnWorker { .. }
             | Command::UpsertReviewThread { .. }
+            | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
             | Command::BrowserIdleWarning { .. }
     )

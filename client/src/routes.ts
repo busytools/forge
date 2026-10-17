@@ -45,6 +45,10 @@ export type Route =
   /** The seat's review: its rounds, their threads and the loop's state. A
    *  sub-path of the seat, because the seat is what the review is keyed to. */
   | { name: 'review'; slot: SessionSlot }
+  /** The seat's files: the tree, the read-only reader, and the comments
+   *  dropped on what was read. A sub-path of the seat, because the tree
+   *  follows the seat - a worker's own worktree, the lead's checkout. */
+  | { name: 'files'; slot: SessionSlot }
   /** A development route: the home drawn from the fixture, with no server. */
   | { name: 'fixture' }
   | { name: 'notFound' };
@@ -91,6 +95,13 @@ export function parseRoute(path: string): Route {
       slot: { org: decode(org), project: decode(project), label: decode(label) },
     };
   }
+  if (segments.length === 5 && segments[0] === 'session' && segments[4] === 'files') {
+    const [, org, project, label] = segments as [string, string, string, string, string];
+    return {
+      name: 'files',
+      slot: { org: decode(org), project: decode(project), label: decode(label) },
+    };
+  }
   if (segments.length >= 5 && segments[0] === 'doc') {
     const [, org, project, label] = segments as [string, string, string, string, ...string[]];
     return {
@@ -125,6 +136,8 @@ export function hrefFor(route: Route): string {
       return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}`;
     case 'review':
       return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}/review`;
+    case 'files':
+      return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}/files`;
     case 'doc': {
       const document = route.path
         .split('/')
@@ -162,6 +175,11 @@ export function titleFor(route: Route): string {
     const { project, label } = route.slot;
     const seat = label === 'lead' ? project : `${project} \u{b7} ${label}`;
     return `${seat} \u{b7} review`;
+  }
+  if (route.name === 'files') {
+    const { project, label } = route.slot;
+    const seat = label === 'lead' ? project : `${project} \u{b7} ${label}`;
+    return `${seat} \u{b7} files`;
   }
   if (route.name === 'doc') {
     const name = route.path

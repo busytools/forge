@@ -236,6 +236,19 @@
      chip's own box is what separates it from the name. */
   .rv-turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
   .rv-turn.you { border-left-color: var(--accent); }
+  /* A resolved thread's marker line: collapsed to one press target, the
+     shape the files reader draws too. */
+  .rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
+    padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--s1); font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .rv-mk.resolved { border-radius: 50%; background: var(--ok); }
+  .rv-mk-word { color: var(--muted); flex: none; }
+  .rv-mk-first { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  /* The edit act rides the who-row, small: a per-turn verb, not one of the
+     card's. */
+  .rv-edit { margin-left: auto; padding: 0 7px; }
   .rv-who { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
     font-size: var(--fs-label); color: var(--dim); }
   .rv-turn.you .rv-who { color: var(--muted); }
@@ -247,13 +260,18 @@
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
 
   .rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
-  /* The diff half's finish, under its canvas: the collapsed control at the
-     row's end, and the page's own finish row filling it once it opens. */
+  /* The finish stack, the piece all three surfaces draw (Ved, 2026-10-17):
+     the summary over the sealing button, each its own row, the mic at the
+     row's end. The bar is the diff half's: the collapsed control
+     right-aligned, the stack in its place once it opens. */
   .rv-finishbar { display: flex; align-items: center; justify-content: flex-end;
     gap: 9px; padding-top: 4px; }
-  .rv-finishrow { display: flex; gap: 9px; align-items: center; }
-  .rv-summary { flex: 1; background: var(--s1); color: var(--dim); border: 1px solid var(--line);
-    border-radius: 8px; font-family: var(--ui); font-size: var(--fs-base); padding: 6px 9px; }
+  .rv-finishstack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .rv-finishbox { background: var(--s1); color: var(--dim); border: 1px solid var(--line);
+    border-radius: 7px; font-family: var(--ui); font-size: var(--fs-base); padding: 6px 8px;
+    min-height: 58px; }
+  .rv-finishacts { display: flex; gap: 9px; align-items: center; }
+  .rv-finishacts .mic { margin-left: auto; }
   .rv-finish { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
     background: var(--s3); border: 0; border-radius: 8px; padding: 6px 14px; }
 
@@ -398,7 +416,10 @@
                       <span class="where">wire.ts &#183; line 199</span>
                     </div>
                     <div class="rv-turn you">
-                      <div class="rv-who"><span class="rv-nm">you</span></div>
+                      <div class="rv-who">
+                        <span class="rv-nm">you</span>
+                        <span class="rv-a rv-edit">edit</span>
+                      </div>
                       <div class="prose">
                         <p>This read is the page's whole input; say so on the type.</p>
                       </div>
@@ -406,6 +427,7 @@
                     <div class="rv-acts">
                       <span class="rv-a">respond</span>
                       <span class="rv-a">resolve</span>
+                      <span class="rv-a">delete</span>
                     </div>
                     <!-- The reply box, opened by its own respond: the same
                          words box the comment is, mic and all. -->
@@ -577,7 +599,15 @@
         <div class="rv-acts">
           <span class="rv-a">respond</span>
           <span class="rv-a">resolve</span>
+          <span class="rv-a">delete</span>
         </div>
+      </div>
+
+      <div class="rv-marker">
+        <span class="rv-mk resolved"></span>
+        <span class="rv-mk-word">resolved</span>
+        <span class="rv-mk-first">That resolves it - the count comes from the round itself.</span>
+        <span class="where">client/src/review/view.ts &#183; line 76</span>
       </div>
 
       <div class="thread">
@@ -602,10 +632,12 @@
   <section class="group">
     <h2>Finish</h2>
     <p class="rv-quiet">Comments written on the diff file into the next round when you finish the review.</p>
-    <div class="rv-finishrow">
-      <span class="rv-summary">summary (optional)</span>
-      <span class="rv-finish">finish review (1)</span>
-      <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+    <div class="rv-finishstack">
+      <div class="rv-finishbox">summary (optional)</div>
+      <div class="rv-finishacts">
+        <span class="rv-finish">finish review (1)</span>
+        <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+      </div>
     </div>
   </section>
 </main>

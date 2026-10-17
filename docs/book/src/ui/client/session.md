@@ -109,11 +109,22 @@ saying where.
 
 One lane of segments above the foot, in a fixed order: the browser, the
 agents, the processes, the connectors, the schedules, the MCP servers, the
-tree, the review, the tasks, the monitors. Each segment draws what it has
-and nothing else, and the strip stands whenever anything has something to
-say - a running turn is one of the things it may say, not the condition
-for it, because these rows are the home of what the inspector used to
-hold.
+files, the tree, the review, the tasks, the monitors. Each segment draws
+what it has and nothing else, and the strip stands whenever anything has
+something to say - a running turn is one of the things it may say, not the
+condition for it, because these rows are the home of what the inspector
+used to hold.
+
+**The files slip is the one mandatory segment** (Ved, 2026-10-17): every
+seat has a tree - a worker's own worktree, the lead's checkout - so it
+draws for every seat with a record, where the tree row beside it keeps its
+rule of staying away when nothing has moved. **The slip IS the door, with
+no panel**: a press opens the page that reads the whole tree
+(`/session/<org>/<project>/<label>/files`), reading `walk · files` for a
+seat in a worktree of its own (the worktree's name, so the destination is
+never a guess) and plain `files` for the project's checkout, with the
+browser's own mark beside it and no count. No hover dialog, no panel -
+there is nothing here but the way in.
 
 **Every cell is a read, not a computation.** The schedules row keeps the
 seat's own set - a cron names the seat that created it - and its
