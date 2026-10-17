@@ -308,14 +308,16 @@ class RustConnection implements Connection {
     if (last && typeof what !== 'string') this.gate.releaseSeat(what.session);
   }
 
-  refresh(what: Subject): void {
+  /** `true` when the ask went, which is what a bound re-arms on. */
+  refresh(what: Subject): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
-    if (this.state !== 'open') return;
+    if (this.state !== 'open') return false;
     this.bounds.arm(what);
     void invoke('client_refresh', { what }).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);
     });
+    return true;
   }
 
   dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null {

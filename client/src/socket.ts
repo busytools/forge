@@ -787,14 +787,16 @@ export function connect(url: string, boundMs: number = READ_BOUND_MS): Connectio
     }
   }
 
-  function refresh(what: Subject): void {
+  /** `true` when the pair went, which is what a bound re-arms on. */
+  function refresh(what: Subject): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
-    if (!isOpen()) return;
+    if (!isOpen()) return false;
     forget(what);
     sendNow({ kind: 'unsubscribe', what });
     const declaration = held.get(subjectKey(what));
     askFor(what, declaration?.answering ?? false, declaration?.browser ?? false);
+    return true;
   }
 
   function dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null {

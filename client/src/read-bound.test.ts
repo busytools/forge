@@ -15,7 +15,14 @@ const HOME: Subject = 'home';
 function bounded(boundMs = READ_BOUND_MS) {
   const stores = new Stores();
   const asked: Subject[] = [];
-  const bounds = new ReadBounds(stores, (what) => asked.push(what), boundMs);
+  const bounds = new ReadBounds(
+    stores,
+    (what) => {
+      asked.push(what);
+      return true;
+    },
+    boundMs,
+  );
   return { stores, bounds, asked };
 }
 
@@ -82,6 +89,62 @@ describe('a read that is not answered', () => {
 
     vi.advanceTimersByTime(5_000);
     expect(asked, 'a closed connection has nothing to ask on').toEqual([]);
+  });
+
+  /**
+   * A read on a connection that is down has nothing to ask on: the re-ask is
+   * refused, and a bound that re-armed anyway would tick forever for a
+   * subject nothing can answer - every subject this page watches, every five
+   * seconds, for the life of a spell with no server.
+   */
+  it('does not re-arm when the re-ask could not be asked', () => {
+    vi.useFakeTimers();
+    const stores = new Stores();
+    const asked: Subject[] = [];
+    const bounds = new ReadBounds(
+      stores,
+      (what) => {
+        asked.push(what);
+        return false;
+      },
+      1_000,
+    );
+    stores.open(HOME);
+    bounds.arm(HOME);
+
+    vi.advanceTimersByTime(5_000);
+    expect(asked, 'the bound asked the one time it was owed').toEqual([HOME]);
+  });
+
+  /**
+   * A close can land while a callback the timers already fired is running -
+   * clearing the timers cannot reach the ones due in the same tick. A
+   * stopped bound stays stopped: the callbacks behind the close ask nothing
+   * and re-arm nothing.
+   */
+  it('stays stopped against callbacks the timers already fired', () => {
+    vi.useFakeTimers();
+    const stores = new Stores();
+    const asked: Subject[] = [];
+    const bounds: ReadBounds = new ReadBounds(
+      stores,
+      (what) => {
+        asked.push(what);
+        // The connection closes while the first of the tick's callbacks runs.
+        bounds.stop();
+        return true;
+      },
+      1_000,
+    );
+    const seat: Subject = { session: { org: 'TestOrg', project: 'proj', label: 'lead' } };
+    stores.open(HOME);
+    stores.open(seat);
+    bounds.arm(HOME);
+    bounds.arm(seat);
+
+    // Both are due in the same tick, and the close lands in the first.
+    vi.advanceTimersByTime(5_000);
+    expect(asked, 'the bound asked once, then stayed stopped').toEqual([HOME]);
   });
 
   it('is re-armed from scratch by a later read of the same subject', () => {

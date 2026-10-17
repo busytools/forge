@@ -38,19 +38,30 @@ export const READ_BOUND_MS = 5_000;
 
 export class ReadBounds {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private stopped = false;
 
   /**
    * `reask` is the connection's own refresh: the pair that asks for a
-   * subject again without changing how many times it is watched.
+   * subject again without changing how many times it is watched, answering
+   * whether the ask really went - a connection that is down or closed has
+   * nothing to ask on, and a bound may not re-arm for a read it did not ask.
    */
   constructor(
     private readonly stores: Stores,
-    private readonly reask: (what: Subject) => void,
+    private readonly reask: (what: Subject) => boolean,
     private readonly boundMs: number = READ_BOUND_MS,
   ) {}
 
-  /** A read just went out for `what`: bound it. */
+  /**
+   * A read just went out for `what`: bound it.
+   *
+   * **A stopped bound never arms again**, which is what keeps a closed
+   * connection closed: the re-arm is the only way a bound's chain continues,
+   * so a callback the timers had already fired when `stop` ran cannot
+   * restart it.
+   */
   arm(what: Subject): void {
+    if (this.stopped) return;
     this.clear(what);
     const key = subjectKey(what);
     this.timers.set(
@@ -74,6 +85,7 @@ export class ReadBounds {
 
   /** The connection is closed for good: nothing is owed on it any more. */
   stop(): void {
+    this.stopped = true;
     for (const held of this.timers.values()) clearTimeout(held);
     this.timers.clear();
   }
@@ -83,7 +95,11 @@ export class ReadBounds {
     const store = this.stores.get(what);
     if (store === undefined) return;
     if (store.state().kind !== 'loading') return;
-    this.reask(what);
+    // Only a re-ask that really went leaves a read owed; re-arming for one
+    // that could not go would tick forever for a subject nothing can answer.
+    // A callback the timers already fired is refused the same way, at the
+    // re-arm below, which is the only way this chain continues.
+    if (!this.reask(what)) return;
     this.arm(what);
   }
 }

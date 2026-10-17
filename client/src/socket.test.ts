@@ -833,7 +833,6 @@ describe('the connection', () => {
     expect(recovered.state(), 'the recovered seat keeps its answer').toEqual({ kind: 'ready' });
   });
 
-
   /**
    * One unsubscribe drops one entry: a second subscribe to one subject adds
    * a second entry rather than replacing the first, because two
