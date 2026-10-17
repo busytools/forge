@@ -3568,12 +3568,9 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   overflow: hidden; }
 .files-cnote { grid-column: 2; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
-/* The finish stacks: the summary's own box first, full width and room to
-   write (it resizes, `.rv-txarea`'s rule), and the button's row under it. */
-.files-finish { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px;
-  display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
-.files-finishacts { display: flex; gap: 9px; align-items: center; position: relative; }
-.files-finishacts .mic { margin-left: auto; }
+/* The rail's finish wrapper: the hairline that separates it from the rows;
+   the stack itself is the sheet's `.rv-finishstack`. */
+.files-finish { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
 
 /* The reader. */
 .files-reader { display: flex; flex-direction: column; min-height: 0; height: 100%; }
@@ -3805,16 +3802,14 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .rv-tabs > button.on { color: var(--text); border-bottom-color: var(--accent); }
 .rv-tn { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 
-/* The finish row: the summary's field, its own wordline, and the sealing
-   button - the REVIEW page's own shape, on its diff and its files halves;
-   the files page and the doc page stack the summary over the button instead
-   (`.files-finish`, `.doc-exit`). */
-.rv-finishrow { display: flex; gap: 9px; align-items: center; position: relative; }
+/* The finish stack: the round's summary over the sealing button, each on its
+   own row, room to write and the mic at the row's end - one shape for the
+   review page's two finishes, the files rail and the document's exit (Ved,
+   2026-10-17). */
+.rv-finishstack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.rv-finishacts { display: flex; gap: 9px; align-items: center; position: relative; }
+.rv-finishacts .mic { margin-left: auto; }
 .rv-wordline { flex: 1; min-width: 0; }
-.rv-finishrow .rv-summary { flex: 1; width: 100%; min-width: 0; background: var(--s1);
-  color: var(--text); border: 1px solid var(--line); border-radius: 8px;
-  font-family: var(--ui); font-size: var(--fs-base); padding: 6px 9px; }
-.rv-finishrow .rv-summary:focus { outline: none; border-color: var(--ctl); }
 .rv-finish { font-family: var(--mono); font-size: var(--fs-data); color: var(--bg);
   background: var(--accent); border: 0; border-radius: 8px; padding: 6px 14px;
   cursor: pointer; flex: none; }
@@ -4270,11 +4265,6 @@ details[open] > summary .arw { opacity: 1; }
    there is nothing to release. */
 .doc .doc-exit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
   margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
-/* The description first, full width and roomy (it resizes), the door's own
-   controls in a row under it - the files rail's own stack. */
-.doc .doc-exitacts { display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
-  position: relative; }
-.doc .doc-exitacts .mic { margin-left: auto; }
 .doc .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
 
 @media (pointer: coarse) {

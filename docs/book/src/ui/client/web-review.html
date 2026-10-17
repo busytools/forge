@@ -247,13 +247,18 @@
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
 
   .rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
-  /* The diff half's finish, under its canvas: the collapsed control at the
-     row's end, and the page's own finish row filling it once it opens. */
+  /* The finish stack, the piece all three surfaces draw (Ved, 2026-10-17):
+     the summary over the sealing button, each its own row, the mic at the
+     row's end. The bar is the diff half's: the collapsed control
+     right-aligned, the stack in its place once it opens. */
   .rv-finishbar { display: flex; align-items: center; justify-content: flex-end;
     gap: 9px; padding-top: 4px; }
-  .rv-finishrow { display: flex; gap: 9px; align-items: center; }
-  .rv-summary { flex: 1; background: var(--s1); color: var(--dim); border: 1px solid var(--line);
-    border-radius: 8px; font-family: var(--ui); font-size: var(--fs-base); padding: 6px 9px; }
+  .rv-finishstack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .rv-finishbox { background: var(--s1); color: var(--dim); border: 1px solid var(--line);
+    border-radius: 7px; font-family: var(--ui); font-size: var(--fs-base); padding: 6px 8px;
+    min-height: 58px; }
+  .rv-finishacts { display: flex; gap: 9px; align-items: center; }
+  .rv-finishacts .mic { margin-left: auto; }
   .rv-finish { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
     background: var(--s3); border: 0; border-radius: 8px; padding: 6px 14px; }
 
@@ -602,10 +607,12 @@
   <section class="group">
     <h2>Finish</h2>
     <p class="rv-quiet">Comments written on the diff file into the next round when you finish the review.</p>
-    <div class="rv-finishrow">
-      <span class="rv-summary">summary (optional)</span>
-      <span class="rv-finish">finish review (1)</span>
-      <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+    <div class="rv-finishstack">
+      <div class="rv-finishbox">summary (optional)</div>
+      <div class="rv-finishacts">
+        <span class="rv-finish">finish review (1)</span>
+        <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+      </div>
     </div>
   </section>
 </main>

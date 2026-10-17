@@ -797,7 +797,7 @@
      collapses again once the round is sealed. One snippet, because the round,
      the field and the write are the page's own either way. -->
 {#snippet roundFinish()}
-  <div class="rv-finishrow">
+  <div class="rv-finishstack">
     <!-- The round's own words take a take the way every box does: the bar in
          the field's place while it runs, and the words at the end of what is
          written. -->
@@ -815,9 +815,9 @@
         />
       {:else}
         <Field
-          element="input"
           editor="nowhere"
-          class="rv-summary"
+          class="rv-txarea"
+          rows={4}
           placeholder="summary (optional)"
           aria={{ label: 'the round summary' }}
           bind:value={summary}
@@ -831,8 +831,8 @@
           }}
           field={(el: HTMLElement | null) => {
             elements.summary = el;
-            // A finish row a press opened owes the field the caret, the same
-            // way a comment box a click opened does.
+            // A finish a press opened owes the field the caret, the same way
+            // a comment box a click opened does.
             if (el !== null && summaryFocus) {
               summaryFocus = false;
               el.focus();
@@ -841,44 +841,46 @@
         />
       {/if}
     </div>
-    <button
-      type="button"
-      class="rv-finish"
-      disabled={busy || drafts.size === 0}
-      onclick={() => void finish()}
-    >
-      finish review
-      {#if drafts.size > 0}({drafts.size}){/if}
-    </button>
-    {#if dictation}
-      <DictateControl
-        {dictate}
-        onpress={() => (pressedIn = 'summary')}
-        onhold={() => (panelIn = 'summary')}
-      />
-    {/if}
-    {#if dictate.panel && panelIn === 'summary'}
-      <div>
-        <DictationPanel
-          connection={voice.connection}
-          axes={voice.axes}
-          defaults={voice.defaults}
-          bind={voice.bind}
-          mode={voice.mode}
-          device={voice.device}
-          onaxes={voice.onaxes}
-          ondevice={voice.ondevice}
-          onclose={() => {
-            dictate.panel = false;
-            elements.summary?.focus();
-          }}
+    <div class="rv-finishacts">
+      <button
+        type="button"
+        class="rv-finish"
+        disabled={busy || drafts.size === 0}
+        onclick={() => void finish()}
+      >
+        finish review
+        {#if drafts.size > 0}({drafts.size}){/if}
+      </button>
+      {#if dictation}
+        <DictateControl
+          {dictate}
+          onpress={() => (pressedIn = 'summary')}
+          onhold={() => (panelIn = 'summary')}
         />
-      </div>
+      {/if}
+      {#if dictate.panel && panelIn === 'summary'}
+        <div>
+          <DictationPanel
+            connection={voice.connection}
+            axes={voice.axes}
+            defaults={voice.defaults}
+            bind={voice.bind}
+            mode={voice.mode}
+            device={voice.device}
+            onaxes={voice.onaxes}
+            ondevice={voice.ondevice}
+            onclose={() => {
+              dictate.panel = false;
+              elements.summary?.focus();
+            }}
+          />
+        </div>
+      {/if}
+    </div>
+    {#if summaryLine !== null}
+      <div class="rv-dictateline {summaryLine.tone}">{summaryLine.text}</div>
     {/if}
   </div>
-  {#if summaryLine !== null}
-    <div class="rv-dictateline {summaryLine.tone}">{summaryLine.text}</div>
-  {/if}
 {/snippet}
 
 <main class="wrap review">
@@ -1088,6 +1090,7 @@
           reviews={reviews.reviews.outcome === 'read' ? reviews.reviews.value : []}
           {busy}
           {dictate}
+          keysOff={pickerOpen}
           {focusComment}
           bind:box
           bind:reply
@@ -1368,10 +1371,11 @@
   .rv-viewmode {
     flex: none;
   }
-  /* The finish row itself - `.rv-finishrow`, `.rv-summary` and `.rv-finish`
-     - lives in the sheet now: this page's diff and files halves both draw
-     it, and one set of rules over both is the point. What stays here is the
-     page's own bar around it. */
+  /* The finish stack itself - `.rv-finishstack`, `.rv-finishacts`, the
+     `.rv-txarea` and `.rv-finish` - lives in the sheet now: the review
+     page, the files rail and the document's exit all draw one shape (Ved,
+     2026-10-17). What stays here is the page's own bar around it: the
+     collapsed button right-aligned, the stack in its place once it opens. */
   .rv-finishbar {
     display: flex;
     align-items: center;
@@ -1380,7 +1384,7 @@
     padding-top: 4px;
     flex: none;
   }
-  .rv-finishbar .rv-finishrow {
+  .rv-finishbar .rv-finishstack {
     flex: 1;
     min-width: 0;
   }

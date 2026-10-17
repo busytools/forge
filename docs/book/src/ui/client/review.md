@@ -30,7 +30,7 @@ file tree, and the diff with the threads on their lines.
 | Canvas        | the scope's files as diffs, with each thread inserted under its own line, the composer under the line a comment is being written on, and GitHub's own gap strips between two hunks (above the first, below the last) that draw the lines the diff left out, a press at a time      | the scope's diff, the threads, the server's landing per thread, and the file's whole content read |
 | Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
 | Rounds        | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                                                                                                              | the rounds half                                                    |
-| Finish        | the summary field, its mic, and `finish review`, live once a comment is drafted - the conversation half's own section, and, on the diff half, a `finish review` control under the canvas that opens the same row in place and collapses again once the round seals                | the page's own drafts                                              |
+| Finish        | the round's summary - a roomy, resizable box, present by default, its own mic - over `finish review (N)`, live once a comment is drafted; the conversation half's own section, and, on the diff half, a control under the canvas that opens the same stack in place and collapses again once the round seals | the page's own drafts                                              |
 | The chat line | the lines the view this client replaced sent, pushed into the reviewed seat's own chat: `Review #N ready - address it via the review MCP (review__list)` when a round seals, `Reopened a comment in review #N - take another look via the review MCP (review__get)` on a reopen | the page's own dispatch after the write                            |
 
 ## A scope, and where a thread draws
@@ -70,6 +70,13 @@ the tabs row - the scope's stepper and, beside it, the comments' stepper
 with its `N/M` count - because a key alone is no door on a touch screen. The
 keys are live only while the diff half is on screen, and a keypress in a
 text field is the field's.
+
+**The tree has a walk of its own, the files page's own rule**: `↑` and `↓`
+move the mark without a prior focus, moving onto a file scrolls to it,
+`Home`/`End` go to the ends, and `Enter` opens a file or folds a directory
+- the picker takes the arrows while it is open. Only the vertical pair:
+the horizontal arrows are the scope and comment stepper's here, so folding
+stays a press on this page.
 
 The commit list is the record's own; a commit's diff is fetched when its
 scope is first shown, and not carried on the record - a branch can hold
@@ -197,11 +204,12 @@ sits on puts the caret back in it.
 
 **The diff half can finish the round where the reader is.** The row under
 the canvas carries a `finish review (N)` control while the round is open;
-a press opens the page's own finish row in place - the same summary field,
-the same seal, one snippet drawn by both halves - the field takes the
-caret, and Enter (or the button) seals the round and collapses the row
-again. A reader never has to leave the diff to close a round, and the write
-path is the conversation half's own either way.
+a press opens the page's own finish stack in place - the same summary box,
+the same seal, one snippet drawn by both halves, the shape every surface
+that finishes a round draws (the files rail, the document's exit) - the
+field takes the caret, and Enter (or the button) seals the round and
+collapses it again. A reader never has to leave the diff to close a round,
+and the write path is the conversation half's own either way.
 
 **The finish nudges the seat the review belongs to.** A round that sealed
 also sends a `prompt_under` into the reviewed seat's own chat - one line,
@@ -251,7 +259,7 @@ wear the composer's own mic control - a press starts a take, a hold opens
 what dictation is set to - over the page's own take, so a take begun here is
 addressed to the seat this review belongs to and the server sees an ordinary
 take on that seat. The summary's own row is drawn by whichever half is up,
-and it goes with that half: a take begun in the diff half's finish row ends
+and it goes with that half: a take begun in the diff half's finish stack ends
 when the row does.
 
 **The visible take bar takes the line of the box that began the take**,

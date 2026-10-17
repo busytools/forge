@@ -75,6 +75,7 @@
     reviews,
     busy,
     dictate,
+    keysOff = false,
     focusComment,
     box = $bindable(),
     reply = $bindable(),
@@ -99,6 +100,9 @@
     busy: boolean;
     /** The take this page owns, which every box's mic drives. */
     dictate: Dictation;
+    /** Hold the tree's keys: the page's picker takes the arrows while it is
+     *  open, and two walkers on one key are one too many. */
+    keysOff?: boolean;
     /** The comment the stepper moved to, and the step's own number: the
      *  canvas brings that card into view, a repeat of the same target
      *  included. */
@@ -453,6 +457,86 @@
       window.removeEventListener('scroll', onScroll, true);
       if (markFrame !== 0) cancelAnimationFrame(markFrame);
     };
+  });
+
+  /**
+   * The tree's keyboard, the files page's own walk (Ved, 2026-10-17): the
+   * arrows move the mark WITHOUT a prior focus, Home and End go to the ends,
+   * moving onto a file scrolls to it and Enter folds a directory. Only the
+   * vertical pair: on this page the horizontal arrows are the scope and
+   * comment stepper's, so folding stays a press here.
+   */
+  let keyRow = $state<string | null>(null);
+
+  $effect(() => {
+    const typingSomewhere = (target: EventTarget | null): boolean =>
+      target instanceof HTMLElement &&
+      (target.closest('.cm-editor') !== null ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target.isContentEditable);
+    const land = (row: TreeRow<unknown> | undefined): void => {
+      if (row === undefined) return;
+      keyRow = row.path;
+      if (row.kind === 'file') jumpTo(row.path);
+    };
+    const step = (delta: number): void => {
+      const paths = tree.map((row) => row.path);
+      if (paths.length === 0) return;
+      const from = keyRow === null ? paths.indexOf(current ?? '') : paths.indexOf(keyRow);
+      const at = Math.min(Math.max((from === -1 ? -1 : from) + delta, 0), paths.length - 1);
+      land(tree[at]);
+    };
+    const onkey = (event: KeyboardEvent): void => {
+      if (keysOff) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (typingSomewhere(event.target)) return;
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          step(1);
+          break;
+        case 'ArrowUp':
+          event.preventDefault();
+          step(-1);
+          break;
+        case 'Home':
+          event.preventDefault();
+          land(tree[0]);
+          break;
+        case 'End':
+          event.preventDefault();
+          land(tree.at(-1));
+          break;
+        case 'Enter': {
+          const row = tree.find((held) => held.path === keyRow);
+          if (row === undefined) return;
+          event.preventDefault();
+          if (row.kind === 'dir') toggle(closedDirs, row.path);
+          else jumpTo(row.path);
+          break;
+        }
+        default:
+          break;
+      }
+    };
+    addEventListener('keydown', onkey);
+    return () => removeEventListener('keydown', onkey);
+  });
+
+  // A row the Tab key lands on becomes the keyboard's row too, so the mark
+  // follows real focus.
+  $effect(() => {
+    const onfocus = (event: FocusEvent): void => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const row = target.closest('button.rv-dir, button.rv-frow');
+      if (row instanceof HTMLElement && row.dataset.path !== undefined) {
+        keyRow = row.dataset.path;
+      }
+    };
+    addEventListener('focusin', onfocus);
+    return () => removeEventListener('focusin', onfocus);
   });
 
   // A change of scope, mode or set of drawn files moves the sections
@@ -1267,6 +1351,7 @@
   count={scopeFiles.length}
   closed={closedDirs}
   here={current}
+  active={keyRow}
   renamed={(path) => (fileByPath.get(path)?.oldPath ?? null) !== null}
   ondir={(path) => toggle(closedDirs, path)}
   onfile={jumpTo}

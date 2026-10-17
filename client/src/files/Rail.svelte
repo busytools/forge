@@ -89,7 +89,7 @@
        and expandable - and the finish button on its own row under it, with
        the mic beside the button (Ved, 2026-10-17: the row shape crammed
        them together). -->
-  <div class="files-finish">
+  <div class="files-finish rv-finishstack">
     <div class="rv-wordline line" class:takeline={summaryBox.phase !== null}>
       {#if summaryBox.phase !== null}
         <TakeCard
@@ -117,7 +117,7 @@
         />
       {/if}
     </div>
-    <div class="files-finishacts">
+    <div class="rv-finishacts">
       <button class="rv-finish" type="button" disabled={busy || finishCount === 0} onclick={seal}>
         {finishCount > 0 ? `finish review (${finishCount})` : 'finish review'}
       </button>

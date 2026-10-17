@@ -769,7 +769,7 @@
             {/if}
           </div>
         {/if}
-        <div class="doc-exitacts">
+        <div class="rv-finishacts">
           <button
             class="doc-finish-btn"
             disabled={finishState.kind === 'busy'}
