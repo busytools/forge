@@ -91,6 +91,13 @@ pub enum WorktreeError {
     /// refusing is the safe direction.
     #[error("refusing to remove {0}: git still lists it as a worktree")]
     StillRegistered(String),
+    /// [`remove_orphaned_worktree_dir`] was handed a directory whose
+    /// `.git` entry says it belongs to something else - a directory (a
+    /// checkout of its own, never a worktree tail) or a link naming a
+    /// gitdir outside this repo. Not this repo's leftover, so not this
+    /// repo's to delete.
+    #[error("refusing to remove {path}: {detail}")]
+    ForeignLeftover { path: String, detail: String },
     /// The leftover directory itself could not be deleted from disk.
     #[error("failed to delete the leftover worktree directory {path}: {error}")]
     LeftoverUndeletable { path: String, error: String },
@@ -189,10 +196,21 @@ pub fn remove_worktree(path: &Path, force: bool) -> Result<(), WorktreeError> {
 /// lives, is untouched by any of this.
 ///
 /// Only the directory is left to delete, and only when the path is
-/// exactly `<repo>/.claude/worktrees/<name>` and git no longer lists it;
-/// anything else refuses rather than guesses. A still-registered
-/// worktree is not a leftover - git may be holding uncommitted work in
-/// it, and `git worktree remove` is the only path allowed to delete one.
+/// exactly `<repo>/.claude/worktrees/<name>`, git no longer lists it, and
+/// its `.git` entry does not say it belongs to something else; anything
+/// else refuses rather than guesses. A still-registered worktree is not a
+/// leftover - git may be holding uncommitted work in it, and `git
+/// worktree remove` is the only path allowed to delete one.
+///
+/// **What the delete trusts, stated plainly:** it is unconditional on the
+/// directory's contents. The .git evidence above separates this repo's
+/// leftover from a foreign directory, but nothing here re-reads the tree -
+/// the trust is that only a removal the despawn admitted (its dirty
+/// verdict, or an explicit force) leaves this state, so what the leftover
+/// holds is artifacts rather than authored work. The blast radius when
+/// that trust is wrong is uncommitted/untracked files in a directory that
+/// is no longer a worktree; committed work lives on the branch, which
+/// this never touches.
 pub fn remove_orphaned_worktree_dir(repo: &Path, path: &Path) -> Result<(), WorktreeError> {
     let root = repo.join(".claude/worktrees");
     // The gate is lexical, not a real-path guarantee: `parent` and
@@ -217,9 +235,63 @@ pub fn remove_orphaned_worktree_dir(repo: &Path, path: &Path) -> Result<(), Work
     if worktree_registered(repo, path) {
         return Err(WorktreeError::StillRegistered(path.display().to_string()));
     }
+    if let Some(detail) = foreign_leftover_detail(repo, path) {
+        return Err(WorktreeError::ForeignLeftover { path: path.display().to_string(), detail });
+    }
     std::fs::remove_dir_all(path).map_err(|error| WorktreeError::LeftoverUndeletable {
         path: path.display().to_string(),
         error: error.to_string(),
+    })
+}
+
+/// Why the directory at `path` is not this repo's leftover, when its
+/// `.git` entry says so - `None` when it is ours to delete.
+///
+/// Our own failed removal leaves one of two shapes, and both pass: a link
+/// naming this repo's `.git` (the walk died before reaching the file), or
+/// no `.git` at all (a write recreated the path after the walk - the
+/// incident's shape). The link is READ, never resolved: a deregistration
+/// has already removed the gitdir it names, so its target is gone by
+/// definition.
+///
+/// A `.git` DIRECTORY is a checkout of its own - a worktree's link is
+/// always a file - and a link naming another repo's `.git` is someone
+/// else's worktree. Neither is the tail of a removal this repo ran; nor
+/// is a `.git` that cannot be read as a link, so refusing is the safe
+/// direction wherever the evidence is not ours.
+fn foreign_leftover_detail(repo: &Path, path: &Path) -> Option<String> {
+    match std::fs::symlink_metadata(path.join(".git")) {
+        Ok(meta) if meta.is_dir() => {
+            return Some(
+                "its .git is a directory, so it is a checkout of its own, not a worktree this \
+                 repo forked"
+                    .to_owned(),
+            );
+        }
+        // No `.git` at all: the recreated-path shape, ours to clear.
+        Err(_) => return None,
+        Ok(_) => {}
+    }
+    let Ok(link) = std::fs::read_to_string(path.join(".git")) else {
+        return Some("its .git file could not be read".to_owned());
+    };
+    let Some(named) = link.trim().strip_prefix("gitdir:").map(str::trim) else {
+        return Some("its .git file does not name a gitdir".to_owned());
+    };
+    let named = Path::new(named);
+    let named = if named.is_absolute() { named.to_path_buf() } else { path.join(named) };
+    // `named` is `<repo>/.git/worktrees/<label>`; its `.git` is the
+    // deepest piece a deregistration leaves resolvable, so the two `.git`
+    // dirs are what get compared - canonicalised, because the spellings
+    // can disagree on a symlinked prefix.
+    let ours = std::fs::canonicalize(repo.join(".git"));
+    let theirs = named.parent().and_then(Path::parent).map(std::fs::canonicalize);
+    let same = matches!((ours, theirs), (Ok(ours), Some(Ok(theirs))) if ours == theirs);
+    (!same).then(|| {
+        format!(
+            "its .git link points at '{}', outside this repo's worktree admin dir",
+            named.display()
+        )
     })
 }
 
@@ -270,17 +342,35 @@ pub enum WorktreeEnsure {
 /// a fresh `--worktree <label>` would use, which cuts from
 /// `origin/<default-branch>`; local HEAD is that base only with
 /// `baseRef` set to `head`, or with no local `origin/<default>` ref and
-/// a fetch that fails. An
-/// existing `path` is a no-op; an out-of-band `rm -rf` defeats this
-/// (git's stale registration makes `worktree add` fail with git's
-/// message, surfaced here).
+/// a fetch that fails.
+///
+/// A `path` that exists is judged by its REGISTRATION, not its presence:
+/// a worktree git still lists is reused as it stands, while a leftover
+/// directory git no longer tracks - a despawn's removal failed part-way,
+/// and git deregisters a path before it walks the tree - is cleared
+/// deliberately before the add below, because `worktree add` refuses a
+/// path that exists and a resume that died on git's refusal surfaced as
+/// the transport's message rather than git's (#1767). An out-of-band
+/// `rm -rf` still defeats this (git's stale registration makes `worktree
+/// add` fail with git's message, surfaced here).
+///
+/// **What the clearing trusts, stated plainly:** that this state is the
+/// tail of a removal the despawn admitted (its dirty verdict, or an
+/// explicit force) - nothing in this call re-reads the tree. Its `.git`
+/// evidence separates this repo's leftover from a foreign directory, and
+/// committed work lives on the branch, which is never touched here; what
+/// could be lost if the trust is wrong is uncommitted/untracked files in
+/// a directory that is no longer a worktree.
 pub fn ensure_worker_worktree(
     repo: &Path,
     label: &str,
     path: &Path,
 ) -> Result<WorktreeEnsure, WorktreeError> {
     if path.exists() {
-        return Ok(WorktreeEnsure::AlreadyPresent);
+        if worktree_registered(repo, path) {
+            return Ok(WorktreeEnsure::AlreadyPresent);
+        }
+        remove_orphaned_worktree_dir(repo, path)?;
     }
     let branch = format!("worktree-{label}");
     let mut cmd = git_command::command("git");
@@ -1623,6 +1713,51 @@ mod tests {
         assert!(wt.is_file(), "the file was not deleted");
     }
 
+    /// A `.git` DIRECTORY at the path is a checkout of its own, never the
+    /// tail of a worktree removal - a worktree's link is a file - so the
+    /// clear must refuse it rather than delete someone's repository.
+    #[test]
+    fn orphan_removal_refuses_a_checkout_of_its_own() {
+        let dir = init_repo_with_commit();
+        let wt = dir.path().join(".claude").join("worktrees").join("lbl");
+        fs::create_dir_all(wt.join(".git")).expect("a .git directory");
+        fs::write(wt.join("real-work.txt"), "someone's repository").expect("write");
+
+        let err =
+            remove_orphaned_worktree_dir(dir.path(), &wt).expect_err("a foreign checkout refuses");
+
+        assert!(matches!(err, WorktreeError::ForeignLeftover { .. }), "{err:?}");
+        assert!(wt.join("real-work.txt").exists(), "nothing was deleted");
+    }
+
+    /// A `.git` link naming ANOTHER repo's admin dir is someone else's
+    /// worktree parked at our path: not this repo's leftover, so not this
+    /// repo's to delete. The comparison must resolve both spellings (a
+    /// tempdir root is a symlink on macOS), which the same-repo case in
+    /// `orphan_removal_removes_a_deregistered_leftover_directory` pins
+    /// from the other side.
+    #[test]
+    fn orphan_removal_refuses_another_repos_worktree_link() {
+        let dir = init_repo_with_commit();
+        let other = init_repo_with_commit();
+        let wt = dir.path().join(".claude").join("worktrees").join("lbl");
+        fs::create_dir_all(&wt).expect("mkdir");
+        fs::write(
+            wt.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                other.path().join(".git").join("worktrees").join("lbl").display()
+            ),
+        )
+        .expect("write the foreign link");
+
+        let err =
+            remove_orphaned_worktree_dir(dir.path(), &wt).expect_err("a foreign link refuses");
+
+        assert!(matches!(err, WorktreeError::ForeignLeftover { .. }), "{err:?}");
+        assert!(wt.exists(), "the directory was left alone");
+    }
+
     fn branch_exists(repo: &Path, branch: &str) -> bool {
         let out = std::process::Command::new("git")
             .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
@@ -1671,6 +1806,16 @@ mod tests {
 
     fn drop_worktree(repo: &Path, wt: &Path) {
         run_git(repo, &["worktree", "remove", "--force", wt.to_str().expect("utf8 path")]);
+    }
+
+    /// The shape a despawn's failed removal leaves: the directory survives
+    /// with no registration at all, because git deregisters a worktree
+    /// before it walks the tree. `git worktree remove` cannot reach this
+    /// state itself (it deletes the directory too), so the registration's
+    /// admin dir is what the fixture drops.
+    fn deregister_worktree(repo: &Path, name: &str) {
+        fs::remove_dir_all(repo.join(".git").join("worktrees").join(name))
+            .expect("drop the registration");
     }
 
     #[test]
@@ -1826,6 +1971,55 @@ mod tests {
         assert!(wt.exists(), "the worktree exists again");
         assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
         assert!(wt.join("work.txt").exists(), "reattaching the branch restores its content");
+    }
+
+    /// The incident (#1767): a despawn's removal failed part-way, leaving
+    /// the directory with NO registration - a late write into the dir
+    /// makes `git worktree remove` fail after git has already deregistered
+    /// the path - and `ensure` then answered `AlreadyPresent` over it, so
+    /// the resumed child ran `--worktree` and git refused the occupied
+    /// path before the initialize handshake. The leftover must be cleared
+    /// deliberately and the worktree recreated.
+    #[test]
+    fn ensure_worker_worktree_clears_a_leftover_dir_git_no_longer_tracks() {
+        let (dir, wt, branch) = init_repo_with_worker_worktree("lbl");
+        deregister_worktree(dir.path(), "lbl");
+        fs::write(wt.join("late-write.txt"), "wrote while dying").expect("late write");
+        assert!(wt.exists(), "fixture precondition: the directory is still there");
+        assert!(
+            !worktree_registered(dir.path(), &wt),
+            "fixture precondition: git no longer lists the path",
+        );
+
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("the leftover clears");
+
+        assert_eq!(
+            outcome,
+            WorktreeEnsure::AttachedExistingBranch,
+            "the branch predates the call and may hold real work, so it is reused",
+        );
+        assert!(wt.exists(), "the worktree stands again");
+        assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
+        assert!(!wt.join("late-write.txt").exists(), "the leftover's death-throes write is gone");
+    }
+
+    /// A path that is not a plain directory cannot be cleared as a
+    /// leftover, and answering `AlreadyPresent` over it is what let the
+    /// resumed child die behind the transport's message. The refusal names
+    /// the path instead of pretending the worktree is there.
+    #[test]
+    fn ensure_worker_worktree_refuses_a_leftover_that_is_not_a_directory() {
+        let dir = init_repo_with_commit();
+        let wt = dir.path().join(".claude").join("worktrees").join("lbl");
+        fs::create_dir_all(wt.parent().expect("worktrees dir")).expect("mkdir worktrees");
+        fs::write(&wt, "a file where the worktree goes").expect("write a file at the path");
+
+        let err = ensure_worker_worktree(dir.path(), "lbl", &wt).expect_err("a file is refused");
+
+        assert!(
+            matches!(err, WorktreeError::NotAPlainDirectory(ref at) if at.ends_with("lbl")),
+            "the refusal names the occupied path: {err:?}",
+        );
     }
 
     /// The despawn-reaped-branch shape: nothing on the branch was

@@ -59,6 +59,13 @@ pub(crate) struct SessionTask {
     /// to what is RUNNING rather than to what is being read - which is the
     /// price of having one producer rather than two.
     pub(crate) conversation: Option<(Vec<forge_primitives::Message>, u32)>,
+    /// Fires as this task drops - after `run`'s exit path has disconnected
+    /// the subprocess (waited it out up to the close-wait budget, then
+    /// SIGKILLed it) - so a despawn can hold its worktree removal until
+    /// the session's own child is reaped. Held for every exit, early
+    /// returns and panics included, so a waiter never hangs on a task that
+    /// ended some other way.
+    pub(crate) teardown_done: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// The file a call's own output sits at, off what its conversation holds:
@@ -863,6 +870,18 @@ impl SessionTask {
                         guard.turn_pending = false;
                         guard.key.clone()
                     };
+                    // A delivery held off this turn goes out now, where it
+                    // starts a turn of its own rather than folding into the
+                    // one that just ended. Only a `Result` is a turn
+                    // ended on a live session: an `Error` is the transport
+                    // dying, and dispatching into it would drop the held
+                    // prompt where nobody hears - the death path's own
+                    // expiry tells its sender instead.
+                    if matches!(msg, forge_primitives::Message::Result { .. })
+                        && let Some(workspace) = self.workspace.upgrade()
+                    {
+                        crate::spawn::drain_turn_held_for_slot(&workspace, &self.domain, &self.key);
+                    }
                     // Turn end: flush this session's accumulated review
                     // actions into one batched notice per review, routed to
                     // each review's submit origin.
@@ -1529,6 +1548,13 @@ impl Drop for SessionTask {
         // no backstop - `reader_loop` emits ConnectionFailed on both of
         // its exit arms (stream error and stream close), and that arm
         // drains review activity before terminating the task.
+        //
+        // The teardown signal fires here rather than at `run`'s tail so
+        // every exit resolves it - a waiter (the despawn's worktree
+        // removal) must not hang on a task that ended some other way.
+        if let Some(done) = self.teardown_done.take() {
+            let _ = done.send(());
+        }
         let caller = self.domain.lock().key.clone();
         self.drain_review_activity_for(&caller);
         if let Some(workspace) = self.workspace.upgrade() {
@@ -2705,6 +2731,7 @@ mod tests {
             connected_once,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -2859,6 +2886,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            teardown_done: None,
         };
         (task, update_rx)
     }
@@ -2885,6 +2913,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            teardown_done: None,
         };
         (task, cmds)
     }
@@ -3230,6 +3259,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3289,6 +3319,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3754,6 +3785,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            teardown_done: None,
         };
         (task, update_rx, to_agent)
     }
@@ -4215,6 +4247,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -4270,6 +4303,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -4325,6 +4359,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -4577,6 +4612,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::PermissionRequest {
@@ -4639,6 +4675,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::PermissionRequest {
@@ -4686,6 +4723,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::QuestionRequest {
@@ -4732,6 +4770,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::QuestionRequest {
@@ -4781,6 +4820,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let mut request = question_request_fixture("tu-round");
@@ -5669,6 +5709,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: std::sync::Weak::new(),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -5770,6 +5811,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -5932,6 +5974,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -6007,6 +6050,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -6061,6 +6105,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -6118,6 +6163,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         let cap = crate::conversation_window::CONVERSATION_CAP;
         let slack = crate::conversation_window::CONVERSATION_SLACK;
@@ -6231,6 +6277,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                teardown_done: None,
             };
             let frame = |at: usize| {
                 serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
@@ -6304,6 +6351,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output"));
 
@@ -6379,6 +6427,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-reasons"));
 
@@ -6477,6 +6526,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-running"));
 
@@ -6560,6 +6610,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-not-yet"));
         let nonce = std::process::id();
@@ -6813,6 +6864,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                teardown_done: None,
             };
 
             let mut event = connected_event(&session_key.display(), "/tmp/count");
@@ -6865,6 +6917,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         // A FRESH session, which is the case that makes this load-bearing: the
@@ -6955,6 +7008,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         // A one-message resumed history (the --resume backfill).
@@ -7031,6 +7085,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -7941,6 +7996,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                teardown_done: None,
             };
 
             task.translate_event(AgentEvent::ConnectionFailed {
@@ -8004,6 +8060,7 @@ provider = "anthropic"
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         // The re-spawned agent fails to connect.
@@ -8096,6 +8153,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::ConnectionFailed {
@@ -8170,6 +8228,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.execute_command(Command::Prompt {
@@ -8204,6 +8263,126 @@ provider = "anthropic"
         );
     }
 
+    /// A prompt held because it arrived mid-turn goes out when that turn's
+    /// Result lands: the seat is idle again, so it starts a turn of its own
+    /// instead of folding into the one that just ended.
+    #[tokio::test]
+    async fn a_turn_end_delivers_the_prompt_held_for_it() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("hp", "/tmp/hp");
+        let key = SessionSlot::from_str_for_test("hp-worker");
+        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(key.clone(), None)));
+        domain.lock().session_id = Some(forge_primitives::SessionId::new("hp-session"));
+        domain.lock().turn_pending = true;
+        let (handle, _agent_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+            teardown_done: None,
+        };
+        let held = crate::mcp::peers::types::WrappedPrompt {
+            id: crate::mcp::peers::types::MessageId::mint(),
+            kind: crate::mcp::peers::types::WrappedKind::Message,
+            sender_name: "forge".to_owned(),
+            sender_org: "Busytools".to_owned(),
+            body: "the held words".to_owned(),
+        };
+        workspace.hold_peer_prompt_unless_turn_ended(
+            &key,
+            &SessionSlot::lead("Busytools", "hp"),
+            held,
+            || true,
+        );
+        workspace.enable_test_dispatch_intercept();
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "hp-session".to_owned(),
+            msg: result_message("success", false),
+        });
+
+        let dispatched = workspace.drain_test_dispatch_buffer().into_iter().any(|cmd| {
+            matches!(
+                cmd,
+                crate::protocol::Command::PromptUnder { text, source, .. }
+                    if source == PromptSource::Peer && text.contains("the held words")
+            )
+        });
+        assert!(dispatched, "the held prompt is delivered as the turn ends");
+        assert!(
+            workspace.take_turn_held_for_slot(&key).is_empty(),
+            "and the hold is spent, not redelivered next turn",
+        );
+    }
+
+    /// A transport death is NOT a turn end to deliver behind: the seat is
+    /// gone, so the hold stays where the death path's expiry can tell its
+    /// sender rather than being dispatched into a dying session, where it
+    /// would drop unheard.
+    #[tokio::test]
+    async fn a_transport_death_does_not_drain_the_hold() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("hd", "/tmp/hd");
+        let key = SessionSlot::from_str_for_test("hd-worker");
+        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(key.clone(), None)));
+        domain.lock().session_id = Some(forge_primitives::SessionId::new("hd-session"));
+        domain.lock().turn_pending = true;
+        let (handle, _agent_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+            teardown_done: None,
+        };
+        let held = crate::mcp::peers::types::WrappedPrompt {
+            id: crate::mcp::peers::types::MessageId::mint(),
+            kind: crate::mcp::peers::types::WrappedKind::Message,
+            sender_name: "forge".to_owned(),
+            sender_org: "Busytools".to_owned(),
+            body: "while the transport dies".to_owned(),
+        };
+        workspace.hold_peer_prompt_unless_turn_ended(
+            &key,
+            &SessionSlot::lead("Busytools", "hd"),
+            held,
+            || true,
+        );
+        workspace.enable_test_dispatch_intercept();
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "hd-session".to_owned(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "error",
+                "error": "stream closed",
+            }))
+            .expect("parse error message"),
+        });
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "nothing is dispatched into a session whose transport just died",
+        );
+        assert_eq!(
+            workspace.take_turn_held_for_slot(&key).len(),
+            1,
+            "the hold stays for the death path's expiry to acknowledge",
+        );
+    }
+
     /// A session whose CLI says it does not carry the lifecycle frames records
     /// NO queued rows: nothing could ever settle one, and a card that can never
     /// drain is worse than no card - that session draws its prompt the way it
@@ -8227,6 +8406,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         // An init frame from a CLI that does not advertise the capability - the
@@ -8295,6 +8475,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let init = |capabilities: serde_json::Value| -> forge_primitives::Message {
