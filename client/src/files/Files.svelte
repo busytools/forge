@@ -33,6 +33,7 @@
   import { toggleClosed, type TreeRow } from '../components/tree';
   import { boxKey } from '../composer/box.svelte';
   import {
+    bindPushToTalk,
     Dictation,
     openCapture,
     takeCounts,
@@ -223,6 +224,40 @@
 
   const rowPhase = $derived(takePhase(dictate, composer.take, slot));
   const rowWire = $derived(takeCounts(dictate, slot));
+
+  /**
+   * The box a key-begun take belongs to: the one the reader's caret is in,
+   * else the one drawing, else the summary - whose box is always in the
+   * rail. The review page's own rule, so the hold behaves the same on both.
+   */
+  function pttBox(): BoxName | null {
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) {
+      for (const at of ['comment', 'reply', 'summary'] as const) {
+        if (elements[at] === active) return at;
+      }
+    }
+    if (comment.spot !== null) return 'comment';
+    if (reply.thread !== null) return 'reply';
+    // A take already running keeps its box, so the key's release can end it.
+    if (takeIn !== null) return takeIn;
+    return record !== null && entries.length > 0 ? 'summary' : null;
+  }
+
+  // The push-to-talk key, once for the page: a hold begins a take in the box
+  // it belongs to, exactly as the composer's own box does.
+  bindPushToTalk({
+    dictate: () => dictate,
+    offered: () => dictation && pttBox() !== null,
+    bind: () => composer.bind,
+    mode: () => composer.mode,
+    onBegin: () => {
+      const at = pttBox();
+      if (at === null) return;
+      pressedIn = at;
+      elements[at]?.focus();
+    },
+  });
 
   /** One stable object whose fields are getters: a mounted box reads its
    *  props once, and the panel must never show a frozen axes snapshot. */

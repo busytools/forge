@@ -313,14 +313,36 @@
     dictateLine ?? noticeLine(composer.notice, landing.holds(composer.notice)),
   );
 
-  // The push-to-talk key, offered only while the box is open: it is where a
-  // take's words land, and a page with no box has nowhere to put them.
+  /**
+   * The box a key-begun take belongs to: the one the reader's caret is in,
+   * else the open block composer, else the round's summary - the box the
+   * exit row draws once there is a review to describe.
+   */
+  function pttBox(): 'composing' | 'summary' | null {
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) {
+      if (active === field) return 'composing';
+      if (active === summaryField) return 'summary';
+    }
+    if (composing !== null) return 'composing';
+    // A take already running keeps its box, so the key's release can end it.
+    if (takeIn !== null) return takeIn === 'summary' ? 'summary' : 'composing';
+    return held.path !== null && drafts.length > 0 ? 'summary' : null;
+  }
+
+  // The push-to-talk key, once for the page: a hold begins a take in the box
+  // it belongs to, exactly as the composer's own box does.
   bindPushToTalk({
     dictate: () => dictate,
-    offered: () => dictation && composing !== null,
+    offered: () => dictation && pttBox() !== null,
     bind: () => composer.bind,
     mode: () => composer.mode,
-    onBegin: () => field?.focus(),
+    onBegin: () => {
+      const at = pttBox();
+      if (at === null) return;
+      pressedSummary = at === 'summary';
+      (at === 'summary' ? summaryField : field)?.focus();
+    },
   });
 
   /**
