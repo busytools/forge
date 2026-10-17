@@ -90,6 +90,9 @@
   {:else if !drawable}
     <p class="files-quiet">This page draws no text for this kind of file.</p>
   {:else}
+    <!-- The door has to be VISIBLE before it is used (Ved, 2026-10-17): a
+         line takes a comment, and nothing said so until a press. -->
+    <p class="files-hint">press a line to comment</p>
     <div class="files-editor" bind:this={mount}></div>
   {/if}
 </section>

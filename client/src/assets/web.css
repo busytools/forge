@@ -3569,10 +3569,20 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   font-size: var(--fs-label); color: var(--dim); }
 .files-editor { flex: 1; min-height: 0; border: 1px solid var(--line); border-top: 0;
   border-radius: 0 0 9px 9px; overflow: hidden; }
-.files-reader .cm-editor { height: 100%; }
+/* The reader's ground is the head's own tone (Ved, 2026-10-17): the module
+   theme carries GitHub Dark's legacy `#24292e`, which sat far lighter than
+   every surface around it. The override needs `!important` because the
+   theme's own rules carry it; the two-class selector outranks them. */
+.files-reader .cm-editor { height: 100%; background: var(--s1) !important; }
 .files-reader .cm-scroller { font-family: var(--mono); font-size: var(--fs-label); }
 .files-reader .cm-gutters { background: transparent; border-right: 1px solid var(--line);
   color: var(--dim); }
+/* Lines take comments, and that is visible: the pointer says pressable and
+   the hover tints the line under it. */
+.files-reader .cm-line { cursor: pointer; }
+.files-reader .cm-line:hover { background: rgba(27,33,48,.5); }
+.files-hint { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  padding: 6px 2px 6px; }
 /* The reader's target line: the same tint and bar the tree's current row
    carries, and its gutter door (the press that opens the composer). */
 .files-reader .files-target { background: rgba(27,33,48,.5);
