@@ -607,8 +607,9 @@ impl BrowserHost {
     }
 
     /// Every profile the idle release may act on, with its clock: the named
-    /// profiles (the seat to warn is their owner, or whoever last called) and
-    /// the shared browser (whoever last called it, `None` when no one has).
+    /// profiles (the seat to warn is their **creator** - the profile's owner,
+    /// whoever called it last) and the shared browser (whoever last called
+    /// it, `None` when no one has).
     ///
     /// **A browser that is not there is not idle, and a window that is up is
     /// in use.** A dead profile has nothing to release, and a raised
@@ -641,7 +642,10 @@ impl BrowserHost {
             out.push(idle::Candidate {
                 name: Some(name),
                 dir,
-                touch: idle::Touch { caller: touch.caller.clone().or(Some(owner)), ..touch },
+                // **The creator, not the last caller**: a named profile's
+                // warning belongs to the seat that made it, so another seat's
+                // call never moves the message.
+                touch: idle::Touch { caller: Some(owner), ..touch },
             });
         }
         if chromium::verified(&paths.user_data).await.is_some()
@@ -2234,7 +2238,22 @@ mod tests {
             .find(|candidate| candidate.name.as_deref() == Some("hunt"))
             .expect("the named row");
         assert!(row.touch.warned.is_none(), "a touch clears the warning");
-        assert_eq!(row.touch.caller, Some(who), "and keeps the seat it had");
+        assert_eq!(row.touch.caller, Some(who.clone()), "and keeps the seat it had");
+
+        // **The creator, not the last caller** (spam-control A1): another
+        // seat using the profile does not move the warning off its owner.
+        let other = Seat { org: "Other".to_owned(), ..who.clone() };
+        host.touch(&hunt, Some(&other)).await;
+        let candidates = host.idle_candidates().await;
+        let row = candidates
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("hunt"))
+            .expect("the named row after another seat's touch");
+        assert_eq!(
+            row.touch.caller,
+            Some(who),
+            "the owner is the seat to warn, not whoever called it last",
+        );
 
         // Marker over the live launch: the window is up, and a raised window
         // is never a candidate - it is the person's.
