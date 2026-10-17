@@ -2606,6 +2606,39 @@ async fn a_refusal_echoes_the_dispatch_its_press_named() {
     assert!(fleet.dispatched().is_empty(), "the refused command did not run");
 }
 
+/// **A dispatch names the connection that sent it** (spam-control A5, issue
+/// #2372): a parked hand-off's answer arrived over the socket with no way to
+/// attribute it, so every dispatched command logs the client and the command
+/// variant. The client id is the socket's own, minted per connection.
+#[tokio::test]
+async fn a_dispatched_command_is_logged_with_its_connection_and_variant() {
+    let (url, fleet) = a_server().await;
+    fleet.intercept_dispatch();
+    let (mut socket, _home) = a_page_on(&url, Subject::Home).await;
+    let (written, _guard) = catch_records();
+
+    send(
+        &mut socket,
+        ClientMessage::Command { command: Box::new(Command::PluginUpdateAll), reply_to: None },
+    )
+    .await;
+    // The dispatch runs behind the read that answers it, so the read is
+    // repeated and bounded rather than taken once.
+    for _ in 0..200 {
+        if caught(&written).contains("command_dispatched") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let records = caught(&written);
+    let Some(line) = records.lines().find(|line| line.contains("command_dispatched")) else {
+        panic!("a dispatched command is logged with its connection: {records}");
+    };
+    assert!(line.contains("PluginUpdateAll"), "the command variant is named: {line}");
+    assert!(line.contains("client="), "and the connection that sent it: {line}");
+}
+
 /// **The refusal a page's own add press actually gets.** The add is
 /// fire-and-forget - sent without `reply_to`, the way the page sends it - so
 /// its refusals travel the fire-and-forget arm, not the mismatch arm above: a
