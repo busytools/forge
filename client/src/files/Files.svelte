@@ -49,6 +49,7 @@
   import type { CommentBox, ReplyBox, TurnEditor, Voice, Words } from '../review/boxes';
   import Conversation from '../review/Conversation.svelte';
   import { latestRound, roundHasWork, roundsNewestFirst } from '../review/view';
+  import Tabs from '../review/Tabs.svelte';
   import WordsBox from '../review/WordsBox.svelte';
   import {
     deleteCommand,
@@ -952,23 +953,20 @@
   {:else if entries.length === 0}
     <main class="files-main"><p class="files-quiet">The seat's tree has no files.</p></main>
   {:else}
-    <nav class="rv-tabs" aria-label="files sections">
-      <button
-        type="button"
-        class:on={tab === 'conversation'}
-        onclick={() => {
-          tab = 'conversation';
-          // The sheets are the files half's doors; one left open would hang
-          // over the conversation with nothing behind it.
-          closeSheet();
-        }}
-      >
-        Conversation
-      </button>
-      <button type="button" class:on={tab === 'files'} onclick={() => (tab = 'files')}>
-        Files <span class="rv-tn">{entries.length}</span>
-      </button>
-    </nav>
+    <Tabs
+      tabs={[
+        { id: 'conversation', label: 'Conversation' },
+        { id: 'files', label: 'Files', count: entries.length },
+      ]}
+      active={tab}
+      label="files sections"
+      onselect={(id) => {
+        // The sheets are the files half's doors; one left open would hang
+        // over the conversation with nothing behind it.
+        if (id === 'conversation') closeSheet();
+        tab = id as 'files' | 'conversation';
+      }}
+    />
     <div class="files-body" class:conv={tab === 'conversation'}>
       {#if tab === 'files'}
         <div class="files-side" class:sheet={sheet === 'tree'}>

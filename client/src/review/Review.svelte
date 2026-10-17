@@ -12,11 +12,7 @@
     type TakeLine,
   } from '../composer/dictate.svelte';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from '../composer/dictation';
-  import DictateControl from '../composer/DictateControl.svelte';
-  import DictationPanel from '../composer/DictationPanel.svelte';
-  import Field from '../composer/Field.svelte';
   import { Landing } from '../composer/landing';
-  import TakeCard from '../composer/TakeCard.svelte';
   import { noticeLine, joined } from '../composer/view';
   import { hrefForSlot } from '../routes';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
@@ -28,6 +24,8 @@
   import Canvas from './Canvas.svelte';
   import type { CommentBox, ReplyBox, TurnEditor } from './boxes';
   import Conversation from './Conversation.svelte';
+  import RoundFinish from './RoundFinish.svelte';
+  import Tabs from './Tabs.svelte';
   import {
     commentsInScope,
     latestRound,
@@ -864,91 +862,36 @@
      collapses again once the round is sealed. One snippet, because the round,
      the field and the write are the page's own either way. -->
 {#snippet roundFinish()}
-  <div class="rv-finishstack">
-    <!-- The round's own words take a take the way every box does: the bar in
-         the field's place while it runs, and the words at the end of what is
-         written. -->
-    <div class="rv-wordline line" class:takeline={phaseIn('summary') !== null}>
-      {#if phaseIn('summary') !== null}
-        <TakeCard
-          take={composer.take}
-          wire={rowWire}
-          phase={phaseIn('summary') ?? 'recording'}
-          silent={rowSilent}
-          oncancel={() => {
-            landing.drop();
-            dictate.act('cancel');
-          }}
-          spread
-        />
-      {:else}
-        <Field
-          editor="nowhere"
-          class="rv-txarea"
-          rows={4}
-          placeholder="summary (optional)"
-          aria={{ label: 'the round summary' }}
-          bind:value={summary}
-          onkeydown={(event: KeyboardEvent) => {
-            // **Enter finishes the review**, as its own button does: the same
-            // key sends everywhere, and the same guard keeps a round with
-            // nothing filed from sealing (Ved, 2026-10-15).
-            if (event.key !== 'Enter' || event.shiftKey) return;
-            event.preventDefault();
-            if (!busy && drafts.size > 0) void finish();
-          }}
-          field={(el: HTMLElement | null) => {
-            elements.summary = el;
-            // A finish a press opened owes the field the caret, the same way
-            // a comment box a click opened does.
-            if (el !== null && summaryFocus) {
-              summaryFocus = false;
-              el.focus();
-            }
-          }}
-        />
-      {/if}
-    </div>
-    <div class="rv-finishacts">
-      <button
-        type="button"
-        class="rv-finish"
-        disabled={busy || drafts.size === 0}
-        onclick={() => void finish()}
-      >
-        finish review
-        {#if drafts.size > 0}({drafts.size}){/if}
-      </button>
-      {#if dictation}
-        <DictateControl
-          {dictate}
-          onpress={() => (pressedIn = 'summary')}
-          onhold={() => (panelIn = 'summary')}
-        />
-      {/if}
-      {#if dictate.panel && panelIn === 'summary'}
-        <div>
-          <DictationPanel
-            connection={voice.connection}
-            axes={voice.axes}
-            defaults={voice.defaults}
-            bind={voice.bind}
-            mode={voice.mode}
-            device={voice.device}
-            onaxes={voice.onaxes}
-            ondevice={voice.ondevice}
-            onclose={() => {
-              dictate.panel = false;
-              elements.summary?.focus();
-            }}
-          />
-        </div>
-      {/if}
-    </div>
-    {#if summaryLine !== null}
-      <div class="rv-dictateline {summaryLine.tone}">{summaryLine.text}</div>
-    {/if}
-  </div>
+  <RoundFinish
+    bind:draft={summary}
+    phase={phaseIn('summary')}
+    take={composer.take}
+    wire={rowWire}
+    silent={rowSilent}
+    line={summaryLine}
+    panel={dictate.panel && panelIn === 'summary'}
+    {voice}
+    count={drafts.size}
+    complete={drafts.size > 0}
+    {busy}
+    onfinish={() => void finish()}
+    oncancel={() => {
+      landing.drop();
+      dictate.act('cancel');
+    }}
+    onpress={() => (pressedIn = 'summary')}
+    onhold={() => (panelIn = 'summary')}
+    onfield={(el: HTMLElement | null) => {
+      elements.summary = el;
+      // A finish a press opened owes the field the caret, the same way a
+      // comment box a click opened does.
+      if (el !== null && summaryFocus) {
+        summaryFocus = false;
+        el.focus();
+      }
+    }}
+    onclosed={() => elements.summary?.focus()}
+  />
 {/snippet}
 
 <main class="wrap review">
@@ -997,17 +940,7 @@
       </p>
     {/if}
 
-    <nav class="rv-tabs" aria-label="review sections">
-      <button
-        type="button"
-        class:on={tab === 'conversation'}
-        onclick={() => (tab = 'conversation')}
-      >
-        Conversation
-      </button>
-      <button type="button" class:on={tab === 'files'} onclick={() => (tab = 'files')}>
-        Files changed <span class="rv-tn">{commits.length}</span>
-      </button>
+    {#snippet scopeControls()}
       {#if tab === 'files'}
         <span class="rv-scope">
           <button
@@ -1094,7 +1027,18 @@
           >
         </span>
       {/if}
-    </nav>
+    {/snippet}
+
+    <Tabs
+      tabs={[
+        { id: 'conversation', label: 'Conversation' },
+        { id: 'files', label: 'Files changed', count: commits.length },
+      ]}
+      active={tab}
+      label="review sections"
+      onselect={(id) => (tab = id as 'conversation' | 'files')}
+      extra={scopeControls}
+    />
 
     {#if tab === 'files'}
       <!-- The keys, where they act, in the reader's own line of sight: the
@@ -1343,9 +1287,6 @@
       height: auto;
       overflow: visible;
     }
-    .rv-tabs {
-      flex-wrap: wrap;
-    }
     .rv-scope {
       margin-left: 0;
       width: 100%;
@@ -1455,10 +1396,6 @@
     justify-content: flex-end;
     padding-top: 4px;
     flex: none;
-  }
-  .rv-finishbar .rv-finishstack {
-    flex: 1;
-    min-width: 0;
   }
   .top {
     align-items: baseline;

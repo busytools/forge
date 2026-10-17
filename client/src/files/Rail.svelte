@@ -15,11 +15,8 @@
    * branch review. Its box is the page's `WordsBox` over the page's take,
    * so the summary dictates like every other box (Ved's hard rule).
    */
-  import DictateControl from '../composer/DictateControl.svelte';
-  import DictationPanel from '../composer/DictationPanel.svelte';
-  import Field from '../composer/Field.svelte';
-  import TakeCard from '../composer/TakeCard.svelte';
   import type { Voice, Words } from '../review/boxes';
+  import RoundFinish from '../review/RoundFinish.svelte';
   import ThreadDelete from '../review/ThreadDelete.svelte';
   import { statusName } from '../review/view';
   import type { RailRow } from './comments';
@@ -94,65 +91,25 @@
       </div>
     {/each}
   {/if}
-  <!-- The finish: the summary's own box FIRST - present by default, roomy
-       and expandable - and the finish button on its own row under it, with
-       the mic beside the button (Ved, 2026-10-17: the row shape crammed
-       them together). -->
-  <div class="files-finish rv-finishstack">
-    <div class="rv-wordline line" class:takeline={summaryBox.phase !== null}>
-      {#if summaryBox.phase !== null}
-        <TakeCard
-          take={summaryBox.take}
-          wire={summaryBox.wire}
-          phase={summaryBox.phase}
-          oncancel={() => voice.dictate.act('cancel')}
-          spread
-        />
-      {:else}
-        <Field
-          editor="nowhere"
-          class="rv-txarea"
-          rows={4}
-          placeholder="summary (optional)"
-          aria={{ label: 'the round summary' }}
-          bind:value={summaryBox.draft}
-          onkeydown={(event: KeyboardEvent) => {
-            // **Enter finishes the review**, as its own button does.
-            if (event.key !== 'Enter' || event.shiftKey) return;
-            event.preventDefault();
-            if (!busy && finishCount > 0) seal();
-          }}
-          field={onfield}
-        />
-      {/if}
-    </div>
-    <div class="rv-finishacts">
-      <button class="rv-finish" type="button" disabled={busy || finishCount === 0} onclick={seal}>
-        {finishCount > 0 ? `finish review (${finishCount})` : 'finish review'}
-      </button>
-      {#if voice.offered}
-        <DictateControl dictate={voice.dictate} {onpress} {onhold} />
-      {/if}
-      {#if summaryBox.panel}
-        <div>
-          <DictationPanel
-            connection={voice.connection}
-            axes={voice.axes}
-            defaults={voice.defaults}
-            bind={voice.bind}
-            mode={voice.mode}
-            device={voice.device}
-            onaxes={voice.onaxes}
-            ondevice={voice.ondevice}
-            onclose={() => {
-              voice.dictate.panel = false;
-            }}
-          />
-        </div>
-      {/if}
-    </div>
-    {#if summaryBox.line !== null}
-      <div class="rv-dictateline {summaryBox.line.tone}">{summaryBox.line.text}</div>
-    {/if}
+  <!-- The finish, drawn by the piece the review page draws too. -->
+  <div class="files-finish">
+    <RoundFinish
+      bind:draft={summaryBox.draft}
+      phase={summaryBox.phase}
+      take={summaryBox.take}
+      wire={summaryBox.wire}
+      silent={summaryBox.silent}
+      line={summaryBox.line}
+      panel={summaryBox.panel}
+      {voice}
+      count={finishCount}
+      complete={finishCount > 0}
+      {busy}
+      onfinish={seal}
+      oncancel={() => voice.dictate.act('cancel')}
+      {onpress}
+      {onhold}
+      {onfield}
+    />
   </div>
 </aside>

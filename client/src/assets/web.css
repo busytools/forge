@@ -3838,6 +3838,9 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    review page's two finishes, the files rail and the document's exit (Ved,
    2026-10-17). */
 .rv-finishstack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+/* The review half's bar keeps the stack filling it, wherever the stack is
+   drawn from (its own component's scoped root). */
+.rv-finishbar .rv-finishstack { flex: 1; min-width: 0; }
 .rv-finishacts { display: flex; gap: 9px; align-items: center; position: relative; }
 .rv-finishacts .mic { margin-left: auto; }
 .rv-wordline { flex: 1; min-width: 0; }
