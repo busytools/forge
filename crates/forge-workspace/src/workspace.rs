@@ -5092,6 +5092,18 @@ impl Workspace {
                         let _ = respond.send(self.upsert_review_thread(&project, &branch, thread));
                     }
                 }
+                Command::DeleteReviewThread { project, branch, thread_id, respond } => {
+                    let span = tracing::info_span!(
+                        "delete_review_thread",
+                        project = %project,
+                        branch = %branch,
+                        thread_id = %thread_id,
+                    );
+                    let _enter = span.enter();
+                    if let Some(respond) = respond {
+                        let _ = respond.send(self.delete_review_thread(&project, &branch, &thread_id));
+                    }
+                }
                 Command::SubmitReview { project, branch, summary, thread_ids, origin, respond } => {
                     let span = tracing::info_span!(
                         "submit_review",
@@ -12464,6 +12476,63 @@ provider = "anthropic"
         );
         let loaded = workspace.load_review_threads("forge", "feat").expect("load");
         assert_eq!(loaded.len(), 1, "the bus-routed upsert landed in the store");
+    }
+
+    /// The same for the retraction: a `DeleteReviewThread` dispatch removes
+    /// the thread from the store and confirms on the responder, and a
+    /// second delete of the same id confirms `false` rather than lying.
+    #[test]
+    fn dispatch_buses_the_review_delete() {
+        use forge_primitives::review::{ReviewAnchor, ReviewSide, ReviewStatus, ReviewThread};
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let db_dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("db"),
+        );
+        let thread = ReviewThread {
+            id: "t1".to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: Vec::new(),
+            status: ReviewStatus::Open,
+            created_at: "t".to_owned(),
+            updated_at: "t".to_owned(),
+            commit: None,
+        };
+        workspace.upsert_review_thread("forge", "feat", thread);
+
+        let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
+        workspace
+            .dispatch(Command::DeleteReviewThread {
+                project: "forge".to_owned(),
+                branch: "feat".to_owned(),
+                thread_id: "t1".to_owned(),
+                respond: Some(respond_tx),
+            })
+            .expect("dispatch");
+        assert!(
+            respond_rx.try_recv().expect("response present"),
+            "an open store confirms the delete on the responder"
+        );
+        let loaded = workspace.load_review_threads("forge", "feat").expect("load");
+        assert!(loaded.is_empty(), "the bus-routed delete left the store empty");
+
+        let (again_tx, mut again_rx) = tokio::sync::oneshot::channel();
+        workspace
+            .dispatch(Command::DeleteReviewThread {
+                project: "forge".to_owned(),
+                branch: "feat".to_owned(),
+                thread_id: "t1".to_owned(),
+                respond: Some(again_tx),
+            })
+            .expect("dispatch");
+        assert!(!again_rx.try_recv().expect("response present"), "an absent id deletes nothing");
     }
 
     /// `/new` and `/resume` re-spawn on the already-pooled handle, where

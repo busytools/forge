@@ -78,6 +78,29 @@ impl Workspace {
         }
     }
 
+    /// Remove one review thread by id from `(project, branch)`. Returns
+    /// whether a thread was removed - `false` when the store isn't open,
+    /// the write failed, or no thread carried the id.
+    pub fn delete_review_thread(&self, project: &str, branch: &str, id: &str) -> bool {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return false;
+        };
+        match crate::store::review::remove_thread(db, project, branch, id) {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::review",
+                    %error,
+                    project = %project,
+                    branch = %branch,
+                    "deleting a review thread failed",
+                );
+                false
+            }
+        }
+    }
+
     /// Set the status of one review thread by id, bumping its `updated_at`.
     pub fn set_review_thread_status(
         &self,

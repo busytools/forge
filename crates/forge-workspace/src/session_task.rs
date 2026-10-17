@@ -1759,6 +1759,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::SetReviewThreadStatus { .. }
         | Command::CloseSession { .. }
         | Command::UpsertReviewThread { .. }
+        | Command::DeleteReviewThread { .. }
         | Command::SubmitReview { .. }
         | Command::TaskVerdict { .. }
         | Command::TaskAnswer { .. }
