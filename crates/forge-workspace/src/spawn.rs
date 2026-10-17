@@ -8510,6 +8510,37 @@ mod lead_charter_tests {
         );
     }
 
+    /// The charter's board lines carry the landing rule (#2377): a landed
+    /// row with no epic above it is deleted in the same pass, a landed
+    /// child of an open epic is left terminal so the epic can read `to
+    /// close`, and the delete is never that child's - the lead is the
+    /// pile's author, so a charter line still saying "complete the row
+    /// when it is merged" would reproduce the 36-completed-rows board the
+    /// tool text was fixed to prevent.
+    #[test]
+    fn the_charter_carries_the_landing_rule() {
+        for (clause, why) in [
+            (
+                "a landed row with no children and no epic above it is deleted in the same \
+                 pass (`tasks__delete`), never left completed, while a landed row under an \
+                 open epic is completed and left terminal, because the epic reads `to close` \
+                 only once every child is terminal",
+                "the row-true bullet carries the delete and its epic carve-out together",
+            ),
+            (
+                "`tasks__delete` clears a row created in error, and a landed row with no \
+                 children and no epic above it - never a child of an open epic, whose terminal \
+                 state its epic's close depends on",
+                "the close-epics bullet states what the delete is for",
+            ),
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not carry the landing rule ({why}): {clause}",
+            );
+        }
+    }
+
     /// The charter is shipped text every lead reads, so a blocked CLI tool
     /// named here would send it to a surface its own launch denies. The
     /// preamble is the other lead-facing text and carries the same test in
@@ -8647,13 +8678,18 @@ mod lead_charter_tests {
                 "the charter maintains the list through {tool}: {DEFAULT_LEAD_CHARTER}",
             );
         }
-        // Case-insensitively: the CLI spells it lowercase `deleted`, and
-        // that spelling is the regression this guards, not the upper-case
-        // one.
-        assert!(
-            !DEFAULT_LEAD_CHARTER.to_lowercase().contains("deleted"),
-            "`deleted` is the CLI's status, not one of forge's four: {DEFAULT_LEAD_CHARTER}",
-        );
+        // Case-insensitively: the CLI spells its removal status lowercase
+        // `deleted`, and a lead reading it as a state here would go looking
+        // for it in `tasks__update`. The landed-row rule legitimately uses
+        // the verb - "is deleted in the same pass", `tasks__delete` named
+        // in the same clause - so the ban is the status spelling: the
+        // backticked form, or the word standing as a state name.
+        for spelling in ["`deleted`", "deleted status", "status deleted"] {
+            assert!(
+                !DEFAULT_LEAD_CHARTER.to_lowercase().contains(spelling),
+                "`deleted` as a status is the CLI's, not one of forge's: {DEFAULT_LEAD_CHARTER}",
+            );
+        }
     }
 
     /// #1494: the parallelism rule reads the project's own `max_workers`

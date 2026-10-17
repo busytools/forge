@@ -140,8 +140,12 @@ impl Tool for Create {
          `parent` names another task in the same project this one belongs under, `estimate` a \
          duration, `rank` the queue order, `verify` whether completion waits on the user, \
          `links` the references it carries (issues, PRs, specs, paths), `detail` free prose. \
-         `status` defaults to pending. Returns the stored task with its id (use it with \
-         tasks__update / tasks__delete). Any session in the project may call this."
+         `status` defaults to pending. A row whose deliverable IS the user's own read or \
+         decision - a report the user asked to read, a verdict the user asked to give - is \
+         minted `verify: \"user\"` explicitly, never left to the epic default: it ends parked \
+         on the user, and the board's approve is what completes it. Returns the stored task \
+         with its id (use it with tasks__update / tasks__delete). Any session in the project \
+         may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -187,7 +191,9 @@ impl Tool for Create {
                     "type": "string",
                     "enum": ["user", "none"],
                     "description": "Whether completion waits on the user's look. The epic's \
-                                    default applies when unset.",
+                                    default applies when unset, but a row whose deliverable \
+                                    IS the user's own read or decision states `user` \
+                                    explicitly instead.",
                 },
                 "links": {
                     "type": "array",
@@ -250,7 +256,12 @@ impl Tool for Update {
         "Change a task in YOUR project by id, stating only the fields to move - everything else \
          is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
          failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
-         label of a worker. Any session in the project may move any of its tasks, so a lead can \
+         label of a worker. The board is for running work: a landed row with no children and \
+         no epic above it is DELETED in the same pass (tasks__delete), never left completed; \
+         a landed row under an open epic is completed and left terminal, because the epic \
+         reads `to close` only once every child is terminal - and completing the epic's ROOT \
+         row archives the whole tree. Any session in the \
+         project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
          it, and a cancel of a row waiting on the user is the withdraw door once the ask has \
@@ -283,7 +294,11 @@ impl Tool for Update {
                 "status": {
                     "type": "string",
                     "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
-                    "description": "The task's new status.",
+                    "description": "The task's new status. `completed` is not a resting state \
+                                    for a landed row with no children and no epic above it: \
+                                    it is deleted in the same pass. A landed row under an \
+                                    open epic stays completed and terminal so the epic can \
+                                    read `to close`.",
                 },
                 "owner": {
                     "type": "string",
@@ -511,7 +526,11 @@ impl Tool for Delete {
     fn description(&self) -> &'static str {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
-         that is over; nothing is archived. A row waiting on the user is not a delete's to \
+         that is over: the board is for running work, so a landed row - its work merged, \
+         delivered or concluded - with no children and no epic above it is deleted in the \
+         same pass, never left completed; a landed row under an open epic is completed and \
+         left terminal instead, so the epic can read `to close`. Nothing \
+         is archived. A row waiting on the user is not a delete's to \
          take - the board's answer or approve settles it, and deleting it (or a tree holding \
          it) is refused rather than taken as a way around the ask. \
          An ask that has gone moot is withdrawn, not removed: `tasks__update` cancels it with \
@@ -1231,6 +1250,90 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Delete-on-landing is shipped text (#2377): the board is for running
+    /// work, so a landed row with no children and no epic above it is
+    /// deleted in the same pass rather than left completed. The carve-out
+    /// is the board's own: an epic reads `to close` only while it holds
+    /// terminal children, so a landed child of an open epic is completed
+    /// and left terminal instead. The update's status property is where
+    /// the caller picks the terminal state, so it carries both.
+    #[test]
+    fn the_task_descriptions_state_delete_on_landing_and_the_epic_carve_out() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let update = Update { facade: facade.clone(), slot: slot.clone() };
+        let delete = Delete { facade, slot };
+        for (name, description, clause) in [
+            (
+                "tasks__update",
+                update.description(),
+                "The board is for running work: a landed row with no children and no epic \
+                 above it is DELETED in the same pass (tasks__delete), never left completed; \
+                 a landed row under an open epic is completed and left terminal, because the \
+                 epic reads `to close` only once every child is terminal",
+            ),
+            (
+                "tasks__delete",
+                delete.description(),
+                "a landed row - its work merged, delivered or concluded - with no children \
+                 and no epic above it is deleted in the same pass, never left completed; a \
+                 landed row under an open epic is completed and left terminal instead, so the \
+                 epic can read `to close`",
+            ),
+        ] {
+            assert!(
+                description.contains(clause),
+                "{name} does not state the landing rule ({clause}): {description}",
+            );
+        }
+        let status = update.input_schema()["properties"]["status"]["description"]
+            .as_str()
+            .expect("the status property carries a description")
+            .to_owned();
+        for clause in [
+            "`completed` is not a resting state for a landed row with no children and no \
+             epic above it",
+            "A landed row under an open epic stays completed and terminal so the epic can \
+             read `to close`",
+        ] {
+            assert!(
+                status.contains(clause),
+                "the status property owes the rule where the caller picks it ({clause}): \
+                 {status}",
+            );
+        }
+    }
+
+    /// The user-read mint is shipped text (#2377): a row whose deliverable
+    /// IS the user's own read or decision is minted `verify: "user"`
+    /// explicitly, never left to the epic default, so the board parks it
+    /// on the user. The verify property is where the caller sets it.
+    #[test]
+    fn the_create_description_states_the_user_read_mint() {
+        let create = Create { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        let description = create.description();
+        assert!(
+            description.contains(
+                "A row whose deliverable IS the user's own read or decision - a report the user \
+                 asked to read, a verdict the user asked to give - is minted `verify: \"user\"` \
+                 explicitly, never left to the epic default: it ends parked on the user, and \
+                 the board's approve is what completes it"
+            ),
+            "tasks__create does not state the mint: {description}",
+        );
+        let verify = create.input_schema()["properties"]["verify"]["description"]
+            .as_str()
+            .expect("the verify property carries a description")
+            .to_owned();
+        assert!(
+            verify.contains(
+                "a row whose deliverable IS the user's own read or decision states `user` \
+                 explicitly instead"
+            ),
+            "the verify property owes the mint where the caller sets it: {verify}",
+        );
     }
 
     #[tokio::test]
