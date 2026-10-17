@@ -61,27 +61,30 @@ pub(crate) enum MoveError {
     /// the withdraw records: the ask leaves with its why on the row,
     /// never silently.
     WithdrawNeedsReason,
-    /// A delete would remove a row parked on the user's look: the look is
-    /// what is pending, not the row's life, and the board's approve is what
-    /// settles it. The row's SUBJECT rides it so the refusal says which look.
+    /// A delete would remove a row waiting on the user: the ask is what is
+    /// pending, not the row's life, and the board's answer or approve is
+    /// what settles it. The row's SUBJECT rides it so the refusal says
+    /// which ask.
     DeletingLook(String),
-    /// Closing a ROOT row would archive a row parked on the user's look:
-    /// removal by close is not a way to settle it either. The row's SUBJECT
-    /// rides it, as the delete's does.
+    /// Closing a ROOT row would archive a row waiting on the user: removal
+    /// by close is not a way to settle it either. The row's SUBJECT rides
+    /// it, as the delete's does.
     ClosingLook(String),
 }
 
-/// Whether a row is parked on the user's look - the verification wait the
-/// gate lands a user-bound completion on. This is the flag both removal
-/// doors refuse to take away; a row merely BOUND by the gate, never parked
-/// on it, is work the caller may abandon.
+/// Whether a row is parked on the user's own look - the verification wait
+/// the gate lands a user-bound completion on. The completion guard reads
+/// it: only the user's approve completes such a row. A row merely BOUND
+/// by the gate, never parked on it, is work the caller may abandon.
 fn parked_on_look(task: &Task) -> bool {
     task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
 }
 
-/// Whether a row presents as waiting on the user: a verification park or
-/// a decision wait. The fleet's count and the board's waiting strip both
-/// read this set.
+/// Whether a row presents as waiting on the user: a decision wait or a
+/// verification park. The fleet's count and the board's waiting strip
+/// both read this set, and so do the removal guards and the withdraw
+/// door - an ask on the user leaves by the user's own answer or approve,
+/// or by a reasoned withdraw.
 fn parked_on_user(task: &Task) -> bool {
     task.waiting_on
         .as_ref()
@@ -151,13 +154,13 @@ impl std::fmt::Display for MoveError {
             ),
             Self::DeletingLook(subject) => write!(
                 f,
-                "\"{subject}\" is waiting on the user's look; the board's approve completes it, \
-                 and deleting the row cannot take the look away"
+                "\"{subject}\" is waiting on the user; the board's answer or approve settles it, \
+                 and deleting the row cannot take the ask away"
             ),
             Self::ClosingLook(subject) => write!(
                 f,
-                "\"{subject}\" is waiting on the user's look; the board's approve completes it, \
-                 and closing the epic cannot take the look away"
+                "\"{subject}\" is waiting on the user; the board's answer or approve settles it, \
+                 and closing the epic cannot take the ask away"
             ),
         }
     }
@@ -356,7 +359,7 @@ impl Workspace {
     /// instead, its own wait gone; and completing a
     /// ROOT row closes it - the whole tree moves to the archive, refused
     /// while any child is still open or while any row in the tree is
-    /// parked on the user's look (#2251).
+    /// parked on the user (#2251).
     pub(crate) fn update_task(
         &self,
         project_name: &str,
@@ -406,9 +409,7 @@ impl Workspace {
             }
             // The look is what completes a row waiting on it: a
             // completion here is refused, naming the look.
-            if next.status == TaskStatus::Completed
-                && next.waiting_on.as_ref().is_some_and(|wait| wait.verification)
-            {
+            if next.status == TaskStatus::Completed && parked_on_look(&next) {
                 return Err(MoveError::WaitingOnLook);
             }
             // The withdraw door (#2340): a seat cancelling a row waiting
@@ -476,7 +477,7 @@ impl Workspace {
                         }
                     }
                 }
-                // The look a row is parked on is not the close's to take
+                // The ask a row is waiting on is not the close's to take
                 // either (#2251's class, found reviewing the delete's
                 // guard): the archive would settle it by removal. The
                 // open-children check above sees direct children only, so
@@ -488,7 +489,7 @@ impl Workspace {
                     t.project_name == project_name
                         && t.id != next.id
                         && doomed.contains(&t.id)
-                        && parked_on_look(t)
+                        && parked_on_user(t)
                 }) {
                     return Err(MoveError::ClosingLook(task.subject.clone()));
                 }
@@ -909,9 +910,10 @@ impl Workspace {
     /// rather than at the call site so a parent can never be deleted out
     /// from under children that would then have nobody to close them.
     ///
-    /// A tree holding a row parked on the user's look is refused by name
-    /// (#2251): removal would settle that row by deletion, a look the
-    /// update path refuses to unbind or complete. The check walks the whole
+    /// A tree holding a row waiting on the user - a verification park or
+    /// a decision wait - is refused by name (#2251): removal would settle
+    /// that row by deletion, an ask the update path refuses to unbind,
+    /// complete, or drop without a reason. The check walks the whole
     /// cascade, so deleting the epic above the row is no way around it.
     pub(crate) fn remove_task_tree(
         &self,
@@ -936,7 +938,7 @@ impl Workspace {
             if let Some(task) = tasks.iter().find(|task| {
                 task.project_name == project_name
                     && doomed.contains(&task.id)
-                    && parked_on_look(task)
+                    && parked_on_user(task)
             }) {
                 return Err(MoveError::DeletingLook(task.subject.clone()));
             }
@@ -2375,6 +2377,77 @@ mod tests {
             ["subject epic".to_owned(), "subject t-1".to_owned()],
             "and nothing went: the epic above the row is not a way around",
         );
+    }
+
+    /// The delete's guard covers the user's other ask too (#2340): a row
+    /// waiting on a question is not a removal's to take either - it would
+    /// settle the ask by deletion, the same way it would settle a look.
+    #[test]
+    fn a_delete_cannot_take_a_row_waiting_on_a_question() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-delete-question");
+        ws.push_task(sample_task("epic", "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(sample_task_with_parent("t-1", Some("epic"), "proj"));
+        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            WaitingKind::Decision,
+            Some("which shape".to_owned()),
+            None,
+        )
+        .expect("the owner may wait its own row");
+
+        let refused = ws
+            .remove_task_tree("proj", &TaskId::from("t-1"))
+            .expect_err("a question waiting on the user is not a delete's to take");
+        assert_eq!(
+            refused,
+            MoveError::DeletingLook("subject t-1".to_owned()),
+            "the refusal names the row whose ask is pending",
+        );
+        assert_eq!(ws.tasks_for_project("proj").len(), 2, "and nothing went");
+    }
+
+    /// The close is the other removal door, and the question park is the
+    /// other ask (#2340): a grandchild waiting on a question, under a
+    /// branch already cancelled, is not archived by the root's close.
+    #[test]
+    fn a_root_close_cannot_take_a_grandchild_waiting_on_a_question() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-close-question");
+        ws.push_task(sample_task("root", "proj"));
+        ws.push_task(sample_task_with_parent("branch", Some("root"), "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(sample_task_with_parent("asked", Some("branch"), "proj"));
+        ws.claim_task("proj", &worker, Some(&TaskId::from("asked")), None).expect("claim");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("asked"),
+            &worker,
+            WaitingKind::Decision,
+            Some("which shape".to_owned()),
+            None,
+        )
+        .expect("the owner may wait its own row");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.update_task("proj", &TaskId::from("branch"), By::Seat(lead.clone()), |task| {
+            task.status = TaskStatus::Canceled;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("root"), By::Seat(lead), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("the archive is not a way to settle a pending question");
+        assert_eq!(refused, MoveError::ClosingLook("subject asked".to_owned()));
+        assert_eq!(ws.tasks_for_project("proj").len(), 3, "and nothing was archived");
     }
 
     /// The gate protects the look, not the row's life: once the approve has
