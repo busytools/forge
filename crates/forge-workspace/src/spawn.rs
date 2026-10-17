@@ -8523,8 +8523,9 @@ mod lead_charter_tests {
             (
                 "a landed row with no children and no epic above it is deleted in the same \
                  pass (`tasks__delete`), never left completed, while a landed row under an \
-                 open epic is completed and left terminal, because the epic reads `to close` \
-                 only once every child is terminal",
+                 epic - open or already terminal - is completed and left terminal, because \
+                 the epic reads `to close` only once every child is terminal (a verify=user \
+                 child parks in waiting on the user and counts only once the user approves)",
                 "the row-true bullet carries the delete and its epic carve-out together",
             ),
             (

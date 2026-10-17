@@ -367,8 +367,9 @@ pub fn build_forge_server(
 pub(crate) const TASK_BOARD_INSTRUCTIONS: &str = "\
 forge's task board is the shared surface for work in flight. It is for running \
 work: a landed row with no children and no epic above it is deleted in the same \
-pass, never left completed; a landed child of an open epic is completed and left \
-terminal so the epic can read `to close`. Read it \
+pass, never left completed; a landed child of an epic - open or already terminal \
+- is completed and left terminal so the epic can read `to close` (a verify=user \
+child parks in waiting on the user first). Read it \
 with tasks__list: a `ready` mark means a row can be started, `worked` and the \
 `overdue` mark say how long it has run against its estimate, and a message \
 about an over-estimate row is an answer you owe. Claim before working: \
@@ -481,7 +482,9 @@ mod tests {
             TASK_BOARD_INSTRUCTIONS.contains(
                 "It is for running work: a landed row with no children and no epic above it \
                  is deleted in the same pass, never left completed; a landed child of an \
-                 open epic is completed and left terminal so the epic can read `to close`"
+                 epic - open or already terminal - is completed and left terminal so the \
+                 epic can read `to close` (a verify=user child parks in waiting on the user \
+                 first)"
             ),
             "the instructions name the board's shape: {TASK_BOARD_INSTRUCTIONS}",
         );

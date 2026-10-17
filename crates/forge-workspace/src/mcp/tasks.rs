@@ -258,9 +258,11 @@ impl Tool for Update {
          failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
          label of a worker. The board is for running work: a landed row with no children and \
          no epic above it is DELETED in the same pass (tasks__delete), never left completed; \
-         a landed row under an open epic is completed and left terminal, because the epic \
-         reads `to close` only once every child is terminal - and completing the epic's ROOT \
-         row archives the whole tree. Any session in the \
+         a landed row under an epic - open or already terminal - is completed and left \
+         terminal, because the epic reads `to close` only once every child is terminal (a \
+         verify=user child parks in waiting on the user and counts only once the user \
+         approves); and completing the epic's ROOT row closes it and archives the whole \
+         tree. Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
@@ -297,8 +299,9 @@ impl Tool for Update {
                     "description": "The task's new status. `completed` is not a resting state \
                                     for a landed row with no children and no epic above it: \
                                     it is deleted in the same pass. A landed row under an \
-                                    open epic stays completed and terminal so the epic can \
-                                    read `to close`.",
+                                    epic - open or already terminal - stays completed and \
+                                    terminal so the epic can read `to close`; a verify=user \
+                                    row parks in waiting on the user first.",
                 },
                 "owner": {
                     "type": "string",
@@ -528,8 +531,9 @@ impl Tool for Delete {
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
          that is over: the board is for running work, so a landed row - its work merged, \
          delivered or concluded - with no children and no epic above it is deleted in the \
-         same pass, never left completed; a landed row under an open epic is completed and \
-         left terminal instead, so the epic can read `to close`. Nothing \
+         same pass, never left completed; a landed row under an epic - open or already \
+         terminal - is completed and left terminal instead, so the epic can read `to close` \
+         (a verify=user row parks in waiting on the user first). Nothing \
          is archived. A row waiting on the user is not a delete's to \
          take - the board's answer or approve settles it, and deleting it (or a tree holding \
          it) is refused rather than taken as a way around the ask. \
@@ -1256,9 +1260,11 @@ mod tests {
     /// work, so a landed row with no children and no epic above it is
     /// deleted in the same pass rather than left completed. The carve-out
     /// is the board's own: an epic reads `to close` only while it holds
-    /// terminal children, so a landed child of an open epic is completed
-    /// and left terminal instead. The update's status property is where
-    /// the caller picks the terminal state, so it carries both.
+    /// terminal children, so a landed child of an epic - open or already
+    /// terminal - is completed and left terminal instead, and a
+    /// verify=user child parks in waiting on the user first. The update's
+    /// status property is where the caller picks the terminal state, so it
+    /// carries all of it.
     #[test]
     fn the_task_descriptions_state_delete_on_landing_and_the_epic_carve_out() {
         let facade = MockTasksFacade::new().into_arc();
@@ -1271,16 +1277,19 @@ mod tests {
                 update.description(),
                 "The board is for running work: a landed row with no children and no epic \
                  above it is DELETED in the same pass (tasks__delete), never left completed; \
-                 a landed row under an open epic is completed and left terminal, because the \
-                 epic reads `to close` only once every child is terminal",
+                 a landed row under an epic - open or already terminal - is completed and \
+                 left terminal, because the epic reads `to close` only once every child is \
+                 terminal (a verify=user child parks in waiting on the user and counts only \
+                 once the user approves)",
             ),
             (
                 "tasks__delete",
                 delete.description(),
                 "a landed row - its work merged, delivered or concluded - with no children \
                  and no epic above it is deleted in the same pass, never left completed; a \
-                 landed row under an open epic is completed and left terminal instead, so the \
-                 epic can read `to close`",
+                 landed row under an epic - open or already terminal - is completed and left \
+                 terminal instead, so the epic can read `to close` (a verify=user row parks \
+                 in waiting on the user first)",
             ),
         ] {
             assert!(
@@ -1295,8 +1304,9 @@ mod tests {
         for clause in [
             "`completed` is not a resting state for a landed row with no children and no \
              epic above it",
-            "A landed row under an open epic stays completed and terminal so the epic can \
-             read `to close`",
+            "A landed row under an epic - open or already terminal - stays completed and \
+             terminal so the epic can read `to close`; a verify=user row parks in waiting on \
+             the user first",
         ] {
             assert!(
                 status.contains(clause),
