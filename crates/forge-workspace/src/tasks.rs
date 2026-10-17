@@ -5,6 +5,7 @@
 //! The core polices the moves here, so no caller can talk a row into an
 //! impossible state: the verify gate lives in the transition into
 //! completed, closing is completing a root, a claim is one atomic write,
+//! a cancel of a row waiting on the user carries the reason it records,
 //! and every status change lands in the history.
 
 use std::time::SystemTime;
@@ -56,6 +57,10 @@ pub(crate) enum MoveError {
     /// A patch would clear the look gate a row is bound by: the user's
     /// own approve is what clears it.
     ClearingLookGate,
+    /// A cancel landed on a row waiting on the user without the reason
+    /// the withdraw records: the ask leaves with its why on the row,
+    /// never silently.
+    WithdrawNeedsReason,
     /// A delete would remove a row parked on the user's look: the look is
     /// what is pending, not the row's life, and the board's approve is what
     /// settles it. The row's SUBJECT rides it so the refusal says which look.
@@ -72,6 +77,15 @@ pub(crate) enum MoveError {
 /// on it, is work the caller may abandon.
 fn parked_on_look(task: &Task) -> bool {
     task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+}
+
+/// Whether a row presents as waiting on the user: a verification park or
+/// a decision wait. The fleet's count and the board's waiting strip both
+/// read this set.
+fn parked_on_user(task: &Task) -> bool {
+    task.waiting_on
+        .as_ref()
+        .is_some_and(|wait| wait.verification || wait.kind == Some(WaitingKind::Decision))
 }
 
 /// Append the user's words to a row's detail, keeping what was there.
@@ -129,6 +143,11 @@ impl std::fmt::Display for MoveError {
                 f,
                 "this row's completion waits on the user's look; an update cannot take that away, \
                  and the board's approve completes it"
+            ),
+            Self::WithdrawNeedsReason => write!(
+                f,
+                "this row is waiting on the user; withdrawing it needs `detail`, the reason the \
+                 ask is withdrawn, which lands on the row, and a bare status flip is refused"
             ),
             Self::DeletingLook(subject) => write!(
                 f,
@@ -328,10 +347,13 @@ impl Workspace {
     /// `waiting` (the verify gate); a patch cannot take a user-bound
     /// row's look gate away - clearing its verify or moving it out of its
     /// epic is refused by name; a completion of a row already waiting on
-    /// the user's look is refused by name; a move off `waiting` drops the
-    /// wait the row was holding, so a completion of any other waiting row
-    /// applies and clears - a verify=user one is taken by the gate and
-    /// lands on the look instead, its own wait gone; and completing a
+    /// the user's look is refused by name; a cancel of a row waiting on
+    /// the user is the withdraw door - it records the reason the caller
+    /// states in `detail`, and a cancel without one is refused (#2340);
+    /// a move off `waiting` drops the wait the row was holding, so a
+    /// completion of any other waiting row applies and clears - a
+    /// verify=user one is taken by the gate and lands on the look
+    /// instead, its own wait gone; and completing a
     /// ROOT row closes it - the whole tree moves to the archive, refused
     /// while any child is still open or while any row in the tree is
     /// parked on the user's look (#2251).
@@ -388,6 +410,22 @@ impl Workspace {
                 && next.waiting_on.as_ref().is_some_and(|wait| wait.verification)
             {
                 return Err(MoveError::WaitingOnLook);
+            }
+            // The withdraw door (#2340): a seat cancelling a row waiting
+            // on the user records the reason the same call states in
+            // `detail`, appended to what the row already said - the ask
+            // that goes away keeps its story. A cancel stating nothing is
+            // refused, so the user's pending ask is never dropped silently.
+            if matches!(by, By::Seat(_))
+                && next.status == TaskStatus::Canceled
+                && parked_on_user(&tasks[index])
+            {
+                let reason = next.detail.clone().unwrap_or_default();
+                if reason.trim().is_empty() || next.detail == tasks[index].detail {
+                    return Err(MoveError::WithdrawNeedsReason);
+                }
+                next.detail.clone_from(&tasks[index].detail);
+                append_words(&mut next, &reason);
             }
             // A move off `waiting` drops the wait the row was holding.
             if prior == TaskStatus::Waiting && next.status != TaskStatus::Waiting {
@@ -2042,6 +2080,179 @@ mod tests {
 
         let stored = ws.tasks_for_project("proj");
         assert_eq!(stored[0].status, TaskStatus::Waiting, "and the row keeps waiting for the look");
+    }
+
+    /// The withdraw door (#2340): a seat cancels a row parked on the
+    /// user's look with the reason it states, which lands appended to
+    /// what the row already said - the ask that goes away keeps its
+    /// story.
+    #[test]
+    fn a_withdraw_records_the_reason_on_a_parked_row() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-withdraw-reason");
+        let mut row = sample_task("t-1", "proj");
+        row.verify = Some(Verify::User);
+        row.detail = Some("the ask".to_owned());
+        ws.push_task(row);
+        ws.update_task("proj", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        let withdrawn = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Canceled;
+                    task.detail = Some("moot: landed via #2296".to_owned());
+                },
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(withdrawn.status, TaskStatus::Canceled, "the cancel lands");
+        assert_eq!(withdrawn.waiting_on, None, "and the withdrawn ask leaves the waiting set");
+        assert_eq!(
+            withdrawn.detail.as_deref(),
+            Some("the ask\nmoot: landed via #2296"),
+            "the reason lands appended to what the row already said",
+        );
+    }
+
+    /// A bare status flip on a parked row is refused: the user's pending
+    /// ask leaves with its reason recorded, never silently.
+    #[test]
+    fn a_withdraw_without_a_reason_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-withdraw-bare");
+        row_awaiting_look(&ws, "t-1");
+
+        let refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Canceled;
+                },
+            )
+            .expect_err("a cancel stating no reason is refused");
+        assert_eq!(refused, MoveError::WithdrawNeedsReason, "the door's own refusal");
+        let stored = ws.tasks_for_project("proj");
+        assert_eq!(stored[0].status, TaskStatus::Waiting, "and the row keeps waiting");
+        assert!(
+            stored[0].waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "with the look it was parked on intact",
+        );
+    }
+
+    /// The door covers a decision wait too: the ask is on the user there
+    /// as well. A bare cancel is refused, and a stated reason lands.
+    #[test]
+    fn a_withdraw_of_a_decision_wait_records_the_reason() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-withdraw-question");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            WaitingKind::Decision,
+            Some("which shape".to_owned()),
+            None,
+        )
+        .expect("the owner may wait its own row");
+
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-1"), By::Seat(lead.clone()), |task| {
+                task.status = TaskStatus::Canceled;
+            })
+            .expect_err("a bare cancel of a question waiting on the user is refused"),
+            MoveError::WithdrawNeedsReason,
+        );
+
+        let withdrawn = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(lead), |task| {
+                task.status = TaskStatus::Canceled;
+                task.detail = Some("the question dissolved".to_owned());
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(withdrawn.status, TaskStatus::Canceled);
+        assert_eq!(withdrawn.waiting_on, None, "the withdrawn question leaves the waiting set");
+        assert_eq!(
+            withdrawn.detail.as_deref(),
+            Some("the question dissolved"),
+            "the reason lands on the row",
+        );
+    }
+
+    /// The requirement is scoped to the user's waits: a seat cancel of an
+    /// ordinary wait - and of a row holding no wait at all - lands as it
+    /// always did, with no reason required.
+    #[test]
+    fn a_seat_cancel_of_an_ordinary_row_stays_silent() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-cancel-ordinary");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(sample_task("blocker", "proj"));
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            WaitingKind::Dependency,
+            Some("the board read first".to_owned()),
+            Some(&TaskId::from("blocker")),
+        )
+        .expect("the owner may wait its own row");
+
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        let cancelled = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(lead.clone()), |task| {
+                task.status = TaskStatus::Canceled;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(cancelled.status, TaskStatus::Canceled);
+        assert_eq!(cancelled.waiting_on, None, "an ordinary wait drops with the cancel");
+
+        // The live shape of the incident's own cleanup: an un-parked row
+        // cancels by seat like any other work.
+        let plain = ws
+            .update_task("proj", &TaskId::from("blocker"), By::Seat(lead), |task| {
+                task.status = TaskStatus::Canceled;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(plain.status, TaskStatus::Canceled, "no reason is asked of ordinary rows");
+    }
+
+    /// The user's own drag is not the lead's door: their cancel of a
+    /// parked row needs no reason - the wait is the user's to withdraw.
+    #[test]
+    fn a_users_own_cancel_of_a_parked_row_needs_no_reason() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-user-cancel-parked");
+        row_awaiting_look(&ws, "t-1");
+
+        let moved = ws
+            .user_move_task("proj", &TaskId::from("t-1"), TaskStatus::Canceled)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(moved.status, TaskStatus::Canceled, "the user's own move lands");
+        assert_eq!(moved.waiting_on, None, "and the wait goes with it");
     }
 
     /// The look gate is not an update's to clear. A `verify: none` patch on

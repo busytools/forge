@@ -1075,6 +1075,63 @@ mod prod_facade_tests {
         }
     }
 
+    /// The withdraw door at the tool's own seam (#2340): a bare cancel of
+    /// a row parked on the user is refused by name, and the reason a
+    /// cancel states lands on the row.
+    #[test]
+    fn a_cancel_through_the_facade_records_the_reason_and_a_bare_one_is_refused() {
+        let (_ws, facade, lead, worker) = fixture();
+        let task = facade
+            .create_task(
+                &worker,
+                TaskDraft {
+                    verify: Some(forge_primitives::tasks::Verify::User),
+                    ..draft("the parked row", Some("reviewer"), Some("epic"))
+                },
+            )
+            .expect("create");
+        facade
+            .update_task(
+                &worker,
+                &task.id,
+                TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+
+        match facade.update_task(
+            &lead,
+            &task.id,
+            TaskPatch { status: Some(TaskStatus::Canceled), ..TaskPatch::default() },
+        ) {
+            Err(TasksError::Refused(said)) => assert!(
+                said.contains("withdrawing it needs `detail`"),
+                "the refusal names the door's requirement: {said}",
+            ),
+            other => panic!("a bare cancel of a parked row is refused, got {other:?}"),
+        }
+
+        let withdrawn = facade
+            .update_task(
+                &lead,
+                &task.id,
+                TaskPatch {
+                    status: Some(TaskStatus::Canceled),
+                    detail: Some("moot: landed via #2296".to_owned()),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(withdrawn.status, TaskStatus::Canceled, "the withdraw lands");
+        assert_eq!(withdrawn.waiting_on, None, "the ask leaves the waiting set");
+        assert_eq!(
+            withdrawn.detail.as_deref(),
+            Some("moot: landed via #2296"),
+            "and the reason lands on the row",
+        );
+    }
+
     /// The live call that walked around the gate: clearing a user-bound
     /// row's verify while asking to complete it is refused by name, and
     /// the row keeps its gate - so the two-call path has no first step.
