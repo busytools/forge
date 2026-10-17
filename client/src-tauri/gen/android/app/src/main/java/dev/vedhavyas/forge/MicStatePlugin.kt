@@ -26,15 +26,24 @@ import app.tauri.plugin.Plugin
 class MicStatePlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun micState(invoke: Invoke) {
-    val audio = activity.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-    var silenced = false
-    if (audio != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      for (config in audio.activeRecordingConfigurations) {
-        if (config.isClientSilenced) silenced = true
+    // **Off the main thread**: the configuration read is a binder call into
+    // audioserver, and Tauri runs a `@Command` on the main thread - a wedged
+    // audio service would park the UI behind a row's own sentence.
+    Thread {
+      try {
+        val audio = activity.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        var silenced = false
+        if (audio != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          for (config in audio.activeRecordingConfigurations) {
+            if (config.isClientSilenced) silenced = true
+          }
+        }
+        invoke.resolve(
+          JSObject().put("muted", audio?.isMicrophoneMute ?: false).put("silenced", silenced)
+        )
+      } catch (err: Exception) {
+        invoke.reject(err.message ?: err.toString())
       }
-    }
-    invoke.resolve(
-      JSObject().put("muted", audio?.isMicrophoneMute ?: false).put("silenced", silenced)
-    )
+    }.start()
   }
 }
