@@ -8,6 +8,7 @@
     phase,
     oncancel,
     spread = false,
+    silent = null,
   }: {
     /**
      * The record's take, once the server has one. `null` while the row is
@@ -46,6 +47,12 @@
      * readings moves as a line).
      */
     spread?: boolean;
+    /**
+     * What the row says when the device is feeding this capture nothing, on a
+     * surface whose reader can act on it. `null` where the surface says
+     * nothing - the card is the same card either way.
+     */
+    silent?: string | null;
   } = $props();
 
   /**
@@ -222,6 +229,9 @@
       </span>
     {/if}
     {#if done > 0}<span class="ready">{done} ready</span>{/if}
+  {/if}
+  {#if silent !== null}
+    <span class="silent">{silent}</span>
   {/if}
   {#if live !== null}
     <span class="fr">{live.frames}</span>

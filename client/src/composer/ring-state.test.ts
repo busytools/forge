@@ -35,6 +35,8 @@ vi.mock('./mic', () => ({
   },
   inputs: () => Promise.resolve([]),
   inputLine: () => 'the inputs could not be listed',
+  micSilence: (): Promise<null> => Promise.resolve(null),
+  silenceCause: (): null => null,
 }));
 
 import Harness from './Harness.svelte';

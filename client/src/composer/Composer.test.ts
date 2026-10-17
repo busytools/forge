@@ -89,6 +89,10 @@ vi.mock('./mic', () => ({
   // A walk a case drives: `mockResolvedValueOnce`/`mockRejectedValueOnce`.
   inputs: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
   inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
+  // The cause readers live in the shell, and jsdom has no shell: a silent
+  // capture's row draws the generic line here, which is the browser's own case.
+  micSilence: (): Promise<null> => Promise.resolve(null),
+  silenceCause: (): null => null,
 }));
 
 import Harness from './Harness.svelte';
@@ -116,6 +120,7 @@ import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
 import { inputs } from './mic';
 import { DRAIN_MS, FLUSH_SETTLE_MS } from './take';
+import { SILENT_NOTICE_MS } from './dictate.svelte';
 import { TRUNCATED, type ComposerProps, type ComposerRecord, type SeatRead } from './view';
 
 /**
@@ -1644,6 +1649,125 @@ describe('the key', () => {
     } finally {
       mic.held.gated = false;
       mic.held.release = null;
+    }
+  });
+
+  /**
+   * A capture the device is feeding nothing is said out loud, while it is
+   * happening.
+   *
+   * A device layer that hands digital silence - a per-app mic mode, a privacy
+   * toggle, another app on the microphone - reads `ready` for the whole take
+   * and draws no graph, and until now the reader only learned it once the take
+   * ended. The line is withdrawn the moment a sample lands, so it can never
+   * stand over a take that is speaking.
+   */
+  it('says the capture is producing nothing once a take has run without signal', async () => {
+    mic.held.gated = true;
+    try {
+      vi.useFakeTimers();
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      mic.held.release?.();
+      await opened();
+      mic.held.onFrame?.(new Uint8Array(641));
+
+      vi.advanceTimersByTime(SILENT_NOTICE_MS - 1);
+      flushSync();
+      expect(document.querySelector('.tc .silent'), 'nothing is said inside the bound').toBeNull();
+
+      vi.advanceTimersByTime(1);
+      flushSync();
+      expect(
+        document.querySelector('.tc .silent')?.textContent,
+        'the capture has produced nothing for seconds, so the take line says so',
+      ).toContain('nothing is coming through it');
+
+      mic.held.onFrame?.(encodeFrame([0.5]));
+      flushSync();
+      expect(
+        document.querySelector('.tc .silent'),
+        'and a real sample withdraws it at once',
+      ).toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * A release inside the bound is not the row's to speak into.
+   *
+   * The take is still non-null while it drains, and `flowing` is still false
+   * on a take that never spoke, so the bound firing mid-drain would flash the
+   * sentence over a take that is already ending.
+   */
+  it('never says it for a take released at the bound', async () => {
+    mic.held.gated = true;
+    try {
+      vi.useFakeTimers();
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      mic.held.release?.();
+      await opened();
+      mic.held.onFrame?.(new Uint8Array(641));
+      flushSync();
+
+      vi.advanceTimersByTime(SILENT_NOTICE_MS - 100);
+      key('ControlRight', 'keyup');
+      flushSync();
+      vi.advanceTimersByTime(100);
+      flushSync();
+      expect(
+        document.querySelector('.tc .silent'),
+        'the bound landing mid-drain must not say the capture is silent',
+      ).toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * What the guards together buy, rather than either one alone: the bound
+   * never sets its flag over a take that spoke (the timer's check), and the
+   * line never draws over a take that is speaking (its own check, which is
+   * the one the sibling above has teeth on - it dies on that guard removed).
+   * The property here is the reader's: a take with a voice in it is never
+   * called silent, whichever of the two is holding it up.
+   */
+  it('never says it for a take that speaks inside the bound', async () => {
+    mic.held.gated = true;
+    try {
+      vi.useFakeTimers();
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      mic.held.release?.();
+      await opened();
+      mic.held.onFrame?.(encodeFrame([0.5]));
+      flushSync();
+
+      vi.advanceTimersByTime(SILENT_NOTICE_MS * 4);
+      flushSync();
+      expect(
+        document.querySelector('.tc .silent'),
+        'a take with a voice in it is never called silent',
+      ).toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+      vi.useRealTimers();
     }
   });
 

@@ -49,6 +49,57 @@ export function inputLine(why: unknown): string {
   return 'the inputs could not be listed \u{b7} try again';
 }
 
+/**
+ * What a platform reports about this app's microphone, when it reports
+ * anything: the phone's own readers answer this, and the desktop and the
+ * browser answer `null` - a line about a silent capture then draws without a
+ * cause.
+ */
+export interface MicSilence {
+  /** The device's microphone mute. */
+  muted: boolean;
+  /** Whether the platform is silencing THIS app's capture. */
+  silenced: boolean;
+}
+
+/**
+ * What the platform says about the capture, or `null` where it says nothing:
+ * no reader on this platform, a reader that did not answer, or a shell that
+ * is not there.
+ *
+ * Never throws: a cause is an embellishment on a line that is already owed,
+ * so a read that fails draws the line without one.
+ */
+export async function micSilence(): Promise<MicSilence | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke<MicSilence | null>('client_mic_state');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The cause a silent capture owes, in the reader's words, or `null` when the
+ * platform named none.
+ *
+ * Ordered by what the reader can act on: a setting the phone is holding leads,
+ * and the device's own mute follows. Another app on the microphone is what the
+ * generic hint asks about and not something the platform reports, so it is
+ * never named here as a cause.
+ */
+export function silenceCause(state: MicSilence | null): string | null {
+  if (state === null) return null;
+  const causes: string[] = [];
+  if (state.silenced) {
+    causes.push(
+      "the phone is silencing this app's microphone \u{b7} check the microphone privacy toggle",
+    );
+  }
+  if (state.muted) causes.push("the device's microphone is muted");
+  return causes.length === 0 ? null : causes.join(' \u{b7} ');
+}
+
 /** One open microphone, and the worklet feeding it. */
 export class Microphone {
   /** Every 20 ms chunk, encoded. Set before `start` has anything to send. */
