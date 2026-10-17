@@ -767,13 +767,15 @@ describe('the connection', () => {
     const conn = connect(server.url, 40);
     opened.push(conn);
     const store = conn.subscribe(HOME);
-    await until(() => server.received.length === 1, 'the first subscribe');
+    await until(() => server.received.length >= 1, 'the first subscribe');
 
-    // The pair a refresh sends: the subject is asked for again without a
-    // second watch left behind on the server's count.
-    await until(() => server.received.length === 3, 'the re-ask pair');
+    // **The shape, not a count.** The bound is 40 ms here and the poll below
+    // is 10 ms, so a slower pass can have asked more than once by the time
+    // this runs: the prefix is what the retry is, and a floor is what says
+    // the loop continues.
+    await until(() => server.received.length >= 3, 'the re-ask pair');
     expect(
-      server.received.map((message) => message.kind),
+      server.received.slice(0, 3).map((message) => message.kind),
       'the re-ask is the refresh pair rather than a bare subscribe',
     ).toEqual(['subscribe', 'unsubscribe', 'subscribe']);
     expect(server.received[2], 'and it is the same subject').toMatchObject({ what: HOME });
