@@ -2244,7 +2244,7 @@ mod tests_windowing {
 #[cfg(test)]
 mod tests_real_recognition {
     use super::*;
-    use crate::{ConfigBuilder, Samples};
+    use crate::{ConfigBuilder, ModelSpec, Samples};
 
     fn read_wav(path: &std::path::Path) -> (Vec<f32>, u32) {
         let bytes = std::fs::read(path).expect("fixture must be readable");
@@ -2537,10 +2537,14 @@ mod tests_real_recognition {
         assert_eq!(reader.samples::<i16>().count(), pcm.len(), "the whole capture is stored");
     }
 
-    /// The direct path's record is built AFTER the cleanup pass:
-    /// `Stages::normalize` is set by the pass itself, so a snapshot taken
-    /// before it reports `normalizer_ran` false on a take that was
-    /// cleaned.
+    /// The direct path's wiring leg and its ordering pin: the record
+    /// names the models the engine was BUILT with, and is built AFTER
+    /// the cleanup pass - `Stages::normalize` is set by the pass itself,
+    /// so a snapshot taken before it reports `normalizer_ran` false on a
+    /// take that was cleaned.
+    ///
+    /// Weights-only: the failed-load path answers jobs without writing a
+    /// record, so no weightless take reaches the worker's record site.
     #[test]
     #[ignore = "needs both models; run with --run-ignored all after `--example fetch`"]
     fn a_direct_take_records_the_cleanup_pass_it_ran() {
@@ -2577,6 +2581,23 @@ mod tests_real_recognition {
         assert_eq!(
             meta["normalizer_ran"], true,
             "the record carries the pass that ran, not a pre-pass snapshot"
+        );
+        let asr = ModelSpec::cohere_transcribe_q4_k_m();
+        let s1 = ModelSpec::s1_mini_f16();
+        assert_eq!(meta["asr"]["file"], asr.file, "the transcribing model the engine ran");
+        assert_eq!(meta["asr"]["sha256"], asr.sha256.clone().unwrap(), "its declared digest");
+        assert_eq!(meta["asr"]["size"], asr.size, "its declared size");
+        assert_eq!(meta["normalizer"]["file"], s1.file, "the cleanup model the engine ran");
+        assert_eq!(meta["normalizer"]["sha256"], s1.sha256.clone().unwrap(), "its declared digest");
+        assert_eq!(meta["normalizer"]["size"], s1.size, "its declared size");
+        assert_eq!(
+            meta["language"], "en",
+            "the record carries the engine's own config, not a default"
+        );
+        assert_eq!(
+            meta["forge_version"],
+            env!("CARGO_PKG_VERSION"),
+            "the release the take was made under"
         );
     }
 
