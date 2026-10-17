@@ -37,6 +37,14 @@ use forge_client::browser::{BrowserHost, StackPaths};
 use serde_json::json;
 use support::Launched;
 
+/// The budget the two raise arms give their launches: **not the shell's own.**
+/// A launch's wait is spent on the machine starting the child - a loaded
+/// machine held a launch's port file back for 13 s (measured 2026-10-14) - and
+/// a deliberate live run may have several arms launching at once, so a test
+/// that pins no launch duration gives the wait a budget load cannot eat. The
+/// shell's own 15 s stays what the shell gives.
+const TEST_LAUNCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The seat these calls are made for: one session, as an ask carries it.
 fn seat() -> Seat {
     Seat {
@@ -538,7 +546,7 @@ async fn a_launch_shows_nothing_and_a_raise_is_the_only_thing_that_appears() {
     std::fs::create_dir_all(&profile).expect("the profile");
 
     // The launch, as a session's first call leaves it: headed, hidden.
-    let launched = forge_client::browser::chromium::launch(&binary, &profile, None)
+    let launched = forge_client::browser::chromium::launch(&binary, &profile, &[])
         .await
         .unwrap_or_else(|why| panic!("the launch would not come up: {why}"));
     let guard = Launched::new(launched.pid, launched.port, profile.clone());
@@ -640,7 +648,7 @@ async fn a_raise_keeps_the_page_a_session_prepared() {
     std::fs::create_dir_all(&profile).expect("the profile");
     let output = dir.path().join("output");
 
-    let launched = forge_client::browser::chromium::launch(&binary, &profile, None)
+    let launched = forge_client::browser::chromium::launch(&binary, &profile, &[])
         .await
         .unwrap_or_else(|why| panic!("the launch would not come up: {why}"));
     let guard = Launched::new(launched.pid, launched.port, profile.clone());
@@ -718,7 +726,7 @@ async fn where_the_move_actually_lands() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let profile = dir.path().join("profile");
     std::fs::create_dir_all(&profile).expect("the profile");
-    let launched = forge_client::browser::chromium::launch(&binary, &profile, None)
+    let launched = forge_client::browser::chromium::launch(&binary, &profile, &[])
         .await
         .unwrap_or_else(|why| panic!("the launch would not come up: {why}"));
     let guard = Launched::new(launched.pid, launched.port, profile.clone());
@@ -783,6 +791,120 @@ async fn where_the_move_actually_lands() {
     guard.reap();
 }
 
+/// **A raise after the window's last tab went births the window again on the
+/// page the raise showed.** Measured 2026-10-17 on this Brave: the devtools
+/// close of the window's last tab leaves the browser serving with an empty
+/// window standing and nothing to raise - and a raise at that state must land
+/// on the carried page rather than fail on it. Puts a REAL window on the
+/// machine.
+#[tokio::test]
+#[ignore = "raises a REAL window; run it deliberately - see the module doc"]
+async fn a_raise_after_the_last_tab_went_births_the_window_again_raises_a_window() {
+    use forge_client::browser::{chromium, window as win};
+
+    let binary = chromium::browser_binary().unwrap_or_else(|why| panic!("no browser: {why}"));
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let profile = dir.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile");
+    let carried = "data:text/html,<title>carried</title><h1>carriedpage</h1>";
+    let launched =
+        chromium::launch_within(&binary, &profile, &[carried.to_owned()], TEST_LAUNCH_BUDGET)
+            .await
+            .unwrap_or_else(|why| panic!("the launch: {why}"));
+    let guard = Launched::new(launched.pid, launched.port, profile.clone());
+    // The raise that writes the marker this test's rebirth reads.
+    chromium::show(&binary, &profile).await.unwrap_or_else(|why| panic!("the first raise: {why}"));
+
+    // The window's only tab closed: the browser keeps serving, with nothing
+    // left to raise.
+    let mut cdp = win::Cdp::connect(launched.port, &launched.path).await.expect("the endpoint");
+    let page = cdp.page().await.expect("the page");
+    cdp.call("Target.closeTarget", json!({ "targetId": page.target }), None)
+        .await
+        .expect("the close");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !chromium::page_targets(launched.port).await.is_empty() {
+        assert!(std::time::Instant::now() < until, "the tab never went");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let raised = chromium::show(&binary, &profile)
+        .await
+        .unwrap_or_else(|why| panic!("the raise must birth the window again: {why}"));
+    assert_eq!(raised.port, launched.port, "the browser that kept serving, not a relaunch");
+    let mut cdp = win::Cdp::connect(raised.port, &raised.path).await.expect("the endpoint");
+    let page = cdp.page().await.expect("the reborn window's page");
+    let at = win::window(&page, &mut cdp).await.expect("the window answers");
+    assert!(at.number("left").is_some(), "a real window is up: {}", at.bounds);
+    assert!(
+        chromium::page_targets(raised.port)
+            .await
+            .iter()
+            .any(|(_, url)| url.contains("carriedpage")),
+        "and it carries the page the raise showed",
+    );
+    guard.reap();
+}
+
+/// **A raise after the browser went reopens the window's pages.** The marker
+/// carries every page the last raise showed, so the relaunch lands on the
+/// window again - born on the page the marker leads with, the rest its tabs -
+/// rather than on the last-served page alone. Puts a REAL window on the
+/// machine.
+#[tokio::test]
+#[ignore = "raises a REAL window; run it deliberately - see the module doc"]
+async fn a_raise_after_the_browser_died_reopens_the_windows_pages_raises_a_window() {
+    use forge_client::browser::{chromium, window as win};
+
+    let binary = chromium::browser_binary().unwrap_or_else(|why| panic!("no browser: {why}"));
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let profile = dir.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile");
+    let one = "data:text/html,<title>one</title><h1>firstpage</h1>";
+    let two = "data:text/html,<title>two</title><h1>secondpage</h1>";
+    let launched =
+        chromium::launch_within(&binary, &profile, &[one.to_owned()], TEST_LAUNCH_BUDGET)
+            .await
+            .unwrap_or_else(|why| panic!("the launch: {why}"));
+    let guard = Launched::new(launched.pid, launched.port, profile.clone());
+    // A second page in the window, then the raise that puts every page of it
+    // into the marker.
+    let mut cdp = win::Cdp::connect(launched.port, &launched.path).await.expect("the endpoint");
+    cdp.call("Target.createTarget", json!({ "url": two, "newWindow": false }), None)
+        .await
+        .expect("the second page");
+    chromium::show(&binary, &profile).await.unwrap_or_else(|why| panic!("the raise: {why}"));
+    let marker = std::fs::read_to_string(profile.join("windowed")).expect("the marker");
+    assert!(
+        marker.contains("firstpage") && marker.contains("secondpage"),
+        "every page the raise showed rides the marker: {marker}",
+    );
+    let leading = marker.lines().next().expect("the marker names a page").to_owned();
+
+    // The browser dies for real - the state the person's X leaves where this
+    // engine does not honour the keep-alive.
+    guard.reap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while chromium::answers_as(&profile, launched.port).await {
+        assert!(std::time::Instant::now() < until, "the browser never went");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let raised =
+        chromium::show(&binary, &profile).await.unwrap_or_else(|why| panic!("the relaunch: {why}"));
+    let pages = chromium::page_targets(raised.port).await;
+    assert_eq!(pages.len(), 2, "both of the window's pages are back: {pages:?}");
+    assert!(
+        pages.iter().any(|(_, url)| url == &leading),
+        "the page the marker leads with is among them: {pages:?}",
+    );
+    assert!(
+        pages.iter().any(|(_, url)| url.contains("secondpage")),
+        "and the window's other page rides with it: {pages:?}",
+    );
+    guard.reap();
+}
+
 /// The window's bounds and the part of them inside the screen, in points:
 /// the overlap area, and the window's own whole area.
 fn visible(
@@ -821,7 +943,7 @@ async fn a_minimized_window_can_still_be_driven() {
     std::fs::create_dir_all(&profile).expect("the profile");
     let output = dir.path().join("output");
 
-    let launched = forge_client::browser::chromium::launch(&binary, &profile, None)
+    let launched = forge_client::browser::chromium::launch(&binary, &profile, &[])
         .await
         .unwrap_or_else(|why| panic!("the launch would not come up: {why}"));
     let guard = Launched::new(launched.pid, launched.port, profile.clone());
@@ -938,7 +1060,7 @@ async fn the_driver_works_in_a_window_that_was_never_shown() {
     std::fs::create_dir_all(&profile).expect("the profile");
     let output = dir.path().join("output");
 
-    let launched = forge_client::browser::chromium::launch(&binary, &profile, None)
+    let launched = forge_client::browser::chromium::launch(&binary, &profile, &[])
         .await
         .unwrap_or_else(|why| panic!("the launch would not come up: {why}"));
     let guard = Launched::new(launched.pid, launched.port, profile.clone());

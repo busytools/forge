@@ -657,7 +657,7 @@ impl BrowserHost {
         let _launching = self.launch.lock().await;
         self.claim(user_data).await;
         let binary = chromium::browser_binary()?;
-        chromium::ensure(&binary, user_data, None).await
+        chromium::ensure(&binary, user_data, &[]).await
     }
 
     /// The named profiles this host holds, by name, for its own strip. A
@@ -1435,7 +1435,8 @@ mod tests {
                     }
                     format!("{{\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}{identity}\"}}")
                 } else {
-                    "[{\"type\":\"page\",\"url\":\"https://example.com/x\"}]".to_owned()
+                    "[{\"id\":\"P1\",\"type\":\"page\",\"url\":\"https://example.com/x\"}]"
+                        .to_owned()
                 };
                 let answer = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\

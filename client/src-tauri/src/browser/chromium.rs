@@ -4,7 +4,7 @@
 //! **The browser outlives the LAUNCH, never the client.** It is spawned
 //! detached, against a profile under the client's app-support directory, so a
 //! login survives both a client restart and a forge restart - the profile
-//! keeps the logins, and a relaunch opens on the page the last raise carried -
+//! keeps the logins, and a relaunch opens on the pages the last raise carried -
 //! while the process itself is claimed by the client that launched it (see
 //! [`claim`]) and dies with it. The `DevToolsActivePort` file Chromium writes
 //! into the profile is what makes a relaunch findable: the port a launch
@@ -100,7 +100,7 @@ pub fn launch_args(profile: &Path) -> Vec<String> {
         // Where the engine honours it, the person's own X on the raised
         // window leaves the browser serving (measured on an older Brave: the
         // X takes the process down instead; the next call recovers either
-        // way, on the page the last raise carried).
+        // way, on the pages the last raise carried).
         "--keep-alive-for-test".to_owned(),
         // The window is the host's own, born hidden: see above.
         "--no-startup-window".to_owned(),
@@ -328,24 +328,60 @@ pub async fn probe(port: u16) -> bool {
     probe_identity(port).await.is_some()
 }
 
-/// The first page target's URL on `port`, from the browser's own HTTP
-/// endpoint: the page the sessions were driving, which a raise writes into
-/// its marker so a later launch - after the window went, the engine taking
-/// it down with the X - opens on the page the person was looking at.
-/// `None` when nothing answers, or when no tab is open - a
-/// window whose last tab was closed is a browser with nothing to carry.
-pub async fn page_url(port: u16) -> Option<String> {
+/// The page targets on `port` as `(target id, url)`, from the browser's own
+/// HTTP endpoint: the pages the sessions were driving, which a raise writes
+/// into its marker so a later launch - after the window went - opens the
+/// window's pages again. Empty when nothing answers, or when no tab is open -
+/// a window whose last tab was closed is a browser with nothing to carry.
+///
+/// **The order is the browser's own, not a fact**: it has answered with the
+/// same window's pages in different orders across runs (measured 2026-10-17),
+/// so nothing that needs a particular page first may trust it - the raise
+/// picks the page it brought forward BY ID, and the rest follow as listed.
+pub async fn page_targets(port: u16) -> Vec<(String, String)> {
     let url = format!("http://127.0.0.1:{port}/json/list");
-    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
-    let body = answer.split_once("\r\n\r\n")?.1;
-    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let Some(answer) = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()
+    else {
+        return Vec::new();
+    };
+    let Some(body) = answer.split_once("\r\n\r\n").map(|(_, body)| body) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
     parsed
-        .as_array()?
-        .iter()
-        .find(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("page"))
-        .and_then(|entry| entry.get("url"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter(|entry| {
+                    entry.get("type").and_then(serde_json::Value::as_str) == Some("page")
+                })
+                .filter_map(|entry| {
+                    let id = entry.get("id").and_then(serde_json::Value::as_str)?;
+                    let url = entry.get("url").and_then(serde_json::Value::as_str)?;
+                    Some((id.to_owned(), url.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The pages a raise's marker carries: **the page it brought forward first**,
+/// then the window's other pages in the browser's own order. This is what a
+/// later launch - or a rebirth over a launch that outlived its window - opens
+/// the window's tabs on, so the person lands on the page they were looking at
+/// with the rest of their window still around them.
+fn carried_pages(raised: &str, pages: &[(String, String)]) -> Vec<String> {
+    let mut carried = Vec::new();
+    for (id, url) in pages {
+        if id == raised {
+            carried.insert(0, url.clone());
+        } else {
+            carried.push(url.clone());
+        }
+    }
+    carried
 }
 
 /// The browser target path an answering port reports - `/devtools/browser/
@@ -443,16 +479,12 @@ const STDERR_TAIL: usize = 4096;
 /// surfaces the window at its CURRENT bounds, so a window still at its birth
 /// point would appear mid-screen at the person the moment a session drove it.
 ///
-/// `page` is what the window opens on: **the page the last raise carried**,
-/// so a person pressing Open after a window was taken down (the X, where the
-/// keep-alive does not hold) lands on the page they were last looking at
-/// rather than a blank one. `None` opens `about:blank`.
-pub async fn launch(
-    binary: &Path,
-    profile: &Path,
-    page: Option<&str>,
-) -> Result<ActivePort, String> {
-    launch_within(binary, profile, page, LAUNCH_TIMEOUT).await
+/// `pages` is what the window opens on: **the pages the last raise carried**,
+/// so a person pressing Open after a window was taken down (the X) lands on
+/// the page they were last looking at with the window's other pages back
+/// around it. Empty opens `about:blank`.
+pub async fn launch(binary: &Path, profile: &Path, pages: &[String]) -> Result<ActivePort, String> {
+    launch_within(binary, profile, pages, LAUNCH_TIMEOUT).await
 }
 
 /// [`launch`] with its budget spelled: the shell gives a launch
@@ -468,7 +500,7 @@ pub async fn launch(
 pub async fn launch_within(
     binary: &Path,
     profile: &Path,
-    page: Option<&str>,
+    pages: &[String],
     budget: Duration,
 ) -> Result<ActivePort, String> {
     if !binary.is_file() {
@@ -566,7 +598,7 @@ pub async fn launch_within(
     // returns. A browser that answered on its port but could not get its
     // window is killed rather than left behind: a process nothing can raise
     // is not a launch.
-    if let Err(why) = birth_hidden_window(&active, page).await {
+    if let Err(why) = birth_hidden_window(&active, pages).await {
         if let Some(pid) = pid {
             kill_pid(pid, true).await;
         }
@@ -589,38 +621,40 @@ pub async fn launch_within(
 }
 
 /// The browser to talk to: the one already running on `profile`, launched if
-/// there is none. `page` is only consulted by the launch.
-pub async fn ensure(
-    binary: &Path,
-    profile: &Path,
-    page: Option<&str>,
-) -> Result<ActivePort, String> {
-    ensure_within(binary, profile, page, LAUNCH_TIMEOUT).await
+/// there is none. `pages` is only consulted by the launch.
+pub async fn ensure(binary: &Path, profile: &Path, pages: &[String]) -> Result<ActivePort, String> {
+    ensure_within(binary, profile, pages, LAUNCH_TIMEOUT).await
 }
 
 /// [`ensure`] with the launch's budget spelled; see [`launch_within`].
 pub async fn ensure_within(
     binary: &Path,
     profile: &Path,
-    page: Option<&str>,
+    pages: &[String],
     budget: Duration,
 ) -> Result<ActivePort, String> {
     if let Some(active) = verified(profile).await {
         return Ok(active);
     }
-    launch_within(binary, profile, page, budget).await
+    launch_within(binary, profile, pages, budget).await
 }
 
 /// Create the window a launch keeps, born `background` so it never surfaces
-/// by itself, and move it clear of every screen before anything can drive it.
-async fn birth_hidden_window(active: &ActivePort, page: Option<&str>) -> Result<(), String> {
+/// by itself, opening the pages it is given - **the first in the window born
+/// for it and left the active one, the rest as its tabs** - and move it clear
+/// of every screen before anything can drive it. No pages opens `about:blank`.
+async fn birth_hidden_window(active: &ActivePort, pages: &[String]) -> Result<(), String> {
     let answer = tokio::time::timeout(WINDOW_TIMEOUT, async {
         let mut cdp = window::Cdp::connect(active.port, &active.path).await?;
+        let (raised, rest): (String, &[String]) = match pages.split_first() {
+            Some((first, rest)) => (first.clone(), rest),
+            None => ("about:blank".to_owned(), &[]),
+        };
         let created = cdp
             .call(
                 "Target.createTarget",
                 json!({
-                    "url": page.unwrap_or("about:blank"),
+                    "url": raised,
                     "newWindow": true,
                     "background": true,
                 }),
@@ -640,6 +674,16 @@ async fn birth_hidden_window(active: &ActivePort, page: Option<&str>) -> Result<
             .and_then(serde_json::Value::as_str)
             .ok_or("the browser refused the session for its own window")?
             .to_owned();
+        // **The rest of the window comes back as its tabs.** A new tab of
+        // this window makes itself the active one, so the page the raise
+        // showed is brought to the front again after them.
+        for url in rest {
+            cdp.call("Target.createTarget", json!({ "url": url, "newWindow": false }), None)
+                .await?;
+        }
+        if !rest.is_empty() {
+            cdp.call("Target.activateTarget", json!({ "targetId": target }), None).await?;
+        }
         let page = window::Page { target, session };
         window::move_to(&page, &mut cdp, OUT_OF_SIGHT.0, OUT_OF_SIGHT.1).await
     })
@@ -722,10 +766,10 @@ fn born_marker(profile: &Path) -> PathBuf {
     profile.join("has-window")
 }
 
-/// The marker a RAISE leaves, carrying the page it showed: the port file says
-/// nothing about what the person can see, and this is what makes "is the
-/// window up" answerable - the strip's show/hide button toggles on it, and
-/// [`hide`] takes it down while the browser stays.
+/// The marker a RAISE leaves, carrying the pages it showed, the raised one
+/// first: the port file says nothing about what the person can see, and this
+/// is what makes "is the window up" answerable - the strip's show/hide button
+/// toggles on it, and [`hide`] takes it down while the browser stays.
 fn windowed_marker(profile: &Path) -> PathBuf {
     profile.join("windowed")
 }
@@ -758,16 +802,18 @@ pub async fn windowed(profile: &Path) -> bool {
     let Some(active) = verified(profile).await else {
         return false;
     };
-    page_url(active.port).await.is_some()
+    !page_targets(active.port).await.is_empty()
 }
 
-/// The page the last raise carried, when it carried one: what a launch after
-/// the window went (the engine took it down with the X) opens on, so the
-/// person lands where they were rather than on a blank tab.
-fn windowed_page(profile: &Path) -> Option<String> {
-    let carried = std::fs::read_to_string(windowed_marker(profile)).ok()?;
-    let carried = carried.trim();
-    (!carried.is_empty()).then(|| carried.to_owned())
+/// The pages the last raise carried, when it carried any: what a launch - or
+/// a rebirth over a launch whose window went - opens the window's tabs on, so
+/// the person lands where they were rather than on a blank tab. One URL per
+/// line, the raised page first; a missing or blank marker carries nothing.
+fn windowed_pages(profile: &Path) -> Vec<String> {
+    let Ok(carried) = std::fs::read_to_string(windowed_marker(profile)) else {
+        return Vec::new();
+    };
+    carried.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_owned).collect()
 }
 
 /// Bring the browser's window into view, for a hand-off's Open or the strip's
@@ -778,15 +824,15 @@ fn windowed_page(profile: &Path) -> Option<String> {
 /// the profile's first call, born hidden; the raise is two moves on it - on
 /// screen, then brought to the front - so the page's DOM state, the fills a
 /// session typed into it and every tab beside it are the same ones the
-/// session left. A browser with no launch at all comes up first (hidden, on
-/// the page the last raise carried) and is then raised: that is the one path
-/// where a raise launches anything, and it is the path a person takes after
-/// the engine took the window down (the X, where the keep-alive does not
-/// hold).
+/// session left. **A raise lands on a window whatever state it finds**: a
+/// browser with no launch at all comes up first (hidden, on the pages the
+/// last raise carried) and is then raised, and a launch that outlived its
+/// window - the person's X where the keep-alive holds, a session closing the
+/// window's last tab - is born a window again on those same pages.
 ///
-/// The marker, written only here, carries the page the raise showed. It means
-/// "the window is up" - what the strip's button toggles on - and [`hide`]
-/// takes it down.
+/// The marker, written only here, carries the pages the raise showed. It
+/// means "the window is up" - what the strip's button toggles on - and
+/// [`hide`] takes it down.
 pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
     show_within(binary, profile, LAUNCH_TIMEOUT).await
 }
@@ -807,18 +853,35 @@ pub async fn show_within(
         let _guard = LaunchLock::acquire(profile).await?;
         close_under_lock(profile, active.port).await;
     }
-    let active = ensure_within(binary, profile, windowed_page(profile).as_deref(), budget).await?;
+    // **Read before the launch about to happen forgets it.**
+    let carried = windowed_pages(profile);
+    let active = ensure_within(binary, profile, &carried, budget).await?;
     let raised = tokio::time::timeout(WINDOW_TIMEOUT, async {
         let mut cdp = window::Cdp::connect(active.port, &active.path).await?;
+        if cdp.page().await.is_err() {
+            // **A live launch with no page is given its window now**, born on
+            // the carried pages exactly as a launch births it: a browser that
+            // answers and has nothing to raise. Measured shapes that reach
+            // this: a session closing the window's last tab (2026-10-17 - the
+            // browser serving, the window standing empty), and the person's X
+            // where the keep-alive holds (2026-10-07 - the process surviving
+            // with nothing to raise).
+            birth_hidden_window(&active, &carried).await?;
+            cdp = window::Cdp::connect(active.port, &active.path).await?;
+        }
         let page = cdp.page().await?;
-        window::bring_forward(&page, &mut cdp, RAISE_AT.0, RAISE_AT.1).await
+        window::bring_forward(&page, &mut cdp, RAISE_AT.0, RAISE_AT.1).await?;
+        Ok::<String, String>(page.target)
     })
     .await
     .map_err(|_| {
         format!("the window did not come forward within {} s", WINDOW_TIMEOUT.as_secs())
     })?;
-    raised.map_err(|why| format!("the window could not be raised: {why}"))?;
-    let carried = page_url(active.port).await.unwrap_or_default();
+    let raised = raised.map_err(|why| format!("the window could not be raised: {why}"))?;
+    // The marker carries the window's pages for the next launch: the page the
+    // raise showed first, then whatever else the window holds.
+    let pages = page_targets(active.port).await;
+    let carried = carried_pages(&raised, &pages).join("\n");
     if let Err(why) = std::fs::write(windowed_marker(profile), carried) {
         // Not fatal - the window IS up - but the strip reads the marker as
         // "the window is up", so a launch whose marker cannot be written
@@ -1104,23 +1167,46 @@ mod tests {
         );
     }
 
-    /// The page a raise carried rides its marker: a launch after the window
-    /// went (the engine took it down with the X) opens on it, and an empty or
+    /// The pages a raise carried ride its marker, one URL per line: a launch
+    /// (or a rebirth) after the window went opens them again, and an empty or
     /// missing marker is a launch that opens blank.
     #[test]
-    fn the_marker_carries_the_page_a_lost_window_reopens_on() {
+    fn the_marker_carries_the_pages_a_lost_window_reopens_on() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        assert_eq!(windowed_page(dir.path()), None, "no marker, no page");
+        assert_eq!(windowed_pages(dir.path()), Vec::<String>::new(), "no marker, no pages");
 
-        std::fs::write(windowed_marker(dir.path()), b"https://example.com/x").expect("a marker");
+        std::fs::write(windowed_marker(dir.path()), b"https://one.example\nhttps://two.example\n")
+            .expect("a marker");
         assert_eq!(
-            windowed_page(dir.path()),
-            Some("https://example.com/x".to_owned()),
-            "the page the raise showed rides the marker",
+            windowed_pages(dir.path()),
+            vec!["https://one.example", "https://two.example"],
+            "every page the raise showed rides the marker, raised first",
         );
 
-        std::fs::write(windowed_marker(dir.path()), b"").expect("a blank marker");
-        assert_eq!(windowed_page(dir.path()), None, "a blank raise reopens blank");
+        // A marker written before this one knew of more than one page is a
+        // one-line list, which is exactly one page.
+        std::fs::write(windowed_marker(dir.path()), b"https://example.com/x").expect("a marker");
+        assert_eq!(windowed_pages(dir.path()), vec!["https://example.com/x"]);
+
+        std::fs::write(windowed_marker(dir.path()), b" \n").expect("a blank marker");
+        assert_eq!(windowed_pages(dir.path()), Vec::<String>::new(), "a blank raise reopens blank");
+    }
+
+    /// The carried list puts **the page the raise brought forward first**,
+    /// whatever order the browser listed its pages in, and the rest after it.
+    #[test]
+    fn the_carried_pages_put_the_raised_page_first() {
+        let pages = vec![
+            ("T2".to_owned(), "https://two.example".to_owned()),
+            ("T1".to_owned(), "https://one.example".to_owned()),
+            ("T3".to_owned(), "https://three.example".to_owned()),
+        ];
+        assert_eq!(
+            carried_pages("T1", &pages),
+            vec!["https://one.example", "https://two.example", "https://three.example"],
+            "the raised page leads; the others keep the browser's own order",
+        );
+        assert_eq!(carried_pages("T1", &[]), Vec::<String>::new(), "no pages, nothing carried");
     }
 
     /// A fake devtools endpoint for the windowed predicate: `/json/version`
@@ -1182,7 +1268,7 @@ mod tests {
         // Marker + a launch answering AS this profile + a page target: up.
         let port = fake_devtools(
             "/devtools/browser/live2",
-            "[{\"type\":\"page\",\"url\":\"about:blank\"}]",
+            "[{\"id\":\"P1\",\"type\":\"page\",\"url\":\"about:blank\"}]",
         )
         .await;
         std::fs::write(
