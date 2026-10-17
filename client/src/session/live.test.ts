@@ -2272,6 +2272,63 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
+   * **The drop's premise is a record of the answer's OWN epoch, and a swap's
+   * read is not one** (#2276). A wipe starts the count again without clearing
+   * the record, so the new epoch's frames merge onto the PREVIOUS occupant's
+   * conversation - and the answer that would have replaced it is exactly what
+   * the cap drops, leaving the old rows standing until the next clean read (a
+   * reconnect, another swap, a quiet round trip). Same-epoch seats keep the
+   * drop: there the frames' record really is the record.
+   */
+  it('adopts the new occupant past the cap, rather than keeping the previous one', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    // The seat's own occupant, with a row of its conversation.
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'old', seq: 1 },
+      ),
+    );
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('before', 'u0') } }, 1));
+    paint();
+    expect(spoken(page), 'precondition: the old occupant has a row of its own').toEqual(['before']);
+
+    // The seat takes a new occupant: the page asks for the whole record.
+    page.land(frameOf(occupant('new'), 2));
+    expect(page.reads(), 'precondition: the swap asked for a whole record').toBe(1);
+
+    // The live loop the cap's own case runs, on the swapped seat: one frame,
+    // then the answer, four rounds, the answer every time behind the frames.
+    // The answers carry a record of their own, so "the new occupant's record
+    // was adopted" cannot read alike with "the old one was left standing".
+    for (let round = 1; round <= 4; round += 1) {
+      page.land(
+        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
+      );
+      page.land(
+        snapshotOf(
+          LEAD,
+          { conversation: { turns: [], compaction_count: 0 }, work: { branch: 'new' } },
+          { epoch: 'new', seq: 1 },
+        ),
+      );
+    }
+    paint();
+
+    expect(
+      page.read().wire?.work.branch,
+      'the swap answer was dropped, so the new occupant record was never adopted',
+    ).toBe('new');
+    expect(
+      spoken(page),
+      "the previous occupant's rows stood where the new record's belong",
+    ).toEqual([]);
+    page.stop();
+  });
+
+  /**
    * **A refusal names no subject, and this client now holds many seats.** The
    * socket hangs a refusal on the oldest ask the connection has outstanding,
    * and every held seat's listener is handed the error - so a seat whose own
