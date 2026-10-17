@@ -501,6 +501,7 @@ describe('axe over the rendered pages', () => {
       props: {
         slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
         connection: untouched(),
+        dictation: false,
       },
     }).body;
     expect(await idsOf(html)).toEqual([]);
@@ -944,5 +945,5 @@ function seedStrip(on: boolean): void {
       : null,
   );
   // The files slip is mandatory (Ved, 2026-10-17), so a seeded strip draws it.
-  files.sync(on ? 1166 : null, on ? '/Users/me/proj' : null);
+  files.sync(on ? '/Users/me/proj/.claude/worktrees/probe' : null, on ? 'probe' : null);
 }

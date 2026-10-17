@@ -238,9 +238,12 @@ class BlockWidget extends WidgetType {
   }
 
   ignoreEvent(): boolean {
-    // The page's components live in here: their presses are theirs, not the
-    // editor's.
-    return false;
+    // **True means the EDITOR ignores events from here**, so a press inside
+    // the page's components reaches them - the DOM's own focus behaviour and
+    // no CodeMirror selection handling. Returning false is the opposite
+    // reading and swallowed every click: the reply box could not be focused
+    // at all (measured live, Ved 2026-10-17).
+    return true;
   }
 }
 

@@ -17,6 +17,12 @@
    * ready`. After every write the record is re-read, because the reviews
    * ride the record and nothing pushes a review change.
    *
+   * **Every box dictates** (Ved, 2026-10-17: dictation in a text box is a
+   * hard rule): the comment, the reply and the finish summary wear the mic
+   * through the composer's own `WordsBox`, over this page's take - the same
+   * arrangement the review page has, ported whole so the two pages' boxes
+   * behave alike.
+   *
    * Its states are drawn here: nothing yet (reading), a seat the server
    * refused, and a tree with no files.
    */
@@ -25,8 +31,23 @@
 
   import FileTree from '../components/FileTree.svelte';
   import { toggleClosed, type TreeRow } from '../components/tree';
-  import { filesFrom, filesOnly } from '../composer/wire';
+  import { boxKey } from '../composer/box.svelte';
+  import {
+    Dictation,
+    openCapture,
+    takeCounts,
+    takePhase,
+    type RowPhase,
+    type TakeLine,
+  } from '../composer/dictate.svelte';
+  import { axesFor, deviceFor, rememberAxes, rememberDevice } from '../composer/dictation';
+  import { Landing } from '../composer/landing';
+  import { joined, noticeLine } from '../composer/view';
+  import { composerFrom, filesFrom, filesOnly } from '../composer/wire';
   import { hrefForSlot } from '../routes';
+  import type { CommentBox, ReplyBox, Voice, Words } from '../review/boxes';
+  import { latestRound, roundHasWork } from '../review/view';
+  import WordsBox from '../review/WordsBox.svelte';
   import {
     finishRound,
     newThread,
@@ -37,20 +58,28 @@
     type Sends,
     type SendOutcome,
   } from '../review/write';
-  import { latestRound, roundHasWork } from '../review/view';
   import { watchSession, type SessionRead } from '../session/live';
   import type { ReviewThreadRecord, SessionRecord } from '../session/wire';
+  import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
-  import Box from './Box.svelte';
   import Inline from './Inline.svelte';
   import Rail from './Rail.svelte';
   import Reader from './Reader.svelte';
-  import { contextForComment, railRows, treeScope, type CommentSpot, type Shelf } from './comments';
+  import { contextForComment, railRows, treeScope } from './comments';
   import type { ReaderBlock, ReaderHandle } from './reader';
   import { indexTreeRows, matchedEntries } from './tree';
 
-  let { connection, slot }: { connection: Connection; slot: SessionSlot } = $props();
+  let {
+    connection,
+    slot,
+    dictation,
+  }: {
+    connection: Connection;
+    slot: SessionSlot;
+    /** Whether this install can dictate at all, which gates every mic. */
+    dictation: boolean;
+  } = $props();
 
   let read = $state<SessionRead>({ wire: null, refused: null });
 
@@ -91,19 +120,235 @@
     ).length,
   );
 
-  // The page's boxes, held here because the reader is re-mounted under them.
-  const comment = $state<Shelf & { spot: CommentSpot | null }>({
+  /**
+   * The three boxes, held on the page as the review page holds its own: a
+   * take's words and its own line have to reach the box that began the take,
+   * and the reader is re-mounted under its boxes.
+   */
+  type BoxName = 'comment' | 'reply' | 'summary';
+  const comment = $state<CommentBox>({
     spot: null,
     draft: '',
     busy: false,
+    line: null,
+    phase: null,
+    panel: false,
+    take: null,
+    wire: null,
   });
-  const reply = $state<Shelf & { thread: string | null }>({
+  const reply = $state<ReplyBox>({
     thread: null,
     draft: '',
     busy: false,
+    line: null,
+    phase: null,
+    panel: false,
+    take: null,
+    wire: null,
   });
-  /** The unfiled turns of this sitting: what `finish review` seals. */
-  const drafts = new SvelteSet<string>();
+  const summary = $state<Words>({
+    draft: '',
+    busy: false,
+    line: null,
+    phase: null,
+    panel: false,
+    take: null,
+    wire: null,
+  });
+
+  /** Where a take's words belong: the box whose mic began it, stamped at the
+   *  press - and the spot/thread it held then, so a box that has MOVED is no
+   *  longer the box the take belongs to. */
+  let takeIn = $state<BoxName | null>(null);
+  let takeSpot = $state<CommentBox['spot']>(null);
+  let takeThread = $state<string | null>(null);
+  /** Where the last mic was pressed: the box a refusal is owed to. */
+  let pressedIn = $state<BoxName | null>(null);
+  /** Where a page line about a take is drawn: the box the attempt was made in. */
+  let lineIn = $state<BoxName | null>(null);
+  /** Which box's mic opened the settings, which is the box that anchors the panel. */
+  let panelIn = $state<BoxName | null>(null);
+  let dictateLine = $state<TakeLine | null>(null);
+  const landing = new Landing();
+  const elements: Record<BoxName, HTMLElement | null> = {
+    comment: null,
+    reply: null,
+    summary: null,
+  };
+
+  const defaults = $derived(connection.settings()?.dictate ?? DEFAULT_AXES);
+  let axesEdit = $state<DictateAxes | null>(null);
+  let deviceEdit = $state<string | null>(null);
+  const key = $derived(boxKey(slot));
+  const seatAxes = $derived(axesEdit ?? axesFor(key, defaults));
+  const seatDevice = $derived(deviceEdit ?? deviceFor(key));
+
+  function setAxes(next: DictateAxes): void {
+    axesEdit = next;
+    rememberAxes(key, next);
+  }
+
+  function setDevice(next: string | null): void {
+    deviceEdit = next;
+    rememberDevice(key, next);
+  }
+
+  const composer = $derived(composerFrom(record?.composer));
+
+  const dictate = new Dictation({
+    connection: () => connection,
+    seat: () => slot,
+    shown: () => composer.take !== null,
+    options: () => axesFor(boxKey(slot), defaults),
+    device: () => deviceFor(boxKey(slot)),
+    capture: openCapture,
+    onStart: () => {
+      takeIn = pressedIn;
+      lineIn = pressedIn;
+      takeSpot = comment.spot;
+      takeThread = reply.thread;
+      dictateLine = null;
+      landing.arm(boxKey(slot), composer.notice);
+    },
+    onLine: (line) => {
+      lineIn = takeIn;
+      dictateLine = line;
+      landing.drop();
+    },
+    onRefused: (line) => {
+      lineIn = pressedIn;
+      dictateLine = line;
+    },
+  });
+
+  const rowPhase = $derived(takePhase(dictate, composer.take, slot));
+  const rowWire = $derived(takeCounts(dictate, slot));
+
+  /** One stable object whose fields are getters: a mounted box reads its
+   *  props once, and the panel must never show a frozen axes snapshot. */
+  const voice: Voice = {
+    dictate,
+    get offered() {
+      return dictation;
+    },
+    get connection() {
+      return connection;
+    },
+    get bind() {
+      return composer.bind;
+    },
+    get mode() {
+      return composer.mode;
+    },
+    get axes() {
+      return seatAxes;
+    },
+    get device() {
+      return seatDevice;
+    },
+    get defaults() {
+      return defaults;
+    },
+    onaxes: setAxes,
+    ondevice: setDevice,
+  };
+
+  /** One box's own take row, or `null` when the take is another box's. */
+  function phaseIn(at: BoxName): RowPhase | null {
+    return takeIn === at ? rowPhase : null;
+  }
+
+  /** What each box reads off the page's state: the write in flight, the
+   *  record's take and this page's counts, and the two per-box readings. */
+  $effect(() => {
+    for (const at of ['comment', 'reply', 'summary'] as const) {
+      const held = at === 'comment' ? comment : at === 'reply' ? reply : summary;
+      held.busy = busy;
+      held.take = composer.take;
+      held.wire = rowWire;
+      held.phase = phaseIn(at);
+      held.panel = dictate.panel && panelIn === at;
+    }
+  });
+
+  /** A take goes with its box: the box that began a LIVE take going - the
+   *  reader's cancel, a move to another spot or thread - ends the take. Only
+   *  a live take; one already submitted carries its words to the landing. */
+  $effect(() => {
+    if (takeIn === null) return;
+    const gone =
+      takeIn === 'summary'
+        ? !finishOpen
+        : takeIn === 'comment'
+          ? comment.spot === null ||
+            takeSpot === null ||
+            comment.spot.path !== takeSpot.path ||
+            comment.spot.line !== takeSpot.line
+          : reply.thread === null || reply.thread !== takeThread;
+    const live = dictate.take;
+    if (gone && (dictate.opening || (live !== null && !live.submitted))) {
+      landing.drop();
+      dictate.act('cancel');
+    }
+  });
+
+  /** A landed take puts its words in the box that began it, once - opening a
+   *  box that has gone, so the words land where the reader sees them. */
+  $effect(() => {
+    const words = landing.place(boxKey(slot), composer.notice);
+    if (words === null) return;
+    if (
+      composer.take === null &&
+      composer.notice?.kind === 'landed' &&
+      composer.notice.carried === true
+    ) {
+      return;
+    }
+    landing.placed(composer.notice);
+    if (takeIn === null) return;
+    if (takeIn === 'comment') {
+      if (
+        comment.spot === null ||
+        takeSpot === null ||
+        comment.spot.path !== takeSpot.path ||
+        comment.spot.line !== takeSpot.line
+      ) {
+        comment.spot = takeSpot;
+      }
+      if (comment.spot === null) return;
+      comment.draft = joined(comment.draft, words);
+    } else if (takeIn === 'reply') {
+      if (reply.thread === null || reply.thread !== takeThread) reply.thread = takeThread;
+      if (reply.thread === null) return;
+      reply.draft = joined(reply.draft, words);
+    } else {
+      finishOpen = true;
+      summary.draft = joined(summary.draft, words);
+    }
+    elements[takeIn]?.focus();
+  });
+
+  /** The line a take owes, in the box it belongs to. */
+  $effect(() => {
+    const line = dictateLine ?? noticeLine(composer.notice, landing.holds(composer.notice));
+    const at = dictateLine !== null ? lineIn : (takeIn ?? 'comment');
+    comment.line = at === 'comment' ? line : null;
+    reply.line = at === 'reply' ? line : null;
+    summary.line = at === 'summary' ? line : null;
+  });
+
+  /**
+   * What `finish review` seals: every thread carrying an unfiled USER turn,
+   * read off the record rather than off a set of ids this sitting happened
+   * to write. The page-local set said "(1) ready" while the button stayed
+   * disabled after a reload took the memory with it (measured live, Ved
+   * 2026-10-17); the record always knows what is unsealed.
+   */
+  const unsealed = $derived(
+    treeThreads.filter((thread) =>
+      thread.comments.some((turn) => turn.author.kind === 'user' && turn.review_id === null),
+    ),
+  );
   let busy = $state(false);
   let refusal = $state<string | null>(null);
   let finishOpen = $state(false);
@@ -320,10 +565,11 @@
     reader?.targetLine(null);
   }
 
-  /** A line was pressed in the reader: the composer opens on it. */
+  /** A line was pressed in the reader: the composer opens on it. The spot's
+   *  side is always the new one - a file has no diff sides. */
   function commentOn(line: number): void {
     if (open === null) return;
-    comment.spot = { path: open, line };
+    comment.spot = { path: open, side: 'new', line };
     comment.draft = '';
   }
 
@@ -346,7 +592,6 @@
     const { went } = await write(upsertCommand(slot, treeScope(slot), thread));
     comment.busy = false;
     if (!went) return;
-    drafts.add(thread.id);
     closeComposer();
   }
 
@@ -355,7 +600,6 @@
     const { went } = await write(upsertCommand(slot, treeScope(slot), withReply(thread, text)));
     reply.busy = false;
     if (!went) return;
-    drafts.add(thread.id);
     reply.thread = null;
     reply.draft = '';
   }
@@ -368,19 +612,22 @@
     await reopenThread(sends, slot, treeScope(slot), thread.id, latestRound(treeRounds, thread));
   }
 
-  async function finished(summary: string | null): Promise<void> {
-    if (drafts.size === 0) return;
+  async function finished(text: string | null): Promise<void> {
+    const ids = unsealed.map((thread) => thread.id);
+    if (ids.length === 0) return;
+    summary.busy = true;
     const sealed = await finishRound(
       sends,
       slot,
       treeScope(slot),
-      [...drafts],
-      summary,
-      roundHasWork(treeThreads, drafts),
+      ids,
+      text,
+      roundHasWork(treeThreads, ids),
     );
+    summary.busy = false;
     if (!sealed) return;
-    drafts.clear();
     finishOpen = false;
+    summary.draft = '';
   }
 
   /** A rail row: open its file and put the reader on its line. */
@@ -397,6 +644,12 @@
     return treeThreads.filter((thread) => thread.anchor.path === path).length;
   }
 
+  /** A status as a block-key segment: the named states as themselves, an
+   *  unnamed one as one word rather than a stringified object. */
+  function statusKey(status: ReviewThreadRecord['status']): string {
+    return typeof status === 'string' ? status : 'unnamed';
+  }
+
   /**
    * The blocks drawn under the open file's lines: its threads, and the
    * composer when one is open. A blocked key carries the reply state, so
@@ -410,7 +663,11 @@
       const id = row.thread.id;
       out.push({
         line: row.line,
-        key: `thread:${id}:${reply.thread === id ? 'reply' : 'shut'}`,
+        // The key carries the thread's own state: a card the key keeps is a
+        // card CM does not re-mount, and a resolve or a reply would leave
+        // its stale DOM (acts, chip) under the line (measured live, Ved
+        // 2026-10-17).
+        key: `thread:${id}:${statusKey(row.thread.status)}:${row.thread.comments.length}:${reply.thread === id ? 'reply' : 'shut'}`,
         mount: (host) => {
           const held = mount(Inline, {
             target: host,
@@ -427,6 +684,7 @@
                 return reply.thread === id;
               },
               replyBox: reply,
+              voice,
               onrespond: () => {
                 reply.thread = reply.thread === id ? null : id;
                 reply.draft = '';
@@ -434,6 +692,15 @@
               onreply: (text: string) => void replied(row.thread, text),
               onresolve: () => void resolved(row.thread),
               onreopen: () => void reopened(row.thread),
+              onpress: () => (pressedIn = 'reply'),
+              onhold: () => (panelIn = 'reply'),
+              field: (el: HTMLElement | null) => {
+                elements.reply = el;
+                // The caret goes in with the box (Ved, 2026-10-17): respond
+                // opens the box AND the keyboard, so no press is needed
+                // before typing.
+                el?.focus();
+              },
             },
           });
           return () => void unmount(held);
@@ -446,7 +713,7 @@
         line: spot.line,
         key: `comment:${spot.path}:${spot.line}`,
         mount: (host) => {
-          const held = mount(Box, {
+          const held = mount(WordsBox, {
             target: host,
             props: {
               class: 'rv-thread comment',
@@ -455,9 +722,13 @@
               label: 'your comment',
               sendLabel: 'comment',
               box: comment,
+              voice,
               onsend: (text: string) => void commented(text),
               oncancel: closeComposer,
+              onpress: () => (pressedIn = 'comment'),
+              onhold: () => (panelIn = 'comment'),
               field: (el: HTMLElement | null) => {
+                elements.comment = el;
                 // The caret goes in with the box (Ved, 2026-10-15).
                 el?.focus();
               },
@@ -565,11 +836,16 @@
         <Rail
           {rows}
           {repliesToRead}
+          finishCount={unsealed.length}
           bind:finishOpen
-          canFinish={drafts.size > 0}
           {busy}
+          summaryBox={summary}
+          {voice}
           onjump={jump}
-          onfinish={(summary) => void finished(summary)}
+          onfinish={(text) => void finished(text)}
+          onpress={() => (pressedIn = 'summary')}
+          onhold={() => (panelIn = 'summary')}
+          onfield={(el) => (elements.summary = el)}
         />
       </div>
     </div>

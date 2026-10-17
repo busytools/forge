@@ -12,38 +12,45 @@
    * The finish row is the review page's own writing (`finishRound`): a
    * `submit_review` for the TREE scope that seals every unfiled turn in one
    * round, and the seat hears `Review #N ready` exactly as it does for a
-   * branch review.
+   * branch review. Its box is the page's `WordsBox` over the page's take,
+   * so the summary dictates like every other box (Ved's hard rule).
    */
-  import Box from './Box.svelte';
-  import type { RailRow, Shelf } from './comments';
+  import type { Voice, Words } from '../review/boxes';
   import { statusName } from '../review/view';
+  import WordsBox from '../review/WordsBox.svelte';
+  import type { RailRow } from './comments';
 
   let {
     rows,
     repliesToRead,
+    finishCount,
     finishOpen = $bindable(false),
-    canFinish,
     busy,
+    summaryBox,
+    voice,
     onjump,
     onfinish,
+    onpress,
+    onhold,
+    onfield,
   }: {
     rows: RailRow[];
     /** Threads the worker has answered and nobody read yet, the header's own count. */
     repliesToRead: number;
+    /** The unfiled turns a round would seal: the button's own count, and
+     *  whether it is live at all. */
+    finishCount: number;
     finishOpen?: boolean;
-    /** A round is worth sealing: at least one unfiled turn on the page. */
-    canFinish: boolean;
     busy: boolean;
+    /** The summary box, held on the page so a take's words land in it. */
+    summaryBox: Words;
+    voice: Voice;
     onjump: (row: RailRow) => void;
-    onfinish: (summary: string | null) => void;
+    onfinish: (text: string | null) => void;
+    onpress: () => void;
+    onhold: () => void;
+    onfield: (el: HTMLElement | null) => void;
   } = $props();
-
-  /** The finish box's words, held here so the row's collapse does not take
-   *  them, and the write-in-flight mirrored from the page. */
-  const shelf = $state<Shelf>({ draft: '', busy: false });
-  $effect(() => {
-    shelf.busy = busy;
-  });
 </script>
 
 <aside class="files-rail" aria-label="comments dropped">
@@ -76,23 +83,31 @@
       <button
         class="rv-a on"
         type="button"
-        disabled={!canFinish || busy}
-        onclick={() => (finishOpen = true)}>finish review ({rows.length})</button
+        disabled={finishCount === 0 || busy}
+        onclick={() => (finishOpen = true)}>finish review ({finishCount})</button
       >
       <div class="files-finishsub">
-        seals the sitting into a round; the seat hears Review #N ready.
+        {#if finishCount === 0}
+          comment first; sealing happens when there is something to seal.
+        {:else}
+          seals the sitting into a round; the seat hears Review #N ready.
+        {/if}
       </div>
     {:else}
-      <Box
+      <WordsBox
         class="rv-thread comment"
         headline="finish review"
         placeholder="what is this round about?"
         label="the round's summary"
         rows={2}
         sendLabel="seal the round"
-        box={shelf}
-        onsend={() => onfinish(shelf.draft.trim() === '' ? null : shelf.draft.trim())}
+        box={summaryBox}
+        {voice}
+        onsend={(text: string) => onfinish(text)}
         oncancel={() => (finishOpen = false)}
+        {onpress}
+        {onhold}
+        field={onfield}
       />
     {/if}
   </div>

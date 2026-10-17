@@ -1717,7 +1717,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 }
 .sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
   border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
-  font: inherit; color: var(--muted); }
+  font: inherit; color: var(--muted); text-decoration: none; }
 .sg-seg .sg-tog:hover, .sg-seg.open .sg-tog { border-color: var(--line); color: var(--text); }
 .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
 .sg-seg .sg-tog .ic.ok { color: var(--ok); }
@@ -3596,11 +3596,21 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-reader .cm-foldPlaceholder { background: var(--s2); border: 1px solid var(--line);
   border-radius: 4px; color: var(--dim); padding: 0 4px; }
 .files-reader .cm-foldGutter .cm-gutterElement { color: var(--dim); }
+/* The door's own column keeps its width whether or not a `+` is in it: an
+   empty gutter collapses, and the marker's arrival shifted the code a
+   character right (measured live, Ved 2026-10-17). */
+.files-reader .files-doors { min-width: 16px; }
+.files-reader .files-doors .cm-gutterElement { width: 16px; text-align: center; }
 /* The reader's target line: the same tint and bar the tree's current row
    carries, and its gutter door (the press that opens the composer). */
 .files-reader .files-target { background: rgba(27,33,48,.5);
   box-shadow: inset 2px 0 0 var(--accent); }
 .files-reader .files-door { color: var(--accent); }
+/* The resolved marker is a press target in the reader, and it takes the row's
+   whole width AND the expanded card's own ground (Ved, 2026-10-17), so a
+   folded thread and an open one are one surface. */
+.files-reader .rv-marker { width: 100%; cursor: pointer; font: inherit;
+  text-align: left; background: var(--s2); }
 
 @media (max-width: 980px) {
   .files { height: auto; min-height: 100dvh; padding: 18px 16px 0; }

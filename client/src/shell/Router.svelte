@@ -209,7 +209,7 @@
     <!-- The page subscribes the seat itself, as the review page does: its
          tree follows the seat - a worker's worktree, the lead's checkout -
          and its states belong to it. -->
-    <Files {connection} slot={route.slot} />
+    <Files {connection} slot={route.slot} dictation={dictate} />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

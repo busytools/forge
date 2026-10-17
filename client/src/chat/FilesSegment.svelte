@@ -10,8 +10,15 @@
    * **Mandatory, by the ruling (Ved, 2026-10-17)**: every seat has a tree -
    * a worker's own worktree, the lead's checkout - so this slip draws for
    * every seat with a record, where the tree row beside it keeps its own
-   * rule of staying away when nothing has moved. The toggle reads the file
-   * count; the panel names the tree and carries `open files`.
+   * rule of staying away when nothing has moved.
+   *
+   * **The toggle IS the door** (Ved, 2026-10-17, second ruling): clicking
+   * it opens the files page - it reads `walk · files` for a worker (the
+   * worktree's own name, so the destination is never a guess) and plain
+   * `files` for the project's checkout, with the browser's own mark beside
+   * it and no count. On a pointer that can hover the panel still peeks open
+   * (the tree's path, and the door again for a keyboard reader); a tap goes
+   * straight there.
    *
    * The scaffold - hover grace, the portal, the pointer's own compat - is
    * the strip's own, as every segment's is.
@@ -36,11 +43,12 @@
     return () => cancelAnimationFrame(raf);
   });
 
-  const count = $derived(files.count());
   const tree = $derived(files.tree());
+  const name = $derived(files.name());
 
-  /** The toggle's own words: how many files, else the noun. */
-  const label = $derived(count === null ? 'files' : `${count} files`);
+  /** The toggle names the tree it opens: the worktree's own name, else the
+   *  noun - and the icon says the kind. */
+  const label = $derived(name === null ? 'files' : `${name} · files`);
 
   function hold() {
     if (closing !== null) clearTimeout(closing);
@@ -110,41 +118,38 @@
     }
     hold();
   }
-
-  /** Put focus back on the toggle, which is where a dismissal leaves a reader. */
-  function toToggle(): void {
-    segEl?.querySelector('button')?.focus();
-  }
 </script>
 
 {#if files.anything()}
   <span class="sg-seg" class:open bind:this={segEl}>
-    <button
-      type="button"
-      class="sg-tog"
-      aria-expanded={open}
-      aria-label="the seat's own files"
-      onclick={() => {
-        if (open) open = false;
-        else hold();
-      }}
-      onpointerenter={(event) => {
-        if (hovering(event)) hold();
-      }}
-      onpointerleave={(event) => {
-        if (hovering(event)) release();
-      }}
-      onfocusin={focusIn}
-      onfocusout={release}
-      onkeydown={(event) => {
-        if (event.key !== 'Escape') return;
-        toToggle();
-        open = false;
-      }}
-    >
-      <Icon name="files" />
-      <span>{label}</span>
-    </button>
+    {#if href !== null}
+      <!-- The toggle is the door: a press goes to the page, never a toggle. -->
+      <a
+        class="sg-tog"
+        {href}
+        aria-label={name === null ? "the seat's own files" : `the seat's files, in ${name}`}
+        onpointerenter={(event) => {
+          if (hovering(event)) hold();
+        }}
+        onpointerleave={(event) => {
+          if (hovering(event)) release();
+        }}
+        onfocusin={focusIn}
+        onfocusout={release}
+        onkeydown={(event) => {
+          if (event.key !== 'Escape') return;
+          open = false;
+        }}
+      >
+        <Icon name="files" />
+        <span>{label}</span>
+      </a>
+    {:else}
+      <span class="sg-tog">
+        <Icon name="files" />
+        <span>{label}</span>
+      </span>
+    {/if}
 
     {#if open}
       <div
