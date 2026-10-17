@@ -5128,7 +5128,8 @@ impl Workspace {
                     );
                     let _enter = span.enter();
                     if let Some(respond) = respond {
-                        let _ = respond.send(self.delete_review_thread(&project, &branch, &thread_id));
+                        let _ =
+                            respond.send(self.delete_review_thread(&project, &branch, &thread_id));
                     }
                 }
                 Command::SubmitReview { project, branch, summary, thread_ids, origin, respond } => {
