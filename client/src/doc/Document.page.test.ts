@@ -39,6 +39,8 @@ vi.mock('../composer/mic', () => ({
   Microphone: { open: mic.open },
   inputs: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
   inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
+  micSilence: (): Promise<null> => Promise.resolve(null),
+  silenceCause: (): null => null,
 }));
 
 import { currentRoute } from '../routes';

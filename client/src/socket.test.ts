@@ -752,6 +752,92 @@ describe('the connection', () => {
   });
 
   /**
+   * **A read that goes unanswered is asked again.** Every re-ask the client
+   * makes is driven by something ARRIVING - an update, a reconnect - so a
+   * first snapshot lost on a live socket left the store loading for the life
+   * of the connection: the page sat at "Reading the fleet..." over LAN and
+   * WireGuard alike, and only exit-and-re-enter ever cleared it. The bound is
+   * what asks unprompted, and it re-arms with each ask.
+   */
+  it('asks a read again when the bound runs out with nothing answered', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    // A short bound, injected: the shipping figure is five seconds, and the
+    // rule being tested is the re-ask rather than the number.
+    const conn = connect(server.url, 40);
+    opened.push(conn);
+    const store = conn.subscribe(HOME);
+    await until(() => server.received.length >= 1, 'the first subscribe');
+
+    // **The shape, not a count.** The bound is 40 ms here and the poll below
+    // is 10 ms, so a slower pass can have asked more than once by the time
+    // this runs: the prefix is what the retry is, and a floor is what says
+    // the loop continues.
+    await until(() => server.received.length >= 3, 'the re-ask pair');
+    expect(
+      server.received.slice(0, 3).map((message) => message.kind),
+      'the re-ask is the refresh pair rather than a bare subscribe',
+    ).toEqual(['subscribe', 'unsubscribe', 'subscribe']);
+    expect(server.received[2], 'and it is the same subject').toMatchObject({ what: HOME });
+    expect(store.state(), 'the store still waits for its answer').toEqual({ kind: 'loading' });
+
+    // The re-ask is bounded like the first read: a loss buys a retry loop,
+    // not one retry and then silence.
+    await until(() => server.received.length >= 6, 'the re-ask to be bounded too');
+  });
+
+  it('asks nothing again for a read that was answered', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const conn = connect(server.url, 40);
+    opened.push(conn);
+    const store = conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe');
+    server.send({ kind: 'snapshot', subject: HOME, data: { fleet: [] } });
+    await until(() => store.state().kind === 'ready', 'the answer to land');
+
+    // Two bounds of quiet: an answered read owes nothing.
+    await settle();
+    await settle();
+    expect(server.received.length, 'an answered read is not re-asked').toBe(1);
+  });
+
+  /**
+   * **A re-ask supersedes the ask it replaces.** A lost answer leaves its
+   * entry in the outstanding queue; the retry adds another, and `refuse` -
+   * which carries no subject and takes the OLDEST key - would then hand a
+   * later refusal to the subject of the lost ask rather than to the
+   * subscription the server actually refused. The refresh pair is net-zero
+   * on the wire, so the bookkeeping is net-zero too.
+   */
+  it('sends a later refusal to the subscription the server refused', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const seats = { org: 'TestOrg', project: 'proj' };
+    const w1: Subject = { session: { ...seats, label: 'w1' } };
+    const w2: Subject = { session: { ...seats, label: 'w2' } };
+    const conn = connect(server.url, 120);
+    opened.push(conn);
+
+    const recovered = conn.subscribe(w1);
+    // Floors rather than exact counts: the bound is 120 ms and the poll is
+    // 10 ms, so a slow pass can have asked more than once before this runs.
+    await until(() => server.received.length >= 1, 'the first subscribe');
+    // The first answer is lost, so the bound re-asks; that answer lands.
+    await until(() => server.received.length >= 3, 'the re-ask pair');
+    server.send({ kind: 'snapshot', subject: w1, data: { who: 'w1' } });
+    await until(() => recovered.state().kind === 'ready', 'the re-ask to answer');
+
+    // A second subscription, still loading, and then the refusal: it is w2's.
+    const second = conn.subscribe(w2);
+    await until(() => server.received.length >= 4, 'the second subscribe');
+    server.send({ kind: 'error', what: 'subscribe', why: 'forge holds no session for that seat' });
+
+    await until(() => second.state().kind === 'refused', 'the refusal to land on w2');
+    expect(recovered.state(), 'the recovered seat keeps its answer').toEqual({ kind: 'ready' });
+  });
+
+  /**
    * One unsubscribe drops one entry: a second subscribe to one subject adds
    * a second entry rather than replacing the first, because two
    * subscriptions to one seat are one seat still being shown.

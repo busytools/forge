@@ -249,7 +249,7 @@ impl WorktreeDisposition {
 /// session task. `Workspace::dispatch` fans the variant into the
 /// matching task's command receiver.
 ///
-/// A reply channel cannot cross a socket, so the four fields carrying one
+/// A reply channel cannot cross a socket, so the six fields carrying one
 /// are `Option` and skipped on the wire: `#[serde(skip)]` reconstructs a
 /// field on deserialize, which needs a `Default`, and a bare
 /// `oneshot::Sender` has none while an `Option` does.
@@ -659,11 +659,19 @@ pub enum Command {
     /// Deliver a wrapped peer-style prompt to a worker. Same envelope
     /// as `DeliverPeerPrompt` but addressed by worker label within
     /// the caller's project rather than by cross-project name.
+    ///
+    /// `respond` carries what actually happened to the prompt: `Ok(())`
+    /// once it was accepted - handed to the target's session queue, held
+    /// for its turn end, or parked for its connect - and `Err(reason)`
+    /// when nothing could take it. The sender's ack is built from this
+    /// answer alone, so it can only claim what the delivery really did.
     DeliverWorkerPrompt {
         caller: SessionSlot,
         project_key: crate::ProjectKey,
         target_label: String,
         wrapped: WrappedPrompt,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<Result<(), String>>>,
     },
     /// Deliver a wrapped prompt from a worker back to its lead.
     /// Dispatched by the `agents__send_message` Tool impl
@@ -673,11 +681,14 @@ pub enum Command {
     /// directly without re-doing the lookup against a possibly-mutated
     /// `live_workers` map. Wire shape is identical to
     /// `DeliverWorkerPrompt` (same PeerEnvelopeAppended echo + same
-    /// `Command::Prompt` dispatch into the target session).
+    /// `Command::Prompt` dispatch into the target session), and its
+    /// `respond` carries the same acceptance answer.
     DeliverWorkerPromptToLead {
         caller: SessionSlot,
         target_lead_key: SessionSlot,
         wrapped: WrappedPrompt,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<Result<(), String>>>,
     },
     /// Deliver a matched Gotify notification into `project` as a plain
     /// user turn (spawning the project if asleep, exactly like a cron

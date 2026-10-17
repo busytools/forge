@@ -12,22 +12,36 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mic = vi.hoisted(() => ({
-  open: (): Promise<unknown> =>
-    Promise.resolve({
-      onFrame: null as ((bytes: Uint8Array) => void) | null,
-      resolved: undefined,
-      flush: () => null,
-      flushWorklet: () => undefined,
-      stop: () => undefined,
-    }),
-}));
+const mic = vi.hoisted(() => {
+  /** The frame sink the live take attached, so a case can feed it frames. */
+  const held: { onFrame: ((bytes: Uint8Array) => void) | null } = { onFrame: null };
+  return {
+    held,
+    open: (): Promise<unknown> =>
+      Promise.resolve({
+        get onFrame(): ((bytes: Uint8Array) => void) | null {
+          return held.onFrame;
+        },
+        set onFrame(fn: ((bytes: Uint8Array) => void) | null) {
+          held.onFrame = fn;
+        },
+        resolved: undefined,
+        flush: () => null,
+        flushWorklet: () => undefined,
+        stop: () => undefined,
+      }),
+  };
+});
 
 vi.mock('../composer/mic', () => ({
   Microphone: { open: mic.open },
   inputs: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
   inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
+  micSilence: (): Promise<null> => Promise.resolve(null),
+  silenceCause: (): null => null,
 }));
+
+import { SILENT_NOTICE_MS } from '../composer/dictate.svelte';
 
 const viewer = vi.hoisted(() => ({ built: [] as string[] }));
 
@@ -367,6 +381,9 @@ function connection(): Connection {
       return true;
     },
     status: () => 'open',
+    // The take's frames ride the same socket; a case that feeds the
+    // microphone drives the ring with them.
+    frame: (_bytes: Uint8Array) => true,
     // A real listener, so a test can move the socket's state: the reconnect
     // path (an ask that never landed is asked again) is a state transition
     // and nothing else can drive it.
@@ -1727,6 +1744,35 @@ describe("a take's end", () => {
     expect(sent, 'a take outlived the box that began it').toEqual([
       { dictate_stop: { key: SLOT, submit: false } },
     ]);
+  });
+
+  /**
+   * **A take this page starts says when the device is feeding it nothing.**
+   * The page builds its own Dictation, so the silence line has to reach ITS
+   * take row: the composer's wiring alone would leave a silenced microphone
+   * dictating a comment with nothing on screen saying so.
+   */
+  it('says a silent capture on the box it is dictated into', async () => {
+    await draw();
+    await openComment();
+    // The clock is faked only for the take: the page's own draw settles on
+    // real timers, and a frozen clock before it would hang the setup.
+    vi.useFakeTimers();
+    try {
+      micIn('.rv-thread.comment').click();
+      await opened();
+      mic.held.onFrame?.(new Uint8Array(641));
+      flushSync();
+
+      vi.advanceTimersByTime(SILENT_NOTICE_MS + 1);
+      flushSync();
+      expect(
+        document.querySelector('.rv-thread.comment .tc .silent')?.textContent,
+        'the box says the capture is producing nothing',
+      ).toContain('nothing is coming through it');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   /**

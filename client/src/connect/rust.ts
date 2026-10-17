@@ -42,6 +42,7 @@ import {
   type Skew,
   type Subject,
 } from '../protocol';
+import { READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
 import { StreamGate } from '../session/stream';
 import { report, type Connection, type ConnectionStatus } from '../socket';
@@ -117,8 +118,15 @@ class RustConnection implements Connection {
   private heldProtocol: number | null = null;
   private greeted: string | null = null;
   private asks = 0;
+  /**
+   * The bound on a subscription's first read: a subject still loading when
+   * it runs out is asked again through `client_refresh`, so a snapshot lost
+   * between the server and the page is not a wait with nothing behind it.
+   */
+  private readonly bounds: ReadBounds;
 
-  constructor(url: string) {
+  constructor(url: string, boundMs: number = READ_BOUND_MS) {
+    this.bounds = new ReadBounds(this.stores, (what) => this.refresh(what), boundMs);
     void this.begin(url);
   }
 
@@ -200,6 +208,8 @@ class RustConnection implements Connection {
       report(`the server refused ${payload.key}, which this client no longer holds`, payload.why);
       return;
     }
+    // A refusal is an answer: nothing is owed on that subject any more.
+    this.bounds.clearKey(payload.key);
     store.refuse(payload.why);
     report(`the subscription to ${payload.key} was refused`, payload.why);
   }
@@ -238,6 +248,7 @@ class RustConnection implements Connection {
         break;
       }
       case 'snapshot':
+        this.bounds.clear(message.subject);
         this.stores.get(message.subject)?.set(message.data);
         break;
       case 'update': {
@@ -279,6 +290,9 @@ class RustConnection implements Connection {
     }).catch((why: unknown) => {
       report('a subscribe could not reach the shell', why);
     });
+    // The read this ask owes is bounded from here: nothing else would ask
+    // again for a snapshot that simply never came.
+    this.bounds.arm(what);
     return store;
   }
 
@@ -294,13 +308,16 @@ class RustConnection implements Connection {
     if (last && typeof what !== 'string') this.gate.releaseSeat(what.session);
   }
 
-  refresh(what: Subject): void {
+  /** `true` when the ask went, which is what a bound re-arms on. */
+  refresh(what: Subject): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
-    if (this.state !== 'open') return;
+    if (this.state !== 'open') return false;
+    this.bounds.arm(what);
     void invoke('client_refresh', { what }).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);
     });
+    return true;
   }
 
   dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null {
@@ -450,6 +467,8 @@ class RustConnection implements Connection {
 
   close(): void {
     this.move('closed');
+    // A closed connection has nothing to ask on.
+    this.bounds.stop();
     if (this.beat !== null) clearInterval(this.beat);
     this.beat = null;
     for (const stop of this.stops) stop();
@@ -461,6 +480,6 @@ class RustConnection implements Connection {
 }
 
 /** The desktop's connection to `url`. */
-export function connectRust(url: string): Connection {
-  return new RustConnection(url);
+export function connectRust(url: string, boundMs: number = READ_BOUND_MS): Connection {
+  return new RustConnection(url, boundMs);
 }

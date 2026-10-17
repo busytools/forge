@@ -378,6 +378,14 @@ impl BrowserHost {
                     .await;
                     match outcome {
                         Ok(mut parts) => {
+                            // **What the window holds now is what a later
+                            // launch should open**: the call may have closed
+                            // a tab, opened one, or navigated - the carry is
+                            // rewritten from the browser as it is, best
+                            // effort, before the answer goes out.
+                            let led =
+                                (tool == "browser_navigate").then(|| landed_url(&parts)).flatten();
+                            self.refresh_carry(&paths.user_data, led.as_deref()).await;
                             if let Err(why) = auto {
                                 self.note_auto_failure(seat, why, &mut parts).await;
                             }
@@ -406,7 +414,18 @@ impl BrowserHost {
                         outcome.is_err(),
                     )
                     .await;
-                    outcome
+                    match outcome {
+                        Ok(parts) => {
+                            // The same refresh the shared arm makes, on this
+                            // profile's own directory: the carry follows the
+                            // tabs.
+                            let led =
+                                (tool == "browser_navigate").then(|| landed_url(&parts)).flatten();
+                            self.refresh_carry(&named.dir, led.as_deref()).await;
+                            Ok(parts)
+                        }
+                        Err(why) => Err(why),
+                    }
                 }
             }
         }
@@ -462,6 +481,16 @@ impl BrowserHost {
             // fails with the reason, and a client restart is the repair.
             shared.call(&start, tool, args).await
         }
+    }
+
+    /// The carry refresh, **under the launch lock the show and hide take**: a
+    /// session call completing while a hide is taking the marker down must
+    /// not put it back, or the strip reads "hide" over an off-screen window
+    /// until the next flip. Best effort - see [`chromium::note_pages`].
+    #[cfg(desktop)]
+    async fn refresh_carry(&self, dir: &Path, led: Option<&str>) {
+        let _launching = self.launch.lock().await;
+        chromium::note_pages(dir, led).await;
     }
 
     /// A call failed: is it the browser that is gone, rather than the tool?
@@ -657,7 +686,7 @@ impl BrowserHost {
         let _launching = self.launch.lock().await;
         self.claim(user_data).await;
         let binary = chromium::browser_binary()?;
-        chromium::ensure(&binary, user_data, None).await
+        chromium::ensure(&binary, user_data, &[]).await
     }
 
     /// The named profiles this host holds, by name, for its own strip. A
@@ -1177,6 +1206,21 @@ fn phone_profile_refusal(name: &str) -> String {
     )
 }
 
+/// The URL a navigation really landed on, read from the driver's own answer
+/// (its snapshot leads with `Page URL: <url>`): a redirect, or a
+/// normalisation the request never named - `example.com` against the
+/// reported `example.com/` - is caught by this rather than missed by an
+/// exact-string match against the browser's page list.
+#[cfg(desktop)]
+fn landed_url(parts: &[ReplyPart]) -> Option<String> {
+    parts.iter().find_map(|part| match part {
+        ReplyPart::Text { text } => text
+            .lines()
+            .find_map(|line| line.split_once("Page URL: ").map(|(_, url)| url.trim().to_owned())),
+        ReplyPart::Image { .. } => None,
+    })
+}
+
 /// Take the `profile` argument off a call.
 ///
 /// It chooses the profile and no driver's schema declares it, so it never
@@ -1424,6 +1468,64 @@ mod tests {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else { continue };
                 let mut buffer = [0_u8; 2048];
+                // **The whole head, however the segments fall**: a single
+                // peek can catch half a handshake on a loaded machine (measured
+                // here 2026-10-17: the upgrade headers landed in a second
+                // segment, the ws branch missed them, and the client got the
+                // HTTP answer as garbage).
+                let mut read;
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    read = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        socket.peek(&mut buffer),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buffer[..read]);
+                    if head.contains("\r\n\r\n") || tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                let request = String::from_utf8_lossy(&buffer[..read]).to_ascii_lowercase();
+                if request.contains("upgrade: websocket") {
+                    // The window predicate asks over the devtools websocket: a
+                    // page, a session for it, and the window it lives in, all
+                    // answered.
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(socket).await else {
+                        continue;
+                    };
+                    use futures_util::{SinkExt as _, StreamExt as _};
+                    use tokio_tungstenite::tungstenite::Message;
+                    while let Some(Ok(frame)) = ws.next().await {
+                        let Message::Text(text) = frame else { continue };
+                        let Ok(call) = serde_json::from_str::<Value>(&text) else { continue };
+                        let id = call.get("id").cloned().unwrap_or(Value::Null);
+                        let method = call
+                            .get("method")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let result = match method.as_str() {
+                            "Target.getTargets" => json!({
+                                "targetInfos": [{ "targetId": "P1", "type": "page",
+                                                  "url": "https://example.com/x" }],
+                            }),
+                            "Target.attachToTarget" => json!({ "sessionId": "SESSION1" }),
+                            "Browser.getWindowForTarget" => json!({
+                                "windowId": 7,
+                                "bounds": { "left": 40, "top": 60 },
+                            }),
+                            _ => Value::Null,
+                        };
+                        let answer = json!({ "id": id, "result": result });
+                        let _ = ws.send(Message::Text(answer.to_string().into())).await;
+                    }
+                    continue;
+                }
                 let read = socket.read(&mut buffer).await.unwrap_or(0);
                 let request = String::from_utf8_lossy(&buffer[..read]);
                 let body = if request.starts_with("GET /json/version") {
@@ -1435,7 +1537,8 @@ mod tests {
                     }
                     format!("{{\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}{identity}\"}}")
                 } else {
-                    "[{\"type\":\"page\",\"url\":\"https://example.com/x\"}]".to_owned()
+                    "[{\"id\":\"P1\",\"type\":\"page\",\"url\":\"https://example.com/x\"}]"
+                        .to_owned()
                 };
                 let answer = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
@@ -1865,6 +1968,63 @@ mod tests {
         assert!(
             !auto.join("DevToolsActivePort").exists(),
             "and nothing was driven through it - the browser waits for a call that names it",
+        );
+    }
+
+    /// **The carry refresh takes the launch lock.** A session call completing
+    /// while a hide is taking the marker down must not put it back: the strip
+    /// would read "hide" over an off-screen window until the next flip.
+    #[tokio::test]
+    async fn the_carry_refresh_takes_the_launch_lock() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        std::fs::create_dir_all(&paths.user_data).expect("the shared directory");
+        std::fs::write(paths.user_data.join("windowed"), b"https://one.example")
+            .expect("a raise marker");
+
+        // The lock a hide holds across its act, taken here in its place.
+        let held = host.launch.lock().await;
+        let refresh = {
+            let host = Arc::clone(&host);
+            let profile = paths.user_data.clone();
+            tokio::spawn(async move { host.refresh_carry(&profile, None).await })
+        };
+        // Every chance to run: it must still be waiting on the lock.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(!refresh.is_finished(), "the refresh wrote outside the launch lock");
+        drop(held);
+        refresh.await.expect("the refresh runs once the lock is free");
+
+        // Nothing answering on the port: the refresh left the carry as the
+        // raise wrote it - the point pinned here is the lock, not the write.
+        let marker = std::fs::read_to_string(paths.user_data.join("windowed")).expect("the marker");
+        assert_eq!(
+            marker, "https://one.example",
+            "the carry stays the raise's until a window answers",
+        );
+    }
+
+    /// **The landed URL comes from the driver's own answer**: the requested
+    /// URL is not trusted - a redirect, or a normalisation (`example.com`
+    /// against the reported `example.com/`), would miss an exact match and
+    /// the wrong page would lead the carry.
+    #[test]
+    fn the_landed_url_comes_from_the_drivers_answer() {
+        let parts = vec![ReplyPart::Text {
+            text: "- Page URL: https://example.com/\n- heading \"x\"".to_owned(),
+        }];
+        assert_eq!(landed_url(&parts), Some("https://example.com/".to_owned()));
+        assert_eq!(
+            landed_url(&[ReplyPart::Text { text: "no url here".to_owned() }]),
+            None,
+            "no URL line, nothing landed",
         );
     }
 

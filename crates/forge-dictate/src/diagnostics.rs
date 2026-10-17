@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
 
 use crate::audio::SAMPLE_RATE;
+use crate::config::ModelSpec;
 use crate::engine::Stages;
 
 /// One window's record: the slice of capture it covered and the raw
@@ -30,6 +31,26 @@ pub(crate) struct WindowRecord {
     pub(crate) raw: String,
 }
 
+/// The models a take ran under: the resolved specs the engine was built
+/// with.
+pub(crate) struct TakeModels {
+    pub(crate) asr: ModelSpec,
+    /// `None` when no normalizer is configured.
+    pub(crate) normalizer: Option<ModelSpec>,
+    /// The language hint, `None` when the run autodetects.
+    pub(crate) language: Option<String>,
+}
+
+impl TakeModels {
+    pub(crate) fn from_config(cfg: &crate::Config) -> Self {
+        Self {
+            asr: cfg.asr_model.clone(),
+            normalizer: cfg.normalizer.clone(),
+            language: cfg.language.clone(),
+        }
+    }
+}
+
 /// Everything one finished take contributes to the store.
 pub(crate) struct TakeRecord<'a> {
     pub(crate) audio: &'a [f32],
@@ -38,6 +59,8 @@ pub(crate) struct TakeRecord<'a> {
     pub(crate) joined: &'a str,
     pub(crate) text: &'a str,
     pub(crate) stages: &'a Stages,
+    /// The models that made this take.
+    pub(crate) models: &'a TakeModels,
     /// Engine accept to first window start: the queue, and for early
     /// takes the tail of the model load. The felt lag the stages do
     /// not carry; `start_lag_ms` + `processing_ms` spans accept to
@@ -189,6 +212,19 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
         "processing_ms": take.processing_ms,
         "truncated": take.truncated,
         "outcome": take.outcome,
+        "asr": model_identity(&take.models.asr),
+        "normalizer": take.models.normalizer.as_ref().map(model_identity),
+        // Whether this take's text went through a completed cleanup pass:
+        // false with none configured, on a failed pass, and on a take whose
+        // recognition failed, so the pass never ran. A completed pass can
+        // still have rewritten nothing.
+        "normalizer_ran": take.stages.normalize.is_some(),
+        // The language hint the engine was configured with; null
+        // autodetects. Not the language a take turned out to be in.
+        "language": take.models.language,
+        // The release the take was made under: the workspace version, not
+        // build identity.
+        "forge_version": env!("CARGO_PKG_VERSION"),
         "stages_ms": {
             "mel": ms(take.stages.mel),
             "encode": ms(take.stages.encode),
@@ -228,6 +264,12 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
     }
 
     prune(dir);
+}
+
+/// One role's resolved spec as `meta.json` names it: the file, the digest
+/// it declares where it declares one, and the size.
+fn model_identity(spec: &ModelSpec) -> serde_json::Value {
+    json!({ "file": spec.file, "sha256": spec.sha256, "size": spec.size })
 }
 
 /// A file's sha256, lowercase hex; empty when it cannot be read.
@@ -298,7 +340,40 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use crate::{ConfigBuilder, ModelFacts, ModelSpec};
+
+    /// The cleanup role's stub spec, digest-free: the feed's doc-table
+    /// models publish none, so the nullable sha256 is the shape to pin.
+    fn stub_normalizer() -> ModelSpec {
+        ModelSpec {
+            file: "cleanup-stub.gguf".into(),
+            url: String::new(),
+            size: 7,
+            sha256: None,
+            facts: ModelFacts::default(),
+        }
+    }
+
+    /// A stub configuration's resolved models, through the same
+    /// `from_config` the engine uses.
+    fn stub_models(normalizer: Option<ModelSpec>, language: Option<&str>) -> TakeModels {
+        let mut builder = ConfigBuilder::new()
+            .asr_model(ModelSpec {
+                file: "asr-stub.gguf".into(),
+                url: String::new(),
+                size: 4242,
+                sha256: Some("a1b2c3".into()),
+                facts: ModelFacts::default(),
+            })
+            .normalizer(normalizer);
+        if let Some(language) = language {
+            builder = builder.language(language);
+        }
+        TakeModels::from_config(&builder.build())
+    }
+
     fn take_record<'a>(
+        models: &'a TakeModels,
         audio: &'a [f32],
         windows: &'a [WindowRecord],
         joined: &'a str,
@@ -311,6 +386,7 @@ mod tests {
             joined,
             text,
             stages,
+            models,
             start_lag_ms: 3,
             processing_ms: 7,
             truncated: false,
@@ -331,10 +407,12 @@ mod tests {
             WindowRecord { start_ms: 0, end_ms: 500, raw: "first take".into() },
             WindowRecord { start_ms: 500, end_ms: 1000, raw: "second take".into() },
         ];
+        let models = stub_models(None, None);
         capture_take(
             dir.path(),
             42,
             &take_record(
+                &models,
                 &audio,
                 &windows,
                 "first take second take",
@@ -401,7 +479,8 @@ mod tests {
         let audio = vec![0.5; 16];
         let stages = Stages::default();
         let windows = vec![WindowRecord { start_ms: 0, end_ms: 500, raw: "first".into() }];
-        let mut record = take_record(&audio, &windows, "first", "", &stages);
+        let models = stub_models(None, None);
+        let mut record = take_record(&models, &audio, &windows, "first", "", &stages);
         record.outcome = "recognition_error";
         record.recognition_error = Some((1, "decode failed: bad input".into()));
         capture_take(dir.path(), 7, &record);
@@ -418,6 +497,76 @@ mod tests {
         );
     }
 
+    /// A take names the models that made it: both roles' resolved specs
+    /// by the three fields a spec declares, plus whether the cleanup pass
+    /// ran, the language, and the release. This is what makes the archive
+    /// usable for comparing models.
+    #[test]
+    fn a_take_names_the_models_that_made_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = vec![0.5; 16];
+        let stages = Stages {
+            audio: Duration::from_millis(1000),
+            normalize: Some(Duration::from_millis(11)),
+            ..Stages::default()
+        };
+        let windows = vec![];
+        let models = stub_models(Some(stub_normalizer()), Some("en"));
+        let record = take_record(&models, &audio, &windows, "", "first take", &stages);
+        capture_take(dir.path(), 9, &record);
+
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("take-0000000000009/meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["asr"]["file"], "asr-stub.gguf", "the transcribing spec's file");
+        assert_eq!(meta["asr"]["sha256"], "a1b2c3", "the digest the transcribing spec declares");
+        assert_eq!(meta["asr"]["size"], 4242, "the size the transcribing spec declares");
+        assert_eq!(meta["normalizer"]["file"], "cleanup-stub.gguf", "the cleanup spec's file");
+        assert!(
+            meta["normalizer"]["sha256"].is_null(),
+            "a spec whose upstream publishes no digest records none, got {}",
+            meta["normalizer"]["sha256"]
+        );
+        assert_eq!(meta["normalizer"]["size"], 7, "the size the cleanup spec declares");
+        assert_eq!(
+            meta["normalizer_ran"], true,
+            "a take whose stages carry a normalize pass ran the normalizer"
+        );
+        assert_eq!(meta["language"], "en", "the language the engine was configured with");
+        assert_eq!(
+            meta["forge_version"],
+            env!("CARGO_PKG_VERSION"),
+            "the release the take was made under"
+        );
+    }
+
+    /// The nullable shape: with no normalizer configured, the spec is
+    /// null and the take says no cleanup ran. An autodetecting run
+    /// records no language either.
+    #[test]
+    fn a_take_with_the_normalizer_off_names_no_cleanup_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = vec![0.5; 16];
+        let stages = Stages::default();
+        let windows = vec![];
+        let models = stub_models(None, None);
+        let record = take_record(&models, &audio, &windows, "", "first take", &stages);
+        capture_take(dir.path(), 8, &record);
+
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("take-0000000000008/meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(meta["normalizer"].is_null(), "no configured cleanup names no model");
+        assert_eq!(meta["normalizer_ran"], false, "no normalize stage means it did not run");
+        assert!(meta["language"].is_null(), "autodetect records no language");
+        assert_eq!(
+            meta["asr"]["file"], "asr-stub.gguf",
+            "the transcribing spec is named whatever the cleanup role is"
+        );
+    }
+
     /// Prune only ever touches store directories: `take-` followed by
     /// nothing but digits. A user folder sharing the prefix is not ours
     /// to remove, whatever its age.
@@ -430,8 +579,9 @@ mod tests {
         let stages = Stages::default();
         let audio = vec![0.5; 16];
         let windows = vec![];
+        let models = stub_models(None, None);
         for id in 1..=RETAINED_TAKES as u128 + 1 {
-            capture_take(dir.path(), id, &take_record(&audio, &windows, "", "", &stages));
+            capture_take(dir.path(), id, &take_record(&models, &audio, &windows, "", "", &stages));
         }
         assert!(foreign.is_dir(), "a user directory sharing the take- prefix must survive pruning");
         let takes: Vec<_> = std::fs::read_dir(dir.path())
@@ -457,9 +607,10 @@ mod tests {
         let audio = vec![0.5; 16];
         let stages = Stages::default();
         let windows = vec![];
+        let models = stub_models(None, None);
         let newest = RETAINED_TAKES as u128 + 2;
         for id in 1..=newest {
-            capture_take(dir.path(), id, &take_record(&audio, &windows, "", "", &stages));
+            capture_take(dir.path(), id, &take_record(&models, &audio, &windows, "", "", &stages));
         }
         let takes: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -491,7 +642,12 @@ mod tests {
         let audio = vec![0.5; 16];
         let stages = Stages::default();
         let windows = vec![];
-        capture_take(&blocker.join("under"), 1, &take_record(&audio, &windows, "", "", &stages));
+        let models = stub_models(None, None);
+        capture_take(
+            &blocker.join("under"),
+            1,
+            &take_record(&models, &audio, &windows, "", "", &stages),
+        );
         assert!(!blocker.is_dir(), "the unwritable location must not have been turned into one");
     }
 }

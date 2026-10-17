@@ -581,12 +581,14 @@ client-release version: vendor-browser-stack client-release-deps
     # and not the copy.
     refuse_if_in_use
 
-    # With both bundles present (an earlier run died before the cleanup below)
-    # this rename nests the old one at $app.old/forge.app; the cleanup takes it
-    # either way, so only a crash inside this run leaves it a level below the
-    # warning above points - and with that nested path already there it fails
-    # outright instead of nesting, which is #1609.
+    # A stale aside is cleared before the move-aside: with it in place the
+    # rename would land inside it, fail on the occupied path, and abort before
+    # the cleanup that removes it. A run killed between the swap and the
+    # cleanup is what leaves one populated, wedging every later release on
+    # that same abort, and the `[ -e "$app" ]` guard keeps this clearing from
+    # deleting an aside that holds the only install.
     if [ -e "$app" ]; then
+        rm -rf "$app.old"
         mv "$app" "$app.old"
     fi
     # A failed copy never reaches here - `set -e` stops the recipe at the

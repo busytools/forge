@@ -85,6 +85,10 @@ read as one system.
   A sequence the page cannot draw (a cursor move, an erase, the extended
   colour forms) is dropped rather than printed, and a command that wrote no
   colour draws in the box's own tone.
+- **A message's image** draws as the file row a turn attached does: the
+  picture named, and its source printed beside it. The page fetches nothing
+  for it - a message is text someone else wrote, so the host it names is
+  never asked for.
 - **A settled failure with nothing to open onto** says so in words rather
   than drawing an empty body.
 

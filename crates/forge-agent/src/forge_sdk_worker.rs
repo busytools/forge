@@ -152,6 +152,13 @@ waits for the user's own look before merge; a fix merges after the \
 review loop as usual. The whole cut is exercised end to end before it \
 lands.\n\
 \n\
+The review gate is not the worker's to run: do your own checks - the \
+project's tests and its check command - then hand the PR over and \
+stop. Do not spawn reviewers or run a review pass \
+over your own work; the lead runs the gate, and a second one from \
+you is the same review bought twice. The lead reads every PR \
+substantively, and the approval anchors to the SHA it read.\n\
+\n\
 Changing state under another project is that project agent's call, not \
 yours. Before you edit a file, run a migration or push a branch outside \
 your own project root, hand the change to that project's agent and let \
@@ -1318,7 +1325,7 @@ fn build_options_with_callback(
 
     // Swap tests drive the real spawn_session against forge-sdk's mock
     // fixture; production always runs the `claude` on PATH.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     if let Some(path) = test_sdk_binary() {
         b = b.binary(path);
     }
@@ -1366,17 +1373,24 @@ fn build_options_with_callback(
     b.build()
 }
 
-#[cfg(test)]
-static TEST_SDK_BINARY: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+#[cfg(any(test, feature = "testing"))]
+static TEST_SDK_BINARY: parking_lot::RwLock<Option<String>> = parking_lot::RwLock::new(None);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 fn test_sdk_binary() -> Option<String> {
-    TEST_SDK_BINARY.read().expect("test binary lock").clone()
+    TEST_SDK_BINARY.read().clone()
 }
 
-#[cfg(test)]
-pub(crate) fn set_test_sdk_binary(path: Option<String>) {
-    *TEST_SDK_BINARY.write().expect("test binary lock") = path;
+/// Point every `claude` spawn this process makes at `path` instead of the
+/// real binary; `None` restores the real one.
+///
+/// Process-wide, so a test holding it must span the whole spawn it drives
+/// (see the mock-binary guard in this file's tests). For cross-crate
+/// fixtures - a workspace test that drives the real spawn path against a
+/// mock child.
+#[cfg(any(test, feature = "testing"))]
+pub fn set_test_sdk_binary(path: Option<String>) {
+    *TEST_SDK_BINARY.write() = path;
 }
 
 async fn run_permission_request(
@@ -3347,6 +3361,40 @@ mod tests {
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
                 .contains("The whole cut is exercised end to end before it lands"),
             "the end-to-end clause is pinned",
+        );
+    }
+
+    /// The review gate is the lead's to run, and a worker's own review
+    /// pass on its own PR is the same review bought twice. Every session
+    /// reads this block, so the role is named where it matters; pinned
+    /// with the hand-over stop and the SHA anchor, because the paragraph
+    /// reads as "review your own work carefully" without them.
+    #[test]
+    fn the_conduct_block_carries_the_worker_review_gate_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("The review gate is not the worker's to run"),
+            "the rule's handle is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "the project's tests and its check command - then hand the PR over and stop"
+            ),
+            "the worker's own checks and where its job ends are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Do not spawn reviewers or run a review pass over your own work"),
+            "the ban on the worker's second gate is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("a second one from you is the same review bought twice"),
+            "the reason the second gate is banned is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("the approval anchors to the SHA it read"),
+            "the SHA anchor is pinned",
         );
     }
 

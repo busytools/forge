@@ -291,6 +291,54 @@ describe('the column as the frames arrive', () => {
     expect(spent, 'the column reads its frames').toBeGreaterThan(0);
     expect(spent / FRAMES, "the column's reads per arriving counter").toBeLessThan(whole);
   });
+
+  /**
+   * The scans OUTSIDE the fold (#2326).
+   *
+   * #1643 took the whole-turn re-fold out of the live path, and the same shape
+   * survived beside it, each growing with the turn while the fold no longer
+   * did. Measured here at a 400-frame turn, per arriving counter: the store's
+   * duplicate check ~832 frame reads, the ask of whether the newest turn
+   * carries its ending ~405, and the agents list's reachability walk ~813 -
+   * against a whole fold of the turn at ~7,088.
+   *
+   * All three are per-turn lookups now, so what a counter costs is its own
+   * frame's worth.
+   */
+  it('does not walk the held turns for a counter that draws nothing', async () => {
+    const size = 400;
+    const frames = arriving(size);
+    const server = stub();
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.send({ kind: 'page', conversation: LEAD, turns: [], cursor: null });
+    await painted();
+    server.send(appended(frames[0]));
+    for (const frame of frames.slice(1)) server.send(appended(frame));
+    await painted();
+    reads = 0;
+    fold(frames, null, true, false);
+    const whole = reads;
+    const FRAMES = 12;
+    let spent = 0;
+    for (let at = 0; at < FRAMES; at += 1) {
+      const before = reads;
+      server.send(appended(counter(2000 + at)));
+      await painted();
+      spent += reads - before;
+    }
+    const perFrame = spent / FRAMES;
+    // A probe that recorded nothing would pass the bound below whatever the
+    // column did, so the column's own reads have to be there at all.
+    expect(perFrame, "the column's reads per arriving counter").toBeGreaterThan(0);
+    // A twentieth of a whole fold, which the counter's own worth sits well
+    // under and a single re-introduced walk of the turn - any one of the three
+    // the fix deleted - does not.
+    expect(perFrame, 'the counter costs the frame, not the turn').toBeLessThan(whole / 20);
+  });
 });
 
 describe('the carried fold draws what the whole fold draws', () => {

@@ -253,7 +253,10 @@ impl Tool for Update {
          label of a worker. Any session in the project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
-         it, and any other move off `waiting` drops the wait the row held. `verify: \"user\"` \
+         it, and a cancel of a row waiting on the user is the withdraw door once the ask has \
+         gone moot: it needs `detail`, the reason the ask is withdrawn, which lands on the row, \
+         and a cancel stating none - or only what the row already says - is refused. Any \
+         other move off `waiting` drops the wait the row held. `verify: \"user\"` \
          may be set here, but not taken away: a user-bound row keeps that gate until the user's \
          approve, so clearing it - or moving the row out of its epic - is refused rather than \
          taken as a way around the look. A task is \
@@ -508,9 +511,11 @@ impl Tool for Delete {
     fn description(&self) -> &'static str {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
-         that is over; nothing is archived. A row waiting on the user's own look is not a \
-         delete's to take - the board's approve completes it, and deleting it (or a tree holding \
-         it) is refused rather than taken as a way around the look. The task is named by its \
+         that is over; nothing is archived. A row waiting on the user is not a delete's to \
+         take - the board's answer or approve settles it, and deleting it (or a tree holding \
+         it) is refused rather than taken as a way around the ask. \
+         An ask that has gone moot is withdrawn, not removed: `tasks__update` cancels it with \
+         the reason it goes away, and the row records why. The task is named by its \
          full id or any unique \
          prefix of one; an exact id wins over any longer id that starts with it, and a prefix \
          matching more than one row is refused with the matching rows named. An unknown id is an \
@@ -646,7 +651,10 @@ impl Tool for Wait {
          (which routes to the user), dependency (another task: put its id in `on`), or resource \
          (an account, a CI run, a machine). Route a decision to the user only when the user \
          explicitly asked for a hold, or something is still genuinely ambiguous after the \
-         decision model, peer opinions and the team's own review. `detail` is the words. The row \
+         decision model, peer opinions and the team's own review. `detail` is the words. \
+         A wait on the user that has gone moot is withdrawn, not stranded: a lead cancels the \
+         row with the reason it goes away (`tasks__update`, `detail`), and the row records why. \
+         The row \
          and the `on` blocker are each named by a full id or any unique prefix of one; an exact \
          id wins over any longer id that starts with it, and a prefix matching more than one row \
          is refused with the matching rows named. The row must be yours. Refused for a row you \
@@ -1153,26 +1161,75 @@ mod tests {
         }
     }
 
-    /// The delete states the look gate the way the update does (#2251): a
-    /// caller reaching for the verb learns a parked row is not its to take,
-    /// so the refusal is never the first word about it. The update's own
-    /// look clause is the precedent - each description clause the verb
-    /// depends on carries a test that says it is missing.
+    /// The delete states the ask gate the way the update does (#2251): a
+    /// caller reaching for the verb learns a row waiting on the user - a
+    /// look or a question - is not its to take, so the refusal is never
+    /// the first word about it. The update's own look clause is the
+    /// precedent - each description clause the verb depends on carries a
+    /// test that fails when it goes missing.
     #[test]
-    fn the_delete_description_states_the_look_gate() {
+    fn the_delete_description_states_the_ask_gate() {
         let facade = MockTasksFacade::new().into_arc();
         let slot = lead_slot();
         let delete = Delete { facade, slot };
         let description = delete.description();
         for clause in [
-            "waiting on the user's own look is not a delete's to take",
-            "the board's approve completes it",
-            "refused rather than taken as a way around the look",
+            "A row waiting on the user is not a delete's to take",
+            "the board's answer or approve settles it",
+            "refused rather than taken as a way around the ask",
         ] {
             assert!(
                 description.contains(clause),
                 "tasks__delete does not state the rule ({clause}): {description}",
             );
+        }
+    }
+
+    /// The withdraw door is shipped text (#2340): each verb that reaches a
+    /// row waiting on the user states the door - the cancel carrying the
+    /// reason, which lands on the row - so a lead reads the way out from
+    /// the description it already has in hand, not from a refusal.
+    #[test]
+    fn the_task_descriptions_state_the_withdraw_door() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let update = Update { facade: facade.clone(), slot: slot.clone() };
+        let delete = Delete { facade: facade.clone(), slot: slot.clone() };
+        let wait = Wait { facade, slot };
+        for (name, description, clauses) in [
+            (
+                "tasks__update",
+                update.description(),
+                &[
+                    "a cancel of a row waiting on the user is the withdraw door once the ask has",
+                    "it needs `detail`, the reason the ask is withdrawn, which lands on the row",
+                    "and a cancel stating none - or only what the row already says - is refused",
+                ] as &[&str],
+            ),
+            (
+                "tasks__delete",
+                delete.description(),
+                &[
+                    "An ask that has gone moot is withdrawn, not removed",
+                    "the reason it goes away, and the row records why",
+                ],
+            ),
+            (
+                "tasks__wait",
+                wait.description(),
+                &[
+                    "A wait on the user that has gone moot is withdrawn, not stranded",
+                    "row with the reason it goes away (`tasks__update`, `detail`), and the row \
+                     records why",
+                ],
+            ),
+        ] {
+            for clause in clauses {
+                assert!(
+                    description.contains(clause),
+                    "{name} does not state the door ({clause}): {description}",
+                );
+            }
         }
     }
 

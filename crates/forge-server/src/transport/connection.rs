@@ -1477,18 +1477,17 @@ fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
 /// update becomes something a client hears; what stays is the seat's session
 /// facts.
 ///
-/// **The bound has to be the frame's, not the window's.** The window holds
-/// four thousand messages and no byte ceiling, and on the largest seat
-/// measured those weigh 382MB - past the 256MiB frame the client's socket
-/// carries (`MAX_FRAME_BYTES`, client/src-tauri/socket.rs), which is what a
-/// live 2.5GiB seat's resume did to a connection (#2150) when the whole read
-/// rode one `Connected`. What a client reads instead is a page, and a page is
-/// bounded by TURNS rather than bytes (twenty a subscribe, twenty a `more`):
-/// on that seat the newest twenty-turn window weighs 103MB and the heaviest
-/// 126MB (measured 2026-10-13), roughly 2x under the cap rather than orders
-/// under it, so a frame carrying any message list leans on that cap. A frame
-/// whose size does not depend on the conversation's size is the only one that
-/// holds whatever the seat weighs.
+/// **The bound has to be the frame's, not the window's.** A window is bounded
+/// by the ceilings a seat keeps it in (frames and bytes, the module beside
+/// the task), and those are a seat's own business: what a live 2.5GiB seat's
+/// resume did to a connection (#2150) was ride one `Connected` as a single
+/// 2.46GiB frame, refused at the 256MiB one the client's socket carries
+/// (`MAX_FRAME_BYTES`, client/src-tauri/socket.rs). What a client reads
+/// instead is a page, and a page is bounded by turns on top of whatever the
+/// window holds (twenty a subscribe, twenty a `more`), so its size leans on
+/// that frame cap rather than sitting orders under it. A frame whose size
+/// does not depend on the conversation's size is the only one that holds
+/// whatever the seat weighs.
 fn for_a_client(mut update: SessionUpdate) -> SessionUpdate {
     match &mut update {
         SessionUpdate::Connected { history, .. }

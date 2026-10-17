@@ -48,7 +48,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
   const connection: Connection = {
     subscribe: () => held(),
     unsubscribe: () => {},
-    refresh: () => {},
+    refresh: () => true,
     dispatch: (command) => {
       sent.push({ command });
       return null;

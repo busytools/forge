@@ -6659,6 +6659,28 @@ async fn an_image_one_byte_past_the_cap_is_refused_and_the_connection_survives()
     assert_eq!(settled(next, "the close").await, Ok(parts), "the connection survived the refusal");
 }
 
+/// How long one frame of the giant handover may take to cross: **the batch's
+/// own ceiling for an update it is holding**
+/// (`forge_server::transport::batch::FLUSH_CEILING`, the cap on how long a
+/// frame can sit in a batch before it goes out), plus the 5 s settle margin
+/// the `spawn_wait()` helpers in forge-agent's `forge_sdk_worker.rs` and
+/// forge-workspace's `spawn.rs` add the same way (`INIT_HANDSHAKE_TIMEOUT + 5
+/// s` - a hand-copied margin, not an importable one). A wait over real work
+/// must derive from the code's own budget for it (the load family, #2273),
+/// and this is that budget: the crossing measures tens of milliseconds, and
+/// what a loaded machine is free to eat is the settle margin.
+const FRAME_WAIT: std::time::Duration =
+    forge_server::transport::batch::FLUSH_CEILING.saturating_add(std::time::Duration::from_secs(5));
+
+/// The ceiling on the giant test's wait for the fold's own mark. The wait
+/// wakes on the mark, so it returns as soon as the fold is done however
+/// loaded the machine is; the 60 s is a wedge ceiling, set above the fold's
+/// measured weigh (seconds unloaded, tens under a starved process) so a fold
+/// that is merely slow does not false-red on it. Sized well under nextest's
+/// outer supervision (30 s slow-timeout, terminate after 4), so a wedged fold
+/// reds by the assertion's own name rather than the harness's kill.
+const SEED_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The frame carrying the next update satisfying `wants`, with the frames that
 /// are not it passed over for the reason [`snapshot_answering`] gives.
 ///
@@ -6670,8 +6692,9 @@ async fn frame_until(
     what: &str,
     mut wants: impl FnMut(&SessionUpdate) -> bool,
 ) -> String {
+    let wait = u64::try_from(FRAME_WAIT.as_millis()).expect("the frame wait fits in millis");
     for _ in 0..16 {
-        let text = next_text_within(socket, 5_000)
+        let text = next_text_within(socket, wait)
             .await
             .unwrap_or_else(|| panic!("waited for {what}, and the server said nothing"));
         let Ok(ServerMessage::Update { update, .. }) = serde_json::from_str::<ServerMessage>(&text)
@@ -6700,6 +6723,12 @@ fn a_giant_history(messages: usize, body: usize) -> Vec<forge_primitives::Messag
             .expect("a user frame")
         })
         .collect()
+}
+
+/// What `messages` weigh as the JSON a page carries them as - the test's own
+/// scales, so the ceiling is checked against the frames rather than itself.
+fn weigh(messages: &[forge_primitives::Message]) -> usize {
+    messages.iter().map(|message| serde_json::to_vec(message).expect("a frame encodes").len()).sum()
 }
 
 /// The seat's session facts, as every history-carrying update carries them.
@@ -6731,12 +6760,23 @@ fn a_current_model() -> forge_primitives::runtime::CurrentModel {
 /// so what crosses is the seat's session facts - a frame with no transcript
 /// in it cannot grow with the transcript, whatever the seat weighs.
 ///
-/// The history here is four megabytes, not two gigabytes: the property is
+/// The history here is ~90 MB rather than two gigabytes: the property is
 /// that the frame does NOT scale with it, and a bound asserted at a size a
-/// cap-sized frame would blow is the same property the live seat broke.
-#[tokio::test]
+/// cap-sized frame would blow is the same property the live seat broke. It is
+/// weighed, not counted, that binds here - 500 frames cross the byte ceiling
+/// while the count cap is nowhere near - so the cut the session task applies
+/// (`Window::tail_of`, the shipped wiring) and the window the transport seeds
+/// from it are both under test.
+///
+/// **The runtime is production's rather than the default's.** The transport's
+/// fold is a task of its own, and the single-threaded default would run it
+/// beside the connection: weighing the window (~80 MiB of JSON, measured
+/// ~1.4 s a reseed) then sits in the frame's own path, so a per-frame wait
+/// would cover the fold's work rather than the frame's crossing (~30 ms
+/// measured).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
-    let (url, fleet) = a_server().await;
+    let (url, fleet, state) = a_server_with_state().await;
     let mut socket = connect_unbounded(&url).await;
     let seat = lead_seat();
 
@@ -6755,17 +6795,25 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     assert_eq!(subject, Subject::Session(seat.clone()), "precondition: the client shows the seat");
 
     // The resume's handover as the session task builds it: the read is the
-    // whole transcript - past both the window's cap and its slack - and the
-    // update carries the newest window of it plus the cut the window left
-    // behind.
-    let read = a_giant_history(
-        forge_workspace::conversation_window::CONVERSATION_CAP
-            + forge_workspace::conversation_window::CONVERSATION_SLACK
-            + 1,
-        4 * 1024,
+    // whole transcript, the cut is the task's own (`Window::tail_of`, both
+    // ceilings), and the update carries the newest window of it plus the cut
+    // the window left behind.
+    let read = a_giant_history(500, 180 * 1024);
+    let (window, dropped) = forge_workspace::conversation_window::Window::tail_of(&read);
+    assert!(
+        window.len() < read.len(),
+        "precondition: the byte ceiling bound the window ({} of {} frames)",
+        window.len(),
+        read.len(),
     );
-    let dropped = read.len() - forge_workspace::conversation_window::CONVERSATION_CAP;
-    let window = read[dropped..].to_vec();
+    let window_bytes = weigh(window.messages());
+    assert!(
+        window_bytes
+            <= forge_workspace::conversation_window::CONVERSATION_CAP_BYTES
+                + forge_workspace::conversation_window::CONVERSATION_SLACK_BYTES,
+        "precondition: and the window is inside the ceiling's slack: {window_bytes} bytes",
+    );
+    let window = window.messages().to_vec();
     let session_id = SessionId::new("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45");
 
     fleet.emit(SessionUpdate::Connected {
@@ -6807,8 +6855,8 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     assert_transcript_free(&frame, "replacement");
 
     // A replay carries the task's own window rather than the read, and that
-    // window is still not a client's to receive: on the seat this was filed
-    // from it weighs 382MB, past the same cap.
+    // window is still not a client's to receive: a window is bounded by the
+    // ceilings a seat keeps it in, not by the frame a client carries.
     fleet.emit(SessionUpdate::HistoryReplayed {
         key: seat.clone(),
         history: window,
@@ -6821,6 +6869,32 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     )
     .await;
     assert_transcript_free(&frame, "replay");
+
+    // The copy the transport KEEPS is the seat's cost, and it is inside the
+    // same ceiling the update crossed under - the shipped wiring, seed and
+    // cut together, on a shape where the count cap has nothing to say.
+    //
+    // **The wait is the fold's own mark**: the handover's two epoch frames
+    // reset the seat's watermark and the replay that follows marks it, so
+    // waking on `1` is waking on the fold having taken all three (`SEED_WAIT`
+    // only bounds a fold that never marks at all).
+    assert!(
+        state.conversations.await_consumed(&seat, 1, SEED_WAIT).await,
+        "waited for the fold to take the handover, and it never marked it",
+    );
+    {
+        let held = state.conversations.get(&seat).expect("the handover holds the seat");
+        let seat_held = held.lock();
+        assert_eq!(seat_held.dropped(), dropped, "the seat's floor is the cut it rode in with");
+        assert!(
+            weigh(seat_held.messages())
+                <= forge_workspace::conversation_window::CONVERSATION_CAP_BYTES
+                    + forge_workspace::conversation_window::CONVERSATION_SLACK_BYTES,
+            "the held copy is inside the byte ceiling's slack: {} bytes over {} frames",
+            weigh(seat_held.messages()),
+            seat_held.messages().len(),
+        );
+    }
 
     // And the connection is still there: another read is answered on it,
     // which the client's own refusal of the frame took with it live.

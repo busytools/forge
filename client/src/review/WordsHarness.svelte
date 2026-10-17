@@ -10,7 +10,12 @@
    * Test support rather than a page: nothing the app ships imports this file.
    */
   import { DEFAULT_AXES } from '../session/wire';
-  import { takePhase, type Dictation, type TakeLine } from '../composer/dictate.svelte';
+  import {
+    takePhase,
+    takeSilenceLine,
+    type Dictation,
+    type TakeLine,
+  } from '../composer/dictate.svelte';
   import type { ComposerConnection } from '../composer/view';
   import type { Take } from '../composer/wire';
   import type { SessionSlot } from '../wire/types';
@@ -49,6 +54,7 @@
     busy: false,
     line: null,
     phase: null,
+    silent: null,
     panel: false,
     take: null,
     wire: null,
@@ -61,6 +67,7 @@
     box.take = take;
     box.wire = dictate.take === null ? null : dictate.take.wire;
     box.phase = mine ? takePhase(dictate, take, slot) : null;
+    box.silent = mine ? (takeSilenceLine(dictate, slot)?.text ?? null) : null;
     box.panel = dictate.panel && mypanel;
   });
 

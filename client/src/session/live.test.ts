@@ -1244,6 +1244,7 @@ function drivable(refusedAtFirst = false): Driveable {
     },
     refresh: () => {
       reads += 1;
+      return true;
     },
     dispatch: () => {
       throw new Error('this page dispatched a command the case did not expect');
@@ -2268,6 +2269,103 @@ describe('the read, and the answer a frame has outrun', () => {
       page.read().wire?.conversation.turns,
       'a stale answer reached the record past the cap',
     ).toHaveLength(4);
+    page.stop();
+  });
+
+  /**
+   * **The same occupant framed past the cap still drops, on a named id.**
+   * The case above runs with no occupant named on either side, where the
+   * record and the answer agree trivially - and the id is the fix's own
+   * operand (#2276), so the arm that compares two REAL ids has to be pinned
+   * too: same seat, same answer, still the frames' record.
+   */
+  it('keeps the frames record at the cap when the answer names the same occupant', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'one', seq: 1 },
+      ),
+    );
+
+    for (let round = 1; round <= 4; round += 1) {
+      page.land(
+        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
+      );
+      page.land(
+        snapshotOf(
+          LEAD,
+          { conversation: { turns: [], compaction_count: 0 } },
+          { epoch: 'one', seq: 1 },
+        ),
+      );
+    }
+    paint();
+
+    expect(page.reads(), 'the cap never stopped the re-ask').toBe(3);
+    expect(
+      page.read().wire?.conversation.turns,
+      "the same occupant's answer was taken past the cap, so the frames' record was rolled back",
+    ).toHaveLength(4);
+    page.stop();
+  });
+
+  /**
+   * **The drop's premise is a record of the answer's OWN epoch, and a swap's
+   * read is not one** (#2276). A wipe starts the count again without clearing
+   * the record, so the new epoch's frames merge onto the PREVIOUS occupant's
+   * conversation - and the answer that would have replaced it is exactly what
+   * the cap drops, leaving the old rows standing until the next clean read (a
+   * reconnect, another swap, a quiet round trip). Same-epoch seats keep the
+   * drop: there the frames' record really is the record.
+   */
+  it('adopts the new occupant past the cap, rather than keeping the previous one', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    // The seat's own occupant, with a row of its conversation.
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'old', seq: 1 },
+      ),
+    );
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('before', 'u0') } }, 1));
+    paint();
+    expect(spoken(page), 'precondition: the old occupant has a row of its own').toEqual(['before']);
+
+    // The seat takes a new occupant: the page asks for the whole record.
+    page.land(frameOf(occupant('new'), 2));
+    expect(page.reads(), 'precondition: the swap asked for a whole record').toBe(1);
+
+    // The live loop the cap's own case runs, on the swapped seat: one frame,
+    // then the answer, four rounds, the answer every time behind the frames.
+    // The answers carry a record of their own, so "the new occupant's record
+    // was adopted" cannot read alike with "the old one was left standing".
+    for (let round = 1; round <= 4; round += 1) {
+      page.land(
+        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
+      );
+      page.land(
+        snapshotOf(
+          LEAD,
+          { conversation: { turns: [], compaction_count: 0 }, work: { branch: 'new' } },
+          { epoch: 'new', seq: 1 },
+        ),
+      );
+    }
+    paint();
+
+    expect(
+      page.read().wire?.work.branch,
+      'the swap answer was dropped, so the new occupant record was never adopted',
+    ).toBe('new');
+    expect(
+      spoken(page),
+      "the previous occupant's rows stood where the new record's belong",
+    ).toEqual([]);
     page.stop();
   });
 

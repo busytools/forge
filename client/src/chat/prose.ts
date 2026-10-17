@@ -7,7 +7,9 @@
  * for one reason that matters here: raw HTML is OFF by default, so a session's
  * prose can quote a page, a log or a file from someone else's repository and
  * the page will not run what it quotes. The Rust renderer this replaces did
- * the same thing by hand, escaping every `<` before parsing.
+ * the same thing by hand, escaping every `<` before parsing. An image is the
+ * module's own tag rather than quoted HTML, so `withPanels` draws it as a row
+ * naming it: the page does not fetch a host a message names either.
  *
  * `linkify` is off too: a URL in prose is already readable as text, and
  * turning every bare domain into a link is a change to the text rather than a
@@ -52,6 +54,8 @@ const PROMPT = new MarkdownIt({
  * nothing reads.
  */
 function withPanels(module: Module): Module {
+  // The module's own escaper, so a rule here escapes what the module escapes.
+  const { escapeHtml } = module.utils;
   const fence: RendererRule = (tokens, index) => {
     const token = tokens[index];
     if (token === undefined) return '';
@@ -67,8 +71,26 @@ function withPanels(module: Module): Module {
     const token = tokens[index];
     return token === undefined ? '' : codePanel(null, null, token.content);
   };
+  /**
+   * An image, named rather than fetched.
+   *
+   * The module's own rule draws an `<img>`, and the page would then request
+   * whatever host the message named. A message is text someone else wrote, so
+   * the page makes no request for it: the row names the picture and prints its
+   * source as text, which leaves the reader something to read and to copy.
+   */
+  const image: RendererRule = (tokens, index, options, env, renderer) => {
+    const token = tokens[index];
+    if (token === undefined) return '';
+    const alt = escapeHtml(renderer.renderInlineAsText(token.children ?? [], options, env));
+    const src = escapeHtml(String(token.attrGet('src') ?? ''));
+    const name = alt === '' ? src : alt;
+    const source = alt === '' ? '' : `<span class="n">${src}</span>`;
+    return `<span class="attrow"><svg class="ic gl"><use href="#i-read"></use></svg><span>${name}</span>${source}</span>`;
+  };
   module.renderer.rules.fence = fence;
   module.renderer.rules.code_block = indented;
+  module.renderer.rules.image = image;
   return module;
 }
 

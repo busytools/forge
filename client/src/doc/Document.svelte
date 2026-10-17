@@ -33,6 +33,7 @@
     openCapture,
     takeCounts,
     takePhase,
+    takeSilenceLine,
     type TakeLine,
   } from '../composer/dictate.svelte';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from '../composer/dictation';
@@ -275,6 +276,8 @@
 
   const rowPhase = $derived(takePhase(dictate, composer.take, slot));
   const rowWire = $derived(takeCounts(dictate, slot));
+  /** What the row says when the device is feeding this page's capture nothing. */
+  const rowSilent = $derived(takeSilenceLine(dictate, slot)?.text ?? null);
 
   /** What dictation means to this page, in the shape the shared boxes read. */
   const voice: Voice = {
@@ -871,6 +874,7 @@
                     dictate.act('cancel');
                   }}
                   spread
+                  silent={rowSilent}
                 />
               {:else}
                 <Field

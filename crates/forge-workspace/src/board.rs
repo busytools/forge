@@ -312,8 +312,8 @@ mod tests {
     use super::*;
     use crate::SessionSlot;
     use forge_primitives::tasks::{
-        By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, TaskTransition, Waiting,
-        WaitingKind,
+        By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, TaskTransition, Verify,
+        Waiting, WaitingKind,
     };
     use tempfile::tempdir;
 
@@ -605,6 +605,48 @@ mod tests {
 
         let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
         assert!(row(&rows, "t-1").marks.waiting_too_long, "the wait's own age is the signal");
+    }
+
+    /// A withdrawn park leaves the waiting-on-you presentation (#2340):
+    /// the fleet's count drops and the row reads canceled, its reason on
+    /// the record.
+    #[test]
+    fn a_withdrawn_park_leaves_the_waiting_presentation() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut row = task("t-1", TaskStatus::Pending);
+        row.verify = Some(Verify::User);
+        ws.seed_test_task(row);
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |t| {
+            t.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        let on_you = |ws: &Workspace| {
+            ws.fleet_rows()
+                .into_iter()
+                .find(|r| r.project == PROJECT)
+                .expect("the project's row")
+                .waiting_on_user
+        };
+        assert_eq!(on_you(&ws), 1, "precondition: the park presents as waiting on the user");
+
+        let withdrawn = ws
+            .update_task(
+                PROJECT,
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", PROJECT)),
+                |t| {
+                    t.status = TaskStatus::Canceled;
+                    t.detail = Some("moot".to_owned());
+                },
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(withdrawn.status, TaskStatus::Canceled, "the row shows canceled");
+        assert_eq!(on_you(&ws), 0, "and it leaves the waiting-on-you presentation");
+        assert_eq!(withdrawn.detail.as_deref(), Some("moot"), "its reason travels on the record");
     }
 
     #[test]

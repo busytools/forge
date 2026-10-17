@@ -4,6 +4,7 @@ import { cronNames } from './cron-names.svelte';
 import { familyOf } from './families';
 import { runningMs } from './report';
 import {
+  carriedValue,
   fold,
   type HookLeaf,
   type HookRun,
@@ -1955,6 +1956,27 @@ describe('one turn folded into the units a view draws', () => {
     ]);
   });
 
+  it('states the size a read turn measured for an attachment', () => {
+    // A turn read off the transcript carries no payload - the page draws no
+    // bytes - and the read path records the size it measured instead, under
+    // forge's own name. The row a read turn draws states the size the live
+    // one does.
+    const read = fold([
+      heard([
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png' },
+          forge_bytes: 180207,
+        },
+      ]),
+    ]);
+
+    expect(
+      read[0]?.kind === 'user' ? read[0].files : [],
+      'the row states the size the read path measured for it',
+    ).toEqual([{ kind: 'image', mime: 'image/png', bytes: 180207 }]);
+  });
+
   it('draws what a user turn attached', () => {
     // The live capture's own frame (user_message_blocks.jsonl, the scenario
     // that sends a one-pixel PNG with its words): a user turn's attachment has
@@ -2834,6 +2856,55 @@ describe('one turn folded into the units a view draws', () => {
 
     expect(kinds(units)).toEqual(['user', 'leaves']);
     expect(units[0]?.kind === 'user' ? units[0].text : null).toBe('run the gate');
+  });
+});
+
+describe('a value carried off a turn, as the turn grows', () => {
+  /**
+   * The carry is keyed on the frame that opened the turn and grows only where
+   * the array did: answered off a turn replaced wholesale, it would report
+   * frames that array does not hold.
+   */
+  it('extends a carry by appends and rebuilds it on anything else', () => {
+    const ids = (turn: { messages: readonly unknown[] }): string[] => [
+      ...carriedValue(
+        turn,
+        'test',
+        () => new Set<string>(),
+        (held, frame) => {
+          const id = (frame as { uuid?: unknown } | null)?.uuid;
+          if (typeof id === 'string') held.add(id);
+        },
+      ),
+    ];
+    const first = heard([text('one')]);
+    const second = heard([text('two')], { uuid: 'u2' });
+    const third = heard([text('three')], { uuid: 'u3' });
+    const turn = { messages: [first] as readonly unknown[] };
+    expect(ids(turn), 'built from the frames it has').toEqual(['u1']);
+    turn.messages = [first, second];
+    expect(ids(turn), 'and the frames it gained are folded in').toEqual(['u1', 'u2']);
+    turn.messages = [first, second, third];
+    expect(ids(turn), 'however many arrive').toEqual(['u1', 'u2', 'u3']);
+    // The same opening frame and a different one after it: not the array this
+    // carries, so the answer is read off the array itself.
+    expect(ids({ messages: [first, third] }), 'a replacement is read afresh').toEqual(['u1', 'u3']);
+    // And the shape a seam alone would wave through: as long as the array it
+    // carries, opening alike, ending alike, different in between. Answered
+    // off that array, a replacement's frames read as the ones they replaced -
+    // which for the store's own reader is a row drawn twice, or dropped.
+    const opened = heard([text('one')], { uuid: 'o1' });
+    const tail = heard([text('three')], { uuid: 'o3' });
+    const revised = heard([text('two, revised')], { uuid: 'u9' });
+    expect(ids({ messages: [opened, second, tail] }), 'the array it carries').toEqual([
+      'o1',
+      'u2',
+      'o3',
+    ]);
+    expect(
+      ids({ messages: [opened, revised, tail] }),
+      'a same-length array is answered off itself, seam or no',
+    ).toEqual(['o1', 'u9', 'o3']);
   });
 });
 

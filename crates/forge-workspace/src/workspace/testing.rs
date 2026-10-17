@@ -441,6 +441,7 @@ impl Workspace {
             test_read_aloud_dir: Mutex::new(None),
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
+            session_teardowns: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),

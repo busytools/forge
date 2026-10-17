@@ -14,26 +14,37 @@ use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::{Command, SessionChoice, WorkerSpawnReply};
 use crate::workspace::{ResumeTarget, Workspace};
 
-/// Synchronous decision from `deliver_worker_prompt` - whether the
-/// target was found (delivered) or unknown (label has no live
-/// match).
+/// A delivery's own answer, and it has one shape: the prompt was accepted
+/// (handed to the target's session queue, held for its turn end, or parked
+/// for its connect). A prompt that reached no session is an error instead,
+/// so "accepted" is the whole of what this claims.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkerTargetStatus {
     Delivered,
 }
 
-/// Synchronous error from `deliver_worker_prompt`. An async failure - a
-/// worker that never finishes connecting - leaves a parked message that
+/// Error from `deliver_worker_prompt`. A prompt not yet taken is not one:
+/// a worker that never finishes connecting leaves a parked message that
 /// `Workspace::expire_parked_for_slot` acknowledges back to its sender.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerDeliverError {
-    /// No live worker in `project_key` matches `label`.
+    /// No worker by `label` in `project_key` at all.
     UnknownLabel { project_key: String, label: String },
+    /// The label's row exists but is not live - it crashed or was closed,
+    /// and the row is kept so the label can be respawned. Distinct from
+    /// [`Self::UnknownLabel`], which claims the label was never there.
+    NotLive { project_key: String, label: String },
+    /// The delivery did not happen: the handler found nothing that could
+    /// take the prompt, the workspace channel failed, or the handler
+    /// dropped its reply, so whether anything took the message is
+    /// unknown. Distinct from [`Self::UnknownLabel`], which claims there
+    /// is no live match.
+    DispatchFailed { message: String },
 }
 
-/// Synchronous error from `deliver_prompt_to_lead`. The caller wants
-/// to send a prompt back to its lead via the reserved `"lead"`
-/// addressing keyword.
+/// Error from `deliver_prompt_to_lead`. The caller wants to send a
+/// prompt back to its lead via the reserved `"lead"` addressing
+/// keyword.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerLeadDeliverError {
     /// Caller resolves to no known session (defensive - should not
@@ -46,6 +57,9 @@ pub enum WorkerLeadDeliverError {
     /// in the pool (lead session ended). The worker can't reach its
     /// lead anymore.
     LeadGone,
+    /// The delivery did not happen (see
+    /// [`WorkerDeliverError::DispatchFailed`]).
+    DispatchFailed { message: String },
 }
 
 /// The label reserved for a project's own agent. A caller addresses it
@@ -338,11 +352,12 @@ pub trait WorkerFacade: Send + Sync {
     /// project.
     fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity>;
 
-    /// Dispatch a worker-bound wrapped prompt. Returns immediately
-    /// with `Delivered` (target was in `live_workers` and the
-    /// `Command::DeliverWorkerPrompt` was dispatched) or
-    /// `UnknownLabel` (no live match).
-    fn deliver_worker_prompt(
+    /// Dispatch a worker-bound wrapped prompt. `Delivered` means the
+    /// prompt was accepted - handed to the target's session queue, held
+    /// for its turn end, or parked for its connect - which is the whole
+    /// claim the sender's ack makes; anything that reached no session is
+    /// an error. `UnknownLabel` when no live worker matches.
+    async fn deliver_worker_prompt(
         &self,
         caller: &SessionSlot,
         target_label: &str,
@@ -355,7 +370,7 @@ pub trait WorkerFacade: Send + Sync {
     /// resolved from it. Mirrors `deliver_worker_prompt` otherwise:
     /// an unknown label is an error and a sleeping target is not
     /// auto-spawned.
-    fn deliver_worker_prompt_to_project(
+    async fn deliver_worker_prompt_to_project(
         &self,
         caller: &SessionSlot,
         org: &str,
@@ -366,15 +381,56 @@ pub trait WorkerFacade: Send + Sync {
 
     /// Dispatch a wrapped prompt from a worker back to its lead.
     /// Caller MUST be a worker. The target lead is resolved from the
-    /// caller's `WorkerEntry::spawned_by_session_id`. Returns
-    /// `Delivered` (`Command::DeliverWorkerPromptToLead` dispatched)
-    /// or one of the `WorkerLeadDeliverError` variants. Same
-    /// wire-shape contract as `deliver_worker_prompt`.
-    fn deliver_prompt_to_lead(
+    /// caller's `WorkerEntry::spawned_by_session_id`. Same
+    /// wire-shape contract as `deliver_worker_prompt`: `Delivered`
+    /// means the lead's session accepted it, and one the session could
+    /// not take is an error.
+    async fn deliver_prompt_to_lead(
         &self,
         caller: &SessionSlot,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError>;
+}
+
+/// The refusal for a label that cannot take a delivery: `None` when a live
+/// worker matches, else the error naming which absence this is - a label
+/// that is not in the project's pool at all, or a row kept because the
+/// worker crashed. The two read very differently to the sender: one says
+/// "check the label", the other "respawn it".
+fn refused_delivery(
+    workers: &[crate::mcp::workers::types::WorkerEntry],
+    project_key: &str,
+    label: &str,
+) -> Option<WorkerDeliverError> {
+    if crate::mcp::workers::types::live_worker_with_label(workers, label).is_some() {
+        return None;
+    }
+    if workers.iter().any(|w| w.label == label) {
+        return Some(WorkerDeliverError::NotLive {
+            project_key: project_key.to_owned(),
+            label: label.to_owned(),
+        });
+    }
+    Some(WorkerDeliverError::UnknownLabel {
+        project_key: project_key.to_owned(),
+        label: label.to_owned(),
+    })
+}
+
+/// Await a delivery's acceptance answer, mapping it to the caller's
+/// ack. The handler answers `Ok(())` once the prompt was accepted and
+/// `Err(reason)` when nothing could take it, so this is the one place
+/// the ack is decided.
+async fn await_delivery(
+    rx: tokio::sync::oneshot::Receiver<Result<(), String>>,
+) -> Result<WorkerTargetStatus, WorkerDeliverError> {
+    match rx.await {
+        Ok(Ok(())) => Ok(WorkerTargetStatus::Delivered),
+        Ok(Err(message)) => Err(WorkerDeliverError::DispatchFailed { message }),
+        Err(_) => Err(WorkerDeliverError::DispatchFailed {
+            message: "the delivery handler dropped its reply".to_owned(),
+        }),
+    }
 }
 
 /// Validation chain shared by the production and mock `spawn_worker`
@@ -792,7 +848,7 @@ impl WorkerFacade for ProdWorkerFacade {
         })
     }
 
-    fn deliver_worker_prompt(
+    async fn deliver_worker_prompt(
         &self,
         caller: &SessionSlot,
         target_label: &str,
@@ -808,29 +864,32 @@ impl WorkerFacade for ProdWorkerFacade {
                 label: target_label.into(),
             });
         };
-        let known = ws.list_live_workers(&cp.project_key).iter().any(|w| w.label == target_label);
-        if !known {
-            return Err(WorkerDeliverError::UnknownLabel {
-                project_key: cp.project_key.as_str().into(),
-                label: target_label.into(),
-            });
+        // A crashed worker keeps its row (Failed) so the label stays
+        // respawnable; that row is not addressable, and the refusal says so
+        // rather than acking a prompt no session can take.
+        if let Some(refusal) = refused_delivery(
+            &ws.list_live_workers(&cp.project_key),
+            cp.project_key.as_str(),
+            target_label,
+        ) {
+            return Err(refusal);
         }
+        let (tx, rx) = tokio::sync::oneshot::channel();
         if let Err(err) = ws.dispatch(Command::DeliverWorkerPrompt {
             caller: caller.clone(),
             project_key: cp.project_key,
             target_label: target_label.into(),
             wrapped,
+            respond: Some(tx),
         }) {
-            tracing::warn!(
-                target: "forge_workspace::mcp::workers",
-                error = ?err,
-                "Command::DeliverWorkerPrompt dispatch failed"
-            );
+            return Err(WorkerDeliverError::DispatchFailed {
+                message: format!("dispatch failed: {err:?}"),
+            });
         }
-        Ok(WorkerTargetStatus::Delivered)
+        await_delivery(rx).await
     }
 
-    fn deliver_worker_prompt_to_project(
+    async fn deliver_worker_prompt_to_project(
         &self,
         caller: &SessionSlot,
         org: &str,
@@ -849,26 +908,27 @@ impl WorkerFacade for ProdWorkerFacade {
         else {
             return Err(unknown());
         };
-        let known = ws.list_live_workers(&view.key).iter().any(|w| w.label == target_label);
-        if !known {
-            return Err(unknown());
+        if let Some(refusal) =
+            refused_delivery(&ws.list_live_workers(&view.key), project, target_label)
+        {
+            return Err(refusal);
         }
+        let (tx, rx) = tokio::sync::oneshot::channel();
         if let Err(err) = ws.dispatch(Command::DeliverWorkerPrompt {
             caller: caller.clone(),
             project_key: view.key,
             target_label: target_label.into(),
             wrapped,
+            respond: Some(tx),
         }) {
-            tracing::warn!(
-                target: "forge_workspace::mcp::workers",
-                error = ?err,
-                "Command::DeliverWorkerPrompt dispatch failed"
-            );
+            return Err(WorkerDeliverError::DispatchFailed {
+                message: format!("dispatch failed: {err:?}"),
+            });
         }
-        Ok(WorkerTargetStatus::Delivered)
+        await_delivery(rx).await
     }
 
-    fn deliver_prompt_to_lead(
+    async fn deliver_prompt_to_lead(
         &self,
         caller: &SessionSlot,
         wrapped: WrappedPrompt,
@@ -894,18 +954,24 @@ impl WorkerFacade for ProdWorkerFacade {
         if !cx.lead_running {
             return Err(WorkerLeadDeliverError::LeadGone);
         }
+        let (tx, rx) = tokio::sync::oneshot::channel();
         if let Err(err) = ws.dispatch(Command::DeliverWorkerPromptToLead {
             caller: caller.clone(),
             target_lead_key,
             wrapped,
+            respond: Some(tx),
         }) {
-            tracing::warn!(
-                target: "forge_workspace::mcp::workers",
-                error = ?err,
-                "Command::DeliverWorkerPromptToLead dispatch failed"
-            );
+            return Err(WorkerLeadDeliverError::DispatchFailed {
+                message: format!("dispatch failed: {err:?}"),
+            });
         }
-        Ok(WorkerTargetStatus::Delivered)
+        match rx.await {
+            Ok(Ok(())) => Ok(WorkerTargetStatus::Delivered),
+            Ok(Err(message)) => Err(WorkerLeadDeliverError::DispatchFailed { message }),
+            Err(_) => Err(WorkerLeadDeliverError::DispatchFailed {
+                message: "the delivery handler dropped its reply".to_owned(),
+            }),
+        }
     }
 }
 
@@ -1100,7 +1166,7 @@ impl WorkerFacade for MockWorkerFacade {
         }))
     }
 
-    fn deliver_worker_prompt(
+    async fn deliver_worker_prompt(
         &self,
         caller: &SessionSlot,
         target_label: &str,
@@ -1125,7 +1191,7 @@ impl WorkerFacade for MockWorkerFacade {
         Ok(WorkerTargetStatus::Delivered)
     }
 
-    fn deliver_worker_prompt_to_project(
+    async fn deliver_worker_prompt_to_project(
         &self,
         caller: &SessionSlot,
         org: &str,
@@ -1155,7 +1221,7 @@ impl WorkerFacade for MockWorkerFacade {
         Ok(WorkerTargetStatus::Delivered)
     }
 
-    fn deliver_prompt_to_lead(
+    async fn deliver_prompt_to_lead(
         &self,
         caller: &SessionSlot,
         wrapped: WrappedPrompt,
@@ -1354,8 +1420,8 @@ mod mock_tests {
         assert!(crate::mcp::workers::types::live_worker_with_label(&running, "tester").is_none());
     }
 
-    #[test]
-    fn mock_deliver_unknown_label_errors() {
+    #[tokio::test]
+    async fn mock_deliver_unknown_label_errors() {
         let mock = MockWorkerFacade::new();
         let caller = SessionSlot::from_str_for_test("k1");
         mock.callers.lock().insert(
@@ -1369,7 +1435,7 @@ mod mock_tests {
             sender_org: "Personal".into(),
             body: "hi".into(),
         };
-        let res = mock.deliver_worker_prompt(&caller, "missing", wrapped);
+        let res = mock.deliver_worker_prompt(&caller, "missing", wrapped).await;
         assert!(matches!(res, Err(WorkerDeliverError::UnknownLabel { .. })));
     }
 
@@ -1472,6 +1538,110 @@ mod prod_list_workers_tests {
             facade.list_workers(&caller)[0].activity,
             Some(SessionLifecycleState::Running),
             "and it must be re-derived per call, not cached at spawn",
+        );
+    }
+}
+
+#[cfg(test)]
+mod deliver_tests {
+    use super::*;
+    use crate::mcp::peers::types::{MessageId, WrappedKind};
+    use crate::mcp::workers::types::WorkerEntry;
+    use forge_primitives::WorkerLiveness;
+    use std::time::SystemTime;
+
+    fn entry(label: &str, status: WorkerLiveness, session_id: Option<&str>) -> WorkerEntry {
+        WorkerEntry {
+            label: label.to_owned(),
+            charter: "test charter".into(),
+            slot: SessionSlot::worker("TestOrg", "forge", label),
+            session_id: session_id.map(forge_primitives::SessionId::new),
+            status,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::lead("TestOrg", "forge"),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            cwd: None,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    fn message() -> WrappedPrompt {
+        WrappedPrompt {
+            id: MessageId::mint(),
+            kind: WrappedKind::Message,
+            sender_name: "forge".to_owned(),
+            sender_org: "Busytools".to_owned(),
+            body: "status?".to_owned(),
+        }
+    }
+
+    /// A live worker whose seat has no session behind it: the prompt reaches
+    /// nothing, so the ack must say so. This is the overclaim the issue names -
+    /// `Delivered` for a delivery that never left forge. The entry is
+    /// Running with a session id, so the delivery is not parked or held: it
+    /// goes to the session dispatch, which finds no session task.
+    #[tokio::test]
+    async fn a_prompt_the_session_cannot_take_is_not_acked_as_delivered() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/forge");
+        let project = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project present")
+            .key;
+        let slot = SessionSlot::worker("TestOrg", "forge", "implementer");
+        ws.insert_live_worker(
+            &project,
+            entry("implementer", WorkerLiveness::Running, Some("live")),
+        );
+        // A connected domain and no session task: the seat looks reachable
+        // and nothing can receive the prompt.
+        ws.mark_session_connected_for_test(&slot, "live");
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let caller = SessionSlot::lead("TestOrg", "forge");
+        let res = facade.deliver_worker_prompt(&caller, "implementer", message()).await;
+        assert!(
+            matches!(res, Err(WorkerDeliverError::DispatchFailed { .. })),
+            "a prompt no session took must not be acked as delivered; got {res:?}",
+        );
+    }
+
+    /// A crashed worker keeps its row (Failed) so its label can be respawned
+    /// and the crash reason stays visible. Addressing that row is addressing
+    /// a seat with no session: the prompt can never reach a live worker, so
+    /// the ack must refuse it rather than say "sent" - and the refusal names
+    /// the dead row, not a label that was never there.
+    #[tokio::test]
+    async fn a_failed_workers_label_is_refused_as_not_live() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/forge");
+        let project = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project present")
+            .key;
+        ws.insert_live_worker(&project, entry("implementer", WorkerLiveness::Failed, Some("dead")));
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let caller = SessionSlot::lead("TestOrg", "forge");
+        let res = facade.deliver_worker_prompt(&caller, "implementer", message()).await;
+        assert!(
+            matches!(res, Err(WorkerDeliverError::NotLive { .. })),
+            "a Failed worker is not a live worker; the delivery must refuse it rather \
+             than ack it as sent, and say the row is dead; got {res:?}",
+        );
+
+        // The control: a label with no entry at all is the other refusal, so
+        // the two absences cannot collapse into one message.
+        let ghost = facade.deliver_worker_prompt(&caller, "ghost", message()).await;
+        assert!(
+            matches!(ghost, Err(WorkerDeliverError::UnknownLabel { .. })),
+            "a label with no row at all is UnknownLabel, not NotLive; got {ghost:?}",
         );
     }
 }

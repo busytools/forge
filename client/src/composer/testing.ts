@@ -284,7 +284,7 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
       // catalogue, so the subject answers with the empty store's own read.
       subscribe: (what) => stores.open(what),
       unsubscribe: () => {},
-      refresh: () => {},
+      refresh: () => true,
     },
     say(message) {
       for (const fn of listeners) fn(message);

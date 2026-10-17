@@ -36,7 +36,7 @@ fn stack_paths(dir: &Path) -> StackPaths {
 /// died leaves.
 async fn a_browser_with_no_client(profile: &Path) -> Launched {
     let binary = chromium::browser_binary().expect("the machine's own browser");
-    let active = chromium::launch(&binary, profile, None).await.expect("the browser comes up");
+    let active = chromium::launch(&binary, profile, &[]).await.expect("the browser comes up");
     Launched::new(active.pid, active.port, profile.to_path_buf())
 }
 

@@ -45,7 +45,7 @@ impl AgentDispatcher {
     /// worker address in another project, which the peers engine
     /// cannot serve because it resolves a project to that project's
     /// own agent.
-    pub fn deliver(
+    pub async fn deliver(
         &self,
         caller: &SessionSlot,
         target: &AgentTarget,
@@ -53,7 +53,7 @@ impl AgentDispatcher {
     ) -> Result<(), String> {
         let own_project = target.org() == caller.org() && target.project() == caller.project();
         if own_project {
-            return self.deliver_within_own_project(caller, target, wrapped);
+            return self.deliver_within_own_project(caller, target, wrapped).await;
         }
         if target.label() == LEAD_LABEL {
             return match self.peers.deliver_peer_prompt(caller, target.project(), wrapped) {
@@ -65,47 +65,63 @@ impl AgentDispatcher {
                 )),
             };
         }
-        match self.workers.deliver_worker_prompt_to_project(
-            caller,
-            target.org(),
-            target.project(),
-            target.label(),
-            wrapped,
-        ) {
+        match self
+            .workers
+            .deliver_worker_prompt_to_project(
+                caller,
+                target.org(),
+                target.project(),
+                target.label(),
+                wrapped,
+            )
+            .await
+        {
             Ok(_) => Ok(()),
-            Err(err) => Err(unknown_label_message(target, &err)),
+            Err(err) => Err(worker_deliver_message(target, &err)),
         }
     }
 
-    fn deliver_within_own_project(
+    async fn deliver_within_own_project(
         &self,
         caller: &SessionSlot,
         target: &AgentTarget,
         wrapped: WrappedPrompt,
     ) -> Result<(), String> {
         if target.label() == LEAD_LABEL {
-            return match self.workers.deliver_prompt_to_lead(caller, wrapped) {
+            return match self.workers.deliver_prompt_to_lead(caller, wrapped).await {
                 Ok(_) => Ok(()),
                 Err(err) => Err(lead_deliver_message(&err)),
             };
         }
-        match self.workers.deliver_worker_prompt(caller, target.label(), wrapped) {
+        match self.workers.deliver_worker_prompt(caller, target.label(), wrapped).await {
             Ok(_) => Ok(()),
-            Err(err) => Err(unknown_label_message(target, &err)),
+            Err(err) => Err(worker_deliver_message(target, &err)),
         }
     }
 }
 
-fn unknown_label_message(target: &AgentTarget, err: &WorkerDeliverError) -> String {
-    let WorkerDeliverError::UnknownLabel { project_key, label } = err;
-    format!(
-        "worker '{label}' is not available (no live worker by that label in '{project_key}', \
-         the project you addressed as '{}'/'{}'). Call agents__list for your own project's \
-         pool; a worker in another project is addressed by whatever label that project's \
-         own agent gives you.",
-        target.org(),
-        target.project(),
-    )
+fn worker_deliver_message(target: &AgentTarget, err: &WorkerDeliverError) -> String {
+    match err {
+        WorkerDeliverError::UnknownLabel { project_key, label } => format!(
+            "worker '{label}' is not available (no live worker by that label in '{project_key}', \
+             the project you addressed as '{}'/'{}'). Call agents__list for your own project's \
+             pool; a worker in another project is addressed by whatever label that project's \
+             own agent gives you.",
+            target.org(),
+            target.project(),
+        ),
+        WorkerDeliverError::NotLive { project_key, label } => format!(
+            "worker '{label}' in '{project_key}' is not live - its row is kept because it \
+             crashed or was closed, so the message did not land. Nothing was delivered; \
+             respawn the label (agents__spawn with resume_session) if you need it back.",
+        ),
+        WorkerDeliverError::DispatchFailed { message } => format!(
+            "worker '{}' did not take the message ({message}). Nothing was delivered, so do not \
+             wait on an answer from it; check agents__list and send again if the label is still \
+             there.",
+            target.label(),
+        ),
+    }
 }
 
 /// `label` naming a project's own agent is worker-only addressing: a
@@ -125,6 +141,10 @@ fn lead_deliver_message(err: &WorkerLeadDeliverError) -> String {
             "your lead is not available (its session closed since this worker was spawned)."
                 .to_owned()
         }
+        WorkerLeadDeliverError::DispatchFailed { message } => format!(
+            "your lead's session did not take the message ({message}). Nothing was delivered, so \
+             do not wait on an answer; send again if the lead is still up."
+        ),
     }
 }
 
@@ -154,8 +174,8 @@ mod tests {
         (peers, workers, dispatcher)
     }
 
-    #[test]
-    fn a_project_name_the_caller_shares_with_another_org_is_not_its_own_project() {
+    #[tokio::test]
+    async fn a_project_name_the_caller_shares_with_another_org_is_not_its_own_project() {
         // `core` exists under both orgs here, which the config loader would
         // refuse - it is the pair the dispatcher compares, and this is
         // that comparison on its own rather than a state forge can reach.
@@ -163,6 +183,7 @@ mod tests {
         let caller = SessionSlot::lead("acme", "core");
         dispatcher
             .deliver(&caller, &target("other", "core", None), message())
+            .await
             .expect("core is configured under other");
         assert_eq!(peers.deliver_calls.lock().len(), 1, "the peers engine carried it");
     }
@@ -220,38 +241,41 @@ mod tests {
         slot
     }
 
-    #[test]
-    fn a_worker_in_the_callers_own_project_goes_through_the_workers_engine() {
+    #[tokio::test]
+    async fn a_worker_in_the_callers_own_project_goes_through_the_workers_engine() {
         let (peers, workers, dispatcher) = host();
         let caller = caller_in_own_project(&workers);
         dispatcher
             .deliver(&caller, &target("acme", "core", Some("w1")), message())
+            .await
             .expect("w1 is live in the caller's project");
 
         assert_eq!(workers.deliver_calls.lock().len(), 1, "the workers engine carried it");
         assert!(peers.deliver_calls.lock().is_empty(), "the peers engine was not used");
     }
 
-    #[test]
-    fn another_projects_agent_goes_through_the_peers_engine() {
+    #[tokio::test]
+    async fn another_projects_agent_goes_through_the_peers_engine() {
         let (peers, workers, dispatcher) = host();
         let caller = caller_in_own_project(&workers);
         dispatcher
             .deliver(&caller, &target("other", "proj", None), message())
+            .await
             .expect("proj is a configured project");
 
         assert_eq!(peers.deliver_calls.lock().len(), 1, "the peers engine carried it");
         assert!(workers.deliver_calls.lock().is_empty(), "the workers engine was not used");
     }
 
-    #[test]
-    fn a_named_worker_in_another_project_goes_through_the_workers_engine() {
+    #[tokio::test]
+    async fn a_named_worker_in_another_project_goes_through_the_workers_engine() {
         // The reach the merge adds: a slot, not a project lead, may be
         // the target from anywhere.
         let (peers, workers, dispatcher) = host();
         let caller = caller_in_own_project(&workers);
         dispatcher
             .deliver(&caller, &target("other", "proj", Some("w1")), message())
+            .await
             .expect("w1 is live in proj");
 
         let calls = workers.deliver_to_project_calls.lock();
@@ -261,12 +285,13 @@ mod tests {
         assert!(peers.deliver_calls.lock().is_empty(), "the peers engine was not used");
     }
 
-    #[test]
-    fn a_label_that_is_not_live_is_refused_rather_than_dropped() {
+    #[tokio::test]
+    async fn a_label_that_is_not_live_is_refused_rather_than_dropped() {
         let (_peers, workers, dispatcher) = host();
         let caller = caller_in_own_project(&workers);
         let err = dispatcher
             .deliver(&caller, &target("other", "proj", Some("ghost")), message())
+            .await
             .expect_err("no live worker by that label");
         assert!(err.contains("ghost"), "the refusal names the label: {err}");
     }
