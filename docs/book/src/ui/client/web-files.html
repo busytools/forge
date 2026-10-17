@@ -45,11 +45,12 @@
     color: var(--warn); }
   /* The tab strip (the sheet's shared rules), and the conversation's own. */
   .rv-tabs { display: flex; align-items: center; gap: 2px; padding: 0 0 6px; }
-  .rv-tabs > button { font-size: var(--fs-base); color: var(--dim); background: none;
-    border: 0; border-bottom: 2px solid transparent; padding: 5px 12px 6px; cursor: pointer; }
+  .rv-tabs > button { font-family: var(--ui); font-size: var(--fs-base); color: var(--dim);
+    background: none; border: 0; border-bottom: 2px solid transparent;
+    padding: 5px 12px 6px; cursor: pointer; }
   .rv-tabs > button.on { color: var(--text); border-bottom-color: var(--accent); }
   .rv-tn { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-  .conv { max-width: 820px; margin: 0 auto; width: 100%; }
+  .conv { width: 100%; }
   .conv .group { margin: 14px 0 8px; }
   .conv .group h2 { display: flex; gap: 8px; align-items: baseline; margin: 0 0 6px;
     font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
@@ -415,7 +416,7 @@
   </div>
 </div>
 
-<p class="fig"><b>Specimen 6 - the conversation.</b> The same rounds the review page draws of a branch, over the seat's tree scope (one component, both pages): newest first, each round with its age, tally chips and the threads it sealed - and the reply box under the thread being answered. Parked threads sit above in their own group with their captured lines. The rail stays beside it, because it carries the finish.</p>
+<p class="fig"><b>Specimen 6 - the conversation.</b> The same rounds the review page draws of a branch, over the seat's tree scope (one component, both pages): newest first, each round with its age, tally chips and the threads it sealed - and the reply box under the thread being answered. Parked threads sit above in their own group with their captured lines. It takes the whole row; the rail, with the finish, is the Files tab's.</p>
 
 <div class="conv">
   <section class="group">

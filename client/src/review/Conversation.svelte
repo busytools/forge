@@ -35,6 +35,7 @@
     reply,
     noun = 'branch',
     known = true,
+    wide = false,
     onreply,
     onresolve,
     onreopen,
@@ -55,6 +56,9 @@
     noun?: string;
     /** Whether both reads landed; the empty lines wait for them. */
     known?: boolean;
+    /** Take the whole row rather than the reading measure - for a page whose
+     *  conversation is not a column beside its own panes. */
+    wide?: boolean;
     /** File one reply. False is a refusal, and the words are the reader's still. */
     onreply: (thread: ReviewThreadRecord, text: string) => Promise<boolean>;
     onresolve: (thread: ReviewThreadRecord) => void;
@@ -78,7 +82,7 @@
   }
 </script>
 
-<div class="rv-conv">
+<div class="rv-conv" class:wide>
   {#if outdated.length > 0}
     <section class="group">
       <h2>Outdated <span class="n">{outdated.length}</span></h2>
@@ -231,6 +235,11 @@
     overflow-y: auto;
     min-height: 0;
     scrollbar-gutter: stable;
+  }
+  /* The page with nothing to keep the space for: the rounds run the full row
+     (Ved, 2026-10-17: "use as much space as you can"). */
+  .rv-conv.wide {
+    max-width: none;
   }
   .group {
     margin: 14px 0 8px;

@@ -250,6 +250,8 @@
     }
     // A take already running keeps its box, so the key's release can end it.
     if (takeIn !== null) return takeIn;
+    // The summary is the rail's box, and the rail is the files half's.
+    if (tab !== 'files') return null;
     if (record === null || entries.length === 0) return null;
     const railUp = sheet === 'comments' || !window.matchMedia('(max-width: 980px)').matches;
     return railUp ? 'summary' : null;
@@ -835,14 +837,14 @@
           aria-expanded={sheet === 'tree'}
           onclick={() => (sheet === 'tree' ? closeSheet() : openSheet('tree'))}>tree</button
         >
+        <button
+          class="files-sheetbtn"
+          type="button"
+          aria-expanded={sheet === 'comments'}
+          onclick={() => (sheet === 'comments' ? closeSheet() : openSheet('comments'))}
+          >comments ({rows.length})</button
+        >
       {/if}
-      <button
-        class="files-sheetbtn"
-        type="button"
-        aria-expanded={sheet === 'comments'}
-        onclick={() => (sheet === 'comments' ? closeSheet() : openSheet('comments'))}
-        >comments ({rows.length})</button
-      >
     </span>
   </header>
 
@@ -861,7 +863,12 @@
       <button
         type="button"
         class:on={tab === 'conversation'}
-        onclick={() => (tab = 'conversation')}
+        onclick={() => {
+          tab = 'conversation';
+          // The sheets are the files half's doors; one left open would hang
+          // over the conversation with nothing behind it.
+          closeSheet();
+        }}
       >
         Conversation
       </button>
@@ -923,6 +930,7 @@
             {reply}
             noun="tree"
             known={treeRead}
+            wide
             onreply={replied}
             onresolve={(thread: ReviewThreadRecord) => void resolved(thread)}
             onreopen={(thread: ReviewThreadRecord) => void reopened(thread)}
@@ -932,22 +940,24 @@
           />
         </main>
       {/if}
-      <div class="files-railhold" class:sheet={sheet === 'comments'}>
-        <button class="files-sheetclose" type="button" onclick={closeSheet}>done</button>
-        <Rail
-          {rows}
-          {repliesToRead}
-          finishCount={unsealed.length}
-          {busy}
-          summaryBox={summary}
-          {voice}
-          onjump={jump}
-          onfinish={(text) => void finished(text)}
-          onpress={() => (pressedIn = 'summary')}
-          onhold={() => (panelIn = 'summary')}
-          onfield={(el) => (elements.summary = el)}
-        />
-      </div>
+      {#if tab === 'files'}
+        <div class="files-railhold" class:sheet={sheet === 'comments'}>
+          <button class="files-sheetclose" type="button" onclick={closeSheet}>done</button>
+          <Rail
+            {rows}
+            {repliesToRead}
+            finishCount={unsealed.length}
+            {busy}
+            summaryBox={summary}
+            {voice}
+            onjump={jump}
+            onfinish={(text) => void finished(text)}
+            onpress={() => (pressedIn = 'summary')}
+            onhold={() => (panelIn = 'summary')}
+            onfield={(el) => (elements.summary = el)}
+          />
+        </div>
+      {/if}
     </div>
   {/if}
 </div>

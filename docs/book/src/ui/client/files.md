@@ -7,11 +7,12 @@ header, and by the strip's files slip on the seat's own page - one place,
 and the tree follows the seat. The drawing it is held against is
 [web-files.html](./web-files.html), beside this page.
 
-**Two halves, like the review page's**: the **Files** tab is the tree and
-the reader, and the **Conversation** tab is the seat-tree scope's rounds,
-newest first - the same conversation the review page draws of a branch,
-through one component both pages use. The rail stays drawn on both, because
-it carries the finish.
+**Two halves, like the review page's**: the **Files** tab is the tree, the
+reader and the comments rail - which carries the dropped list and the
+finish and is that tab's alone - and the **Conversation** tab is the
+seat-tree scope's rounds, newest first, taking the whole row: the same
+conversation the review page draws of a branch, through one component both
+pages use.
 
 It lives at `/session/{org}/{project}/{label}/files`. **The tree is the
 seat's own**: a worker's worktree when the seat is a worker, the lead's
