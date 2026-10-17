@@ -11,8 +11,11 @@
 //! names an input to hold - at client start, and again whenever the pick
 //! changes - and it stays open through every take, so a press records from
 //! the press: no device open under it, and none of the device's own start-up
-//! silence inside its first second. The cost is the microphone indicator
-//! staying lit while the client runs, which is the trade this half makes.
+//! silence inside its first second. The one exception is a capture the device
+//! has stopped serving, which is opened again: a dropped stream never comes
+//! back by itself, and every later take it served would record nothing. The
+//! cost is the microphone indicator staying lit while the client runs, which
+//! is the trade this half makes.
 //!
 //! While no take is recording, the held stream's frames are dropped - the
 //! audio belongs to no take, and only a take's frames go to the page.
@@ -43,11 +46,11 @@ pub const DRAIN_MS: u64 = 150;
 /// hold or a press treats it as one the device stopped serving, and opens
 /// the device again.
 ///
-/// The device delivers about fifty blocks a second, so a gap this wide is
-/// not a slow device - it is a stream that stopped and never came back
-/// (#2359: Android disconnects the input when the audio layer under the app
-/// changes). Generous, because a false positive costs only the warm open the
-/// press was promised.
+/// A stream that stopped and never came back is what this is for (#2359:
+/// Android disconnects the input when the audio layer under the app changes).
+/// The window runs from the open as well as from the last block, so a device
+/// whose first block is slower than this is opened again needlessly - which
+/// costs the warm open the press was promised, never a take's audio.
 const SILENT_LIMIT: Duration = Duration::from_millis(500);
 
 /// How long a take's open may run before the shell says the microphone did
@@ -100,11 +103,11 @@ struct Carry {
 }
 
 /// The samples not yet a whole frame, and when the device last delivered a
-/// block. The stamp is taken while the capture is open, so a stream is live
-/// until the bound passes rather than never having been.
+/// block: the second is what says whether the stream is still being served.
 struct Partial {
     samples: Vec<f32>,
-    /// When a block last arrived; the open, before the first one does.
+    /// When a block last arrived - set at the open as well, so a capture that
+    /// has not delivered yet reads as live until the bound passes.
     at: Instant,
 }
 
@@ -309,9 +312,12 @@ impl Mic {
     /// Open the picked device - or the system default when nothing is
     /// picked - and keep it open until [`Mic::release`].
     ///
-    /// Idempotent for the pick it is already holding, and a no-op for the
-    /// page recording on it: the pick applies from the next take, so a change
-    /// mid take never tears the stream out from under the recording.
+    /// A pick it is already holding AND still delivering to is answered
+    /// without a second open; a pick whose capture the device has stopped
+    /// serving is opened again, and an open that fails answers that error
+    /// with the old capture left standing. A no-op for the page recording on
+    /// it: the pick applies from the next take, so a change mid take never
+    /// tears the stream out from under the recording.
     ///
     /// **A hold is also a claim on the device**, which is how the page that
     /// comes back from a reload catches the take its predecessor left
@@ -728,9 +734,13 @@ mod tests {
         }
 
         #[test]
-        fn a_capture_the_device_is_still_serving_is_kept() {
+        fn a_capture_that_starts_delivering_again_is_kept() {
             let rig = Rig::new();
             rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page").expect("opens");
+            // Stale FIRST, then a block: what keeps the capture is the
+            // delivery, not the open - a fresh open stamps itself live and
+            // would pass the bound with no block at all.
+            staled(&rig);
             deliver(&rig, &[0.0; 8]);
             rig.mic
                 .start(&rig.bridge, Some("one".to_owned()), "page", "take")
@@ -738,7 +748,7 @@ mod tests {
             assert_eq!(
                 rig.calls(),
                 vec!["open one"],
-                "a capture whose device is delivering is the warm one the press was promised"
+                "a capture the device is delivering to is the warm one the press was promised"
             );
         }
 
@@ -773,6 +783,48 @@ mod tests {
                 vec!["open one", "open one", "release one"],
                 "a hold on a capture the device stopped serving opens it again"
             );
+        }
+
+        #[test]
+        fn a_hold_for_a_stopped_capture_that_will_not_reopen_answers_the_error() {
+            let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let opened = Arc::clone(&log);
+            let mic = Mic {
+                warm: Mutex::new(None),
+                opener: Box::new(move |device, carry| {
+                    let mut opened = opened.lock().unwrap();
+                    if !opened.is_empty() {
+                        return Err("the device is gone".to_owned());
+                    }
+                    let name = device.unwrap_or("default").to_owned();
+                    opened.push(format!("open {name}"));
+                    Ok(Box::new(Fake {
+                        device: forge_capture::Device {
+                            id: name,
+                            name: "stand-in".to_owned(),
+                            is_default: false,
+                        },
+                        carry,
+                        log: Arc::clone(&log),
+                    }))
+                }),
+            };
+            let bridge = Bridge::new(None, tokio::sync::mpsc::unbounded_channel().0);
+            mic.hold(&bridge, Some("one".to_owned()), "page").expect("opens");
+
+            // The device drops the capture, so re-stating the same pick opens
+            // again - and that open fails. The error is the caller's answer,
+            // and the capture the hold was keeping is still what it keeps.
+            {
+                let warm = mic.warm.lock().unwrap();
+                let held = warm.as_ref().expect("a held capture");
+                held.held.carry().held.lock().unwrap().at = Instant::now() - SILENT_LIMIT * 4;
+            }
+            let refused = mic.hold(&bridge, Some("one".to_owned()), "page");
+            assert_eq!(refused.err().as_deref(), Some("the device is gone"));
+            let warm = mic.warm.lock().unwrap();
+            let held = warm.as_ref().expect("a capture is still held");
+            assert_eq!(held.held.device().id, "one", "the capture that was held is still standing");
         }
 
         #[test]
