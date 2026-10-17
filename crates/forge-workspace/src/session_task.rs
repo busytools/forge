@@ -58,7 +58,7 @@ pub(crate) struct SessionTask {
     /// It is the same conversation a view holds, so the cost is proportional
     /// to what is RUNNING rather than to what is being read - which is the
     /// price of having one producer rather than two.
-    pub(crate) conversation: Option<(Vec<forge_primitives::Message>, u32)>,
+    pub(crate) conversation: Option<(crate::conversation_window::Window, u32)>,
     /// Fires as this task drops - after `run`'s exit path has disconnected
     /// the subprocess (waited it out up to the close-wait budget, then
     /// SIGKILLed it) - so a despawn can hold its worktree removal until
@@ -356,18 +356,18 @@ impl SessionTask {
                 // was filed from) may not ride the update or be paid again
                 // per consumer: one cut, and the window is what is kept and
                 // what is handed over alike.
-                let window = crate::conversation_window::tail_of(&read);
+                let (window, left_behind) = crate::conversation_window::Window::tail_of(&read);
                 // **And the cut itself rides along.** A consumer holding the
                 // window alone reads it as the conversation's front, and a
                 // client's walk below the window would stop there rather than
                 // crossing into the transcript - the floor a cursor below the
                 // window is measured against is exactly what the window left
                 // behind.
-                let left_behind = read.len() - window.len();
+                //
                 // The read goes before the window's second copy is taken, so
                 // the peak is the window's rather than the transcript plus it.
                 drop(read);
-                let history = window.clone();
+                let history = window.messages().to_vec();
                 self.conversation = Some((window, compaction_count));
                 // The slot the task was spawned under, which the CLI's
                 // own id never moves: it names the occupant, this names
@@ -1151,7 +1151,7 @@ impl SessionTask {
             // Answered by this task rather than the agent: the conversation
             // is the task's own, so it never leaves this loop.
             Command::ReplayConversation { key: _ } => {
-                let Some((history, compaction_count)) = self.conversation.as_ref() else {
+                let Some((window, compaction_count)) = self.conversation.as_ref() else {
                     tracing::debug!(
                         target: "forge_workspace::session_task",
                         slot = %self.key.display(),
@@ -1161,7 +1161,7 @@ impl SessionTask {
                 };
                 self.emit(SessionUpdate::HistoryReplayed {
                     key: self.key.clone(),
-                    history: history.clone(),
+                    history: window.messages().to_vec(),
                     compaction_count: *compaction_count,
                 });
             }
@@ -1173,9 +1173,9 @@ impl SessionTask {
             // - or the window has carried off - is the no-path reason, not a
             // blank.
             Command::ReadCallOutput { key: _, call_id } => {
-                let path = self.conversation.as_ref().and_then(|(history, _)| {
+                let path = self.conversation.as_ref().and_then(|(window, _)| {
                     resolve_call_output_path(
-                        history,
+                        window.messages(),
                         &call_id,
                         crate::output_tail::task_output_base,
                     )
@@ -1318,9 +1318,12 @@ impl SessionTask {
     ///
     /// **And the copy is a window, not the run.** Its one reader cuts it to
     /// the newest turns, so a session up for days would otherwise carry a run
-    /// that nothing reads (see [`crate::conversation_window`]).
+    /// that nothing reads (see [`crate::conversation_window`]). The window's
+    /// own push is what holds both ceilings - the frames and their weight -
+    /// and the drop it runs before the push is why the copy pays for the room
+    /// it makes rather than for a doubling it is about to throw away.
     fn retain(&mut self, message: &forge_primitives::Message) {
-        let Some((history, compaction_count)) = self.conversation.as_mut() else {
+        let Some((window, compaction_count)) = self.conversation.as_mut() else {
             // Before the first connect there is no conversation to add to,
             // and no frame to add: the CLI says nothing until it connects.
             return;
@@ -1328,15 +1331,7 @@ impl SessionTask {
         if matches!(message, forge_primitives::Message::CompactBoundary { .. }) {
             *compaction_count = compaction_count.saturating_add(1);
         }
-        // Before the push, so the drop pays for the room it makes rather than
-        // for a doubling it is about to throw away.
-        if history.len()
-            >= crate::conversation_window::CONVERSATION_CAP
-                + crate::conversation_window::CONVERSATION_SLACK
-        {
-            crate::conversation_window::drop_past_cap(history);
-        }
-        history.push(message.clone());
+        window.push(message.clone());
     }
 
     /// Flush `caller`'s buffered review activity into its batched
@@ -3954,7 +3949,7 @@ mod tests {
         let (workspace, _updates) = crate::Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("stamp-crossing");
         let (mut task, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
-        task.conversation = Some((Vec::new(), 0));
+        task.conversation = Some((crate::conversation_window::Window::empty(), 0));
 
         let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
             task.translate_event(AgentEvent::SdkMessage {
@@ -4020,6 +4015,7 @@ mod tests {
         // that watched the turn opens does.
         let (history, _count) = task.conversation.as_ref().expect("the window is held");
         let held: Vec<Option<String>> = history
+            .messages()
             .iter()
             .map(|msg| {
                 serde_json::to_value(msg).expect("encode")["timestamp"].as_str().map(str::to_owned)
@@ -6189,11 +6185,6 @@ provider = "anthropic"
             cap,
             "a connect hands over a transcript and the copy keeps a window"
         );
-        assert!(
-            seeded.capacity() <= cap + slack,
-            "held in a window-sized store rather than the transcript's: capacity for {} messages",
-            seeded.capacity(),
-        );
 
         // And the frames that arrive after it, which is where a long-running
         // session's copy grows.
@@ -6231,15 +6222,10 @@ provider = "anthropic"
             "and the frames it dropped are the oldest ones",
         );
 
-        // **The store is what the cap is for**, so the shape is pinned as well
-        // as the length: a drop that drained would trim the copy and keep the
-        // transcript's buffer under it.
+        // The copy the replay was answered from is the same window, held on
+        // (the store's own shape is the window module's business; what this
+        // pins is which frames it holds).
         let (held, _) = task.conversation.as_ref().expect("the task keeps a conversation");
-        assert!(
-            held.capacity() <= cap + slack,
-            "the copy is held in a window-sized store: capacity for {} messages",
-            held.capacity(),
-        );
         assert_eq!(held.len(), history.len(), "and holds the frames the replay answered with");
     }
 
