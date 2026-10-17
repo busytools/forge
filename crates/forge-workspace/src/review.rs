@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use forge_primitives::review::is_doc_scope;
+use forge_primitives::review::{is_doc_scope, is_tree_scope};
 use forge_primitives::{ReviewStatus, ReviewThread};
 
 use crate::protocol::SessionUpdate;
@@ -195,9 +195,11 @@ impl Workspace {
             let dead: Vec<&String> = stored
                 .iter()
                 // A doc scope is stored in the branch column and has no ref
-                // by construction, so absence proves nothing about it.
+                // by construction, so absence proves nothing about it; a
+                // tree scope names a seat for the same reason.
                 .filter(|branch| {
                     !is_doc_scope(branch)
+                        && !is_tree_scope(branch)
                         && !repo.names.contains(*branch)
                         && !spawning.contains(*branch)
                 })
@@ -1027,6 +1029,36 @@ mod tests {
         assert!(
             sweep_has_state(&ws, "docproj", &doc_scope),
             "the document's threads survive a boot",
+        );
+    }
+
+    /// **A tree scope names a SEAT, not a ref, and the sweep must not read
+    /// it as a dead branch.** A seat's tree threads follow the seat - a
+    /// worker's worktree, the lead's checkout - so no repo ref will ever
+    /// carry the scope's name; without the guard the sweep deletes the
+    /// files page's review the first time it runs.
+    #[test]
+    fn the_sweep_spares_a_tree_scope() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("treews");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sweep_init_repo(&root, "main");
+        sweep_git(&root, &["branch", "feat/live"]);
+
+        let (ws, _rx) = sweep_ws(dir.path(), "treews", &root);
+        seed(&ws, "treews", "feat/live", &[sweep_thread("a")]);
+        let slot = SessionSlot::worker("Busytools", "treews", "sweeper");
+        let tree_scope = forge_primitives::review::tree_scope_ref(&slot);
+        seed(&ws, "treews", &tree_scope, &[sweep_thread("t")]);
+
+        assert_eq!(
+            ws.sweep_dead_review_branches(),
+            0,
+            "one live branch and a seat's tree: nothing is dead",
+        );
+        assert!(
+            sweep_has_state(&ws, "treews", &tree_scope),
+            "the seat's tree threads survive a boot",
         );
     }
 
