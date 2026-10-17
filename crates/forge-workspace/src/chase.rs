@@ -629,7 +629,7 @@ struct PromptDeliver {
 
 impl Deliver for PromptDeliver {
     fn to_seat(&self, slot: &SessionSlot, text: &str) -> Delivery {
-        let uuid = forge_sdk::request_id::next_prompt_id();
+        let uuid = forge_sdk::request_id::next_forged_prompt_id();
         match self.workspace.dispatch_forged_prompt_under(slot, text.to_owned(), uuid) {
             Ok(()) => Delivery::Delivered,
             Err(_) => Delivery::NoSession,
@@ -1359,6 +1359,11 @@ mod tests {
         let wired = match ws.drain_test_dispatch_buffer().as_slice() {
             [crate::protocol::Command::PromptUnder { uuid, text: wired, .. }] => {
                 assert_eq!(wired, text, "the model receives the chase's words");
+                assert!(
+                    uuid.starts_with("forge_nudge_"),
+                    "the id carries the machinery's prefix, which is what a reloaded row keys \
+                     on: {uuid}",
+                );
                 uuid.clone()
             }
             other => panic!("the delivery wires one prompt; got {other:?}"),

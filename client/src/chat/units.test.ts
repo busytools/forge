@@ -9,6 +9,7 @@ import {
   type HookLeaf,
   type HookRun,
   type InboundLeaf,
+  type NudgeLeaf,
   type PeerCard,
   type ThoughtLeaf,
   type Unit,
@@ -78,6 +79,10 @@ const thoughtsOf = (unit: Unit | undefined): ThoughtLeaf[] =>
 /** The inbound rows of a unit, in the order they arrived. */
 const inboundsOf = (unit: Unit | undefined): InboundLeaf[] =>
   rowsOf(unit).flatMap((row) => (row.tag === 'inbound' ? [row] : []));
+
+/** The nudge rows of a unit, in the order they arrived. */
+const nudgesOf = (unit: Unit | undefined): NudgeLeaf[] =>
+  rowsOf(unit).flatMap((row) => (row.tag === 'nudge' ? [row] : []));
 
 /** The hook runs a fold drew, in the order they arrived. */
 const runsOf = (units: Unit[]): HookLeaf[] =>
@@ -2411,6 +2416,33 @@ describe('one turn folded into the units a view draws', () => {
     const calls = units.flatMap((unit) => callsOf(unit)).map((call) => call.leaf);
 
     expect(calls[0]?.status, 'the notice keeps the status the frames set').toBe('killed');
+  });
+
+  it('draws a nudge as a work row live and reloaded alike', () => {
+    // The chase's own words, under the id the machinery minted for them: the
+    // live dispatch carries it as the frame's `uuid`, and the page's copy
+    // carries it as the queued block's `source_uuid` - one prompt, so one row
+    // by the same recognizer either way.
+    const words = 'task board: worker w-1 holds no row - feed it or despawn it.';
+    const id = 'forge_nudge_7_1a2b3c4d';
+
+    const live = fold([heard([text(words)], { uuid: id })]);
+    expect(kinds(live), "a nudge is work, not the reader's own turn").toEqual(['leaves']);
+    expect(nudgesOf(live[0]).map((row) => row.text)).toEqual([words]);
+
+    const reloaded = fold([
+      heard([{ type: 'queued_command', commandMode: 'prompt', prompt: words, source_uuid: id }], {
+        uuid: 'c9351772-2ce7-4c28-88e1-6fcad33c0905',
+      }),
+    ]);
+    expect(nudgesOf(reloaded[0]).map((row) => row.text), 'the reloaded row draws like the live one').toEqual(
+      nudgesOf(live[0]).map((row) => row.text),
+    );
+
+    // The reader's own send keeps its row: the id's prefix is what tells the
+    // two apart, so a plain prompt id is still the reader's words.
+    const typed = fold([heard([text(words)], { uuid: 'forge_prompt_8_5e6f7a8b' })]);
+    expect(kinds(typed), "a typed prompt is still the reader's row").toEqual(['user']);
   });
 
   it('draws no line for a task the wire did not say outlives its turn', () => {

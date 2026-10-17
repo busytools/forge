@@ -252,6 +252,8 @@ export interface Block {
   forge_bytes?: unknown;
   prompt?: unknown;
   commandMode?: unknown;
+  /** The prompt's own id, on a `queued_command` block: the sender's minted one. */
+  source_uuid?: unknown;
   thinking?: unknown;
 }
 

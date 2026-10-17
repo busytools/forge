@@ -4060,7 +4060,10 @@ impl Workspace {
             key,
             text,
             source,
-            forge_sdk::request_id::next_prompt_id(),
+            match source {
+                PromptSource::Forge => forge_sdk::request_id::next_forged_prompt_id(),
+                _ => forge_sdk::request_id::next_prompt_id(),
+            },
         )
     }
 
@@ -4110,7 +4113,7 @@ impl Workspace {
             // the same tick's fold cannot have moved it - so a replacement
             // drained ahead of it is not handed words about a history it
             // does not have; the check is where the queued prompt runs.
-            let uuid = forge_sdk::request_id::next_prompt_id();
+            let uuid = forge_sdk::request_id::next_forged_prompt_id();
             guard.auto_continue_queued = Some((uuid.clone(), guard.session_id.clone()));
             (pending.reason, uuid)
         };
@@ -4143,7 +4146,7 @@ impl Workspace {
         key: &SessionSlot,
         text: String,
     ) -> Result<(), DispatchError> {
-        self.dispatch_forged_prompt_under(key, text, forge_sdk::request_id::next_prompt_id())
+        self.dispatch_forged_prompt_under(key, text, forge_sdk::request_id::next_forged_prompt_id())
     }
 
     /// [`Self::dispatch_forged_prompt`] with the id supplied by the caller,
@@ -5175,7 +5178,7 @@ impl Workspace {
                                 match self.dispatch_forged_prompt_under(
                                     &key,
                                     text,
-                                    forge_sdk::request_id::next_prompt_id(),
+                                    forge_sdk::request_id::next_forged_prompt_id(),
                                 ) {
                                     Ok(()) => IdleVerdict::Delivered,
                                     Err(_) => IdleVerdict::NoSession,
