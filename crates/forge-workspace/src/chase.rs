@@ -2,12 +2,14 @@
 //! report.
 //!
 //! Every pass derives crossings from the board's own marks and the chase
-//! log: an in-progress row past its estimate asks its owner once, a lead
-//! hears once at 1.5x, a stalled queue or a stuck wait lands with the
-//! lead once, a dead row's death is named once, an epic's retro and its
-//! close are each asked for once. `Unaccounted` is deduped in memory (a
-//! restart may re-fire once); every other rung is deduped durably by the
-//! chase log, so "once" survives a reboot.
+//! log: a row past its estimate asks its owner once per estimate, a lead
+//! hears at the rung's class cadence while its state holds, and a row
+//! that died, moved and died again is a new occurrence, named at once.
+//! The cadences are the settled two: five minutes for a state burning a
+//! resource (a drifting worker, a row at 1.5x its estimate), thirty for
+//! one parked and stuck (a dead row, a stalled queue, a stuck wait, a
+//! retro or a close owed). Every naming is deduped durably by the chase
+//! log, so a restart re-reads it rather than re-firing.
 //!
 //! Delivery degrades, never wakes: a live owner is asked; with a dead
 //! owner the lead is; with every seat asleep the mark alone stands. A
@@ -33,6 +35,14 @@ pub const CHASE_INTERVAL_SECS: u64 = 30;
 /// How long after a wait resolves its message is still worth sending.
 const WAIT_RESOLVED_WINDOW_SECS: u64 = 600;
 
+/// The cadence of a rung whose state is burning a resource: a drifting
+/// worker, a row past 1.5x its estimate.
+const CADENCE_BURNING_SECS: u64 = 5 * 60;
+
+/// The cadence of a rung whose state is parked and stuck: a dead row, a
+/// stalled queue, a stuck wait, a retro or a close owed.
+const CADENCE_STUCK_SECS: u64 = 30 * 60;
+
 /// What a delivery attempt found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivery {
@@ -51,6 +61,10 @@ pub trait Deliver: Send + Sync {
 pub struct Crossing {
     pub rung: ChaseRung,
     pub task_id: Option<TaskId>,
+    /// The rung's own subject where a row id does not identify it: the
+    /// worker a seat-level rung names, or the estimate a nudge fired
+    /// against.
+    pub subject: Option<String>,
     /// The seat the message prefers: the row's owner for a nudge, the
     /// lead for everything else. The ladder falls back to the lead.
     pub seat: Option<SessionSlot>,
@@ -58,37 +72,84 @@ pub struct Crossing {
 }
 
 /// In-memory dedup for the rung with no row to stamp: a worker holding
-/// nothing is named once, and named again only after it accounts itself.
+/// nothing is named when it drifts, again only at the rung's cadence
+/// while it keeps drifting, and at once after it accounts and drifts
+/// again. The log holds the naming, so a fresh process re-reads the
+/// slate rather than re-firing inside the cadence.
 #[derive(Default)]
 pub struct ChaseMemory {
-    reported: std::collections::HashSet<(String, String)>,
+    /// Per (project, worker): when the sweep last named it - `None` once
+    /// it accounted, which is what resets the slate.
+    named: std::collections::HashMap<(String, String), Option<SystemTime>>,
 }
 
 impl ChaseMemory {
-    /// The unaccounted workers not yet named this occurrence, and the
-    /// bookkeeping that makes this naming the once.
-    fn take_new(&mut self, project: &str, unaccounted: &[String]) -> Vec<String> {
-        let current: std::collections::HashSet<(String, String)> =
-            unaccounted.iter().map(|label| (project.to_owned(), label.clone())).collect();
-        // A worker that accounted again may be re-reported if it drifts
-        // once more; anything still missing keeps its report. Only this
-        // project's entries are in reach: one sweep walks every project
-        // through this memory, so clearing another's here would make its
-        // workers fresh on every pass.
-        self.reported.retain(|entry| entry.0 != project || current.contains(entry));
+    /// The drifted workers due a naming, and the bookkeeping that makes
+    /// this naming the once for the occurrence.
+    fn take_new(
+        &mut self,
+        project: &str,
+        unaccounted: &[String],
+        fired: &[TaskChase],
+        now: SystemTime,
+    ) -> Vec<String> {
+        // A worker that accounted resets its slate; anything still
+        // drifted keeps its naming. Only this project's entries are in
+        // reach: one sweep walks every project through this memory, so
+        // clearing another's here would make its workers fresh on every
+        // pass.
+        for ((entry_project, label), named) in self.named.iter_mut() {
+            if entry_project == project && !unaccounted.contains(label) {
+                *named = None;
+            }
+        }
         let mut fresh = Vec::new();
         for label in unaccounted {
             let entry = (project.to_owned(), label.clone());
-            if self.reported.insert(entry) {
+            // A cleared slate is this process's knowledge and outranks
+            // the log; one the process never held is seeded from the log,
+            // so a restart inside the cadence stays quiet.
+            let last = match self.named.get(&entry) {
+                Some(slot) => *slot,
+                None => durable_last_named(fired, label),
+            };
+            let cadence_elapsed = last.is_none_or(|at| since_secs(at, now) >= CADENCE_BURNING_SECS);
+            if cadence_elapsed {
+                self.named.insert(entry, Some(now));
                 fresh.push(label.clone());
+            } else {
+                self.named.insert(entry, last);
             }
         }
         fresh
     }
 }
 
-fn fired_already(fired: &[TaskChase], rung: ChaseRung, id: &TaskId) -> bool {
-    fired.iter().any(|chase| chase.rung == rung && chase.task_id.as_ref() == Some(id))
+/// The log's most recent naming of `label` by the seat-level rung.
+fn durable_last_named(fired: &[TaskChase], label: &str) -> Option<SystemTime> {
+    fired
+        .iter()
+        .filter(|chase| {
+            chase.rung == ChaseRung::Unaccounted && chase.subject.as_deref() == Some(label)
+        })
+        .map(|chase| chase.at)
+        .max()
+}
+
+/// How long `now` is after `at`, saturating: an `at` in the future reads
+/// as the longest age, so a skewed stamp never silences a rung.
+fn since_secs(at: SystemTime, now: SystemTime) -> u64 {
+    now.duration_since(at).map_or(u64::MAX, |d| d.as_secs())
+}
+
+/// Whether `rung` already fired for `id` and this subject - a restated
+/// estimate changes the subject, which arms the nudge again.
+fn fired_already(fired: &[TaskChase], rung: ChaseRung, id: &TaskId, subject: Option<&str>) -> bool {
+    fired.iter().any(|chase| {
+        chase.rung == rung
+            && chase.task_id.as_ref() == Some(id)
+            && chase.subject.as_deref() == subject
+    })
 }
 
 /// Whether `rung` already fired for `id` at or after `at` - the shape a
@@ -97,6 +158,47 @@ fn fired_since(fired: &[TaskChase], rung: ChaseRung, id: &TaskId, at: SystemTime
     fired
         .iter()
         .any(|chase| chase.rung == rung && chase.task_id.as_ref() == Some(id) && chase.at >= at)
+}
+
+/// Whether a project-level rung - one with no row to key on - has waited
+/// out its cadence.
+fn due_any(fired: &[TaskChase], rung: ChaseRung, cadence: u64, now: SystemTime) -> bool {
+    let last = fired.iter().filter(|chase| chase.rung == rung).map(|chase| chase.at).max();
+    last.is_none_or(|at| since_secs(at, now) >= cadence)
+}
+
+/// Whether a recurring rung has waited out its cadence: it is due when
+/// nothing fired since `since` (the instant its state appeared, where
+/// the history says), or when the newest firing since then is at least
+/// `cadence` seconds old.
+fn due(
+    fired: &[TaskChase],
+    rung: ChaseRung,
+    id: &TaskId,
+    since: Option<SystemTime>,
+    cadence: u64,
+    now: SystemTime,
+) -> bool {
+    let last = fired
+        .iter()
+        .filter(|chase| {
+            chase.rung == rung
+                && chase.task_id.as_ref() == Some(id)
+                && since.is_none_or(|at| chase.at >= at)
+        })
+        .map(|chase| chase.at)
+        .max();
+    last.is_none_or(|at| since_secs(at, now) >= cadence)
+}
+
+/// When a row last died, if the history says: a row that moved and died
+/// again is a new occurrence.
+fn failed_at(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
+    history
+        .iter()
+        .filter(|transition| transition.task_id == *id && transition.to == TaskStatus::Failed)
+        .map(|transition| transition.at)
+        .max()
 }
 
 /// When a released wait landed, if one did: a transition out of waiting
@@ -138,11 +240,17 @@ pub(crate) fn crossings(
         if running
             && let Some(estimate) = estimate
             && row.worked_secs > estimate.secs
-            && !fired_already(fired, ChaseRung::EstimateNudge, id)
+            && !fired_already(
+                fired,
+                ChaseRung::EstimateNudge,
+                id,
+                Some(&estimate.secs.to_string()),
+            )
         {
             out.push(Crossing {
                 rung: ChaseRung::EstimateNudge,
                 task_id: Some(id.clone()),
+                subject: Some(estimate.secs.to_string()),
                 seat: row.task.owner.clone(),
                 text: format!(
                     "task board: \"{}\" has worked {} against its estimate of {} - status? An \
@@ -156,11 +264,12 @@ pub(crate) fn crossings(
         if running
             && let Some(estimate) = estimate
             && row.worked_secs > estimate.secs + estimate.secs / 2
-            && !fired_already(fired, ChaseRung::Escalate, id)
+            && due(fired, ChaseRung::Escalate, id, None, CADENCE_BURNING_SECS, now)
         {
             out.push(Crossing {
                 rung: ChaseRung::Escalate,
                 task_id: Some(id.clone()),
+                subject: None,
                 seat: Some(lead.clone()),
                 text: format!(
                     "task board: \"{}\" is at {} against an estimate of {} - rescope, reassign, \
@@ -174,11 +283,12 @@ pub(crate) fn crossings(
         if row.marks.ready
             && row.task.owner.is_none()
             && row.marks.no_movement
-            && !fired_already(fired, ChaseRung::QueueStall, id)
+            && due(fired, ChaseRung::QueueStall, id, None, CADENCE_STUCK_SECS, now)
         {
             out.push(Crossing {
                 rung: ChaseRung::QueueStall,
                 task_id: Some(id.clone()),
+                subject: None,
                 seat: Some(lead.clone()),
                 text: format!(
                     "task board: \"{}\" has been ready and unowned for {} - the queue is \
@@ -191,11 +301,12 @@ pub(crate) fn crossings(
         let wait_kind = row.task.waiting_on.as_ref().and_then(|wait| wait.kind);
         if row.marks.waiting_too_long
             && matches!(wait_kind, Some(WaitingKind::Dependency | WaitingKind::Resource))
-            && !fired_already(fired, ChaseRung::WaitStall, id)
+            && due(fired, ChaseRung::WaitStall, id, None, CADENCE_STUCK_SECS, now)
         {
             out.push(Crossing {
                 rung: ChaseRung::WaitStall,
                 task_id: Some(id.clone()),
+                subject: None,
                 seat: Some(lead.clone()),
                 text: format!(
                     "task board: \"{}\" has waited {} on a {} - unblock it or change its plan.",
@@ -211,10 +322,15 @@ pub(crate) fn crossings(
         }
         let died = row.task.status == TaskStatus::Failed;
         let stranded = running && row.marks.stale;
-        if (died || stranded) && !fired_already(fired, ChaseRung::Death, id) {
+        // The death repeats at the stuck cadence, counted from the death
+        // itself: a row that moved and died again is a new occurrence.
+        if (died || stranded)
+            && due(fired, ChaseRung::Death, id, failed_at(history, id), CADENCE_STUCK_SECS, now)
+        {
             out.push(Crossing {
                 rung: ChaseRung::Death,
                 task_id: Some(id.clone()),
+                subject: None,
                 seat: Some(lead.clone()),
                 text: format!(
                     "task board: \"{}\" {} - re-dispatch it or cancel it.",
@@ -224,12 +340,13 @@ pub(crate) fn crossings(
             });
         }
         if let Some(at) = released_at(history, id)
-            && now.duration_since(at).map_or(u64::MAX, |d| d.as_secs()) <= WAIT_RESOLVED_WINDOW_SECS
+            && since_secs(at, now) <= WAIT_RESOLVED_WINDOW_SECS
             && !fired_since(fired, ChaseRung::WaitResolved, id, at)
         {
             out.push(Crossing {
                 rung: ChaseRung::WaitResolved,
                 task_id: Some(id.clone()),
+                subject: None,
                 seat: row.task.owner.clone(),
                 text: format!(
                     "task board: \"{}\" was waiting and the thing it waited on has ended - \
@@ -238,10 +355,13 @@ pub(crate) fn crossings(
                 ),
             });
         }
-        if row.marks.to_close && !fired_already(fired, ChaseRung::EpicClose, id) {
+        if row.marks.to_close
+            && due(fired, ChaseRung::EpicClose, id, None, CADENCE_STUCK_SECS, now)
+        {
             out.push(Crossing {
                 rung: ChaseRung::EpicClose,
                 task_id: Some(id.clone()),
+                subject: None,
                 seat: Some(lead.clone()),
                 text: format!(
                     "task board: \"{}\" has every child terminal and its retro run - close it \
@@ -258,7 +378,7 @@ pub(crate) fn crossings(
         if row.task.parent.is_none()
             && row.rollup.is_some()
             && !row.task.links.iter().any(|l| l.label.as_deref() == Some("retro"))
-            && !fired_already(fired, ChaseRung::Retro, &row.task.id)
+            && due(fired, ChaseRung::Retro, &row.task.id, None, CADENCE_STUCK_SECS, now)
             && rows.iter().any(|child| child.task.parent.as_ref() == Some(&row.task.id))
             && rows.iter().filter(|child| child.task.parent.as_ref() == Some(&row.task.id)).all(
                 |child| {
@@ -272,16 +392,54 @@ pub(crate) fn crossings(
             out.push(Crossing {
                 rung: ChaseRung::Retro,
                 task_id: Some(row.task.id.clone()),
+                subject: None,
                 seat: Some(lead.clone()),
                 text: retro_prompt(row, rows),
             });
         }
     }
 
-    for label in memory.take_new(project, unaccounted) {
+    // The rows parked on the user: never chased before, so a decision
+    // wait sat forever with only a board count. ONE digest per project
+    // asks the lead to filter them - a touch or a move takes a row back
+    // out of it - and a dead lead leaves the mark alone, as every rung.
+    let parked: Vec<&BoardRow> = rows
+        .iter()
+        .filter(|row| {
+            row.task.status == TaskStatus::Waiting
+                && row
+                    .task
+                    .waiting_on
+                    .as_ref()
+                    .is_some_and(|wait| wait.verification || wait.kind == Some(WaitingKind::Decision))
+                && row.updated_secs_ago > CADENCE_STUCK_SECS
+        })
+        .collect();
+    if !parked.is_empty() && due_any(fired, ChaseRung::UserWaitDigest, CADENCE_STUCK_SECS, now) {
+        let named: Vec<String> = parked
+            .iter()
+            .map(|row| format!("\"{}\" ({})", row.task.subject, fmt_secs(row.updated_secs_ago)))
+            .collect();
+        let count = parked.len();
+        let verb = if count == 1 { "row is" } else { "rows are" };
+        out.push(Crossing {
+            rung: ChaseRung::UserWaitDigest,
+            task_id: None,
+            subject: None,
+            seat: Some(lead.clone()),
+            text: format!(
+                "task board: {count} {verb} waiting on the user: {} - confirm it's really \
+                 theirs, or re-plan.",
+                named.join(", "),
+            ),
+        });
+    }
+
+    for label in memory.take_new(project, unaccounted, fired, now) {
         out.push(Crossing {
             rung: ChaseRung::Unaccounted,
             task_id: None,
+            subject: Some(label.clone()),
             seat: Some(lead.clone()),
             text: format!("task board: worker {label} holds no row - feed it or despawn it."),
         });
@@ -402,14 +560,13 @@ impl Workspace {
                 {
                     delivered += 1;
                 }
-                if crossing.rung != ChaseRung::Unaccounted {
-                    self.record_chase(&TaskChase {
-                        task_id: crossing.task_id.clone(),
-                        project_name: project.clone(),
-                        rung: crossing.rung,
-                        at: now,
-                    });
-                }
+                self.record_chase(&TaskChase {
+                    task_id: crossing.task_id.clone(),
+                    subject: crossing.subject.clone(),
+                    project_name: project.clone(),
+                    rung: crossing.rung,
+                    at: now,
+                });
             }
         }
         delivered
@@ -584,8 +741,7 @@ mod tests {
     /// A live worker in `project` holding no row: the shape the
     /// unaccounted rung names.
     fn worker_holding_no_row(ws: &Workspace, project: &str, label: &str) {
-        let key =
-            ws.list_projects().into_iter().find(|v| v.name == project).expect("view").key.clone();
+        let key = project_key(ws, project);
         ws.insert_live_worker(
             &key,
             crate::WorkerEntry {
@@ -603,6 +759,32 @@ mod tests {
                 kick: None,
             },
         );
+    }
+
+    fn project_key(ws: &Workspace, project: &str) -> crate::ProjectKey {
+        ws.list_projects().into_iter().find(|v| v.name == project).expect("view").key.clone()
+    }
+
+    /// One status transition, durably logged, at a synthetic instant.
+    fn append_transition(ws: &Workspace, id: &str, from: TaskStatus, to: TaskStatus, at: u64) {
+        let guard = ws.db.lock();
+        crate::store::task_history::append(
+            guard.as_ref().expect("db"),
+            &[TaskTransition {
+                task_id: TaskId::from(id),
+                project_name: PROJECT.to_owned(),
+                from: Some(from),
+                to,
+                at: epoch(at),
+                by: By::System,
+            }],
+        )
+        .expect("history");
+    }
+
+    /// How many delivered messages carry `needle`.
+    fn says(deliver: &Recording, needle: &str) -> usize {
+        deliver.seen.lock().iter().filter(|(_, text)| text.contains(needle)).count()
     }
 
     /// The unaccounted rung is per project: one project's pass never
@@ -652,6 +834,255 @@ mod tests {
         assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "the worker is named");
         assert_eq!(sweep(&ws, &deliver, &mut memory, 140), 0, "the empty pass says nothing");
         assert_eq!(deliver.seen.lock().len(), 1, "and the naming stands");
+    }
+
+    /// The drifted worker's naming repeats at the 5-minute cadence while
+    /// it stays drifted.
+    #[test]
+    fn the_unaccounted_naming_repeats_at_its_cadence() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        worker_holding_no_row(&ws, PROJECT, "w-1");
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "named on appearance");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 399), 0, "quiet inside the cadence");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 400), 1, "named again at it");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 500), 0, "quiet again");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 701), 1, "and again at the next one");
+    }
+
+    /// A worker that accounts resets its slate: its next drift is named
+    /// at once rather than at the old cadence.
+    #[test]
+    fn a_cleared_unaccounted_worker_is_named_at_once_on_its_next_drift() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        worker_holding_no_row(&ws, PROJECT, "w-1");
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "named on appearance");
+        // The worker despawns: the state cleared.
+        ws.remove_latest_worker(&project_key(&ws, PROJECT), "w-1");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 150), 0, "nothing drifted");
+        // It drifts again, inside the old cadence.
+        worker_holding_no_row(&ws, PROJECT, "w-1");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 200), 1, "the clear reset the slate");
+    }
+
+    /// The naming is durable: a restart inside the cadence does not name
+    /// the worker again, and the cadence still runs off the logged
+    /// naming.
+    #[test]
+    fn a_restart_inside_the_cadence_does_not_rename_the_worker() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        worker_holding_no_row(&ws, PROJECT, "w-1");
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "named");
+        // The process restarts: a fresh memory, the log standing.
+        let mut memory = ChaseMemory::default();
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 200), 0, "the restart does not re-name it");
+        assert_eq!(
+            sweep(&ws, &deliver, &mut memory, 401),
+            1,
+            "the cadence runs off the logged naming",
+        );
+    }
+
+    /// The 30-minute class on a rung with no floor: a stalled queue
+    /// repeats at the cadence while it stays stalled.
+    #[test]
+    fn the_queue_stall_repeats_every_thirty_minutes() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Pending);
+        row.updated_at = epoch(0);
+        ws.seed_test_task(row);
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, WINDOW + 1), 1, "stalled: named");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, WINDOW + 1001), 0, "quiet inside the cadence");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, WINDOW + 1801), 1, "named again at it");
+    }
+
+    /// A failed row is named at the cadence while it stays failed, and a
+    /// re-dispatch that fails again is a new occurrence - named at once,
+    /// not held back by the window.
+    #[test]
+    fn a_failed_row_is_named_at_its_cadence_and_a_refail_is_a_new_occurrence() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Failed);
+        row.updated_at = epoch(0);
+        ws.seed_test_task(row);
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::Failed, 100);
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "the death is named");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 1000), 0, "quiet inside the cadence");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 1901), 1, "named again at it");
+        // Re-dispatched and failed again: a new occurrence.
+        append_transition(&ws, "t-1", TaskStatus::Pending, TaskStatus::InProgress, 5000);
+        append_transition(&ws, "t-1", TaskStatus::InProgress, TaskStatus::Failed, 5000);
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 5010), 1, "the new failure is named at once");
+    }
+
+    /// The 1x overrun nudge is once per estimate: a restated estimate
+    /// arms it again.
+    #[test]
+    fn a_restated_estimate_arms_the_overrun_nudge_again() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        running_over_estimate(&ws, "t-1", None);
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        sweep(&ws, &deliver, &mut memory, 200);
+        assert_eq!(says(&deliver, "has worked"), 1, "named once: {:?}", deliver.seen.lock());
+        sweep(&ws, &deliver, &mut memory, 400);
+        assert_eq!(says(&deliver, "has worked"), 1, "never twice for one estimate");
+        // The owner restates the estimate; the row is still over it.
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.estimate = Some(Estimate { words: "1m".to_owned(), secs: 60 });
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        sweep(&ws, &deliver, &mut memory, 500);
+        assert_eq!(
+            says(&deliver, "has worked"),
+            2,
+            "the restated estimate is a new occurrence: {:?}",
+            deliver.seen.lock(),
+        );
+        sweep(&ws, &deliver, &mut memory, 700);
+        assert_eq!(says(&deliver, "has worked"), 2, "once per estimate, not per sweep");
+    }
+
+    /// The 1.5x escalation repeats every five minutes while the row
+    /// stays over.
+    #[test]
+    fn the_escalation_repeats_at_its_cadence() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        running_over_estimate(&ws, "t-1", None);
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        sweep(&ws, &deliver, &mut memory, 200);
+        assert_eq!(says(&deliver, "is at"), 1, "escalated once: {:?}", deliver.seen.lock());
+        sweep(&ws, &deliver, &mut memory, 400);
+        assert_eq!(says(&deliver, "is at"), 1, "quiet inside the cadence");
+        sweep(&ws, &deliver, &mut memory, 501);
+        assert_eq!(says(&deliver, "is at"), 2, "escalated again at it");
+    }
+
+    /// A row parked on the user - a decision wait, or the look's own
+    /// verification park - untouched since `updated`.
+    fn waiting_on_user(ws: &Workspace, id: &str, updated: u64, verification: bool) {
+        let mut row = task(id, TaskStatus::Waiting);
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification,
+        });
+        row.updated_at = epoch(updated);
+        ws.seed_test_task(row);
+    }
+
+    /// The rows parked on the user get ONE digest per project per window,
+    /// whatever their count.
+    #[test]
+    fn the_user_wait_digest_is_one_message_for_the_whole_set() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        for id in ["t-1", "t-2", "t-3"] {
+            waiting_on_user(&ws, id, 0, false);
+        }
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        let now = WINDOW + 1;
+        assert_eq!(sweep(&ws, &deliver, &mut memory, now), 1, "one message, not three");
+        let seen = deliver.seen.lock();
+        let text = &seen[0].1;
+        assert!(text.contains("3 rows are waiting on the user"), "{text}");
+        for id in ["t-1", "t-2", "t-3"] {
+            assert!(text.contains(&format!("\"subject {id}\"")), "names {id}: {text}");
+        }
+        assert_eq!(seen[0].0, SessionSlot::lead("TestOrg", PROJECT), "it goes to the lead");
+        drop(seen);
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, now + 1799), 0, "quiet inside the window");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, now + 1800), 1, "one more at the cadence");
+    }
+
+    /// The lead's touch takes exactly that row out of the digest; a
+    /// verify=user row rides it like a decision wait.
+    #[test]
+    fn a_touched_row_leaves_the_digest_and_a_verify_park_joins_it() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        waiting_on_user(&ws, "t-1", 0, false);
+        waiting_on_user(&ws, "t-2", 0, true);
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        let now = WINDOW + 1;
+        assert_eq!(sweep(&ws, &deliver, &mut memory, now), 1, "one digest");
+        let seen = deliver.seen.lock();
+        assert!(seen[0].1.contains("2 rows are waiting on the user"), "{}", seen[0].1);
+        assert!(seen[0].1.contains("\"subject t-2\""), "the park joins it: {}", seen[0].1);
+        drop(seen);
+
+        // The lead answers t-1: the touch ends that row's asks.
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            task.detail = Some("really on Ved".to_owned());
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, now + 1800), 1, "the digest repeats");
+        let seen = deliver.seen.lock();
+        let text = &seen.last().expect("a digest").1;
+        assert!(text.contains("1 row is waiting on the user"), "{text}");
+        assert!(text.contains("\"subject t-2\""), "the park still stands: {text}");
+        assert!(!text.contains("t-1"), "the touched row left: {text}");
+    }
+
+    /// With no live lead the digest is mark-only: nothing is delivered
+    /// and nothing is spawned.
+    #[test]
+    fn the_digest_with_no_live_lead_leaves_only_the_mark() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        waiting_on_user(&ws, "t-1", 0, false);
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, WINDOW + 1), 0, "nothing delivered");
+        assert!(deliver.seen.lock().is_empty(), "no seat was reached");
+        assert!(
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .any(|chase| chase.rung == ChaseRung::UserWaitDigest),
+            "the mark alone stands on the log",
+        );
     }
 
     /// The estimate crossing asks the owner once, ever - a later sweep

@@ -213,13 +213,22 @@ pub enum ChaseRung {
     Death,
     Retro,
     EpicClose,
+    /// Rows parked on the user, untouched: ONE digest per project asks
+    /// the lead to filter them - the chase never spawns a session for it.
+    UserWaitDigest,
 }
 
-/// One fired chase: the row it was about (absent for a seat-level rung)
-/// and when.
+/// One fired chase: the row it was about (absent for a seat-level rung),
+/// the rung's own subject where a row id does not identify it, and when.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskChase {
     pub task_id: Option<TaskId>,
+    /// The rung's subject where a row id does not identify it: the
+    /// worker a seat-level rung names, or the estimate a nudge fired
+    /// against - so a restated estimate arms the nudge again. `default`
+    /// reads a row written before the field.
+    #[serde(default)]
+    pub subject: Option<String>,
     pub project_name: String,
     pub rung: ChaseRung,
     pub at: SystemTime,
@@ -360,6 +369,7 @@ mod tests {
     fn a_chase_records_its_rung_and_may_have_no_task() {
         let chase = TaskChase {
             task_id: None,
+            subject: Some("w-1".to_owned()),
             project_name: "forge".to_owned(),
             rung: ChaseRung::Unaccounted,
             at: std::time::SystemTime::UNIX_EPOCH,
@@ -371,6 +381,11 @@ mod tests {
             serde_json::to_string(&ChaseRung::EstimateNudge).expect("serialize"),
             "\"estimate_nudge\"",
             "the rung's spelling is what the store reads back",
+        );
+        assert_eq!(
+            serde_json::to_string(&ChaseRung::UserWaitDigest).expect("serialize"),
+            "\"user_wait_digest\"",
+            "the newest rung's spelling is what the store reads back",
         );
     }
 

@@ -13,12 +13,17 @@ use super::Db;
 const TASK_CHASES: TableDefinition<&str, &[u8]> = TableDefinition::new("task_chases");
 
 /// The row key for one fired chase: project, the row it was about (a
-/// seat-level rung carries none), the rung, and the instant.
+/// seat-level rung carries none), the rung's own subject (two workers
+/// named in one sweep share an instant), the rung, and the instant.
 fn row_key(chase: &TaskChase) -> String {
     let nanos =
         chase.at.duration_since(std::time::SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let task = chase.task_id.as_ref().map_or("-", forge_primitives::tasks::TaskId::as_str);
-    format!("{}\u{0}{task}\u{0}{:?}\u{0}{nanos:040}", chase.project_name, chase.rung)
+    let subject = chase.subject.as_deref().unwrap_or("-");
+    format!(
+        "{}\u{0}{task}\u{0}{subject}\u{0}{:?}\u{0}{nanos:040}",
+        chase.project_name, chase.rung
+    )
 }
 
 /// Append `chases`; never rewrites what is there.
@@ -78,6 +83,7 @@ mod tests {
     fn chase(task: Option<&str>, project: &str, rung: ChaseRung, at_secs: u64) -> TaskChase {
         TaskChase {
             task_id: task.map(TaskId::from),
+            subject: None,
             project_name: project.to_owned(),
             rung,
             at: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at_secs),
@@ -111,6 +117,23 @@ mod tests {
             forge.iter().any(|c| c.task_id.is_none() && c.rung == ChaseRung::Unaccounted),
             "a seat-level rung records with no task",
         );
+    }
+
+    /// Two workers named by one sweep share an instant, so the label is
+    /// part of the key: without it the second write would overwrite the
+    /// first and one worker's naming would vanish from the log.
+    #[test]
+    fn two_seat_level_chases_at_one_instant_both_survive() {
+        let dir = tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let mut w1 = chase(None, "forge", ChaseRung::Unaccounted, 10);
+        w1.subject = Some("w-1".to_owned());
+        let mut w2 = chase(None, "forge", ChaseRung::Unaccounted, 10);
+        w2.subject = Some("w-2".to_owned());
+        append(&db, &[w1, w2]).expect("append");
+
+        let forge = list_for_project(&db, "forge").expect("list");
+        assert_eq!(forge.len(), 2, "both namings stand: {forge:?}");
     }
 
     #[test]
