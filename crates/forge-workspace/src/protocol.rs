@@ -2849,6 +2849,30 @@ mod session_update_variants {
 }
 
 #[cfg(test)]
+mod idle_verdict_wire_tests {
+    use super::*;
+
+    /// **The idle verdicts' own words**, which the client reads by hand: a
+    /// rename on either side would leave every warning reading Unanswered,
+    /// the feature failing silently.
+    #[test]
+    fn the_idle_verdicts_cross_as_their_own_words() {
+        for (verdict, word) in [
+            (IdleVerdict::Delivered, "delivered"),
+            (IdleVerdict::Held, "held"),
+            (IdleVerdict::NoSession, "no_session"),
+            (IdleVerdict::Clear, "clear"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(verdict).expect("a verdict encodes"),
+                serde_json::json!(word),
+                "{verdict:?} crosses as its own snake_case word",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod dictate_level_wire_tests {
     use super::*;
 

@@ -171,8 +171,7 @@ pub struct BrowserHost {
     owned: Mutex<HashMap<PathBuf, chromium::ClientLock>>,
     /// The idle release's clock per profile: when a seat last used it, when
     /// its seat was last warned, and who that seat was. In-memory on purpose
-    /// (see [`idle`]): a client restart grants every browser a fresh window,
-    /// and the bound is an hour long.
+    /// (see [`idle`]): a client restart grants every browser a fresh window.
     #[cfg(desktop)]
     touches: Mutex<HashMap<PathBuf, idle::Touch>>,
     /// When this client's host came up: an untouched profile's clock starts
@@ -596,6 +595,11 @@ impl BrowserHost {
     /// Every profile the idle release may act on, with its clock: the named
     /// profiles (the seat to warn is their owner, or whoever last called) and
     /// the shared browser (whoever last called it, `None` when no one has).
+    ///
+    /// **A browser that is not there is not idle, and a window that is up is
+    /// in use.** A dead profile has nothing to release, and a raised window
+    /// - the marker over a live launch with a page - is the person's: it is
+    /// never warned about and never closed.
     #[cfg(desktop)]
     pub(crate) async fn idle_candidates(&self) -> Vec<idle::Candidate> {
         let Ok(paths) = self.paths.clone() else { return Vec::new() };
@@ -604,39 +608,62 @@ impl BrowserHost {
             touches.clone()
         };
         let untouched = idle::Touch { at: self.boot, warned: None, caller: None };
-        let mut out = Vec::new();
-        {
+        // **The registry lock is not held across the probes** - the same
+        // discipline the strip's list keeps: a devtools read parks an open
+        // behind every profile it has to ask about.
+        let rows: Vec<(String, PathBuf, Seat)> = {
             let named = self.named.lock().await;
-            for (name, entry) in named.iter() {
-                let touch = touches.get(&entry.dir).cloned().unwrap_or_else(|| untouched.clone());
-                out.push(idle::Candidate {
-                    name: Some(name.clone()),
-                    dir: entry.dir.clone(),
-                    touch: idle::Touch {
-                        caller: touch.caller.clone().or_else(|| Some(entry.owner.clone())),
-                        ..touch
-                    },
-                });
+            named
+                .iter()
+                .map(|(name, entry)| (name.clone(), entry.dir.clone(), entry.owner.clone()))
+                .collect()
+        };
+        let mut out = Vec::new();
+        for (name, dir, owner) in rows {
+            if chromium::verified(&dir).await.is_none() || chromium::windowed(&dir).await {
+                continue;
             }
+            let touch = touches.get(&dir).cloned().unwrap_or_else(|| untouched.clone());
+            out.push(idle::Candidate {
+                name: Some(name),
+                dir,
+                touch: idle::Touch {
+                    caller: touch.caller.clone().or_else(|| Some(owner)),
+                    ..touch
+                },
+            });
         }
-        let touch = touches.get(&paths.user_data).cloned().unwrap_or(untouched);
-        out.push(idle::Candidate { name: None, dir: paths.user_data.clone(), touch });
+        if chromium::verified(&paths.user_data).await.is_some()
+            && !chromium::windowed(&paths.user_data).await
+        {
+            let touch = touches.get(&paths.user_data).cloned().unwrap_or(untouched);
+            out.push(idle::Candidate { name: None, dir: paths.user_data.clone(), touch });
+        }
         out
     }
 
     /// The idle release closing one profile: the named path takes the row's
     /// own close (the name is given up and the next call relaunches), and the
     /// shared browser is closed where it stands - it is not a profile to
-    /// remove.
+    /// remove. **The clock goes with it**: the entry a closed profile leaves
+    /// would otherwise re-nudge and re-close a dead browser every pass.
     #[cfg(desktop)]
     pub(crate) async fn close_idle(&self, name: Option<&str>) {
         match name {
             Some(name) => {
+                let dir = {
+                    let named = self.named.lock().await;
+                    named.get(name).map(|entry| entry.dir.clone())
+                };
                 let _ = self.close(name).await;
+                if let Some(dir) = dir {
+                    self.touches.lock().await.remove(&dir);
+                }
             }
             None => {
                 if let Ok(paths) = self.paths.clone() {
                     chromium::close(&paths.user_data).await;
+                    self.touches.lock().await.remove(&paths.user_data);
                 }
             }
         }
@@ -2140,10 +2167,10 @@ mod tests {
     }
 
     /// **The idle release's clock resets on every touch, and the candidates
-    /// name the seat to warn**: a named profile's owner, the shared browser's
-    /// last caller, and no one at all until someone calls.
+    /// name the seat to warn** - while a browser that is not there, and a
+    /// window that is up, are never candidates at all.
     #[tokio::test]
-    async fn the_idle_clock_resets_and_the_candidates_name_their_seats() {
+    async fn the_idle_clock_resets_and_dead_or_raised_browsers_are_no_candidates() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let paths = StackPaths {
             stack: dir.path().join("stack"),
@@ -2151,30 +2178,44 @@ mod tests {
             output: dir.path().join("output"),
             profiles: dir.path().join("profiles"),
         };
-        let host = BrowserHost::new(paths.clone());
+        let host = Arc::new(BrowserHost::new(paths.clone()));
         let who = seat();
         let named = Named::open(who.clone(), "hunt", &paths).expect("the open");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
         let hunt = paths.profiles.join("hunt");
-
         host.touch(&hunt, Some(&who)).await;
-        let candidates = host.idle_candidates().await;
+
+        // No endpoint: a browser that is not there is not idle.
+        assert!(
+            host.idle_candidates().await.is_empty(),
+            "a dead profile and the unlaunched shared browser are no candidates",
+        );
+
+        // A live endpoint, no raise marker: the candidate appears, and the
+        // clock carries the seat.
+        let identity = "/devtools/browser/idle";
+        let (port, in_flight, release) = stalling_devtools(identity).await;
+        std::fs::write(hunt.join("DevToolsActivePort"), format!("{port}\n{identity}\n"))
+            .expect("the port file");
+        let first = tokio::spawn({
+            let host = Arc::clone(&host);
+            async move { host.idle_candidates().await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), in_flight)
+            .await
+            .expect("the probe reaches the endpoint")
+            .expect("the endpoint signals the request");
+        release.send(()).expect("the endpoint releases");
+        let candidates = first.await.expect("the candidates");
         let row = candidates
             .iter()
             .find(|candidate| candidate.name.as_deref() == Some("hunt"))
-            .expect("the named row");
+            .expect("the named row with a live launch");
         assert_eq!(row.touch.caller, Some(who.clone()), "the owner is the seat to warn");
         assert!(row.touch.warned.is_none(), "a fresh touch carries no warning");
 
         let warned_at = std::time::Instant::now();
         host.note_warned(&hunt, warned_at).await;
-        let candidates = host.idle_candidates().await;
-        let row = candidates
-            .iter()
-            .find(|candidate| candidate.name.as_deref() == Some("hunt"))
-            .expect("the named row");
-        assert_eq!(row.touch.warned, Some(warned_at), "the warning stands until a touch");
-
         host.touch(&hunt, None).await;
         let candidates = host.idle_candidates().await;
         let row = candidates
@@ -2184,11 +2225,13 @@ mod tests {
         assert!(row.touch.warned.is_none(), "a touch clears the warning");
         assert_eq!(row.touch.caller, Some(who), "and keeps the seat it had");
 
-        let shared = candidates
-            .iter()
-            .find(|candidate| candidate.name.is_none())
-            .expect("the shared browser is a candidate too");
-        assert_eq!(shared.touch.caller, None, "no one has called the shared browser yet");
+        // Marker over the live launch: the window is up, and a raised window
+        // is never a candidate - it is the person's.
+        std::fs::write(hunt.join("windowed"), b"https://example.com/x").expect("the marker");
+        assert!(host.idle_candidates().await.is_empty(), "a raised window is in use, not idle",);
+
+        let shared = candidates.iter().find(|candidate| candidate.name.is_none());
+        assert!(shared.is_none(), "the shared browser has not launched at all");
     }
 
     /// **Two leads, two projects, two auto profiles.** Every lead carries

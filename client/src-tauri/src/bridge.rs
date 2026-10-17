@@ -832,6 +832,25 @@ mod tests {
         })
     }
 
+    /// **The idle numbers come off the greeting**, and an absent pair is the
+    /// built-in 30/10 - the same unset-means-built-in rule the names keep.
+    #[tokio::test]
+    async fn the_idle_numbers_come_off_the_greeting() {
+        let (bridge, _rx) = bridge();
+        sent(
+            &bridge,
+            json!({ "kind": "greeting", "version": 8,
+                    "settings": { "browser_idle_minutes": 45, "browser_grace_minutes": 15 } }),
+        );
+        assert_eq!(bridge.browser_idle_minutes(), (45, 15), "the config's pair crosses intact");
+
+        sent(&bridge, json!({ "kind": "greeting", "version": 8, "settings": {} }));
+        assert_eq!(bridge.browser_idle_minutes(), (30, 10), "absent means the built-in pair");
+
+        sent(&bridge, json!({ "kind": "greeting", "version": 8 }));
+        assert_eq!(bridge.browser_idle_minutes(), (30, 10), "and no settings at all is the same");
+    }
+
     /// Every frame reaches the page as itself, an unknown kind included
     /// (rule 25) - and the record takes it as well.
     #[tokio::test]

@@ -5165,8 +5165,8 @@ impl Workspace {
                         let text = format!(
                             "the '{profile}' browser has sat idle for {idle_minutes} minutes; it \
                              closes in {grace_minutes} unless a browser call of yours uses it. \
-                             Nothing prepared survives the close except the pages themselves, \
-                             which reopen on the next call.",
+                             Nothing prepared survives the close: the next call brings the \
+                             browser back, and raising it brings the pages back.",
                         );
                         match self.dispatch_forged_prompt_under(
                             &key,

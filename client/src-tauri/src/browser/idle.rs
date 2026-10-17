@@ -13,9 +13,9 @@
 //!
 //! **The two numbers are `[client]` keys** (`browser_idle_minutes`,
 //! `browser_grace_minutes`), read off the greeting this client was sent;
-//! absent means the built-in pair below. Nothing prepared survives a close
-//! except the pages themselves, which reopen on the next call - that is the
-//! trade the warning's own words name.
+//! absent means the built-in pair below. Nothing prepared survives a close:
+//! the next call brings the browser back blank, and raising it brings the
+//! pages back - the trade the warning's own words name.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -171,27 +171,32 @@ async fn sweep(bridge: &Arc<Bridge>) {
         // **No one to tell closes now, quietly** - the shared browser never
         // called, a profile whose seat is gone.
         let Some(seat) = candidate.touch.caller.as_ref() else {
-            host.close_idle(candidate.name.as_deref()).await;
+            close_guarded(&host, &candidate).await;
             continue;
         };
         let command = warning(&candidate, seat, idle_minutes, grace_minutes, at_close);
         let verdict = verdict_of(socket.dispatch(command, true).await.ok().flatten().as_ref());
         match verdict {
-            // **Held**: a hand-off is waiting on the person; nothing was
-            // delivered and nothing may close. The streak stays armed, and
-            // the close's own ask re-checks once per grace - so an abandoned
-            // hand-off (the session gone, the browser parked) closes on a
-            // later round rather than never.
-            Verdict::Held => host.note_warned(&candidate.dir, now).await,
-            Verdict::Delivered => host.note_warned(&candidate.dir, now).await,
-            Verdict::NoSession | Verdict::Clear => {
-                host.close_idle(candidate.name.as_deref()).await;
+            // **Delivered, or Held (a hand-off waiting on the person - nothing
+            // delivered, nothing to close), or a reply lost in flight (not a
+            // reason to ask twice)**: the grace arms, and the close's own ask
+            // re-checks the hold - so an abandoned hand-off (the session gone,
+            // the browser parked) closes on a later round rather than never.
+            Verdict::Delivered | Verdict::Held | Verdict::Unanswered => {
+                host.note_warned(&candidate.dir, now).await;
             }
-            // Asked and not answered (no connection, a refusal): nothing is
-            // concluded; the next pass asks again.
-            Verdict::Unanswered => {}
+            Verdict::NoSession | Verdict::Clear => close_guarded(&host, &candidate).await,
         }
     }
+}
+
+/// The kill, re-checked: the verdict that allowed it is a round trip old, so
+/// a window raised meanwhile is not closed.
+async fn close_guarded(host: &crate::browser::BrowserHost, candidate: &Candidate) {
+    if crate::browser::chromium::windowed(&candidate.dir).await {
+        return;
+    }
+    host.close_idle(candidate.name.as_deref()).await;
 }
 
 #[cfg(test)]
@@ -200,6 +205,15 @@ mod tests {
 
     const IDLE: Duration = Duration::from_secs(30 * 60);
     const GRACE: Duration = Duration::from_secs(10 * 60);
+
+    /// The book (`docs/book/src/configuration.md`) documents 30 and 10 as
+    /// what an unset pair means; a drift here must fail a test, not the
+    /// user's expectation.
+    #[test]
+    fn the_defaults_are_the_documents_thirty_and_ten() {
+        assert_eq!(IDLE_MINUTES, 30);
+        assert_eq!(GRACE_MINUTES, 10);
+    }
 
     /// The whole clock, one case per arm: a fresh touch sits quiet, an idle
     /// one warns once, and the warning's grace decides between waiting and
