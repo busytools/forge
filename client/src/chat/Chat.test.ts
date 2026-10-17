@@ -33,6 +33,11 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
+// The switch marks (#2374) are the probe's to write; the column's half is
+// calling the mark where the rows actually draw, which is what this watches.
+const firstRowMark = vi.hoisted(() => vi.fn());
+vi.mock('../perf', () => ({ noteFirstRow: firstRowMark }));
+
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
 /** The seat key the pinned-row store is read under, which is what the composer draws from. */
@@ -1456,5 +1461,64 @@ describe('the arrival mark', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * **The first-row mark lands where the rows land (#2374).** The probe writes
+ * the record; what this pins is the column's half - the mark is called when
+ * a seat's conversation first draws a row, not when the seat was switched
+ * to, and another seat's arrival marks again.
+ */
+describe('the first-row mark', () => {
+  const turn = (key: string): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'assistant',
+        message: {
+          id: `m-${key}`,
+          role: 'assistant',
+          model: 'claude-opus-5',
+          content: [{ type: 'text', text: `said ${key}` }],
+        },
+      },
+    ],
+  });
+
+  it('marks when a seat first draws rows, and again when another seat lands', async () => {
+    const server = stub();
+    firstRowMark.mockClear();
+    const column = mount(SeatSwitch, {
+      target: document.body,
+      props: { connection: server.connection, first: LEAD, second: { ...LEAD, label: 'w1' } },
+    }) as unknown as { flip: () => void };
+    app = column;
+    flushSync();
+
+    expect(firstRowMark, 'nothing is drawn before a page lands').not.toHaveBeenCalled();
+
+    server.answer([turn('t1')]);
+    await painted();
+    expect(firstRowMark, 'the first row a seat draws is the mark').toHaveBeenCalled();
+
+    // The switch: the new seat has drawn nothing, and its own page is what
+    // puts the mark down for it.
+    firstRowMark.mockClear();
+    column.flip();
+    flushSync();
+    expect(firstRowMark, 'the seat just switched to has drawn no row yet').not.toHaveBeenCalled();
+
+    server.send({
+      kind: 'page',
+      conversation: { ...LEAD, label: 'w1' },
+      turns: [turn('t2')],
+      cursor: null,
+    });
+    await painted();
+    expect(
+      firstRowMark,
+      "the switched-to seat's own first row is the second mark",
+    ).toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@
   import { heldReserve, sizes } from './row-sizes';
 
   import Icon from '../components/Icon.svelte';
+  import { noteFirstRow } from '../perf';
   import { subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
@@ -666,6 +667,18 @@
     for (const entry of live.values()) entry.stop();
     live.clear();
     kept.clear();
+  });
+
+  /**
+   * **The seat's first drawn row (#2374).** The effect runs after the update
+   * that first puts this seat's rows in the DOM, which is what the switch's
+   * own timing is measured to - the mark is written where the row landed,
+   * not where the click happened. Declared after the seat effect above, so a
+   * switch has put the new seat's conversation in `held` before this reads
+   * it: a mark written off the seat that is going would time the wrong open.
+   */
+  $effect(() => {
+    if (held.turns.length > 0) noteFirstRow();
   });
 
   // The first page is drawn at the end rather than the start, and that is not

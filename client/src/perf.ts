@@ -43,13 +43,16 @@ const SUMMARY_INTERVAL_MS = 10_000;
 /** One line of the perf log, as the shell writes it. */
 export interface PerfRecord {
   schema: string;
-  kind: 'run_started' | 'frame' | 'longtask' | 'summary';
+  kind: 'run_started' | 'frame' | 'longtask' | 'summary' | 'switch' | 'first_row' | 'quiet';
   run_id: string;
   ts_ms: number;
   version?: string;
   /** The frame's own counter within the run, for a frame record. */
   frame?: number;
-  /** The frame's gap, or the long task's duration, in milliseconds. */
+  /**
+   * The frame's gap, or the long task's duration, or - for a `first_row` and
+   * a `quiet` - the time since the switch record the mark belongs to.
+   */
   ms?: number;
   /** A long task's own name. */
   name?: string;
@@ -75,6 +78,8 @@ interface PerfProbe {
   stop(): void;
   /** The page the probe is looking at; nulls for a route with no seat. */
   setSurface(surface: string | null, session: string | null): void;
+  /** One row of the open seat's conversation has drawn (#2374). */
+  noteFirstRow(): void;
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
@@ -145,6 +150,19 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let last: number | null = null;
   let cancelFrame: (() => void) | null = null;
   let cancelObserver: (() => void) | null = null;
+  /**
+   * The seat the page is showing, and whether a route has been wired yet.
+   *
+   * **A seat that was not already on screen is a switch** (#2374): the
+   * records a reader measures a slow switch by - `first_row` and `quiet` -
+   * are timed from when the seat came on screen. The first wiring is boot's
+   * own read, and the run line already brackets that.
+   */
+  let shown: string | null = null;
+  let wired = false;
+  /** When the open seat came on screen, and whether its rows have drawn. */
+  let openAt: number | null = null;
+  let firstRowSeen = false;
 
   function emit(record: PerfRecord): void {
     sink([record]);
@@ -192,6 +210,20 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           surface,
           session,
         });
+      } else if (openAt !== null && firstRowSeen) {
+        // **The open seat's work is done**: its rows are drawn and the
+        // frame loop is back to a normal cadence, which is the quiet the
+        // switch's own timing is measured to.
+        emit({
+          schema: SCHEMA,
+          kind: 'quiet',
+          run_id: runId,
+          ts_ms: Date.now(),
+          ms: at - openAt,
+          surface,
+          session,
+        });
+        openAt = null;
       }
     }
     last = at;
@@ -205,6 +237,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       frames = 0;
       slow = 0;
       maxMs = 0;
+      openAt = null;
+      firstRowSeen = false;
       windowStart = now();
       // Boot's own reading: the router has usually not wired a route yet,
       // so null here is the honest answer rather than a gap.
@@ -247,6 +281,33 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     setSurface(next: string | null, seat: string | null): void {
       surface = next;
       session = seat;
+      if (wired && seat !== null && seat !== shown) {
+        openAt = now();
+        firstRowSeen = false;
+        emit({
+          schema: SCHEMA,
+          kind: 'switch',
+          run_id: runId,
+          ts_ms: Date.now(),
+          surface,
+          session,
+        });
+      }
+      shown = seat;
+      wired = true;
+    },
+    noteFirstRow(): void {
+      if (openAt === null || firstRowSeen) return;
+      firstRowSeen = true;
+      emit({
+        schema: SCHEMA,
+        kind: 'first_row',
+        run_id: runId,
+        ts_ms: Date.now(),
+        ms: now() - openAt,
+        surface,
+        session,
+      });
     },
   };
 }
@@ -270,6 +331,15 @@ export function startPerfProbe(options: ProbeOptions = {}): PerfProbe | null {
 /** Where the page is, for the records the probe writes from here on. */
 export function notePerfSurface(surface: string | null, session: string | null): void {
   running?.setSurface(surface, session);
+}
+
+/**
+ * One row of the open seat's conversation has drawn: the mark a seat
+ * switch's own timing is measured to, written where the rows land rather
+ * than where the click happened (#2374).
+ */
+export function noteFirstRow(): void {
+  running?.noteFirstRow();
 }
 
 /**
