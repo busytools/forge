@@ -10891,7 +10891,7 @@ provider = "anthropic"
         use forge_primitives::browser::{HandOff, HandOffEnding};
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let key = SessionSlot::lead("TestOrg", "proj");
         // The stub task plus a connected session id: what a forged prompt
         // needs to land (the chase's own delivery machinery, unchanged).
@@ -10929,6 +10929,24 @@ provider = "anthropic"
             warn(&ws, Some(&key), "printables", false).await,
             IdleVerdict::Delivered,
             "another profile is not held by it",
+        );
+        // **The delivered warning is the authored sentence, drawn as a
+        // turn**: the verdict alone would pass with any text at all.
+        let warned = std::iter::from_fn(|| rx.try_recv().ok())
+            .find_map(|update| match update.update {
+                SessionUpdate::ChatAppended { msg, .. } => {
+                    Some(serde_json::to_string(&msg).expect("the frame encodes"))
+                }
+                _ => None,
+            })
+            .expect("the warning's frame reached the stream");
+        assert!(
+            warned.contains(
+                "the 'printables' browser has sat idle for 30 minutes; it closes in 10 unless \
+                 a browser call of yours uses it. Nothing prepared survives the close: the next \
+                 call brings the browser back, and raising it brings the pages back."
+            ),
+            "the authored sentence is what crosses: {warned}",
         );
         assert!(ws.resolve_browser_hand_off(id, &key, HandOffEnding::NotNow), "it resolves");
         assert_eq!(
