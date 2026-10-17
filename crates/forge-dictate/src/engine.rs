@@ -353,6 +353,10 @@ pub struct Engine {
     /// anywhere. Held here because the worker consumes the config, and
     /// the per-take segmenter writes the record at finish.
     diagnostics_dir: Option<PathBuf>,
+    /// The models this engine runs, resolved from the config before the
+    /// worker consumes it: what every take's diagnostics record names
+    /// itself by.
+    models: Arc<diagnostics::TakeModels>,
     /// Set before teardown. The worker checks it between jobs, so a
     /// backlog is DISCARDED rather than drained: shutdown should not wait
     /// out work whose callers are going away with it.
@@ -408,6 +412,7 @@ impl Engine {
         let normalize_options = cfg.normalize_options;
         let silence_floor = cfg.silence_floor;
         let diagnostics_dir = cfg.diagnostics_dir.clone();
+        let models = Arc::new(diagnostics::TakeModels::from_config(&cfg));
         let stopping = Arc::new(AtomicBool::new(false));
         let in_flight: Arc<Mutex<Option<CancelToken>>> = Arc::new(Mutex::new(None));
         let readiness = Arc::new(Readiness::default());
@@ -419,7 +424,8 @@ impl Engine {
                 let stopping = Arc::clone(&stopping);
                 let in_flight = Arc::clone(&in_flight);
                 let readiness = Arc::clone(&readiness);
-                move || worker(&asr_path, &cfg, &queue, &stopping, &in_flight, &readiness)
+                let models = Arc::clone(&models);
+                move || worker(&asr_path, &cfg, &models, &queue, &stopping, &in_flight, &readiness)
             })
             .map_err(|source| Error::WorkerSpawn { message: source.to_string() })?;
 
@@ -428,6 +434,7 @@ impl Engine {
             normalize_options,
             silence_floor,
             diagnostics_dir,
+            models,
             stopping,
             in_flight,
             jobs: Some(jobs),
@@ -548,6 +555,7 @@ impl Engine {
                     jobs,
                     silence_floor: self.silence_floor,
                     diagnostics_dir: self.diagnostics_dir.clone(),
+                    models: Arc::clone(&self.models),
                     take,
                     last_cut: 0,
                     cuts: Vec::new(),
@@ -933,6 +941,7 @@ fn load_models(asr_path: &Path, cfg: &Config) -> Result<Loaded, (PathBuf, String
 fn worker(
     asr_path: &Path,
     cfg: &Config,
+    models: &diagnostics::TakeModels,
     queue: &Receiver<Job>,
     stopping: &AtomicBool,
     in_flight: &Mutex<Option<CancelToken>>,
@@ -1077,11 +1086,12 @@ fn worker(
                 }
             }
         }
-        // The diagnostics record snapshots the stages, since the
-        // transcript the answer carries takes the original.
-        let diag_stages = stages.clone();
-        let answer = if let Some(error) = failure {
-            Err(error)
+        // The diagnostics record's copy of the stages is taken beside
+        // the answer rather than before it: the cleanup pass sets
+        // `Stages::normalize` on the way, so a clone made first would
+        // report `normalizer_ran` false for a take that ran it.
+        let (diag_stages, answer) = if let Some(error) = failure {
+            (stages.clone(), Err(error))
         } else {
             let (asr, text) = finalize_transcript(&asr_parts, |raw| match &job.normalize {
                 // A normalizer that fails mid-session must not cost the
@@ -1096,7 +1106,8 @@ fn worker(
             // error or a cancel discards the stages, and taking the
             // load cost there would lose it for the process.
             first = false;
-            Ok(Outcome::Transcript(Transcript { text, asr, stages, truncated }))
+            let transcript = Transcript { text, asr, stages, truncated };
+            (transcript.stages.clone(), Ok(Outcome::Transcript(transcript)))
         };
         let diag = diagnostic_outcome(&answer);
         in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
@@ -1121,6 +1132,7 @@ fn worker(
                 joined: &join_window_texts(&asr_parts),
                 text: &text,
                 stages: &diag_stages,
+                models,
                 start_lag_ms,
                 processing_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                 truncated,
@@ -1275,6 +1287,8 @@ struct TakeSegmenter {
     jobs: Sender<Job>,
     silence_floor: f32,
     diagnostics_dir: Option<PathBuf>,
+    /// The models the take ran under, named in its diagnostics record.
+    models: Arc<diagnostics::TakeModels>,
     take: TakeShared,
     /// First sample not yet handed to a segment.
     last_cut: usize,
@@ -1527,6 +1541,7 @@ impl TakeSegmenter {
                 joined: &join_window_texts(&raws),
                 text: &text,
                 stages: &diag_stages,
+                models: &self.models,
                 start_lag_ms,
                 processing_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                 truncated: folded_truncated || finish.truncated,
@@ -1563,7 +1578,7 @@ impl TakeSegmenter {
 #[cfg(test)]
 mod tests_engine {
     use super::*;
-    use crate::{ConfigBuilder, Samples};
+    use crate::{ConfigBuilder, ModelFacts, ModelSpec, Samples};
 
     /// An engine whose weights live in an empty directory. Enough for
     /// anything decided before a job is queued; a job would fail at
@@ -1945,6 +1960,68 @@ mod tests_engine {
         drop(stream);
     }
 
+    /// The wiring leg for a capture's provenance: its record names the
+    /// models the engine was BUILT with, not a default or a stub.
+    ///
+    /// Weightless: the failed load answers the take's segments, and a
+    /// take whose segments failed still writes its record - which is
+    /// the whole path a live capture's provenance rides.
+    #[test]
+    fn a_live_take_records_the_models_the_engine_was_built_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(ModelSpec {
+                file: "asr-stub.gguf".into(),
+                url: String::new(),
+                size: 4242,
+                sha256: Some("a1b2c3".into()),
+                facts: ModelFacts::default(),
+            })
+            .normalizer(None)
+            .language("en")
+            .diagnostics_dir(&store)
+            .build();
+        let engine = Engine::new(cfg).expect("engine must start");
+        let stream = engine.capture_stream().expect("an idle engine must take a stream");
+        for chunk in loud(5).chunks(SAMPLE_RATE as usize) {
+            assert!(stream.sink.push_mono(chunk), "a push below the cap must be kept");
+        }
+        let ticket = stream.capture.finish().expect("the take must finish");
+        // `recv` joins the segmenter, which writes the record before it
+        // returns, so the store is complete once this lands.
+        assert!(
+            matches!(ticket.recv(), Err(Error::ModelLoad { .. })),
+            "the missing weights' failure is the take's answer"
+        );
+
+        let take = std::fs::read_dir(&store)
+            .expect("the store directory")
+            .flatten()
+            .next()
+            .expect("a failed take still writes its record")
+            .path();
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(take.join("meta.json")).unwrap())
+                .expect("meta.json parses");
+        assert_eq!(meta["outcome"], "recognition_error", "the take's own outcome");
+        assert_eq!(
+            meta["asr"]["file"], "asr-stub.gguf",
+            "the record names the model this engine was built with"
+        );
+        assert_eq!(meta["asr"]["sha256"], "a1b2c3", "its declared digest");
+        assert_eq!(meta["asr"]["size"], 4242, "its declared size");
+        assert!(meta["normalizer"].is_null(), "no configured cleanup names no model");
+        assert_eq!(meta["normalizer_ran"], false, "nothing normalized this take");
+        assert_eq!(meta["language"], "en", "the language the engine was built with");
+        assert_eq!(
+            meta["forge_version"],
+            env!("CARGO_PKG_VERSION"),
+            "the release the take was made under"
+        );
+    }
+
     /// Poll a capture's progress stream until one segment has settled,
     /// while the recording is still open.
     fn wait_for_a_settled_segment(progress: &mut Receiver<WindowProgress>) -> Vec<WindowProgress> {
@@ -2167,7 +2244,7 @@ mod tests_windowing {
 #[cfg(test)]
 mod tests_real_recognition {
     use super::*;
-    use crate::{ConfigBuilder, Samples};
+    use crate::{ConfigBuilder, ModelSpec, Samples};
 
     fn read_wav(path: &std::path::Path) -> (Vec<f32>, u32) {
         let bytes = std::fs::read(path).expect("fixture must be readable");
@@ -2458,6 +2535,70 @@ mod tests_real_recognition {
             "the capture is stored at the model rate"
         );
         assert_eq!(reader.samples::<i16>().count(), pcm.len(), "the whole capture is stored");
+    }
+
+    /// The direct path's wiring leg and its ordering pin: the record
+    /// names the models the engine was BUILT with, and is built AFTER
+    /// the cleanup pass - `Stages::normalize` is set by the pass itself,
+    /// so a snapshot taken before it reports `normalizer_ran` false on a
+    /// take that was cleaned.
+    ///
+    /// Weights-only: the failed-load path answers jobs without writing a
+    /// record, so no weightless take reaches the worker's record site.
+    #[test]
+    #[ignore = "needs both models; run with --run-ignored all after `--example fetch`"]
+    fn a_direct_take_records_the_models_and_the_cleanup_pass_it_ran() {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
+        let (pcm, rate) = read_wav(&clip);
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().language("en").diagnostics_dir(dir.path()).build();
+        let engine = Engine::new(cfg).expect("engine must start");
+        let outcome = engine
+            .transcribe(Samples::new(pcm, rate, 1))
+            .expect("queued")
+            .recv()
+            .expect("recognition must succeed");
+        let Outcome::Transcript(transcript) = outcome else {
+            panic!("a spoken take must not read as silence: {outcome:?}");
+        };
+        assert!(
+            transcript.stages.normalize.is_some(),
+            "the default config runs cleanup, or this test pins nothing"
+        );
+        // The write lands after the reply, on the worker the engine drop
+        // joins.
+        drop(engine);
+
+        let take = std::fs::read_dir(dir.path())
+            .expect("store dir")
+            .flatten()
+            .next()
+            .expect("the take wrote its record")
+            .path();
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(take.join("meta.json")).unwrap())
+                .expect("meta.json parses");
+        assert_eq!(
+            meta["normalizer_ran"], true,
+            "the record carries the pass that ran, not a pre-pass snapshot"
+        );
+        let asr = ModelSpec::cohere_transcribe_q4_k_m();
+        let s1 = ModelSpec::s1_mini_f16();
+        assert_eq!(meta["asr"]["file"], asr.file, "the transcribing model the engine ran");
+        assert_eq!(meta["asr"]["sha256"], asr.sha256.clone().unwrap(), "its declared digest");
+        assert_eq!(meta["asr"]["size"], asr.size, "its declared size");
+        assert_eq!(meta["normalizer"]["file"], s1.file, "the cleanup model the engine ran");
+        assert_eq!(meta["normalizer"]["sha256"], s1.sha256.clone().unwrap(), "its declared digest");
+        assert_eq!(meta["normalizer"]["size"], s1.size, "its declared size");
+        assert_eq!(
+            meta["language"], "en",
+            "the record carries the engine's own config, not a default"
+        );
+        assert_eq!(
+            meta["forge_version"],
+            env!("CARGO_PKG_VERSION"),
+            "the release the take was made under"
+        );
     }
 
     /// The `Config` -> `Engine` settings leg, which is a DIFFERENT path
