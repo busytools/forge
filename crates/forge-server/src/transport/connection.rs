@@ -811,7 +811,13 @@ async fn handle_client(
                     }
                     let bytes =
                         send_frame(socket, ServerMessage::Snapshot { subject: what, data }).await?;
-                    if let Some(slot) = &seat {
+                    // **A declare is not an open.** It re-states the browser
+                    // capability against a subject the client already watches
+                    // and takes no hold and no watch, so no page came on
+                    // screen and the line would be a switch nobody made.
+                    if let Some(slot) = &seat
+                        && !declare
+                    {
                         // The session's open, in its own slices: the numbers a
                         // reader places a slow switch with, beside the
                         // client's own marks. Debug, and for one session's
