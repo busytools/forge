@@ -980,17 +980,22 @@
     thread.comments.forEach((turn, index) => card.append(turnBlock(thread, turn, index)));
     const acts = document.createElement('div');
     acts.className = 'rv-acts';
-    const respond = document.createElement('button');
-    respond.type = 'button';
-    respond.className = 'rv-a';
-    respond.textContent = 'respond';
-    respond.disabled = busy;
-    respond.addEventListener('click', () => {
-      reply.thread = reply.thread === thread.id ? null : thread.id;
-      reply.index = null;
-      reply.draft = '';
-    });
-    acts.append(respond);
+    // Resolved draws no respond: it is accepted, and answering an accepted
+    // thread is the reopen's job (Ved, 2026-10-17: "should only be reopen,
+    // collapse, and delete").
+    if (statusName(thread.status) !== 'resolved') {
+      const respond = document.createElement('button');
+      respond.type = 'button';
+      respond.className = 'rv-a';
+      respond.textContent = 'respond';
+      respond.disabled = busy;
+      respond.addEventListener('click', () => {
+        reply.thread = reply.thread === thread.id ? null : thread.id;
+        reply.index = null;
+        reply.draft = '';
+      });
+      acts.append(respond);
+    }
     if (statusName(thread.status) === 'resolved') {
       const reopen = document.createElement('button');
       reopen.type = 'button';

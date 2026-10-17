@@ -191,16 +191,21 @@
                 <ThreadTurn {turn} {rounds} {now} index={i} thread={thread.id} {editor} />
               {/each}
               <div class="acts">
-                <button
-                  type="button"
-                  class="rv-a"
-                  disabled={busy}
-                  onclick={() => {
-                    reply.thread = reply.thread === thread.id ? null : thread.id;
-                    reply.index = null;
-                    reply.draft = '';
-                  }}>respond</button
-                >
+                <!-- Resolved draws no respond: it is accepted, and answering
+                     an accepted thread is the reopen's job (Ved, 2026-10-17:
+                     "should only be reopen, collapse, and delete"). -->
+                {#if name !== 'resolved'}
+                  <button
+                    type="button"
+                    class="rv-a"
+                    disabled={busy}
+                    onclick={() => {
+                      reply.thread = reply.thread === thread.id ? null : thread.id;
+                      reply.index = null;
+                      reply.draft = '';
+                    }}>respond</button
+                  >
+                {/if}
                 {#if name === 'resolved'}
                   <button
                     type="button"

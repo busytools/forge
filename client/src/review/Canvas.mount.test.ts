@@ -405,12 +405,9 @@ describe('the clock a mounted row draws', () => {
     const acts = [...document.querySelectorAll('.rv-insert .rv-acts .rv-a')].map((button) =>
       button.textContent?.trim(),
     );
-    // No `delete` here: this harness wires no ondelete, and the act draws
-    // only where the surface offers it.
-    expect(acts, 'opened, with the hand-back and the fold').toEqual([
-      'respond',
-      'reopen',
-      'collapse',
-    ]);
+    // No `respond` on an accepted thread, and no `delete` here: this
+    // harness wires no ondelete, and the act draws only where the surface
+    // offers it.
+    expect(acts, 'opened, with the hand-back and the fold').toEqual(['reopen', 'collapse']);
   });
 });

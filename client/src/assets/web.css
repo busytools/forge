@@ -3557,19 +3557,24 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-railen { font-family: var(--mono); letter-spacing: 0; }
 .files-replies { margin-left: auto; font-family: var(--mono); letter-spacing: 0;
   text-transform: none; color: var(--warn); }
-.files-crow { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px;
-  align-items: baseline; width: 100%; text-align: left; background: none; border: 0;
-  padding: 7px 8px; border-radius: 7px; cursor: pointer; color: inherit; font: inherit; }
+/* The row is one column, not a grid: the chip and the path ride the first
+   line, the words take the whole width, and a note gets a line of its own -
+   a two-column grid squeezed the note into a one-word column beside the
+   retraction button (Ved's screenshot, 2026-10-17). */
+.files-crow { display: block; width: 100%; text-align: left; background: none;
+  border: 0; padding: 7px 8px; border-radius: 7px; cursor: pointer;
+  color: inherit; font: inherit; }
+.files-crow > .rv-st { margin-right: 8px; }
 .files-crowwrap { display: flex; align-items: start; gap: 6px; }
 .files-crowwrap .files-crow { flex: 1; min-width: 0; }
 .files-crowwrap + .files-crowwrap { border-top: 1px solid var(--line); }
 .files-crow:hover { background: rgba(27,33,48,.5); }
 .files-cwhere { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.files-cwords { font-size: var(--fs-base); color: var(--text);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; }
-.files-cnote { grid-column: 2; font-family: var(--mono); font-size: var(--fs-label);
+  display: inline-block; max-width: 100%; vertical-align: baseline;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-cwords { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; font-size: var(--fs-base); color: var(--text); }
+.files-cnote { display: block; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 /* The rail's finish wrapper: the hairline that separates it from the rows;
    the stack itself is the sheet's `.rv-finishstack`. */
@@ -3620,6 +3625,11 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    folded thread and an open one are one surface. */
 .files-reader .rv-marker { width: 100%; cursor: pointer; font: inherit;
   text-align: left; background: var(--s2); }
+/* The reader's thread cards draw the page's own type, not the code's: the
+   CM context carries `--fs-label` and a 1.4 line-height, so the same card
+   read tighter here than the diff's (Ved's screenshots, 2026-10-17: "these
+   two are a little different... that needs to be similar"). */
+.files-reader .rv-thread { font-size: var(--fs-base); line-height: 1.5; }
 
 @media (max-width: 980px) {
   .files { height: auto; min-height: 100dvh; padding: 18px 16px 0; }
@@ -3778,11 +3788,12 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 
 /* A resolved thread collapses to one line in the canvas. */
 .rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
+  max-width: 100%; min-width: 0; box-sizing: border-box;
   padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--s1); font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 .rv-mk-word { color: var(--muted); flex: none; }
-.rv-mk-first { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+.rv-mk-first { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
 
 /* The four state marks: the sheet's shapes, the sheet's tones. */

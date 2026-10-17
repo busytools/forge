@@ -890,7 +890,6 @@ describe('a landing', () => {
       button.textContent?.trim(),
     );
     expect(acts, 'a press opens it back up, with the hand-back and the fold').toEqual([
-      'respond',
       'reopen',
       'collapse',
       'delete',
