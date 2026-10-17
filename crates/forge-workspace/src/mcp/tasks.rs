@@ -256,8 +256,11 @@ impl Tool for Update {
         "Change a task in YOUR project by id, stating only the fields to move - everything else \
          is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
          failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
-         label of a worker. The board is for running work: a row whose work has landed is \
-         DELETED in the same pass (tasks__delete), never left completed. Any session in the \
+         label of a worker. The board is for running work: a landed row with no children and \
+         no epic above it is DELETED in the same pass (tasks__delete), never left completed; \
+         a landed row under an open epic is completed and left terminal, because the epic \
+         reads `to close` only once every child is terminal - and completing the epic's ROOT \
+         row archives the whole tree. Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
@@ -291,9 +294,11 @@ impl Tool for Update {
                 "status": {
                     "type": "string",
                     "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
-                    "description": "The task's new status. `completed` is not a resting state: \
-                                    a landed row is deleted in the same pass, never left \
-                                    completed.",
+                    "description": "The task's new status. `completed` is not a resting state \
+                                    for a landed row with no children and no epic above it: \
+                                    it is deleted in the same pass. A landed row under an \
+                                    open epic stays completed and terminal so the epic can \
+                                    read `to close`.",
                 },
                 "owner": {
                     "type": "string",
@@ -522,7 +527,9 @@ impl Tool for Delete {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
          that is over: the board is for running work, so a landed row - its work merged, \
-         delivered or concluded - is deleted in the same pass, never left completed. Nothing \
+         delivered or concluded - with no children and no epic above it is deleted in the \
+         same pass, never left completed; a landed row under an open epic is completed and \
+         left terminal instead, so the epic can read `to close`. Nothing \
          is archived. A row waiting on the user is not a delete's to \
          take - the board's answer or approve settles it, and deleting it (or a tree holding \
          it) is refused rather than taken as a way around the ask. \
@@ -1246,11 +1253,14 @@ mod tests {
     }
 
     /// Delete-on-landing is shipped text (#2377): the board is for running
-    /// work, so a landed row is deleted in the same pass rather than left
-    /// completed. The update's status property is where the caller picks
-    /// the terminal state, so it carries the rule too.
+    /// work, so a landed row with no children and no epic above it is
+    /// deleted in the same pass rather than left completed. The carve-out
+    /// is the board's own: an epic reads `to close` only while it holds
+    /// terminal children, so a landed child of an open epic is completed
+    /// and left terminal instead. The update's status property is where
+    /// the caller picks the terminal state, so it carries both.
     #[test]
-    fn the_task_descriptions_state_delete_on_landing() {
+    fn the_task_descriptions_state_delete_on_landing_and_the_epic_carve_out() {
         let facade = MockTasksFacade::new().into_arc();
         let slot = lead_slot();
         let update = Update { facade: facade.clone(), slot: slot.clone() };
@@ -1259,32 +1269,41 @@ mod tests {
             (
                 "tasks__update",
                 update.description(),
-                "The board is for running work: a row whose work has landed is DELETED in \
-                 the same pass (tasks__delete), never left completed",
+                "The board is for running work: a landed row with no children and no epic \
+                 above it is DELETED in the same pass (tasks__delete), never left completed; \
+                 a landed row under an open epic is completed and left terminal, because the \
+                 epic reads `to close` only once every child is terminal",
             ),
             (
                 "tasks__delete",
                 delete.description(),
-                "the board is for running work, so a landed row - its work merged, delivered \
-                 or concluded - is deleted in the same pass, never left completed",
+                "a landed row - its work merged, delivered or concluded - with no children \
+                 and no epic above it is deleted in the same pass, never left completed; a \
+                 landed row under an open epic is completed and left terminal instead, so the \
+                 epic can read `to close`",
             ),
         ] {
             assert!(
                 description.contains(clause),
-                "{name} does not state delete-on-landing ({clause}): {description}",
+                "{name} does not state the landing rule ({clause}): {description}",
             );
         }
         let status = update.input_schema()["properties"]["status"]["description"]
             .as_str()
             .expect("the status property carries a description")
             .to_owned();
-        assert!(
-            status.contains(
-                "`completed` is not a resting state: a landed row is deleted in the same \
-                 pass, never left completed"
-            ),
-            "the status property owes the rule where the caller picks it: {status}",
-        );
+        for clause in [
+            "`completed` is not a resting state for a landed row with no children and no \
+             epic above it",
+            "A landed row under an open epic stays completed and terminal so the epic can \
+             read `to close`",
+        ] {
+            assert!(
+                status.contains(clause),
+                "the status property owes the rule where the caller picks it ({clause}): \
+                 {status}",
+            );
+        }
     }
 
     /// The user-read mint is shipped text (#2377): a row whose deliverable

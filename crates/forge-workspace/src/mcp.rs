@@ -366,7 +366,9 @@ pub fn build_forge_server(
 /// 17) covers the wording.
 pub(crate) const TASK_BOARD_INSTRUCTIONS: &str = "\
 forge's task board is the shared surface for work in flight. It is for running \
-work: a landed row is deleted in the same pass, never left completed. Read it \
+work: a landed row with no children and no epic above it is deleted in the same \
+pass, never left completed; a landed child of an open epic is completed and left \
+terminal so the epic can read `to close`. Read it \
 with tasks__list: a `ready` mark means a row can be started, `worked` and the \
 `overdue` mark say how long it has run against its estimate, and a message \
 about an over-estimate row is an answer you owe. Claim before working: \
@@ -466,17 +468,20 @@ mod tests {
     }
 
     /// The board's shape is stated before any tool call (#2377): the
-    /// board is for running work, so a landed row is deleted in the same
-    /// pass - the discipline the instructions owe a session that reads no
-    /// description. The claim is the discipline rather than a filter: the
-    /// drawn board keeps its terminal lanes, so "shows only running rows"
-    /// would be false of the surface a caller is about to read.
+    /// board is for running work, so a landed row with no children and no
+    /// epic above it is deleted in the same pass - the discipline the
+    /// instructions owe a session that reads no description. The claim is
+    /// the discipline rather than a filter: the drawn board keeps its
+    /// terminal lanes, so "shows only running rows" would be false of the
+    /// surface a caller is about to read. The epic carve-out rides here
+    /// too, since the instructions are all some sessions read.
     #[test]
     fn the_task_instructions_name_the_board_shape() {
         assert!(
             TASK_BOARD_INSTRUCTIONS.contains(
-                "It is for running work: a landed row is deleted in the same pass, never \
-                 left completed"
+                "It is for running work: a landed row with no children and no epic above it \
+                 is deleted in the same pass, never left completed; a landed child of an \
+                 open epic is completed and left terminal so the epic can read `to close`"
             ),
             "the instructions name the board's shape: {TASK_BOARD_INSTRUCTIONS}",
         );
