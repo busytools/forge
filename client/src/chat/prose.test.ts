@@ -160,6 +160,25 @@ describe('markdown, as the maintained module renders it', () => {
     );
   });
 
+  it("draws the image row as the page's own attachment row", () => {
+    // The row reuses the piece the chat draws for what a turn attached, so the
+    // class and the glyph are what make it that row rather than a bare span the
+    // sheet does not stylise.
+    const html = renderProse('![a picture](https://example.test/x.png)');
+
+    expect(html, 'the row takes the attachment class').toContain('class="attrow"');
+    expect(html, 'and the glyph that marks it an image').toContain('href="#i-read"');
+  });
+
+  it('escapes the source it prints in the row', () => {
+    // `&` is what a markdown destination gives the row raw, and the row prints
+    // its source as text - so it comes out escaped rather than as the start of
+    // an entity the page would resolve.
+    const html = renderProse('![a picture](https://example.test/a.png?x=1&y=2)');
+
+    expect(html, 'the source draws escaped').toContain('?x=1&amp;y=2');
+  });
+
   it('escapes what an image names rather than drawing it as markup', () => {
     // The alt and the source are the message's own text, so neither may open
     // a tag of its own inside the row.
