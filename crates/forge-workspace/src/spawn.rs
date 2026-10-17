@@ -1784,8 +1784,10 @@ fn announce_live_seats(workspace: &Arc<Workspace>) {
 /// session, which drops the worker's command sender; the disconnect
 /// itself runs asynchronously on the worker's own task and can take
 /// up to the 5s close-wait budget to reap the child. The worktree
-/// removal then runs on the blocking pool (see [`DespawnCleanup`]), so it
-/// overlaps the claude child's final seconds without holding the caller's
+/// removal runs on the blocking pool (see [`DespawnCleanup`]) only after
+/// that task has finished dying - its exit path reaps the claude child
+/// (waits it out, then SIGKILLs), so nothing is still writing into the
+/// tree when the removal takes it (#1767) - without holding the caller's
 /// runtime. A post-teardown worktree-removal failure is surfaced as a
 /// warning in the
 /// [`DespawnResult`](crate::protocol::DespawnResult) but never rolls back
@@ -1930,6 +1932,7 @@ pub(crate) fn handle_despawn_worker(
     // it, so it goes here with the records and payloads its label still
     // owns. Without that, a despawn would report a worker gone while
     // leaving exactly what the live path exists to clear (#1142).
+    let mut teardown_done = None;
     if live.is_some() {
         // Announced here rather than at the removal below: this despawn's
         // own frame only goes out once the worktree cleanup finishes, and
@@ -1938,6 +1941,11 @@ pub(crate) fn handle_despawn_worker(
         // path returned above, so a blocked or absent despawn marks nothing.
         if let Some(entry) = live.as_ref() {
             workspace.announce_release(&entry.slot);
+            // Taken before the teardown releases it: the cleanup below
+            // holds the worktree removal until this resolves, so the
+            // removal comes after the session task has finished dying
+            // (#1767). `None` for a slot with no task behind it.
+            teardown_done = workspace.take_session_teardown(&entry.slot);
         }
         // The single-threaded command loop means nothing mutated
         // `live_workers` between the peek above and here, but re-checking
@@ -2012,28 +2020,44 @@ pub(crate) fn handle_despawn_worker(
         is_git_repo,
         respond,
     };
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            // A wrapper task awaits the blocking handle, so a panic in the
-            // cleanup names its site in the log instead of vanishing with
-            // the JoinHandle; the caller still sees the dropped reply.
-            let task = handle.spawn_blocking(move || cleanup.run(cleanup_pending));
-            handle.spawn(async move {
-                if let Err(join_err) = task.await {
-                    tracing::warn!(
-                        target: "forge_workspace::spawn",
-                        event_name = "despawn_cleanup_panicked",
-                        project = %log_project.as_str(),
-                        label = %log_label,
-                        error = %join_err,
-                        "despawn: the worktree cleanup panicked part-way through",
-                    );
-                }
-            });
-        }
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        // A wrapper task holds the removal until the worker's session
+        // has finished dying, then awaits the blocking handle, so a
+        // panic in the cleanup names its site in the log instead of
+        // vanishing with the JoinHandle; the caller still sees the
+        // dropped reply.
+        //
+        // The wait is the point: the session's exit path is what reaps
+        // the claude child (waits it out, then SIGKILLs), and a
+        // removal that overlapped those final seconds is how a
+        // runaway wrote back into the path the removal had already
+        // taken (#1767). `Err` means the task went away without
+        // firing - nothing is left to wait for.
+        handle.spawn(async move {
+            if let Some(done) = teardown_done {
+                let _ = done.await;
+            }
+            let task = tokio::task::spawn_blocking(move || cleanup.run(cleanup_pending));
+            if let Err(join_err) = task.await {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    event_name = "despawn_cleanup_panicked",
+                    project = %log_project.as_str(),
+                    label = %log_label,
+                    error = %join_err,
+                    "despawn: the worktree cleanup panicked part-way through",
+                );
+            }
+        });
+    } else {
         // No runtime to hand it to - a caller outside one: the cleanup runs
-        // where it is, the way this path always did.
-        Err(_) => cleanup.run(cleanup_pending),
+        // where it is, the way this path always did. The wait still
+        // happens; blocking here is safe precisely because there is no
+        // runtime on this thread.
+        if let Some(done) = teardown_done {
+            let _ = done.blocking_recv();
+        }
+        cleanup.run(cleanup_pending);
     }
 }
 
@@ -3493,6 +3517,182 @@ provider = "anthropic"
             "as is the worktree the project forked for its own worker of that name: the \
              despawn acted on the worker's tree, not the project's",
         );
+    }
+
+    /// The one handle on the process-wide mock-binary slot below: the case
+    /// that drives it holds this for its span, so no sibling case can spawn
+    /// against a mock it did not ask for (or against the clearing of one).
+    static MOCK_BINARY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// How long a case waits for a spawn's first event: the SDK's own
+    /// handshake budget plus a settle margin - a wait shorter than the
+    /// budget under it fails a machine that is merely slow.
+    fn spawn_wait() -> std::time::Duration {
+        forge_sdk::INIT_HANDSHAKE_TIMEOUT + std::time::Duration::from_secs(5)
+    }
+
+    /// The real mock wrapped so the child's death throes write into the
+    /// worktree: after its stdin closes (the despawn's first teardown act)
+    /// it waits `throes`, recreates the path and writes, then exits. The
+    /// path is baked in because nothing tells the child where its worktree
+    /// is - the real CLI derives it from `--worktree`, which the mock
+    /// ignores. The write also lands a marker OUTSIDE the worktree, which
+    /// is what lets the case prove the throes really ran: inside, the
+    /// removal erases the evidence along with the write.
+    fn death_throes_mock(
+        dir: &std::path::Path,
+        worktree: &std::path::Path,
+        throes: std::time::Duration,
+    ) -> String {
+        use std::os::unix::fs::PermissionsExt as _;
+        let real =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh");
+        let wrapper = dir.join("death-throes-mock");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/bash\nif [[ ${{1:-}} == \"--version\" ]]; then exec {real} \"$@\"; fi\n\
+                 {real} \"$@\"\n\
+                 /bin/sleep {}\n\
+                 mkdir -p {wt} && printf 'wrote while dying\\n' > {wt}/late-write.txt\n\
+                 printf 'throes ran\\n' > {marker}\n",
+                throes.as_secs_f64(),
+                wt = worktree.display(),
+                marker = death_throes_marker(dir).display(),
+            ),
+        )
+        .expect("write the death-throes mock");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+        wrapper.to_string_lossy().into_owned()
+    }
+
+    /// Where the death-throes mock records that its dying write ran.
+    fn death_throes_marker(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join("death-throes-ran")
+    }
+
+    /// **The despawn must take the worker's whole tree down before the
+    /// worktree.** The incident (#1767): the worktree came out at 15:47:08
+    /// while the session's child was still alive for five seconds more,
+    /// and in that gap the dying vite wrote its cache back into the path
+    /// the removal had already taken. The despawn's own doc admits the
+    /// overlap - teardown releases the session and returns, the disconnect
+    /// reaps the child asynchronously, and `DespawnCleanup` removes the
+    /// worktree immediately.
+    ///
+    /// This drives exactly that shape: a real worker session over a mock
+    /// child that, once its stdin closes, waits and then writes into the
+    /// worktree before it exits. The despawn must not come back - and so
+    /// must not remove anything - before that child is dead.
+    #[tokio::test]
+    async fn a_despawn_holds_the_removal_until_the_worker_child_has_died() {
+        let _binary = MOCK_BINARY.lock().await;
+        let dir = tempdir().expect("config tempdir");
+        let repo = tempdir().expect("repo tempdir");
+        run_git(repo.path(), &["init", "-q"]);
+        run_git(repo.path(), &["config", "user.email", "t@example.com"]);
+        run_git(repo.path(), &["config", "user.name", "Test"]);
+        run_git(repo.path(), &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.path().join("README.md"), "seed").expect("write seed");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-q", "-m", "init"]);
+        let repo_root = std::fs::canonicalize(repo.path()).expect("canonical repo");
+        write_forge_toml(dir.path(), &repo_root.to_string_lossy());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+
+        // The worktree `--worktree dying` would fork (the mock ignores the
+        // flag, so the fixture forks it).
+        let wt = repo_root.join(".claude").join("worktrees").join("dying");
+        std::fs::create_dir_all(wt.parent().expect("wt parent")).expect("mkdir worktrees");
+        run_git(
+            &repo_root,
+            &["worktree", "add", "-q", "-b", "worktree-dying", wt.to_str().expect("utf8")],
+        );
+        // The dying child's write is a build artifact git ignores - the
+        // incident's vite cache - so the removal it races is the ordinary
+        // one, not the dirty-worktree refusal.
+        let excludes = dir.path().join("excludes");
+        fs::write(&excludes, "late-write.txt\n").expect("write excludes");
+        run_git(&repo_root, &["config", "core.excludesFile", excludes.to_str().expect("utf8")]);
+
+        let throes = std::time::Duration::from_secs(2);
+        forge_agent::set_test_sdk_binary(Some(death_throes_mock(dir.path(), &wt, throes)));
+
+        let mut updates = ws.subscribe_observer();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "dying".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+                cwd: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        rx.await.expect("spawn replies").expect("spawn succeeds");
+        // The despawn has an ordering to enforce only once the child is up
+        // and holding its stdin; Connected is that moment. A stream that
+        // ends first is a failure too - the wait must not read as settled
+        // on a closed channel.
+        let slot = SessionSlot::worker("Default", "forge", "dying");
+        tokio::time::timeout(spawn_wait(), async {
+            while let Some(seat) = updates.recv().await {
+                if matches!(&seat.update, SessionUpdate::Connected { key, .. } if *key == slot) {
+                    return;
+                }
+            }
+            panic!("the update stream closed before the worker's session connected");
+        })
+        .await
+        .expect("the worker's session reaches Connected");
+
+        let started = std::time::Instant::now();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&ws, &key, "dying", false, tx);
+        let result = rx.await.expect("despawn result");
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned {
+                    worktree_cleanup_warning: None,
+                    branch_cleanup_warning: None,
+                }
+            ),
+            "the despawn lands clean: {result:?}",
+        );
+        assert!(
+            elapsed >= throes,
+            "the despawn must not report the worker gone before its child is dead: it came back \
+             after {elapsed:?}, while the child was still alive for {throes:?} of its death",
+        );
+        assert!(
+            death_throes_marker(dir.path()).exists(),
+            "the child's dying write really ran before the despawn came back",
+        );
+        assert!(
+            !wt.exists(),
+            "and the removal must come after the child's last write: a write landing in the \
+             already-removed path is exactly the leftover this ordering exists to prevent",
+        );
+        forge_agent::set_test_sdk_binary(None);
     }
 
     /// The boot wave carries a persisted row's tree into the spawn it

@@ -59,6 +59,14 @@ pub(crate) struct SessionTask {
     /// to what is RUNNING rather than to what is being read - which is the
     /// price of having one producer rather than two.
     pub(crate) conversation: Option<(Vec<forge_primitives::Message>, u32)>,
+    /// Fires as this task drops - after `run`'s exit path has disconnected
+    /// the subprocess (waited it out up to the close-wait budget, then
+    /// SIGKILLed it) - so a despawn can hold its worktree removal until
+    /// the worker's child is reaped and nothing is left to write into the
+    /// path the removal takes. Held for every exit, early returns and
+    /// panics included, so a waiter never hangs on a task that ended some
+    /// other way.
+    pub(crate) teardown_done: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// The file a call's own output sits at, off what its conversation holds:
@@ -1529,6 +1537,13 @@ impl Drop for SessionTask {
         // no backstop - `reader_loop` emits ConnectionFailed on both of
         // its exit arms (stream error and stream close), and that arm
         // drains review activity before terminating the task.
+        //
+        // The teardown signal fires here rather than at `run`'s tail so
+        // every exit resolves it - a waiter (the despawn's worktree
+        // removal) must not hang on a task that ended some other way.
+        if let Some(done) = self.teardown_done.take() {
+            let _ = done.send(());
+        }
         let caller = self.domain.lock().key.clone();
         self.drain_review_activity_for(&caller);
         if let Some(workspace) = self.workspace.upgrade() {
@@ -2705,6 +2720,7 @@ mod tests {
             connected_once,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -2859,6 +2875,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            teardown_done: None,
         };
         (task, update_rx)
     }
@@ -2885,6 +2902,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            teardown_done: None,
         };
         (task, cmds)
     }
@@ -3230,6 +3248,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3289,6 +3308,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -3754,6 +3774,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            teardown_done: None,
         };
         (task, update_rx, to_agent)
     }
@@ -4215,6 +4236,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -4270,6 +4292,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -4325,6 +4348,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let continues = task.translate_event(AgentEvent::ConnectionFailed {
@@ -4577,6 +4601,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::PermissionRequest {
@@ -4639,6 +4664,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::PermissionRequest {
@@ -4686,6 +4712,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::QuestionRequest {
@@ -4732,6 +4759,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::QuestionRequest {
@@ -4781,6 +4809,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let mut request = question_request_fixture("tu-round");
@@ -5669,6 +5698,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: std::sync::Weak::new(),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -5770,6 +5800,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -5932,6 +5963,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -6007,6 +6039,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -6061,6 +6094,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         workspace.enable_test_dispatch_intercept();
@@ -6118,6 +6152,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         let cap = crate::conversation_window::CONVERSATION_CAP;
         let slack = crate::conversation_window::CONVERSATION_SLACK;
@@ -6231,6 +6266,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                teardown_done: None,
             };
             let frame = |at: usize| {
                 serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
@@ -6304,6 +6340,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output"));
 
@@ -6379,6 +6416,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-reasons"));
 
@@ -6477,6 +6515,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-running"));
 
@@ -6560,6 +6599,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-not-yet"));
         let nonce = std::process::id();
@@ -6813,6 +6853,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                teardown_done: None,
             };
 
             let mut event = connected_event(&session_key.display(), "/tmp/count");
@@ -6865,6 +6906,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         // A FRESH session, which is the case that makes this load-bearing: the
@@ -6955,6 +6997,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         // A one-message resumed history (the --resume backfill).
@@ -7031,6 +7074,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::Connected {
@@ -7941,6 +7985,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                teardown_done: None,
             };
 
             task.translate_event(AgentEvent::ConnectionFailed {
@@ -8004,6 +8049,7 @@ provider = "anthropic"
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         // The re-spawned agent fails to connect.
@@ -8096,6 +8142,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.translate_event(AgentEvent::ConnectionFailed {
@@ -8170,6 +8217,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         task.execute_command(Command::Prompt {
@@ -8227,6 +8275,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         // An init frame from a CLI that does not advertise the capability - the
@@ -8295,6 +8344,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            teardown_done: None,
         };
 
         let init = |capabilities: serde_json::Value| -> forge_primitives::Message {
