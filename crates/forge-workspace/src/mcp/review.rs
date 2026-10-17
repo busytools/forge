@@ -130,17 +130,25 @@ pub(crate) struct ReviewActivity {
 
 /// The reviewer-facing one-line summary a worker's review turn produces:
 /// `worker addressed review #N - A replied, B resolved, C open. Open /diff.`
-/// `open` is the review's current open-comment count after the turn. `doc`
-/// is true for a document's scope, whose door is the viewer rather than the
-/// diff overlay - a doc scope never loads into the overlay at all.
+/// `open` is the review's current open-comment count after the turn, and
+/// `scope` names the review itself, because **each scope's comments open in
+/// a door of their own**: the document viewer, the files page, or the diff
+/// overlay (the lead's gate, 2026-10-17: a tree scope pointed at `/diff`,
+/// which never carries one - the same hole the doc scope's door had closed).
 pub(crate) fn notice_message(
     number: u32,
     replied: usize,
     resolved: usize,
     open: usize,
-    doc: bool,
+    scope: &str,
 ) -> String {
-    let door = if doc { "Open the document." } else { "Open /diff." };
+    let door = if forge_primitives::review::is_doc_scope(scope) {
+        "Open the document."
+    } else if forge_primitives::review::is_tree_scope(scope) {
+        "Open the files page."
+    } else {
+        "Open /diff."
+    };
     format!(
         "worker addressed review #{number} - {replied} replied, {resolved} resolved, \
          {open} open. {door}"
@@ -853,7 +861,7 @@ mod tests {
     #[test]
     fn notice_message_reads_as_a_tally_line() {
         assert_eq!(
-            notice_message(3, 2, 1, 4, false),
+            notice_message(3, 2, 1, 4, "feat"),
             "worker addressed review #3 - 2 replied, 1 resolved, 4 open. Open /diff.",
         );
     }
@@ -862,8 +870,17 @@ mod tests {
     /// doc scope, so pointing there would send the reader nowhere.
     #[test]
     fn notice_message_for_a_document_names_the_viewer() {
-        let message = notice_message(1, 1, 0, 1, true);
+        let message = notice_message(1, 1, 0, 1, "doc:/proj/plan.md");
         assert!(message.contains("Open the document."), "{message}");
+        assert!(!message.contains("/diff"), "{message}");
+    }
+
+    /// **A seat's tree has its own door too** (the lead's gate, 2026-10-17):
+    /// the files page carries the tree scope, and `/diff` never does.
+    #[test]
+    fn notice_message_for_a_seat_tree_names_the_files_page() {
+        let message = notice_message(1, 1, 0, 1, "tree:Busytools/forge/lead");
+        assert!(message.contains("Open the files page."), "{message}");
         assert!(!message.contains("/diff"), "{message}");
     }
 

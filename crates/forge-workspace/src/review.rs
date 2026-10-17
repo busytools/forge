@@ -646,7 +646,7 @@ impl Workspace {
                 replied,
                 resolved,
                 summary.open,
-                forge_primitives::review::is_doc_scope(&branch),
+                &branch,
             );
             messages.push(((project, branch), waiting, message));
         }
