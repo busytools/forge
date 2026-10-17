@@ -7436,3 +7436,40 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         assert!(parsed.get(field).is_some(), "the line carries {field}: {line}");
     }
 }
+
+/// **A declare opens nothing (#2374).** It re-states the browser capability
+/// against a subject the client already watches, holding no watch and no
+/// seat - no page came on screen, so the open line must not fire for it. The
+/// count is taken around the ask rather than over the whole capture, so a
+/// neighbouring record cannot be read as this one's.
+#[tokio::test]
+async fn a_declare_subscribe_logs_no_open() {
+    install_capture();
+    let (url, _fleet, _state) = a_server_with_state().await;
+    let opens_before = captured().matches("\"session_open\"").count();
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: true,
+            declare: true,
+        },
+    )
+    .await;
+    let (subject, _data, _passed) = snapshot_answering(&mut socket).await;
+    assert!(
+        matches!(subject, Subject::Session(_)),
+        "a declare is still answered with its subject's snapshot",
+    );
+
+    let opens_after = captured().matches("\"session_open\"").count();
+    assert_eq!(
+        opens_after,
+        opens_before,
+        "a declare is no page opening, so it logs no open; caught: {}",
+        captured(),
+    );
+}
