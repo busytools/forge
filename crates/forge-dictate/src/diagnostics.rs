@@ -497,9 +497,9 @@ mod tests {
     }
 
     /// A take names the models that made it: both roles' resolved specs
-    /// by the three fields the bench's header identifies one by, plus
-    /// whether the cleanup pass ran, the language, and the build stamp.
-    /// This is what makes the archive usable for comparing models.
+    /// by the three fields a spec declares, plus whether the cleanup pass
+    /// ran, the language, and the release. This is what makes the archive
+    /// usable for comparing models.
     #[test]
     fn a_take_names_the_models_that_made_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -536,7 +536,7 @@ mod tests {
         assert_eq!(
             meta["forge_version"],
             env!("CARGO_PKG_VERSION"),
-            "the build stamp that made the take"
+            "the release the take was made under"
         );
     }
 

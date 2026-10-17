@@ -2018,7 +2018,7 @@ mod tests_engine {
         assert_eq!(
             meta["forge_version"],
             env!("CARGO_PKG_VERSION"),
-            "the build stamp that made the take"
+            "the release the take was made under"
         );
     }
 
@@ -2547,7 +2547,7 @@ mod tests_real_recognition {
     /// record, so no weightless take reaches the worker's record site.
     #[test]
     #[ignore = "needs both models; run with --run-ignored all after `--example fetch`"]
-    fn a_direct_take_records_the_cleanup_pass_it_ran() {
+    fn a_direct_take_records_the_models_and_the_cleanup_pass_it_ran() {
         let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/08_009s.wav");
         let (pcm, rate) = read_wav(&clip);
         let dir = tempfile::tempdir().unwrap();
