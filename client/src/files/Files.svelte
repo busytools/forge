@@ -923,6 +923,28 @@
     <p class="files-said">{refusal}</p>
   {/if}
 
+  <!-- **A failed or unnameable read is DRAWN, never folded to empty** (rule
+       22): the derivations below hand `[]` to every non-read outcome, which
+       is what makes the rail and the conversation draw the clean empty page
+       - the review page's own two lines say so and this page owes the same
+       (the lead's gate, 2026-10-17). -->
+  {#if record?.tree_reviews.threads.outcome === 'failed'}
+    <p class="files-said">The threads could not be read: {record.tree_reviews.threads.value}</p>
+  {:else if record?.tree_reviews.threads.outcome === 'unknown'}
+    <p class="files-said">
+      The threads read answered {String(record.tree_reviews.threads.value)}, which this build cannot
+      name.
+    </p>
+  {/if}
+  {#if record?.tree_reviews.reviews.outcome === 'failed'}
+    <p class="files-said">The rounds could not be read: {record.tree_reviews.reviews.value}</p>
+  {:else if record?.tree_reviews.reviews.outcome === 'unknown'}
+    <p class="files-said">
+      The rounds read answered {String(record.tree_reviews.reviews.value)}, which this build cannot
+      name.
+    </p>
+  {/if}
+
   {#if read.refused !== null}
     <main class="files-main"><p class="files-quiet">{read.refused}</p></main>
   {:else if record === null}
