@@ -293,7 +293,10 @@ impl std::io::Write for Counted {
 /// whole turns and can come in slightly under the cap. The byte ceiling lands
 /// the same way: its own line is the first frame whose tail weighs no more
 /// than the ceiling, and the cut is made at whichever line reaches later, so
-/// the window is inside both ceilings or a turn short of the later one.
+/// what a drop leaves is inside both ceilings or a turn short of the later one.
+/// (A copy grows toward a ceiling's slack again between drops, and the append
+/// at its edge rides one frame past before the next push checks - the shape the
+/// count alone has always had.)
 ///
 /// **A turn crossing the line rides into the slack.** The newest turn holds
 /// the newest frames, so a window cannot drop it: when it alone is longer than
