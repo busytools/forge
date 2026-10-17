@@ -18,6 +18,13 @@ pub struct ClientConfig {
     /// face - Fira Code for prose and code alike - shipped beside the view
     /// rather than left to whatever the OS has.
     pub font: Option<String>,
+    /// The idle release: how many minutes a browser profile may sit
+    /// untouched before its seat is warned. `None` is the built-in half
+    /// hour.
+    pub browser_idle_minutes: Option<u64>,
+    /// How long after that warning the browser lives unless it is used.
+    /// `None` is the built-in ten minutes.
+    pub browser_grace_minutes: Option<u64>,
 }
 
 /// The marks forge ships, by the name `[client] mark` takes - a bounded set

@@ -531,6 +531,8 @@ name unset, which is the built-in.
 | `mark`  | string | unset, drawing panes                              | The mark a client draws, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn.                                |
 | `theme` | string | unset, drawing dark                               | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background.                                                                                               |
 | `font`  | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, bundled with the client and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
+| `browser_idle_minutes` | integer | unset, meaning 30                      | The idle release: after this many minutes with no browser call, raise or lower, the profile's owning seat is sent a heads-up over the socket's prompt channel. A live session gets the heads-up as a turn; a seat with no live session has nobody to tell, and its browser closes quietly instead. **A hand-off waiting on the person always holds the profile** - it is neither warned about nor closed, and neither is a profile whose window is up. |
+| `browser_grace_minutes` | integer | unset, meaning 10                     | How long the browser lives after that heads-up unless it is used. The close is a real close: logins and the profile stay, and the pages reopen on the next call, but a filled form does not. |
 
 ## `[documents]`
 
@@ -555,10 +557,10 @@ nothing forge ships; this key picks by name, never by path`), because a
 setting that is quietly ignored reads as the key not working. Like the
 port checks, none of them run while the socket is disabled.
 
-`mark`, `theme` and `font` are a client's settings rather than the
-server's, and the socket carries them to a client on connect, so a client
-never reads `forge.toml` for itself and the file stays the one source of
-truth. The server draws none of them: the socket serves no page.
+`mark`, `theme`, `font` and the idle pair are a client's settings rather
+than the server's, and the socket carries them to a client on connect, so a
+client never reads `forge.toml` for itself and the file stays the one
+source of truth. The server draws none of them: the socket serves no page.
 
 ## `[usage]`
 

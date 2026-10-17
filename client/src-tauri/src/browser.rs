@@ -32,6 +32,8 @@ pub mod android;
 pub mod chromium;
 pub mod custom;
 pub mod driver;
+#[cfg(desktop)]
+pub(crate) mod idle;
 pub mod profiles;
 pub mod window;
 
@@ -167,6 +169,17 @@ pub struct BrowserHost {
     /// reap closes, and what the boot sweep must never read as an orphan.
     #[cfg(desktop)]
     owned: Mutex<HashMap<PathBuf, chromium::ClientLock>>,
+    /// The idle release's clock per profile: when a seat last used it, when
+    /// its seat was last warned, and who that seat was. In-memory on purpose
+    /// (see [`idle`]): a client restart grants every browser a fresh window,
+    /// and the bound is an hour long.
+    #[cfg(desktop)]
+    touches: Mutex<HashMap<PathBuf, idle::Touch>>,
+    /// When this client's host came up: an untouched profile's clock starts
+    /// here rather than at the epoch, so a restart spares what the last run
+    /// left.
+    #[cfg(desktop)]
+    boot: std::time::Instant,
     /// The seats whose auto-profile refusal this run has already told a
     /// session about: the create is retried on every unnamed call, and the
     /// note belongs on the first one, not on each.
@@ -194,6 +207,10 @@ impl BrowserHost {
             named: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
             owned: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            touches: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            boot: std::time::Instant::now(),
             #[cfg(desktop)]
             auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
@@ -226,6 +243,10 @@ impl BrowserHost {
             named: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
             owned: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            touches: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            boot: std::time::Instant::now(),
             #[cfg(desktop)]
             auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
@@ -346,6 +367,10 @@ impl BrowserHost {
             let cli = driver::cli_path(&paths.stack);
             match profile {
                 None => {
+                    // **The shared browser is in use from here on**: the touch
+                    // is the idle release's clock, and it lands before any
+                    // work that can fail - a slow call is not an idle one.
+                    self.touch(&paths.user_data, Some(seat)).await;
                     // **The seat's auto profile is ensured on its first
                     // unnamed reach**, before anything is driven: the record
                     // is what keeps the name the seat's across restarts. The
@@ -396,6 +421,8 @@ impl BrowserHost {
                 }
                 Some(name) => {
                     let named = self.named_profile(seat, &name).await?;
+                    // The idle release's clock: the named profile is in use.
+                    self.touch(&named.dir, Some(seat)).await;
                     let active = self.browser_for(&named.dir).await?;
                     self.used.store(true, std::sync::atomic::Ordering::Release);
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
@@ -535,6 +562,84 @@ impl BrowserHost {
         let mut named = self.named.lock().await;
         named.remove(name);
         Ok(())
+    }
+
+    /// Record that `dir` was just used: `caller` is the seat that did it, or
+    /// `None` for a raise or lower, where the seat is whoever last called.
+    /// **A touch clears the streak**: whatever warning stood, the browser is
+    /// in use again, and its seat will be told afresh if it idles again.
+    #[cfg(desktop)]
+    pub(crate) async fn touch(&self, dir: &Path, caller: Option<&Seat>) {
+        let mut touches = self.touches.lock().await;
+        let entry = touches.entry(dir.to_path_buf()).or_insert(idle::Touch {
+            at: self.boot,
+            warned: None,
+            caller: None,
+        });
+        entry.at = std::time::Instant::now();
+        entry.warned = None;
+        if let Some(caller) = caller {
+            entry.caller = Some(caller.clone());
+        }
+    }
+
+    /// Note that this profile's seat was just warned (or that its close's own
+    /// ask came back held): the grace runs from here.
+    #[cfg(desktop)]
+    pub(crate) async fn note_warned(&self, dir: &Path, at: std::time::Instant) {
+        let mut touches = self.touches.lock().await;
+        if let Some(entry) = touches.get_mut(dir) {
+            entry.warned = Some(at);
+        }
+    }
+
+    /// Every profile the idle release may act on, with its clock: the named
+    /// profiles (the seat to warn is their owner, or whoever last called) and
+    /// the shared browser (whoever last called it, `None` when no one has).
+    #[cfg(desktop)]
+    pub(crate) async fn idle_candidates(&self) -> Vec<idle::Candidate> {
+        let Ok(paths) = self.paths.clone() else { return Vec::new() };
+        let touches = {
+            let touches = self.touches.lock().await;
+            touches.clone()
+        };
+        let untouched = idle::Touch { at: self.boot, warned: None, caller: None };
+        let mut out = Vec::new();
+        {
+            let named = self.named.lock().await;
+            for (name, entry) in named.iter() {
+                let touch = touches.get(&entry.dir).cloned().unwrap_or_else(|| untouched.clone());
+                out.push(idle::Candidate {
+                    name: Some(name.clone()),
+                    dir: entry.dir.clone(),
+                    touch: idle::Touch {
+                        caller: touch.caller.clone().or_else(|| Some(entry.owner.clone())),
+                        ..touch
+                    },
+                });
+            }
+        }
+        let touch = touches.get(&paths.user_data).cloned().unwrap_or(untouched);
+        out.push(idle::Candidate { name: None, dir: paths.user_data.clone(), touch });
+        out
+    }
+
+    /// The idle release closing one profile: the named path takes the row's
+    /// own close (the name is given up and the next call relaunches), and the
+    /// shared browser is closed where it stands - it is not a profile to
+    /// remove.
+    #[cfg(desktop)]
+    pub(crate) async fn close_idle(&self, name: Option<&str>) {
+        match name {
+            Some(name) => {
+                let _ = self.close(name).await;
+            }
+            None => {
+                if let Ok(paths) = self.paths.clone() {
+                    chromium::close(&paths.user_data).await;
+                }
+            }
+        }
     }
 
     /// The phone holds no named profiles, so the row's close has nothing to
@@ -851,6 +956,9 @@ impl BrowserHost {
         };
         let _launching = self.launch.lock().await;
         self.claim(&dir).await;
+        // A raise is use: the person is being shown this browser, so the
+        // idle release's clock restarts and any standing warning is spent.
+        self.touch(&dir, None).await;
         let binary = chromium::browser_binary()?;
         chromium::show(&binary, &dir).await
     }
@@ -896,6 +1004,9 @@ impl BrowserHost {
         // no-op against a browser not yet up - Open then Done would leave the
         // window raised after the answer crossed.
         let _launching = self.launch.lock().await;
+        // A lower is the same use a raise is: the browser was just in front
+        // of someone, and the clock restarts with it.
+        self.touch(&dir, None).await;
         chromium::hide(&dir).await;
         Ok(())
     }
@@ -2026,6 +2137,58 @@ mod tests {
             None,
             "no URL line, nothing landed",
         );
+    }
+
+    /// **The idle release's clock resets on every touch, and the candidates
+    /// name the seat to warn**: a named profile's owner, the shared browser's
+    /// last caller, and no one at all until someone calls.
+    #[tokio::test]
+    async fn the_idle_clock_resets_and_the_candidates_name_their_seats() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let who = seat();
+        let named = Named::open(who.clone(), "hunt", &paths).expect("the open");
+        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
+        let hunt = paths.profiles.join("hunt");
+
+        host.touch(&hunt, Some(&who)).await;
+        let candidates = host.idle_candidates().await;
+        let row = candidates
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("hunt"))
+            .expect("the named row");
+        assert_eq!(row.touch.caller, Some(who.clone()), "the owner is the seat to warn");
+        assert!(row.touch.warned.is_none(), "a fresh touch carries no warning");
+
+        let warned_at = std::time::Instant::now();
+        host.note_warned(&hunt, warned_at).await;
+        let candidates = host.idle_candidates().await;
+        let row = candidates
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("hunt"))
+            .expect("the named row");
+        assert_eq!(row.touch.warned, Some(warned_at), "the warning stands until a touch");
+
+        host.touch(&hunt, None).await;
+        let candidates = host.idle_candidates().await;
+        let row = candidates
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("hunt"))
+            .expect("the named row");
+        assert!(row.touch.warned.is_none(), "a touch clears the warning");
+        assert_eq!(row.touch.caller, Some(who), "and keeps the seat it had");
+
+        let shared = candidates
+            .iter()
+            .find(|candidate| candidate.name.is_none())
+            .expect("the shared browser is a candidate too");
+        assert_eq!(shared.touch.caller, None, "no one has called the shared browser yet");
     }
 
     /// **Two leads, two projects, two auto profiles.** Every lead carries

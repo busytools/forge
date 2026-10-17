@@ -84,6 +84,11 @@ mod commands {
             .map(|state| Arc::clone(state.inner()));
         let (events, rx) = tokio::sync::mpsc::unbounded_channel();
         let bridge = Bridge::new(host, events);
+        // **The idle release starts with the bridge**: its clock is the
+        // host's, its warning rides the bridge's socket, and a client with
+        // no host or no connection simply has nothing to sweep.
+        #[cfg(desktop)]
+        crate::browser::idle::start(&bridge);
         app.manage(Arc::clone(&bridge));
         app.manage(Arc::new(crate::mic::Mic::default()));
         pump(app.clone(), rx);

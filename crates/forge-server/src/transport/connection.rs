@@ -1923,7 +1923,7 @@ async fn dispatch_answering(
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
     //
-    // The four reply-carrying commands take a sender the wire deliberately
+    // The five reply-carrying commands take a sender the wire deliberately
     // does not carry, and each carries its OWN reply type - a spawned worker
     // answers with a `WorkerSpawnReply`, a despawn with a `DespawnResult`,
     // and the review pair with a `bool` and a `ReviewSet`. So the channel is
@@ -1981,6 +1981,20 @@ async fn dispatch_answering(
                 thread_ids,
                 origin,
                 respond: Some(tx),
+            };
+            answered(socket, state, command, to, rx).await
+        }
+        Command::BrowserIdleWarning {
+            key, profile, idle_minutes, grace_minutes, at_close, ..
+        } => {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::BrowserIdleWarning {
+                key,
+                profile,
+                idle_minutes,
+                grace_minutes,
+                at_close,
+                verdict: Some(tx),
             };
             answered(socket, state, command, to, rx).await
         }
@@ -2091,10 +2105,11 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::DespawnWorker { .. }
             | Command::UpsertReviewThread { .. }
             | Command::SubmitReview { .. }
+            | Command::BrowserIdleWarning { .. }
     )
 }
 
-/// Dispatch one of those four, and send back the answer it carries.
+/// Dispatch one of those five, and send back the answer it carries.
 async fn answered<T: serde::Serialize>(
     socket: &mut WebSocket,
     state: &TransportState,

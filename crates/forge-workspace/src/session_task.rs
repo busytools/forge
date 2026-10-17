@@ -1781,6 +1781,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::CloseSession { .. }
         | Command::UpsertReviewThread { .. }
         | Command::SubmitReview { .. }
+        | Command::BrowserIdleWarning { .. }
         | Command::TaskVerdict { .. }
         | Command::TaskAnswer { .. }
         | Command::TaskRank { .. }

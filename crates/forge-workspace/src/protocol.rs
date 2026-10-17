@@ -249,7 +249,7 @@ impl WorktreeDisposition {
 /// session task. `Workspace::dispatch` fans the variant into the
 /// matching task's command receiver.
 ///
-/// A reply channel cannot cross a socket, so the six fields carrying one
+/// A reply channel cannot cross a socket, so the seven fields carrying one
 /// are `Option` and skipped on the wire: `#[serde(skip)]` reconstructs a
 /// field on deserialize, which needs a `Default`, and a bare
 /// `oneshot::Sender` has none while an `Option` does.
@@ -776,6 +776,36 @@ pub enum Command {
         #[serde(skip)]
         respond: Option<oneshot::Sender<Option<forge_primitives::ReviewSet>>>,
     },
+    /// **A browser profile on this client has sat idle**: the client's own
+    /// clock asks that the owning seat be told, or - with `at_close` - asks
+    /// the one question the close needs answered, nothing delivered. The
+    /// answer is an [`IdleVerdict`]; a parked hand-off on the seat holds the
+    /// profile and nothing is sent. App-level command (`key()` returns
+    /// `None`): the registry and the forged prompt both belong to the
+    /// workspace, not to the seat's task.
+    BrowserIdleWarning {
+        key: SessionSlot,
+        profile: String,
+        idle_minutes: u64,
+        grace_minutes: u64,
+        at_close: bool,
+        #[serde(skip)]
+        verdict: Option<oneshot::Sender<IdleVerdict>>,
+    },
+}
+
+/// Outcome of a [`Command::BrowserIdleWarning`], sent back to the asking
+/// client: whether the seat was warned (`Delivered`), whether a hand-off was
+/// waiting on the person and holds the profile (`Held` - nothing was
+/// delivered), whether the seat had no live session to tell (`NoSession`),
+/// or - on an `at_close` ask - that nothing holds it (`Clear`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdleVerdict {
+    Delivered,
+    Held,
+    NoSession,
+    Clear,
 }
 
 impl Command {
@@ -828,6 +858,7 @@ impl Command {
             | Self::RespondBrowserHandOff { .. }
             | Self::AnswerDocumentHandOff { .. }
             | Self::SubmitReview { .. }
+            | Self::BrowserIdleWarning { .. }
             | Self::TaskVerdict { .. }
             | Self::TaskAnswer { .. }
             | Self::TaskRank { .. }
@@ -1033,6 +1064,12 @@ impl std::fmt::Debug for Command {
                 .field("project", project)
                 .field("branch", branch)
                 .field("thread_ids", thread_ids)
+                .finish_non_exhaustive(),
+            Self::BrowserIdleWarning { key, profile, at_close, .. } => f
+                .debug_struct("BrowserIdleWarning")
+                .field("key", key)
+                .field("profile", profile)
+                .field("at_close", at_close)
                 .finish_non_exhaustive(),
             Self::TaskVerdict { project, id, approve, .. } => f
                 .debug_struct("TaskVerdict")
