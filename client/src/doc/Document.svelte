@@ -192,6 +192,7 @@
     busy: false,
     line: null,
     phase: null,
+    silent: null,
     panel: false,
     take: null,
     wire: null,

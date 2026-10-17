@@ -420,7 +420,7 @@ describe('the reviewable document', () => {
    * over its text and save rewrites the stored thread, and delete takes the
    * draft off the shelf and out of the store.
    */
-  it("edits and retracts a draft's words", async () => {
+  it("edits and retracts a draft's words", () => {
     const page = drawReviewable();
 
     blockTarget('line two').click();
