@@ -37,6 +37,14 @@ pub const GRACE_MINUTES: u64 = 10;
 /// sitting a few seconds past its bound is not a fault.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
+/// The bound one idle dispatch is given. The socket is loopback and its
+/// server answers in milliseconds; a dispatch that outlives this is a skew or
+/// a wedge the sweep must not inherit - **an error frame never resolves a
+/// pending dispatch reply** (a gap in the transport, not this loop's), so an
+/// unbounded await here would stall every later pass for the client's
+/// lifetime, silently.
+const DISPATCH_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// One profile's clock, as the host keeps it.
 #[derive(Clone, Debug)]
 pub struct Touch {
@@ -184,7 +192,19 @@ async fn sweep(bridge: &Arc<Bridge>) {
         let seat = candidate.touch.caller.as_ref();
         let at_close = at_close || seat.is_none();
         let command = warning(&candidate, seat, idle_minutes, grace_minutes, at_close);
-        let verdict = verdict_of(socket.dispatch(command, true).await.ok().flatten().as_ref());
+        let verdict = match tokio::time::timeout(DISPATCH_TIMEOUT, socket.dispatch(command, true))
+            .await
+        {
+            Ok(answer) => verdict_of(answer.ok().flatten().as_ref()),
+            Err(_) => {
+                tauri_plugin_log::log::warn!(
+                    "the idle warning went unanswered (event_name browser_idle_dispatch_timeout, \
+                         profile {})",
+                    candidate.name.as_deref().unwrap_or("shared"),
+                );
+                Verdict::Unanswered
+            }
+        };
         match (at_close, verdict) {
             // **Held**: a hand-off is waiting on the person; nothing was
             // delivered and nothing may close. The streak stays armed, and
