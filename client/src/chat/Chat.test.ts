@@ -34,10 +34,12 @@ vi.mock('./conversation', async (importOriginal) => {
 });
 
 // The switch marks (#2374) are the probe's to write; the column's half is
-// calling the mark where its terminal state actually draws, which is what
-// this watches.
+// opening the mark where a conversation actually opens and calling the
+// drawn mark where its terminal state actually draws, which is what these
+// watch.
 const drawnMark = vi.hoisted(() => vi.fn());
-vi.mock('../perf', () => ({ noteDrawn: drawnMark }));
+const openedMark = vi.hoisted(() => vi.fn());
+vi.mock('../perf', () => ({ noteDrawn: drawnMark, noteConversationOpened: openedMark }));
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -1491,6 +1493,7 @@ describe('the drawn mark', () => {
   it('marks when a seat first draws rows, and again when another seat lands', async () => {
     const server = stub();
     drawnMark.mockClear();
+    openedMark.mockClear();
     const column = mount(SeatSwitch, {
       target: document.body,
       props: { connection: server.connection, first: LEAD, second: { ...LEAD, label: 'w1' } },
@@ -1498,17 +1501,25 @@ describe('the drawn mark', () => {
     app = column;
     flushSync();
 
+    expect(
+      openedMark,
+      'taking a seat on is the conversation opening, marked where it happens',
+    ).toHaveBeenCalledWith('Busytools/forge/lead');
     expect(drawnMark, 'nothing is drawn before a page lands').not.toHaveBeenCalled();
 
     server.answer([turn('t1')]);
     await painted();
     expect(drawnMark, 'the rows a seat draws are the mark').toHaveBeenCalled();
 
-    // The switch: the new seat has drawn nothing, and its own page is what
-    // puts the mark down for it.
+    // The switch: the new seat's own conversation opens, and its own page is
+    // what puts the drawn mark down for it.
     drawnMark.mockClear();
+    openedMark.mockClear();
     column.flip();
     flushSync();
+    expect(openedMark, 'the switched-to seat opens its own conversation').toHaveBeenCalledWith(
+      'Busytools/forge/w1',
+    );
     expect(
       drawnMark,
       'the seat just switched to has not drawn its answer yet',

@@ -183,18 +183,15 @@ describe('the frame probe', () => {
   });
 });
 
-describe('the open a seat switch begins', () => {
-  it('marks the switch, then measures the drawn and the quiet from it', () => {
+describe('the open a conversation begins', () => {
+  it('marks the open, then measures the drawn and the quiet from it', () => {
     const h = harness();
-    // Boot reads the route first: that wiring is the run line's own moment,
-    // not a switch.
-    h.probe.setSurface('home', null);
-    h.frame(16);
-
     h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
     const switches = h.records.flat().filter((record) => record.kind === 'switch');
     expect(switches).toHaveLength(1);
     expect(switches[0]?.session).toBe('Busytools/forge/lead');
+    expect(switches[0]?.surface).toBe('session');
 
     // A normal frame while the seat's answer is still on its way must not
     // read as the open being done: the quiet needs the drawing first.
@@ -204,14 +201,14 @@ describe('the open a seat switch begins', () => {
     h.probe.noteDrawn();
     const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
     expect(drawn).toHaveLength(1);
-    expect(drawn[0]?.ms, 'the drawn mark measures from the switch').toBe(16);
+    expect(drawn[0]?.ms, 'the drawn mark measures from the open').toBe(16);
 
-    // A slow frame after the drawing is the switch still being paid for, so
-    // the open stays running.
+    // A slow frame after the drawing is the open still being paid for, so it
+    // stays running.
     h.frame(120);
     expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
 
-    // The next normal frame is the quiet, measured from the same switch.
+    // The next normal frame is the quiet, measured from the same open.
     h.frame(16);
     const quiet = h.records.flat().filter((record) => record.kind === 'quiet');
     expect(quiet).toHaveLength(1);
@@ -222,28 +219,32 @@ describe('the open a seat switch begins', () => {
     expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(1);
   });
 
-  it('does not mark booting straight onto a seat as a switch', () => {
+  /**
+   * **A route change is not a conversation.** The board route names an
+   * org/project and no seat, and the review, files and doc routes name a
+   * seat no conversation opens for: an open marked off the route would write
+   * switches that never settle, or that steal the next real open.
+   */
+  it('marks nothing for a route change alone', () => {
     const h = harness();
-    h.probe.setSurface('session', 'Busytools/forge/lead');
-    expect(h.records.flat().filter((record) => record.kind === 'switch')).toHaveLength(0);
+    h.probe.setSurface('board', 'Busytools/forge');
+    h.probe.noteDrawn();
+    h.frame(16);
+    h.frame(120);
+
+    const kinds = h.records.flat().map((record) => record.kind);
+    expect(kinds, 'no open, no drawing and no quiet come from a route move').not.toContain(
+      'switch',
+    );
+    expect(kinds).not.toContain('drawn');
+    expect(kinds).not.toContain('quiet');
   });
 
-  it('does not mark moving between views of the same seat', () => {
+  it('marks a reopen of the same seat: a reconnect opens its conversation again', () => {
     const h = harness();
-    h.probe.setSurface('session', 'Busytools/forge/lead');
-    h.probe.setSurface('review', 'Busytools/forge/lead');
-    expect(h.records.flat().filter((record) => record.kind === 'switch')).toHaveLength(0);
-  });
-
-  it('marks a return to a seat as a switch, and does not mark the home it left through', () => {
-    const h = harness();
-    h.probe.setSurface('session', 'Busytools/forge/lead');
-    h.probe.setSurface('home', null);
-    expect(h.records.flat().filter((record) => record.kind === 'switch')).toHaveLength(0);
-    h.probe.setSurface('session', 'Busytools/forge/lead');
-    const switches = h.records.flat().filter((record) => record.kind === 'switch');
-    expect(switches).toHaveLength(1);
-    expect(switches[0]?.surface).toBe('session');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    expect(h.records.flat().filter((record) => record.kind === 'switch')).toHaveLength(2);
   });
 });
 

@@ -5,7 +5,7 @@
   import { heldReserve, sizes } from './row-sizes';
 
   import Icon from '../components/Icon.svelte';
-  import { noteDrawn } from '../perf';
+  import { noteConversationOpened, noteDrawn } from '../perf';
   import { subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
@@ -610,7 +610,14 @@
     // list unmounts and the new landing re-pins before any event can read the
     // old value. A swap that kept the list mounted across it would make this
     // stale.
-    if (fresh || which !== placedFor) {
+    // **The same predicate is what a conversation OPEN is** (#2374): a first
+    // visit, a seat reopened on another connection, or a kept seat coming
+    // back on screen. Every way into a seat - a click, a deep link, a reload,
+    // a reconnect, a palette move - passes through this effect, so the perf
+    // log's open is marked from here rather than from a route change: a route
+    // change alone is no conversation, and a board route must write nothing.
+    const switched = fresh || which !== placedFor;
+    if (switched) {
       placed = null;
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
@@ -636,6 +643,12 @@
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
     held = untrack(() => kept.get(which)) ?? NOTHING;
+    // After `held`, so the open's own start and the conversation it names
+    // land in one flush - the drawn mark below reads `held` and must never
+    // time the seat that is going.
+    if (switched) {
+      noteConversationOpened(`${slot.org}/${slot.project}/${slot.label}`);
+    }
     // Leaving the seat: its store notifications stop with its frames.
     return () => {
       unsubscribe();

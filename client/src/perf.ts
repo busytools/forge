@@ -78,6 +78,10 @@ interface PerfProbe {
   stop(): void;
   /** The page the probe is looking at; nulls for a route with no seat. */
   setSurface(surface: string | null, session: string | null): void;
+  /** A conversation opened for `seat`: a click, a deep link, a reload, a
+   *  reconnect or a palette move, written where the column takes the seat on
+   *  (#2374). */
+  noteConversationOpened(seat: string): void;
   /** The open seat's terminal drawing has landed: its conversation, or the
    *  seat's own empty/waking/refused line (#2374). */
   noteDrawn(): void;
@@ -151,17 +155,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let last: number | null = null;
   let cancelFrame: (() => void) | null = null;
   let cancelObserver: (() => void) | null = null;
-  /**
-   * The seat the page is showing, and whether a route has been wired yet.
-   *
-   * **A seat that was not already on screen is a switch** (#2374): the
-   * records a reader measures a slow switch by - `first_row` and `quiet` -
-   * are timed from when the seat came on screen. The first wiring is boot's
-   * own read, and the run line already brackets that.
-   */
-  let shown: string | null = null;
-  let wired = false;
-  /** When the open seat came on screen, and whether its state has drawn. */
+  /** When a conversation opened, and whether its state has drawn (#2374). */
   let openAt: number | null = null;
   let drawnSeen = false;
 
@@ -282,20 +276,18 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     setSurface(next: string | null, seat: string | null): void {
       surface = next;
       session = seat;
-      if (wired && seat !== null && seat !== shown) {
-        openAt = now();
-        drawnSeen = false;
-        emit({
-          schema: SCHEMA,
-          kind: 'switch',
-          run_id: runId,
-          ts_ms: Date.now(),
-          surface,
-          session,
-        });
-      }
-      shown = seat;
-      wired = true;
+    },
+    noteConversationOpened(seat: string): void {
+      openAt = now();
+      drawnSeen = false;
+      emit({
+        schema: SCHEMA,
+        kind: 'switch',
+        run_id: runId,
+        ts_ms: Date.now(),
+        surface: 'session',
+        session: seat,
+      });
     },
     noteDrawn(): void {
       if (openAt === null || drawnSeen) return;
@@ -332,6 +324,17 @@ export function startPerfProbe(options: ProbeOptions = {}): PerfProbe | null {
 /** Where the page is, for the records the probe writes from here on. */
 export function notePerfSurface(surface: string | null, session: string | null): void {
   running?.setSurface(surface, session);
+}
+
+/**
+ * A conversation has opened for `seat`. **The open is written where the
+ * column takes the seat on**, not where a route changed: a click, a deep
+ * link, a reload, a reconnect and a palette move all pass through the
+ * column, and a route change alone is no conversation - a board is not a
+ * seat and a board route must write nothing (#2374).
+ */
+export function noteConversationOpened(seat: string): void {
+  running?.noteConversationOpened(seat);
 }
 
 /**
