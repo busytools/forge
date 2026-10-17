@@ -71,8 +71,11 @@ impl ChaseMemory {
         let current: std::collections::HashSet<(String, String)> =
             unaccounted.iter().map(|label| (project.to_owned(), label.clone())).collect();
         // A worker that accounted again may be re-reported if it drifts
-        // once more; anything still missing keeps its report.
-        self.reported.retain(|entry| current.contains(entry));
+        // once more; anything still missing keeps its report. Only this
+        // project's entries are in reach: one sweep walks every project
+        // through this memory, so clearing another's here would make its
+        // workers fresh on every pass.
+        self.reported.retain(|entry| entry.0 != project || current.contains(entry));
         let mut fresh = Vec::new();
         for label in unaccounted {
             let entry = (project.to_owned(), label.clone());
@@ -576,6 +579,79 @@ mod tests {
         ws: &Workspace,
     ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         ws.install_testing_stub(&SessionSlot::lead("TestOrg", PROJECT))
+    }
+
+    /// A live worker in `project` holding no row: the shape the
+    /// unaccounted rung names.
+    fn worker_holding_no_row(ws: &Workspace, project: &str, label: &str) {
+        let key =
+            ws.list_projects().into_iter().find(|v| v.name == project).expect("view").key.clone();
+        ws.insert_live_worker(
+            &key,
+            crate::WorkerEntry {
+                label: label.to_owned(),
+                charter: "charter".to_owned(),
+                slot: SessionSlot::worker("TestOrg", project, label),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: epoch(0),
+                spawned_by: SessionSlot::lead("TestOrg", project),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+    }
+
+    /// The unaccounted rung is per project: one project's pass never
+    /// makes another's namings fresh again. Regression for the sweep
+    /// that re-fired every worker of every project on every pass.
+    #[test]
+    fn two_projects_through_one_sweep_are_named_once_each() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_project("other", "/tmp/tp-chase-other");
+        let _lead_rx = live_lead(&ws);
+        let _other_rx = ws.install_testing_stub(&SessionSlot::lead("TestOrg", "other"));
+        worker_holding_no_row(&ws, PROJECT, "w-1");
+        worker_holding_no_row(&ws, "other", "w-2");
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 2, "one nudge per project");
+        let seen = deliver.seen.lock();
+        assert!(
+            seen.iter().any(|(_, text)| text.contains("worker w-1 holds no row")),
+            "proj's worker is named: {seen:?}",
+        );
+        assert!(
+            seen.iter().any(|(_, text)| text.contains("worker w-2 holds no row")),
+            "other's worker is named: {seen:?}",
+        );
+        drop(seen);
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 140), 0, "and neither repeats");
+        assert_eq!(deliver.seen.lock().len(), 2, "still exactly the two namings");
+    }
+
+    /// An empty project - one holding no unaccounted worker - leaves
+    /// the other projects' namings standing. Regression for the pass
+    /// that wiped the whole memory whenever any project was empty.
+    #[test]
+    fn an_empty_project_does_not_wipe_another_projects_namings() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_project("empty", "/tmp/tp-chase-empty");
+        let _lead_rx = live_lead(&ws);
+        worker_holding_no_row(&ws, PROJECT, "w-1");
+        let deliver = Recording::default();
+        let mut memory = ChaseMemory::default();
+
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 100), 1, "the worker is named");
+        assert_eq!(sweep(&ws, &deliver, &mut memory, 140), 0, "the empty pass says nothing");
+        assert_eq!(deliver.seen.lock().len(), 1, "and the naming stands");
     }
 
     /// The estimate crossing asks the owner once, ever - a later sweep
