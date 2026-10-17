@@ -31,6 +31,9 @@
     onresolve,
     onreopen,
     ondelete = null,
+    opened,
+    onopen,
+    oncollapse,
     onpress,
     onhold,
     field = () => {},
@@ -55,6 +58,11 @@
     onreopen: () => void;
     /** Remove this thread; absent where the page offers no delete. */
     ondelete?: (() => void | Promise<void>) | null;
+    /** The resolved threads the page holds open: the state outlives this
+     *  card, which CM rebuilds whenever a write moves the block key. */
+    opened: ReadonlySet<string>;
+    onopen: (thread: string) => void;
+    oncollapse: (thread: string) => void;
     onpress: () => void;
     onhold: () => void;
     /** The field, so the page can put the keyboard back in it. */
@@ -72,16 +80,20 @@
    * A resolved thread collapses to its marker line, the way the review
    * page's canvas does (Ved, 2026-10-17) - and is opened by a press on it.
    * Reopening un-resolves the thread, which expands it again by itself.
+   *
+   * **The open state is the PAGE's, not this card's**: a write moves the
+   * block key and CodeMirror tears the card down and builds it again, so a
+   * locally-held `opened` folded the thread back before its own edit box
+   * could draw (the lead's gate, 2026-10-17).
    */
-  let opened = $state(false);
-  const collapsed = $derived(status === 'resolved' && !opened);
+  const collapsed = $derived(status === 'resolved' && !opened.has(row.thread.id));
 </script>
 
 {#if collapsed}
   <ResolvedMarker
     first={row.thread.comments[0]?.text ?? ''}
     {where}
-    onopen={() => (opened = true)}
+    onopen={() => onopen(row.thread.id)}
   />
 {:else}
   <article class="rv-thread compact">
@@ -105,7 +117,9 @@
              (Ved, 2026-10-17): no respond on something accepted, and one
              way back to the marker it came from. -->
         <button class="rv-a" type="button" disabled={busy} onclick={onreopen}>reopen</button>
-        <button class="rv-a" type="button" onclick={() => (opened = false)}>collapse</button>
+        <button class="rv-a" type="button" onclick={() => oncollapse(row.thread.id)}
+          >collapse</button
+        >
       {:else}
         <button class="rv-a" type="button" disabled={busy} onclick={onrespond}>respond</button>
         <button class="rv-a" type="button" disabled={busy} onclick={onresolve}>resolve</button>

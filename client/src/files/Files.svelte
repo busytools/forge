@@ -108,6 +108,11 @@
   /** A jump's line, applied once the reader for its file is in hand. */
   let pendingLine = $state<number | null>(null);
 
+  /** The resolved threads the reader opened back up - held on the PAGE,
+   *  because the reader re-mounts a card whenever a write moves its block
+   *  key (the lead's gate, 2026-10-17). */
+  const openedResolved = new SvelteSet<string>();
+
   /** The seat-tree half of the record: the files page's threads and rounds. */
   const treeThreads = $derived(
     record?.tree_reviews.threads.outcome === 'read' ? record.tree_reviews.threads.value : [],
@@ -822,6 +827,9 @@
               replyBox: reply,
               voice,
               editor,
+              opened: openedResolved,
+              onopen: (id: string) => openedResolved.add(id),
+              oncollapse: (id: string) => openedResolved.delete(id),
               onrespond: () => {
                 reply.thread = reply.thread === id ? null : id;
                 reply.index = null;
