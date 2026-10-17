@@ -2406,6 +2406,83 @@ function extendsFrom(held: readonly unknown[], next: readonly unknown[]): boolea
   );
 }
 
+/** A value read off one turn's frames, and the array it was read from. */
+interface CarriedValue<T> {
+  messages: readonly unknown[];
+  value: T;
+}
+
+/**
+ * Whether `next` is `held` with frames appended to it.
+ *
+ * **The seam test alone is not enough here.** It reads the frame at the seam
+ * index and nothing between, so two arrays sharing the frame that opened the
+ * turn and the frame at that index would read as one array - and this carry
+ * answers whether a row is drawn or dropped, where the fold's own memo only
+ * decides what a row is redrawn as. So an array of the SAME length is answered
+ * only where it IS the array, and a longer one is taken on the seam.
+ *
+ * The growth arm is sound for the reason the fold's is: a turn's frames are
+ * only ever appended to (`conversation.ts` grows a turn as
+ * `[...messages, frame]`), and every other array the store builds is a fresh
+ * array or a prefix-preserving filter of one.
+ */
+function grewFrom(held: readonly unknown[], next: readonly unknown[]): boolean {
+  if (next.length === held.length) return next === held;
+  return extendsFrom(held, next);
+}
+
+/**
+ * The values read off the same turn, by what each of them reads.
+ *
+ * Keyed on the frame that OPENED the turn, the one part of its array every
+ * append preserves - the same key and the same growth test the fold's memo
+ * uses, and for the same reason: a turn of M frames asked once per arriving
+ * frame is an O(M) walk per frame.
+ */
+const carried = new WeakMap<object, Map<string, CarriedValue<unknown>>>();
+
+/**
+ * A value read off one turn's frames, carried as the turn grows.
+ *
+ * `kind` separates the readers of the same turn - a turn is asked for its
+ * frame ids, for whether it holds the frame it ends on, and for the calls it
+ * dispatched - and `seed` builds the value on a miss. `add` folds one frame
+ * into it, so the carry is extended by the frames the turn gained rather than
+ * walked again.
+ *
+ * **The value is the carry's own and is extended in place**, so a caller that
+ * keeps it across frames must take a copy. A miss is always correct: the value
+ * is built afresh from whatever the array holds.
+ */
+export function carriedValue<T>(
+  turn: { messages: readonly unknown[] },
+  kind: string,
+  seed: () => T,
+  add: (held: T, frame: unknown) => void,
+): T {
+  const messages = turn.messages;
+  const head = messages[0];
+  const keyed = head !== null && typeof head === 'object' ? carried.get(head) : undefined;
+  const held = keyed?.get(kind) as CarriedValue<T> | undefined;
+  if (held !== undefined && grewFrom(held.messages, messages)) {
+    for (const frame of messages.slice(held.messages.length)) add(held.value, frame);
+    held.messages = messages;
+    return held.value;
+  }
+  const value = seed();
+  for (const frame of messages) add(value, frame);
+  if (head !== null && typeof head === 'object') {
+    let byKind = keyed;
+    if (byKind === undefined) {
+      byKind = new Map();
+      carried.set(head, byKind);
+    }
+    byKind.set(kind, { messages, value });
+  }
+  return value;
+}
+
 /**
  * Whether a frame carries nothing another frame has to be re-read for.
  *
