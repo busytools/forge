@@ -3626,11 +3626,12 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-reader .rv-marker { width: 100%; cursor: pointer; font: inherit;
   text-align: left; background: var(--s2); }
 /* The reader's thread cards draw the page's own type, not the code's, and
-   they sit DENSER than the wide diff's cards (Ved, 2026-10-17: "the space
-   on the comments is very spacious... borrow this one from the git diff"):
-   the words keep their 15.5px, the gaps between turns, the paragraph
-   spacing and the acts' room come in. */
-.files-reader .rv-thread { font-size: var(--fs-base); line-height: 1.4; }
+   they read as a COLUMN, not a full-bleed box: the reader is wide and the
+   card stretched with it - "super wide for no reason, super spacey for no
+   reason" (Ved, 2026-10-17). The measure is the prose's own 72ch, and the
+   spacing comes in with it. */
+.files-reader .rv-thread { max-width: 72ch; font-size: var(--fs-base); line-height: 1.4; }
+.files-reader .rv-marker { max-width: 72ch; }
 .files-reader .rv-thread .rv-turn { margin: 5px 0; }
 .files-reader .rv-thread .rv-turn .prose p + p { margin-top: 10px; }
 .files-reader .rv-thread .rv-acts { padding-top: 4px; }
