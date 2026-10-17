@@ -372,9 +372,16 @@ pub async fn page_targets(port: u16) -> Vec<(String, String)> {
 /// later launch - or a rebirth over a launch that outlived its window - opens
 /// the window's tabs on, so the person lands on the page they were looking at
 /// with the rest of their window still around them.
+///
+/// **A blank page carries nothing**: `about:blank` is a fresh tab, not a page
+/// anyone was looking at. (A driver's own other scratch pages cannot be told
+/// from real ones by the devtools endpoint and stay.)
 fn carried_pages(raised: &str, pages: &[(String, String)]) -> Vec<String> {
     let mut carried = Vec::new();
     for (id, url) in pages {
+        if url.is_empty() || url == "about:blank" {
+            continue;
+        }
         if id == raised {
             carried.insert(0, url.clone());
         } else {
@@ -382,6 +389,39 @@ fn carried_pages(raised: &str, pages: &[(String, String)]) -> Vec<String> {
         }
     }
     carried
+}
+
+/// **One browsing call changed what the window holds**: rewrite the raise's
+/// marker from the browser as it is now, so a later launch opens the pages
+/// the window really has rather than the ones it had when the person last
+/// looked. A tab a session closed must not resurrect.
+///
+/// `led` is the page a call NAMED (a navigation's own URL): it leads the
+/// carry. When no call named one - a click, a type, a close - the page the
+/// marker already led with leads, if it is still there; otherwise the
+/// browser's own order, the same pick the raise itself makes.
+///
+/// Nothing is written while no window is up: the marker means "the window is
+/// up", and a refresh cannot raise one. Best-effort otherwise: an unwritten
+/// refresh leaves the previous carry, the state before the call.
+pub async fn note_pages(profile: &Path, led: Option<&str>) {
+    if !launched_windowed(profile) {
+        return;
+    }
+    let Some(active) = verified(profile).await else {
+        return;
+    };
+    let pages = page_targets(active.port).await;
+    let previous = windowed_pages(profile);
+    let led_id = led
+        .and_then(|url| pages.iter().find(|(_, u)| u == url).map(|(id, _)| id.as_str()))
+        .or_else(|| {
+            previous
+                .first()
+                .and_then(|first| pages.iter().find(|(_, u)| u == first).map(|(id, _)| id.as_str()))
+        });
+    let carried = carried_pages(led_id.unwrap_or_default(), &pages).join("\n");
+    let _ = std::fs::write(windowed_marker(profile), carried);
 }
 
 /// The browser target path an answering port reports - `/devtools/browser/
@@ -788,13 +828,16 @@ pub fn ever_opened(profile: &Path) -> bool {
 }
 
 /// Whether the window is really UP on `profile`: the raise's marker AND a
-/// live launch answering as this profile's own AND a page left to carry.
+/// live launch answering as this profile's own AND **a window answering for
+/// a page**.
 ///
 /// **The marker alone lied once** (Ved, 2026-10-07, live): he closed the
 /// window with the X, the process survived with the marker still set, and
 /// the next Open concluded a window was up and raised nothing. Everything
 /// that SPEAKS for a window - the strip's window-open mark and its hide
-/// label - must keep this predicate.
+/// label - must keep this predicate. **And a page is not a window either**:
+/// a page target can outlive the window it lived in, so the answer that
+/// counts is `Browser.getWindowForTarget`'s, not the page list's.
 pub async fn windowed(profile: &Path) -> bool {
     if !launched_windowed(profile) {
         return false;
@@ -802,7 +845,13 @@ pub async fn windowed(profile: &Path) -> bool {
     let Some(active) = verified(profile).await else {
         return false;
     };
-    !page_targets(active.port).await.is_empty()
+    let Ok(mut cdp) = window::Cdp::connect(active.port, &active.path).await else {
+        return false;
+    };
+    let Ok(page) = cdp.page().await else {
+        return false;
+    };
+    window::window(&page, &mut cdp).await.is_ok()
 }
 
 /// The pages the last raise carried, when it carried any: what a launch - or
@@ -858,18 +907,36 @@ pub async fn show_within(
     let active = ensure_within(binary, profile, &carried, budget).await?;
     let raised = tokio::time::timeout(WINDOW_TIMEOUT, async {
         let mut cdp = window::Cdp::connect(active.port, &active.path).await?;
-        if cdp.page().await.is_err() {
-            // **A live launch with no page is given its window now**, born on
-            // the carried pages exactly as a launch births it: a browser that
-            // answers and has nothing to raise. Measured shapes that reach
-            // this: a session closing the window's last tab (2026-10-17 - the
-            // browser serving, the window standing empty), and the person's X
-            // where the keep-alive holds (2026-10-07 - the process surviving
-            // with nothing to raise).
-            birth_hidden_window(&active, &carried).await?;
-            cdp = window::Cdp::connect(active.port, &active.path).await?;
-        }
-        let page = cdp.page().await?;
+        // **A page with no window under it is cleared first**: a page target
+        // can outlive the window it lived in, and nothing can be raised in
+        // it. `Browser.getWindowForTarget` is what tells the two apart.
+        let live_page = match cdp.page().await {
+            Ok(page) => match window::window(&page, &mut cdp).await {
+                Ok(_) => Some(page),
+                Err(_) => {
+                    // Its URL is being born again from the carried pages: left
+                    // standing it would double in the target list.
+                    let _ = cdp
+                        .call("Target.closeTarget", json!({ "targetId": page.target }), None)
+                        .await;
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+        let page = match live_page {
+            Some(page) => page,
+            None => {
+                // **A live launch with no window is given one now**, born on
+                // the carried pages exactly as a launch births it. Measured
+                // shapes (2026-10-17): a session closing the window's last
+                // tab through the devtools close - the window goes with it
+                // and the browser keeps serving.
+                birth_hidden_window(&active, &carried).await?;
+                cdp = window::Cdp::connect(active.port, &active.path).await?;
+                cdp.page().await?
+            }
+        };
         window::bring_forward(&page, &mut cdp, RAISE_AT.0, RAISE_AT.1).await?;
         Ok::<String, String>(page.target)
     })
@@ -1207,79 +1274,6 @@ mod tests {
             "the raised page leads; the others keep the browser's own order",
         );
         assert_eq!(carried_pages("T1", &[]), Vec::<String>::new(), "no pages, nothing carried");
-    }
-
-    /// A fake devtools endpoint for the windowed predicate: `/json/version`
-    /// answers with an identity, everything else with the page list given.
-    async fn fake_devtools(identity: &str, pages: &str) -> u16 {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
-        let port = listener.local_addr().expect("the bound port").port();
-        let identity = identity.to_owned();
-        let pages = pages.to_owned();
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else { continue };
-                let mut buffer = [0_u8; 2048];
-                let read = socket.read(&mut buffer).await.unwrap_or(0);
-                let request = String::from_utf8_lossy(&buffer[..read]);
-                let body = if request.starts_with("GET /json/version") {
-                    format!("{{\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}{identity}\"}}")
-                } else {
-                    pages.clone()
-                };
-                let answer = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                     Connection: close\r\n\r\n{body}",
-                    body.len(),
-                );
-                let _ = socket.write_all(answer.as_bytes()).await;
-            }
-        });
-        port
-    }
-
-    /// **A window is the marker AND a live launch AND a page** - the same
-    /// predicate `show` keeps. The marker alone lied once (a person's X left
-    /// the keep-alive process with the marker set and no page), so anything
-    /// that SPEAKS for a window - the strip's mark and its hide label - must
-    /// not trust it alone.
-    #[tokio::test]
-    async fn a_window_is_marker_and_a_live_launch_and_a_page() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        assert!(!windowed(dir.path()).await, "no marker, no window");
-
-        std::fs::write(windowed_marker(dir.path()), b"").expect("the marker");
-        assert!(!windowed(dir.path()).await, "a marker with nothing answering is no window");
-
-        // The X-close state: the marker survives, the launch answers, and no
-        // page is left.
-        let port = fake_devtools("/devtools/browser/live", "[]").await;
-        std::fs::write(
-            dir.path().join("DevToolsActivePort"),
-            format!("{port}\n/devtools/browser/live\n"),
-        )
-        .expect("the port file");
-        assert!(
-            !windowed(dir.path()).await,
-            "a windowless launch leaves the marker and no page - not a window",
-        );
-
-        // Marker + a launch answering AS this profile + a page target: up.
-        let port = fake_devtools(
-            "/devtools/browser/live2",
-            "[{\"id\":\"P1\",\"type\":\"page\",\"url\":\"about:blank\"}]",
-        )
-        .await;
-        std::fs::write(
-            dir.path().join("DevToolsActivePort"),
-            format!("{port}\n/devtools/browser/live2\n"),
-        )
-        .expect("the port file");
-        assert!(
-            windowed(dir.path()).await,
-            "the marker, a launch answering as it, and a page make a window",
-        );
     }
 
     /// **A launch must not resurrect the last session's tabs.** The clean

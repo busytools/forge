@@ -93,6 +93,13 @@ impl Endpoint {
         *self.pages.lock().expect("the pages") = pages;
     }
 
+    /// The window object is gone while the pages stay: `Browser.getWindowForTarget`
+    /// refuses and nothing can be raised - the state a page target outliving
+    /// its window leaves.
+    fn windowless(&self) {
+        *self.bounds.lock().expect("the bounds") = None;
+    }
+
     /// The methods called, in order.
     fn methods(&self) -> Vec<String> {
         self.calls.lock().expect("the calls").iter().map(|(method, _)| method.clone()).collect()
@@ -148,12 +155,26 @@ async fn serve(endpoint: Arc<Endpoint>) -> u16 {
             let endpoint = Arc::clone(&endpoint);
             tokio::spawn(async move {
                 let mut head = [0_u8; 2048];
-                let peeked =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), socket.peek(&mut head))
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .unwrap_or(0);
+                // **The whole head, however the segments fall**: one peek can
+                // catch half a handshake on a loaded machine (measured
+                // 2026-10-17), which routes a websocket open down the HTTP arm.
+                let mut peeked;
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    peeked = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        socket.peek(&mut head),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or(0);
+                    let request = String::from_utf8_lossy(&head[..peeked]);
+                    if request.contains("\r\n\r\n") || tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
                 let request = String::from_utf8_lossy(&head[..peeked]).to_ascii_lowercase();
                 if request.contains("upgrade: websocket") {
                     serve_cdp(socket, endpoint).await;
@@ -627,6 +648,147 @@ async fn a_launch_opens_the_pages_it_is_carried() {
         1,
         "and the carried page is left the active one",
     );
+}
+
+/// **A raise over a page whose window is gone births the window again.** A
+/// page target can outlive the window it lived in (reachable in production or
+/// not, the class is closed here): `cdp.page()` answers, nothing can be
+/// raised in it, and the raise must clear that page and land on the carried
+/// pages instead of failing on a browser that answers and has nothing to
+/// show.
+#[tokio::test]
+async fn a_raise_over_a_page_with_no_window_births_the_window_again() {
+    let world = world().await;
+    world.launched();
+    world.endpoint.windowless();
+    std::fs::write(world.profile.join("windowed"), b"https://one.example\nhttps://two.example")
+        .expect("the raise marker");
+
+    let shown = chromium::show(&world.stub, &world.profile)
+        .await
+        .unwrap_or_else(|why| panic!("the raise must birth the window again: {why}"));
+    assert_eq!(shown.port, world.port(), "raised over the launch that was there");
+    assert!(world.launches().is_empty(), "nothing was spawned - the browser kept running");
+    assert_eq!(
+        world.endpoint.params_of("Target.closeTarget").len(),
+        1,
+        "the windowless page was cleared first: {:?}",
+        world.endpoint.params_of("Target.closeTarget"),
+    );
+    let created = world.endpoint.params_of("Target.createTarget");
+    assert_eq!(created.len(), 2, "the window, then its second page: {created:?}");
+    assert_eq!(created[0]["url"], json!("https://one.example"), "{created:?}");
+    assert_eq!(created[0]["newWindow"], json!(true), "{created:?}");
+    assert_eq!(created[1]["url"], json!("https://two.example"), "{created:?}");
+    assert_eq!(created[1]["newWindow"], json!(false), "the rest are tabs of it: {created:?}");
+    assert!(world.endpoint.brought_forward() >= 1, "and the reborn window is brought forward");
+    assert!(chromium::windowed(&world.profile).await, "the window is up again");
+}
+
+/// **A window is the marker AND a live launch AND a window answering for a
+/// page** - the same predicate `show` keeps. The marker alone lied once (a
+/// person's X left the keep-alive process with the marker set and no page);
+/// a page alone is not a window either - a page target can outlive the window
+/// it lived in, and anything that SPEAKS for a window - the strip's mark and
+/// its hide label - must not trust either alone.
+#[tokio::test]
+async fn a_window_is_the_marker_a_live_launch_and_a_window() {
+    let world = world().await;
+    assert!(!chromium::windowed(&world.profile).await, "no marker, no window");
+
+    std::fs::write(world.profile.join("windowed"), b"").expect("the marker");
+    assert!(
+        !chromium::windowed(&world.profile).await,
+        "a marker with nothing answering is no window",
+    );
+
+    // The launch answering, the marker set, no page at all.
+    world.launched();
+    world.endpoint.set_pages(Vec::new());
+    assert!(!chromium::windowed(&world.profile).await, "no page is not a window");
+
+    // A page left, but no window under it: still not a window.
+    world.endpoint.set_pages(vec!["https://example.com/prepared".to_owned()]);
+    world.endpoint.windowless();
+    assert!(
+        !chromium::windowed(&world.profile).await,
+        "a page whose window is gone is not a window - nothing can be raised in it",
+    );
+
+    world.endpoint.born_hidden();
+    assert!(
+        chromium::windowed(&world.profile).await,
+        "the marker, a launch answering as it, and a window for a page make a window",
+    );
+}
+
+/// **A tab closed after the raise stops being carried.** The marker is not a
+/// freeze-frame of the raise: a call that changes the window rewrites it, so
+/// a tab a session closed itself does not resurrect on the next launch.
+#[tokio::test]
+async fn a_tab_closed_after_the_raise_stops_being_carried() {
+    let world = world().await;
+    world.launched();
+    std::fs::write(world.profile.join("windowed"), b"https://one.example\nhttps://two.example")
+        .expect("the raise marker");
+    world.endpoint.set_pages(vec!["https://one.example".to_owned()]);
+
+    chromium::note_pages(&world.profile, None).await;
+
+    let marker = std::fs::read_to_string(world.profile.join("windowed")).expect("the marker");
+    assert_eq!(marker, "https://one.example", "the closed tab is gone from the carry");
+}
+
+/// **A page a call named leads the carry**: a navigation's own URL is the
+/// page the session was working on, wherever the browser's list happens to
+/// put it.
+#[tokio::test]
+async fn a_named_page_leads_the_carry() {
+    let world = world().await;
+    world.launched();
+    std::fs::write(world.profile.join("windowed"), b"https://one.example\nhttps://two.example")
+        .expect("the raise marker");
+    world
+        .endpoint
+        .set_pages(vec!["https://one.example".to_owned(), "https://two.example".to_owned()]);
+
+    chromium::note_pages(&world.profile, Some("https://two.example")).await;
+
+    let marker = std::fs::read_to_string(world.profile.join("windowed")).expect("the marker");
+    assert_eq!(
+        marker, "https://two.example\nhttps://one.example",
+        "the named page leads, the window's other pages follow",
+    );
+}
+
+/// **Blank pages carry nothing**: `about:blank` is a fresh tab, not a page
+/// anyone was looking at.
+#[tokio::test]
+async fn a_blank_page_is_not_carried() {
+    let world = world().await;
+    world.launched();
+    std::fs::write(world.profile.join("windowed"), b"about:blank").expect("a marker");
+    world.endpoint.set_pages(vec!["about:blank".to_owned(), "https://one.example".to_owned()]);
+
+    chromium::note_pages(&world.profile, None).await;
+
+    let marker = std::fs::read_to_string(world.profile.join("windowed")).expect("the marker");
+    assert_eq!(marker, "https://one.example", "the blank is not carried");
+}
+
+/// **No window up, no rewrite**: the marker means "the window is up", and a
+/// refresh cannot raise one - a call on a browser whose window is not up
+/// leaves the carry exactly as it was.
+#[tokio::test]
+async fn a_refresh_without_a_window_writes_nothing() {
+    let world = world().await;
+    world.launched();
+    world.endpoint.set_pages(vec!["https://one.example".to_owned()]);
+    assert!(!world.profile.join("windowed").exists(), "no raise, no marker");
+
+    chromium::note_pages(&world.profile, Some("https://one.example")).await;
+
+    assert!(!world.profile.join("windowed").exists(), "a refresh with no window up writes nothing",);
 }
 
 /// **A hide lowers the window and leaves the browser running.** The heart of

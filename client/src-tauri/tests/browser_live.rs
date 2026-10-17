@@ -905,6 +905,69 @@ async fn a_raise_after_the_browser_died_reopens_the_windows_pages_raises_a_windo
     guard.reap();
 }
 
+/// **A session's own calls rewrite the carry**: a navigation leads the
+/// marker, and a tab closed after the raise does not resurrect on the next
+/// launch. The carry follows the browser as it is, not the raise's
+/// freeze-frame - and the wiring pinned here is the host's own call path.
+/// Drives the vendored stack.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn a_session_call_rewrites_the_carry() {
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    // Normalised so the browser's report equals the ask (the refresh matches
+    // a navigation by URL): a trailing slash included, https over data: so
+    // nothing is re-encoded under it.
+    const ONE: &str = "https://example.com/";
+    const TWO: &str = "https://example.org/";
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        user_data: dir.path().join("user-data"),
+        output: dir.path().join("output"),
+        profiles: dir.path().join("profiles"),
+    };
+    let host = BrowserHost::new(paths.clone());
+    let launched = host.start().await.expect("the browser comes up with the app");
+    let browser = Launched::new(launched.pid, launched.port, paths.user_data.clone());
+    let who = seat();
+
+    host.call(&who, "browser_navigate", json!({ "url": ONE }))
+        .await
+        .unwrap_or_else(|why| panic!("the first navigate: {why}"));
+    host.show(None, Some(&who)).await.unwrap_or_else(|why| panic!("the raise: {why}"));
+    let marker = std::fs::read_to_string(paths.user_data.join("windowed")).expect("the marker");
+    assert!(marker.contains(ONE), "the raise carried the page it showed: {marker}");
+
+    // A second tab, navigated: the navigation leads the carry.
+    host.call(&who, "browser_tabs", json!({ "action": "new" }))
+        .await
+        .unwrap_or_else(|why| panic!("the new tab: {why}"));
+    host.call(&who, "browser_navigate", json!({ "url": TWO }))
+        .await
+        .unwrap_or_else(|why| panic!("the second navigate: {why}"));
+    let marker = std::fs::read_to_string(paths.user_data.join("windowed")).expect("the marker");
+    assert_eq!(
+        marker.lines().next(),
+        Some(TWO),
+        "the page the session navigated leads the carry: {marker}",
+    );
+
+    // The second tab closed by the session: it must not resurrect.
+    host.call(&who, "browser_tabs", json!({ "action": "close", "index": 1 }))
+        .await
+        .unwrap_or_else(|why| panic!("the close: {why}"));
+    let marker = std::fs::read_to_string(paths.user_data.join("windowed")).expect("the marker");
+    assert!(!marker.contains(TWO), "a tab the session closed is gone from the carry: {marker}",);
+    assert!(marker.contains(ONE), "and the page that is still open stays: {marker}");
+
+    browser.reap();
+}
+
 /// The window's bounds and the part of them inside the screen, in points:
 /// the overlap area, and the window's own whole area.
 fn visible(

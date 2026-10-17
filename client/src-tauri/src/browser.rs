@@ -368,6 +368,7 @@ impl BrowserHost {
                         identity: &active.path,
                         output: &paths.output,
                     };
+                    let led = named_page(tool, &args);
                     let outcome = shared.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
                         &paths.user_data,
@@ -378,6 +379,12 @@ impl BrowserHost {
                     .await;
                     match outcome {
                         Ok(mut parts) => {
+                            // **What the window holds now is what a later
+                            // launch should open**: the call may have closed
+                            // a tab, opened one, or navigated - the carry is
+                            // rewritten from the browser as it is, best
+                            // effort, before the answer goes out.
+                            chromium::note_pages(&paths.user_data, led.as_deref()).await;
                             if let Err(why) = auto {
                                 self.note_auto_failure(seat, why, &mut parts).await;
                             }
@@ -398,6 +405,7 @@ impl BrowserHost {
                         identity: &active.path,
                         output: &paths.output,
                     };
+                    let led = named_page(tool, &args);
                     let outcome = named.profile.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
                         &named.dir,
@@ -406,6 +414,11 @@ impl BrowserHost {
                         outcome.is_err(),
                     )
                     .await;
+                    if outcome.is_ok() {
+                        // The same refresh the shared arm makes, on this
+                        // profile's own directory: the carry follows the tabs.
+                        chromium::note_pages(&named.dir, led.as_deref()).await;
+                    }
                     outcome
                 }
             }
@@ -1177,6 +1190,17 @@ fn phone_profile_refusal(name: &str) -> String {
     )
 }
 
+/// The page a call NAMED, when it names one: a navigation carries the URL the
+/// session went to, and the carry a call refreshes should lead with it. A
+/// click or a type names no page - the refresh keeps the marker's own lead.
+#[cfg(desktop)]
+fn named_page(tool: &str, args: &Value) -> Option<String> {
+    if tool != "browser_navigate" {
+        return None;
+    }
+    args.get("url").and_then(Value::as_str).map(str::to_owned)
+}
+
 /// Take the `profile` argument off a call.
 ///
 /// It chooses the profile and no driver's schema declares it, so it never
@@ -1424,6 +1448,64 @@ mod tests {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else { continue };
                 let mut buffer = [0_u8; 2048];
+                // **The whole head, however the segments fall**: a single
+                // peek can catch half a handshake on a loaded machine (measured
+                // here 2026-10-17: the upgrade headers landed in a second
+                // segment, the ws branch missed them, and the client got the
+                // HTTP answer as garbage).
+                let mut read;
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    read = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        socket.peek(&mut buffer),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buffer[..read]);
+                    if head.contains("\r\n\r\n") || tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                let request = String::from_utf8_lossy(&buffer[..read]).to_ascii_lowercase();
+                if request.contains("upgrade: websocket") {
+                    // The window predicate asks over the devtools websocket: a
+                    // page, a session for it, and the window it lives in, all
+                    // answered.
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(socket).await else {
+                        continue;
+                    };
+                    use futures_util::{SinkExt as _, StreamExt as _};
+                    use tokio_tungstenite::tungstenite::Message;
+                    while let Some(Ok(frame)) = ws.next().await {
+                        let Message::Text(text) = frame else { continue };
+                        let Ok(call) = serde_json::from_str::<Value>(&text) else { continue };
+                        let id = call.get("id").cloned().unwrap_or(Value::Null);
+                        let method = call
+                            .get("method")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let result = match method.as_str() {
+                            "Target.getTargets" => json!({
+                                "targetInfos": [{ "targetId": "P1", "type": "page",
+                                                  "url": "https://example.com/x" }],
+                            }),
+                            "Target.attachToTarget" => json!({ "sessionId": "SESSION1" }),
+                            "Browser.getWindowForTarget" => json!({
+                                "windowId": 7,
+                                "bounds": { "left": 40, "top": 60 },
+                            }),
+                            _ => Value::Null,
+                        };
+                        let answer = json!({ "id": id, "result": result });
+                        let _ = ws.send(Message::Text(answer.to_string().into())).await;
+                    }
+                    continue;
+                }
                 let read = socket.read(&mut buffer).await.unwrap_or(0);
                 let request = String::from_utf8_lossy(&buffer[..read]);
                 let body = if request.starts_with("GET /json/version") {
