@@ -22,7 +22,14 @@
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
   import { focusOf, type Where } from './editors';
-  import { bindPushToTalk, Dictation, openCapture, takeCounts, takePhase } from './dictate.svelte';
+  import {
+    bindPushToTalk,
+    Dictation,
+    openCapture,
+    takeCounts,
+    takePhase,
+    takeSilenceLine,
+  } from './dictate.svelte';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -281,6 +288,12 @@
 
   // The row's phase, read the way every box that draws a take row reads it.
   const rowPhase = $derived(takePhase(dictate, composer.take, slot));
+  /**
+   * What the take line says when the device is feeding this capture nothing,
+   * or `null`. It rides the take's own row rather than the notice above the
+   * box, which stands down while the record shows a take.
+   */
+  const silentLine = $derived(takeSilenceLine(dictate, slot)?.text ?? null);
 
   /** What the reader wrote in the dock's box, which a landed take has to reach. */
   let dockDraft = $state('');
@@ -1159,7 +1172,14 @@
                  would be typed into is the row they arrive on, so nothing is
                  added and nothing moves when a take starts or ends; the
                  controls ride it, and the surface's ring carries the state. -->
-            <TakeCard take={composer.take} {wire} phase={rowPhase} oncancel={dropTake} spread />
+            <TakeCard
+              take={composer.take}
+              {wire}
+              phase={rowPhase}
+              oncancel={dropTake}
+              spread
+              silent={silentLine}
+            />
             {#if !secondRow}
               {@render ctls()}
             {/if}

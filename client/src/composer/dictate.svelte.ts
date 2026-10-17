@@ -30,7 +30,7 @@ import {
   type Mode,
 } from './dictate-key';
 import { rememberDefaultDevice } from './dictation';
-import { Microphone } from './mic';
+import { Microphone, micSilence, silenceCause, type MicSilence } from './mic';
 import { openShellMic } from './mic-shell';
 import { busyLine, LocalTake, type MicSource, type TakeConnection } from './take';
 import type { Take } from './wire';
@@ -116,6 +116,21 @@ export function bindPushToTalk(wiring: PushToTalk): void {
   });
 }
 
+/**
+ * How long a take may produce nothing before its row says so.
+ *
+ * Long enough that a reader pressing and drawing breath is not called silent,
+ * short enough that a device feeding the capture nothing is named while it is
+ * happening rather than only at the take's end.
+ */
+export const SILENT_NOTICE_MS = 3_000;
+
+/** What the row says a capture it is hearing nothing from is doing. */
+const SILENT_HEAD = 'the capture is open and nothing is coming through it';
+
+/** The check the row falls back to when the platform named no cause. */
+const SILENT_HINT = 'check the microphone is not muted, or held by another app';
+
 /** A line a surface draws about a take, in its own row. */
 export interface TakeLine {
   tone: string;
@@ -161,6 +176,24 @@ export function takeCounts(dictate: Dictation, seat: SessionSlot): LocalTake['wi
   const live = dictate.take;
   if (live === null || boxKey(live.seat) !== boxKey(seat)) return null;
   return live.wire;
+}
+
+/**
+ * The line a take owes when the device is feeding it nothing, or `null`.
+ *
+ * A capture that is open and producing digital silence - a per-app mic mode,
+ * a privacy toggle, another app on the microphone - reads `ready` for the
+ * whole take and draws no graph, so the reader used to learn it only once the
+ * take ended. This is the row saying so while it is happening, withdrawn the
+ * moment a sample lands because the take's own `flowing` is what decides it.
+ * Shared, so every box that draws a take row can say the same thing.
+ */
+export function takeSilenceLine(dictate: Dictation, seat: SessionSlot): TakeLine | null {
+  const live = dictate.take;
+  if (live === null || boxKey(live.seat) !== boxKey(seat)) return null;
+  if (!dictate.nothingHeard || live.wire.flowing) return null;
+  const cause = silenceCause(dictate.silence);
+  return { tone: 'q', text: `${SILENT_HEAD} \u{b7} ${cause ?? SILENT_HINT}` };
 }
 
 interface DictationWiring {
@@ -210,11 +243,28 @@ export class Dictation {
   /** Whether the settings panel is showing, which the mic's hold opens. */
   panel = $state(false);
   /**
+   * Whether the live take has run for {@link SILENT_NOTICE_MS} with no sample.
+   *
+   * What a device feeding the capture nothing looks like from here, and the
+   * state the row's line is drawn from - read together with the take's own
+   * `flowing`, so a sample landing after this was set withdraws the line
+   * rather than this clearing a flag nobody sees.
+   */
+  nothingHeard = $state(false);
+  /**
+   * What the platform says is wrong with the capture, read when the row's
+   * line needs a cause; `null` until a read answers, and on every platform
+   * with no reader.
+   */
+  silence = $state<MicSilence | null>(null);
+  /**
    * A release or a cancel that landed while the microphone was still
    * opening, applied the moment the take exists - the permission prompt is
    * the everyday case, and it is seconds long.
    */
   #pending: Action | null = null;
+  /** The bound's own timer, cleared with the take that set it. */
+  #quiet: ReturnType<typeof setTimeout> | null = null;
   readonly #wiring: DictationWiring;
 
   constructor(wiring: DictationWiring) {
@@ -279,6 +329,7 @@ export class Dictation {
             });
           }
           this.take = null;
+          this.#clearQuiet();
         },
       });
       if (started === null) {
@@ -292,6 +343,18 @@ export class Dictation {
         rememberDefaultDevice(started.resolved);
       }
       this.take = started;
+      // The bound is a clock rather than a frame count: a capture the device
+      // is feeding nothing is exactly the one whose frames do not arrive to
+      // re-render anything, so the row would never learn.
+      this.#clearQuiet();
+      this.nothingHeard = false;
+      this.silence = null;
+      this.#quiet = setTimeout(() => {
+        if (this.take !== null && !this.take.wire.flowing) {
+          this.nothingHeard = true;
+          void this.#readSilence();
+        }
+      }, SILENT_NOTICE_MS);
       if (this.#pending !== null) {
         const held = this.#pending;
         this.#pending = null;
@@ -300,6 +363,28 @@ export class Dictation {
     } finally {
       this.opening = false;
     }
+  }
+
+  /** Drop the bound's timer, which belongs to the take that set it. */
+  #clearQuiet(): void {
+    if (this.#quiet !== null) clearTimeout(this.#quiet);
+    this.#quiet = null;
+  }
+
+  /**
+   * Ask the platform what is wrong with the capture, for the row's cause.
+   * Fire and forget: the line draws without a cause if nothing answers, and
+   * an answer landing after the take ended is dropped rather than kept.
+   */
+  async #readSilence(): Promise<void> {
+    let state: MicSilence | null = null;
+    try {
+      state = await micSilence();
+    } catch {
+      // A reader that cannot answer names no cause: the line is owed anyway,
+      // and the cause is the embellishment on it.
+    }
+    if (this.take !== null) this.silence = state;
   }
 
   /** What a bound key or an Escape asks for, the same three the view this client replaced had. */

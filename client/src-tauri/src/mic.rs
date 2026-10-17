@@ -28,6 +28,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::bridge::Bridge;
 
 /// One frame's payload: 20 ms of mono 16 kHz samples, the cadence the
@@ -573,6 +575,19 @@ pub fn encode_frame(samples: &[f32]) -> Vec<u8> {
 /// for both the take's `resolved` (`ShellMic.open`) and the picker's rows.
 pub fn device_json(device: &forge_capture::Device) -> serde_json::Value {
     serde_json::json!({ "id": device.id, "label": device.name })
+}
+
+/// What a platform reports about this app's microphone, when it reports
+/// anything: the shape the page's `client_mic_state` answer carries, on every
+/// platform - the desktop answers `None` and the row's line draws without a
+/// cause.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MicState {
+    /// The device's microphone mute.
+    pub muted: bool,
+    /// Whether the platform is silencing THIS app's capture - a per-app mic
+    /// mode, the privacy toggle.
+    pub silenced: bool,
 }
 
 #[cfg(test)]
