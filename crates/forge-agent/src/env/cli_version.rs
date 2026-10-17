@@ -71,13 +71,19 @@ pub async fn fetch_info() -> CliVersionInfo {
 /// [`PROBE_TIMEOUT`], and normalise the output to a bare
 /// `MAJOR.MINOR.PATCH` token. WARN log + `None` on any failure.
 async fn probe_installed() -> Option<String> {
+    probe_installed_within(PROBE_TIMEOUT).await
+}
+
+/// [`probe_installed`] with the wait as a parameter, so a test driving a
+/// real child can widen the budget rather than race machine load.
+async fn probe_installed_within(budget: Duration) -> Option<String> {
     let result = tokio::time::timeout(
-        PROBE_TIMEOUT,
+        budget,
         tokio::task::spawn_blocking(|| forge_sdk::transport::process::query_cli_version("claude")),
     )
     .await;
     match result {
-        Ok(Ok(Ok(reported))) => extract_semver_token(&reported).map(str::to_owned),
+        Ok(Ok(Ok(reported))) => reported_version_or_warn(&reported),
         Ok(Ok(Err(err))) => {
             tracing::warn!(
                 target: crate::logging::targets::ENV_GIT,
@@ -108,6 +114,23 @@ async fn probe_installed() -> Option<String> {
             None
         }
     }
+}
+
+/// Normalise a zero-exit `claude --version` stdout to a bare version
+/// token, WARN + `None` when it carries none - a silent `None` here is
+/// indistinguishable from a probe that never ran.
+fn reported_version_or_warn(reported: &str) -> Option<String> {
+    let Some(token) = extract_semver_token(reported) else {
+        tracing::warn!(
+            target: crate::logging::targets::ENV_GIT,
+            event_name = "cli_version_probe_unparseable",
+            message = "claude --version output carried no version token",
+            outcome = "failure",
+            output = %reported,
+        );
+        return None;
+    };
+    Some(token.to_owned())
 }
 
 /// Result of one npm-registry attempt. The type exists for the retry
@@ -215,10 +238,28 @@ async fn attempt_latest(client: &reqwest::Client, direct: bool) -> ProbeOutcome 
             return ProbeOutcome::Unusable;
         }
     };
-    match parse_latest_version(&body) {
+    match latest_version_or_warn(&body, direct) {
         Some(version) => ProbeOutcome::Version(version),
         None => ProbeOutcome::Unusable,
     }
+}
+
+/// Normalise an npm `/latest` response body to a version token, WARN +
+/// `None` when it carries none - the same silent-collapse shape as the
+/// installed probe's miss.
+fn latest_version_or_warn(body: &serde_json::Value, direct: bool) -> Option<String> {
+    let Some(version) = parse_latest_version(body) else {
+        tracing::warn!(
+            target: crate::logging::targets::ENV_GIT,
+            event_name = "cli_release_version_unparseable",
+            message = "npm registry response carried no version token",
+            outcome = "failure",
+            direct,
+            version = ?body.get("version"),
+        );
+        return None;
+    };
+    Some(version)
 }
 
 /// Pull the `MAJOR.MINOR.PATCH` token from an npm `/latest` dist-tag
@@ -357,5 +398,152 @@ mod tests {
     fn parse_latest_version_none_when_field_missing() {
         let body = serde_json::json!({ "name": "@anthropic-ai/claude-code" });
         assert!(parse_latest_version(&body).is_none());
+    }
+
+    /// The npm side of the same defect: a `/latest` response carrying no
+    /// parseable version token must warn rather than read as a registry
+    /// that was never reached. The warn sits in the helper the HTTP path
+    /// calls, because reaching the registry is that path's own concern.
+    #[test]
+    fn an_unusable_npm_latest_body_warns_and_yields_none() {
+        let body = serde_json::json!({
+            "name": "@anthropic-ai/claude-code",
+            "version": "not-a-version",
+        });
+        let (result, captured) = capture_logs(|| latest_version_or_warn(&body, false));
+        assert_eq!(result, None, "an unusable body yields None: {captured:?}");
+        assert!(
+            captured.contains("cli_release_version_unparseable"),
+            "the miss fired no warn: {captured:?}",
+        );
+        assert!(
+            captured.contains("not-a-version"),
+            "the warn must carry the field's value - the diagnostic: {captured:?}",
+        );
+    }
+
+    /// The converse half, or a warn-everything regression passes both
+    /// miss tests: a readable output is not flagged.
+    #[test]
+    fn readable_outputs_are_not_flagged() {
+        let (installed, captured) =
+            capture_logs(|| reported_version_or_warn("2.1.116 (anthropic)"));
+        assert_eq!(installed.as_deref(), Some("2.1.116"), "no token from a readable output");
+        assert!(
+            !captured.contains("cli_version_probe_unparseable"),
+            "warned on a readable version: {captured:?}",
+        );
+
+        let body = serde_json::json!({ "version": "2.1.201" });
+        let (latest, captured) = capture_logs(|| latest_version_or_warn(&body, false));
+        assert_eq!(latest.as_deref(), Some("2.1.201"), "no token from a readable body");
+        assert!(
+            !captured.contains("cli_release_version_unparseable"),
+            "warned on a readable body: {captured:?}",
+        );
+    }
+
+    /// Buffer tracing output so an emitted record can be read back.
+    #[derive(Clone, Default)]
+    struct LogCapture(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
+        let result = tracing::subscriber::with_default(subscriber, f);
+        let text = String::from_utf8_lossy(&capture.0.lock().clone()).into_owned();
+        (result, text)
+    }
+
+    /// The defect #1205 names, end to end: a zero-exit `claude --version`
+    /// whose output carries no version token must warn rather than
+    /// collapse to a silent `None`. PATH cannot be injected in-process
+    /// (process-global, and `unsafe` to set under this edition), so the
+    /// test re-execs this binary as a child whose whole PATH is a stub
+    /// dir, and asserts the child's captured log. The child drives the
+    /// probe with a widened budget so machine load cannot spend it before
+    /// the stub answers.
+    #[test]
+    fn a_zero_exit_unreadable_version_warns() {
+        const PROBE: &str = "FORGE_CLI_VERSION_PROBE";
+        const PROBE_OK: &str = "FORGE_CLI_VERSION_PROBE_OK";
+        const PROBE_TEST: &str = "env::cli_version::tests::a_zero_exit_unreadable_version_warns";
+
+        let stub_dir = tempfile::tempdir().expect("tempdir");
+        let stub = stub_dir.path().join("claude");
+        std::fs::write(&stub, "#!/bin/sh\necho 'unknown build'\n").expect("write stub");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod stub");
+        }
+
+        if std::env::var(PROBE).is_err() {
+            // Parent mode: re-run this test as a child whose PATH holds
+            // only the stub dir, so `claude` resolves to the stub.
+            let out = std::process::Command::new(std::env::current_exe().expect("current_exe"))
+                .args(["--exact", PROBE_TEST, "--test-threads=1", "--nocapture"])
+                .env(PROBE, "1")
+                .env("PATH", stub_dir.path())
+                .output()
+                .expect("spawn probe");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success(),
+                "the child probe failed: stdout={stdout}\nstderr={stderr}",
+            );
+            assert!(
+                stdout.contains(PROBE_OK),
+                "the probe never ran (filter matched nothing?): stdout={stdout}\nstderr={stderr}",
+            );
+            return;
+        }
+
+        // Child mode. `unknown build` appears only in the stub's stdout,
+        // so a capture carrying it proves the probe ran the stub rather
+        // than a real `claude`; `cli_version_probe_failed`'s absence
+        // proves it reached the exit-0 arm rather than a spawn failure.
+        let (installed, captured) = capture_logs(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(probe_installed_within(std::time::Duration::from_secs(60)))
+        });
+        assert_eq!(
+            installed, None,
+            "an unreadable `--version` output still yields None: {captured:?}",
+        );
+        assert!(
+            captured.contains("cli_version_probe_unparseable"),
+            "the miss fired no warn, which is the defect: {captured:?}",
+        );
+        assert!(
+            captured.contains("unknown build"),
+            "the warn must carry the raw output - the only diagnostic: {captured:?}",
+        );
+        assert!(
+            !captured.contains("cli_version_probe_failed"),
+            "the probe must have read the stub's output, not failed to spawn it: {captured:?}",
+        );
+        println!("{PROBE_OK}");
     }
 }

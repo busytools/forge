@@ -151,9 +151,12 @@ impl Workspace {
         self.announce_connector_subscriptions_changed(&project_name);
     }
 
-    /// The active subscriptions for `project`. Backs `gotify__list` and
-    /// the Inspector GOTIFY snapshot, which scopes by the active tab's
-    /// stamped project name (mirroring [`Self::crons_for_project`]).
+    /// The active subscriptions for `project`, whatever their owner. The
+    /// scoping consumers narrow it - `gotify__list` to the caller's own
+    /// subscriptions, the Inspector GOTIFY snapshot to the active tab's
+    /// stamped project name - while the refused-unsubscribe determination
+    /// reads it whole, because telling "not in this project" from "not
+    /// yours" needs the other owners' rows.
     pub fn gotify_subscriptions_for_project(
         &self,
         project: &str,

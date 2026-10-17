@@ -943,6 +943,13 @@ function createSeat(
         // answer that never comes, so it is taken: never a merge, and never a
         // loop.
         const moved = seat.seen !== seat.askedAt;
+        // **The drop keeps a record the frames carried forward, and only the
+        // answer's own occupant has one.** A wipe restarts the count WITHOUT
+        // clearing the record, so past a swap the frames have merged onto the
+        // PREVIOUS occupant's conversation - and dropping the answer there
+        // leaves those rows standing, where taking it is the replace the wipe
+        // was waiting for (#2276).
+        const sameOccupant = seat.wire !== null && seat.wire.header.session_id === reach.epoch;
         if (reach.seq !== null && reach.seq - 1 < seat.lastSeq && moved && seat.wire !== null) {
           if (seat.outrun >= OUTRUN_CAP) {
             // **Past the cap the merged state is the record.** The frames
@@ -952,12 +959,15 @@ function createSeat(
             // re-fetched, rows lost (rule 25). So the answer is dropped
             // rather than taken, the stale body never reaches the store, and
             // the re-ask stops here (#1472).
-            seat.outrun = 0;
+            if (sameOccupant) {
+              seat.outrun = 0;
+              return;
+            }
+          } else {
+            seat.outrun += 1;
+            reread();
             return;
           }
-          seat.outrun += 1;
-          reread();
-          return;
         }
         // The answer is taken, so the run of outruns is over.
         seat.outrun = 0;
