@@ -187,11 +187,13 @@
      shipped sheet carries (the lead's gate, 2026-10-17; the drawing had the
      two-column grid Ved's screenshot fixed). */
   .files-crow { display: block; width: 100%; text-align: left; background: none;
-    border: 0; padding: 7px 8px; border-radius: 7px; color: inherit; font: inherit; }
+    border: 0; padding: 7px 8px; border-radius: 7px; cursor: pointer;
+    color: inherit; font: inherit; }
   .files-crow > .rv-st { margin-right: 8px; }
   .files-crowwrap { display: flex; align-items: start; gap: 6px; }
   .files-crowwrap .files-crow { flex: 1; min-width: 0; }
   .files-crowwrap + .files-crowwrap { border-top: 1px solid var(--line); }
+  .files-crow:hover { background: rgba(27,33,48,.5); }
   .files-cwhere { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     display: inline-block; max-width: 100%; vertical-align: baseline;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
