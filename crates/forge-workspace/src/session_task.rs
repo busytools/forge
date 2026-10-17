@@ -62,10 +62,9 @@ pub(crate) struct SessionTask {
     /// Fires as this task drops - after `run`'s exit path has disconnected
     /// the subprocess (waited it out up to the close-wait budget, then
     /// SIGKILLed it) - so a despawn can hold its worktree removal until
-    /// the worker's child is reaped and nothing is left to write into the
-    /// path the removal takes. Held for every exit, early returns and
-    /// panics included, so a waiter never hangs on a task that ended some
-    /// other way.
+    /// the session's own child is reaped. Held for every exit, early
+    /// returns and panics included, so a waiter never hangs on a task that
+    /// ended some other way.
     pub(crate) teardown_done: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
