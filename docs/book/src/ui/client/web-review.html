@@ -236,6 +236,9 @@
      chip's own box is what separates it from the name. */
   .rv-turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
   .rv-turn.you { border-left-color: var(--accent); }
+  /* The edit act rides the who-row, small: a per-turn verb, not one of the
+     card's. */
+  .rv-edit { margin-left: auto; padding: 0 7px; }
   .rv-who { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
     font-size: var(--fs-label); color: var(--dim); }
   .rv-turn.you .rv-who { color: var(--muted); }
@@ -403,7 +406,10 @@
                       <span class="where">wire.ts &#183; line 199</span>
                     </div>
                     <div class="rv-turn you">
-                      <div class="rv-who"><span class="rv-nm">you</span></div>
+                      <div class="rv-who">
+                        <span class="rv-nm">you</span>
+                        <span class="rv-a rv-edit">edit</span>
+                      </div>
                       <div class="prose">
                         <p>This read is the page's whole input; say so on the type.</p>
                       </div>
@@ -411,6 +417,7 @@
                     <div class="rv-acts">
                       <span class="rv-a">respond</span>
                       <span class="rv-a">resolve</span>
+                      <span class="rv-a">delete</span>
                     </div>
                     <!-- The reply box, opened by its own respond: the same
                          words box the comment is, mic and all. -->
@@ -582,6 +589,7 @@
         <div class="rv-acts">
           <span class="rv-a">respond</span>
           <span class="rv-a">resolve</span>
+          <span class="rv-a">delete</span>
         </div>
       </div>
 

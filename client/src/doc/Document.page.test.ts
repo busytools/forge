@@ -412,6 +412,77 @@ describe('the reviewable document', () => {
     expect(document.querySelector('.doc-draft'), 'the drafts were filed').toBeNull();
   });
 
+  /**
+   * **A comment written here is editable and retractable, like every other
+   * surface's** (Ved, 2026-10-17): the draft's edit opens the page's own box
+   * over its text and save rewrites the stored thread, and delete takes the
+   * draft off the shelf and out of the store.
+   */
+  it("edits and retracts a draft's words", async () => {
+    const page = drawReviewable();
+
+    blockTarget('line two').click();
+    flushSync();
+    const box = document.querySelector('textarea');
+    if (!(box instanceof HTMLTextAreaElement)) throw new Error('no composer');
+    box.value = 'the first words';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('comment').click();
+    flushSync();
+
+    const edit = [...document.querySelectorAll<HTMLButtonElement>('.doc-draft .rv-a')].find(
+      (button) => button.textContent?.trim() === 'edit',
+    );
+    expect(edit, 'a draft draws the edit act').toBeDefined();
+    edit?.click();
+    flushSync();
+
+    const field = document.querySelector<HTMLTextAreaElement>('.doc-editbox .rv-txarea');
+    expect(field, 'the box opens over the draft').not.toBeNull();
+    expect(field?.value, "and it holds the draft's words").toBe('the first words');
+    if (field !== null) {
+      field.value = 'the better words';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+    }
+    [...document.querySelectorAll<HTMLButtonElement>('.doc-editbox .rv-acts button')]
+      .find((button) => button.textContent?.trim() === 'save')
+      ?.click();
+    flushSync();
+
+    // The LAST upsert: writing the comment was the first, and the edit is
+    // the one this press made.
+    const upsert = (page.sent as Record<string, unknown>[])
+      .filter((command) => 'upsert_review_thread' in command)
+      .at(-1) as { upsert_review_thread: { thread: { comments: { text: string }[] } } } | undefined;
+    expect(upsert?.upsert_review_thread.thread.comments[0]?.text, 'save rewrites the store').toBe(
+      'the better words',
+    );
+    expect(
+      document.querySelector('.doc-draft')?.textContent,
+      'and the draft row reads the new words',
+    ).toContain('the better words');
+
+    const del = [...document.querySelectorAll<HTMLButtonElement>('.doc-draft .rv-a')].find(
+      (button) => button.textContent?.trim() === 'delete',
+    );
+    del?.click();
+    flushSync();
+    const go = [...document.querySelectorAll<HTMLButtonElement>('.rv-delask .rv-a')].find(
+      (button) => button.textContent?.trim() === 'delete',
+    );
+    expect(go, 'the retraction asks first').toBeDefined();
+    go?.click();
+    flushSync();
+
+    expect(document.querySelector('.doc-draft'), 'the draft went with the confirm').toBeNull();
+    const cut = (page.sent as Record<string, unknown>[]).find(
+      (command) => 'delete_review_thread' in command,
+    ) as { delete_review_thread: { thread_id: string } } | undefined;
+    expect(cut?.delete_review_thread.thread_id, 'and the store heard about it').toBeTruthy();
+  });
+
   /** **The nudge the view this client replaced sent on its own drop.** The
    *  finish pushes the review-ready line into the session, so the chat shows
    *  the review to the reader and reaches the agent - with the document's

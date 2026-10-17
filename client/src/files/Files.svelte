@@ -46,16 +46,18 @@
   import { joined, noticeLine } from '../composer/view';
   import { composerFrom, filesFrom, filesOnly } from '../composer/wire';
   import { hrefForSlot } from '../routes';
-  import type { CommentBox, ReplyBox, Voice, Words } from '../review/boxes';
+  import type { CommentBox, ReplyBox, TurnEditor, Voice, Words } from '../review/boxes';
   import Conversation from '../review/Conversation.svelte';
   import { latestRound, roundHasWork, roundsNewestFirst } from '../review/view';
   import WordsBox from '../review/WordsBox.svelte';
   import {
+    deleteCommand,
     finishRound,
     newThread,
     reopenThread,
     statusCommand,
     upsertCommand,
+    withEditedTurn,
     withReply,
     type Sends,
     type SendOutcome,
@@ -68,7 +70,7 @@
   import Inline from './Inline.svelte';
   import Rail from './Rail.svelte';
   import Reader from './Reader.svelte';
-  import { contextForComment, railRows, treeScope } from './comments';
+  import { contextForComment, railRows, treeScope, type RailRow } from './comments';
   import type { ReaderBlock, ReaderHandle } from './reader';
   import { indexTreeRows, matchedEntries } from './tree';
 
@@ -142,6 +144,7 @@
   });
   const reply = $state<ReplyBox>({
     thread: null,
+    index: null,
     draft: '',
     busy: false,
     line: null,
@@ -166,6 +169,9 @@
   let takeIn = $state<BoxName | null>(null);
   let takeSpot = $state<CommentBox['spot']>(null);
   let takeThread = $state<string | null>(null);
+  /** The turn a reply slot was EDITING when its take began, so a box that
+   *  moved to another turn is no longer the box the take belongs to. */
+  let takeIndex = $state<number | null>(null);
   /** Where the last mic was pressed: the box a refusal is owed to. */
   let pressedIn = $state<BoxName | null>(null);
   /** Where a page line about a take is drawn: the box the attempt was made in. */
@@ -211,6 +217,7 @@
       lineIn = pressedIn;
       takeSpot = comment.spot;
       takeThread = reply.thread;
+      takeIndex = reply.index;
       dictateLine = null;
       landing.arm(boxKey(slot), composer.notice);
     },
@@ -303,6 +310,36 @@
     ondevice: setDevice,
   };
 
+  /**
+   * The edit box every turn card draws off: the page's reply slot when it
+   * EDITS a turn (`index` set), which is what lets an edit wear the same
+   * mic, take and panel as every other box.
+   */
+  const editor: TurnEditor = {
+    box: reply,
+    voice,
+    begin: (threadId, index, text) => {
+      reply.thread = threadId;
+      reply.index = index;
+      reply.draft = text;
+    },
+    send: (threadId, index, text) => {
+      const thread = treeThreads.find((held) => held.id === threadId);
+      if (thread === undefined) return;
+      void editedTurn(thread, index, text);
+    },
+    cancel: () => {
+      reply.thread = null;
+      reply.index = null;
+      reply.draft = '';
+    },
+    press: () => (pressedIn = 'reply'),
+    hold: () => (panelIn = 'reply'),
+    field: (el) => {
+      elements.reply = el;
+    },
+  };
+
   /** One box's own take row, or `null` when the take is another box's. */
   function phaseIn(at: BoxName): RowPhase | null {
     return takeIn === at ? rowPhase : null;
@@ -335,7 +372,7 @@
             takeSpot === null ||
             comment.spot.path !== takeSpot.path ||
             comment.spot.line !== takeSpot.line
-          : reply.thread === null || reply.thread !== takeThread;
+          : reply.thread === null || reply.thread !== takeThread || reply.index !== takeIndex;
     const live = dictate.take;
     if (gone && (dictate.opening || (live !== null && !live.submitted))) {
       landing.drop();
@@ -672,6 +709,31 @@
     return true;
   }
 
+  /** Replace one turn's words: an upsert like every other write, so the
+   *  store keeps the turn's identity and only the text moves. */
+  async function editedTurn(
+    thread: ReviewThreadRecord,
+    index: number,
+    text: string,
+  ): Promise<boolean> {
+    reply.busy = true;
+    const { went } = await write(
+      upsertCommand(slot, treeScope(slot), withEditedTurn(thread, index, text)),
+    );
+    reply.busy = false;
+    if (!went) return false;
+    reply.thread = null;
+    reply.index = null;
+    reply.draft = '';
+    return true;
+  }
+
+  /** The retraction, wherever its card is: a refused delete says so. */
+  async function deleted(thread: ReviewThreadRecord): Promise<void> {
+    const { went, body } = await write(deleteCommand(slot, treeScope(slot), thread.id));
+    if (went && body !== true) refusal = 'the delete did not reach the store';
+  }
+
   async function resolved(thread: ReviewThreadRecord): Promise<void> {
     await write(statusCommand(slot, treeScope(slot), thread.id, 'Resolved'));
   }
@@ -733,10 +795,11 @@
       out.push({
         line: row.line,
         // The key carries the thread's own state: a card the key keeps is a
-        // card CM does not re-mount, and a resolve or a reply would leave
-        // its stale DOM (acts, chip) under the line (measured live, Ved
-        // 2026-10-17).
-        key: `thread:${id}:${statusKey(row.thread.status)}:${row.thread.comments.length}:${reply.thread === id ? 'reply' : 'shut'}`,
+        // card CM does not re-mount, and a resolve, a reply or an EDIT would
+        // leave its stale DOM (acts, chip, words) under the line (measured
+        // live, Ved 2026-10-17 - the edit landed in the store and the card
+        // read the old words until the stamp joined the key).
+        key: `thread:${id}:${statusKey(row.thread.status)}:${row.thread.comments.length}:${row.thread.updated_at}:${reply.thread === id ? 'reply' : 'shut'}:${reply.thread === id && reply.index !== null ? `edit-${reply.index}` : 'noedit'}`,
         mount: (host) => {
           const held = mount(Inline, {
             target: host,
@@ -750,17 +813,20 @@
                 return busy;
               },
               get replying() {
-                return reply.thread === id;
+                return reply.thread === id && reply.index === null;
               },
               replyBox: reply,
               voice,
+              editor,
               onrespond: () => {
                 reply.thread = reply.thread === id ? null : id;
+                reply.index = null;
                 reply.draft = '';
               },
               onreply: (text: string) => void replied(row.thread, text),
               onresolve: () => void resolved(row.thread),
               onreopen: () => void reopened(row.thread),
+              ondelete: () => void deleted(row.thread),
               onpress: () => (pressedIn = 'reply'),
               onhold: () => (panelIn = 'reply'),
               field: (el: HTMLElement | null) => {
@@ -933,6 +999,8 @@
             noun="tree"
             known={treeRead}
             wide
+            {editor}
+            ondelete={(thread: ReviewThreadRecord) => void deleted(thread)}
             onreply={replied}
             onresolve={(thread: ReviewThreadRecord) => void resolved(thread)}
             onreopen={(thread: ReviewThreadRecord) => void reopened(thread)}
@@ -952,6 +1020,7 @@
             {busy}
             summaryBox={summary}
             {voice}
+            ondelete={(row: RailRow) => void deleted(row.thread)}
             onjump={jump}
             onfinish={(text) => void finished(text)}
             onpress={() => (pressedIn = 'summary')}

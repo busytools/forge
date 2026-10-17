@@ -25,7 +25,7 @@
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Canvas from './Canvas.svelte';
-  import type { CommentBox, ReplyBox } from './boxes';
+  import type { CommentBox, ReplyBox, TurnEditor } from './boxes';
   import Conversation from './Conversation.svelte';
   import {
     commentsInScope,
@@ -36,11 +36,13 @@
     threadsInRound,
   } from './view';
   import {
+    deleteCommand,
     finishRound,
     newThread,
     reopenThread,
     statusCommand,
     upsertCommand,
+    withEditedTurn,
     withReply,
     type ComposedComment,
     type Sends,
@@ -158,6 +160,7 @@
   });
   let reply = $state<ReplyBox>({
     thread: null,
+    index: null,
     draft: '',
     busy: false,
     line: null,
@@ -181,6 +184,9 @@
    *  closed one is not. */
   let takeSpot = $state<CommentBox['spot']>(null);
   let takeThread = $state<string | null>(null);
+  /** The turn a reply slot was EDITING when its take began, so a box that
+   *  moved to another turn is no longer the box the take belongs to. */
+  let takeIndex = $state<number | null>(null);
   /** Where the last mic was pressed, or the last key begun a take: the box a
    *  refusal, or a take's own line, is owed to. */
   let pressedIn = $state<BoxName | null>(null);
@@ -260,6 +266,7 @@
       lineIn = pressedIn;
       takeSpot = box.spot;
       takeThread = reply.thread;
+      takeIndex = reply.index;
       dictateLine = null;
       // The arm this take's landing waits on, set at the press, on the seat
       // the take belongs to, with the notice the record was already showing -
@@ -319,6 +326,36 @@
     },
     onaxes: setAxes,
     ondevice: setDevice,
+  };
+
+  /**
+   * The edit box every turn card draws off: the page's reply slot when it
+   * EDITS a turn (`index` set), which is what lets an edit wear the same
+   * mic, take and panel as every other box on this page.
+   */
+  const editor: TurnEditor = {
+    // A getter: the canvas binds the reply box, so the box this hands out
+    // must be whatever the binding holds now, not what it held at init.
+    get box() {
+      return reply;
+    },
+    voice,
+    begin: (threadId, index, text) => {
+      reply.thread = threadId;
+      reply.index = index;
+      reply.draft = text;
+    },
+    send: (threadId, index, text) => void editedTurn({ id: threadId }, index, text),
+    cancel: () => {
+      reply.thread = null;
+      reply.index = null;
+      reply.draft = '';
+    },
+    press: () => (pressedIn = 'reply'),
+    hold: () => (panelIn = 'reply'),
+    field: (el) => {
+      elements.reply = el;
+    },
   };
 
   /**
@@ -429,7 +466,7 @@
         ? !summaryDrawn()
         : takeIn === 'comment'
           ? box.spot === null || !sameSpot(box.spot, takeSpot) || tab !== 'files'
-          : !replyDrawn() || reply.thread !== takeThread;
+          : !replyDrawn() || reply.thread !== takeThread || reply.index !== takeIndex;
     // A take already SUBMITTED - draining the capture, or waiting on a
     // connection to send its stop - is not this effect's to cancel: the
     // server would read it as an abandon and drop words the reader kept.
@@ -603,6 +640,20 @@
 
   async function resolved(thread: { id: string }): Promise<void> {
     await write(statusCommand(slot, branch, thread.id, 'Resolved'));
+  }
+
+  /** Replace one turn's words - the same upsert, the turn's identity kept. */
+  async function editedTurn(thread: { id: string }, index: number, text: string): Promise<boolean> {
+    const full = threads.find((held) => held.id === thread.id);
+    if (full === undefined) return false;
+    const { went } = await write(upsertCommand(slot, branch, withEditedTurn(full, index, text)));
+    return went;
+  }
+
+  /** The retraction, wherever its card is: a refused delete says so. */
+  async function deleted(thread: { id: string }): Promise<void> {
+    const { went, body } = await write(deleteCommand(slot, branch, thread.id));
+    if (went && body !== true) refusal = 'the delete did not reach the store';
   }
 
   /**
@@ -1076,6 +1127,8 @@
         onpress={() => (pressedIn = 'reply')}
         onhold={() => (panelIn = 'reply')}
         onfield={(el: HTMLElement | null) => (elements.reply = el)}
+        {editor}
+        ondelete={(thread: ReviewThreadRecord) => void deleted(thread)}
         footer={convFooter}
       />
     {:else}
@@ -1091,6 +1144,8 @@
           {busy}
           {dictate}
           keysOff={pickerOpen}
+          {editor}
+          ondelete={(thread: ReviewThreadRecord) => void deleted(thread)}
           {focusComment}
           bind:box
           bind:reply

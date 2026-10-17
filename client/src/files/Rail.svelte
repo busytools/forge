@@ -20,6 +20,7 @@
   import Field from '../composer/Field.svelte';
   import TakeCard from '../composer/TakeCard.svelte';
   import type { Voice, Words } from '../review/boxes';
+  import ThreadDelete from '../review/ThreadDelete.svelte';
   import { statusName } from '../review/view';
   import type { RailRow } from './comments';
 
@@ -35,6 +36,7 @@
     onpress,
     onhold,
     onfield,
+    ondelete = null,
   }: {
     rows: RailRow[];
     /** Threads the worker has answered and nobody read yet, the header's own count. */
@@ -51,6 +53,8 @@
     onpress: () => void;
     onhold: () => void;
     onfield: (el: HTMLElement | null) => void;
+    /** Remove a row's thread; absent where the page offers no delete. */
+    ondelete?: ((row: RailRow) => void | Promise<void>) | null;
   } = $props();
 
   /** The seal itself: the summary as written, or none. */
@@ -71,18 +75,23 @@
     <p class="files-quiet">Nothing dropped yet. Press a line to comment.</p>
   {:else}
     {#each rows as row (row.thread.id)}
-      <button class="files-crow" type="button" onclick={() => onjump(row)}>
-        <span class="rv-st {statusName(row.thread.status)}">{statusName(row.thread.status)}</span>
-        <span class="files-cwhere">
-          {row.thread.anchor.path}:{row.line ?? row.thread.anchor.line}
-        </span>
-        <span class="files-cwords">
-          {row.thread.comments[0]?.text ?? ''}
-        </span>
-        {#if row.stale}
-          <span class="files-cnote">the code moved under this - captured lines kept</span>
+      <div class="files-crowwrap">
+        <button class="files-crow" type="button" onclick={() => onjump(row)}>
+          <span class="rv-st {statusName(row.thread.status)}">{statusName(row.thread.status)}</span>
+          <span class="files-cwhere">
+            {row.thread.anchor.path}:{row.line ?? row.thread.anchor.line}
+          </span>
+          <span class="files-cwords">
+            {row.thread.comments[0]?.text ?? ''}
+          </span>
+          {#if row.stale}
+            <span class="files-cnote">the code moved under this - captured lines kept</span>
+          {/if}
+        </button>
+        {#if ondelete !== null}
+          <ThreadDelete {busy} ondelete={() => ondelete(row)} />
         {/if}
-      </button>
+      </div>
     {/each}
   {/if}
   <!-- The finish: the summary's own box FIRST - present by default, roomy

@@ -236,13 +236,14 @@ export interface Connection {
  * The commands that answer through a reply, mirroring the server's
  * `answers_through_a_reply`.
  *
- * These four are the ones with nothing behind them on the wire: a client that
+ * These are the ones with nothing behind them on the wire: a client that
  * omits `reply_to` for one of them has no second way to learn what happened.
  */
 const ANSWERS_THROUGH_A_REPLY = new Set([
   'spawn_worker',
   'despawn_worker',
   'upsert_review_thread',
+  'delete_review_thread',
   'submit_review',
 ]);
 
@@ -497,6 +498,7 @@ export function connect(url: string): Connection {
       case 'page':
       case 'commit_diff':
       case 'file_content':
+      case 'document_read':
         return;
       // `seat_frames` is the conversation's too, and the same way: a repaired
       // stretch folds through the chat's own listener, so this switch knows

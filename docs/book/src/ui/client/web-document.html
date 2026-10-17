@@ -334,6 +334,17 @@
         margin: 8px 0;
         line-height: 1.55;
       }
+      /* The card's own verbs: the edit and the retraction every surface
+         draws (Ved, 2026-10-17). */
+      .strip .rv-acts { display: flex; gap: 8px; padding-top: 6px; }
+      .strip .rv-a {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 2px 9px;
+      }
       .strip .doc-note {
         display: flex;
         flex-wrap: wrap;
@@ -693,6 +704,10 @@ max_size_mib = 10</pre>
             <div class="doc-note">
               <span class="doc-who">you</span>
               <div class="prose"><p>name which document this is</p></div>
+              <div class="rv-acts">
+                <span class="rv-a">edit</span>
+                <span class="rv-a">delete</span>
+              </div>
             </div>
             <div class="doc-block target">
               <p>

@@ -206,6 +206,7 @@ function draw(held: ReviewThreadRecord = thread, at: DiffLayerRecord = layer): v
       },
       reply: {
         thread: null,
+        index: null,
         draft: '',
         busy: false,
         line: null,

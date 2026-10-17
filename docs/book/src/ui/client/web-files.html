@@ -175,7 +175,9 @@
   .files-crow { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px;
     align-items: baseline; width: 100%; text-align: left; background: none; border: 0;
     padding: 7px 8px; border-radius: 7px; color: inherit; font: inherit; }
-  .files-crow + .files-crow { border-top: 1px solid var(--line); }
+  .files-crowwrap { display: flex; align-items: start; gap: 6px; }
+  .files-crowwrap .files-crow { flex: 1; min-width: 0; }
+  .files-crowwrap + .files-crowwrap { border-top: 1px solid var(--line); }
   .files-cwhere { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .files-cwords { font-size: var(--fs-base); color: var(--text); }
@@ -318,12 +320,13 @@
               <span class="rv-where">surface.rs · line 320</span>
             </div>
             <div class="rv-turn you">
-              <div class="rv-who"><span>you</span></div>
+              <div class="rv-who"><span>you</span><span class="rv-a rv-edit">edit</span></div>
               <div class="prose">HEAD reads the tip NOW. On this page the read is the working tree, so the line I am on is the line the worker has - good.</div>
             </div>
             <div class="rv-acts">
               <button class="rv-a" type="button">respond</button>
               <button class="rv-a" type="button">resolve</button>
+              <button class="rv-a" type="button">delete</button>
             </div>
           </div>
         </div>
@@ -347,17 +350,23 @@
         Comments <span class="files-railen">2</span>
         <span class="files-replies">1 to read</span>
       </h2>
-      <button class="files-crow" type="button">
-        <span class="rv-st open">open</span>
-        <span class="files-cwhere">crates/forge-server/src/surface.rs:320</span>
-        <span class="files-cwords">HEAD reads the tip NOW. On this page the read is the working tree...</span>
-      </button>
-      <button class="files-crow" type="button">
-        <span class="rv-st outdated">outdated</span>
-        <span class="files-cwhere">client/src/main.ts:9</span>
-        <span class="files-cwords">anchor this on the boot line</span>
-        <span class="files-cnote">the code moved under this - captured lines kept</span>
-      </button>
+      <div class="files-crowwrap">
+        <button class="files-crow" type="button">
+          <span class="rv-st open">open</span>
+          <span class="files-cwhere">crates/forge-server/src/surface.rs:320</span>
+          <span class="files-cwords">HEAD reads the tip NOW. On this page the read is the working tree...</span>
+        </button>
+        <button class="rv-a" type="button">delete</button>
+      </div>
+      <div class="files-crowwrap">
+        <button class="files-crow" type="button">
+          <span class="rv-st outdated">outdated</span>
+          <span class="files-cwhere">client/src/main.ts:9</span>
+          <span class="files-cwords">anchor this on the boot line</span>
+          <span class="files-cnote">the code moved under this - captured lines kept</span>
+        </button>
+        <button class="rv-a" type="button">delete</button>
+      </div>
       <div class="files-finish">
         <div class="files-finishbox">summary (optional)</div>
         <div class="files-finishacts">
@@ -433,9 +442,9 @@
           <span class="rv-state open">open</span>
           <span class="where">crates/forge-server/src/surface.rs &#183; line 320</span>
         </div>
-        <div class="turn you"><span class="rv-at">you</span><span class="prose">the tree scope rides the seat, so a rebase keeps them</span></div>
+        <div class="turn you"><span class="rv-at">you</span><span class="rv-a rv-edit">edit</span><span class="prose">the tree scope rides the seat, so a rebase keeps them</span></div>
         <div class="turn"><span class="rv-at">agent</span><span class="prose">kept - the scope is the seat and never the branch</span></div>
-        <div class="acts"><button class="rv-a" type="button">respond</button><button class="rv-a" type="button">resolve</button></div>
+        <div class="acts"><button class="rv-a" type="button">respond</button><button class="rv-a" type="button">resolve</button><button class="rv-a" type="button">delete</button></div>
       </div>
     </article>
   </section>

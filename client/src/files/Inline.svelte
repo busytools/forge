@@ -8,7 +8,8 @@
    * The reply box is the page's `Box` and the page's own reply state: this
    * component draws what it is handed and reports presses.
    */
-  import type { ReplyBox, Voice } from '../review/boxes';
+  import type { ReplyBox, TurnEditor, Voice } from '../review/boxes';
+  import ThreadDelete from '../review/ThreadDelete.svelte';
   import ThreadTurn from '../review/ThreadTurn.svelte';
   import { statusName } from '../review/view';
   import WordsBox from '../review/WordsBox.svelte';
@@ -23,10 +24,12 @@
     replying,
     replyBox,
     voice,
+    editor = null,
     onrespond,
     onreply,
     onresolve,
     onreopen,
+    ondelete = null,
     onpress,
     onhold,
     field = () => {},
@@ -43,10 +46,14 @@
     replyBox: ReplyBox;
     /** What dictation means to this page - every box wears the mic. */
     voice: Voice;
+    /** The page's edit box, handed to every turn this card draws. */
+    editor?: TurnEditor | null;
     onrespond: () => void;
     onreply: (text: string) => void;
     onresolve: () => void;
     onreopen: () => void;
+    /** Remove this thread; absent where the page offers no delete. */
+    ondelete?: (() => void | Promise<void>) | null;
     onpress: () => void;
     onhold: () => void;
     /** The field, so the page can put the keyboard back in it. */
@@ -90,7 +97,7 @@
       {/if}
     </div>
     {#each row.thread.comments as turn, index (index)}
-      <ThreadTurn {turn} {rounds} {index} {now} />
+      <ThreadTurn {turn} {rounds} {index} {now} thread={row.thread.id} {editor} />
     {/each}
     <div class="rv-acts">
       {#if status === 'resolved'}
@@ -102,6 +109,9 @@
       {:else}
         <button class="rv-a" type="button" disabled={busy} onclick={onrespond}>respond</button>
         <button class="rv-a" type="button" disabled={busy} onclick={onresolve}>resolve</button>
+      {/if}
+      {#if ondelete !== null}
+        <ThreadDelete {busy} {ondelete} />
       {/if}
     </div>
     {#if replying}

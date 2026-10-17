@@ -133,6 +133,19 @@ export function addDraft(scope: string, draft: DocDraft): void {
   drafts.set(scope, [...draftsFor(scope), draft]);
 }
 
+/** Replace one draft's words; the id - and so its stored thread - stays. */
+export function editDraftText(scope: string, id: string, text: string): DocDraft | null {
+  const at = draftsFor(scope);
+  const found = at.find((draft) => draft.id === id);
+  if (found === undefined) return null;
+  const next = { ...found, text };
+  drafts.set(
+    scope,
+    at.map((draft) => (draft.id === id ? next : draft)),
+  );
+  return next;
+}
+
 /** Clear the drafts a finish filed; the ids are the only ones that went. */
 export function clearDrafts(scope: string, ids: string[]): void {
   const gone = new Set(ids);

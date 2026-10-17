@@ -42,9 +42,9 @@ review page's own line.
 | Conversation  | the rounds newest first, each with its age, tally chips, summary and threads - state chip, `path:line`, the turns, and `respond` / `resolve` / `reopen`; parked threads above in an Outdated group with their captured lines | the record's `tree_reviews`; the page's own drafts and reply box                       |
 | Tree          | the seat's whole index as its own hierarchy - a row per directory and per file, folders before files at every level, indented by depth - with the current file marked, a pill per file carrying its comment count, and a filter | the record's `file_index`; the filter ranks by the `@` list's own matching             |
 | Reader        | the file's head - path, language, line count - and the file's text, read-only, colour and structure as the language set allows, wrapped at the box's edge; the target line carries the tint and the gutter `+`                | the `document_read` answer for the open path: kind and bytes                           |
-| A thread      | under the line it was written on: its state chip, where it is, its turns through the review page's own turn renderer, and `respond` / `resolve` / `reopen`                                                                     | the record's `tree_reviews` threads and their landings, and the page's own drafts      |
+| A thread      | under the line it was written on: its state chip, where it is, its turns through the review page's own turn renderer, `edit` on a turn the reader wrote, and `respond` / `resolve` / `reopen` / `delete`                      | the record's `tree_reviews` threads and their landings, and the page's own drafts      |
 | A comment box | under the line a press landed on, the caret already in it; **Enter comments**, Shift+Enter keeps the newline                                                                                                                | the page's own comment shelf                                                           |
-| Comments      | every thread in the scope as one list, by path and then by line: the state chip, `path:line`, the first words; a row jumps back to its line                                                                                 | the record's `tree_reviews` threads                                                    |
+| Comments      | every thread in the scope as one list, by path and then by line: the state chip, `path:line`, the first words, and `delete`; a row jumps back to its line                                                                    | the record's `tree_reviews` threads                                                    |
 | Parked        | a thread whose landing could not place it - the code moved too far, or no landing was carried - says so on its row, its captured lines kept; it is never dropped                                                             | the landing's `outdated` word, or none carried                                         |
 | Finish        | the round's summary - a roomy, resizable box, present by default in the rail's bottom, its own mic like every box - over `finish review (N)`, which seals the sitting into one round; a refusal keeps the words                | `submit_review`'s reply, and the round's number                                        |
 | States        | reading; a seat the server refused, in its own words; a tree with no files; no match for the filter; a kind this page draws no text for; a file read refused with its own sentence                                              | the record's and the read's own outcomes                                               |
@@ -92,6 +92,13 @@ Every write re-reads the record, because a review change is not pushed -
 the reviews ride the record, and a record re-read is what carries them.
 The Conversation tab answers over the same calls a diff review does - reply,
 resolve, reopen - and a rail row jumps back to its line from either tab.
+
+**A comment is editable and retractable wherever its card is drawn** (Ved,
+2026-10-17): `edit` on a turn the reader wrote opens the page's own box over
+that turn's words - the same mic and take as every box - and `save` upserts
+the text with the turn's identity kept; `delete` removes the whole thread,
+and it asks before it writes, because a delete cannot be undone. Both write
+through the review plumbing every other change rides.
 
 ## The two widths
 

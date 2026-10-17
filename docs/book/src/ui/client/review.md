@@ -197,6 +197,13 @@ reopen a `set_review_thread_status`, and `finish review` a `submit_review`
 sealing every thread this sitting has drafted or replied on. The summary
 field is the round's own.
 
+**A comment is editable and retractable wherever its card is drawn** (Ved,
+2026-10-17): `edit` on a turn the reader wrote opens the page's own box
+under it with its words - the same take and mic every box wears - and `save`
+upserts the text back with the turn's identity kept; `delete` takes the
+thread away through a `delete_review_thread`, asking first because a delete
+cannot be undone. The canvas's cards and the conversation's carry both.
+
 **A comment opens with the caret already in it.** Clicking a line's door -
 or anywhere on the line - is a reader asking to write there, so the box's
 field takes the focus as the row mounts; a click on the line the box already

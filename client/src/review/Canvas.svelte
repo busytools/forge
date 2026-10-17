@@ -24,7 +24,7 @@
   import { toggleClosed, type TreeRow } from '../components/tree';
   import type { Dictation } from '../composer/dictate.svelte';
   import type { Connection } from '../socket';
-  import type { CommentBox, ReplyBox, Voice } from './boxes';
+  import type { CommentBox, ReplyBox, TurnEditor, Voice } from './boxes';
   import type {
     DiffFileRecord,
     DiffLayerRecord,
@@ -57,6 +57,7 @@
   import { canvasLine, statusName, threadsInScope } from './view';
   import { captureContext, type ComposedComment, type ReviewSpot } from './write';
   import { Mounts } from './mounts';
+  import ThreadDelete from './ThreadDelete.svelte';
   import ThreadTurn from './ThreadTurn.svelte';
   import WordsBox from './WordsBox.svelte';
 
@@ -76,6 +77,8 @@
     busy,
     dictate,
     keysOff = false,
+    editor = null,
+    ondelete = null,
     focusComment,
     box = $bindable(),
     reply = $bindable(),
@@ -103,6 +106,10 @@
     /** Hold the tree's keys: the page's picker takes the arrows while it is
      *  open, and two walkers on one key are one too many. */
     keysOff?: boolean;
+    /** The page's edit box, handed to every turn its cards draw. */
+    editor?: TurnEditor | null;
+    /** Remove a thread; absent where the surface offers no delete. */
+    ondelete?: ((thread: ReviewThreadRecord) => void | Promise<void>) | null;
     /** The comment the stepper moved to, and the step's own number: the
      *  canvas brings that card into view, a repeat of the same target
      *  included. */
@@ -771,8 +778,13 @@
           const side = thread.anchor.side === 'old' ? 'old' : 'new';
           const placed = canvasLine(thread, scopeCommit);
           if (placed === null) continue;
+          // The key carries the thread's own state - an edited turn's stamp
+          // included, or the reconciler keeps a card whose words moved under
+          // it (the files reader measured the same trap live, 2026-10-17).
           const key = `t:${thread.id}:${statusName(thread.status)}:${thread.comments.length}:${
-            reply.thread === thread.id ? 'open' : ''
+            thread.updated_at
+          }:${reply.thread === thread.id ? 'open' : ''}:${
+            reply.thread === thread.id && reply.index !== null ? `edit-${reply.index}` : ''
           }`;
           want.push({
             key,
@@ -903,7 +915,11 @@
   const mounts = new Mounts();
 
   /** One turn, drawn by the piece both halves of the page draw. */
-  function turnBlock(turn: ReviewThreadRecord['comments'][number], index: number): HTMLElement {
+  function turnBlock(
+    thread: ReviewThreadRecord,
+    turn: ReviewThreadRecord['comments'][number],
+    index: number,
+  ): HTMLElement {
     const host = document.createElement('div');
     const held = mount(ThreadTurn, {
       target: host,
@@ -913,6 +929,8 @@
         turn,
         rounds: reviews,
         index,
+        thread: thread.id,
+        editor,
         get now() {
           return now;
         },
@@ -939,7 +957,7 @@
       tops.append(span('rv-moved', `moved from ${placed.movedFrom}`));
     }
     card.append(tops);
-    thread.comments.forEach((turn, index) => card.append(turnBlock(turn, index)));
+    thread.comments.forEach((turn, index) => card.append(turnBlock(thread, turn, index)));
     const acts = document.createElement('div');
     acts.className = 'rv-acts';
     const respond = document.createElement('button');
@@ -949,6 +967,7 @@
     respond.disabled = busy;
     respond.addEventListener('click', () => {
       reply.thread = reply.thread === thread.id ? null : thread.id;
+      reply.index = null;
       reply.draft = '';
     });
     acts.append(respond);
@@ -969,8 +988,23 @@
       resolve.addEventListener('click', () => void onresolve(thread));
       acts.append(resolve);
     }
+    if (ondelete !== null) {
+      // The retraction, drawn by the piece every surface draws it with.
+      const delHost = document.createElement('span');
+      const del = mount(ThreadDelete, {
+        target: delHost,
+        props: {
+          ondelete: () => ondelete?.(thread),
+          get busy() {
+            return busy;
+          },
+        },
+      });
+      mounts.hold(delHost, () => void unmount(del));
+      acts.append(delHost);
+    }
     card.append(acts);
-    if (reply.thread === thread.id) {
+    if (reply.thread === thread.id && reply.index === null) {
       // **The same words box the comment is, mounted the same way.** A reply
       // takes the mic, the take's bar and the settings panel exactly as the
       // comment box does, and one component draws both halves' boxes - the

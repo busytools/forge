@@ -3559,7 +3559,9 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-crow { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px;
   align-items: baseline; width: 100%; text-align: left; background: none; border: 0;
   padding: 7px 8px; border-radius: 7px; cursor: pointer; color: inherit; font: inherit; }
-.files-crow + .files-crow { border-top: 1px solid var(--line); }
+.files-crowwrap { display: flex; align-items: start; gap: 6px; }
+.files-crowwrap .files-crow { flex: 1; min-width: 0; }
+.files-crowwrap + .files-crowwrap { border-top: 1px solid var(--line); }
 .files-crow:hover { background: rgba(27,33,48,.5); }
 .files-cwhere { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3734,6 +3736,9 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .rv-a:hover { color: var(--text); border-color: var(--ctl); }
 .rv-a.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
 .rv-a.on:hover { background: var(--hot); }
+/* The one act that cannot be undone wears the error tone at its confirm. */
+.rv-a.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.rv-a.danger:hover { border-color: var(--bad); }
 .rv-a:disabled { opacity: .45; cursor: default; }
 .rv-reply { padding-top: 6px; }
 .rv-txarea { width: 100%; box-sizing: border-box; background: var(--s1);

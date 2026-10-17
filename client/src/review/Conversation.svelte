@@ -13,7 +13,8 @@
   import type { Snippet } from 'svelte';
 
   import type { ReviewSetRecord, ReviewThreadRecord } from '../session/wire';
-  import type { ReplyBox, Voice } from './boxes';
+  import type { ReplyBox, TurnEditor, Voice } from './boxes';
+  import ThreadDelete from './ThreadDelete.svelte';
   import ThreadTurn from './ThreadTurn.svelte';
   import WordsBox from './WordsBox.svelte';
   import {
@@ -42,6 +43,8 @@
     onpress,
     onhold,
     onfield,
+    editor = null,
+    ondelete = null,
     footer,
   }: {
     threads: ReviewThreadRecord[];
@@ -66,6 +69,10 @@
     onpress: () => void;
     onhold: () => void;
     onfield: (el: HTMLElement | null) => void;
+    /** The page's edit box, handed to every turn that can be edited. */
+    editor?: TurnEditor | null;
+    /** Remove a thread; absent where the surface offers no delete. */
+    ondelete?: ((thread: ReviewThreadRecord) => void | Promise<void>) | null;
     footer?: Snippet;
   } = $props();
 
@@ -103,7 +110,7 @@
             <pre>{thread.anchor.context.join('\n')}</pre>
           </div>
           {#each thread.comments as turn, i (i)}
-            <ThreadTurn {turn} {rounds} {now} index={i} />
+            <ThreadTurn {turn} {rounds} {now} index={i} thread={thread.id} {editor} />
           {/each}
           <div class="acts">
             {#if inRound}
@@ -115,6 +122,7 @@
                 disabled={busy}
                 onclick={() => {
                   reply.thread = reply.thread === thread.id ? null : thread.id;
+                  reply.index = null;
                   reply.draft = '';
                 }}>respond</button
               >
@@ -122,6 +130,9 @@
             <button type="button" class="rv-a" disabled={busy} onclick={() => onresolve(thread)}
               >resolve</button
             >
+            {#if ondelete !== null}
+              <ThreadDelete {busy} ondelete={() => ondelete(thread)} />
+            {/if}
             {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
           </div>
         </article>
@@ -163,7 +174,7 @@
               <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
             </div>
             {#each thread.comments as turn, i (i)}
-              <ThreadTurn {turn} {rounds} {now} index={i} />
+              <ThreadTurn {turn} {rounds} {now} index={i} thread={thread.id} {editor} />
             {/each}
             <div class="acts">
               <button
@@ -172,6 +183,7 @@
                 disabled={busy}
                 onclick={() => {
                   reply.thread = reply.thread === thread.id ? null : thread.id;
+                  reply.index = null;
                   reply.draft = '';
                 }}>respond</button
               >
@@ -184,9 +196,12 @@
                   >resolve</button
                 >
               {/if}
+              {#if ondelete !== null}
+                <ThreadDelete {busy} ondelete={() => ondelete(thread)} />
+              {/if}
               {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
             </div>
-            {#if reply.thread === thread.id}
+            {#if reply.thread === thread.id && reply.index === null}
               <!-- The same box the canvas mounts under its threads: one
                    component, so a reply reads and dictates the same wherever
                    it is drawn. -->
