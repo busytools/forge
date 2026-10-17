@@ -32,7 +32,7 @@ import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
-import { fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
+import { carriedValue, fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
 import { onRefusal } from '../refusals';
 import { callOutputOf } from '../wire/call-output';
 import { reportFrom } from '../wire/fleet';
@@ -90,12 +90,39 @@ export interface Turn {
   held?: boolean;
 }
 
-/** Whether a turn's own frames carry the frame it ends on - a result, or the CLI giving up. */
-function carriesResult(messages: unknown[]): boolean {
-  return messages.some((message) => {
-    const type = (message as { type?: unknown } | null)?.type;
-    return type === 'result' || type === 'error';
-  });
+/**
+ * Whether a turn's own frames carry the frame it ends on - a result, or the
+ * CLI giving up.
+ *
+ * Carried per turn: both askers ask it of the newest turn on every arriving
+ * frame, so a walk of the turn here is the same O(turn) shape the fold's own
+ * carry exists to delete (#2326).
+ */
+function carriesResult(turn: Turn): boolean {
+  return (
+    carriedValue(
+      turn,
+      'result',
+      () => ({ ended: false }),
+      (held, frame) => {
+        const type = (frame as { type?: unknown } | null)?.type;
+        if (type === 'result' || type === 'error') held.ended = true;
+      },
+    ).ended === true
+  );
+}
+
+/** The frame ids one turn holds, carried as the turn grows. */
+function heldIds(turn: Turn): ReadonlySet<string> {
+  return carriedValue(
+    turn,
+    'uuid',
+    () => new Set<string>(),
+    (held, frame) => {
+      const id = uuidOf(frame);
+      if (id !== null) held.add(id);
+    },
+  );
 }
 
 /**
@@ -1011,7 +1038,7 @@ export class Chat {
     const last = held.turns.length - 1;
     let changed = false;
     const turns = held.turns.map((turn, at) => {
-      const wanted = at === last && this.turnRunning && !carriesResult(turn.messages);
+      const wanted = at === last && this.turnRunning && !carriesResult(turn);
       if ((turn.running === true) === wanted) return turn;
       changed = true;
       return { ...turn, running: wanted };
@@ -1863,11 +1890,16 @@ export class Chat {
   /**
    * Whether the conversation already holds the row a `chat_appended` frame
    * carries, by the id the fold reconciles on.
+   *
+   * **Asked of each turn's own index, not of its frames** (#2326): this runs
+   * on every arriving frame, so walking the held turns here is the O(turn)
+   * shape the fold's carry exists to delete. Each turn's ids are built once
+   * and carried as it grows, which leaves one lookup per turn.
    */
   private carries(update: SessionUpdate): boolean {
     const id = uuidOf((update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg);
     if (id === null) return false;
-    return this.held.turns.some((turn) => turn.messages.some((message) => uuidOf(message) === id));
+    return this.held.turns.some((turn) => heldIds(turn).has(id));
   }
 
   /**
@@ -2481,7 +2513,7 @@ export class Chat {
       // - a turn the frames built stays live for good (#1486), so a row that
       // carries the frame it ended on is over whatever the flags say, and a
       // prompt arriving after it must still open the next turn's row.
-      const writing = last !== undefined && beingWritten(last) && !carriesResult(last.messages);
+      const writing = last !== undefined && beingWritten(last) && !carriesResult(last);
       const opens =
         draws &&
         !isSystem(message) &&

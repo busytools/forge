@@ -15,6 +15,7 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 
 import type { SubagentCard } from '../session/wire';
+import { carriedValue } from './units';
 
 export class SubagentCards {
   #byDispatch = new SvelteMap<string, SubagentCard>();
@@ -84,19 +85,27 @@ export function reachableIds(
 ): ReadonlySet<string> {
   const ids = new SvelteSet<string>();
   for (const turn of turns) {
-    for (const message of turn.messages) {
-      const frame = message as {
-        parent_tool_use_id?: unknown;
-        message?: { content?: unknown };
-      };
-      const parent = frame.parent_tool_use_id;
-      if (typeof parent === 'string' && parent !== '') continue;
-      const content = frame.message?.content;
-      if (!Array.isArray(content)) continue;
-      for (const block of content) {
-        const held = block as { type?: unknown; id?: unknown };
-        if (held.type === 'tool_use' && typeof held.id === 'string') ids.add(held.id);
-      }
+    // **Read off each turn's own carried index** (#2326). This asks the loaded
+    // turns on every arriving frame, and a walk of every frame they hold is
+    // the O(turn) shape the fold's carry exists to delete - so the dispatches
+    // are read once per turn and extended as it grows.
+    for (const id of carriedValue(
+      turn,
+      'dispatch',
+      () => new SvelteSet<string>(),
+      (held, frame) => {
+        const dispatch = frame as { parent_tool_use_id?: unknown; message?: { content?: unknown } };
+        const parent = dispatch.parent_tool_use_id;
+        if (typeof parent === 'string' && parent !== '') return;
+        const content = dispatch.message?.content;
+        if (!Array.isArray(content)) return;
+        for (const block of content) {
+          const use = block as { type?: unknown; id?: unknown };
+          if (use.type === 'tool_use' && typeof use.id === 'string') held.add(use.id);
+        }
+      },
+    )) {
+      ids.add(id);
     }
   }
   return ids;
