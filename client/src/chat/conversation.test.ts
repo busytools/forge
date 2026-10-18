@@ -3077,6 +3077,258 @@ describe('the conversation the chat draws', () => {
     expect(new Set(keys).size, 'no two rows are drawn under one key').toBe(keys.length);
   });
 
+  /**
+   * **A delivery the CLI pressed into the running turn draws with that turn.**
+   *
+   * The delivery frame can land just after the previous turn's result - the
+   * core clears its turn on the result, while the CLI still takes the prompt
+   * inside the turn it was writing - so the frames build a turn for it. The
+   * fold keeps the envelope row inside the turn above, so the page's row for
+   * that turn carries the same message under the prompt's id. Kept as a live
+   * turn of its own, the row drew twice: once in the turn that carries it,
+   * once below that turn's report (#2390).
+   *
+   * The page carries a later turn too, so what the read could not see has a
+   * wrong row to land in as well as a missing one: it still goes in the row
+   * the page put the delivery in, not in the row that happens to draw last.
+   */
+  it('draws a delivery the page keeps in the turn above only once', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The turn the delivery landed in, at the moment the core handed it over:
+    // its result is in, and the delivery frame follows the result.
+    server.update({ chat_appended: { key: LEAD, msg: typed('do the thing') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('worked on it') } });
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    server.update({
+      chat_appended: { key: LEAD, msg: forgedUnder('from forge/gap-timings', 'forge_prompt_1') },
+    });
+    // The CLI's turn carries on before the read: the page cannot hold this.
+    server.update({ chat_appended: { key: LEAD, msg: said('carried on') } });
+
+    // The page read that follows: the fold opens no turn at an envelope row,
+    // so its row rides the turn above, and the page's copy carries the
+    // prompt's id. A later turn rides below it.
+    server.send(
+      page(
+        [
+          {
+            key: null,
+            messages: [
+              typed('do the thing'),
+              said('worked on it'),
+              ended(),
+              forgedUnder('from forge/gap-timings', 'forge_prompt_1'),
+            ],
+          },
+          { key: null, messages: [typed('next thing'), said('answered it')] },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    const carrying = after.filter((row) =>
+      JSON.stringify(row.messages).includes('from forge/gap-timings'),
+    );
+    expect(carrying, 'the delivery is drawn in one row').toHaveLength(1);
+    expect(
+      JSON.stringify(carrying[0]?.messages ?? []).includes('carried on'),
+      'the frame the read came too early for stays in that row',
+    ).toBe(true);
+    const later = after.find((row) => JSON.stringify(row.messages).includes('next thing'));
+    expect(later, 'precondition: the page did land its later turn').toBeDefined();
+    expect(
+      JSON.stringify(later?.messages ?? []).includes('carried on'),
+      "the later turn takes none of the running turn's own frames",
+    ).toBe(false);
+    expect(after, 'and no row is left beside it for the same frames').toHaveLength(3);
+    stop();
+  });
+
+  /**
+   * **A page that already carries the delivery whole still takes the live
+   * row.** The read can land between the delivery and the next frame, so the
+   * absorb has nothing to grow - and the live turn has to go anyway, or the
+   * message draws once per copy.
+   */
+  it('absorbs a delivery the page already carries whole', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    server.update({ chat_appended: { key: LEAD, msg: typed('do the thing') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('worked on it') } });
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    server.update({
+      chat_appended: { key: LEAD, msg: forgedUnder('from forge/gap-timings', 'forge_prompt_1') },
+    });
+
+    server.send(
+      page(
+        [
+          {
+            key: null,
+            messages: [
+              typed('do the thing'),
+              said('worked on it'),
+              ended(),
+              forgedUnder('from forge/gap-timings', 'forge_prompt_1'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      JSON.stringify(after).split('from forge/gap-timings').length - 1,
+      'the delivery is drawn once even when the page needed nothing added',
+    ).toBe(1);
+    expect(after, 'and the live row it was is gone').toHaveLength(2);
+    stop();
+  });
+
+  /**
+   * **The page's copy of a mid-turn prompt rides its attachment, not the row's
+   * own id.** The transcript's attachment row carries the CLI's uuid while the
+   * prompt's id rides `source_uuid`, so the lookup has to read the block or
+   * the carrier regresses while #2390 returns.
+   */
+  it('finds the page copy of a delivery that rides a queued attachment', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    server.update({ chat_appended: { key: LEAD, msg: typed('do the thing') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('worked on it') } });
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    server.update({
+      chat_appended: { key: LEAD, msg: forgedUnder('mid-turn words', 'forge_prompt_1') },
+    });
+
+    server.send(
+      page(
+        [
+          {
+            key: null,
+            messages: [
+              typed('do the thing'),
+              said('worked on it'),
+              ended(),
+              {
+                type: 'user',
+                uuid: 'cli-row-1',
+                message: {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'queued_command',
+                      prompt: 'mid-turn words',
+                      source_uuid: 'forge_prompt_1',
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      JSON.stringify(after).split('mid-turn words').length - 1,
+      'the delivery draws once, found by the id its attachment carries',
+    ).toBe(1);
+    stop();
+  });
+
+  /**
+   * **An id-less opening is never paired with a row by its words.** A delivery
+   * frame with no id and a page row saying the same words can be two
+   * messages - a repeat, which the reader's new row must survive - and the
+   * merge only ever pairs a turn by the id its opening carries.
+   */
+  it('keeps an id-less delivery the page only repeats words of', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer') } });
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    // The reader's new delivery, with no id of its own.
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+
+    // The page's row ends on an older delivery saying the same words.
+    server.send(
+      page(
+        [
+          {
+            key: null,
+            messages: [typed('mine'), said('answer'), ended(), forged('check the build')],
+          },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      JSON.stringify(after).split('check the build').length - 1,
+      'the new delivery draws beside the row that says the same words',
+    ).toBe(2);
+    stop();
+  });
+
+  it('keeps both deliveries a page carries in one row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    server.update({ chat_appended: { key: LEAD, msg: typed('do the thing') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('worked on it') } });
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    // Two prompts pressed into the one CLI turn: the second joins the first.
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('first delivery', 'p1') } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('second delivery', 'p2') } });
+
+    // The page carries the first and not the second, so the second is grown.
+    server.send(
+      page(
+        [
+          {
+            key: null,
+            messages: [
+              typed('do the thing'),
+              said('worked on it'),
+              ended(),
+              forgedUnder('first delivery', 'p1'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    const drawn = JSON.stringify(after);
+    expect(drawn.split('first delivery').length - 1, 'the first draws once').toBe(1);
+    expect(drawn.split('second delivery').length - 1, 'and the second does too').toBe(1);
+    const carrying = after.filter((row) => JSON.stringify(row.messages).includes('first delivery'));
+    expect(
+      JSON.stringify(carrying[0]?.messages ?? []).includes('second delivery'),
+      'the second grows the same row rather than a row of its own',
+    ).toBe(true);
+    stop();
+  });
+
   it('keeps a repeat from taking a live turn an id-bearing frame opened', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
