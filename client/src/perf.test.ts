@@ -198,10 +198,11 @@ describe('the open a conversation begins', () => {
     h.frame(16);
     expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
 
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
     const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
     expect(drawn).toHaveLength(1);
     expect(drawn[0]?.ms, 'the drawn mark measures from the open').toBe(16);
+    expect(drawn[0]?.state, 'and says what completed the open').toBe('conversation');
 
     // A slow frame after the drawing is the open still being paid for, so it
     // stays running.
@@ -228,7 +229,7 @@ describe('the open a conversation begins', () => {
   it('marks nothing for a route change alone', () => {
     const h = harness();
     h.probe.setSurface('board', 'Busytools/forge');
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
     h.frame(16);
     h.frame(120);
 
@@ -259,11 +260,39 @@ describe('the open a conversation begins', () => {
     h.probe.noteConversationOpened('Busytools/forge/lead');
     h.frame(16);
 
-    h.probe.noteDrawn();
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
+    h.probe.noteDrawn('conversation');
     h.frame(16);
-    h.probe.noteDrawn(); // the open already settled: a stray redraw marks nothing
+    h.probe.noteDrawn('conversation'); // the open already settled: a stray redraw marks nothing
 
+    expect(h.records.flat().filter((record) => record.kind === 'drawn')).toHaveLength(1);
+  });
+
+  /**
+   * **A waking line is not the seat's content arriving** (#2374): the open
+   * ends at that drawing - no quiet follows it, and the content that lands
+   * later marks nothing - so a placeholder can never read as a fast open.
+   */
+  it('ends a waking drawing without a quiet, and later content marks nothing', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.frame(16);
+
+    h.probe.noteDrawn('waking');
+    const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]?.state).toBe('waking');
+    expect(drawn[0]?.ms).toBe(16);
+
+    // Frames after it: the open is over, so nothing settles.
+    h.frame(16);
+    h.frame(120);
+    h.frame(16);
+    expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
+
+    // The seat's real content arriving later is not this open's drawing.
+    h.probe.noteDrawn('conversation');
     expect(h.records.flat().filter((record) => record.kind === 'drawn')).toHaveLength(1);
   });
 
@@ -279,7 +308,7 @@ describe('the open a conversation begins', () => {
     h.probe.setSurface('review', 'Busytools/forge/lead');
     h.frame(16); // a normal frame while the seat's answer is still on its way
 
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
     h.frame(16);
 
     const marks = h.records
@@ -304,7 +333,7 @@ describe('the open a conversation begins', () => {
     h.probe.noteConversationOpened('Busytools/forge/lead');
     h.probe.setSurface('home', null);
 
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
     h.frame(16);
     h.frame(16);
 

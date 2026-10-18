@@ -41,6 +41,16 @@ const SLOW_FRAME_MS = 50;
  *  client replaced used. */
 const SUMMARY_INTERVAL_MS = 10_000;
 
+/**
+ * Which terminal drawing completed a seat's open (#2374).
+ *
+ * **`conversation` and `empty` are the seat's own answer** - rows on screen,
+ * or the loaded-and-empty state. `waking` and `refused` are the column
+ * saying something else, and an open completed by one of those has NOT seen
+ * the seat's content.
+ */
+export type DrawnState = 'conversation' | 'empty' | 'waking' | 'refused';
+
 /** One line of the perf log, as the shell writes it. */
 export interface PerfRecord {
   schema: string;
@@ -55,6 +65,13 @@ export interface PerfRecord {
    * `quiet` - the time since the switch record the mark belongs to.
    */
   ms?: number;
+  /**
+   * For a `drawn`: WHICH terminal state completed the open. Only
+   * `conversation` and `empty` are the seat's own answer; a `waking` or
+   * `refused` line is the column saying something else, and must never read
+   * as the content arriving (#2374).
+   */
+  state?: DrawnState;
   /** A long task's own name. */
   name?: string;
   /**
@@ -83,9 +100,8 @@ interface PerfProbe {
    *  reconnect or a palette move, written where the column takes the seat on
    *  (#2374). */
   noteConversationOpened(seat: string): void;
-  /** The open seat's terminal drawing has landed: its conversation, or the
-   *  seat's own empty/waking/refused line (#2374). */
-  noteDrawn(): void;
+  /** The open seat's terminal drawing has landed, in `state` (#2374). */
+  noteDrawn(state: DrawnState): void;
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
@@ -311,7 +327,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         session: seat,
       });
     },
-    noteDrawn(): void {
+    noteDrawn(state: DrawnState): void {
       if (openAt === null || drawnSeen) return;
       drawnSeen = true;
       emit({
@@ -320,9 +336,19 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         run_id: runId,
         ts_ms: Date.now(),
         ms: now() - openAt,
+        state,
         surface: 'session',
         session: openSeat,
       });
+      // **A waking or refused line is not the seat's content**, so the open
+      // ends here rather than waiting on a quiet: nothing that follows can
+      // be that open's settle, and a placeholder must never read as the
+      // content arriving. A conversation or empty drawing keeps the open
+      // armed for the quiet that measures the settle (#2374).
+      if (state === 'waking' || state === 'refused') {
+        openAt = null;
+        openSeat = null;
+      }
     },
   };
 }
@@ -370,13 +396,13 @@ export function noteConversationOpened(slot: SessionSlot): void {
 }
 
 /**
- * The open seat's terminal drawing has landed - its conversation, or the
- * seat's own empty/waking/refused line. The mark a switch's own timing is
- * measured to, written where the drawing lands rather than where the click
- * happened (#2374).
+ * The open seat's terminal drawing has landed, in `state`: its conversation,
+ * the empty state, or the column's own waking or refused line. The mark a
+ * switch's own timing is measured to, written where the drawing lands rather
+ * than where the click happened (#2374).
  */
-export function noteDrawn(): void {
-  running?.noteDrawn();
+export function noteDrawn(state: DrawnState): void {
+  running?.noteDrawn(state);
 }
 
 /**

@@ -1509,7 +1509,7 @@ describe('the drawn mark', () => {
 
     server.answer([turn('t1')]);
     await painted();
-    expect(drawnMark, 'the rows a seat draws are the mark').toHaveBeenCalled();
+    expect(drawnMark, 'the rows a seat draws are the mark').toHaveBeenCalledWith('conversation');
 
     // The switch: the new seat's own conversation opens, and its own page is
     // what puts the drawn mark down for it.
@@ -1534,7 +1534,9 @@ describe('the drawn mark', () => {
       cursor: null,
     });
     await painted();
-    expect(drawnMark, "the switched-to seat's own drawing is the second mark").toHaveBeenCalled();
+    expect(drawnMark, "the switched-to seat's own drawing is the second mark").toHaveBeenCalledWith(
+      'conversation',
+    );
   });
 
   it('marks a seat whose conversation is empty, once its own state has drawn', async () => {
@@ -1546,17 +1548,30 @@ describe('the drawn mark', () => {
 
     server.answer([]);
     await painted();
-    expect(drawnMark, 'the empty state is the column answering').toHaveBeenCalled();
+    expect(drawnMark, 'the empty state is the column answering').toHaveBeenCalledWith('empty');
   });
 
-  it('marks a seat that is only waking, with nothing on its way yet', () => {
+  it('marks a seat that is only waking, and says that is what drew', () => {
     const server = stub();
     drawnMark.mockClear();
     draw({ waking: true }, server);
 
     expect(
       drawnMark,
-      'a waking seat draws its own line, and that is the answer',
-    ).toHaveBeenCalled();
+      'a waking seat draws its own line, and the mark says so',
+    ).toHaveBeenCalledWith('waking');
+  });
+
+  it('marks a refusal with no rows as refused, not as content', async () => {
+    const server = stub();
+    drawnMark.mockClear();
+    draw({}, server);
+
+    server.send({ kind: 'error', what: 'more', why: 'forge holds no session for that seat' });
+    await painted();
+    expect(
+      drawnMark,
+      'a refusal is the column answering, but it is no content',
+    ).toHaveBeenCalledWith('refused');
   });
 });
