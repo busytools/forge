@@ -2,7 +2,8 @@
 //! with a kind.
 //!
 //! Resolution is against the session's own working directory, and nothing
-//! outside that tree reads - the check is on the canonicalized path, so a
+//! outside that tree reads unless it sits under one of the project's
+//! configured vault roots - the check is on the canonicalized path, so a
 //! `..` walk, an absolute path and a symlink pointing out are all refused
 //! the same way. The read is bounded by a ceiling and detects the kind by
 //! extension. Every refusal is a sentence naming its reason, because the
@@ -32,7 +33,7 @@ pub enum DocumentRefusal {
     NotUtf8 { path: String },
 }
 
-/// Read one document out of `cwd`'s tree.
+/// Read one document out of `cwd`'s tree, or under one of `vault_roots`.
 ///
 /// `path` resolves against `cwd`. The read answers whether the DOCUMENT is
 /// reviewable - a markdown or text kind is, and a PDF opens read-only - so a
@@ -40,8 +41,16 @@ pub enum DocumentRefusal {
 /// `reviewable` flag asks the hand-off's own question and is refused for a
 /// PDF, whose kind can never carry a review. The read is bounded by
 /// `ceiling_bytes`, and a refusal names its reason.
+///
+/// `vault_roots` are the extra roots the project allows - the
+/// `vault_roots` entries of its `forge.toml` project. Each is
+/// canonicalized before the comparison, like the requested path, so a
+/// root behind a symlink is judged by where it really points; a root
+/// that cannot be canonicalized is compared lexically, which refuses
+/// nothing a resolvable path would have been allowed under.
 pub fn read(
     cwd: &Path,
+    vault_roots: &[PathBuf],
     path: &str,
     reviewable: bool,
     ceiling_bytes: u64,
@@ -51,7 +60,7 @@ pub fn read(
         why: err.to_string(),
     })?;
     let resolved = resolve(&root, path);
-    if !resolved.starts_with(&root) {
+    if !resolved.starts_with(&root) && !under_any_root(vault_roots, &resolved) {
         return Err(DocumentRefusal::OutsideTheTree { path: path.to_owned() });
     }
     let metadata = std::fs::metadata(&resolved).map_err(|err| {
@@ -121,6 +130,16 @@ fn reviewable_kind(kind: &DocumentKind) -> bool {
         DocumentKind::Other(ext) => TEXT_EXTENSIONS.contains(&ext.as_str()),
         DocumentKind::Pdf => false,
     }
+}
+
+/// Whether `resolved` sits under one of the vault roots. The comparison
+/// is by path component - `Path::starts_with` - so `MadnessX` is not
+/// under a `Madness` root.
+fn under_any_root(vault_roots: &[PathBuf], resolved: &Path) -> bool {
+    vault_roots.iter().any(|vault| {
+        let vault = vault.canonicalize().unwrap_or_else(|_| lexical(vault));
+        resolved.starts_with(vault)
+    })
 }
 
 /// The canonical target of `path` under `root`. A missing file has no
@@ -242,7 +261,8 @@ mod tests {
         let root = dir.path().canonicalize().expect("the fixture canonicalizes");
         write(&root, "docs/readme.md", b"# hi\n");
 
-        let document = read(dir.path(), "docs/readme.md", false, CEILING).expect("the read lands");
+        let document =
+            read(dir.path(), &[], "docs/readme.md", false, CEILING).expect("the read lands");
 
         assert_eq!(document.kind, DocumentKind::Markdown);
         assert_eq!(document.bytes, b"# hi\n");
@@ -267,7 +287,7 @@ mod tests {
         write(dir.path(), "sketch.rs", b"x");
         write(dir.path(), "LICENSE", b"x");
 
-        let kind = |rel: &str| read(dir.path(), rel, false, CEILING).expect("reads").kind;
+        let kind = |rel: &str| read(dir.path(), &[], rel, false, CEILING).expect("reads").kind;
         assert_eq!(kind("notes.md"), DocumentKind::Markdown);
         assert_eq!(kind("paper.PDF"), DocumentKind::Pdf, "the extension's case does not matter");
         assert_eq!(kind("notes.txt"), DocumentKind::Text);
@@ -290,11 +310,11 @@ mod tests {
         write(dir.path(), "blob.png", b"\x89PNG fake");
 
         for probe in ["plan.md", "notes.txt", "sketch.rs"] {
-            let cold = read(dir.path(), probe, false, CEILING).expect("reads");
+            let cold = read(dir.path(), &[], probe, false, CEILING).expect("reads");
             assert!(cold.reviewable, "{probe}: reviewable however the reader got there");
         }
         for probe in ["paper.pdf", "blob.png"] {
-            let read_only = read(dir.path(), probe, false, CEILING).expect("reads");
+            let read_only = read(dir.path(), &[], probe, false, CEILING).expect("reads");
             assert!(!read_only.reviewable, "{probe}: read-only whatever the caller asked");
         }
     }
@@ -304,7 +324,7 @@ mod tests {
         let dir = fixture();
 
         let refusal =
-            read(dir.path(), "docs/gone.md", false, CEILING).expect_err("nothing to read");
+            read(dir.path(), &[], "docs/gone.md", false, CEILING).expect_err("nothing to read");
 
         assert!(matches!(refusal, DocumentRefusal::Missing { .. }), "{refusal:?}");
         assert!(
@@ -320,7 +340,8 @@ mod tests {
         let dir = fixture();
         write(dir.path(), "big.txt", &vec![b'x'; 2 * 1024 * 1024]);
 
-        let refusal = read(dir.path(), "big.txt", false, CEILING).expect_err("over the ceiling");
+        let refusal =
+            read(dir.path(), &[], "big.txt", false, CEILING).expect_err("over the ceiling");
 
         assert!(matches!(refusal, DocumentRefusal::OverCeiling { .. }), "{refusal:?}");
         let why = refusal.to_string();
@@ -344,7 +365,7 @@ mod tests {
         let absolute = base.join("outside.md").to_str().expect("utf8").to_owned();
 
         for probe in ["../../outside.md".to_owned(), absolute, "link.md".to_owned()] {
-            let refusal = read(&cwd, &probe, false, CEILING).expect_err("escapes never read");
+            let refusal = read(&cwd, &[], &probe, false, CEILING).expect_err("escapes never read");
             assert!(
                 matches!(refusal, DocumentRefusal::OutsideTheTree { .. }),
                 "{probe}: {refusal:?}"
@@ -365,16 +386,113 @@ mod tests {
         let cwd = root.join("tree");
         std::fs::create_dir_all(&cwd).expect("the session tree");
 
-        let refusal = read(&cwd, "../../etc/hosts", false, CEILING)
+        let refusal = read(&cwd, &[], "../../etc/hosts", false, CEILING)
             .expect_err("climbing out never reads, existing or not");
         assert!(
             matches!(refusal, DocumentRefusal::OutsideTheTree { .. }),
             "the boundary is the refusal: {refusal:?}",
         );
 
-        let refusal = read(&cwd, "gone/deeper/missing.md", false, CEILING)
+        let refusal = read(&cwd, &[], "gone/deeper/missing.md", false, CEILING)
             .expect_err("a missing document inside the tree still reads missing");
         assert!(matches!(refusal, DocumentRefusal::Missing { .. }), "{refusal:?}");
+    }
+
+    /// A file under a configured vault root reads exactly as an in-tree
+    /// one does, and the root is handed in UNCANONICALIZED - on this
+    /// machine `dir.path()` is the `/var` -> `/private/var` case - so
+    /// the check canonicalizes both sides. An in-tree read with roots
+    /// configured is the control: roots widen, they never narrow.
+    #[test]
+    fn a_document_under_a_vault_root_reads_as_an_in_tree_one() {
+        let dir = fixture();
+        let base = dir.path().canonicalize().expect("canonical");
+        let cwd = base.join("tree");
+        std::fs::create_dir_all(&cwd).expect("the session tree");
+        write(&base, "vault/notes.md", b"# vault\n");
+        write(&base, "tree/inside.md", b"# inside\n");
+        let roots = vec![dir.path().join("vault")];
+
+        let vaulted = base.join("vault/notes.md").to_str().expect("utf8").to_owned();
+        let document = read(&cwd, &roots, &vaulted, false, CEILING).expect("a vault file reads");
+        assert_eq!(document.kind, DocumentKind::Markdown, "the kind, as in-tree");
+        assert_eq!(document.bytes, b"# vault\n");
+        assert_eq!(document.path, base.join("vault/notes.md"), "resolved to its canonical path");
+
+        let inside = read(&cwd, &roots, "inside.md", false, CEILING).expect("the tree reads");
+        assert_eq!(inside.path, cwd.join("inside.md"), "the tree is not narrowed by the roots");
+    }
+
+    /// Outside the tree AND outside every root is the refusal it always
+    /// was, in the same sentence: a `..` walk, an absolute path and a
+    /// symlink pointing out are all refused by name with roots in play.
+    #[test]
+    fn a_path_outside_the_tree_and_every_root_still_refuses_by_name() {
+        let dir = fixture();
+        let base = dir.path().canonicalize().expect("canonical");
+        let cwd = base.join("tree");
+        std::fs::create_dir_all(&cwd).expect("the session tree");
+        std::fs::create_dir_all(base.join("vault")).expect("a root that holds nothing for it");
+        write(&base, "outside.md", b"secret");
+        std::os::unix::fs::symlink(base.join("outside.md"), cwd.join("link.md"))
+            .expect("the escaping symlink");
+        let absolute = base.join("outside.md").to_str().expect("utf8").to_owned();
+        let roots = vec![dir.path().join("vault")];
+
+        for probe in ["../outside.md".to_owned(), absolute, "link.md".to_owned()] {
+            let refusal =
+                read(&cwd, &roots, &probe, false, CEILING).expect_err("escapes never read");
+            assert!(
+                matches!(refusal, DocumentRefusal::OutsideTheTree { .. }),
+                "{probe}: {refusal:?}"
+            );
+            assert!(refusal.to_string().contains(&probe), "the refusal names {probe}: {refusal}");
+        }
+    }
+
+    /// A symlink under a root that points out of every root refuses:
+    /// the canonicalized target is what the check sees, not the link's
+    /// place. The root's own real file is the control.
+    #[test]
+    fn a_symlink_out_of_a_root_refuses() {
+        let dir = fixture();
+        let base = dir.path().canonicalize().expect("canonical");
+        let cwd = base.join("tree");
+        std::fs::create_dir_all(&cwd).expect("the session tree");
+        write(&base, "vault/real.md", b"# real\n");
+        write(&base, "elsewhere/secret.md", b"secret");
+        std::os::unix::fs::symlink(base.join("elsewhere/secret.md"), base.join("vault/link.md"))
+            .expect("the escaping symlink");
+        let roots = vec![base.join("vault")];
+
+        let link = base.join("vault/link.md").to_str().expect("utf8").to_owned();
+        let refusal = read(&cwd, &roots, &link, false, CEILING).expect_err("out of every root");
+        assert!(matches!(refusal, DocumentRefusal::OutsideTheTree { .. }), "{refusal:?}");
+
+        let real = base.join("vault/real.md").to_str().expect("utf8").to_owned();
+        read(&cwd, &roots, &real, false, CEILING).expect("the root's own file still reads");
+    }
+
+    /// A sibling whose name starts with a root's is NOT inside it: the
+    /// comparison is by path component, so `MadnessX` is not under a
+    /// `Madness` root however their strings start.
+    #[test]
+    fn a_sibling_of_a_root_is_not_inside_it() {
+        let dir = fixture();
+        let base = dir.path().canonicalize().expect("canonical");
+        let cwd = base.join("tree");
+        std::fs::create_dir_all(&cwd).expect("the session tree");
+        write(&base, "Madness/plan.md", b"# plan\n");
+        write(&base, "MadnessX/plan.md", b"# plan\n");
+        let roots = vec![base.join("Madness")];
+
+        let root_file = base.join("Madness/plan.md").to_str().expect("utf8").to_owned();
+        read(&cwd, &roots, &root_file, false, CEILING).expect("the root itself reads");
+
+        let sibling = base.join("MadnessX/plan.md").to_str().expect("utf8").to_owned();
+        let refusal =
+            read(&cwd, &roots, &sibling, false, CEILING).expect_err("a sibling is not inside");
+        assert!(matches!(refusal, DocumentRefusal::OutsideTheTree { .. }), "{refusal:?}");
     }
 
     /// A file the process cannot read is a refusal with the reason, not a
@@ -388,7 +506,7 @@ mod tests {
         let locked = dir.path().join("locked.txt");
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("lock");
 
-        let refusal = read(dir.path(), "locked.txt", false, CEILING).expect_err("locked");
+        let refusal = read(dir.path(), &[], "locked.txt", false, CEILING).expect_err("locked");
 
         // Unlocked before the assert so a failing explain leaves a deletable
         // fixture behind rather than one a cleanup walks around.
@@ -408,12 +526,12 @@ mod tests {
         let dir = fixture();
         write(dir.path(), "paper.pdf", b"%PDF-1.4 fake");
 
-        let document = read(dir.path(), "paper.pdf", false, CEILING).expect("a PDF reads");
+        let document = read(dir.path(), &[], "paper.pdf", false, CEILING).expect("a PDF reads");
         assert_eq!(document.kind, DocumentKind::Pdf);
         assert_eq!(document.bytes, b"%PDF-1.4 fake");
 
         let refusal =
-            read(dir.path(), "paper.pdf", true, CEILING).expect_err("reviewable is refused");
+            read(dir.path(), &[], "paper.pdf", true, CEILING).expect_err("reviewable is refused");
         assert!(matches!(refusal, DocumentRefusal::PdfNotReviewable), "{refusal:?}");
         assert!(refusal.to_string().contains("read-only"), "names the reason: {refusal}");
     }
@@ -424,7 +542,7 @@ mod tests {
         write(dir.path(), "empty.md", b"");
 
         let document =
-            read(dir.path(), "empty.md", false, CEILING).expect("an empty file is a document");
+            read(dir.path(), &[], "empty.md", false, CEILING).expect("an empty file is a document");
 
         assert_eq!(document.kind, DocumentKind::Markdown);
         assert!(document.bytes.is_empty());
@@ -445,13 +563,13 @@ mod tests {
         write(dir.path(), "blob.png", &bytes);
 
         for probe in ["broken.md", "broken.txt", "broken.rs"] {
-            let refusal = read(dir.path(), probe, false, CEILING).expect_err("not text");
+            let refusal = read(dir.path(), &[], probe, false, CEILING).expect_err("not text");
             assert!(matches!(refusal, DocumentRefusal::NotUtf8 { .. }), "{probe}: {refusal:?}");
             assert!(refusal.to_string().contains("UTF-8"), "{probe}: names the reason: {refusal}");
         }
 
         let other =
-            read(dir.path(), "blob.png", false, CEILING).expect("an image kind is not text");
+            read(dir.path(), &[], "blob.png", false, CEILING).expect("an image kind is not text");
         assert_eq!(other.kind, DocumentKind::Other("png".to_owned()));
     }
 }

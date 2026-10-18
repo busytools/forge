@@ -397,6 +397,13 @@ struct ProjectEntry {
     /// forge restart.
     #[serde(default)]
     env_file: Option<String>,
+    /// Extra roots the document read accepts beyond the session's own
+    /// tree, so a project's documents can live outside its repo (a
+    /// vault, a shared spec directory). Each entry is absolute or
+    /// starts with `~`; a relative one is a load error. Absent ->
+    /// empty.
+    #[serde(default)]
+    vault_roots: Vec<String>,
 }
 
 /// Hand-written because a project's env may carry secrets, which the
@@ -414,6 +421,7 @@ impl std::fmt::Debug for ProjectEntry {
             .field("max_workers", &self.max_workers)
             .field("env", &env)
             .field("env_file", &self.env_file)
+            .field("vault_roots", &self.vault_roots)
             .finish()
     }
 }
@@ -636,6 +644,10 @@ pub(crate) struct LoadedProject {
     /// CLI permission mode stamped onto every session this project
     /// spawns. Resolved once at load; absent key resolves to `auto`.
     pub permission_mode: PermissionMode,
+    /// The extra roots the document read accepts beyond a session's own
+    /// tree: the entry's `vault_roots` with `~` expanded. Empty for a
+    /// project that declares none.
+    pub vault_roots: Vec<PathBuf>,
 }
 
 /// Hand-written because a project's env may carry secrets (`env_file`
@@ -657,6 +669,7 @@ impl std::fmt::Debug for LoadedProject {
             .field("env", &env)
             .field("max_workers", &self.max_workers)
             .field("permission_mode", &self.permission_mode)
+            .field("vault_roots", &self.vault_roots)
             .finish()
     }
 }
@@ -1108,6 +1121,22 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
             let permission_mode = project_entry.permission_mode(&path, &project_entry.name)?;
+            let vault_roots = project_entry
+                .vault_roots
+                .iter()
+                .map(|root| {
+                    let expanded = expand_home(root);
+                    if expanded.is_absolute() {
+                        Ok(expanded)
+                    } else {
+                        Err(WorkspaceError::ProjectVaultRootRelative {
+                            path: path.clone(),
+                            name: project_entry.name.clone(),
+                            root: root.clone(),
+                        })
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let env =
                 resolve_project_env(&project_entry.name, project_entry.env, project_entry.env_file);
             projects.push(LoadedProject {
@@ -1122,6 +1151,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 env,
                 max_workers: project_entry.max_workers,
                 permission_mode,
+                vault_roots,
             });
             // The project model must be served by at least one account
             // the org can reach: a typo would boot clean, stamp all the
@@ -4330,6 +4360,78 @@ auto_compact_windows = 983040
         assert!(
             message.contains("auto_compact_windows"),
             "the refusal names the key that was not recognized, got: {message}",
+        );
+    }
+
+    /// A relative `vault_roots` entry is refused at load, naming the key
+    /// and the entry: a relative root would resolve against whatever
+    /// working directory the read happened in, which is nobody's answer.
+    #[test]
+    fn a_relative_vault_root_is_refused_at_load_naming_key_and_entry() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+vault_roots = ["~/Madness", "Madness"]
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+
+        let refusal = load_from_dir(dir.path()).expect_err("a relative entry is a load error");
+        assert!(matches!(refusal, WorkspaceError::ProjectVaultRootRelative { .. }), "{refusal:?}");
+        let why = refusal.to_string();
+        assert!(why.contains("vault_roots"), "names the key: {why}");
+        assert!(why.contains("'Madness'"), "names the entry: {why}");
+        assert!(why.contains("'forge'"), "and the project it sits on: {why}");
+    }
+
+    /// `vault_roots` defaults to empty, and an entry expands `~` while
+    /// an absolute one stays as itself.
+    #[test]
+    fn vault_roots_default_to_empty_and_expand_home() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("loads");
+        assert!(named(&config, "forge").vault_roots.is_empty(), "absent key, no roots");
+
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+vault_roots = ["~/Madness", "/opt/vault"]
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("loads");
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(
+            named(&config, "forge").vault_roots,
+            vec![home.join("Madness"), PathBuf::from("/opt/vault")],
+            "entries expand ~ and keep absolutes as themselves",
         );
     }
 }

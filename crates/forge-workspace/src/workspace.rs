@@ -7321,6 +7321,13 @@ impl Workspace {
         )
     }
 
+    /// The extra document roots the seat's project declares: its
+    /// `vault_roots` entries, `~` expanded at load. Empty for a project
+    /// that declares none, and for a slot whose project is not loaded.
+    pub fn vault_roots_for_session(&self, session_key: &SessionSlot) -> Vec<PathBuf> {
+        self.project_for_slot(session_key).map(|project| project.vault_roots).unwrap_or_default()
+    }
+
     /// The cwd to pass `claude --resume` for the session at
     /// `session_key`: [`Self::cwd_for_session`], or an empty string
     /// when forge holds none (pass through and let the bridge surface
@@ -8560,6 +8567,7 @@ mod account_stamp_tests {
             env: HashMap::new(),
             max_workers: None,
             permission_mode,
+            vault_roots: Vec::new(),
         }
     }
 

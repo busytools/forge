@@ -551,6 +551,7 @@ mod resolve_scope_tests {
             env: std::collections::HashMap::new(),
             max_workers: None,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
+            vault_roots: Vec::new(),
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(
             PathBuf::from("/tmp/forge-review-testing-stub"),

@@ -263,9 +263,10 @@ impl ViewSurface {
     /// `path` resolves against the session's working directory and
     /// `reviewable` is what the hand-off flagged; both go to the read in
     /// `forge_agent::env::documents`, whose refusals are the sentences a
-    /// route draws and a refused hand-off returns. The read is blocking
-    /// (a file off disk), so a caller offloads it rather than running it in
-    /// a handler.
+    /// route draws and a refused hand-off returns. The seat's project's
+    /// `vault_roots` go with them, so a document the hand-off accepted
+    /// opens here too. The read is blocking (a file off disk), so a
+    /// caller offloads it rather than running it in a handler.
     pub fn read_document(
         &self,
         seat: &SessionSlot,
@@ -277,6 +278,7 @@ impl ViewSurface {
         };
         forge_workspace::env::documents::read(
             &cwd,
+            &self.roster().vault_roots_for(seat),
             path,
             reviewable,
             self.workspace.document_max_bytes(),

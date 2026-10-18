@@ -122,6 +122,7 @@ impl Workspace {
         };
         let read = crate::env::documents::read(
             std::path::Path::new(&cwd),
+            &self.vault_roots_for_session(seat),
             path,
             reviewable,
             self.document_max_bytes(),
@@ -159,6 +160,77 @@ impl Drop for AbandonOnDrop<'_> {
             self.id,
             self.seat,
             DocumentHandOffEnding::Abandoned,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use crate::SessionSlot;
+    use crate::workspace::Workspace;
+
+    /// A workspace holding one project rooted at `cwd` with `roots` as
+    /// its vault roots, and the project's lead slot. The project is
+    /// declared in the config rather than seeded into the test overlay:
+    /// a lead's cwd comes from `project_for_slot`, which reads
+    /// `config.projects`.
+    fn ws_with_project(cwd: &str, roots: Vec<PathBuf>) -> (Arc<Workspace>, SessionSlot) {
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.projects.push(crate::config::LoadedProject {
+            name: "myproj".to_owned(),
+            path: PathBuf::from(cwd),
+            display_path: cwd.to_owned(),
+            org: "TestOrg".to_owned(),
+            accounts: Vec::new(),
+            fallback_accounts: Vec::new(),
+            auto_start: false,
+            model: None,
+            env: std::collections::HashMap::new(),
+            max_workers: None,
+            permission_mode: forge_primitives::permission::PermissionMode::Auto,
+            vault_roots: roots,
+        });
+        let (ws, _rx) = Workspace::testing_stub_with_config(
+            PathBuf::from("/tmp/forge-vault-roots-test"),
+            config,
+        )
+        .expect("the stub builds");
+        (ws, SessionSlot::lead("TestOrg", "myproj"))
+    }
+
+    /// The hand-off consults the seat's PROJECT's vault_roots: a file
+    /// under one gets past the containment check - with no client
+    /// attached the park is what refuses it - while the same call on a
+    /// project declaring none is the outside-the-tree sentence, the
+    /// control that the roots are what carried it.
+    #[tokio::test]
+    async fn the_hand_off_reads_through_the_seats_projects_vault_roots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().canonicalize().expect("canonical");
+        let tree = base.join("tree");
+        std::fs::create_dir_all(&tree).expect("the session tree");
+        std::fs::create_dir_all(base.join("vault")).expect("the vault");
+        std::fs::write(base.join("vault/plan.md"), b"# plan\n").expect("the vault document");
+        let plan = base.join("vault/plan.md").to_string_lossy().into_owned();
+
+        let (ws, seat) = ws_with_project(&tree.to_string_lossy(), vec![base.join("vault")]);
+        let refusal = ws
+            .hand_off_document(&seat, &plan, false)
+            .await
+            .expect_err("no client is attached, so the park is what refuses");
+        assert_eq!(refusal, super::NO_VIEWER_CLIENT, "the read got past containment");
+
+        let (no_roots, no_roots_seat) = ws_with_project(&tree.to_string_lossy(), Vec::new());
+        let refusal = no_roots
+            .hand_off_document(&no_roots_seat, &plan, false)
+            .await
+            .expect_err("outside the tree and every root");
+        assert!(
+            refusal.contains("resolves outside the session's tree"),
+            "the control is the refusal sentence: {refusal}"
         );
     }
 }

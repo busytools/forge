@@ -70,6 +70,7 @@ impl ViewSurface {
         threads: Vec<ReviewThread>,
     ) -> Vec<TreeThreadView> {
         let cwd = self.roster().cwd_for(seat);
+        let roots = self.roster().vault_roots_for(seat);
         let ceiling = self.workspace.document_max_bytes();
         let mut files: std::collections::HashMap<String, Option<Vec<String>>> =
             std::collections::HashMap::new();
@@ -80,6 +81,7 @@ impl ViewSurface {
                     let lines = files.entry(thread.anchor.path.clone()).or_insert_with(|| {
                         forge_workspace::env::documents::read(
                             cwd,
+                            &roots,
                             &thread.anchor.path,
                             false,
                             ceiling,

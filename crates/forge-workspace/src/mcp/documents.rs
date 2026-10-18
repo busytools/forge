@@ -11,8 +11,9 @@
 //!
 //! **Any-caller and not toggleable, like the browser**: every session may
 //! hand a document out of its own tree, and the read resolves against that
-//! tree - so there is nothing a project could withhold. Every state the read
-//! can refuse is the call's failure, with the read's own sentence in it.
+//! tree or its project's `vault_roots` - so there is nothing a project
+//! could withhold. Every state the read can refuse is the call's failure,
+//! with the read's own sentence in it.
 
 use std::sync::Arc;
 

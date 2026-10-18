@@ -211,6 +211,7 @@ quietly applying nothing.
 | `max_workers`     | integer | `2`     | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project.                                                                                                                                     |
 | `permission_mode` | string  | `auto`  | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate.                                                                                                                                                                                                                                                                                                                                                 |
 | `model`           | string  |         | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Required: the walk that picks a session's account matches on the model an account serves, so a project without one is refused at spawn. |
+| `vault_roots`     | array   | `[]`    | Extra roots the document read accepts beyond the session's own tree, so a project's documents can live outside its repo (a vault, a shared spec directory). Each entry is an absolute path or starts with `~`; a relative one fails the load. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
@@ -224,6 +225,33 @@ fails the load listing them. The mode the session actually runs is what
 the CLI reports back on connect, and the `/mode` picker offers
 `bypassPermissions` only on sessions launched into it; the CLI refuses a
 mid-session switch to bypass.
+
+### `vault_roots`
+
+```toml
+[[orgs.projects]]
+name = "companies"
+path = "~/Projects/companies"
+vault_roots = ["~/Madness"]
+```
+
+Extra roots the document read accepts beyond the session's own tree, so
+a project's documents can live outside its repo. The `documents__hand_off`
+tool, the viewer's document read and the tree review placement all
+consult the seat's project's roots; the file-index walk does not, because
+it lists the session's tree.
+
+The check canonicalizes both sides and resolves symlinks before
+comparing, so a symlink out of every root refuses like any other escape,
+and a path inside a root reads exactly as an in-tree path does. A path
+outside the tree and outside every root keeps the refusal it always had:
+`the path resolves outside the session's tree: <path>`.
+
+Each entry is absolute or starts with `~`. A relative entry fails the
+load naming the key and the entry: `project 'companies' in forge.toml at
+... sets vault_roots entry 'Madness', which is not absolute; every entry
+must be an absolute path or start with ~`, because a relative root would
+resolve against whatever directory the read happened in.
 
 ### `env_file`
 
