@@ -6,7 +6,7 @@
 
   import Icon from '../components/Icon.svelte';
   import { noteConversationOpened, noteDrawn } from '../perf';
-  import { subjectKey } from '../protocol';
+  import { MORE_TURNS, subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
   import { mintPromptId } from '../wire/ids';
@@ -67,6 +67,16 @@
 
   /** How near the top the reader has to be before the turns above are asked for. */
   const REACH = 400;
+  /**
+   * How much of the room a page above aims to fill.
+   *
+   * **A page is sized by height, not by a turn count** (#2398): a landing's
+   * cost is the page's real height - the compensation rewrites the scroll by
+   * it and the reader re-traverses it - and twenty turns are one screenful
+   * in one session and thirty in another. A screen and a half is enough to
+   * keep the next ask one pull away without making the jump large.
+   */
+  const PAGE_VIEWPORTS = 1.5;
   /** How long the arrival mark stays on the newest item's wrapper. */
   const ARRIVE_MS = 300;
   /** How far above the last pin counts as the reader when no input preceded it. */
@@ -1072,7 +1082,7 @@
         // top is what made an older dispatch's click do nothing at all. The
         // empty-page beat is a third false - a chase that stops on it stands
         // the click down until the beat passes, rather than spinning.
-        loadOlder();
+        loadOlder(MORE_TURNS);
       }
       return;
     }
@@ -1082,7 +1092,7 @@
       list?.scrollToIndex(at, { align: 'start' });
       return;
     }
-    if (!loadOlder()) asking = false;
+    if (!loadOlder(MORE_TURNS)) asking = false;
   });
 
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
@@ -1196,7 +1206,7 @@
         // that puts the foot inside the near-top reach is an event the ask rode
         // in the base app, and a history shorter than the room would otherwise
         // never ask for what is above it.
-        if (offset < REACH) loadOlder();
+        if (offset < REACH) loadOlder(pageTurns());
         return;
       }
     }
@@ -1282,11 +1292,35 @@
     // painted frame later - so a capture that read the record would depend on
     // which side of that timing it caught.
     if (!foot) captureAnchor();
-    if (offset < REACH) loadOlder();
+    if (offset < REACH) loadOlder(pageTurns());
+  }
+
+  /**
+   * How many turns the reader's own pull asks for: a screen and a half of
+   * this column's own median turn.
+   *
+   * **Measured, not assumed**: the median is what the column has watched its
+   * rows measure, so the same rule gives three turns on a seat of long
+   * transcript reads and eleven on a seat of short ones - and the landing
+   * jumps by about a screenful either way. The ceiling and the floor are
+   * both the ask's (`Chat#ask`), which every caller crosses: this returns the
+   * measured size and leaves the wire's limits in one place.
+   */
+  function pageTurns(): number {
+    const median = rowSizes.median();
+    const room = viewport?.clientHeight ?? 0;
+    if (median === undefined || room <= 0) return MORE_TURNS;
+    return Math.round((room * PAGE_VIEWPORTS) / median);
   }
 
   /**
    * Ask for the turns above, holding the reader's place while they arrive.
+   *
+   * **The count is the caller's**: the reader's own pull is sized by what the
+   * column has measured (`pageTurns`), while the two walks - the dispatch
+   * chase and the compaction jump - keep the protocol's full page, because
+   * their pages land on the way to a place the reader asked to go and a small
+   * page would turn a far jump into dozens of round trips.
    *
    * The compensation is armed as the ask goes out rather than when the answer
    * lands, because the list applies it AS the rows change: a page that waited
@@ -1299,8 +1333,8 @@
    * appended below the reader then goes through the prepend path, which moves
    * them AND leaves the list's measured sizes attributed to the wrong rows.
    */
-  function loadOlder(): boolean {
-    if (working?.older() !== true) return false;
+  function loadOlder(turns: number): boolean {
+    if (working?.older(turns) !== true) return false;
     outstanding += 1;
     return true;
   }
@@ -1381,8 +1415,17 @@
     style="display:flex;flex-direction:column"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
-    itemProps={({ item }: { item: HeldTurn }) =>
-      item.key === arriving ? { class: 'arriving' } : undefined}
+    itemProps={({ item }: { item: HeldTurn }) => ({
+      ...(item.key === arriving ? { class: 'arriving' } : {}),
+      // **A row the list has not measured is drawn, not hidden.** virtua
+      // paints the slot and sets `visibility: hidden` until a row reports its
+      // height, which is the black a fast scroll meets (#2398). The style
+      // rides after virtua's own, so the row is drawn at its natural height
+      // on the offset the list's estimate placed it at, and the measurement
+      // corrects the offsets. The foot's pin and the parked anchor both
+      // absorb that correction.
+      style: { visibility: 'visible' },
+    })}
     {shift}
     onscroll={scrolled}
     {@attach scrollViewport}
@@ -1414,6 +1457,13 @@
       </div>
     {/snippet}
   </VList>
+  <!-- An older page in flight, said at the column's top edge: the wheel is
+       clamped at the top for as long as the ask takes, and with nothing drawn
+       the column reads as a dead scroll rather than as one waiting on a
+       page (#2398). It stands over the rows and takes no pointer. -->
+  {#if outstanding > 0}
+    <div class="older-loading" role="status">Loading older messages…</div>
+  {/if}
   <!-- The way back to the foot, shown ONLY while the reader is away from it:
        following means the newest row is on screen, so its presence is the
        state read at a glance and its click is the whole way back - at the

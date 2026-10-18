@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
 
   import { boxes, element, layout, list, pins, records, register, reported } from './records';
 
@@ -47,6 +48,34 @@
   /** What a row is keyed by: the list's own keyer, or its position without one. */
   function keyOf(row: unknown, at: number): string {
     return getKey === undefined ? `${at}` : getKey(row);
+  }
+
+  /**
+   * The rows that have REPORTED their height, which is what the real list
+   * keys its hidden base on: an item is `visibility: hidden` until its
+   * `ResizeObserver` delivers a size, and visible from then on. A test
+   * measures with `resized()`, so a row added afterwards is the genuinely
+   * unmeasured one.
+   */
+  const measured = new SvelteSet<string>();
+
+  /**
+   * An item's style as virtua 0.52.9's `ListItem` lands it: its own record
+   * first - an unmeasured row is `visibility: hidden` - and the item's style
+   * merged after it, then the pair stringified. **The order is the point**:
+   * a column overrides a base property only by riding after it, so a stub
+   * that dropped the base would pass a column that overrides nothing.
+   */
+  function cssOf(base: Record<string, string>, style: unknown): string {
+    const merged: Record<string, string> = { ...base };
+    if (style !== null && typeof style === 'object') {
+      for (const [name, value] of Object.entries(style)) {
+        if (value !== null && value !== undefined) merged[name] = String(value);
+      }
+    }
+    return Object.entries(merged)
+      .map(([name, value]) => `${name}:${value}`)
+      .join(';');
   }
 
   // Where virtua reads it: before the DOM updates, on the change itself.
@@ -142,7 +171,7 @@
    * Live getters over the test's model, like the rows' rects: a test sets the
    * numbers after the mount and the next read sees them.
    */
-  function itemBox(at: number): (node: HTMLElement) => void {
+  function itemBox(at: number, key: string): (node: HTMLElement) => () => void {
     return (node: HTMLElement) => {
       Object.defineProperty(node, 'offsetTop', {
         configurable: true,
@@ -152,6 +181,11 @@
         configurable: true,
         get: () => boxes.items[at]?.height ?? 0,
       });
+      // The item's own report: any measured entry the test delivers marks it
+      // measured, as the real list's observer does.
+      const observer = new ResizeObserver(() => measured.add(key));
+      observer.observe(node);
+      return () => observer.disconnect();
     };
   }
 
@@ -203,7 +237,19 @@
 
 <div class="conv" {@attach container} {...rest}>
   {#each data as row, at (keyOf(row, at))}
-    <div class="turn" {@attach itemBox(at)} {...itemProps?.({ item: row, index: at }) ?? {}}>
+    {@const itemKey = keyOf(row, at)}
+    {@const attrs = itemProps?.({ item: row, index: at }) ?? {}}
+    <!-- The base class is the stub's own and every test's selector, so an
+         item's class joins it rather than replacing it. The real list's item
+         carries no base class, which is why this only matters here. The base
+         STYLE is the real list's own too: an item it has not measured is
+         hidden, and the item's style rides after that either way. -->
+    <div
+      {@attach itemBox(at, itemKey)}
+      {...attrs}
+      class="turn {attrs.class ?? ''}"
+      style={cssOf(measured.has(itemKey) ? {} : { visibility: 'hidden' }, attrs.style)}
+    >
       {@render children?.(row)}
     </div>
   {/each}

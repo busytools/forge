@@ -30,7 +30,8 @@ import { get, writable } from 'svelte/store';
 
 import { cronNames } from '../chat/cron-names.svelte';
 import { git } from '../chat/git.svelte';
-import { installResizeObserver } from '../chat/testing/viewport';
+import { list, setMeasured } from '../chat/testing/records';
+import { installResizeObserver, resized } from '../chat/testing/viewport';
 import { homeWire } from '../dev/fixture.data';
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
@@ -84,6 +85,7 @@ async function stubServer(
   session: unknown,
   conversations: Record<string, unknown[]> = {},
   home: typeof homeWire = homeWire,
+  options: { holdOlder?: boolean } = {},
 ) {
   const server = new WebSocketServer({ port: 0 });
   await new Promise((resolve) => server.once('listening', resolve));
@@ -91,6 +93,7 @@ async function stubServer(
 
   const received: Subscribe[] = [];
   const gone: Subscribe[] = [];
+  const held: { socket: import('ws').WebSocket; before: string }[] = [];
   const sockets = new Set<import('ws').WebSocket>();
   server.on('connection', (socket) => {
     sockets.add(socket);
@@ -113,6 +116,12 @@ async function stubServer(
       if (message.kind === 'more') {
         const asked = (message as { conversation?: SessionSlot }).conversation ?? LEAD;
         const key = subjectKey({ session: asked });
+        // An older ask can be held open, so a test can read the page in its
+        // flight; the newest page is always answered, or nothing would draw.
+        if (options.holdOlder && message.before !== null && message.before !== undefined) {
+          held.push({ socket, before: message.before });
+          return;
+        }
         const turns =
           conversations[key] ??
           (session as { conversation: { turns: unknown[] } }).conversation.turns;
@@ -121,7 +130,9 @@ async function stubServer(
             kind: 'page',
             conversation: asked,
             turns,
-            cursor: null,
+            // A held stack needs a handle for the reader's ask to carry, and
+            // a null one ends the walk before an older ask can be made.
+            cursor: options.holdOlder && message.before === null ? 'c1' : null,
           } satisfies ServerMessage),
         );
         return;
@@ -150,6 +161,21 @@ async function stubServer(
     drop() {
       for (const socket of sockets) socket.terminate();
     },
+    /** How many older asks this server is holding open. */
+    heldCount: () => held.length,
+    /** Answer every older ask this server held, with the history's end. */
+    answerHeld() {
+      for (const entry of held.splice(0)) {
+        entry.socket.send(
+          JSON.stringify({
+            kind: 'page',
+            conversation: LEAD,
+            turns: [],
+            cursor: null,
+          } satisfies ServerMessage),
+        );
+      }
+    },
     /** Push one frame the way the server would: an update on the seat. */
     push(message: ServerMessage) {
       for (const socket of sockets) socket.send(JSON.stringify(message));
@@ -166,6 +192,8 @@ interface Subscribe {
   kind: string;
   what?: unknown;
   answering?: boolean;
+  /** A `more`'s handle: null for the newest page, a cursor for an older one. */
+  before?: string | null;
 }
 
 function text(data: RawData): string {
@@ -401,6 +429,80 @@ describe('the session page over a socket', () => {
     expect(git.strip()?.label, 'the seat record never reached the page').toContain('worktree-pr');
     const facts = document.querySelector('.sess .facts');
     expect(facts?.textContent, 'the header drew no facts from the record').toContain('max');
+  });
+
+  /**
+   * **The column's edge states hang off the conversation's own box**, not the
+   * page's column, where they would land behind the seat's header. Both are
+   * drawn only in a state - the loading line while an older page is in
+   * flight, the way back while the reader is off the foot - so this drives
+   * the one gesture that shows both at once: a reader reaching the top of a
+   * history whose answer the server holds.
+   */
+  it('draws the loading line and the way back inside the conversation box', async () => {
+    // Two turns, because a first page holding only one is a fresh open's
+    // fill: it asks for the history above on its own, and that ask is not the
+    // reader's. The gesture under test needs the reader to be the asker.
+    const first = (sessionFixture as { conversation: { turns: unknown[] } }).conversation.turns[0];
+    const second = {
+      key: 'second',
+      messages: [
+        { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'again' }] } },
+      ],
+    };
+    server = await stubServer(
+      sessionFixture,
+      { [subjectKey({ session: LEAD })]: [first, second] },
+      homeWire,
+      { holdOlder: true },
+    );
+    connection = connect(server.url);
+    app = mount(Router, {
+      target: document.body,
+      props: { ...routerProps(), route: { name: 'session', slot: LEAD } },
+    });
+    await settle();
+
+    const box = document.querySelector('.conv-body');
+    expect(box, 'the page drew no conversation box').not.toBeNull();
+    expect(box?.querySelector('.conv'), 'the conversation is not inside the box').not.toBeNull();
+
+    // jsdom reports no layout, so the list is told the tall history and the
+    // room it scrolls in: without them a reader at 0 is at the foot of a
+    // zero-height list, which re-arms the follow instead of taking it off.
+    // The size change then re-pins the foot, which is the landing the reader
+    // moves away from.
+    setMeasured(500, 320);
+    resized();
+    flushSync();
+
+    // The open's own refreshes can still be in flight when the page first
+    // draws, and an ask already out swallows this one, so the reader pulls
+    // until the ask gets out.
+    await until(() => {
+      if (box?.querySelector('.older-loading') !== null) return true;
+      list()?.scrolledTo(0, 500, 320);
+      flushSync();
+      return false;
+    }, "the reader's older ask to go out");
+    expect(
+      server.heldCount(),
+      "no older ask went: the reader's pull never reached the server",
+    ).toBe(1);
+    expect(
+      box?.querySelector('.older-loading'),
+      'the ask is out and the loading line did not draw inside the conversation box',
+    ).not.toBeNull();
+    expect(
+      box?.querySelector('.follow'),
+      'the way back did not draw inside the conversation box',
+    ).not.toBeNull();
+
+    server.answerHeld();
+    await until(
+      () => document.querySelector('.older-loading') === null,
+      'the held page to settle the loading line',
+    );
   });
 
   /**

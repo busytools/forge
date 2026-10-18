@@ -1174,12 +1174,19 @@ export class Chat {
   /**
    * Ask for the turns above the oldest held one, answering whether it asked.
    *
+   * **The count is the caller's**, because the two callers want different
+   * pages: the reader's own pull is sized by what the column has measured (a
+   * landing's cost is its real height, #2398), while a walk toward a distant
+   * row wants the protocol's full page - its pages land on the way to a place
+   * the reader asked to go, and a page of three turns would turn a far jump
+   * into dozens of round trips.
+   *
    * The answer is what the list turns its compensation on with, and it has to
    * be on BEFORE the page lands: the compensation is applied as the rows
    * change, so a caller that switched it on when the answer arrived would be
    * switching it on after the change it exists for.
    */
-  older(): boolean {
+  older(turns: number = MORE_TURNS): boolean {
     const { cursor, loaded } = this.read();
     // Nothing above the page already drawn is the server's own `null`, and
     // asking again on it would walk the same page forever.
@@ -1192,7 +1199,7 @@ export class Chat {
       const beat = Math.min(RETRY_MS * 2 ** (this.emptyBeats - 1), EMPTY_RETRY_MAX_MS);
       if (Date.now() - this.emptyAt < beat) return false;
     }
-    return this.ask(cursor);
+    return this.ask(cursor, turns);
   }
 
   /** Ask for the newest page again, which is what replaces a settled turn. */
@@ -1244,14 +1251,15 @@ export class Chat {
     return this.held;
   }
 
-  private ask(before: string | null): boolean {
+  private ask(before: string | null, turns: number = MORE_TURNS): boolean {
     if (this.inFlight !== null) return false;
     this.inFlight = before === null ? 'newest' : 'older';
     this.askedBefore = before;
     // A closed socket answers nothing, so the flag must not stay set waiting
     // on a page that was never asked for - and the caller has to know, because
     // what it does with the answer is hold a reader's place while it arrives.
-    if (this.connection.more(this.slot, before, MORE_TURNS)) return true;
+    const page = Math.max(1, Math.min(MORE_TURNS, Math.round(turns)));
+    if (this.connection.more(this.slot, before, page)) return true;
     this.inFlight = null;
     this.askedBefore = null;
     return false;

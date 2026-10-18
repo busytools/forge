@@ -1023,7 +1023,7 @@ describe('the chat column as it draws', () => {
     });
     await painted();
 
-    const held = document.querySelector<HTMLElement>('.turn');
+    const held = document.querySelector<HTMLElement>('[data-t]');
     expect(held, 'the row is kept mounted while the hold waits').not.toBeNull();
     expect(held?.textContent, 'and draws nothing').not.toContain('let me in');
     expect(held?.style.minHeight, 'an estimate reserved as empty space was the plane').toBe('');
@@ -1065,9 +1065,47 @@ describe('the chat column as it draws', () => {
     });
     await painted();
 
-    const held = document.querySelector<HTMLElement>('.turn');
+    const held = document.querySelector<HTMLElement>('[data-t]');
     expect(held?.textContent, 'held and drawing nothing').not.toContain('measure me');
     expect(held?.style.minHeight, 'the row holds the height it measured').toBe('512px');
+  });
+
+  it('draws the row a drained queue opens, rather than leaving its slot blank', async () => {
+    // **The drain is the foot band's shape** (#2394): a prompt queued with no
+    // chat copy yet is claimed by the pile, and when it starts the drain
+    // opens a turn from the announcement's words alone. That turn's row is
+    // genuinely new - the list has never measured it - so it is the row the
+    // real list hides until it reports a size. A hidden row is the blank band
+    // between the last drawn row and the queued strip; the visibility
+    // override is what draws it.
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+
+    // Queued with no prior `chat_appended`: nothing drawn yet.
+    server.send({
+      kind: 'update',
+      update: {
+        prompt_queued: { key: LEAD, uuid: 'u-fresh', source: 'you', text: 'draw me fresh' },
+      },
+    });
+    await painted();
+    expect(document.querySelector('[data-t]'), 'nothing drawn while it waits').toBeNull();
+
+    // The drain opens the turn.
+    server.send({
+      kind: 'update',
+      update: { prompt_lifecycle: { key: LEAD, uuid: 'u-fresh', state: 'started' } },
+    });
+    await painted();
+
+    const opened = document.querySelector<HTMLElement>('[data-t]');
+    expect(opened?.textContent, 'the drain drew its words').toContain('draw me fresh');
+    // The item wrapper carries the list's own style first (hidden, for a row
+    // it has not measured) and the column's after it; the merge is what a
+    // browser paints.
+    const item = document.querySelector<HTMLElement>('.conv > .turn');
+    expect(item?.style.visibility, 'and the new row is painted, not hidden').toBe('visible');
   });
 
   it('lets the pin go when the column moves to another seat', async () => {

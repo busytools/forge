@@ -7,6 +7,11 @@ import { clear, list, register } from './records';
 import List from './List.svelte';
 import Siblings from './Siblings.svelte';
 import Swapped from './Swapped.svelte';
+import { installResizeObserver } from './viewport';
+
+// The stub's items report their sizes through an observer, which jsdom has
+// none of.
+installResizeObserver();
 
 /** Let the list mount and every deferred pass land, the way `follow.test.ts` does. */
 async function settle(): Promise<void> {
@@ -88,5 +93,39 @@ describe('the handle a list registers at the seam', () => {
       list(),
       'a list unmounted before its effect ran leaves no handle at the seam',
     ).toBeNull();
+  });
+});
+
+/**
+ * **The base an item is given is the negative the drawn-row tests rest on.**
+ * virtua's ListItem lands its own style first - an unmeasured row is
+ * `visibility: hidden` - and the item's style after it; the stub mirrors
+ * that, so a column that overrides nothing leaves a row a browser hides.
+ */
+describe('the style an item is given', () => {
+  it('hides a row until it is measured, and lets an item override it', () => {
+    const data = [{ key: 'a' }];
+    app = mount(List, {
+      target: document.body,
+      props: { data, getKey: (row: unknown) => (row as { key: string }).key },
+    });
+    flushSync();
+    const plain = document.querySelector<HTMLElement>('.conv > .turn');
+    expect(plain?.style.visibility, 'no item props, the base hides the row').toBe('hidden');
+
+    void unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    app = mount(List, {
+      target: document.body,
+      props: {
+        data,
+        getKey: (row: unknown) => (row as { key: string }).key,
+        itemProps: () => ({ style: { visibility: 'visible' } }),
+      },
+    });
+    flushSync();
+    const overridden = document.querySelector<HTMLElement>('.conv > .turn');
+    expect(overridden?.style.visibility, 'an item style rides after the base').toBe('visible');
   });
 });
