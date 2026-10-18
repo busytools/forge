@@ -99,7 +99,7 @@ pub use dictate::{
 pub use forge_gateway::{LoadingState, Unusable, UsageFetchStatus};
 // The normalizer's prompt axes reach a view only through this
 // re-export: no view depends on a forge-dictate crate of its own.
-pub use domain_session::{ContextUsage, DomainSession, McpServers};
+pub use domain_session::{ContextUsage, DomainSession, McpServers, TurnLiveness, liveness_of};
 pub use error::WorkspaceError;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
 pub use protocol::{

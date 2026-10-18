@@ -8,8 +8,8 @@
 //!
 //! **This answers no more than the fold would.** Every frame [`TurnScan`]
 //! names is one the fold opens a turn at; it names none the fold would not.
-//! Two shapes it cannot read the way the fold does are answered the safe way -
-//! no turn - so what they cost is a head the window cannot start on, never a
+//! Three shapes it cannot read the way the fold does are answered the safe way
+//! (no turn), so what they cost is a head the window cannot start on, never a
 //! cut inside a turn.
 //!
 //! A queued prompt opens a turn in the fold, and the scan answers none for it.
@@ -24,6 +24,13 @@
 //! notice the parser rejects, are heads here that this leaves alone. The shapes
 //! read here are exempt from that, so an image note the fold opens a turn at is
 //! named.
+//!
+//! And a forge-minted row arriving at an open call is a delivery the CLI
+//! pressed into the running turn - the fold keeps it there and opens no turn
+//! (#2379). That answer needs the whole list (the fold declines only where the
+//! call's result really comes); a stream cannot read it, so this side answers
+//! no turn for the row, and for a call whose result never arrives it keeps
+//! answering that way - heads the window cannot start on.
 
 use forge_primitives::messages::names_a_dispatch;
 use forge_primitives::{ContentBlock, Message};
@@ -42,6 +49,16 @@ pub struct TurnScan {
     /// an image it read arrives right behind the call that read it, so it
     /// joins that turn rather than opening one.
     calls: bool,
+    /// The open turn's calls still waiting on their results, oldest first. A
+    /// forge-minted row arriving at one is a delivery pressed into the running
+    /// turn: the fold keeps it there, so no turn opens here either.
+    ///
+    /// The fold answers that row too, and it can answer it more sharply - it
+    /// reads the whole list and declines only where the call's result really
+    /// comes. This side reads a stream, so a call whose result never arrives
+    /// (the restart shape, #1836) is declined here and opened there: a head
+    /// the window cannot start on, never a cut inside a turn.
+    open: Vec<String>,
 }
 
 impl TurnScan {
@@ -63,7 +80,7 @@ impl TurnScan {
                 self.calls_in(&envelope.content);
                 false
             }
-            Message::User { message: envelope, .. } => {
+            Message::User { message: envelope, uuid, .. } => {
                 let mut opens = false;
                 for block in &envelope.content {
                     match block {
@@ -99,9 +116,21 @@ impl TurnScan {
                             if text.starts_with('[') && !is_image_note(text) {
                                 continue;
                             }
+                            // **A forge-minted row at an open call is a
+                            // delivery pressed into the running turn**: the
+                            // fold keeps it there (#2379), and a head named
+                            // here would start the window inside that turn.
+                            // The fold's own bound - the result really coming
+                            // - needs the whole list; a stream cannot read it,
+                            // so this side answers no turn and the window
+                            // loses only a head.
+                            if forge_minted(uuid.as_deref()) && !self.open.is_empty() {
+                                continue;
+                            }
                             self.skills.clear();
                             self.boundary = false;
                             self.calls = false;
+                            self.open.clear();
                             opens = true;
                         }
                         other => self.calls_in(std::slice::from_ref(other)),
@@ -114,13 +143,21 @@ impl TurnScan {
     }
 
     /// The blocks that move the state the next turn opens under rather than
-    /// opening one: a call, and a `Skill` call's own name for what it loads.
+    /// opening one: a call, the result that answers one, and a `Skill` call's
+    /// own name for what it loads.
     fn calls_in(&mut self, content: &[ContentBlock]) {
         for block in content {
-            if let ContentBlock::ToolUse { name, input, .. }
-            | ContentBlock::ServerToolUse { name, input, .. } = block
+            if let ContentBlock::ToolResult { tool_use_id, .. }
+            | ContentBlock::ServerToolResult { tool_use_id, .. } = block
+            {
+                self.open.retain(|open| open != tool_use_id);
+                continue;
+            }
+            if let ContentBlock::ToolUse { id, name, input, .. }
+            | ContentBlock::ServerToolUse { id, name, input, .. } = block
             {
                 self.calls = true;
+                self.open.push(id.clone());
                 if let Some(want) = input
                     .get("skill")
                     .and_then(serde_json::Value::as_str)
@@ -131,6 +168,18 @@ impl TurnScan {
             }
         }
     }
+}
+
+/// Whether a user row's id says forge minted it: a reader's own send
+/// (`forge_prompt_*`) or the machinery's dispatch (`forge_nudge_*`), the two
+/// namespaces `forge_sdk::request_id` mints.
+///
+/// **The id is the one fact about the sender the CLI carries into the
+/// transcript**, so it is what tells a row the CLI is pressing into a running
+/// turn from a row that opens one - an id minted elsewhere is not this
+/// workspace's row.
+pub fn forge_minted(uuid: Option<&str>) -> bool {
+    uuid.is_some_and(|id| id.starts_with("forge_prompt_") || id.starts_with("forge_nudge_"))
 }
 
 /// A frame a sub-agent produced. What it narrates and calls belongs to the

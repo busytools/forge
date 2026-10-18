@@ -9,13 +9,12 @@
 
 use std::collections::HashMap;
 
-use forge_primitives::runtime::RuntimeSessionState;
 use forge_primitives::{ContentBlock, Message, StopReason, ToolCallStatus};
 // The row predicates the fold opens a turn by, which the conversation window
 // reads too: they live in the window's crate so the two share one copy.
 use forge_workspace::conversation_turns::{
-    claims_skill_call, is_continuation, is_dispatched, is_image_note, is_interrupt_marker,
-    is_task_notice,
+    claims_skill_call, forge_minted, is_continuation, is_dispatched, is_image_note,
+    is_interrupt_marker, is_task_notice,
 };
 
 use crate::envelope::detect_inbound;
@@ -47,6 +46,28 @@ pub struct Rendered {
     pub endings: HashMap<String, TaskEnding>,
 }
 
+/// Whether any of `open` is answered later than `from`.
+///
+/// The settled half of the delivery rule's bound: a transcript keeps a call
+/// whose result never arrived - the restart shape (#1836) - and a row after it
+/// belongs to the next turn. Asked on demand, at the rare row that needs it,
+/// so a fold over a settled conversation pays a scan only where it joins; the
+/// live walk never asks, because the caller's flag answers first.
+fn answered_later(messages: &[Message], from: usize, open: &[String]) -> bool {
+    messages[from + 1..].iter().any(|message| {
+        let Message::User { message: envelope, .. } = message else {
+            return false;
+        };
+        envelope.content.iter().any(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. }
+            | ContentBlock::ServerToolResult { tool_use_id, .. } => {
+                open.iter().any(|id| id == tool_use_id)
+            }
+            _ => false,
+        })
+    })
+}
+
 /// Open a turn, answering the span it opened: the one a page is cut on and the
 /// one a later report names.
 ///
@@ -73,17 +94,21 @@ fn name_open(turns: &mut [TurnSpan], open: Option<usize>, key: Option<String>) {
 /// One walk serves both: a second boundary rule over the messages is how the
 /// two would come to disagree about where a turn begins, and the page is cut
 /// on the answer.
-pub fn render(messages: &[Message]) -> Rendered {
+///
+/// `live` is the session's own turn state at this read, carried by the
+/// CALLER rather than read off a frame: the frame that would say it
+/// (`system/session_state_changed`) is emitted only behind an environment
+/// variable forge never sets and appears in no capture, so the transport that
+/// holds the seat's frames derives the delivered rule instead (a turn is open
+/// until its `Result`, or the error the CLI gives up with) and hands the
+/// answer in. The settled reads - a transcript on disk, a span page - pass
+/// `false` or the seat's own flag where that is at hand.
+pub fn render(messages: &[Message], live: bool) -> Rendered {
     let endings = task_endings(messages);
     let mut traced = TurnTrace::default();
     // The names this fold has already given out, so a second turn opening on
     // one clock takes its own rather than the first turn's.
     let mut keys: HashMap<String, usize> = HashMap::new();
-    // The last state the session reported. A conversation read from a
-    // transcript reports none, so a page opened fresh draws its last turn's
-    // row here; a live session's trailing turn is left to the view's own
-    // live row.
-    let mut running_turn = false;
     // Where each turn opens, taken as the fold opens it: one push per turn, in
     // order.
     let mut turns: Vec<TurnSpan> = Vec::new();
@@ -103,6 +128,23 @@ pub fn render(messages: &[Message]) -> Rendered {
     // that turn rather than opening one; the note claims the call by content
     // in the views, and this only keeps the two in one turn.
     let mut turn_calls = false;
+    // The open turn's calls still waiting on their results, oldest first. A
+    // running turn's row that would otherwise open one - the chase's board
+    // notice, a mid-turn prompt - is DELIVERED into this turn, and opening a
+    // turn for it cuts the calls above it off from the answers below: every
+    // reader of the fold then draws the call failed with no result (#2379).
+    //
+    // **The rule's bound is the turn's liveness, which the caller carries.**
+    // While the seat's turn is live, an open call is mid-flight whatever the
+    // list holds - on the live walk the result is not written yet, so a bound
+    // read off the list alone would stop protecting exactly the window #2379
+    // is about. The flag is the whole seat's, so an older crash-shaped turn
+    // sitting in the window keeps its early row too while a later turn runs -
+    // the same "whatever the list holds" policy, read on the window rather
+    // than the turn. A settled shape with no result is the crash one (#1836):
+    // there the open call is never coming back and the row after it opens its
+    // own turn, which is what `answered_later` decides.
+    let mut open_calls: Vec<String> = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
         if is_dispatched(message) {
@@ -121,21 +163,16 @@ pub fn render(messages: &[Message]) -> Rendered {
             let key = take_key(&mut keys, traced.opened.clone(), uuid.as_deref());
             name_open(&mut turns, open, key);
             traced = TurnTrace::default();
-            running_turn = false;
+            open_calls.clear();
             continue;
         }
-        // A state frame is the turn boundary the wire alone reports, and the
-        // only place a session says one is in flight. The turn before it is
-        // named here, since nothing else closes it, and the state says whether
-        // the turn after it is the one running.
-        if let Some(running) = session_running_state(message) {
-            close_traced(&mut traced, true, &mut keys, &mut turns, open);
-            running_turn = running;
-            continue;
-        }
-        let (assistant, content) = match message {
-            Message::Assistant { message: envelope, .. } => (true, envelope.content.as_slice()),
-            Message::User { message: envelope, .. } => (false, envelope.content.as_slice()),
+        let (assistant, row_uuid, content) = match message {
+            Message::Assistant { message: envelope, .. } => {
+                (true, None, envelope.content.as_slice())
+            }
+            Message::User { message: envelope, uuid, .. } => {
+                (false, uuid.as_deref(), envelope.content.as_slice())
+            }
             _ => continue,
         };
         for block in content {
@@ -184,6 +221,23 @@ pub fn render(messages: &[Message]) -> Rendered {
                         close_traced(&mut traced, true, &mut keys, &mut turns, open);
                         continue;
                     }
+                    // **A forge-minted row arriving while the open turn waits
+                    // on a call was delivered INTO it**: the CLI presses a
+                    // mid-turn write into the running turn, and the chase's
+                    // board notice while an `agents__despawn` is out is the
+                    // everyday one. A turn opened for it cuts the call off
+                    // from the result below, and every reader of the fold
+                    // draws the despawn failed with no result while it came
+                    // back cleanly (#2379). A row the CLI wrote itself is not
+                    // this - it opens a turn as it always did.
+                    if !assistant
+                        && forge_minted(row_uuid)
+                        && open.is_some()
+                        && !open_calls.is_empty()
+                        && (live || answered_later(messages, index, &open_calls))
+                    {
+                        continue;
+                    }
                     // The user's own row opens a turn, so the work above it is
                     // named first; the assistant's prose stays inside the turn
                     // already open.
@@ -193,9 +247,10 @@ pub fn render(messages: &[Message]) -> Rendered {
                         turn_skills.clear();
                         turn_boundary = false;
                         turn_calls = false;
+                        open_calls.clear();
                     }
                 }
-                ContentBlock::QueuedCommand { prompt, command_mode, .. } => {
+                ContentBlock::QueuedCommand { prompt, command_mode, source_uuid, .. } => {
                     // The harness's own background-completion notice rides the
                     // same block as a prompt, and the scan hoists it into a
                     // user envelope without reading the mode - so a turn opened
@@ -205,15 +260,30 @@ pub fn render(messages: &[Message]) -> Rendered {
                     if is_completion_notice(command_mode.as_deref(), prompt) {
                         continue;
                     }
+                    // The same rule as the plain row above: a forge-minted
+                    // queued write pressed into a running turn - a call still
+                    // waiting on its result - stays in that turn (#2379). The
+                    // marker rides the block's `source_uuid` when the CLI keeps
+                    // the attachment shape, and the enclosing row's id when
+                    // the scan hoisted it.
+                    if (forge_minted(source_uuid.as_deref()) || forge_minted(row_uuid))
+                        && open.is_some()
+                        && !open_calls.is_empty()
+                        && (live || answered_later(messages, index, &open_calls))
+                    {
+                        continue;
+                    }
                     close_traced(&mut traced, true, &mut keys, &mut turns, open);
                     open = Some(open_turn(&mut turns, index));
                     turn_skills.clear();
                     turn_boundary = false;
                     turn_calls = false;
+                    open_calls.clear();
                 }
-                ContentBlock::ToolUse { name, input, .. }
-                | ContentBlock::ServerToolUse { name, input, .. } => {
+                ContentBlock::ToolUse { id, name, input, .. }
+                | ContentBlock::ServerToolUse { id, name, input, .. } => {
                     turn_calls = true;
+                    open_calls.push(id.clone());
                     // A `Skill` call's own name for the skill it loads, held
                     // until that skill's body arrives: the body is what this
                     // claim decides the turn of.
@@ -224,6 +294,13 @@ pub fn render(messages: &[Message]) -> Rendered {
                     {
                         turn_skills.push(want.to_owned());
                     }
+                }
+                // A result answers a call of the open turn: the turn is no
+                // longer waiting on it, which is what tells a row arriving
+                // later it was pressed into a running turn - or not.
+                ContentBlock::ToolResult { tool_use_id, .. }
+                | ContentBlock::ServerToolResult { tool_use_id, .. } => {
+                    open_calls.retain(|open| open != tool_use_id);
                 }
                 // A result is not a row of its own: it is what the call
                 // it answers already carries.
@@ -238,30 +315,15 @@ pub fn render(messages: &[Message]) -> Rendered {
     // The trailing turn is the one a running session is still writing, and
     // the view draws that turn's row itself. Every other turn is closed by
     // the turn after it, or by the result that reported it.
-    if !running_turn {
-        close_traced(&mut traced, false, &mut keys, &mut turns, open);
-    }
+    close_traced(&mut traced, false, &mut keys, &mut turns, open);
     Rendered { turns, endings }
 }
 
-/// What a session-state frame says about a turn being in flight: `Some(true)`
-/// when the session reports it is running one, `Some(false)` for any other
-/// state it reports, and `None` for every frame that is not a state change.
-///
-/// The fold reads it to leave a running turn unnamed - the view draws that
-/// turn's live row itself - and the client parses the same frame for the same
-/// reason.
-pub fn session_running_state(message: &Message) -> Option<bool> {
-    let Message::System { subtype, data, .. } = message else {
-        return None;
-    };
-    if subtype != "session_state_changed" {
-        return None;
-    }
-    Some(
-        crate::translate::state_parsing::parse_runtime_session_state(data.get("state"))
-            == Some(RuntimeSessionState::Running),
-    )
+/// The fold over a settled conversation: every fixture but the live window's,
+/// which call [`render`] with the caller's own flag.
+#[cfg(test)]
+fn settled(messages: &[Message]) -> Rendered {
+    render(messages, false)
 }
 
 /// The facts a turn's own rows carry, gathered while the fold walks them.
@@ -333,10 +395,10 @@ impl TurnTrace {
 /// trace. A turn the wire already settled is named by its own result frame and
 /// this one nothing, so the two never name one turn twice.
 ///
-/// `known_over` is whether whatever closed the turn says so - the next prompt
-/// or a state frame. A turn closing at the end of a conversation has nothing
-/// saying it, and needs its own last frame to have stopped rather than handed
-/// back for a tool call.
+/// `known_over` is whether whatever closed the turn says so - the next prompt.
+/// A turn closing at the end of a conversation has nothing saying it, and
+/// needs its own last frame to have stopped rather than handed back for a
+/// tool call.
 fn close_traced(
     trace: &mut TurnTrace,
     known_over: bool,
@@ -554,7 +616,7 @@ mod tests {
         AssistantEnvelope, ContentBlock, Message, ToolCallStatus, UserEnvelope,
     };
 
-    use super::{Rendered, TaskEnding, render, task_ending};
+    use super::{Rendered, TaskEnding, render, settled, task_ending};
 
     /// An assistant message carrying `content`.
     fn assistant(content: Vec<ContentBlock>) -> Message {
@@ -636,7 +698,7 @@ mod tests {
             extras: serde_json::Map::new(),
         }]);
 
-        let rendered = render(&[quiet, loud, slack, failed]);
+        let rendered = settled(&[quiet, loud, slack, failed]);
 
         assert!(
             rendered.turns.is_empty(),
@@ -660,7 +722,7 @@ mod tests {
             extras: serde_json::Map::new(),
         }]);
 
-        let rendered = render(&[prompt, call, marker]);
+        let rendered = settled(&[prompt, call, marker]);
 
         assert_eq!(
             rendered.turns.len(),
@@ -674,7 +736,7 @@ mod tests {
             text: "[Request interrupted by user".to_owned(),
             extras: serde_json::Map::new(),
         }]);
-        let rendered = render(&[
+        let rendered = settled(&[
             user(vec![ContentBlock::Text {
                 text: "run the checks".to_owned(),
                 extras: serde_json::Map::new(),
@@ -730,10 +792,150 @@ mod tests {
     /// block drops the question the assistant went on to answer.
     #[test]
     fn a_queued_prompt_opens_a_turn_of_its_own() {
-        let rendered = render(&[queued_prompt("and keep the multiSelect case too")]);
+        let rendered = settled(&[queued_prompt("and keep the multiSelect case too")]);
 
         assert_eq!(rendered.turns.len(), 1, "the queued prompt opens one turn");
         assert_eq!(rendered.turns[0].opens_at, 0, "at the row the prompt arrived in");
+    }
+
+    /// The reader's own row, which opens the turn.
+    fn reader_row(text: &str) -> Message {
+        user(vec![ContentBlock::Text { text: text.to_owned(), extras: serde_json::Map::new() }])
+    }
+
+    /// The same row under an id forge minted for a send or a dispatch.
+    fn forge_row(uuid: &str, text: &str) -> Message {
+        let mut row = reader_row(text);
+        if let Message::User { uuid: id, .. } = &mut row {
+            *id = Some(uuid.to_owned());
+        }
+        row
+    }
+
+    /// The call a running turn is waiting on.
+    fn despawn_call() -> Message {
+        assistant(vec![ContentBlock::ToolUse {
+            id: "call_1".to_owned(),
+            name: "mcp__forge__agents__despawn".to_owned(),
+            input: serde_json::json!({ "label": "probe" }),
+            extras: serde_json::Map::new(),
+        }])
+    }
+
+    /// **A forge-minted row pressed into a running turn stays in that turn.**
+    ///
+    /// The CLI delivers a mid-turn write into the running turn, and the board
+    /// chase's notice while an `agents__despawn` is out is the everyday one:
+    /// the transcript shows it between the call and the result the call waits
+    /// on. A turn opened for it cuts the call off from its answer, and every
+    /// reader of the fold - a page, a re-attach, a transcript read - draws the
+    /// despawn failed with no result while it came back cleanly (#2379).
+    #[test]
+    fn a_mid_call_forge_row_stays_in_the_turn_it_was_pressed_into() {
+        let rendered = settled(&[
+            reader_row("despawn probe"),
+            despawn_call(),
+            forge_row(
+                "forge_nudge_38_d56ff2d2",
+                "task board: \"probe holds no row\" has no live owner",
+            ),
+            tool_result("call_1", false),
+        ]);
+
+        assert_eq!(
+            rendered.turns.len(),
+            1,
+            "the notice opens no turn of its own while the call is out",
+        );
+        assert_eq!(rendered.turns[0].opens_at, 0, "the turn still opens on the prompt row");
+    }
+
+    /// The same marker on the queued carrier, which rides `source_uuid`.
+    #[test]
+    fn a_mid_call_queued_write_stays_too() {
+        let mut notice = queued_prompt("task board: \"probe holds no row\" has no live owner");
+        if let Message::User { message, .. } = &mut notice
+            && let Some(ContentBlock::QueuedCommand { source_uuid, .. }) =
+                message.content.first_mut()
+        {
+            *source_uuid = Some("forge_nudge_38_d56ff2d2".to_owned());
+        }
+        let rendered = settled(&[
+            reader_row("despawn probe"),
+            despawn_call(),
+            notice,
+            tool_result("call_1", false),
+        ]);
+
+        assert_eq!(rendered.turns.len(), 1, "the queued write opens no turn either");
+    }
+
+    /// The same row at a settled turn opens one, as the reader's own rows do:
+    /// the call's result has landed, so nothing is being waited on.
+    #[test]
+    fn a_forge_row_at_a_settled_turn_opens_one() {
+        let rendered = settled(&[
+            reader_row("despawn probe"),
+            despawn_call(),
+            tool_result("call_1", false),
+            forge_row(
+                "forge_nudge_38_d56ff2d2",
+                "task board: \"probe holds no row\" has no live owner",
+            ),
+        ]);
+
+        assert_eq!(rendered.turns.len(), 2, "a settled turn's notice opens its own");
+        assert_eq!(rendered.turns[1].opens_at, 3, "on the row it arrived in");
+    }
+
+    /// **A call whose result has not streamed yet is still a live turn.**
+    ///
+    /// The live fold runs over the incrementally-grown window, and during
+    /// every in-flight call the result is not in the list yet - so a bound
+    /// read off the list alone stops protecting exactly the window #2379 is
+    /// about, and the notice opens its own turn until a later fold heals it.
+    /// The caller's flag is what tells that apart from the crash shape, and it
+    /// is the delivered signal: the init/result ladder the transport derives
+    /// from the seat's own frames.
+    #[test]
+    fn a_live_turns_open_call_is_protected_before_its_result_lands() {
+        let rendered = render(
+            &[
+                reader_row("despawn probe"),
+                despawn_call(),
+                forge_row(
+                    "forge_nudge_38_d56ff2d2",
+                    "task board: \"probe holds no row\" has no live owner",
+                ),
+            ],
+            true,
+        );
+
+        assert_eq!(
+            rendered.turns.len(),
+            1,
+            "the notice stays in the turn the caller reports live, with no result on the list yet",
+        );
+    }
+
+    /// **A call whose result never comes does not latch the delivery rule.**
+    ///
+    /// The restart shape (#1836): the transcript keeps a `tool_use` with no
+    /// `tool_result`, and no `Result` frame either - a transcript holds none -
+    /// so a guard keyed on "a call is out" alone would read that turn as
+    /// running for the rest of the conversation and swallow every forge row
+    /// into one crash turn: the auto-continue a restarted seat gets, every
+    /// nudge, every queued write.
+    #[test]
+    fn a_call_whose_result_never_comes_does_not_hold_the_next_turn_shut() {
+        let rendered = settled(&[
+            reader_row("run the checks"),
+            despawn_call(),
+            forge_row("forge_prompt_9_aaaaaaaa", "continue where you left off"),
+        ]);
+
+        assert_eq!(rendered.turns.len(), 2, "the later forge row opens its own turn");
+        assert_eq!(rendered.turns[1].opens_at, 2, "on its own row, after the crash turn");
     }
 
     /// The harness's background-completion notice is not a turn.
@@ -776,11 +978,11 @@ mod tests {
         };
 
         let rendered =
-            render(&[prompt(), call("unslop"), body("/Users/ved/.claude/skills/unslop")]);
+            settled(&[prompt(), call("unslop"), body("/Users/ved/.claude/skills/unslop")]);
         assert_eq!(rendered.turns.len(), 1, "the body opens no turn of its own");
 
         // The plugin spelling: the call says `a:b` where the path ends `b`.
-        let cached = render(&[
+        let cached = settled(&[
             prompt(),
             call("ui-ux-pro-max:ui-ux-pro-max"),
             body("/Users/ved/.claude/plugins/cache/x/ui-ux-pro-max/2.13.0"),
@@ -788,12 +990,12 @@ mod tests {
         assert_eq!(cached.turns.len(), 1, "a versioned plugin path still matches its call");
 
         // The control: a body no call claimed opens a turn, so nothing is lost.
-        let orphan = render(&[prompt(), body("/Users/ved/.claude/skills/other")]);
+        let orphan = settled(&[prompt(), body("/Users/ved/.claude/skills/other")]);
         assert_eq!(orphan.turns.len(), 2, "an unclaimed body opens a turn as it always did");
 
         // The carrier a tool-invoked skill uses: the skill's own markdown,
         // named only by its title heading.
-        let titled = render(&[
+        let titled = settled(&[
             prompt(),
             call("pr-review-loop"),
             user(vec![ContentBlock::Text {
@@ -809,11 +1011,11 @@ mod tests {
             text: "[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]".to_owned(),
             extras: serde_json::Map::new(),
         }]);
-        let pictured = render(&[prompt(), tool_call("read"), note.clone()]);
+        let pictured = settled(&[prompt(), tool_call("read"), note.clone()]);
         assert_eq!(pictured.turns.len(), 1, "the image line opens no turn of its own");
 
         // The control: with no call in the turn it opens one, so nothing is lost.
-        let loose = render(&[prompt(), note]);
+        let loose = settled(&[prompt(), note]);
         assert_eq!(loose.turns.len(), 2, "with no call to join it opens a turn");
     }
 
@@ -840,11 +1042,11 @@ mod tests {
             user(vec![ContentBlock::Text { text: "go".to_owned(), extras: serde_json::Map::new() }])
         };
 
-        let rendered = render(&[prompt(), boundary(), summary.clone()]);
+        let rendered = settled(&[prompt(), boundary(), summary.clone()]);
         assert_eq!(rendered.turns.len(), 1, "the prompt opens no turn of its own");
 
         // The control: no boundary in the turn, so it opens one as it did.
-        let orphan = render(&[prompt(), summary]);
+        let orphan = settled(&[prompt(), summary]);
         assert_eq!(orphan.turns.len(), 2, "a prompt with no boundary still opens a turn");
     }
 
@@ -866,7 +1068,7 @@ mod tests {
         }]);
 
         for (notice, signal) in [(by_mode, "the mode"), (by_tag, "the tag")] {
-            let rendered = render(&[notice]);
+            let rendered = settled(&[notice]);
             assert!(rendered.turns.is_empty(), "a completion notice opens no turn: {signal}");
         }
     }
@@ -947,9 +1149,17 @@ mod tests {
             // the window could cut inside the turn the marker stays in.
             text("[Request interrupted by user]"),
             text("\n[Request interrupted by user]"),
+            // **A forge-minted notice delivered mid-call** (#2379): the CLI
+            // presses it into the running turn, and the fold keeps it there -
+            // so the scan must name it too, or the window could start inside
+            // the turn whose call is still out.
+            call("Bash", serde_json::json!({ "command": "ls" }), "toolu_9"),
+            forge_row("forge_nudge_9_deadbeef", "task board: a row lost its owner"),
+            tool_result("toolu_9", false),
         ];
 
-        let opened: Vec<usize> = render(&messages).turns.iter().map(|span| span.opens_at).collect();
+        let opened: Vec<usize> =
+            settled(&messages).turns.iter().map(|span| span.opens_at).collect();
         let mut scan = forge_workspace::conversation_turns::TurnScan::default();
         let named: Vec<usize> = messages
             .iter()
@@ -983,6 +1193,15 @@ mod tests {
             !opened.contains(&27) && !opened.contains(&28),
             "and the fold keeps both inside the turn it ended: fold {opened:?}",
         );
+        // A forge-minted notice delivered at an open call (#2379) is the
+        // forbidden direction this fixture exists for: the fold keeps it in
+        // the running turn, so a scan naming it would cut the window inside
+        // that turn.
+        assert!(
+            !opened.contains(&30),
+            "the fold keeps the mid-call notice inside the turn whose call is out: fold {opened:?}",
+        );
+        assert!(!named.contains(&30), "and the scan names no head there either: scan {named:?}");
     }
 
     /// A persisted notice IS an ending, and it says the same three things the
@@ -1020,7 +1239,7 @@ mod tests {
         let seat = forge_primitives::SessionSlot::lead("TestOrg", "proj");
         let surface = fleet.surface();
         let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
-        render(&surface.conversation(&seat, &cwd).messages)
+        settled(&surface.conversation(&seat, &cwd).messages)
     }
 
     /// The ending the fold read for `call`.
@@ -1156,7 +1375,7 @@ mod tests {
     /// XML as the reader's own turn.
     #[test]
     fn a_raw_transcripts_notice_is_read() {
-        let rendered = render(&read_raw(crate::fixtures::SAME_TURN_USER_ROW));
+        let rendered = settled(&read_raw(crate::fixtures::SAME_TURN_USER_ROW));
 
         assert!(rendered.turns.is_empty(), "the row the CLI wrote opens no turn of its own");
         assert_eq!(
@@ -1186,7 +1405,7 @@ mod tests {
         for (word, expected) in
             [("reticulating", None), ("completed", Some(ToolCallStatus::Completed))]
         {
-            let rendered = render(&[
+            let rendered = settled(&[
                 launch.clone(),
                 failed.clone(),
                 notice("toolu_ending", word, "what the harness said"),
@@ -1215,11 +1434,11 @@ mod tests {
         };
 
         assert!(
-            render(&[dispatched(prompt())]).turns.is_empty(),
+            settled(&[dispatched(prompt())]).turns.is_empty(),
             "a sub-agent's prompt opens no turn in the parent's chat",
         );
         assert_eq!(
-            render(&[prompt()]).turns.len(),
+            settled(&[prompt()]).turns.len(),
             1,
             "and the same frame is a turn when the agent is the session's own",
         );
@@ -1230,7 +1449,7 @@ mod tests {
         if let Message::User { parent_tool_use_id, .. } = &mut blank {
             *parent_tool_use_id = Some(String::new());
         }
-        assert_eq!(render(&[blank]).turns.len(), 1, "an empty id is not a dispatch");
+        assert_eq!(settled(&[blank]).turns.len(), 1, "an empty id is not a dispatch");
 
         // A parent that names nothing the session dispatched: the guard
         // reads the field rather than looking the id up, and the wire has
@@ -1240,7 +1459,7 @@ mod tests {
             *parent_tool_use_id = Some("8f3c1d20-0a4b-4c6e-9d21-77e5a0b3c914".to_owned());
         }
         assert!(
-            render(&[stray]).turns.is_empty(),
+            settled(&[stray]).turns.is_empty(),
             "a parent that names no dispatch still suppresses the frame",
         );
     }
@@ -1263,9 +1482,9 @@ mod tests {
             extras: serde_json::Map::new(),
         }]);
 
-        assert!(render(&[arrived]).turns.is_empty(), "the envelope that arrived opens no turn");
+        assert!(settled(&[arrived]).turns.is_empty(), "the envelope that arrived opens no turn");
         assert!(
-            render(&[sent]).turns.is_empty(),
+            settled(&[sent]).turns.is_empty(),
             "and the call the session made opens none either",
         );
     }
@@ -1322,7 +1541,7 @@ mod turns {
         AssistantEnvelope, ContentBlock, Message, StopReason, Usage, UserEnvelope,
     };
 
-    use super::{Rendered, render};
+    use super::{Rendered, settled};
 
     /// An assistant frame the CLI wrote at `at`, having stopped for `stop`.
     fn assistant_at(text: &str, at: &str, stop: StopReason, usage: Option<Usage>) -> Message {
@@ -1367,18 +1586,6 @@ mod turns {
             synthetic: false,
             extras: serde_json::Map::new(),
         }
-    }
-
-    /// A session-state frame, as the wire sends it.
-    fn state_frame(state: &str) -> Message {
-        serde_json::from_value(serde_json::json!({
-            "type": "system",
-            "subtype": "session_state_changed",
-            "state": state,
-            "uuid": format!("state-{state}"),
-            "session_id": "session",
-        }))
-        .expect("a state frame")
     }
 
     fn use_at(id: &str, at: &str) -> Message {
@@ -1470,7 +1677,7 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&first)),
+            keys(&settled(&first)),
             [
                 Some("2026-04-22T04:15:27.000Z".to_owned()),
                 Some("2026-04-22T05:00:00.000Z".to_owned()),
@@ -1478,7 +1685,7 @@ mod turns {
             "each turn is named for its own opening instant",
         );
         assert_eq!(
-            keys(&render(&inserted)).last(),
+            keys(&settled(&inserted)).last(),
             Some(&Some("2026-04-22T05:00:00.000Z".to_owned())),
             "and an inserted turn leaves the turn after it named the same",
         );
@@ -1497,7 +1704,7 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [Some("2026-04-22T04:15:27.000Z".to_owned())],
             "the turn's own instant, not the id of the frame that reported it",
         );
@@ -1521,7 +1728,7 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [None],
             "no clock and no frame id, so no name rather than another turn's",
         );
@@ -1545,7 +1752,7 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [Some("result-1".to_owned())],
             "nothing placed a clock on the turn, so the frame's own id names it",
         );
@@ -1565,7 +1772,7 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [
                 Some("2026-04-22T04:15:27.000Z".to_owned()),
                 Some("2026-04-22T04:15:27.000Z#2".to_owned()),
@@ -1585,7 +1792,7 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [Some("2026-04-22T04:15:27.000Z".to_owned())],
             "with no result frame to name it, the turn's own opening instant does",
         );
@@ -1600,7 +1807,7 @@ mod turns {
             assistant_at("Shipped.", "2026-04-22T04:18:08.000Z", StopReason::EndTurn, None),
             result_frame(None),
         ];
-        let rendered = render(&messages);
+        let rendered = settled(&messages);
 
         assert_eq!(rendered.turns.len(), 1, "the result closes the turn rather than opening one");
         assert_eq!(
@@ -1621,7 +1828,7 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [None],
             "nothing ended this turn, so nothing named it"
         );
@@ -1640,7 +1847,7 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [Some("2026-04-22T04:15:27.000Z".to_owned()), None],
             "the closed turn is named from its own rows, and the row that closed it opens a turn \
              with nothing to name it",
@@ -1657,14 +1864,14 @@ mod turns {
             user_at("count it", "2026-04-22T04:18:08.000Z"),
             assistant_at("done", "2026-04-22T04:15:27.000Z", StopReason::EndTurn, None),
         ];
-        assert_eq!(keys(&render(&backwards)), [None], "a span that runs backwards is not one");
+        assert_eq!(keys(&settled(&backwards)), [None], "a span that runs backwards is not one");
 
         let unreadable = [
             user_at("count it", "2026-04-22T04:15:27.000Z"),
             assistant_at("done", "nope", StopReason::EndTurn, None),
         ];
         assert_eq!(
-            keys(&render(&unreadable)),
+            keys(&settled(&unreadable)),
             [None],
             "and neither is a clock that does not parse",
         );
@@ -1686,65 +1893,23 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [None],
             "a name invented here would be one the turn does not have",
         );
     }
 
-    /// A session-state frame is the boundary the wire alone reports: a turn
-    /// the transcript left open is named by it, and the state says whether
-    /// the turn after it is the one running.
-    #[test]
-    fn a_state_frame_closes_the_turn_before_it_and_holds_the_one_after() {
-        let read_then_running = [
-            user_at("count it", "2026-04-22T04:15:27.000Z"),
-            assistant_at("done", "2026-04-22T04:18:08.000Z", StopReason::EndTurn, None),
-            state_frame("running"),
-        ];
-        assert_eq!(
-            keys(&render(&read_then_running)),
-            [Some("2026-04-22T04:15:27.000Z".to_owned())],
-            "a turn read from a transcript keeps its name when the next one starts",
-        );
-
-        let running = [
-            state_frame("running"),
-            user_at("and then", "2026-04-22T04:20:00.000Z"),
-            assistant_at("more", "2026-04-22T04:21:00.000Z", StopReason::EndTurn, None),
-        ];
-        assert_eq!(
-            keys(&render(&running)),
-            [None],
-            "the turn the session is running is left to the view's live row, so nothing here \
-             names it",
-        );
-
-        let settled = [
-            state_frame("running"),
-            user_at("and then", "2026-04-22T04:20:00.000Z"),
-            assistant_at("more", "2026-04-22T04:21:00.000Z", StopReason::EndTurn, None),
-            state_frame("idle"),
-        ];
-        assert_eq!(
-            keys(&render(&settled)),
-            [Some("2026-04-22T04:20:00.000Z".to_owned())],
-            "and nothing running leaves the name to the fold again",
-        );
-    }
-
-    /// A turn the next prompt closed is named whatever the session reports:
-    /// the gate belongs to the trailing turn alone.
+    /// A turn the next prompt closed is named while a later one runs: the
+    /// trailing turn carries no name until its own report arrives.
     #[test]
     fn a_closed_turn_is_named_while_a_later_one_runs() {
         let messages = [
             user_at("first", "2026-04-22T04:15:27.000Z"),
             assistant_at("one", "2026-04-22T04:16:00.000Z", StopReason::EndTurn, None),
-            state_frame("running"),
             user_at("second", "2026-04-22T04:20:00.000Z"),
         ];
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [Some("2026-04-22T04:15:27.000Z".to_owned()), None],
             "the first turn's name survives a running second",
         );
@@ -1761,7 +1926,7 @@ mod turns {
         ];
 
         assert_eq!(
-            keys(&render(&messages)),
+            keys(&settled(&messages)),
             [
                 Some("2026-04-22T04:15:27.000Z".to_owned()),
                 Some("2026-04-22T04:20:00.000Z".to_owned()),

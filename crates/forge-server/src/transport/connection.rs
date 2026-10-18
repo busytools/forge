@@ -1920,7 +1920,12 @@ async fn rows_below_floor(
         );
         return BelowFloor::Empty;
     };
-    let folded = tokio::task::spawn_blocking(move || page_of_span(&span, turns)).await;
+    // The span is read from the file, but the SEAT may be mid-turn right
+    // now - and a mid-call delivery inside this span has to be foldable the
+    // same way the held window folds it (#2379), so the seat's own state
+    // travels with the read.
+    let live = state.conversations.live_of(seat);
+    let folded = tokio::task::spawn_blocking(move || page_of_span(&span, turns, live)).await;
     if let Ok(page) = folded {
         BelowFloor::Page(page)
     } else {
@@ -1945,8 +1950,9 @@ async fn rows_below_floor(
 fn page_of_span(
     span: &forge_primitives::TranscriptSpan,
     turns: u32,
+    live: bool,
 ) -> crate::transport::wire::Page {
-    let rendered = crate::transcript::render(&span.messages);
+    let rendered = crate::transcript::render(&span.messages, live);
     let mut page = page(&span.messages, &rendered, 0, None, turns);
     // The page's oldest row, out of the frames it served: the first one whose
     // id names a row of the span. A frame with no id - a forged ending, an
@@ -2805,7 +2811,7 @@ mod tests {
             offsets: (from as u64..160).map(|at| at * 100).collect(),
             exhausted: false,
         };
-        let page = page_of_span(&span, 4);
+        let page = page_of_span(&span, 4, false);
 
         assert_eq!(
             turn_texts(&page),
@@ -2827,7 +2833,7 @@ mod tests {
             offsets: (100_u64..106).map(|at| at * 100).collect(),
             exhausted: false,
         };
-        let short_page = page_of_span(&short, 8);
+        let short_page = page_of_span(&short, 8, false);
         assert_eq!(short_page.turns.len(), 6, "precondition: the span holds six turns");
         assert_eq!(
             short_page.cursor.as_deref(),
@@ -2836,7 +2842,7 @@ mod tests {
         );
         let ended = forge_primitives::TranscriptSpan { exhausted: true, ..short };
         assert!(
-            page_of_span(&ended, 8).cursor.is_none(),
+            page_of_span(&ended, 8, false).cursor.is_none(),
             "and only a page reaching the transcript's first row ends the walk",
         );
     }

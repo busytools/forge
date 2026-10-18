@@ -575,7 +575,7 @@ fn breakdown(surface: &Arc<ViewSurface>, seat: &SessionSlot, cwd: &Path) -> anyh
     let holding = rss()?;
 
     let started = Instant::now();
-    let rendered = forge_server::transcript::render(&read.messages);
+    let rendered = forge_server::transcript::render(&read.messages, false);
     let fold_ms = started.elapsed().as_millis();
 
     let started = Instant::now();
