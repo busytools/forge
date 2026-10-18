@@ -1122,9 +1122,17 @@ pub(crate) async fn sweep_scope(
         // back. Whether the user is IN the thread is a separate question,
         // asked of the replies the walk fetches.
         for message in window.iter().filter(|message| is_thread_parent(message)) {
-            let since = match message.latest_reply.as_deref() {
+            let anchor = match message.latest_reply.as_deref() {
                 Some(latest) => just_below(latest),
                 None => message.ts.clone(),
+            };
+            // A new thread's seed never falls below the conversation cursor:
+            // its newest reply can predate a new subscription. The walk filters
+            // by ts alone, so a correction to a reply already behind that
+            // cursor is not re-offered on the first follow.
+            let since = match watermark.as_deref() {
+                Some(cursor) if is_newer(cursor, Some(anchor.as_str())) => cursor.to_owned(),
+                _ => anchor,
             };
             for subscription in
                 subscriptions.iter().filter(|subscription| owns_threads(subscription, conversation))
@@ -4521,6 +4529,152 @@ mod tests {
             host.delivered().iter().any(|message| message.ts == "150.0"),
             "a thread he is named in delivers what follows: {:?}",
             host.delivered(),
+        );
+    }
+
+    /// A subscription starts at its cursor; the thread anchor must not start
+    /// below it. A thread first followed on that sweep seeds its newest reply,
+    /// which can predate the subscription, and the thread walk filters by that
+    /// cursor alone - so the reply lands though the channel read had already
+    /// passed it. The floor must not stop the thread delivering once it moves.
+    #[tokio::test]
+    async fn a_thread_first_followed_does_not_start_below_the_conversation_cursor() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        let parent = parent_with_latest_reply("100.0", 2, "150.0");
+        host.set_watermark("acme", "C1", "200.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent.clone(),
+                history_message("120.0", "U1", "the user's own reply"),
+                reply("150.0", "100.0", "U8", "posted before the subscription"),
+            ],
+        );
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert!(
+            !host.delivered().iter().any(|message| message.ts == "150.0"),
+            "a reply older than the conversation cursor is not news: {:?}",
+            host.delivered(),
+        );
+        assert!(
+            host.thread_cursor("acme", "C1", "100.0")
+                .as_deref()
+                .is_some_and(|cursor| cursor == "200.0"),
+            "the first follow never starts below the conversation cursor: {:?}",
+            host.thread_cursor("acme", "C1", "100.0"),
+        );
+
+        // The thread moves past the cursor: the walk runs and must deliver the
+        // newest reply, while the reply behind the cursor stays out.
+        let moved = parent_with_latest_reply("100.0", 3, "250.0");
+        host.seed_history("C1", vec![moved.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                moved,
+                history_message("120.0", "U1", "the user's own reply"),
+                reply("150.0", "100.0", "U8", "posted before the subscription"),
+                reply("250.0", "100.0", "U8", "posted after the subscription"),
+            ],
+        );
+
+        sweep(&host, &host, "acme").await.expect("moved sweep");
+
+        let delivered = host.delivered();
+        assert!(
+            delivered.iter().any(|message| message.ts == "250.0"),
+            "the first follow still delivers a thread that moves: {delivered:?}",
+        );
+        assert!(
+            !delivered.iter().any(|message| message.ts == "150.0"),
+            "the reply behind the cursor stays out: {delivered:?}",
+        );
+    }
+
+    /// The floor is a floor, not a replacement: a thread whose newest reply
+    /// is above the conversation cursor still starts below that reply, so the
+    /// reply that brought it in is delivered and older ones are not.
+    #[tokio::test]
+    async fn a_thread_first_followed_above_the_cursor_seeds_below_its_newest_reply() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        let parent = parent_with_latest_reply("100.0", 3, "250.0");
+        host.set_watermark("acme", "C1", "150.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                history_message("200.0", "U1", "the user's own reply"),
+                reply("230.0", "100.0", "U8", "older than the newest reply"),
+                reply("250.0", "100.0", "U8", "the reply that brought the thread in"),
+            ],
+        );
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let delivered_messages = host.delivered();
+        let delivered: Vec<&str> =
+            delivered_messages.iter().map(|message| message.ts.as_str()).collect();
+        assert!(delivered.contains(&"250.0"), "the newest reply is delivered: {delivered:?}");
+        assert!(
+            !delivered.contains(&"230.0"),
+            "a reply below the newest reply is not news on a first follow: {delivered:?}",
+        );
+    }
+
+    /// The seed only decides where a NEW row starts. A thread already followed
+    /// keeps the cursor it has, so a reply between that cursor and the
+    /// conversation cursor is still delivered.
+    #[tokio::test]
+    async fn an_existing_thread_keeps_its_cursor_when_the_conversation_moves() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        let parent = parent_with_latest_reply("100.0", 2, "250.0");
+        host.set_watermark("acme", "C1", "300.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                history_message("160.0", "U1", "the user's own reply"),
+                reply("170.0", "100.0", "U8", "between the thread and conversation cursors"),
+                reply("250.0", "100.0", "U8", "the newest reply"),
+            ],
+        );
+        host.follow_thread("acme", "C1", "100.0", thread_owner("forge", Some("tester")), "150.0");
+        host.mark_thread_participating("acme", "C1", "100.0");
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let delivered = host.delivered();
+        assert!(
+            delivered.iter().any(|message| message.ts == "170.0"),
+            "the row's own cursor governs, not the conversation's: {delivered:?}",
+        );
+        assert!(
+            delivered.iter().any(|message| message.ts == "250.0"),
+            "and the thread keeps delivering: {delivered:?}",
         );
     }
 
