@@ -980,7 +980,11 @@
   .leaf.running > summary { color: var(--text); }
   .leaf.running .tn::after { content: ""; }
 
-  .composer { padding: 4px 0 2px; }
+  /* The foot sits flush here as it does in the app. No margin: the drawing's
+     composer is a child of the chat column, which has no grid row gap to
+     cancel - the shipped composer's cancels the app grid's, which the drawing
+     does not carry. */
+  .composer { padding: 0 0 2px; }
   /* One slot, several states. The chips pick which one the box is in. */
   .cstates { display: flex; align-items: center; gap: 6px; padding-left: 2px;
     margin-bottom: 7px; flex-wrap: wrap; }
