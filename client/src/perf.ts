@@ -22,6 +22,7 @@
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
+import { HEARTBEAT_TICK_MS } from './heartbeat';
 import { CLIENT_VERSION } from './protocol';
 import type { Route } from './routes';
 import { mintPromptId } from './wire/ids';
@@ -56,7 +57,8 @@ export type DrawnState = 'conversation' | 'empty' | 'waking' | 'refused';
 /** One line of the perf log, as the shell writes it. */
 export interface PerfRecord {
   schema: string;
-  kind: 'run_started' | 'frame' | 'longtask' | 'summary' | 'switch' | 'drawn' | 'quiet';
+  kind:
+    'run_started' | 'frame' | 'longtask' | 'summary' | 'switch' | 'drawn' | 'quiet' | 'heartbeat';
   run_id: string;
   ts_ms: number;
   version?: string;
@@ -74,6 +76,51 @@ export interface PerfRecord {
    * as the content arriving (#2374).
    */
   state?: DrawnState;
+  /**
+   * **The Web Worker's heartbeat, spanning a slow `frame`** (#2374). The
+   * worker ticks once a second and the page times each arrival, so the pair
+   * says whether the page's clock ran while frames did not, and when:
+   *
+   * - `worker_beats`: how many ticks arrived during the gap.
+   * - `worker_max_late_ms`: the WORST lateness among them - a tick the page
+   *   received long after it was sent. A blocked main thread queues the
+   *   worker's messages and delivers them late, in a burst.
+   * - `worker_since_beat_ms`: how long before this frame the last tick
+   *   arrived. **Read it against the one-second tick**: a gap shorter than
+   *   a tick can carry no beat at all, and `worker_beats: 0` with
+   *   `worker_since_beat_ms` under the tick is "no beat was due", while a
+   *   `since_beat` of several tick periods is a page that stopped ticking.
+   *
+   * All three are absent where no Web Worker ran (or the worker failed to
+   * load), because absence must not read as zero.
+   */
+  worker_beats?: number;
+  worker_max_late_ms?: number;
+  worker_since_beat_ms?: number;
+  /**
+   * How many ticks the gap would have carried at the worker's interval
+   * (`floor(ms / worker_tick_ms)`).
+   *
+   * **The reading takes BOTH axes - the count and the lateness:**
+   * - `worker_beats` about equal to this AND `worker_max_late_ms` low: the
+   *   page ran on its usual clock while frames stopped (a compositing or
+   *   visibility gate, not a busy thread).
+   * - `worker_beats` about equal to this AND `worker_max_late_ms`
+   *   approaching the gap: the busy-main-thread burst - the ticks ran
+   *   off-thread and the page received them on release, late by the block.
+   * - `worker_beats` about one with this far above it: the suspended shape
+   *   (a resumed page fires its one overdue interval).
+   * - `worker_beats` zero with this at least one: nothing ticked.
+   */
+  worker_expected_beats?: number;
+  /**
+   * Whether a Web Worker heartbeat is running: on `run_started` it says the
+   * page has one at all, and a `heartbeat` record with `false` says the
+   * worker failed to load and the beat fields are absent from then on.
+   */
+  heartbeat?: boolean;
+  /** How long the heartbeat's tick interval is, for the reading above. */
+  worker_tick_ms?: number;
   /** A long task's own name. */
   name?: string;
   /**
@@ -115,9 +162,26 @@ interface ProbeOptions {
   schedule?: (cb: () => void) => () => void;
   /** Reports long tasks; returns its own disconnect. */
   observeLongTasks?: (cb: (ms: number, name: string) => void) => () => void;
+  /** Reports each off-thread heartbeat, how late it arrived and whether the
+   *  worker failed to load; returns its own disconnect, or null where the
+   *  page has no Web Worker at all - which is what keeps the evidence
+   *  fields absent rather than claiming zero (#2374). */
+  observeHeartbeat?: (
+    cb: (lateMs: number) => void,
+    failed: (why: string) => void,
+  ) => (() => void) | null;
   /** Where finished records go; the shell write by default. */
   sink?: (records: PerfRecord[]) => void;
   version?: string;
+  /**
+   * Runs `cb` after one macrotask, which is where a slow frame's record is
+   * written (#2374): the worker's ticks queued DURING a blocked gap are
+   * delivered as tasks right after the block, usually after the frame
+   * callback that measured the gap - so the record is deferred past that
+   * turn or it would report the burst's beats as a page that stopped.
+   * Injectable so a test drives the turn rather than racing it.
+   */
+  defer?: (cb: () => void) => void;
 }
 
 function nextFrame(cb: () => void): () => void {
@@ -133,6 +197,77 @@ function observeLongTasks(cb: (ms: number, name: string) => void): () => void {
   });
   observer.observe({ type: 'longtask', buffered: true });
   return () => observer.disconnect();
+}
+
+/**
+ * The off-thread heartbeat: one tick a second from a Web Worker, and each
+ * one's lateness measured against the page's own clock.
+ *
+ * **A Web Worker is what makes the split possible** (#2374): its timer runs
+ * on another thread, so ticks that REACH THE PAGE during a stalled frame
+ * loop prove the page's main thread ran while frames did not; a busy main
+ * thread queues them and delivers them late, in a burst. No ticks over
+ * several tick periods means the page was not running on its usual clock -
+ * not composited, App-Nap'd, or locked - and the record says which of those
+ * only as far as the measured tick rate goes (see the README).
+ *
+ * **Both clocks are monotonic and the offset is the minimum seen**, so a
+ * wall-clock step cannot read as lateness, and the transport delay of the
+ * fastest tick is the baseline every other one is measured against.
+ *
+ * **A worker that fails to load is announced, never silent**: `new Worker`
+ * does not throw for a script that cannot be fetched or throws on load -
+ * those arrive as `error`/`messageerror`. This port reports that to
+ * `failed`, so the fields go ABSENT rather than reading as a stopped page.
+ * A page without Worker at all answers null.
+ */
+function observeHeartbeat(
+  cb: (lateMs: number) => void,
+  failed: (why: string) => void,
+): (() => void) | null {
+  if (typeof Worker === 'undefined') return null;
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL('./heartbeat.worker.ts', import.meta.url), { type: 'module' });
+  } catch (error) {
+    // **A construction throw is a FAILURE, not an absent worker**: a page
+    // that could not build its worker must read differently from one that
+    // has none, so this reports before answering null.
+    const why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    failed(`constructor: ${why}`);
+    return null;
+  }
+  /** The smallest page-minus-worker time seen: the clock offset, less the
+   *  fastest tick's transport delay. */
+  let offset = Infinity;
+  const onMessage = (event: MessageEvent): void => {
+    const sent: unknown = (event.data as { t?: unknown } | null)?.t;
+    if (typeof sent !== 'number') return;
+    const raw = performance.now() - sent;
+    if (raw < offset) offset = raw;
+    cb(raw - offset);
+  };
+  const onFailure = (event: Event): void => {
+    // **The cause lives on `event.error`, not on the event.** A worker's
+    // script error is an `ErrorEvent` whose `name`/`message` sit in
+    // `error`; `messageerror` is a `MessageEvent` carrying neither; a fetch
+    // or MIME failure is a plain `Event` with only its type. So the record
+    // names the error where there is one and the event's own type otherwise,
+    // rather than reporting a name no DOM event carries.
+    const inner = (event as { error?: { name?: unknown; message?: unknown } }).error;
+    const name = typeof inner?.name === 'string' ? inner.name : event.type;
+    const message = typeof inner?.message === 'string' ? inner.message : '';
+    failed(message === '' ? name : `${name}: ${message}`);
+  };
+  worker.addEventListener('message', onMessage);
+  worker.addEventListener('error', onFailure);
+  worker.addEventListener('messageerror', onFailure);
+  return () => {
+    worker.removeEventListener('message', onMessage);
+    worker.removeEventListener('error', onFailure);
+    worker.removeEventListener('messageerror', onFailure);
+    worker.terminate();
+  };
 }
 
 /** The shell's write: one invoke, fire-and-forget. */
@@ -160,6 +295,12 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   const version = options.version ?? CLIENT_VERSION;
   const schedule = options.schedule ?? nextFrame;
   const observe = options.observeLongTasks ?? observeLongTasks;
+  const heartbeat = options.observeHeartbeat ?? observeHeartbeat;
+  const defer =
+    options.defer ??
+    ((cb: () => void): void => {
+      setTimeout(cb, 0);
+    });
 
   const runId = mintPromptId();
   let surface: string | null = null;
@@ -174,6 +315,56 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let last: number | null = null;
   let cancelFrame: (() => void) | null = null;
   let cancelObserver: (() => void) | null = null;
+  let cancelHeartbeat: (() => void) | null = null;
+  /**
+   * Whether the Web Worker heartbeat is live: false where the page has none,
+   * or where the worker failed to load after starting. A false here is what
+   * keeps the beat fields ABSENT from the records rather than reading as a
+   * page that stopped (#2374).
+   */
+  let heartbeatOk = false;
+  /**
+   * Whether the one failure record has been written. **A separate flag from
+   * `heartbeatOk`, because a construction throw reports BEFORE the port
+   * answers**: the port's catch calls the failure callback synchronously, so
+   * a guard keyed on the not-yet-set heartbeat would swallow it.
+   */
+  let failedSeen = false;
+  /**
+   * The beats since the last record, the WORST lateness among them, and when
+   * the last one arrived - what a slow frame reports about whether the page
+   * kept running while frames did not (#2374). They reset with a fast frame
+   * that has no record waiting on them, and with every flush; the arrival
+   * time carries across, because "when did the last beat land" is what tells
+   * a gap shorter than a tick from a page that stopped ticking.
+   */
+  let beats = 0;
+  let beatLate = 0;
+  let lastBeatAt: number | null = null;
+  /**
+   * The slow frame waiting for its record, and the beats that reached the
+   * page after it was measured (#2374).
+   *
+   * **A blocked gap's evidence arrives AFTER the frame that measured it.**
+   * The worker's messages queued during the block are delivered as tasks
+   * once the main thread frees - usually after the frame callback - so a
+   * record written in that callback would report zeros for a thread that
+   * was blocked. The record is therefore written one macrotask later, and
+   * any beat delivered in between is the gap's own (it was SENT during the
+   * gap): those go in `postBeats`/`postLate`.
+   */
+  let pending: {
+    gap: number;
+    frame: number;
+    sinceBeat: number | null;
+    beats: number;
+    beatLate: number;
+    surface: string | null;
+    session: string | null;
+  } | null = null;
+  let postBeats = 0;
+  let postLate = 0;
+  let flushArmed = false;
   /**
    * The open conversation's own seat, when it started, and what has drawn
    * for it (#2374).
@@ -224,6 +415,57 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     windowSession = session;
   }
 
+  /**
+   * Write the waiting slow frame's record, with every beat that reached the
+   * page since it was measured.
+   *
+   * **The wait is the point** (#2374): a blocked gap's queued ticks are
+   * delivered as tasks after the frame callback that measured the gap, so
+   * the record is written one macrotask later - by then the burst has
+   * landed and `worker_beats`/`worker_max_late_ms` carry it. A beat that
+   * lands between the measurement and this write was SENT during the gap,
+   * so it counts here (`postBeats`); the next gap starts from zero.
+   */
+  function flushSlow(): void {
+    flushArmed = false;
+    const waiting = pending;
+    if (waiting === null) return;
+    pending = null;
+    const total = waiting.beats + postBeats;
+    const worst = Math.max(waiting.beatLate, postLate);
+    postBeats = 0;
+    postLate = 0;
+    beats = 0;
+    beatLate = 0;
+    emit({
+      schema: SCHEMA,
+      kind: 'frame',
+      run_id: runId,
+      ts_ms: Date.now(),
+      frame: waiting.frame,
+      ms: waiting.gap,
+      // The evidence: beats that reached the page across this gap, the
+      // WORST lateness among them, when the last one landed, and how many
+      // the gap WOULD carry at the tick. **Both axes are needed to read it**:
+      // beats equal to expected with LOW lateness is a page that ran while
+      // frames stopped (a compositing gate); the same count with the worst
+      // lateness approaching the gap is the busy-main-thread burst; one beat
+      // against a far larger expected count is the suspended shape; zero
+      // against at least one means nothing ticked.
+      ...(heartbeatOk
+        ? {
+            worker_beats: total,
+            ...(total > 0 ? { worker_max_late_ms: worst } : {}),
+            ...(waiting.sinceBeat === null ? {} : { worker_since_beat_ms: waiting.sinceBeat }),
+            worker_expected_beats: Math.floor(waiting.gap / HEARTBEAT_TICK_MS),
+            worker_tick_ms: HEARTBEAT_TICK_MS,
+          }
+        : {}),
+      surface: waiting.surface,
+      session: waiting.session,
+    });
+  }
+
   function tick(): void {
     const at = now();
     frames += 1;
@@ -231,33 +473,59 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       const gap = at - last;
       if (gap > maxMs) maxMs = gap;
       if (gap >= slowFrameMs) {
+        // Counted where it is MEASURED, so a summary crossing before the
+        // deferred record still counts it.
         slow += 1;
-        emit({
-          schema: SCHEMA,
-          kind: 'frame',
-          run_id: runId,
-          ts_ms: Date.now(),
+        // A slow frame still waiting for its record is written first: a
+        // second one is the NEXT period's record, and the beats that reached
+        // the page up to now belong to the one being written.
+        flushSlow();
+        pending = {
+          gap,
           frame: frames,
-          ms: gap,
+          sinceBeat: lastBeatAt === null ? null : at - lastBeatAt,
+          beats,
+          beatLate,
           surface,
           session,
-        });
-      } else if (openAt !== null && contentSeen) {
-        // **The open seat's work is done**: its state is drawn and the frame
-        // loop is back to a normal cadence, which is the quiet the switch's
-        // own timing is measured to.
-        emit({
-          schema: SCHEMA,
-          kind: 'quiet',
-          run_id: runId,
-          ts_ms: Date.now(),
-          ms: at - openAt,
-          surface: 'session',
-          session: openSeat,
-        });
-        openAt = null;
-        openSeat = null;
+        };
+        beats = 0;
+        beatLate = 0;
+        if (!flushArmed) {
+          flushArmed = true;
+          defer(flushSlow);
+        }
+      } else {
+        // A fast frame that no record is waiting on starts the counters'
+        // period over; one a record IS waiting on keeps them (the beats
+        // arriving there were sent during that gap).
+        if (pending === null) {
+          beats = 0;
+          beatLate = 0;
+        }
+        if (openAt !== null && contentSeen) {
+          // **The open seat's work is done**: its state is drawn and the
+          // frame loop is back to a normal cadence, which is the quiet the
+          // switch's own timing is measured to.
+          emit({
+            schema: SCHEMA,
+            kind: 'quiet',
+            run_id: runId,
+            ts_ms: Date.now(),
+            ms: at - openAt,
+            surface: 'session',
+            session: openSeat,
+          });
+          openAt = null;
+          openSeat = null;
+        }
       }
+    }
+    // A beat before the FIRST frame belongs to no gap, so the baseline
+    // frame starts the counters' period as a fast one would.
+    if (last === null) {
+      beats = 0;
+      beatLate = 0;
     }
     last = at;
     if (at - windowStart >= summaryIntervalMs) flushWindow(at);
@@ -275,19 +543,20 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       placeholderSeen = false;
       contentSeen = false;
       windowStart = now();
+      // Null until the first tick lands: before then there is no arrival to
+      // measure from, and a since-beat of "since start" would invent one.
+      lastBeatAt = null;
+      pending = null;
+      postBeats = 0;
+      postLate = 0;
+      beats = 0;
+      beatLate = 0;
+      flushArmed = false;
+      failedSeen = false;
       // Boot's own reading: the router has usually not wired a route yet,
       // so null here is the honest answer rather than a gap.
       windowSurface = surface;
       windowSession = session;
-      emit({
-        schema: SCHEMA,
-        kind: 'run_started',
-        run_id: runId,
-        ts_ms: Date.now(),
-        version,
-        surface,
-        session,
-      });
       cancelObserver = observe((ms, name) => {
         emit({
           schema: SCHEMA,
@@ -300,18 +569,65 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           session,
         });
       });
+      cancelHeartbeat = heartbeat(
+        (lateMs) => {
+          beats += 1;
+          if (lateMs > beatLate) beatLate = lateMs;
+          if (pending !== null) {
+            postBeats += 1;
+            if (lateMs > postLate) postLate = lateMs;
+          }
+          lastBeatAt = now();
+        },
+        (why) => {
+          // **A worker that failed to load is announced, never silent.** Its
+          // `error`/`messageerror` means no beat will ever arrive; the fields
+          // go absent (not zero) and one record names it, with the event's
+          // own error where it has one and its type otherwise, so a broken
+          // asset cannot read as a page that stopped.
+          if (failedSeen) return;
+          failedSeen = true;
+          heartbeatOk = false;
+          emit({
+            schema: SCHEMA,
+            kind: 'heartbeat',
+            run_id: runId,
+            ts_ms: Date.now(),
+            heartbeat: false,
+            name: why === '' ? 'worker_load_failed' : `worker_load_failed: ${why}`,
+            worker_tick_ms: HEARTBEAT_TICK_MS,
+            surface,
+            session,
+          });
+        },
+      );
+      // A construction throw reported synchronously above, so the run line
+      // must say "no heartbeat" even though the failure record already landed.
+      heartbeatOk = cancelHeartbeat !== null && !failedSeen;
+      emit({
+        schema: SCHEMA,
+        kind: 'run_started',
+        run_id: runId,
+        ts_ms: Date.now(),
+        version,
+        heartbeat: heartbeatOk,
+        ...(heartbeatOk ? { worker_tick_ms: HEARTBEAT_TICK_MS } : {}),
+        surface,
+        session,
+      });
       cancelFrame = schedule(tick);
     },
     stop(): void {
-      // The open window still lands, the same rule the view this client
-      // replaced applied at shutdown: a partial window is what the reader
-      // wants when the page is going away, and dropping it is a silence
-      // nobody can act on.
+      // The waiting slow frame's record still lands: a partial window is
+      // what the reader wants when the page is going away.
+      flushSlow();
       flushWindow(now());
       cancelFrame?.();
       cancelObserver?.();
+      cancelHeartbeat?.();
       cancelFrame = null;
       cancelObserver = null;
+      cancelHeartbeat = null;
     },
     setSurface(next: string | null, seat: string | null): void {
       surface = next;

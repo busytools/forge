@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { perfProbe, perfSurface, seatLabel, startPerfProbe, type PerfRecord } from './perf';
 
@@ -14,6 +14,9 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
   let clock = 1_000;
   const callbacks: (() => void)[] = [];
   let longTask: ((ms: number, name: string) => void) | null = null;
+  let heartbeat: ((lateMs: number) => void) | null = null;
+  let heartbeatFailed: ((why: string) => void) | null = null;
+  const deferred: (() => void)[] = [];
   let stopped = false;
 
   const probe = perfProbe({
@@ -29,6 +32,19 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
       return () => {
         longTask = null;
       };
+    },
+    observeHeartbeat: (cb, failed) => {
+      heartbeat = cb;
+      heartbeatFailed = failed;
+      return () => {
+        heartbeat = null;
+        heartbeatFailed = null;
+      };
+    },
+    // The record for a slow frame is written one macrotask after it, so a
+    // test owns that turn: `settle()` runs every deferred callback.
+    defer: (cb) => {
+      deferred.push(cb);
     },
     sink: (batch) => {
       records.push(batch);
@@ -54,6 +70,15 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
     frame,
     records,
     longTask: (ms: number, name = 'self') => longTask?.(ms, name),
+    beat: (lateMs = 5) => heartbeat?.(lateMs),
+    failHeartbeat: (why = '') => heartbeatFailed?.(why),
+    /** The macrotask turn the slow frame's record is written on. */
+    settle: () => {
+      for (let cb = deferred.shift(); cb !== undefined; cb = deferred.shift()) cb();
+    },
+    get beating() {
+      return heartbeat !== null;
+    },
     get stopped() {
       return stopped;
     },
@@ -77,6 +102,7 @@ describe('the frame probe', () => {
     h.probe.setSurface('connect', null);
     h.frame(16);
     h.frame(120);
+    h.settle(); // the slow frame's record lands on the next macrotask
     const frame = h.records.flat().find((record) => record.kind === 'frame');
     expect(frame?.surface).toBe('connect');
   });
@@ -87,6 +113,7 @@ describe('the frame probe', () => {
     h.frame(16);
     h.frame(16);
     h.frame(120);
+    h.settle();
 
     const frames = h.records.flat().filter((record) => record.kind === 'frame');
     expect(frames).toHaveLength(1);
@@ -101,6 +128,7 @@ describe('the frame probe', () => {
     h.frame(49.9);
     expect(h.records.flat().filter((record) => record.kind === 'frame')).toHaveLength(0);
     h.frame(50);
+    h.settle();
     expect(h.records.flat().filter((record) => record.kind === 'frame')).toHaveLength(1);
   });
 
@@ -129,6 +157,7 @@ describe('the frame probe', () => {
     // The switch lands INSIDE window 2, before its crossing.
     h.probe.setSurface('session', 'Busytools/forge/lead');
     h.frame(120); // window 2's crossing: its summary must still say `home`.
+    h.settle();
 
     const summaries = h.records.flat().filter((record) => record.kind === 'summary');
     expect(summaries).toHaveLength(2);
@@ -180,6 +209,453 @@ describe('the frame probe', () => {
     const h = harness();
     h.probe.stop();
     expect(h.stopped).toBe(true);
+  });
+
+  /**
+   * **A slow frame's record waits one macrotask, and takes the burst with
+   * it** (#2374). A blocked gap's queued ticks are delivered AFTER the frame
+   * callback that measured the gap - the defect this test pins: feeding the
+   * burst between the frame and the flush, as the engine does, must still
+   * land every tick of it on the record, with the WORST lateness (the burst
+   * is fed oldest-first so a last-wins reading fails).
+   */
+  it('writes the slow record after the burst lands, with its beats and worst lateness', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+
+    h.beat(3);
+    h.beat(7);
+    h.frame(16);
+    expect(h.records.flat().filter((record) => record.kind === 'frame')).toHaveLength(0);
+
+    // The gap is measured first…
+    h.frame(5000);
+    // …and the blocked thread's queued ticks are delivered right after it.
+    h.beat(2400);
+    h.beat(1200);
+    h.beat(2);
+    h.settle();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.worker_beats, 'the burst is on the record too').toBe(3);
+    expect(frames[0]?.worker_max_late_ms, 'the WORST lateness, not the last one').toBe(2400);
+    expect(frames[0]?.worker_expected_beats, 'five ticks were due over five seconds').toBe(5);
+    expect(frames[0]?.worker_tick_ms, 'and the tick it is read against').toBe(1000);
+  });
+
+  /**
+   * **The ticks that arrived BEFORE the slow frame keep their worst
+   * lateness.** A last-wins reading survives the post-frame burst alone; a
+   * descending pre-frame burst (2,400 then 2) fails it.
+   */
+  it('keeps the worst lateness of a pre-frame burst', () => {
+    const h = harness();
+    h.frame(16);
+    h.beat(2400);
+    h.beat(2);
+    h.frame(5000);
+    h.settle();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames[0]?.worker_beats).toBe(2);
+    expect(frames[0]?.worker_max_late_ms, 'the worst, not the last').toBe(2400);
+  });
+
+  /** **A second slow frame before the deferred write does not drop it.** */
+  it('writes both records when a second slow frame arrives before the flush', () => {
+    const h = harness();
+    h.frame(16);
+    h.frame(200); // slow 1: its record waits a macrotask…
+    h.frame(200); // …and slow 2 arrives first
+    h.settle();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames, 'neither slow frame is lost').toHaveLength(2);
+  });
+
+  /** **A fast frame with no record waiting starts the counters over.** */
+  it('does not carry a fast frame with a beat into the next slow gap', () => {
+    const h = harness();
+    h.frame(16);
+    h.beat(5); // lands during a fast frame…
+    h.frame(16);
+    h.frame(5000); // …which must not be on this gap's record
+    h.settle();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames[0]?.worker_beats, 'the normal-cadence beat belongs to no gap').toBe(0);
+  });
+
+  /** **A record still waiting when the probe stops is written, not lost.** */
+  it('writes a waiting slow record on stop', () => {
+    const h = harness();
+    h.frame(16);
+    h.frame(5000);
+    h.probe.stop();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames, 'the deferred record lands at shutdown').toHaveLength(1);
+  });
+
+  /** The expected count is the FLOOR of the gap's tick periods. */
+  it('counts expected beats by whole tick periods', () => {
+    const h = harness();
+    h.frame(16);
+    h.frame(60); // a slow gap shorter than a tick: no tick was due
+    h.settle();
+    h.frame(2999);
+    h.settle();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames).toHaveLength(2);
+    expect(frames[0]?.worker_expected_beats, 'a sub-tick gap expects none').toBe(0);
+    expect(frames[1]?.worker_expected_beats, '2,999 ms is two whole periods').toBe(2);
+  });
+
+  /** **The seat is captured with the gap**: a route move before the deferred
+   *  write does not re-attribute the record. */
+  it('names the seat the gap happened on, even after the page moved', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.frame(16);
+    h.frame(5000);
+    h.probe.setSurface('session', 'Busytools/forge/embed-b-plan');
+    h.settle();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames[0]?.session, 'the gap happened on the lead seat').toBe('Busytools/forge/lead');
+  });
+
+  /** **since-beat is absent before the first tick**: there is no arrival to
+   *  measure from, and a zero would invent one. */
+  it('leaves since-beat absent before the first tick lands', () => {
+    const h = harness();
+    h.frame(16);
+    h.frame(5000); // no beat has ever arrived
+    h.settle();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames[0]?.worker_beats).toBe(0);
+    expect(frames[0], 'no arrival to measure from').not.toHaveProperty('worker_since_beat_ms');
+  });
+
+  /**
+   * **The suspended shape** (#2374): a page that resumes fires its ONE
+   * overdue interval, so a long gap carries a single beat with the expected
+   * count far above it - the reading that tells "suspended" from "ran".
+   */
+  it('says a resumed page carried one beat where twenty were due', () => {
+    const h = harness();
+    h.frame(16);
+    h.frame(20_000);
+    h.beat(0); // the overdue interval, fired once on resume
+    h.settle();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames[0]?.worker_beats, 'one beat').toBe(1);
+    expect(
+      frames[0]?.worker_expected_beats,
+      'against twenty due - the suspended shape, not a running page',
+    ).toBe(20);
+  });
+
+  /**
+   * **Zero beats says nothing over a short gap** (#2374): at one tick a
+   * second, a gap shorter than a tick carries no beat by construction. The
+   * record carries the time since the last arrival so a reader can tell
+   * "nothing was due" from a page that stopped ticking - and the high
+   * lateness of the previous frame must NOT leak into this one.
+   */
+  it('reports a zero-beat gap with its since-beat time, and no stale lateness', () => {
+    const h = harness();
+    h.frame(16); // baseline at 1016
+    h.beat(1200); // the last arrival, at 1016
+    h.frame(800); // this one carries the lateness…
+    h.settle();
+
+    h.frame(150); // …and this one lands 950 ms after the last beat: nothing due yet
+    h.settle();
+
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(frames).toHaveLength(2);
+    expect(frames[1]?.worker_beats, 'no tick was due').toBe(0);
+    expect(frames[1], 'a zero-beat frame invents no lateness').not.toHaveProperty(
+      'worker_max_late_ms',
+    );
+    expect(frames[1]?.worker_since_beat_ms, 'and says how long since the last arrival').toBe(950);
+  });
+
+  /**
+   * **A page with no Web Worker writes no evidence fields, rather than
+   * zero.** This exercises the REAL port: this test environment has no
+   * `Worker`, so the production path answers null and the fields stay
+   * absent.
+   */
+  it('leaves the heartbeat fields absent where there is no worker', () => {
+    const records: PerfRecord[][] = [];
+    let clock = 1_000;
+    const callbacks: (() => void)[] = [];
+    const deferred: (() => void)[] = [];
+    const probe = perfProbe({
+      now: () => clock,
+      schedule: (cb) => {
+        callbacks.push(cb);
+        return () => undefined;
+      },
+      observeLongTasks: () => () => undefined,
+      defer: (cb) => {
+        deferred.push(cb);
+      },
+      sink: (batch) => {
+        records.push(batch);
+      },
+    });
+    probe.start();
+    const frame = (ms: number) => {
+      clock += ms;
+      callbacks.shift()?.();
+    };
+    frame(16);
+    frame(5000);
+    for (let cb = deferred.shift(); cb !== undefined; cb = deferred.shift()) cb();
+
+    const started = records.flat().find((record) => record.kind === 'run_started');
+    expect(started?.heartbeat, 'the run line says the page has no heartbeat').toBe(false);
+    const slow = records.flat().filter((record) => record.kind === 'frame');
+    expect(slow).toHaveLength(1);
+    expect(slow[0]).not.toHaveProperty('worker_beats');
+    expect(slow[0]).not.toHaveProperty('worker_max_late_ms');
+    probe.stop();
+  });
+
+  /**
+   * **A worker that fails to load is announced, never silent** (#2374): the
+   * load errors arrive on the worker, not at the constructor, so the port
+   * reports them - naming the event's own error - and the fields go ABSENT,
+   * because a broken asset must not read as a page that stopped. One
+   * record, once.
+   */
+  it('announces a worker that failed to load and omits the fields after it', () => {
+    const h = harness();
+    h.frame(16);
+    h.failHeartbeat('SecurityError: blocked by the scheme');
+    h.failHeartbeat('second error, another one is not a record');
+
+    h.beat(5); // a beat that still somehow arrives must not revive the fields
+    h.frame(5000);
+    h.settle();
+
+    const beats = h.records.flat().filter((record) => record.kind === 'heartbeat');
+    expect(beats).toHaveLength(1);
+    expect(beats[0]?.heartbeat, 'the record names the failure').toBe(false);
+    expect(beats[0]?.name, "and carries the event's own error").toContain('SecurityError');
+    const slow = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(slow[0], 'and the frame carries no beat evidence after it').not.toHaveProperty(
+      'worker_beats',
+    );
+  });
+
+  /** The run line says whether the page has a heartbeat at all. */
+  it('says on the run line that a heartbeat is running', () => {
+    const h = harness();
+    const started = h.records.flat().find((record) => record.kind === 'run_started');
+    expect(started?.heartbeat).toBe(true);
+    expect(started?.worker_tick_ms).toBe(1000);
+  });
+
+  /** Stopping the probe disconnects the heartbeat with everything else. */
+  it('stops the heartbeat where it was told to', () => {
+    const h = harness();
+    expect(h.beating).toBe(true);
+    h.probe.stop();
+    expect(h.beating, 'the worker is torn down with the probe').toBe(false);
+  });
+
+  /**
+   * **The REAL port, below its no-Worker guard** (#2374): the engine's
+   * worker is stubbed, so the listeners, the min-offset lateness and both
+   * failure paths run as shipped. Two ticks 500 ms apart must report a
+   * 500 ms worst lateness - a last-wins offset would report zero - and the
+   * teardown must terminate the worker and drop its listeners.
+   */
+  it('runs the real port: min-offset lateness, and the worker torn down', () => {
+    class FakeWorker {
+      static last: FakeWorker | null = null;
+      readonly listeners = new Map<string, Set<(event: unknown) => void>>();
+      readonly terminate = vi.fn();
+      constructor() {
+        FakeWorker.last = this;
+      }
+      addEventListener(type: string, fn: (event: unknown) => void): void {
+        const set = this.listeners.get(type) ?? new Set<(event: unknown) => void>();
+        set.add(fn);
+        this.listeners.set(type, set);
+      }
+      removeEventListener(type: string, fn: (event: unknown) => void): void {
+        this.listeners.get(type)?.delete(fn);
+      }
+      emit(type: string, event: unknown): void {
+        for (const fn of this.listeners.get(type) ?? []) fn(event);
+      }
+    }
+    vi.stubGlobal('Worker', FakeWorker);
+    let clock = 1_000;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    try {
+      const records: PerfRecord[][] = [];
+      const callbacks: (() => void)[] = [];
+      const deferred: (() => void)[] = [];
+      const probe = perfProbe({
+        now: () => clock,
+        schedule: (cb) => {
+          callbacks.push(cb);
+          return () => undefined;
+        },
+        observeLongTasks: () => () => undefined,
+        defer: (cb) => {
+          deferred.push(cb);
+        },
+        sink: (batch) => {
+          records.push(batch);
+        },
+      });
+      probe.start();
+      const worker = FakeWorker.last;
+      expect(worker, 'the real port constructed a Worker').not.toBeNull();
+      const frame = (ms: number) => {
+        clock += ms;
+        callbacks.shift()?.();
+      };
+      frame(16); // the baseline frame
+      // Two ticks as the engine sends them: the same worker stamp, the
+      // second arriving 500 ms later.
+      worker?.emit('message', { data: { t: 100 } }); // arrival 1_016: raw 916
+      clock += 500;
+      worker?.emit('message', { data: { t: 100 } }); // arrival 1_516: raw 1_416
+      frame(5000);
+      for (let cb = deferred.shift(); cb !== undefined; cb = deferred.shift()) cb();
+
+      const slow = records.flat().filter((record) => record.kind === 'frame');
+      expect(slow[0]?.worker_beats).toBe(2);
+      expect(
+        slow[0]?.worker_max_late_ms,
+        'the second tick is 500 ms later than the first: min-offset keeps the first as zero',
+      ).toBe(500);
+      expect(slow[0]?.worker_expected_beats).toBe(5);
+
+      probe.stop();
+      expect(worker?.terminate, 'the worker is terminated on stop').toHaveBeenCalled();
+      expect(worker?.listeners.get('message')?.size ?? 0, 'and its listeners are removed').toBe(0);
+      expect(worker?.listeners.get('error')?.size ?? 0, 'the error listener goes with them').toBe(
+        0,
+      );
+      expect(
+        worker?.listeners.get('messageerror')?.size ?? 0,
+        'and so does the messageerror one',
+      ).toBe(0);
+    } finally {
+      nowSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /**
+   * **Every load-error shape announces, and the cause is read where the DOM
+   * puts it** (#2374): a script error is an `ErrorEvent` whose name and
+   * message sit on `error`; `messageerror` is a `MessageEvent` carrying
+   * neither; a fetch or MIME failure is a plain `Event` with only its type.
+   * One record per run, because one failure ends the heartbeat for the page.
+   */
+  it('announces a worker load failure for every real error shape', () => {
+    class FailingWorker {
+      static last: FailingWorker | null = null;
+      readonly listeners = new Map<string, Set<(event: unknown) => void>>();
+      readonly terminate = vi.fn();
+      constructor() {
+        FailingWorker.last = this;
+      }
+      addEventListener(type: string, fn: (event: unknown) => void): void {
+        const set = this.listeners.get(type) ?? new Set<(event: unknown) => void>();
+        set.add(fn);
+        this.listeners.set(type, set);
+      }
+      removeEventListener(type: string, fn: (event: unknown) => void): void {
+        this.listeners.get(type)?.delete(fn);
+      }
+      emit(type: string, event: unknown): void {
+        for (const fn of this.listeners.get(type) ?? []) fn(event);
+      }
+    }
+    vi.stubGlobal('Worker', FailingWorker);
+    const cases: [string, unknown, string][] = [
+      // A script error: ErrorEvent, the cause on `error`.
+      [
+        'error',
+        { type: 'error', error: { name: 'SecurityError', message: 'blocked' } },
+        'SecurityError',
+      ],
+      // No error payload: the event's own type names it.
+      ['error', { type: 'error' }, 'error'],
+      // A message that could not be deserialized: MessageEvent, neither field.
+      ['messageerror', { type: 'messageerror' }, 'messageerror'],
+    ];
+    try {
+      for (const [path, event, named] of cases) {
+        const records: PerfRecord[][] = [];
+        const probe = perfProbe({
+          schedule: () => () => undefined,
+          observeLongTasks: () => () => undefined,
+          sink: (batch) => {
+            records.push(batch);
+          },
+        });
+        probe.start();
+        FailingWorker.last?.emit(path, event);
+        const failures = records.flat().filter((record) => record.kind === 'heartbeat');
+        expect(failures, `${path} is announced`).toHaveLength(1);
+        expect(failures[0]?.name, `the cause named for ${path}`).toContain(named);
+        probe.stop();
+        FailingWorker.last = null;
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /**
+   * **A construction throw is a FAILURE, not an absent worker** (#2374): a
+   * page that could not build its worker must read differently from one
+   * that has none, so the record names it and the run line still says no
+   * heartbeat. The report happens synchronously, before the port answers
+   * null, which is why the failure flag is not the heartbeat flag.
+   */
+  it('announces a worker whose construction throws', () => {
+    class ThrowingWorker {
+      constructor() {
+        throw new Error('no worker here');
+      }
+    }
+    vi.stubGlobal('Worker', ThrowingWorker);
+    try {
+      const records: PerfRecord[][] = [];
+      const probe = perfProbe({
+        schedule: () => () => undefined,
+        observeLongTasks: () => () => undefined,
+        sink: (batch) => {
+          records.push(batch);
+        },
+      });
+      probe.start();
+      const failures = records.flat().filter((record) => record.kind === 'heartbeat');
+      expect(failures, 'one record names the construction failure').toHaveLength(1);
+      expect(failures[0]?.name).toContain('constructor');
+      const started = records.flat().find((record) => record.kind === 'run_started');
+      expect(started?.heartbeat, 'and the run line says no heartbeat').toBe(false);
+      probe.stop();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
