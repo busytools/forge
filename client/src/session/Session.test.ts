@@ -745,8 +745,8 @@ describe('the app grid', () => {
    * added later.
    */
   it('ends the conversation at the composer, with the foot as one row', () => {
-    // Every rule the sheet writes for `.composer`, not the last one: the
-    // mobile query's comes after the base rule and would answer for it.
+    // Every rule the sheet writes for `.composer`, not just the last: the
+    // grid placement is the sheet's last one and would answer for it.
     const composer = [...sheet.matchAll(/^\s*\.composer\s*\{([^}]*)\}/gm)].map(
       (hit) => hit[1] ?? '',
     );
