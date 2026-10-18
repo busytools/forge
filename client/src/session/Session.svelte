@@ -748,28 +748,34 @@
       {/if}
     </div>
 
-    <!-- The column's element is the chat's own where a chat is mounted: it
-         draws its own scroll viewport, and the sheet's `.conv` rules are that
-         viewport's padding and scrollbar, so a wrapper carrying them as well
-         would put a second scroller outside the one that scrolls. -->
-    {#if conversation !== null}
-      {@render conversation(conversationProps)}
-    {:else if seat.waking || seat.lifecycle === 'Spawning'}
-      <!-- The seat's own state, which this column owns: a seat coming up -
-           a spawn the core is running, or the lead's own this page
-           dispatched - draws the waking line, while a worker's seat the
-           roster does not name has no spawn coming and says so. -->
-      <div class="conv">
-        {#if seat.lifecycle === 'Spawning' || slot.label === 'lead'}
-          <div class="hold"><span class="shimmer">Waking up agent...</span></div>
-        {:else}
-          <div class="hold off">
-            not running
-            <span class="sub">{seat.reason ?? 'this seat has no session behind it'}</span>
-          </div>
-        {/if}
-      </div>
-    {/if}
+    <!-- The conversation's own box below the header: the list and the queue
+         are its children, and the states the column pins to an edge - the
+         older-page line at the top, the way back at the foot - anchor to THIS
+         rather than to the page's column, where they would land behind the
+         header. The column's element is the chat's own where a chat is
+         mounted: it draws its own scroll viewport, and the sheet's `.conv`
+         rules are that viewport's padding and scrollbar, so this wrapper
+         carries none of them and adds no second scroller. -->
+    <div class="conv-body">
+      {#if conversation !== null}
+        {@render conversation(conversationProps)}
+      {:else if seat.waking || seat.lifecycle === 'Spawning'}
+        <!-- The seat's own state, which this column owns: a seat coming up -
+             a spawn the core is running, or the lead's own this page
+             dispatched - draws the waking line, while a worker's seat the
+             roster does not name has no spawn coming and says so. -->
+        <div class="conv">
+          {#if seat.lifecycle === 'Spawning' || slot.label === 'lead'}
+            <div class="hold"><span class="shimmer">Waking up agent...</span></div>
+          {:else}
+            <div class="hold off">
+              not running
+              <span class="sub">{seat.reason ?? 'this seat has no session behind it'}</span>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
   </main>
 
   <!-- The box draws the moment the seat is shown, not after its first read:
