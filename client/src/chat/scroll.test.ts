@@ -26,9 +26,9 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
-const { clear, firstGrowth, last, list } = await import('./testing/records');
+const { clear, firstGrowth, last, list, setMeasured } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
-const { installResizeObserver } = await import('./testing/viewport');
+const { installResizeObserver, resized } = await import('./testing/viewport');
 
 installResizeObserver();
 
@@ -249,5 +249,117 @@ describe('the compensation the list is handed', () => {
     server.page([turn('t0'), turn('t1')], null);
     await tick();
     expect(last()?.shift, 'both landed, so off').toBe(false);
+  });
+});
+
+describe('the page a height-bounded ask requests', () => {
+  it('sizes the count from the measured turns and the room, not from a constant', async () => {
+    const server = stub();
+    draw(server);
+    // The column starts at the foot of a history taller than the reach, so
+    // the opening pin's own echo does not ask; the ask under test is the
+    // reader's.
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+
+    // jsdom reports no layout, so the observer hands every row its height and
+    // the column's own median becomes the size a page is built from.
+    resized(100);
+    list()?.scrolledTo(0, 500, 320);
+    flushSync();
+
+    // A screen and a half (1.5 x 320) of 100 px turns is five, where the
+    // protocol's fixed page would have asked for twenty.
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    const lastAsk = asks[asks.length - 1];
+    expect(lastAsk?.turns, 'the ask carries the measured page').toBe(5);
+  });
+
+  it('never asks for more than the wire accepts, however short the turns are', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+
+    // A 20 px turn in a 320 px viewport wants twenty-four; the protocol's
+    // page is the ceiling.
+    resized(20);
+    list()?.scrolledTo(0, 500, 320);
+    flushSync();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks[asks.length - 1]?.turns, 'clamped to the protocol page').toBe(20);
+  });
+
+  it('asks for one turn when a turn is taller than the room', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+
+    // One turn of 900 px in a 320 px viewport: a page cannot be smaller than
+    // the turn it carries.
+    resized(900);
+    list()?.scrolledTo(0, 500, 320);
+    flushSync();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks[asks.length - 1]?.turns, 'the floor is one turn').toBe(1);
+  });
+});
+
+describe('the loading state over the column', () => {
+  it('says an older page is loading while the ask is out, and stops when it lands', async () => {
+    const server = stub();
+    draw(server);
+    // The opening pin lands at the foot of a history taller than the reach,
+    // so its own echo asks nothing and the only ask is the reader's.
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+
+    expect(document.querySelector('.older-loading'), 'nothing in flight yet').toBeNull();
+
+    list()?.scrolledTo(0, 900, 320);
+    flushSync();
+    expect(
+      document.querySelector('.older-loading')?.textContent,
+      'the clamped top says what it is waiting for',
+    ).toContain('Loading older messages');
+
+    server.page([turn('t0'), turn('t1')], null);
+    await tick();
+    expect(document.querySelector('.older-loading'), 'the page landed').toBeNull();
+  });
+
+  it('is not shown for an ask the socket refused, which nothing is coming for', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+
+    server.shut();
+    list()?.scrolledTo(0, 500, 320);
+    flushSync();
+    expect(document.querySelector('.older-loading'), 'no ask went, no state').toBeNull();
+  });
+});
+
+describe('a row the list has not measured', () => {
+  it('is drawn rather than left hidden, so a fling is not a black column', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1')], null);
+    await tick();
+
+    // The item wrapper is the element the list places; virtua's own styling
+    // lives on it, so that is where an item attribute has to land.
+    const row = document.querySelector<HTMLElement>('.conv > .turn');
+    expect(row, 'the page drew a row').not.toBeNull();
+    // virtua sets `visibility: hidden` on a row it has not measured; the
+    // column's own item attribute rides after it, which is what paints the
+    // row at the estimate instead (#2398).
+    expect(row?.style.visibility, 'the unmeasured row is painted').toBe('visible');
   });
 });

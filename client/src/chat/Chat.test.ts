@@ -1016,7 +1016,7 @@ describe('the chat column as it draws', () => {
     });
     await painted();
 
-    const held = document.querySelector<HTMLElement>('.turn');
+    const held = document.querySelector<HTMLElement>('[data-t]');
     expect(held, 'the row is kept mounted while the hold waits').not.toBeNull();
     expect(held?.textContent, 'and draws nothing').not.toContain('let me in');
     expect(held?.style.minHeight, 'an estimate reserved as empty space was the plane').toBe('');
@@ -1058,7 +1058,7 @@ describe('the chat column as it draws', () => {
     });
     await painted();
 
-    const held = document.querySelector<HTMLElement>('.turn');
+    const held = document.querySelector<HTMLElement>('[data-t]');
     expect(held?.textContent, 'held and drawing nothing').not.toContain('measure me');
     expect(held?.style.minHeight, 'the row holds the height it measured').toBe('512px');
   });

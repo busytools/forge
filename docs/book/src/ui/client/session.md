@@ -105,6 +105,22 @@ each turn's frames into its rows; a compaction boundary draws where it
 happened, collapsed, with the header's count saying how many and the mark
 saying where.
 
+**A row is drawn before the list has measured it.** The virtualised list
+places a row at an estimated height and corrects it the moment the row
+reports its own; drawn rather than left blank, so a fast scroll through
+fresh history reads as moving content instead of a black column. The
+correction is the list's, and the column's foot and parked anchor absorb
+it, so the reader's place does not move under them.
+
+**The column's top edge says when it is fetching.** An older page is
+asked for when the reader reaches the top and answered a moment later;
+while it is in flight the wheel has nothing left to scroll, so a muted
+line at the top edge says the older messages are loading rather than
+leaving the column reading as a dead scroll. The page is sized by what
+the column has measured - about a screen and a half of its own turns,
+within the protocol's own page - rather than by a fixed count, so the
+history lands a screenful at a time whatever the transcript's density.
+
 ## The strip
 
 One lane of segments above the foot, in a fixed order: the browser, the

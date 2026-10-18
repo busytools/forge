@@ -464,8 +464,18 @@
      book page; a terminal draws one row per line at 1.231em of its own text
      size, and 1.35 is nearer that without sitting on it - a browser still has to
      fit a descender under a line of monospace. */
+  /* The conversation's own box below the header: the list scrolls inside it,
+     and the states the column pins to an edge anchor here rather than to the
+     page's column. */
+  .conv-body { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .conv { overflow-y: auto; flex: 1; padding: 2px 8px 0 0; scrollbar-gutter: stable;
     line-height: 1.35; }
+  /* The older-history ask, said at the column's top edge: the wheel is clamped
+     at the top while a page is in flight, so the wait is drawn. */
+  .older-loading { position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    z-index: 6; pointer-events: none; padding: 3px 10px; border-radius: var(--r);
+    border: 1px solid var(--line); background: var(--s2); color: var(--muted);
+    font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap; }
 
   /* One blank line between blocks, the terminal's whole spacing policy, read
      the same on both sides of a work block: the turn's margin and the block's
@@ -1681,6 +1691,19 @@
       <span class="dim">no compaction yet &#183; a fresh session draws no figure at all</span>
     </div>
 
+    <!-- The older-history state, named beside the specimen rather than only in
+         the pill: the top edge is where the reader's wheel stops while the
+         page above is being fetched, so the state is drawn there. -->
+    <div class="annot">
+      <span class="dim">an older page in flight &#183; the column's top edge says so</span>
+    </div>
+
+    <div class="conv-body">
+      <!-- The older-page state: while a page above is in flight the wheel is
+           clamped at the top of the loaded window, so the column says what it
+           is waiting for rather than reading as dead scroll. Shown here over
+           the rows it will join. -->
+      <div class="older-loading" role="status">Loading older messages&#8230;</div>
     <div class="conv">
 
       <div class="mine">
@@ -2604,6 +2627,7 @@ branch main, nothing to commit</div>
           </details>
         </div>
       </div>
+    </div>
 
     <div class="composer">
       <div class="cstates" data-mock-ignore>

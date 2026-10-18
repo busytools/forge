@@ -35,6 +35,16 @@ export function heldReserve(size: number | undefined): string | undefined {
 interface RowSizes {
   /** What `key`'s row last measured, or `undefined` for one never measured. */
   sizeOf(key: string | null | undefined): number | undefined;
+  /**
+   * The middle measured height, or `undefined` before anything measured.
+   *
+   * **What a page is sized by**, since a turn's height is not its count: the
+   * median is the column's own answer to how tall a turn here is, and the
+   * page sizes ride on it rather than on a constant the transcript varies
+   * wildly from (#2398). A median rather than a mean because one transcript
+   * read or one giant tool output must not size every page after it.
+   */
+  median(): number | undefined;
   /** Record a row's height. A zero-size render is a layout in flight, not a fact. */
   remember(key: string, height: number): void;
   /** Forget every key the conversation no longer holds, so the map stays the seat's. */
@@ -46,6 +56,15 @@ export function sizes(): RowSizes {
   return {
     sizeOf(key) {
       return key === null || key === undefined ? undefined : heights.get(key);
+    },
+    median() {
+      if (heights.size === 0) return undefined;
+      const sorted = [...heights.values()].sort((left, right) => left - right);
+      const middle = sorted.length >> 1;
+      const high = sorted[middle];
+      if (high === undefined) return undefined;
+      if (sorted.length % 2 !== 0) return high;
+      return Math.round(((sorted[middle - 1] ?? high) + high) / 2);
     },
     remember(key, height) {
       if (height > 0) heights.set(key, height);

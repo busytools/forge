@@ -6,7 +6,7 @@
 
   import Icon from '../components/Icon.svelte';
   import { noteConversationOpened, noteDrawn } from '../perf';
-  import { subjectKey } from '../protocol';
+  import { MORE_TURNS, subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
   import { mintPromptId } from '../wire/ids';
@@ -67,6 +67,16 @@
 
   /** How near the top the reader has to be before the turns above are asked for. */
   const REACH = 400;
+  /**
+   * How much of the room a page above aims to fill.
+   *
+   * **A page is sized by height, not by a turn count** (#2398): a landing's
+   * cost is the page's real height - the compensation rewrites the scroll by
+   * it and the reader re-traverses it - and twenty turns are one screenful
+   * in one session and thirty in another. A screen and a half is enough to
+   * keep the next ask one pull away without making the jump large.
+   */
+  const PAGE_VIEWPORTS = 1.5;
   /** How long the arrival mark stays on the newest item's wrapper. */
   const ARRIVE_MS = 300;
   /** How far above the last pin counts as the reader when no input preceded it. */
@@ -1286,6 +1296,23 @@
   }
 
   /**
+   * How many turns to ask for: a screen and a half of this column's own
+   * median turn, clamped to what the wire accepts.
+   *
+   * **Measured, not assumed**: the median is what the column has watched its
+   * rows measure, so the same rule gives three turns on a seat of long
+   * transcript reads and eleven on a seat of short ones - and the landing
+   * jumps by about a screenful either way.
+   */
+  function pageTurns(): number {
+    const median = rowSizes.median();
+    const room = viewport?.clientHeight ?? 0;
+    if (median === undefined || room <= 0) return MORE_TURNS;
+    const want = Math.round((room * PAGE_VIEWPORTS) / median);
+    return Math.max(1, Math.min(MORE_TURNS, want));
+  }
+
+  /**
    * Ask for the turns above, holding the reader's place while they arrive.
    *
    * The compensation is armed as the ask goes out rather than when the answer
@@ -1300,18 +1327,24 @@
    * them AND leaves the list's measured sizes attributed to the wrong rows.
    */
   function loadOlder(): boolean {
-    if (working?.older() !== true) return false;
+    if (working?.older(pageTurns()) !== true) return false;
     outstanding += 1;
     return true;
   }
 </script>
 
-{#if (waking || spawning) && held.turns.length === 0}
-  <!-- Each state below is the column in that state, so each carries the
+<!-- The conversation's own box: the list and the queue are its children, and
+     the two things the column pins to its edges - the older-page state and
+     the way back to the foot - anchor to IT. Anchored to the page's column
+     instead they land behind the header, which is where the loading line was
+     first drawn. -->
+<div class="conv-body">
+  {#if (waking || spawning) && held.turns.length === 0}
+    <!-- Each state below is the column in that state, so each carries the
        column's own rules: without them the copy is the one thing on the page
        drawn at no padding and no gutter, while the list beside it is not. -->
-  <div class="conv">
-    <!-- A seat that is coming up, either side of the roster noticing: a
+    <div class="conv">
+      <!-- A seat that is coming up, either side of the roster noticing: a
          spawn the core is running, or - for a LEAD the roster does not name
          yet - the one this page dispatched on open. Both draw the waking
          line, so the wake reads as one state rather than two. A worker's
@@ -1322,53 +1355,53 @@
          the page lands while the spawn is still in flight - and the waking
          line is for a seat with nothing to draw yet, not a cover over a
          conversation already loaded. -->
-    {#if spawning || slot.label === 'lead'}
-      <div class="hold"><span class="shimmer">Waking up agent...</span></div>
-    {:else}
-      <div class="hold off">
-        not running
-        <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
-      </div>
-    {/if}
-  </div>
-{:else if held.refused !== null && held.turns.length === 0}
-  <!-- A refusal with nothing drawn under it is the column in that state. With
+      {#if spawning || slot.label === 'lead'}
+        <div class="hold"><span class="shimmer">Waking up agent...</span></div>
+      {:else}
+        <div class="hold off">
+          not running
+          <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
+        </div>
+      {/if}
+    </div>
+  {:else if held.refused !== null && held.turns.length === 0}
+    <!-- A refusal with nothing drawn under it is the column in that state. With
        turns held it is a line above them instead, because the refusal belongs
        to the ask rather than to the conversation - replacing the list would
        take the reader's own history away and unmount the thing whose scroll
        asks again. -->
-  <div class="conv">
-    <p class="hold off">This forge would not answer for this conversation: {held.refused}</p>
-  </div>
-{:else if !held.loaded}
-  <div class="conv">
-    <!-- Connected, and the first page has not come back. It is its own state:
+    <div class="conv">
+      <p class="hold off">This forge would not answer for this conversation: {held.refused}</p>
+    </div>
+  {:else if !held.loaded}
+    <div class="conv">
+      <!-- Connected, and the first page has not come back. It is its own state:
          the empty copy here would say the seat has no history when the truth
          is that nothing has answered yet. -->
-    <p class="hold">Reading the conversation...</p>
-  </div>
-{:else if held.turns.length === 0}
-  <div class="conv">
-    {#if echo !== undefined}
-      <!-- A seat with no history still has a message on its way, and that row
+      <p class="hold">Reading the conversation...</p>
+    </div>
+  {:else if held.turns.length === 0}
+    <div class="conv">
+      {#if echo !== undefined}
+        <!-- A seat with no history still has a message on its way, and that row
            is the first thing it says: the empty copy would claim nothing was
            said while the reader watches their own words arrive. -->
-      <Echo {echo} onretry={retry} />
-    {:else}
-      <div class="hold">
-        Nothing said yet
-        <span class="sub">this seat has no history: what is said here starts it</span>
-      </div>
-    {/if}
-  </div>
-{:else}
-  {#if held.refused !== null}
-    <!-- The server's own words for the ask that failed, said beside the rows
+        <Echo {echo} onretry={retry} />
+      {:else}
+        <div class="hold">
+          Nothing said yet
+          <span class="sub">this seat has no history: what is said here starts it</span>
+        </div>
+      {/if}
+    </div>
+  {:else}
+    {#if held.refused !== null}
+      <!-- The server's own words for the ask that failed, said beside the rows
          it did not replace: the list stays mounted, so the reader keeps their
          place and their next scroll to the top asks again. -->
-    <p class="refused">This forge would not answer for this conversation: {held.refused}</p>
-  {/if}
-  <!-- The list draws its own scroll viewport, so the sheet's `.conv` rules go
+      <p class="refused">This forge would not answer for this conversation: {held.refused}</p>
+    {/if}
+    <!-- The list draws its own scroll viewport, so the sheet's `.conv` rules go
        on that element rather than a wrapper around it: they are the column's
        padding, its scrollbar gutter and its scrollbar, and a wrapper would put
        them outside the thing that scrolls. **`display:flex` rides here as an
@@ -1376,66 +1409,82 @@
        `display:block` inline (composed before this one, so this wins), and a
        class cannot beat it - without the flex column the foot anchor's auto
        margin resolves to zero on every real conversation. -->
-  <VList
-    class="conv"
-    style="display:flex;flex-direction:column"
-    data={held.turns}
-    getKey={(turn: HeldTurn) => turn.key}
-    itemProps={({ item }: { item: HeldTurn }) =>
-      item.key === arriving ? { class: 'arriving' } : undefined}
-    {shift}
-    onscroll={scrolled}
-    {@attach scrollViewport}
-    bind:this={list}
-  >
-    {#snippet children(turn: HeldTurn)}
-      <!-- `data-t` names the wrapper for the turn it draws, which is how the
+    <VList
+      class="conv"
+      style="display:flex;flex-direction:column"
+      data={held.turns}
+      getKey={(turn: HeldTurn) => turn.key}
+      itemProps={({ item }: { item: HeldTurn }) => ({
+        ...(item.key === arriving ? { class: 'arriving' } : {}),
+        // **A row the list has not measured is drawn, not hidden.** virtua
+        // paints the slot and sets `visibility: hidden` until a row reports its
+        // height, which is the black a fast scroll meets (#2398); the style
+        // rides after its own, so this draws the row at the estimate and the
+        // measurement corrects it. The foot's pin and the parked anchor both
+        // absorb that correction.
+        style: { visibility: 'visible' },
+      })}
+      {shift}
+      onscroll={scrolled}
+      {@attach scrollViewport}
+      bind:this={list}
+    >
+      {#snippet children(turn: HeldTurn)}
+        <!-- `data-t` names the wrapper for the turn it draws, which is how the
            foot's reservation check finds the newest row's box - the row's own
            keys ride its units, and a held turn has none. -->
-      <div
-        class="turn"
-        data-t={turn.key}
-        style:min-height={turn.held ? heldReserve(rowSizes.sizeOf(turn.key)) : undefined}
-        {@attach (node: HTMLElement) => measureTurn(node, turn.key)}
-      >
-        <Turn
-          {turn}
-          {slot}
-          turns={held.turns}
-          carried={turn.key === newest ? (pinned?.key ?? null) : null}
-          onreadoutput={readOutput}
-        />
-        <!-- The echo rides the newest row, which is where the words will land:
+        <div
+          class="turn"
+          data-t={turn.key}
+          style:min-height={turn.held ? heldReserve(rowSizes.sizeOf(turn.key)) : undefined}
+          {@attach (node: HTMLElement) => measureTurn(node, turn.key)}
+        >
+          <Turn
+            {turn}
+            {slot}
+            turns={held.turns}
+            carried={turn.key === newest ? (pinned?.key ?? null) : null}
+            onreadoutput={readOutput}
+          />
+          <!-- The echo rides the newest row, which is where the words will land:
              the row it is drawn in is the one the core's own copy opens or
              joins, so nothing moves when the send is taken. -->
-        {#if echo !== undefined && turn.key === newest}
-          <Echo {echo} onretry={retry} />
-        {/if}
-      </div>
-    {/snippet}
-  </VList>
-  <!-- The way back to the foot, shown ONLY while the reader is away from it:
+          {#if echo !== undefined && turn.key === newest}
+            <Echo {echo} onretry={retry} />
+          {/if}
+        </div>
+      {/snippet}
+    </VList>
+    <!-- An older page in flight, said at the column's top edge: the wheel is
+       clamped at the top for as long as the ask takes, and with nothing drawn
+       the column reads as a dead scroll rather than as one waiting on a
+       page (#2398). It stands over the rows and takes no pointer. -->
+    {#if outstanding > 0}
+      <div class="older-loading" role="status">Loading older messages…</div>
+    {/if}
+    <!-- The way back to the foot, shown ONLY while the reader is away from it:
        following means the newest row is on screen, so its presence is the
        state read at a glance and its click is the whole way back - at the
        foot and following again, in one move. -->
-  {#if !held.following}
-    <button
-      class="follow"
-      type="button"
-      title="back to the latest"
-      onclick={() => {
-        working?.following(true);
-        anchor = null;
-        land();
-      }}
-    >
-      <Icon name="down" />
-    </button>
+    {#if !held.following}
+      <button
+        class="follow"
+        type="button"
+        title="back to the latest"
+        onclick={() => {
+          working?.following(true);
+          anchor = null;
+          land();
+        }}
+      >
+        <Icon name="down" />
+      </button>
+    {/if}
   {/if}
-{/if}
-<!-- The waiting prompts stand in EVERY conversation state, not only under the
+  <!-- The waiting prompts stand in EVERY conversation state, not only under the
      list: a seat coming up, refused, not yet read or empty holds the same tree,
      tasks and watchers as one mid-turn. The strip and the box are one surface
      now, drawn by the composer - the column publishes its pinned row through
      `pinnedRow` and nothing else stands at this foot. -->
-{#if queue !== undefined}{@render queue()}{/if}
+  {#if queue !== undefined}{@render queue()}{/if}
+</div>

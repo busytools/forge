@@ -1290,6 +1290,11 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
    it and none is left standing alone; the tier that folds the then-first fact
    moves the dot off the one that becomes first. */
 .sess .facts > .fact + .fact::before { content: '\00b7'; color: var(--line); margin-right: 13px; }
+/* The conversation's own box, below the seat's header: the list scrolls
+   inside it and the queue stands at its foot, and the states the column pins
+   to an edge - the older-page line at the top, the way back at the foot -
+   have this as their containing block rather than the page's column. */
+.conv-body { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 /* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
    book page; a terminal draws one row per line at 1.231em of its own text
    size, and 1.35 is nearer that without sitting on it - a browser still has to
@@ -2041,6 +2046,15 @@ details.leaf.running > summary { color: var(--text); }
 .shot img { max-width: 100%; max-height: 320px; display: block;
   border: 1px solid var(--line); border-radius: 6px; }
 .shot .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 5px; }
+
+/* The older-history ask, said at the column's top edge: while a page is in
+   flight the wheel is clamped at the top of the loaded window, so the state
+   has to be drawn or the column reads as dead scroll (#2398). It stands over
+   the rows and takes no pointer. */
+.older-loading { position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 6; pointer-events: none; padding: 3px 10px; border-radius: var(--r);
+  border: 1px solid var(--line); background: var(--s2); color: var(--muted);
+  font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap; }
 
 /* The way back to the foot, over the column's corner while the reader is away
    from it: a request, not a status - the state is that it is there at all. */

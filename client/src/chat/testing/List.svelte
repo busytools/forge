@@ -49,6 +49,20 @@
     return getKey === undefined ? `${at}` : getKey(row);
   }
 
+  /**
+   * An item's style as the real list lands it: virtua merges a style RECORD
+   * into its own and stringifies the pair, so a spread alone here would put
+   * an object where a CSS string belongs.
+   */
+  function cssOf(style: unknown): string | undefined {
+    if (typeof style === 'string') return style;
+    if (style === null || typeof style !== 'object') return undefined;
+    return Object.entries(style)
+      .filter(([, value]) => value !== null && value !== undefined)
+      .map(([name, value]) => `${name}:${value}`)
+      .join(';');
+  }
+
   // Where virtua reads it: before the DOM updates, on the change itself.
   $effect.pre(() => {
     records.push({ length: data.length, shift });
@@ -203,7 +217,16 @@
 
 <div class="conv" {@attach container} {...rest}>
   {#each data as row, at (keyOf(row, at))}
-    <div class="turn" {@attach itemBox(at)} {...itemProps?.({ item: row, index: at }) ?? {}}>
+    {@const attrs = itemProps?.({ item: row, index: at }) ?? {}}
+    <!-- The base class is the stub's own and every test's selector, so an
+         item's class joins it rather than replacing it. The real list's item
+         carries no base class, which is why this only matters here. -->
+    <div
+      {@attach itemBox(at)}
+      {...attrs}
+      class="turn {attrs.class ?? ''}"
+      style={cssOf(attrs.style)}
+    >
       {@render children?.(row)}
     </div>
   {/each}

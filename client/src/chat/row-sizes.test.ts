@@ -44,6 +44,45 @@ describe('the column memory of what each row measured', () => {
   });
 });
 
+describe('the middle height a page is sized by', () => {
+  it('is the middle value of an odd count', () => {
+    const rows = sizes();
+    for (const [key, height] of [
+      ['a', 300],
+      ['b', 900],
+      ['c', 600],
+    ] as const) {
+      rows.remember(key, height);
+    }
+    expect(rows.median(), 'the middle measurement, not a mean').toBe(600);
+  });
+
+  it('is the mean of the two middles on an even count', () => {
+    const rows = sizes();
+    for (const [key, height] of [
+      ['a', 200],
+      ['b', 400],
+      ['c', 600],
+      ['d', 800],
+    ] as const) {
+      rows.remember(key, height);
+    }
+    expect(rows.median(), 'the pair either side of the middle').toBe(500);
+  });
+
+  it('says nothing before any row measured, so a caller keeps its own default', () => {
+    expect(sizes().median(), 'no measurements, no median').toBeUndefined();
+  });
+
+  it('is one giant turn among many and not the page after it', () => {
+    // The transcript's own shape: most turns short, one enormous tool output.
+    const rows = sizes();
+    for (let at = 0; at < 9; at += 1) rows.remember(`t${at}`, 300);
+    rows.remember('giant', 20000);
+    expect(rows.median(), 'a median is what a page can be sized by').toBe(300);
+  });
+});
+
 describe('what a held row reserves', () => {
   it('comes back at the height it measured, which is the shake the hold exists for', () => {
     expect(heldReserve(512), 'a measured row holds its own space').toBe('512px');
