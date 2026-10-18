@@ -17,6 +17,7 @@
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -25,7 +26,11 @@ use tokio::sync::Mutex;
 #[cfg(desktop)]
 use super::StackPaths;
 use super::custom;
+#[cfg(target_os = "android")]
+use super::driver;
 use super::driver::{Driver, ReplyPart};
+#[cfg(desktop)]
+use super::visibility;
 
 /// The session a browser ask is made for, as the ask carries it.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash, serde::Serialize)]
@@ -135,6 +140,9 @@ impl Profile {
     /// One call through this profile's driver, rebuilt when it is not there,
     /// when it died, or when the browser it was built against moved.
     ///
+    /// **A hidden tab is named before it reads as a wedge on the desktop**,
+    /// where the person can bring the tab to front; the phone's page cannot
+    /// be raised that way, so its calls run as they always have.
     pub(super) async fn call(
         &self,
         start: &DriverStart<'_>,
@@ -143,7 +151,14 @@ impl Profile {
     ) -> Result<Vec<ReplyPart>, String> {
         let mut held = self.held.lock().await;
         let driver = live_driver(&mut held, start).await?;
-        routed_call(&driver, tool, &args).await
+        #[cfg(desktop)]
+        {
+            visibility::dispatch(&driver, tool, &args).await
+        }
+        #[cfg(target_os = "android")]
+        {
+            routed_call(&driver, tool, &args, driver::CALL_TIMEOUT).await
+        }
     }
 
     /// Forget the driver, so the next call builds a fresh one. Called when a
@@ -191,13 +206,28 @@ pub struct Named {
     pub(super) dir: std::path::PathBuf,
 }
 
+/// The call's own shape fault, before any page is consulted: a malformed
+/// call is its argument error, not the visibility gate's. Desktop only, with
+/// the gate that consults it.
+#[cfg(desktop)]
+pub(super) fn routing_refusal(tool: &str, args: &Value) -> Option<String> {
+    custom::route(tool, args).err()
+}
+
 /// Route one call the way the host always has: upstream's own tool, or the
-/// snippet this client composes for an addition.
-async fn routed_call(driver: &Driver, tool: &str, args: &Value) -> Result<Vec<ReplyPart>, String> {
+/// snippet this client composes for an addition. `bound` is the call's own -
+/// the visibility gate's input calls ask for less than the driver's default
+/// so the probe after a failure fits.
+pub(super) async fn routed_call(
+    driver: &Driver,
+    tool: &str,
+    args: &Value,
+    bound: Duration,
+) -> Result<Vec<ReplyPart>, String> {
     match custom::route(tool, args)? {
-        custom::Routed::Upstream { tool, args } => driver.call(&tool, args).await,
+        custom::Routed::Upstream { tool, args } => driver.call_within(&tool, args, bound).await,
         custom::Routed::Snippet(code) => {
-            driver.call("browser_run_code_unsafe", json!({ "code": code })).await
+            driver.call_within("browser_run_code_unsafe", json!({ "code": code }), bound).await
         }
     }
 }

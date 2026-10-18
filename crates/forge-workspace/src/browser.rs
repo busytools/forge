@@ -23,7 +23,10 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 /// 15 s) and one tool call (`driver`'s `CALL_TIMEOUT`, 150 s) - 180 s end to
 /// end, and the constant below keeps the retired hint mask's 15 s and its
 /// failure flush's 5 s on top, as headroom rather than as layers still
-/// there. It is a wedge-breaker,
+/// there; **the visibility probe and a failed call's re-probe ride that
+/// headroom**: an input call's action bound is 148 s, so its segment is
+/// 2+148+2 = 152 s, two over the driver's own call bound. It is a
+/// wedge-breaker,
 /// not a ceiling on every call:
 /// a second ask on one profile queues behind the first call's own lock (up
 /// to the 150 s call bound), and a call waiting on a relaunch can wait
@@ -34,7 +37,11 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 // one driver call. The desktop is 15+15+150 (launch, handshake, call) = 180 s,
 // and the hint mask and the failure flush that rode it retired with the
 // headless launch - their 20 s stays in the constant as headroom, not as
-// layers - and
+// layers - and **the visibility probe rides the ask's headroom**: an input
+// call gives the probe 2 s before its action, whose own bound is trimmed to
+// 148 s so the re-probe after a failure (2 s) fits, making the call's
+// segment 2+148+2 = 152 s - two over the driver's own call bound and inside
+// this constant's headroom - and
 // NEITHER this nor the phone's sum is a ceiling the bound contains: a cold,
 // contested desktop launch reaches about 37 s for its launch segment alone
 // (the launch lock's 15+2, and the port's 15), and
@@ -595,7 +602,9 @@ mod tests {
     /// it.** The desktop client's own typical bounds are a launch (15 s), a
     /// driver handshake (15 s) and one tool call (150 s) - 180 s, with the
     /// hint mask and its failure flush retired along with the headless
-    /// launch and their 20 s of the constant kept as headroom; a cold
+    /// launch and their 20 s of the constant kept as headroom; the
+    /// visibility probe and a failed call's re-probe (2 s each) ride that
+    /// headroom, an input call's segment being 2+148+2 = 152 s; a cold
     /// contested launch reaches about 37 s for the launch segment alone (the
     /// lock's 15+2 and the port's 15), so the desktop's real worst sits
     /// above it. An Android
@@ -613,6 +622,12 @@ mod tests {
             ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 150),
             "the ask's bound must clear the desktop client's launch, handshake and call bounds: \
              {ASK_TIMEOUT:?}",
+        );
+        assert!(
+            ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 2 + 148 + 2),
+            "the desktop client's visibility probe (2 s), input call (148 s, its action bound \
+             below the driver's own) and the re-probe after its failure (2 s) ride the same \
+             segment and must clear too: {ASK_TIMEOUT:?}",
         );
         assert!(
             ASK_TIMEOUT >= Duration::from_secs(40 + 10 + 150),
