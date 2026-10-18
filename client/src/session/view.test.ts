@@ -6,6 +6,7 @@ import { FORGE_COMMANDS } from '../composer/forge-commands';
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
+import { rankOf } from '../home/view';
 import { repoPath } from '../repo';
 import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
@@ -29,7 +30,6 @@ import {
   railFooter,
   railGroups,
   railMark,
-  rankOf,
   reviewRows,
   reviewSets,
   type RailGroup,

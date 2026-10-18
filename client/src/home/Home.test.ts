@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { render } from 'svelte/server';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -143,8 +145,20 @@ describe('the home page as it draws', () => {
    * server that disagrees on it refuse each other (`socket.ts` checks the
    * greeting), so the number belongs where a mismatch would be looked for.
    */
-  it('names the socket protocol in the header', () => {
-    expect(draw(), 'the protocol this app speaks').toContain(`socket v${PROTOCOL_VERSION}`);
+  it('names each build in the header, and the protocol they speak', () => {
+    // A distinctive server build, so a template that copied the client's line
+    // into the server slot cannot pass on two identical versions.
+    const body = draw({ wire: { ...homeWire, forge_version_short: '9.8.7' } });
+    // Each build is a labelled pair, which is what tells server, client and
+    // claude apart: a bare version beside another build cannot be read.
+    expect(body, 'the server is named with its own build').toContain(
+      '<span class="k">server</span> <b>v9.8.7</b>',
+    );
+    expect(body, 'the client is named').toMatch(/class="k">client<\/span> <b>v[^<]+<\/b>/);
+    expect(body, 'the protocol is named').toMatch(
+      new RegExp(`class="k">socket</span> <b>v${PROTOCOL_VERSION}</b>`),
+    );
+    expect(body, 'the CLI is named').toMatch(/class="k">claude<\/span> <b>v1\.0\.0<\/b>/);
   });
 
   it('announces an update only when the published version is newer', () => {
@@ -189,6 +203,103 @@ describe('the home page as it draws', () => {
     expect(body).toContain('class="fleet-row"');
     expect(body).toContain('>proj</a>');
     expect(body, 'and the board keeps its own control').toContain('href="/board/TestOrg/proj"');
+    // The row is the only hover target (the link stretches over it), so its
+    // title is where the truncated name and tree read live.
+    expect(body, 'the row tooltip keeps the full read').toContain(
+      'title="proj - its working directory is not there - when the project last moved"',
+    );
+  });
+
+  /**
+   * **The fleet reads in the rail's three sections.** The home used to list
+   * every project flat, so a sleeping project drew a hollow mark and no word
+   * for it. The grouping is `fleetGroups`' and the headings are the rail's
+   * own, so the two surfaces state a project's state the same way.
+   */
+  it("groups the fleet under the rail's headings", () => {
+    const body = draw();
+    // The fixture's one lead holds a permission ask.
+    expect(body, 'the ask puts the project under needs you').toContain('class="state needs"');
+    expect(body, 'the heading carries its count').toMatch(/needs you <span class="n">1<\/span>/);
+    expect(body, 'nothing asleep draws no fold').not.toContain('class="gfold"');
+  });
+
+  /**
+   * **The asleep section folds behind its count, and starts expanded here.**
+   * The rail keeps its own folded; on the home the fleet is the page, so the
+   * quiet half is shown, with the fold there for a reader who wants it out of
+   * the way. The count says the section is not empty when it is closed.
+   */
+  it('folds the asleep section behind its count', () => {
+    const [project] = homeWire.projects;
+    const [fleet] = homeWire.fleet;
+    if (project === undefined || fleet === undefined) {
+      throw new Error('the fixture holds no project');
+    }
+    const body = draw({
+      wire: {
+        ...homeWire,
+        projects: [
+          ...homeWire.projects,
+          {
+            ...project,
+            project: {
+              ...project.project,
+              key: 'TestOrg-notes',
+              name: 'notes',
+              path: '/p/notes',
+              display_path: '/p/notes',
+            },
+          },
+        ],
+        fleet: [...homeWire.fleet, { ...fleet, project: 'notes', live_workers: 0 }],
+      },
+    });
+    const at = body.indexOf('<details');
+    const fold = body.slice(at, body.indexOf('</details>'));
+    expect(at, 'the asleep section is a fold').toBeGreaterThan(-1);
+    expect(fold.slice(0, fold.indexOf('>')), 'the home shows the asleep half expanded').toContain(
+      'open',
+    );
+    expect(fold, 'the asleep heading is the fold').toContain('asleep');
+    expect(fold, 'the count is what the fold hides').toMatch(
+      /asleep<\/span> <span class="cn">1<\/span>/,
+    );
+    // The mark crosses into the summary as a dot class; the view test pins
+    // the value, this pins the wiring, which the prop can lose silently. The
+    // summary alone: the rows inside the fold wear dots of their own.
+    const summary = fold.slice(0, fold.indexOf('</summary>'));
+    expect(summary, "the fold wears the group's dot").toContain('<span class="dot off"></span>');
+    expect(fold, 'and the sleeping project is inside it').toContain('>notes</a>');
+    expect(body.slice(0, at), 'the needs-you row is not folded').toContain('>proj</a>');
+  });
+
+  /**
+   * **The count's name is not a page name.** `.files` was the files page's
+   * root, and the home's changed-file count wears the same class: the page's
+   * `height: 100dvh` stretched the first fleet row to 954px and left an empty
+   * band between its branch and its project. The page root is `files-page`;
+   * a bare `.files` rule is that regression coming back.
+   *
+   * The scan reads rule heads at the start of a line and splits their
+   * selector lists, so `.files, .other` cannot slip past; a head written
+   * inline inside an at-rule is still its blind spot.
+   */
+  it('keeps the changed-file count out of a page-wide .files rule', () => {
+    const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
+    expect(sheet, 'the sheet is read').toContain('.fleet-where .files');
+    expect(sheet, 'the page root is namespaced').toContain('.files-page {');
+    expect(
+      readFileSync(new URL('../files/Files.svelte', import.meta.url), 'utf8'),
+      'and the page wears it',
+    ).toContain('class="files-page"');
+    const heads = sheet
+      .split('\n')
+      .filter((line) => line.includes('{') && !line.trim().startsWith('@'))
+      .flatMap((line) => (line.split('{')[0] ?? '').split(','))
+      .map((part) => part.trim())
+      .filter((part) => /^\.files(:[a-z-]+)?$/.test(part));
+    expect(heads, 'a bare .files rule reaches the fleet count').toEqual([]);
   });
 
   /**
@@ -331,7 +442,9 @@ describe("the client's own update", () => {
 
     const body = draw();
     expect(body).toContain('v9.9.9 available');
-    expect(body, 'the notice is text where it should be a control').toMatch(/<button[^>]*>client /);
+    expect(body, 'the notice is text where it should be a control').toMatch(
+      /<button[^>]*>[^<]*v9\.9\.9 available/,
+    );
   });
 
   it('draws none of it on a build that is current', () => {
@@ -344,7 +457,7 @@ describe("the client's own update", () => {
     const body = draw();
     expect(body).toContain('v9.9.9 updating...');
     expect(body, 'the stage offers an action while one is already in flight').not.toMatch(
-      /<button[^>]*>client /,
+      /<button[^>]*>[^<]*v9\.9\.9/,
     );
   });
 
@@ -379,10 +492,12 @@ describe("the client's own update", () => {
     updateState.set({ stage: 'web', latest: '9.9.9' });
 
     const body = draw();
-    expect(body).toContain(`client v${CLIENT_VERSION}`);
+    expect(body, 'the client is named with its build').toContain(
+      `<span class="k">client</span> <b>v${CLIENT_VERSION}</b>`,
+    );
     expect(body).toContain('latest v9.9.9');
     expect(body, 'a browser build drew a control it cannot use').not.toMatch(
-      /<button[^>]*>client /,
+      /<button[^>]*>[^<]*v9\.9\.9/,
     );
   });
 
@@ -390,7 +505,9 @@ describe("the client's own update", () => {
     updateState.set({ stage: 'web', latest: null });
 
     const body = draw();
-    expect(body).toContain(`client v${CLIENT_VERSION}`);
+    expect(body, 'the client is named with its build').toContain(
+      `<span class="k">client</span> <b>v${CLIENT_VERSION}</b>`,
+    );
     expect(body).not.toContain('latest v');
   });
 });

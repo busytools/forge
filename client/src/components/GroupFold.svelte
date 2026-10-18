@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
-  import Chevron from '../components/Chevron.svelte';
+  import Chevron from './Chevron.svelte';
 
   /**
    * A rail heading that folds what it holds: the asleep half of the fleet.
@@ -21,19 +21,27 @@
     count,
     mark = null,
     holds = false,
+    startOpen = false,
     children,
   }: {
     heading: string;
     count: number;
     mark?: string | null;
     holds?: boolean;
+    /**
+     * Whether the fold starts open when nothing moves in behind it. The rail
+     * keeps its asleep section folded; the home shows the same section
+     * expanded, because there the fleet is the page rather than a column
+     * beside it.
+     */
+    startOpen?: boolean;
     children: Snippet;
   } = $props();
 
   // Read once, through a call, as the inspector's own sections take theirs:
   // this is what the fold opens on first render, and the effect below is what
   // keeps it open when the seat arrives later.
-  const startsOpen = () => holds;
+  const startsOpen = () => holds || startOpen;
   let open = $state(startsOpen());
   $effect(() => {
     if (holds) open = true;

@@ -889,7 +889,7 @@
   });
 </script>
 
-<div class="files">
+<div class="files-page">
   <header class="files-top">
     <a class="files-back" href={hrefForSlot(slot)}>&lt;- session</a>
     <h1>Files</h1>

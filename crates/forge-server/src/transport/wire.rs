@@ -97,10 +97,10 @@ pub struct HomeWire {
     pub cli_version: Option<Value>,
     /// The forge build serving this socket: the full stamp and the short one.
     ///
-    /// **A client draws these rather than its own package version.** The
-    /// header states which forge commit is RUNNING, and the client is a
-    /// different program with a version of its own - so a client rendering
-    /// `env!("CARGO_PKG_VERSION")` would name itself in a header about forge.
+    /// **A client draws the short one as its `server` build, beside its own
+    /// labelled `client` build.** The header states which forge commit is
+    /// RUNNING, and the client is a different program with a version of its
+    /// own, so the two are named apart rather than one standing for both.
     pub forge_version: String,
     pub forge_version_short: String,
     pub service_status: Option<Value>,

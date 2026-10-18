@@ -22,8 +22,11 @@ import {
   chipFor,
   elapsedLabel,
   gateLine,
+  GROUP_HEADINGS,
+  groupClassOf,
   placeOf,
   projectRows,
+  rankOf,
   stateOf,
   whenOf,
 } from '../home/view';
@@ -727,36 +730,6 @@ function permClass(mode: string): string {
 }
 
 /**
- * Where a row sits in the rail. The three groups are also the order they read
- * in, so the rank is the order and the array index both.
- */
-export function rankOf(
-  state: RowState,
-  pending: 'question' | 'permission' | 'hand_off' | null,
-): number {
-  // An ask outranks the lifecycle: a session holds a prompt while the core
-  // still calls it idle, and what it is waiting on is a person.
-  if (pending !== null) return 0;
-  if (state.kind === 'unseen') return 1;
-  // A failed turn is the seat's own version of a needed person, so it ranks
-  // with the attention states rather than with the completions - and so does
-  // a death the reader has not been shown.
-  if (state.kind === 'failed-turn' || state.kind === 'died') return 0;
-  if (state.kind === 'never-started') return 2;
-  switch (state.lifecycle) {
-    case 'Attention':
-    case 'Failed':
-    case 'AuthRequired':
-      return 0;
-    case 'Sleeping':
-    case 'LoggedOut':
-      return 2;
-    default:
-      return 1;
-  }
-}
-
-/**
  * The line a failed row draws under itself: the core's recorded reason, or the
  * fallback for a failure it left no text for.
  *
@@ -828,22 +801,18 @@ export function railGroups(
   now: number,
   closing: (slot: SessionSlot) => boolean = () => false,
 ): RailGroup[] {
-  const groups: RailGroup[] = [
-    {
-      heading: 'needs you',
-      klass: 'state needs',
-      hidden: null,
-      holds: false,
-      mark: null,
-      projects: [],
-    },
-    { heading: 'working', klass: 'state', hidden: null, holds: false, mark: null, projects: [] },
+  const groups: RailGroup[] = GROUP_HEADINGS.map((heading, rank) => ({
+    heading,
+    klass: groupClassOf(rank),
     // The sleeping half of the fleet is the one nobody is working in, so it is
     // the one heading that folds: everything under it is still counted on the
     // heading, because a fold that reads as an empty section is worse than no
     // fold at all.
-    { heading: 'asleep', klass: 'state', hidden: 0, holds: false, mark: null, projects: [] },
-  ];
+    hidden: rank === 2 ? 0 : null,
+    holds: false,
+    mark: null,
+    projects: [],
+  }));
 
   for (const entry of home.projects) {
     const { lead, workers } = projectRows(home, entry);

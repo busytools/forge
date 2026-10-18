@@ -22,9 +22,18 @@ nothing to draw, and the client never falls back to bundled data.
 |---|---|---|
 | Stopped | the core's last fatal, above everything else: `forge stopped:` and the core's own words | `fatal_error` |
 | Upstream | the core's held service status, above the band and only when there is one: `claude status` and the status line's own words, in the warn tone or the bad one an error report takes | `service_status` |
-| Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, the CLI's update notice, this app's own update line (or, in a browser, the build and the latest published), and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents` and `projects` counted |
+| Header | the brand mark, `forge`, and the three builds as labelled pairs - `server` (the forge serving the socket), `client` (this app) and `claude` (the CLI both drive) - with `socket` and its protocol beside them; each update notice sits on the build it belongs to (in a browser, the latest published), and the fleet totals close the line | `ClientSettings.mark` from the greeting; `forge_version_short`; `CLIENT_VERSION`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents` and `projects` counted |
 | Band | five cards: the gateway listener, the client's own address, dictation, the account pool, and the extensions | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading`, the `extensions` subject |
+| Fleet sections | up to three sections, the rail's own: `needs you`, `working` and `asleep`, each appearing when it holds a project and carrying its count; the asleep section starts expanded here but folds behind its count when closed, so the page can put the quiet half away | the same rank the rail groups by, read from each project's strongest seat - an ask first, then a run, then a sleep |
 | Fleet row | one per project: the strongest seat mark, the project, its branch and changed-file count, when it last moved (the newest write among its seats and the sessions its catalog remembers, `now`/`3h`/`2d`, or `never` for a project with neither a seat nor a session behind it), its seats, `live of cap slots · queue · on you`, the named misses, and the ways in - the row itself, each seat, and the board | `fleet` for the counts and the misses; `projects` for the tree; `agents` and `projects[].sessions` for the seats and the age |
+
+The fleet reads in the same three sections the session rail draws, ranked
+from each project's strongest seat: a worker holding an ask lifts its project
+into `needs you` even when the lead is idle, and a project with no live seat
+ranks asleep. The asleep section folds, like the rail's, but starts expanded
+on this page - the rail keeps its own folded, because there the fleet is a
+column beside the conversation rather than the page itself. Its count rides
+the heading, so a closed section cannot read as an empty one.
 
 Every cell of a fleet row is the server's own read. The mark is the
 strongest of the project's seat states, drawn with the same shapes a seat
@@ -59,9 +68,11 @@ the page behind it), **a warning** when something is stale, naming how many
 updates wait, and **quiet** when nothing is, naming the marketplaces the
 card draws nothing of.
 
-**The header draws the forge build, not this app's own version.** The header
-states which forge is serving, and the client is a different program, so the
-version in the shell crate's own manifest would name the wrong thing.
+**The header names each build it draws.** `server` is the forge serving the
+socket (the build in `forge_version_short`), `client` is this app's own build,
+`socket` is the protocol they speak, and `claude` is the CLI both drive. The
+labels keep one build's version from being read as another's, and each update
+notice sits beside the build it belongs to.
 
 **The band's server card is the way back to the connect screen** (Ved,
 2026-10-12): the card names the forge this client is on - `host:port`, as a
@@ -132,9 +143,10 @@ seat's conversation), so its line is the words `a turn failed`.
   has one strictly newer than the installed CLI. Both sides have to resolve
   for it to appear at all, so a probe that answered one of them draws
   nothing rather than claiming an update it cannot see.
-- **This app's own update**: the header draws `client ↑ vX available` when a
-  newer release is published, checked once at launch. It is a control, where
-  the CLI notice beside it is not: clicking installs the update and the line
+- **This app's own update**: the header draws `↑ vX available` beside the
+  `client` pair when a newer release is published, checked once at launch. It
+  is a control, where the CLI notice beside it is not: clicking installs the
+  update and the line
   becomes `ready - restart to finish`, which is the click that swaps into the
   new build. On the phone the same click downloads and checks the APK and the
   line becomes `ready - install it`, which hands it to the system installer;

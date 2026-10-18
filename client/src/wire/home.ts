@@ -362,7 +362,7 @@ export interface HomeWire {
   connectors: unknown;
   dictate: DictateWire;
   cli_version: { installed: string | null; latest: string | null } | null;
-  /** The forge build serving the socket, which a client draws rather than its own. */
+  /** The forge build serving the socket, drawn as the header's `server` pair. */
   forge_version: string;
   forge_version_short: string;
   /**

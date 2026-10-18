@@ -7,7 +7,7 @@ import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import GroupFold from './GroupFold.svelte';
+import GroupFold from '../components/GroupFold.svelte';
 import Rail from './Rail.svelte';
 import SessionId from './SessionId.svelte';
 import SleeperFold from './SleeperFold.svelte';

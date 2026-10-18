@@ -59,9 +59,10 @@ build is named where the greeting carried it: a server ahead carries it,
 and an older one may speak a protocol from before the field existed.
 
 `forge_version` and `forge_version_short` are the build serving the
-socket, in the two forms the header draws. They ride here because the
-greeting is the only channel both halves are guaranteed to have, so a skew
-that could name only a number would name nothing a person can act on.
+socket, the full stamp and the short one; the header draws the short one as
+its `server` build. They ride here because the greeting is the only channel
+both halves are guaranteed to have, so a skew that could name only a number
+would name nothing a person can act on.
 
 `settings` carries `forge.toml`'s `[client]` keys: the three names -
 `mark`, `theme` and `font` - and the idle release's pair,
@@ -545,7 +546,7 @@ facts a row is drawn from.
 | `connectors`                           | The connector liveness: Gotify's connection, Slack's workspaces and whether the stored subscription set failed to load. **What a project is subscribed to is not here** - those sets are per project and ride the project's own row.                                                                                                                                                                         |
 | `dictate`                              | Whether dictation is on, the per-model fetch and load state, and where the models land.                                                                                                                                                                                                                                                                                                                      |
 | `cli_version`                          | The installed and latest `claude` versions.                                                                                                                                                                                                                                                                                                                                                                  |
-| `forge_version`, `forge_version_short` | Which forge build is serving the socket. A client draws these rather than its own version.                                                                                                                                                                                                                                                                                                                   |
+| `forge_version`, `forge_version_short` | Which forge build is serving the socket. A client draws it as the `server` build beside its own `client` build.                                                                                                                                                                                                                                                                                              |
 | `service_status`                       | The statuspage's last answer, `null` for healthy or unreachable.                                                                                                                                                                                                                                                                                                                                             |
 | `fatal_error`                          | The last fatal error the core held, `null` when there has been none.                                                                                                                                                                                                                                                                                                                                         |
 
