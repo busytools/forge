@@ -488,6 +488,14 @@ mod tests {
             ),
             "the instructions name the board's shape: {TASK_BOARD_INSTRUCTIONS}",
         );
+        // The archive case rides the shape too (#2377): a later edit
+        // dropping "completing the ROOT row ... archives the tree" would
+        // leave the carve-out pointing at a close signal nothing acts on.
+        assert!(
+            TASK_BOARD_INSTRUCTIONS
+                .contains("completing the ROOT row of an epic closes it and archives the tree"),
+            "the instructions state the archive that closes an epic: {TASK_BOARD_INSTRUCTIONS}",
+        );
     }
 
     fn forge_server_families(

@@ -8534,6 +8534,11 @@ mod lead_charter_tests {
                  state its epic's close depends on",
                 "the close-epics bullet states what the delete is for",
             ),
+            (
+                "completing the ROOT row closes it and archives the tree",
+                "the archive that closes an epic is pinned, so the carve-out's close signal \
+                 has an action behind it",
+            ),
         ] {
             assert!(
                 DEFAULT_LEAD_CHARTER.contains(clause),
@@ -8684,11 +8689,14 @@ mod lead_charter_tests {
         // for it in `tasks__update`. The landed-row rule legitimately uses
         // the verb - "is deleted in the same pass", `tasks__delete` named
         // in the same clause - so the ban is the status spelling: the
-        // backticked form, or the word standing as a state name.
-        for spelling in ["`deleted`", "deleted status", "status deleted"] {
+        // backticked form, the word named as a status, or stated as a value
+        // ("status: deleted", "set to deleted").
+        for spelling in
+            ["`deleted`", "deleted status", "status deleted", "status: deleted", "to deleted"]
+        {
             assert!(
                 !DEFAULT_LEAD_CHARTER.to_lowercase().contains(spelling),
-                "`deleted` as a status is the CLI's, not one of forge's: {DEFAULT_LEAD_CHARTER}",
+                "the charter names `deleted` as a status ({spelling}): {DEFAULT_LEAD_CHARTER}",
             );
         }
     }

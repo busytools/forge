@@ -1280,7 +1280,8 @@ mod tests {
                  a landed row under an epic - open or already terminal - is completed and \
                  left terminal, because the epic reads `to close` only once every child is \
                  terminal (a verify=user child parks in waiting on the user and counts only \
-                 once the user approves)",
+                 once the user approves); and completing the epic's ROOT row closes it and \
+                 archives the whole tree",
             ),
             (
                 "tasks__delete",
