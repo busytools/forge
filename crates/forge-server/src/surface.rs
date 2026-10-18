@@ -743,6 +743,39 @@ mod tests {
              for the session it could not place: {no_cwd:?}",
         );
     }
+
+    /// The viewer's route hands the seat's project's vault roots to the
+    /// read, so a document the hand-off accepted opens here too - and a
+    /// path outside the tree and every root keeps the refusal. Dropping
+    /// the roots from the read call fails this on the first read.
+    #[test]
+    fn the_viewer_route_reads_a_document_under_the_seats_vault_roots() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        let vault = tempfile::tempdir().expect("tempdir");
+        std::fs::write(vault.path().join("plan.md"), b"# plan\n").expect("the vault document");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        std::fs::write(elsewhere.path().join("x.md"), b"x").expect("the outside document");
+        let (workspace, _dir) =
+            crate::surface::testing::workspace_with_vault_roots(tree.path(), vault.path());
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let seat = SessionSlot::lead("TestOrg", "forge");
+
+        let vaulted = vault.path().join("plan.md");
+        let document = surface
+            .read_document(&seat, &vaulted.to_string_lossy(), false)
+            .expect("the vault document opens");
+        assert_eq!(document.bytes, b"# plan\n");
+        assert_eq!(document.path, vaulted.canonicalize().expect("canonical"), "resolved");
+
+        let outside = elsewhere.path().join("x.md");
+        let refusal = surface
+            .read_document(&seat, &outside.to_string_lossy(), false)
+            .expect_err("outside the tree and every root");
+        assert!(
+            refusal.contains("resolves outside the session's tree"),
+            "the refusal sentence, unchanged: {refusal}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -786,6 +819,45 @@ models_dir = \"/tmp/forge-dictate-models\"
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge/");
         std::fs::write(forge.join("forge.toml"), CONFIG).expect("write forge.toml");
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
+        workspace.install_db_for_test(
+            forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        (Arc::new(workspace), dir)
+    }
+
+    /// A workspace whose one project is rooted at `root` and declares
+    /// `vault_roots`, its store open. Both come from `forge.toml`, so
+    /// the seat's cwd and its vault roots resolve the way production's
+    /// do.
+    pub(crate) fn workspace_with_vault_roots(
+        root: &std::path::Path,
+        vault: &std::path::Path,
+    ) -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        let config = format!(
+            "\
+[[orgs]]
+name = \"TestOrg\"
+accounts = [\"Granite\"]
+
+[[orgs.projects]]
+name = \"forge\"
+path = \"{}\"
+vault_roots = [\"{}\"]
+
+[[accounts]]
+display_name = \"Granite\"
+token = \"t\"
+models = [\"claude-sonnet-5\"]
+provider = \"anthropic\"
+",
+            root.display(),
+            vault.display(),
+        );
+        std::fs::write(forge.join("forge.toml"), config).expect("write forge.toml");
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
         workspace.install_db_for_test(
             forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
