@@ -273,6 +273,9 @@ describe('the language a fence names', () => {
     expect(fenceLanguage('rust')).toBe('rust');
     expect(fenceLanguage('toml')).toBe('ini');
     expect(fenceLanguage('  yaml  ')).toBe('yaml');
+    // A markdown fence is the same language a `.md` path names.
+    expect(fenceLanguage('md')).toBe('markdown');
+    expect(fenceLanguage('markdown')).toBe('markdown');
     // A fence's info string carries attributes after the language.
     expect(fenceLanguage('rust title="x"')).toBe('rust');
     expect(fenceLanguage('klingon')).toBeNull();
@@ -283,7 +286,11 @@ describe('the language a fence names', () => {
 describe('a source file, as the maintained highlighter draws it', () => {
   it('takes the language from the path a call named', () => {
     expect(languageOf('crates/forge-server/src/family.rs')).toBe('rust');
-    expect(languageOf('client/src/chat/Chat.svelte')).toBeNull();
+    // The two most-read file types the chat left uncoloured: markdown is the
+    // most-read of any type, a component tree the next uncoloured one.
+    expect(languageOf('README.md')).toBe('markdown');
+    expect(languageOf('docs/notes.markdown')).toBe('markdown');
+    expect(languageOf('client/src/chat/Chat.svelte')).toBe('xml');
     expect(languageOf('a/file.py')).toBe('python');
     expect(languageOf('no-extension')).toBeNull();
     // A path whose extension names an object member rather than a language.
@@ -295,6 +302,16 @@ describe('a source file, as the maintained highlighter draws it', () => {
 
     expect(html).toContain('hljs-');
     expect(html).toContain('pub');
+  });
+
+  it('colours a read body as markdown, not only code-shaped ones', () => {
+    // A Read arrives line-numbered (`N\t` prefixes), which keeps markdown's
+    // line-anchored tokens plain; the inline ones still colour, and only the
+    // markdown grammar emits them for this text.
+    const html = renderCode('markdown', '1\t# Title\n2\t\n3\t**bold** and `code`');
+
+    expect(html).toContain('hljs-strong');
+    expect(html).toContain('hljs-code');
   });
 
   it('escapes a file it has no language for rather than dropping it', () => {

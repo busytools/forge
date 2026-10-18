@@ -20,6 +20,7 @@ import go from 'highlight.js/lib/languages/go';
 import ini from 'highlight.js/lib/languages/ini';
 import javascript from 'highlight.js/lib/languages/javascript';
 import json from 'highlight.js/lib/languages/json';
+import markdown from 'highlight.js/lib/languages/markdown';
 import plaintext from 'highlight.js/lib/languages/plaintext';
 import python from 'highlight.js/lib/languages/python';
 import rust from 'highlight.js/lib/languages/rust';
@@ -31,8 +32,8 @@ import yaml from 'highlight.js/lib/languages/yaml';
 /**
  * The languages this page has, by the name `languageOf` answers.
  *
- * A curated set rather than `highlight.js/lib/common`: the full bundle carries
- * every language it has ever learned, and a session reads nine of them.
+ * A curated set rather than `highlight.js/lib/common`: the common bundle
+ * carries thirty-odd languages, and a session reads a handful of them.
  */
 const LANGUAGES = {
   bash,
@@ -41,6 +42,7 @@ const LANGUAGES = {
   ini,
   javascript,
   json,
+  markdown,
   // What a file this page has no language for is drawn as: registering it is
   // what keeps the fallback path escaping rather than throwing.
   plaintext,
@@ -86,6 +88,12 @@ const NAMED: Record<string, keyof typeof LANGUAGES> = {
   html: 'xml',
   xml: 'xml',
   sql: 'sql',
+  // Read more than any other file type in this repo's sessions, and `svelte`
+  // is a component tree: the markdown grammar and the XML grammar are what
+  // colour their tokens (a script body's own tokens stay plain).
+  md: 'markdown',
+  markdown: 'markdown',
+  svelte: 'xml',
 };
 
 /**
