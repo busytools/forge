@@ -7,7 +7,7 @@
 //! the conversation window reads too, and the envelope parser
 //! ([`crate::envelope`]) is the one the read path uses.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use forge_primitives::runtime::RuntimeSessionState;
 use forge_primitives::{ContentBlock, Message, StopReason, ToolCallStatus};
@@ -47,32 +47,26 @@ pub struct Rendered {
     pub endings: HashMap<String, TaskEnding>,
 }
 
-/// The calls the conversation holds a result for, by id.
+/// Whether any of `open` is answered later than `from`.
 ///
-/// The fold's answer to whether the result the open turn waits on ever comes:
-/// a transcript keeps a call whose result never arrived - the restart shape
-/// (#1836) - and a guard keyed on "a call is out" alone would read that call as
-/// still running for the rest of the conversation, swallowing every forge row
-/// after it into one crash turn. The membership question is asked only of ids
-/// still open, and an id leaves the open set as the walk passes its result, so
-/// "in here" means the result is still ahead.
-fn answered_calls(messages: &[Message]) -> HashSet<&str> {
-    let mut answered = HashSet::new();
-    for message in messages {
+/// The settled half of the delivery rule's bound: a transcript keeps a call
+/// whose result never arrived - the restart shape (#1836) - and a row after it
+/// belongs to the next turn. Asked on demand, at the rare row that needs it,
+/// so a fold over a settled conversation pays a scan only where it joins; the
+/// live walk never asks, because the state frame answers first.
+fn answered_later(messages: &[Message], from: usize, open: &[String]) -> bool {
+    messages[from + 1..].iter().any(|message| {
         let Message::User { message: envelope, .. } = message else {
-            continue;
+            return false;
         };
-        for block in &envelope.content {
-            match block {
-                ContentBlock::ToolResult { tool_use_id, .. }
-                | ContentBlock::ServerToolResult { tool_use_id, .. } => {
-                    answered.insert(tool_use_id.as_str());
-                }
-                _ => {}
+        envelope.content.iter().any(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. }
+            | ContentBlock::ServerToolResult { tool_use_id, .. } => {
+                open.iter().any(|id| id == tool_use_id)
             }
-        }
-    }
-    answered
+            _ => false,
+        })
+    })
 }
 
 /// Open a turn, answering the span it opened: the one a page is cut on and the
@@ -136,11 +130,15 @@ pub fn render(messages: &[Message]) -> Rendered {
     // notice, a mid-turn prompt - is DELIVERED into this turn, and opening a
     // turn for it cuts the calls above it off from the answers below: every
     // reader of the fold then draws the call failed with no result (#2379).
+    //
+    // **The rule's bound is the turn's liveness, and the state frame answers
+    // it first.** While the session reports a turn running, an open call is
+    // mid-flight whatever the list holds - on the live walk the result is not
+    // written yet, so a bound read off the list alone would stop protecting
+    // exactly the window #2379 is about. A settled shape with no result is the
+    // crash one (#1836): there the open call is never coming back and the row
+    // after it opens its own turn, which is what `answered_later` decides.
     let mut open_calls: Vec<String> = Vec::new();
-    // The calls the conversation answers at all, which bounds that delivery
-    // rule: a call whose result never comes - the restart shape (#1836) - is
-    // not a running turn, so the rows after it open their own.
-    let answered = answered_calls(messages);
     for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
         if is_dispatched(message) {
@@ -239,7 +237,8 @@ pub fn render(messages: &[Message]) -> Rendered {
                     if !assistant
                         && forge_minted(row_uuid)
                         && open.is_some()
-                        && open_calls.iter().any(|id| answered.contains(id.as_str()))
+                        && !open_calls.is_empty()
+                        && (running_turn || answered_later(messages, index, &open_calls))
                     {
                         continue;
                     }
@@ -273,7 +272,8 @@ pub fn render(messages: &[Message]) -> Rendered {
                     // the scan hoisted it.
                     if (forge_minted(source_uuid.as_deref()) || forge_minted(row_uuid))
                         && open.is_some()
-                        && open_calls.iter().any(|id| answered.contains(id.as_str()))
+                        && !open_calls.is_empty()
+                        && (running_turn || answered_later(messages, index, &open_calls))
                     {
                         continue;
                     }
@@ -817,6 +817,15 @@ mod tests {
         assert_eq!(rendered.turns[0].opens_at, 0, "at the row the prompt arrived in");
     }
 
+    /// The state frame the wire reports a turn running with.
+    fn running_state() -> Message {
+        Message::System {
+            subtype: "session_state_changed".to_owned(),
+            session_id: Some("session".to_owned()),
+            data: serde_json::json!({ "state": "running" }),
+        }
+    }
+
     /// The reader's own row, which opens the turn.
     fn reader_row(text: &str) -> Message {
         user(vec![ContentBlock::Text { text: text.to_owned(), extras: serde_json::Map::new() }])
@@ -905,6 +914,33 @@ mod tests {
 
         assert_eq!(rendered.turns.len(), 2, "a settled turn's notice opens its own");
         assert_eq!(rendered.turns[1].opens_at, 3, "on the row it arrived in");
+    }
+
+    /// **A call whose result has not streamed yet is still a running turn.**
+    ///
+    /// The live fold runs over the incrementally-grown window, and during
+    /// every in-flight call the result is not in the list yet - so a bound
+    /// read off the list alone stops protecting exactly the window #2379 is
+    /// about, and the notice opens its own turn until a later fold heals it.
+    /// The state frame is what tells that apart from the crash shape: while
+    /// the session reports a turn running, an open call is mid-flight.
+    #[test]
+    fn a_running_turns_open_call_is_protected_before_its_result_lands() {
+        let rendered = render(&[
+            reader_row("despawn probe"),
+            running_state(),
+            despawn_call(),
+            forge_row(
+                "forge_nudge_38_d56ff2d2",
+                "task board: \"probe holds no row\" has no live owner",
+            ),
+        ]);
+
+        assert_eq!(
+            rendered.turns.len(),
+            1,
+            "the notice stays in the running turn with no result on the list yet",
+        );
     }
 
     /// **A call whose result never comes does not latch the delivery rule.**
