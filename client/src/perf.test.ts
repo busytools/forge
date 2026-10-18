@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { perfProbe, perfSurface, startPerfProbe, type PerfRecord } from './perf';
+import { perfProbe, perfSurface, seatLabel, startPerfProbe, type PerfRecord } from './perf';
 
 /**
  * The probe's clock and frame source, driven by the test.
@@ -183,11 +183,153 @@ describe('the frame probe', () => {
   });
 });
 
+describe('the open a conversation begins', () => {
+  it('marks the open, then measures the drawn and the quiet from it', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    const switches = h.records.flat().filter((record) => record.kind === 'switch');
+    expect(switches).toHaveLength(1);
+    expect(switches[0]?.session).toBe('Busytools/forge/lead');
+    expect(switches[0]?.surface).toBe('session');
+
+    // A normal frame while the seat's answer is still on its way must not
+    // read as the open being done: the quiet needs the drawing first.
+    h.frame(16);
+    expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
+
+    h.probe.noteDrawn();
+    const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]?.ms, 'the drawn mark measures from the open').toBe(16);
+
+    // A slow frame after the drawing is the open still being paid for, so it
+    // stays running.
+    h.frame(120);
+    expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
+
+    // The next normal frame is the quiet, measured from the same open.
+    h.frame(16);
+    const quiet = h.records.flat().filter((record) => record.kind === 'quiet');
+    expect(quiet).toHaveLength(1);
+    expect(quiet[0]?.ms).toBe(152);
+
+    // A settled column writes nothing more for this open.
+    h.frame(16);
+    expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(1);
+  });
+
+  /**
+   * **A route change is not a conversation.** The board route names an
+   * org/project and no seat, and the review, files and doc routes name a
+   * seat no conversation opens for: an open marked off the route would write
+   * switches that never settle, or that steal the next real open.
+   */
+  it('marks nothing for a route change alone', () => {
+    const h = harness();
+    h.probe.setSurface('board', 'Busytools/forge');
+    h.probe.noteDrawn();
+    h.frame(16);
+    h.frame(120);
+
+    const kinds = h.records.flat().map((record) => record.kind);
+    expect(kinds, 'no open, no drawing and no quiet come from a route move').not.toContain(
+      'switch',
+    );
+    expect(kinds).not.toContain('drawn');
+    expect(kinds).not.toContain('quiet');
+  });
+
+  it('marks a reopen of the same seat: a reconnect opens its conversation again', () => {
+    const h = harness();
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    expect(h.records.flat().filter((record) => record.kind === 'switch')).toHaveLength(2);
+  });
+
+  /**
+   * **One drawn mark per open, and none after the open has settled.** The
+   * dedupe lives in the probe, and removing it is silent: the column draws
+   * on every update it holds, so each redraw would write its own mark and
+   * the log would read as a burst of opens that never happened.
+   */
+  it('writes one drawn mark per open, whatever the column redraws', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.frame(16);
+
+    h.probe.noteDrawn();
+    h.probe.noteDrawn();
+    h.frame(16);
+    h.probe.noteDrawn(); // the open already settled: a stray redraw marks nothing
+
+    expect(h.records.flat().filter((record) => record.kind === 'drawn')).toHaveLength(1);
+  });
+
+  /**
+   * **A mark names the seat that opened, not where the page moved to.** The
+   * route can move on while the seat's drawing is still on its way - to a
+   * view of the same seat, whose whole point is that it is not a switch.
+   */
+  it('attributes the marks to the seat that opened, not the live route', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.setSurface('review', 'Busytools/forge/lead');
+    h.frame(16); // a normal frame while the seat's answer is still on its way
+
+    h.probe.noteDrawn();
+    h.frame(16);
+
+    const marks = h.records
+      .flat()
+      .filter((record) => record.kind === 'drawn' || record.kind === 'quiet');
+    expect(marks).toHaveLength(2);
+    for (const mark of marks) {
+      expect(mark.session, 'the seat itself is what the mark names').toBe('Busytools/forge/lead');
+      expect(mark.surface).toBe('session');
+    }
+    expect(marks[1]?.ms, 'the quiet measures from the open too').toBe(32);
+  });
+
+  /**
+   * **An open the page leaves is dropped, not carried.** Home between the
+   * open and its first normal frame would otherwise write the seat's own
+   * delta under a route that never opened anything.
+   */
+  it('drops an unfinished open when the page leaves its seat', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.setSurface('home', null);
+
+    h.probe.noteDrawn();
+    h.frame(16);
+    h.frame(16);
+
+    const kinds = h.records.flat().map((record) => record.kind);
+    expect(kinds, 'a dropped open leaves no late drawn mark').not.toContain('drawn');
+    expect(kinds, 'and no quiet under the route that came next').not.toContain('quiet');
+  });
+});
+
 describe('the surface a record names', () => {
   it('names the seat on a seat route', () => {
     expect(
       perfSurface({ name: 'session', slot: { org: 'Busytools', project: 'forge', label: 'lead' } }),
     ).toEqual({ surface: 'session', session: 'Busytools/forge/lead' });
+  });
+
+  /**
+   * **One builder, one spelling.** The surface a frame carries and the seat
+   * an open's marks name are paired by this string, so a second hand-rolled
+   * join is exactly how that pairing silently stops finding anything.
+   */
+  it('names a seat the same way for a frame and for an open', () => {
+    const slot = { org: 'Busytools', project: 'forge', label: 'lead' };
+    expect(seatLabel(slot)).toBe('Busytools/forge/lead');
+    expect(perfSurface({ name: 'session', slot }).session).toBe(seatLabel(slot));
   });
 
   it('names the project on a board', () => {

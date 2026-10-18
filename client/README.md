@@ -141,8 +141,14 @@ bundle identifier - `dev.vedhavyas.forge` for the installed app), one
 JSON line per record: `run_started` when a page attaches, `summary` every
 ten seconds (frames, how many were slow, the worst gap), and a `frame` line
 for each frame at or over 50 ms with the surface and seat it happened
-on, plus `longtask` lines naming the work that blocked. Slow frames are
-what the file is for; a quiet log is a client that is keeping up.
+on, plus `longtask` lines naming the work that blocked. A seat's open
+writes its own records beside those: `switch` when its conversation
+opens (the column taking the seat on - a click, a deep link, a reload, a
+reconnect), `drawn` when the seat's terminal state is on screen (its
+rows, the empty state, or its own waking or refused line), and `quiet`
+when the frame loop is back to a normal cadence, the last two carrying
+the time since the switch. Slow frames are what the file is for; a
+quiet log is a client that is keeping up.
 
 The icon is the `panes` mark from `src/brand.ts`, on the `--bg` ground in
 the `--accent` colour. Render the mark to a 1024 PNG and pass that to

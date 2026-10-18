@@ -25,6 +25,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { CLIENT_VERSION } from './protocol';
 import type { Route } from './routes';
 import { mintPromptId } from './wire/ids';
+import type { SessionSlot } from './wire/types';
 
 /** The record schema, shared with the log the shell writes. */
 const SCHEMA = 'forge-perf/v1';
@@ -43,13 +44,16 @@ const SUMMARY_INTERVAL_MS = 10_000;
 /** One line of the perf log, as the shell writes it. */
 export interface PerfRecord {
   schema: string;
-  kind: 'run_started' | 'frame' | 'longtask' | 'summary';
+  kind: 'run_started' | 'frame' | 'longtask' | 'summary' | 'switch' | 'drawn' | 'quiet';
   run_id: string;
   ts_ms: number;
   version?: string;
   /** The frame's own counter within the run, for a frame record. */
   frame?: number;
-  /** The frame's gap, or the long task's duration, in milliseconds. */
+  /**
+   * The frame's gap, or the long task's duration, or - for a `drawn` and a
+   * `quiet` - the time since the switch record the mark belongs to.
+   */
   ms?: number;
   /** A long task's own name. */
   name?: string;
@@ -75,6 +79,13 @@ interface PerfProbe {
   stop(): void;
   /** The page the probe is looking at; nulls for a route with no seat. */
   setSurface(surface: string | null, session: string | null): void;
+  /** A conversation opened for `seat`: a click, a deep link, a reload, a
+   *  reconnect or a palette move, written where the column takes the seat on
+   *  (#2374). */
+  noteConversationOpened(seat: string): void;
+  /** The open seat's terminal drawing has landed: its conversation, or the
+   *  seat's own empty/waking/refused line (#2374). */
+  noteDrawn(): void;
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
@@ -145,6 +156,19 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let last: number | null = null;
   let cancelFrame: (() => void) | null = null;
   let cancelObserver: (() => void) | null = null;
+  /**
+   * The open conversation's own seat, when it started, and whether its state
+   * has drawn (#2374).
+   *
+   * **The marks name the seat that OPENED, not whatever the page shows
+   * next**: a reader who leaves the seat before its first normal frame would
+   * otherwise read the seat's own delta attributed to the home they moved
+   * to. And the open is dropped the moment the page leaves that seat: a mark
+   * left armed across the move would land on an unrelated moment.
+   */
+  let openSeat: string | null = null;
+  let openAt: number | null = null;
+  let drawnSeen = false;
 
   function emit(record: PerfRecord): void {
     sink([record]);
@@ -192,6 +216,21 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           surface,
           session,
         });
+      } else if (openAt !== null && drawnSeen) {
+        // **The open seat's work is done**: its state is drawn and the frame
+        // loop is back to a normal cadence, which is the quiet the switch's
+        // own timing is measured to.
+        emit({
+          schema: SCHEMA,
+          kind: 'quiet',
+          run_id: runId,
+          ts_ms: Date.now(),
+          ms: at - openAt,
+          surface: 'session',
+          session: openSeat,
+        });
+        openAt = null;
+        openSeat = null;
       }
     }
     last = at;
@@ -205,6 +244,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       frames = 0;
       slow = 0;
       maxMs = 0;
+      openAt = null;
+      openSeat = null;
+      drawnSeen = false;
       windowStart = now();
       // Boot's own reading: the router has usually not wired a route yet,
       // so null here is the honest answer rather than a gap.
@@ -247,6 +289,40 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     setSurface(next: string | null, seat: string | null): void {
       surface = next;
       session = seat;
+      // **An open belongs to the seat that opened it.** Leaving that seat -
+      // to the home, a board, a view that opens no conversation, or another
+      // seat - ends an unfinished open rather than letting its quiet land
+      // under whatever came next.
+      if (openAt !== null && seat !== openSeat) {
+        openAt = null;
+        openSeat = null;
+      }
+    },
+    noteConversationOpened(seat: string): void {
+      openSeat = seat;
+      openAt = now();
+      drawnSeen = false;
+      emit({
+        schema: SCHEMA,
+        kind: 'switch',
+        run_id: runId,
+        ts_ms: Date.now(),
+        surface: 'session',
+        session: seat,
+      });
+    },
+    noteDrawn(): void {
+      if (openAt === null || drawnSeen) return;
+      drawnSeen = true;
+      emit({
+        schema: SCHEMA,
+        kind: 'drawn',
+        run_id: runId,
+        ts_ms: Date.now(),
+        ms: now() - openAt,
+        surface: 'session',
+        session: openSeat,
+      });
     },
   };
 }
@@ -273,6 +349,37 @@ export function notePerfSurface(surface: string | null, session: string | null):
 }
 
 /**
+ * The seat as the perf log names it. **The ONE place the string is built**:
+ * a frame's surface pair and the marks a conversation's open carries must
+ * name the seat identically, or a reader pairing them by it finds nothing
+ * (#2374).
+ */
+export function seatLabel(slot: SessionSlot): string {
+  return `${slot.org}/${slot.project}/${slot.label}`;
+}
+
+/**
+ * A conversation has opened for the seat `slot`. **The open is written where
+ * the column takes the seat on**, not where a route changed: a click, a deep
+ * link, a reload, a reconnect and a palette move all pass through the
+ * column, and a route change alone is no conversation - a board is not a
+ * seat and a board route must write nothing (#2374).
+ */
+export function noteConversationOpened(slot: SessionSlot): void {
+  running?.noteConversationOpened(seatLabel(slot));
+}
+
+/**
+ * The open seat's terminal drawing has landed - its conversation, or the
+ * seat's own empty/waking/refused line. The mark a switch's own timing is
+ * measured to, written where the drawing lands rather than where the click
+ * happened (#2374).
+ */
+export function noteDrawn(): void {
+  running?.noteDrawn();
+}
+
+/**
  * A route, as the probe's records name it: the surface is the route's own
  * name, and the session is the seat, when the route holds one. #1596 asks
  * that a record say which surface and which session a cost came from - this
@@ -280,10 +387,7 @@ export function notePerfSurface(surface: string | null, session: string | null):
  */
 export function perfSurface(route: Route): { surface: string; session: string | null } {
   if ('slot' in route) {
-    return {
-      surface: route.name,
-      session: `${route.slot.org}/${route.slot.project}/${route.slot.label}`,
-    };
+    return { surface: route.name, session: seatLabel(route.slot) };
   }
   if (route.name === 'board') return { surface: 'board', session: `${route.org}/${route.project}` };
   return { surface: route.name, session: null };
