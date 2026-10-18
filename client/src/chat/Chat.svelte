@@ -693,18 +693,26 @@
    * before this reads it: a mark written off the seat that is going would
    * time the wrong open.
    *
-   * **Every terminal state completes the open, and only a terminal one.**
-   * The condition mirrors the column's own state chain below: a loaded
-   * conversation (its rows, or the empty state), or the seat's own waking,
-   * not-running or refused line - those are the column's answer, while
-   * `Reading the conversation` is the wait. An open left armed through one
-   * of the terminal states would land on the next real turn minutes later
-   * and read as a stall nothing was slow for.
+   * **Every terminal state draws a mark, and the mark says which one.** The
+   * chain below mirrors the column's own state chain: the waking line (a
+   * seat the roster does not name, or a spawn in flight - the not-running
+   * line is the same state and shares the word), then the refusal, then the
+   * wait ("Reading the conversation..."), then the empty state, then the
+   * rows. A waking or refused line is NOT the seat's content: the probe
+   * records it as a placeholder and keeps the open armed, so the content's
+   * later drawing is the one that measures click-to-first-row, and only it
+   * lets a quiet follow.
    */
+  function terminalState(): Parameters<typeof noteDrawn>[0] | null {
+    if (held.turns.length === 0 && (waking || spawning)) return 'waking';
+    if (held.turns.length === 0 && held.refused !== null) return 'refused';
+    if (!held.loaded) return null;
+    return held.turns.length === 0 ? 'empty' : 'conversation';
+  }
+
   $effect(() => {
-    const settled =
-      held.loaded || (held.turns.length === 0 && (waking || spawning || held.refused !== null));
-    if (settled) noteDrawn();
+    const state = terminalState();
+    if (state !== null) noteDrawn(state);
   });
 
   // The first page is drawn at the end rather than the start, and that is not

@@ -198,10 +198,11 @@ describe('the open a conversation begins', () => {
     h.frame(16);
     expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
 
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
     const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
     expect(drawn).toHaveLength(1);
     expect(drawn[0]?.ms, 'the drawn mark measures from the open').toBe(16);
+    expect(drawn[0]?.state, 'and says what completed the open').toBe('conversation');
 
     // A slow frame after the drawing is the open still being paid for, so it
     // stays running.
@@ -228,7 +229,7 @@ describe('the open a conversation begins', () => {
   it('marks nothing for a route change alone', () => {
     const h = harness();
     h.probe.setSurface('board', 'Busytools/forge');
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
     h.frame(16);
     h.frame(120);
 
@@ -259,12 +260,124 @@ describe('the open a conversation begins', () => {
     h.probe.noteConversationOpened('Busytools/forge/lead');
     h.frame(16);
 
-    h.probe.noteDrawn();
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
+    h.probe.noteDrawn('conversation');
     h.frame(16);
-    h.probe.noteDrawn(); // the open already settled: a stray redraw marks nothing
+    h.probe.noteDrawn('conversation'); // the open already settled: a stray redraw marks nothing
 
     expect(h.records.flat().filter((record) => record.kind === 'drawn')).toHaveLength(1);
+  });
+
+  /**
+   * **A placeholder does not end the open** (#2374): a waking line is the
+   * column saying the seat is coming up, not its content arriving. The open
+   * stays armed, no quiet may fire while the content is still on its way,
+   * and the content's own drawing follows with the total from the switch -
+   * which is the click-to-first-row measurement this cut exists for.
+   */
+  it('records a waking placeholder, then the content drawing, then the quiet', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.frame(16);
+
+    h.probe.noteDrawn('waking');
+    h.probe.noteDrawn('waking'); // a redraw of the placeholder marks nothing new
+    // Frames while the content is still on its way settle nothing.
+    h.frame(16);
+    h.frame(16);
+    expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
+    expect(h.records.flat().filter((record) => record.kind === 'drawn')).toHaveLength(1);
+
+    // The content lands; its drawing carries the whole time since the switch.
+    h.frame(120); // the arrival's own slow frame
+    h.probe.noteDrawn('conversation');
+    h.frame(16);
+
+    const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
+    expect(drawn).toHaveLength(2);
+    expect(drawn[0]?.state).toBe('waking');
+    expect(drawn[0]?.ms).toBe(16);
+    expect(drawn[1]?.state).toBe('conversation');
+    expect(
+      drawn[1]?.ms,
+      'the content drawing measures from the switch, placeholder or no placeholder',
+    ).toBe(168);
+    const quiet = h.records.flat().filter((record) => record.kind === 'quiet');
+    expect(quiet).toHaveLength(1);
+    expect(quiet[0]?.ms, 'and the quiet settles the same open').toBe(184);
+  });
+
+  /** The refused placeholder is the same shape: an answer, but not content. */
+  it('records a refused placeholder, then the content and its quiet', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.frame(16);
+
+    h.probe.noteDrawn('refused');
+    h.frame(16);
+    expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(0);
+
+    h.probe.noteDrawn('conversation');
+    h.frame(16);
+
+    const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
+    expect(drawn.map((record) => record.state)).toEqual(['refused', 'conversation']);
+    expect(h.records.flat().filter((record) => record.kind === 'quiet')).toHaveLength(1);
+  });
+
+  /** An empty drawing is content, so the quiet follows it. */
+  it('lets the quiet follow an empty drawing', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.frame(16);
+
+    h.probe.noteDrawn('empty');
+    h.frame(16);
+
+    const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
+    expect(drawn[0]?.state, 'the state crosses verbatim, not mapped').toBe('empty');
+    const quiet = h.records.flat().filter((record) => record.kind === 'quiet');
+    expect(quiet).toHaveLength(1);
+    expect(quiet[0]?.ms).toBe(32);
+  });
+
+  /**
+   * **A switch after one conversation has drawn is a new open** (#2374).
+   * The flags belong to the open: a reset left out of
+   * `noteConversationOpened` would leave every later seat measuring nothing,
+   * so this opens a second conversation on top of a settled first one and
+   * wants both drawings and both quiets.
+   */
+  it('measures a second conversation opened after one has drawn', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.frame(16);
+    h.probe.noteDrawn('conversation');
+    h.frame(16); // the first open settles
+
+    h.probe.setSurface('session', 'Busytools/forge/w1');
+    h.probe.noteConversationOpened('Busytools/forge/w1');
+    h.frame(16);
+    h.probe.noteDrawn('conversation');
+    h.frame(16);
+
+    const seats = (kind: string) =>
+      h.records
+        .flat()
+        .filter((record) => record.kind === kind)
+        .map((record) => record.session);
+    expect(seats('drawn'), 'the second seat draws its own mark').toEqual([
+      'Busytools/forge/lead',
+      'Busytools/forge/w1',
+    ]);
+    expect(seats('quiet'), 'and settles on its own quiet').toEqual([
+      'Busytools/forge/lead',
+      'Busytools/forge/w1',
+    ]);
   });
 
   /**
@@ -279,7 +392,7 @@ describe('the open a conversation begins', () => {
     h.probe.setSurface('review', 'Busytools/forge/lead');
     h.frame(16); // a normal frame while the seat's answer is still on its way
 
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
     h.frame(16);
 
     const marks = h.records
@@ -304,7 +417,7 @@ describe('the open a conversation begins', () => {
     h.probe.noteConversationOpened('Busytools/forge/lead');
     h.probe.setSurface('home', null);
 
-    h.probe.noteDrawn();
+    h.probe.noteDrawn('conversation');
     h.frame(16);
     h.frame(16);
 

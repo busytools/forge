@@ -1509,7 +1509,7 @@ describe('the drawn mark', () => {
 
     server.answer([turn('t1')]);
     await painted();
-    expect(drawnMark, 'the rows a seat draws are the mark').toHaveBeenCalled();
+    expect(drawnMark, 'the rows a seat draws are the mark').toHaveBeenCalledWith('conversation');
 
     // The switch: the new seat's own conversation opens, and its own page is
     // what puts the drawn mark down for it.
@@ -1534,7 +1534,9 @@ describe('the drawn mark', () => {
       cursor: null,
     });
     await painted();
-    expect(drawnMark, "the switched-to seat's own drawing is the second mark").toHaveBeenCalled();
+    expect(drawnMark, "the switched-to seat's own drawing is the second mark").toHaveBeenCalledWith(
+      'conversation',
+    );
   });
 
   it('marks a seat whose conversation is empty, once its own state has drawn', async () => {
@@ -1546,17 +1548,82 @@ describe('the drawn mark', () => {
 
     server.answer([]);
     await painted();
-    expect(drawnMark, 'the empty state is the column answering').toHaveBeenCalled();
+    expect(drawnMark, 'the empty state is the column answering').toHaveBeenCalledWith('empty');
   });
 
-  it('marks a seat that is only waking, with nothing on its way yet', () => {
+  it('marks a seat that is only waking, and says that is what drew', () => {
     const server = stub();
     drawnMark.mockClear();
     draw({ waking: true }, server);
 
     expect(
       drawnMark,
-      'a waking seat draws its own line, and that is the answer',
-    ).toHaveBeenCalled();
+      'a waking seat draws its own line, and the mark says so',
+    ).toHaveBeenCalledWith('waking');
+  });
+
+  it('marks a refusal with no rows as refused, not as content', async () => {
+    const server = stub();
+    drawnMark.mockClear();
+    draw({}, server);
+
+    server.send({ kind: 'error', what: 'more', why: 'forge holds no session for that seat' });
+    await painted();
+    expect(
+      drawnMark,
+      'a refusal is the column answering, but it is no content',
+    ).toHaveBeenCalledWith('refused');
+    expect(
+      drawnMark.mock.calls[0]?.[0],
+      'the refusal is the FIRST mark: nothing drew before it',
+    ).toBe('refused');
+  });
+
+  it('marks a spawn in flight as waking - the waking line is one state', () => {
+    const server = stub();
+    drawnMark.mockClear();
+    draw({ spawning: true }, server);
+
+    expect(
+      drawnMark,
+      'the not-running and waking lines share the state the mark carries',
+    ).toHaveBeenCalledWith('waking');
+  });
+
+  it('marks waking before refused when a seat is both', async () => {
+    const server = stub();
+    drawnMark.mockClear();
+    draw({ waking: true }, server);
+    server.send({ kind: 'error', what: 'more', why: 'forge holds no session for that seat' });
+    await painted();
+
+    const states = drawnMark.mock.calls.map((call): unknown => call[0]);
+    expect(states[0], 'the waking line draws first').toBe('waking');
+    expect(
+      states,
+      'and the waking arm stays ahead of the refusal, which is never the word here',
+    ).not.toContain('refused');
+  });
+
+  /**
+   * **The handoff from a placeholder to the content is the column's own
+   * job** (#2374): the waking line does not stop the drawing, so the page
+   * that lands after it must mark `conversation` on the same open - a
+   * once-per-open guard here would silence exactly the rising seat, and the
+   * content and its quiet would never be recorded.
+   */
+  it('hands off from the waking placeholder to the content when it lands', async () => {
+    const server = stub();
+    drawnMark.mockClear();
+    draw({ waking: true }, server);
+    expect(drawnMark.mock.calls[0]?.[0], 'the placeholder comes first').toBe('waking');
+
+    server.answer([turn('t1')]);
+    await painted();
+    const states = drawnMark.mock.calls.map((call): unknown => call[0]);
+    expect(
+      states.indexOf('conversation'),
+      'the content drawing follows the placeholder on the same open',
+    ).toBeGreaterThan(0);
   });
 });

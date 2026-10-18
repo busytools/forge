@@ -39,6 +39,13 @@ pub struct ClientPerfRecord {
     pub frame: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ms: Option<f64>,
+    /// Which terminal state completed a seat's open, on a `drawn` record.
+    ///
+    /// A plain string rather than an enum: a page that learns a fifth state
+    /// must reach this shell, and a strict set would refuse the whole batch
+    /// over one unknown word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +111,7 @@ mod tests {
             version: None,
             frame: Some(3),
             ms: Some(120.0),
+            state: None,
             name: None,
             surface: Some("session".to_owned()),
             session: Some("forge/lead".to_owned()),
@@ -139,6 +147,48 @@ mod tests {
             serde_json::from_str(line).expect("a new field is tolerated");
         assert_eq!(parsed.kind, "frame");
         assert!(parsed.ms.is_none(), "an absent optional is absence, not zero");
+    }
+
+    /// **The state a drawn mark carries survives the write.** The page marks
+    /// which terminal state completed a seat's open, and this struct is what
+    /// re-serialises it: a field the struct does not know is parsed away and
+    /// never reaches the log, so the round trip is the property that matters,
+    /// not the parse.
+    #[test]
+    fn the_state_a_drawn_mark_carries_survives_the_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut mark = record("drawn");
+        mark.state = Some("waking".to_owned());
+        append(dir.path(), &[mark], MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let parsed: serde_json::Value = serde_json::from_str(text.trim()).expect("a JSON line");
+        assert_eq!(
+            parsed["state"], "waking",
+            "the shell must write the state the page marked: {text}",
+        );
+    }
+
+    /// A state the page has not been taught yet is carried rather than
+    /// refused: a future fifth state must not cost the whole batch.
+    #[test]
+    fn an_unknown_state_value_is_carried_rather_than_refused() {
+        let line = r#"{"schema":"forge-perf/v1","kind":"drawn","run_id":"r","ts_ms":1,"state":"invented"}"#;
+        let parsed: ClientPerfRecord =
+            serde_json::from_str(line).expect("an unknown state value is carried");
+        assert_eq!(parsed.state.as_deref(), Some("invented"));
+    }
+
+    /// The other half: a record with no state writes no key at all, so a
+    /// frame cannot read as a drawn mark.
+    #[test]
+    fn a_record_without_a_state_writes_no_state_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        append(dir.path(), &[record("frame")], MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let parsed: serde_json::Value = serde_json::from_str(text.trim()).expect("a JSON line");
+        assert!(parsed.get("state").is_none(), "no state on a frame: {text}");
     }
 
     /// The cap is armed at its own boundary: a file exactly AT the cap
