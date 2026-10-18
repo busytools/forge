@@ -104,6 +104,304 @@ async fn a_session_drives_a_page() {
     );
 }
 
+/// **A backgrounded tab must not read as a wedged client (#2385).** Chromium
+/// stops a hidden tab's frames and freezes its scroll and input dispatch while
+/// `page.evaluate` still reads the DOM, so a call that dies in a stability
+/// timeout or hangs looks exactly like a broken browser. The host names the
+/// visibility, an input call fails fast with the remedy, and bringing the tab
+/// to front clears it.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn a_hidden_tab_is_named_and_its_input_refused() {
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        user_data: dir.path().join("user-data"),
+        output: dir.path().join("output"),
+        profiles: dir.path().join("profiles"),
+    };
+    let host = BrowserHost::new(paths.clone());
+    let launched = host.start().await.expect("the browser comes up");
+    let browser = Launched::new(launched.pid, launched.port, paths.user_data.clone());
+
+    let page = "data:text/html,<title>hidden probe</title><button id=b \
+                onclick=\"document.title='clicked'\">Press</button><input id=n>\
+                <input id=c type=checkbox>";
+    host.call(&seat(), "browser_navigate", json!({ "url": page }))
+        .await
+        .expect("the page navigates");
+
+    // **Background the driver's tab without moving the driver**: a second page
+    // becomes the browser's active tab, and the driver keeps driving the first.
+    let opened = host
+        .call(
+            &seat(),
+            "browser_run_code_unsafe",
+            json!({ "code": "async (page) => { const other = await page.context().newPage(); \
+                     await other.goto('data:text/html,<title>other</title>'); \
+                     await other.bringToFront(); return 'opened'; }" }),
+        )
+        .await;
+    assert!(opened.is_ok(), "a second tab opens: {opened:?}");
+
+    // A read still answers in the hidden tab - the fact that makes the defect
+    // read as a wedge rather than as a background tab.
+    let state = text_of(&read_state(&host).await);
+    assert!(state.contains("\"hidden\""), "precondition: the tab is backgrounded: {state}");
+
+    let snapshot = text_of(
+        &host
+            .call(&seat(), "browser_snapshot", json!({}))
+            .await
+            .unwrap_or_else(|why| panic!("a hidden tab still snapshots: {why}")),
+    );
+    assert!(
+        snapshot.contains("document.visibilityState"),
+        "the snapshot output names the hidden visibility: {snapshot}",
+    );
+
+    // **A DOM fill still lands on a hidden page**, so the gate must not
+    // refuse it - the narrowing this test pins.
+    let filled = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        host.call(&seat(), "browser_type", json!({ "target": "#n", "text": "still lands" })),
+    )
+    .await
+    .expect("a plain type answers rather than hanging")
+    .unwrap_or_else(|why| panic!("a plain type must not be refused on a hidden tab: {why}"));
+    assert!(!filled.is_empty());
+    let value = text_of(
+        &host
+            .call(
+                &seat(),
+                "browser_evaluate",
+                json!({ "function": "() => document.querySelector('#n').value" }),
+            )
+            .await
+            .expect("the value reads back"),
+    );
+    assert!(value.contains("still lands"), "the plain type landed on the hidden page: {value}");
+
+    // A DOM-shaped `fill_form` (textbox only) is not refused either; a
+    // checkbox is a pointer action and is.
+    let text_fields = json!({ "fields": [
+        { "target": "#n", "name": "n", "type": "textbox", "value": "form fill" }
+    ] });
+    host.call(&seat(), "browser_fill_form", text_fields)
+        .await
+        .unwrap_or_else(|why| panic!("a textbox fill_form must not be refused hidden: {why}"));
+    let checked = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        host.call(
+            &seat(),
+            "browser_fill_form",
+            json!({ "fields": [
+                { "target": "#c", "name": "c", "type": "checkbox", "value": "true" }
+            ] }),
+        ),
+    )
+    .await
+    .expect("a hidden page's checkbox fill fails fast rather than hanging");
+    let why = checked.expect_err("a checkbox fill_form is refused while the tab is hidden");
+    assert!(why.contains("document.visibilityState"), "the refusal names the state: {why}");
+    assert!(why.contains("browser_tabs"), "the refusal names the remedy: {why}");
+
+    // **The calls that do not take the stability wait are not gated**: key
+    // input is dropped silently and the press path returns, and a forced
+    // click skips the actionability gate. Letting them run is the class
+    // boundary.
+    let submitted = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        host.call(&seat(), "browser_type", json!({ "target": "#n", "text": "x", "submit": true })),
+    )
+    .await
+    .expect("a keyboard type answers rather than hanging");
+    submitted.unwrap_or_else(|why| panic!("a keyboard type must not be refused hidden: {why}"));
+
+    let pressed = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        host.call(&seat(), "browser_press_key", json!({ "key": "Home" })),
+    )
+    .await
+    .expect("a key press answers rather than hanging");
+    pressed.unwrap_or_else(|why| panic!("a key press must not be refused hidden: {why}"));
+
+    let forced = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        host.call(&seat(), "browser_click", json!({ "target": "#n", "force": true })),
+    )
+    .await
+    .expect("a forced click answers rather than hanging");
+    forced.unwrap_or_else(|why| panic!("a forced click must not be refused hidden: {why}"));
+
+    // A mouse input call is refused the same way, and it really did not run.
+    let clicked = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        host.call(&seat(), "browser_click", json!({ "target": "#b" })),
+    )
+    .await
+    .expect("a hidden tab's click fails fast rather than hanging");
+    let why = clicked.expect_err("the click is refused while the tab is hidden");
+    assert!(why.contains("\"hidden probe\""), "the refusal names the tab: {why}");
+    assert!(why.contains("browser_tabs"), "the refusal names the remedy: {why}");
+    assert!(text_of(&read_state(&host).await).contains("\"hidden\""), "the tab stayed hidden");
+    let title = text_of(
+        &host
+            .call(&seat(), "browser_evaluate", json!({ "function": "() => document.title" }))
+            .await
+            .expect("the title still reads"),
+    );
+    assert!(title.contains("hidden probe"), "the refused click did not run: {title}");
+
+    // The remedy: select the tab the list marks current, which runs
+    // page.bringToFront - then the same click lands, and its effect is read.
+    let tabs = text_of(
+        &host
+            .call(&seat(), "browser_tabs", json!({ "action": "list" }))
+            .await
+            .expect("the tabs list"),
+    );
+    let index = tabs
+        .lines()
+        .find(|line| line.contains("(current)"))
+        .and_then(|line| line.trim_start().strip_prefix("- "))
+        .and_then(|rest| rest.split_once(':'))
+        .and_then(|(index, _)| index.trim().parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("the tabs list marks no current tab: {tabs}"));
+    host.call(&seat(), "browser_tabs", json!({ "action": "select", "index": index }))
+        .await
+        .expect("selecting the current tab brings it to the front");
+
+    let after = text_of(&read_state(&host).await);
+    assert!(after.contains("\"visible\""), "the remedy makes the tab visible: {after}");
+
+    host.call(&seat(), "browser_click", json!({ "target": "#b" }))
+        .await
+        .expect("the click lands once the tab is visible");
+    let title = text_of(
+        &host
+            .call(&seat(), "browser_evaluate", json!({ "function": "() => document.title" }))
+            .await
+            .expect("the title still reads"),
+    );
+    assert!(title.contains("clicked"), "the click landed after the remedy: {title}");
+
+    browser.reap();
+}
+
+/// The current page's `document.visibilityState`, read through the host.
+async fn read_state(host: &BrowserHost) -> Vec<forge_client::browser::driver::ReplyPart> {
+    host.call(&seat(), "browser_evaluate", json!({ "function": "() => document.visibilityState" }))
+        .await
+        .expect("the state reads")
+}
+
+/// **The gate's class is measured, not assumed.** Driven straight through the
+/// driver, where the host's gate is not in the way, on a hidden page: the
+/// plain click dies in the stability wait the refusal names, while a forced
+/// click and the keyboard calls return; and a checkbox set - a click under a
+/// `fill_form` - dies in the same wait, which is why that form is gated.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn the_hidden_gate_refuses_only_what_takes_the_stability_wait() {
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let binary = forge_client::browser::chromium::browser_binary()
+        .unwrap_or_else(|why| panic!("no browser on this machine: {why}"));
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let profile = dir.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile");
+    let output = dir.path().join("output");
+    let launched = forge_client::browser::chromium::launch(&binary, &profile, &[])
+        .await
+        .unwrap_or_else(|why| panic!("the launch would not come up: {why}"));
+    let guard = Launched::new(launched.pid, launched.port, profile.clone());
+    let endpoint = format!("http://127.0.0.1:{}", launched.port);
+    let driver = Driver::start(
+        &forge_client::browser::driver::node_path(&stack),
+        &forge_client::browser::driver::cli_path(&stack),
+        &endpoint,
+        &output,
+    )
+    .await
+    .unwrap_or_else(|why| panic!("the driver did not start: {why}"));
+
+    let page = "data:text/html,<title>gate control</title><button id=b \
+                onclick=\"document.title='clicked'\">Press</button><input id=n>\
+                <input id=c type=checkbox>";
+    driver.call("browser_navigate", json!({ "url": page })).await.expect("the page navigates");
+    driver
+        .call(
+            "browser_run_code_unsafe",
+            json!({ "code": "async (page) => { const other = await page.context().newPage(); \
+                     await other.goto('data:text/html,<title>other</title>'); \
+                     await other.bringToFront(); return 'opened'; }" }),
+        )
+        .await
+        .expect("a second tab opens");
+    let state = driver
+        .call("browser_evaluate", json!({ "function": "() => document.visibilityState" }))
+        .await
+        .expect("the state evaluates");
+    assert!(format!("{state:?}").contains("hidden"), "precondition: the page is hidden");
+
+    // The plain click takes the stability wait the gate's refusal names.
+    let clicked = driver.call("browser_click", json!({ "target": "#b" })).await;
+    let Err(why) = &clicked else {
+        panic!("a plain click into a hidden page must die in the stability wait: {clicked:?}");
+    };
+    assert!(why.contains("stable"), "and its reason names the wait: {why}");
+
+    // The calls that do not take it return. `force` is this host's own
+    // argument, carried as the snippet `custom` composes, and it skips
+    // checkElementStates outright; key input is dropped silently and the
+    // press path never checks frames.
+    driver
+        .call(
+            "browser_run_code_unsafe",
+            json!({ "code": "async (page) => { await page.locator('#b').click({ force: true }); \
+                     return 'clicked'; }" }),
+        )
+        .await
+        .expect("a forced click returns on a hidden page");
+    driver
+        .call("browser_press_key", json!({ "key": "Home" }))
+        .await
+        .expect("a key press returns on a hidden page");
+    driver
+        .call("browser_type", json!({ "target": "#n", "text": "x", "submit": true }))
+        .await
+        .expect("a keyboard type returns on a hidden page");
+    driver
+        .call("browser_type", json!({ "target": "#n", "text": "y", "slowly": true }))
+        .await
+        .expect("a slowly type returns on a hidden page");
+
+    // A checkbox is set with a click, so it dies in the same wait.
+    let checked = driver
+        .call(
+            "browser_fill_form",
+            json!({ "fields": [
+                { "target": "#c", "name": "c", "type": "checkbox", "value": "true" }
+            ] }),
+        )
+        .await;
+    let Err(why) = &checked else {
+        panic!("a checkbox set takes the click path and must die hidden: {checked:?}");
+    };
+    assert!(why.contains("stable"), "and its reason names the wait: {why}");
+
+    guard.reap();
+}
+
 /// The text one answer carries, which is every part that is not an image.
 fn text_of(parts: &[forge_client::browser::driver::ReplyPart]) -> String {
     parts

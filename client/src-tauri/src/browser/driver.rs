@@ -23,7 +23,11 @@ use rmcp::transport::{ConfigureCommandExt as _, TokioChildProcess};
 use serde_json::Value;
 
 /// The longest one tool call is given before the driver is presumed mute.
-const CALL_TIMEOUT: Duration = Duration::from_secs(150);
+///
+/// **An input call asks for less** (`visibility::action_bound`): the probe it
+/// may run after a failure has to fit inside this same bound, which is the
+/// segment the server's `ASK_TIMEOUT` already covers.
+pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// **The longest a driver start is given before it is presumed wedged.**
 /// Measured live 2026-10-07: a named profile's driver child spawned and sat
@@ -245,7 +249,7 @@ impl Driver {
         }
         let args =
             serde_json::json!({ "width": relay.viewport_width, "height": relay.viewport_height });
-        match self.call_raw("browser_resize", args).await {
+        match self.call_raw("browser_resize", args, CALL_TIMEOUT).await {
             Ok(_) => tauri_plugin_log::log::info!(
                 "the driver's context seeded with the engine's viewport ({}x{})",
                 relay.viewport_width,
@@ -259,7 +263,9 @@ impl Driver {
     /// [`Driver::start_inapp`] for why this exists.
     #[cfg(target_os = "android")]
     async fn pin_browser_tab(&self) -> Result<(), String> {
-        let listed = self.call_raw("browser_tabs", serde_json::json!({ "action": "list" })).await?;
+        let listed = self
+            .call_raw("browser_tabs", serde_json::json!({ "action": "list" }), CALL_TIMEOUT)
+            .await?;
         let text = listed
             .iter()
             .map(|part| match part {
@@ -279,9 +285,13 @@ impl Driver {
             ));
         };
         tauri_plugin_log::log::info!("pinning the driver to tab {index} ({url})");
-        self.call_raw("browser_tabs", serde_json::json!({ "action": "select", "index": index }))
-            .await
-            .map(|_| ())
+        self.call_raw(
+            "browser_tabs",
+            serde_json::json!({ "action": "select", "index": index }),
+            CALL_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// The phone's page is not a tab, and the phone has no second page: a
@@ -298,8 +308,9 @@ impl Driver {
             && args.get("action").and_then(Value::as_str) == Some("select")
             && args.get("index").and_then(Value::as_u64).is_some();
         let listed = if needs_tabs {
-            let parts =
-                self.call_raw("browser_tabs", serde_json::json!({ "action": "list" })).await?;
+            let parts = self
+                .call_raw("browser_tabs", serde_json::json!({ "action": "list" }), CALL_TIMEOUT)
+                .await?;
             parts
                 .iter()
                 .map(|part| match part {
@@ -322,6 +333,16 @@ impl Driver {
         !self.client.is_transport_closed()
     }
 
+    /// One page evaluate: the read a hidden tab still answers.
+    #[cfg(desktop)]
+    pub(super) async fn evaluate(
+        &self,
+        function: &str,
+        bound: Duration,
+    ) -> Result<Vec<ReplyPart>, String> {
+        self.call_raw("browser_evaluate", serde_json::json!({ "function": function }), bound).await
+    }
+
     /// The tool names the driver itself publishes: the live side of the
     /// parity check, read from the pinned package rather than from a capture.
     pub async fn tool_names(&self) -> Result<Vec<String>, String> {
@@ -342,14 +363,30 @@ impl Driver {
     /// own (a 60 s navigation, a 30 s wait) with room: it is the wedge-breaker,
     /// not a deadline the tools keep.
     pub async fn call(&self, tool: &str, args: Value) -> Result<Vec<ReplyPart>, String> {
+        self.call_within(tool, args, CALL_TIMEOUT).await
+    }
+
+    /// One call under a bound of its own, for the calls that probe after a
+    /// failure and must leave that probe room inside the driver's own bound.
+    pub(super) async fn call_within(
+        &self,
+        tool: &str,
+        args: Value,
+        bound: Duration,
+    ) -> Result<Vec<ReplyPart>, String> {
         #[cfg(target_os = "android")]
         self.refuse_a_client_page(tool, &args).await?;
-        self.call_raw(tool, args).await
+        self.call_raw(tool, args, bound).await
     }
 
     /// The dispatch itself, unguarded: the guard's own tab list runs through
     /// this, or the guard would recurse into itself.
-    async fn call_raw(&self, tool: &str, args: Value) -> Result<Vec<ReplyPart>, String> {
+    async fn call_raw(
+        &self,
+        tool: &str,
+        args: Value,
+        bound: Duration,
+    ) -> Result<Vec<ReplyPart>, String> {
         let arguments = match args {
             Value::Object(fields) => fields,
             Value::Null => serde_json::Map::new(),
@@ -360,14 +397,12 @@ impl Driver {
             }
         };
         let result = tokio::time::timeout(
-            CALL_TIMEOUT,
+            bound,
             self.client
                 .call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments)),
         )
         .await
-        .map_err(|_| {
-            format!("the driver did not answer {tool} within {} s", CALL_TIMEOUT.as_secs())
-        })?
+        .map_err(|_| did_not_answer(tool, bound))?
         .map_err(|why| format!("the driver did not answer {tool}: {why}"))?;
 
         let parts = parts_of(&result)?;
@@ -386,6 +421,13 @@ impl Driver {
         }
         Ok(parts)
     }
+}
+
+/// The sentence a call that ran past its bound reports: one builder, so the
+/// visibility gate can tell this failure from a tool's own and not by
+/// matching prose it would have to keep in step.
+pub(super) fn did_not_answer(tool: &str, bound: Duration) -> String {
+    format!("the driver did not answer {tool} within {} s", bound.as_secs())
 }
 
 /// Map one MCP result onto the parts the socket carries.

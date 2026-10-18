@@ -22,10 +22,13 @@
 //! - [`profiles`] - which names are usable and who owns one.
 //! - [`driver`] - upstream `@playwright/mcp` as a child process, spoken to as
 //!   an MCP client.
+//! - `visibility` - the page's `document.visibilityState`, and the refusal or
+//!   diagnosis a call carries when it is hidden.
 //!
 //! Nothing here decides what a tool MEANS: the ask carries upstream's own
 //! tool name and arguments, the driver runs them, and the answer is the parts
-//! it returned.
+//! it returned - except where the visibility gate refuses a pointer call on a
+//! hidden page or carries its state on a snapshot.
 
 #[cfg(target_os = "android")]
 pub mod android;
@@ -35,6 +38,8 @@ pub mod driver;
 #[cfg(desktop)]
 pub(crate) mod idle;
 pub mod profiles;
+#[cfg(desktop)]
+mod visibility;
 pub mod window;
 
 #[cfg(desktop)]
