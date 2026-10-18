@@ -222,6 +222,17 @@ export interface Conversation {
   loaded: boolean;
   /** The handle the page carried for the turns above it, or `null` at the top. */
   cursor: string | null;
+  /**
+   * When the walk may ask again, after a page that came back empty.
+   *
+   * **An empty page keeps the cursor, so nothing else about the record moves.**
+   * A below-floor read that cannot resolve its anchor answers zero rows and a
+   * null cursor; the walk stays where it was and the next ask is paced
+   * against a beat that doubles per consecutive empty. A column filling a
+   * fitting room has no scroll to retry on, so it reads this stamp and waits
+   * the beat out (#2411).
+   */
+  reaskAt: number | null;
   /** The server's own words when it turned the conversation down. */
   refused: string | null;
   /**
@@ -260,6 +271,7 @@ export const NOTHING: Conversation = {
   turns: [],
   loaded: false,
   cursor: null,
+  reaskAt: null,
   refused: null,
   following: true,
   prepends: 0,
@@ -1459,6 +1471,9 @@ export class Chat {
     if (emptied) this.emptyBeats += 1;
     else this.emptyBeats = 0;
     this.emptyAt = emptied ? Date.now() : 0;
+    const reask = emptied
+      ? Date.now() + Math.min(RETRY_MS * 2 ** (this.emptyBeats - 1), EMPTY_RETRY_MAX_MS)
+      : null;
     // The page's frames, indexed once for everything below that asks what the
     // page carries: the heal, the ride, and the walk's own check.
     const fromPage = new Frames(pageRows.flatMap((row) => messagesOf(row)));
@@ -1798,6 +1813,9 @@ export class Chat {
         // refusal is about THAT ask rather than about the conversation, and
         // one that outlived its ask leaves every later page undrawable.
         refused: null,
+        // The empty-page beat, on the record so a column that cannot scroll
+        // can wait it out and ask again (#2411); a page with rows clears it.
+        reaskAt: reask,
         // The newest page's own handle names a place just above itself, which
         // is no use to a reader who has walked further back: taking it would
         // send the walk to the top of the conversation and fetch every page

@@ -505,13 +505,176 @@ describe('the history above a column that fits', () => {
     await frame();
     expect(server.asks, 'nothing measured, nothing asked').toHaveLength(1);
 
-    // Two deliveries, as a browser gives two: the first measures the rows,
-    // the second is the batch after they reported, where the fit is known.
+    // The harness delivers one observer batch per `resized()`; a browser
+    // settles its layout over more than one, so the second is that settle.
+    const before = server.asks.length;
     resized(100);
     resized(100);
     await tick();
+    expect(server.asks.length - before, 'measured and fitting, the page above is asked').toBe(1);
+  });
+
+  it('keeps asking as pages land while the window still fits', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    resized(100);
+    await frame();
+    await tick();
     const asks = server.asks.filter((ask) => ask.kind === 'more');
-    expect(asks.length, 'measured and fitting, the page above is asked').toBe(2);
+    expect(asks[asks.length - 1]?.before, 'the first fill went').toBe('2');
+
+    // The page lands and the column still fits; the cursor moved, so the
+    // fill asks again. A fill that stopped after one page would pass the
+    // single-ask test above and fail here.
+    server.page([turn('t0')], '1');
+    await tick();
+    resized(100);
+    await frame();
+    await tick();
+    const after = server.asks.filter((ask) => ask.kind === 'more');
+    expect(after[after.length - 1]?.before, 'the fill continued on the landing').toBe('1');
+  });
+
+  it('holds the fill while a landing carries a turn that has not measured', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    resized(100);
+    await frame();
+    await tick();
+    const before = server.asks.length;
+
+    // The repeated turns are measured and the page has one NEW turn that has
+    // not reported; a guard that only asked "has anything measured" would
+    // ask on that.
+    server.page([turn('t3')], '1');
+    await tick();
+    await frame();
+    await tick();
+    expect(server.asks.length, 'the unmeasured turn holds the fill').toBe(before);
+
+    // The harness's deliveries: the first measures the row, the second is the
+    // batch after it reported.
+    resized(100);
+    resized(100);
+    await tick();
+    expect(server.asks.length, 'measured, the fill asks again').toBe(before + 1);
+  });
+
+  it('does not ask the same cursor twice', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    resized(100);
+    await frame();
+    await tick();
+    const before = server.asks.length;
+
+    // A page that repeats the cursor it was asked with is the walk's own
+    // stop, and the fill stops on it too. The deliveries are the harness's
+    // layout settle, so the check sees the new row measured.
+    server.page([turn('t0')], '2');
+    await tick();
+    resized(100);
+    resized(100);
+    await tick();
+    expect(server.asks.length, 'the same cursor is not asked again').toBe(before);
+  });
+
+  it('does not wait for a held row, which draws nothing and never measures', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+
+    // A prompt queued and pulled into the pile leaves its row held: it draws
+    // nothing and records no height until the drain, which can be minutes
+    // behind a running turn. The fill is not its to wait for.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-held',
+          message: { role: 'user', content: [{ type: 'text', text: 'wait with me' }] },
+        },
+      },
+    });
+    await frame();
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'u-held', source: 'you', text: 'wait with me' },
+    });
+    await frame();
+
+    // The held row reports nothing, as a real zero-height row does: the two
+    // deliveries measure the conversation's own turns and leave it out.
+    const heldRow = (node: Element) => node.getAttribute('data-t')?.includes('u-held') === true;
+    resized(100, heldRow);
+    resized(100, heldRow);
+    await tick();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks[asks.length - 1]?.before, 'the measured turns alone fill the room').toBe('2');
+  });
+
+  it('asks nothing more once the conversation is refused', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    resized(100);
+    await frame();
+    await tick();
+    const before = server.asks.length;
+
+    // A landing with a NEW cursor whose row is a repeat - so nothing new
+    // measures - then the refusal, then a size change: the observer's fill
+    // reaches the refusal guard too, not only the landing's frame (#2411).
+    server.page([turn('t1')], '1');
+    await tick();
+    server.refuse();
+    await frame();
+    resized(100);
+    await tick();
+    expect(server.asks.length, 'a refusal is retried by its own beat, not the fill').toBe(before);
+  });
+
+  it("waits an empty page's beat out and asks the same cursor again", async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw(server);
+      setMeasured(300, 320);
+      server.page([turn('t1'), turn('t2')], '2');
+      flushSync();
+      resized(100);
+      resized(100);
+      flushSync();
+      const before = server.asks.length;
+      expect(before, 'the fill asked above').toBe(2);
+
+      // The empty page keeps the cursor and stamps the beat; a quiet seat
+      // publishes nothing else, so the fill schedules the retry itself.
+      server.page([], null);
+      flushSync();
+      expect(server.asks.length, 'the beat has not passed yet').toBe(before);
+
+      await vi.advanceTimersByTimeAsync(2_100);
+      flushSync();
+      expect(server.asks.length, 'the beat passed, the same cursor is asked again').toBe(
+        before + 1,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

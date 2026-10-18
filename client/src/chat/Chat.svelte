@@ -646,6 +646,9 @@
       // restore out of a prepend's way and would keep it out for good.
       outstanding = 0;
       settling = false;
+      // And so is the cursor the fill last asked with: it named the seat that
+      // is going, and a new seat's handle could spell the same string.
+      filledFor = null;
       // **And the hand is not this seat's.** A hold that outlived its press
       // belongs to the gesture that left; the one state this flag can get
       // stuck in is invisible on screen, and the time-token it replaced
@@ -1122,36 +1125,76 @@
    * reports no height, which reads as fitting, and a fill asked on that would
    * take a page it does not need.
    */
+  /** The cursor the fill last asked with, so a page that repeats it stops the fill. */
+  let filledFor: string | null = null;
+
   function fillFittingRoom(): void {
     if (viewport === null || viewport.scrollHeight === 0) return;
-    if (!held.loaded || held.cursor === null) return;
+    // **A refused conversation is its own retry's to recover.** A refusal
+    // publishes; without this the fill re-asks on every refusal at the frame
+    // cadence, where `retryAsk` already owns the recovery (#2411).
+    if (!held.loaded || held.refused !== null) return;
+    // A page that repeats the cursor it was asked with is the walk's own
+    // stop; the fill stops on it too. The empty-page beat clears the mark so
+    // its paced retry may ask the same cursor again.
+    if (held.cursor !== null && held.cursor === filledFor) return;
+    // Above the loop, so an overflowing column pays one read, not one per
+    // turn before it learns there is nothing to fill.
+    if (!holdsEverything()) return;
     // **Every held turn has to have reported its height.** A list still
     // drawing its rows reads short, and one read short takes a page it does
     // not need; a window that fits is a window whose every row was drawn, so
     // the measured set is the honest test of "there is nothing left to
-    // scroll".
+    // scroll". A held row draws nothing and reports nothing until its drain,
+    // so it is skipped.
     for (const turn of held.turns) {
+      if (turn.held === true) continue;
       if (rowSizes.sizeOf(turn.key) === undefined) return;
     }
-    if (holdsEverything()) loadOlder(pageTurns());
+    if (loadOlder(pageTurns())) filledFor = held.cursor;
   }
 
   /**
-   * The frame-deferred check, run on every landing.
+   * The events the fill runs on: the first load, a landing, an empty page's
+   * beat, or a refusal. **Not every published frame**: a seat emits on every
+   * frame it folds, and the fill has nothing to say about most of them.
+   */
+  const fills = $derived(
+    held.loaded ? `${held.prepends}:${held.reaskAt ?? 0}:${held.refused ?? ''}` : '',
+  );
+
+  /**
+   * The frame-deferred check, run on the edges above.
    *
    * **The read waits a frame**, because the sizes right after a landing are
    * the layout BEFORE the rows it added are measured: a column that is about
    * to overflow reads as fitting there. The size observer below catches the
    * other half - the layout settling - so a check that waits here and finds
    * nothing still gets one when the rows report.
+   *
+   * **An empty page's beat is waited out rather than refused.** Its ask is
+   * held off until the stamped beat, and a quiet seat publishes nothing to
+   * wake the fill, so the fill schedules the retry itself (#2411).
    */
   $effect(() => {
+    const edge = fills;
     const element = viewport;
-    if (element === null || !held.loaded || held.cursor === null) return;
-    const frame = requestAnimationFrame(() => {
-      fillFittingRoom();
+    if (edge === '' || element === null) return;
+    return untrack(() => {
+      if (held.refused !== null) return;
+      if (held.reaskAt !== null) {
+        const timer = setTimeout(
+          () => {
+            filledFor = null;
+            fillFittingRoom();
+          },
+          Math.max(0, held.reaskAt - Date.now()),
+        );
+        return () => clearTimeout(timer);
+      }
+      const frame = requestAnimationFrame(() => fillFittingRoom());
+      return () => cancelAnimationFrame(frame);
     });
-    return () => cancelAnimationFrame(frame);
   });
 
   /**
