@@ -495,10 +495,12 @@ export interface BrowserAsk {
 export type BrowserAnswer = { parts: BrowserAnswerPart[] } | { error: string };
 
 /**
- * How many turns one `more` asks for.
+ * The largest page one `more` asks for, and the page the history walks use.
  *
  * A page carries whole turns, so the ask is a count rather than a position:
  * the boundary can never land inside a turn, and the server errs toward
- * repeating a row rather than toward a gap.
+ * repeating a row rather than toward a gap. The column sizes the reader's
+ * own pull from what it has measured; this is that size's ceiling, and the
+ * count the dispatch and compaction walks keep asking for.
  */
 export const MORE_TURNS = 20;

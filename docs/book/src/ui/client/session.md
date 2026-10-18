@@ -114,8 +114,8 @@ it, so the reader's place does not move under them.
 
 **The column's top edge says when it is fetching.** An older page is
 asked for when the reader reaches the top and answered a moment later;
-while it is in flight the wheel has nothing left to scroll, so a muted
-line at the top edge says the older messages are loading rather than
+while it is in flight the wheel has nothing left to scroll, so a small
+pill at the top edge says the older messages are loading rather than
 leaving the column reading as a dead scroll. The page is sized by what
 the column has measured - about a screen and a half of its own turns,
 within the protocol's own page - rather than by a fixed count, so the

@@ -28,6 +28,7 @@ vi.mock('./conversation', async (importOriginal) => {
 
 const { clear, firstGrowth, last, list, setMeasured } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
+const { scrollAsk } = await import('../session/scroll-ask');
 const { installResizeObserver, resized } = await import('./testing/viewport');
 
 installResizeObserver();
@@ -93,6 +94,17 @@ function stub() {
       }
       flushSync();
     },
+    /** The core refusing the ask it took: no page is coming for it. */
+    refuse(): void {
+      for (const fn of listeners) {
+        fn({
+          kind: 'error',
+          what: 'more',
+          why: 'the conversation is not held yet',
+        });
+      }
+      flushSync();
+    },
     /** One turn arriving below the reader, the way a live turn does. */
     append(): void {
       for (const fn of listeners) {
@@ -138,6 +150,9 @@ afterEach(async () => {
   if (app !== null) await unmount(app);
   app = null;
   document.body.innerHTML = '';
+  // A walk's ask outlives the column it was set for, so a test that left one
+  // standing would move the next test's column.
+  scrollAsk.set(null);
 });
 
 beforeEach(() => {
@@ -276,36 +291,94 @@ describe('the page a height-bounded ask requests', () => {
     expect(lastAsk?.turns, 'the ask carries the measured page').toBe(5);
   });
 
-  it('never asks for more than the wire accepts, however short the turns are', async () => {
+  it('never asks for more than the client page ceiling, however short the turns are', async () => {
     const server = stub();
     draw(server);
     setMeasured(900, 320);
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
-    // A 20 px turn in a 320 px viewport wants twenty-four; the protocol's
-    // page is the ceiling.
+    // A 20 px turn in a 320 px viewport wants twenty-four; the client's own
+    // page is the ceiling the ask is held to.
     resized(20);
     list()?.scrolledTo(0, 500, 320);
     flushSync();
     const asks = server.asks.filter((ask) => ask.kind === 'more');
-    expect(asks[asks.length - 1]?.turns, 'clamped to the protocol page').toBe(20);
+    expect(asks[asks.length - 1]?.turns, 'clamped to the client page').toBe(20);
   });
 
-  it('asks for one turn when a turn is taller than the room', async () => {
+  it('asks for one turn when a turn is taller than twice the target', async () => {
     const server = stub();
     draw(server);
     setMeasured(900, 320);
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
-    // One turn of 900 px in a 320 px viewport: a page cannot be smaller than
-    // the turn it carries.
-    resized(900);
+    // A 1000 px turn in a 320 px viewport: a screen and a half of it rounds
+    // to zero, and the ask's own floor is what makes it a page of one. An
+    // 800 px turn would round to one by itself and pin nothing.
+    resized(1000);
     list()?.scrolledTo(0, 500, 320);
     flushSync();
     const asks = server.asks.filter((ask) => ask.kind === 'more');
     expect(asks[asks.length - 1]?.turns, 'the floor is one turn').toBe(1);
+  });
+
+  it('asks for the protocol page before any turn has measured', async () => {
+    const server = stub();
+    draw(server);
+    // The column starts at the foot of a history taller than the reach, and
+    // NO row has measured: the median is undefined, so the reader's first
+    // pull is the protocol's own page rather than a computed one.
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+
+    list()?.scrolledTo(0, 500, 320);
+    flushSync();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks[asks.length - 1]?.turns, 'nothing measured, the default page').toBe(20);
+  });
+});
+
+describe('the page a walk requests', () => {
+  it('keeps the protocol page for the compaction walk', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    // A median that would size the reader's own pull at five, so a walk that
+    // read it would ask for five.
+    resized(100);
+
+    scrollAsk.set({ what: 'compaction', token: 1 });
+    flushSync();
+    await tick();
+
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    const lastAsk = asks[asks.length - 1];
+    expect(lastAsk?.before, 'the walk asked above').toBe('2');
+    expect(lastAsk?.turns, 'the walk keeps the protocol page, not the measured one').toBe(20);
+  });
+
+  it('keeps the protocol page for the dispatch chase', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    resized(100);
+
+    // A call no loaded turn carries: the chase walks the history for it.
+    scrollAsk.set({ what: 'dispatch', token: 1, call: 'tu-nowhere' });
+    flushSync();
+    await tick();
+
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    const lastAsk = asks[asks.length - 1];
+    expect(lastAsk?.before, 'the chase walked above').toBe('2');
+    expect(lastAsk?.turns, 'the chase keeps the protocol page, not the measured one').toBe(20);
   });
 });
 
@@ -343,6 +416,26 @@ describe('the loading state over the column', () => {
     list()?.scrolledTo(0, 500, 320);
     flushSync();
     expect(document.querySelector('.older-loading'), 'no ask went, no state').toBeNull();
+  });
+
+  it('goes when the ask is refused after it went out, which is a dropped ask', async () => {
+    const server = stub();
+    draw(server);
+    // A history taller than the reach, so the opening pin asks nothing and the
+    // only ask in flight is the reader's.
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+
+    list()?.scrolledTo(0, 900, 320);
+    flushSync();
+    expect(document.querySelector('.older-loading'), 'the ask is out').not.toBeNull();
+
+    // The core refuses the ask it took: no page is coming, and the line must
+    // not outlive it.
+    server.refuse();
+    await tick();
+    expect(document.querySelector('.older-loading'), 'the refusal settled it').toBeNull();
   });
 });
 

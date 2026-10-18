@@ -1082,7 +1082,7 @@
         // top is what made an older dispatch's click do nothing at all. The
         // empty-page beat is a third false - a chase that stops on it stands
         // the click down until the beat passes, rather than spinning.
-        loadOlder();
+        loadOlder(MORE_TURNS);
       }
       return;
     }
@@ -1092,7 +1092,7 @@
       list?.scrollToIndex(at, { align: 'start' });
       return;
     }
-    if (!loadOlder()) asking = false;
+    if (!loadOlder(MORE_TURNS)) asking = false;
   });
 
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
@@ -1206,7 +1206,7 @@
         // that puts the foot inside the near-top reach is an event the ask rode
         // in the base app, and a history shorter than the room would otherwise
         // never ask for what is above it.
-        if (offset < REACH) loadOlder();
+        if (offset < REACH) loadOlder(pageTurns());
         return;
       }
     }
@@ -1292,28 +1292,35 @@
     // painted frame later - so a capture that read the record would depend on
     // which side of that timing it caught.
     if (!foot) captureAnchor();
-    if (offset < REACH) loadOlder();
+    if (offset < REACH) loadOlder(pageTurns());
   }
 
   /**
-   * How many turns to ask for: a screen and a half of this column's own
-   * median turn, clamped to what the wire accepts.
+   * How many turns the reader's own pull asks for: a screen and a half of
+   * this column's own median turn, up to the client's page ceiling.
    *
    * **Measured, not assumed**: the median is what the column has watched its
    * rows measure, so the same rule gives three turns on a seat of long
    * transcript reads and eleven on a seat of short ones - and the landing
-   * jumps by about a screenful either way.
+   * jumps by about a screenful either way. The floor is the ask's own, since
+   * a rounded zero is still one turn.
    */
   function pageTurns(): number {
     const median = rowSizes.median();
     const room = viewport?.clientHeight ?? 0;
     if (median === undefined || room <= 0) return MORE_TURNS;
     const want = Math.round((room * PAGE_VIEWPORTS) / median);
-    return Math.max(1, Math.min(MORE_TURNS, want));
+    return Math.min(MORE_TURNS, want);
   }
 
   /**
    * Ask for the turns above, holding the reader's place while they arrive.
+   *
+   * **The count is the caller's**: the reader's own pull is sized by what the
+   * column has measured (`pageTurns`), while the two walks - the dispatch
+   * chase and the compaction jump - keep the protocol's full page, because
+   * their pages land on the way to a place the reader asked to go and a small
+   * page would turn a far jump into dozens of round trips.
    *
    * The compensation is armed as the ask goes out rather than when the answer
    * lands, because the list applies it AS the rows change: a page that waited
@@ -1326,8 +1333,8 @@
    * appended below the reader then goes through the prepend path, which moves
    * them AND leaves the list's measured sizes attributed to the wrong rows.
    */
-  function loadOlder(): boolean {
-    if (working?.older(pageTurns()) !== true) return false;
+  function loadOlder(turns: number): boolean {
+    if (working?.older(turns) !== true) return false;
     outstanding += 1;
     return true;
   }

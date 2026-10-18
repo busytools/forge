@@ -45,29 +45,31 @@ describe('the column memory of what each row measured', () => {
 });
 
 describe('the middle height a page is sized by', () => {
-  it('is the middle value of an odd count', () => {
+  it('is the middle value of an odd count, not the mean', () => {
+    // The mean of these three is 800, so a mean implementation reads 800.
     const rows = sizes();
     for (const [key, height] of [
       ['a', 300],
-      ['b', 900],
-      ['c', 600],
+      ['b', 600],
+      ['c', 1500],
     ] as const) {
       rows.remember(key, height);
     }
     expect(rows.median(), 'the middle measurement, not a mean').toBe(600);
   });
 
-  it('is the mean of the two middles on an even count', () => {
+  it('is the mean of the two middles on an even count, not the mean of all', () => {
+    // The mean of all four is 1100, so a mean implementation reads 1100.
     const rows = sizes();
     for (const [key, height] of [
-      ['a', 200],
-      ['b', 400],
-      ['c', 600],
-      ['d', 800],
+      ['a', 300],
+      ['b', 600],
+      ['c', 1500],
+      ['d', 2000],
     ] as const) {
       rows.remember(key, height);
     }
-    expect(rows.median(), 'the pair either side of the middle').toBe(500);
+    expect(rows.median(), 'the pair either side of the middle').toBe(1050);
   });
 
   it('says nothing before any row measured, so a caller keeps its own default', () => {

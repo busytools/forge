@@ -50,15 +50,20 @@
   }
 
   /**
-   * An item's style as the real list lands it: virtua merges a style RECORD
-   * into its own and stringifies the pair, so a spread alone here would put
-   * an object where a CSS string belongs.
+   * An item's style as virtua 0.52.9's `ListItem` lands it: its own record
+   * first - an unmeasured row is `visibility: hidden` - and the item's style
+   * merged after it, then the pair stringified. **The order is the point**:
+   * a column overrides a base property only by riding after it, so a stub
+   * that dropped the base would pass a column that overrides nothing.
    */
-  function cssOf(style: unknown): string | undefined {
-    if (typeof style === 'string') return style;
-    if (style === null || typeof style !== 'object') return undefined;
-    return Object.entries(style)
-      .filter(([, value]) => value !== null && value !== undefined)
+  function cssOf(base: Record<string, string>, style: unknown): string {
+    const merged: Record<string, string> = { ...base };
+    if (style !== null && typeof style === 'object') {
+      for (const [name, value] of Object.entries(style)) {
+        if (value !== null && value !== undefined) merged[name] = String(value);
+      }
+    }
+    return Object.entries(merged)
       .map(([name, value]) => `${name}:${value}`)
       .join(';');
   }
@@ -225,7 +230,7 @@
       {@attach itemBox(at)}
       {...attrs}
       class="turn {attrs.class ?? ''}"
-      style={cssOf(attrs.style)}
+      style={cssOf({ visibility: 'hidden' }, attrs.style)}
     >
       {@render children?.(row)}
     </div>

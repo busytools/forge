@@ -1063,6 +1063,58 @@ describe('the chat column as it draws', () => {
     expect(held?.style.minHeight, 'the row holds the height it measured').toBe('512px');
   });
 
+  it('draws the row the queue gives back, rather than leaving its slot blank', async () => {
+    // **The re-add is the foot band's shape**: a queued prompt pulls its row
+    // out of the conversation, and the drain puts it back. The list renders
+    // that re-added row before anything has measured it, so a row left
+    // hidden is the blank band between the last drawn row and the queued
+    // strip (#2394). The visibility override is what draws it.
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'user',
+            uuid: 'u-returned',
+            message: { role: 'user', content: [{ type: 'text', text: 'draw me again' }] },
+          },
+        },
+      },
+    });
+    await painted();
+    resized(512);
+    server.send({
+      kind: 'update',
+      update: {
+        prompt_queued: { key: LEAD, uuid: 'u-returned', source: 'you', text: 'draw me again' },
+      },
+    });
+    await painted();
+    expect(
+      document.querySelector<HTMLElement>('[data-t]')?.textContent,
+      'held, drawing nothing',
+    ).not.toContain('draw me again');
+
+    // The drain: the prompt starts, the row is put back with its words.
+    server.send({
+      kind: 'update',
+      update: { prompt_lifecycle: { key: LEAD, uuid: 'u-returned', state: 'started' } },
+    });
+    await painted();
+
+    const returned = document.querySelector<HTMLElement>('[data-t]');
+    expect(returned?.textContent, 'the row is back with its words').toContain('draw me again');
+    // The item wrapper carries the list's own style first and the column's
+    // after it; the merged result is what a browser paints.
+    const item = document.querySelector<HTMLElement>('.conv > .turn');
+    expect(item?.style.visibility, 'and the re-added row is painted, not hidden').toBe('visible');
+  });
+
   it('lets the pin go when the column moves to another seat', async () => {
     // **The switch, not the teardown.** The pin is keyed on the seat it was
     // published under, and a cleanup clearing the CURRENT seat instead of the
