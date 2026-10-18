@@ -135,9 +135,11 @@ means it reached the window, and `failed to start` means it did not and
 carries the reason. A start that fails before the logger exists writes
 that line itself, because nothing else would.
 
-The page's frame cost goes to `forge-perf.log` beside it, one JSON line
-per record: `run_started` when a page attaches, `summary` every ten
-seconds (frames, how many were slow, the worst gap), and a `frame` line
+The page's frame cost goes to
+`~/Library/Logs/<identifier>/forge-perf.log` (`<identifier>` the shell's
+bundle identifier - `dev.vedhavyas.forge` for the installed app), one
+JSON line per record: `run_started` when a page attaches, `summary` every
+ten seconds (frames, how many were slow, the worst gap), and a `frame` line
 for each frame at or over 50 ms with the surface and seat it happened
 on, plus `longtask` lines naming the work that blocked. Slow frames are
 what the file is for; a quiet log is a client that is keeping up.
