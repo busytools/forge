@@ -596,7 +596,12 @@ fn live_cron_slot(
 ) -> Option<SessionSlot> {
     let live = workspace.list_live_workers(&view.key);
     let candidate = if let Some(label) = team_role {
-        live.into_iter().find(|w| w.label == label).map(|w| w.slot)
+        // **`live_worker_with_label`, not a bare label match**: a `Failed`
+        // entry is kept by design and is NOT live, so a bare match picks a
+        // slot whose session failed and drops the prompt into it.
+        // `cron_slot_exists` beside this applies the same rule (#1208's
+        // class, one resolver over).
+        crate::mcp::workers::types::live_worker_with_label(&live, label).map(|w| w.slot.clone())
     } else {
         let slot = SessionSlot::lead(&view.org, &view.name);
         workspace.session_is_pooled(&slot).then_some(slot)
