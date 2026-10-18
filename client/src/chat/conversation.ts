@@ -1744,9 +1744,45 @@ export class Chat {
       // the page's own names cover: a row the core says is running but the
       // frames did not build would otherwise be drawn beside its own repeat,
       // under one key - which a keyed list throws on.
-      const loose = healed.turns.filter(
-        (turn) => (turn.live || turn.running === true) && !inPage.has(turn.key),
-      );
+      //
+      // **And a page can account for a live turn under a row that is not its
+      // own.** The fold opens no turn at a delivery's envelope row - the CLI
+      // pressed the prompt into the turn it was writing - while a frame that
+      // lands just after that turn's result builds one here. The page's row
+      // for the turn above carries the same message under the prompt's id and
+      // neither name finds the other, so the delivery drew twice: once in the
+      // turn carrying it and once below that turn's report (#2390). The frames
+      // the read came too early for join that row.
+      //
+      // By the prompt's id, never by words: a delivery repeating earlier words
+      // is still the reader's new row.
+      const rowOf = new Map<string, number>();
+      copies.forEach((copy, index) => {
+        for (const message of copy) {
+          const id = uuidOf(message);
+          if (id !== null && !rowOf.has(id)) rowOf.set(id, index);
+        }
+      });
+      /** Take `turn` into the page row carrying its opening, if any row does. */
+      const absorbed = (turn: Turn): boolean => {
+        const opening = turn.messages[0];
+        const id = opening === undefined ? null : uuidOf(opening);
+        if (id === null) return false;
+        const index = rowOf.get(id);
+        if (index === undefined) return false;
+        const row = drawn[index];
+        if (row === undefined) return false;
+        const carried = new Frames(row.messages);
+        const grown = turn.messages.filter((message) => !carried.carries(message));
+        if (grown.length > 0) drawn[index] = { ...row, messages: [...row.messages, ...grown] };
+        return true;
+      };
+      const loose: Turn[] = [];
+      for (const turn of healed.turns) {
+        if (!(turn.live || turn.running === true) || inPage.has(turn.key)) continue;
+        if (absorbed(turn)) continue;
+        loose.push(turn);
+      }
       return this.answered({
         ...healed,
         loaded: true,
