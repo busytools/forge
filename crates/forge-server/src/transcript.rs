@@ -1189,7 +1189,7 @@ mod tests {
             !opened.contains(&30),
             "the fold keeps the mid-call notice inside the turn whose call is out: fold {opened:?}",
         );
-        assert!(!named.contains(&30), "and the scan names no head there either: scan {named:?}",);
+        assert!(!named.contains(&30), "and the scan names no head there either: scan {named:?}");
     }
 
     /// A persisted notice IS an ending, and it says the same three things the

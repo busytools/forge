@@ -9,7 +9,7 @@
 //! **This answers no more than the fold would.** Every frame [`TurnScan`]
 //! names is one the fold opens a turn at; it names none the fold would not.
 //! Three shapes it cannot read the way the fold does are answered the safe way
-//! - no turn - so what they cost is a head the window cannot start on, never a
+//! (no turn), so what they cost is a head the window cannot start on, never a
 //! cut inside a turn.
 //!
 //! A queued prompt opens a turn in the fold, and the scan answers none for it.
