@@ -141,7 +141,51 @@ bundle identifier - `dev.vedhavyas.forge` for the installed app), one
 JSON line per record: `run_started` when a page attaches, `summary` every
 ten seconds (frames, how many were slow, the worst gap), and a `frame` line
 for each frame at or over 50 ms with the surface and seat it happened
-on, plus `longtask` lines naming the work that blocked. A seat's open
+on, plus `longtask` lines naming the work that blocked. A slow frame also
+carries the Web Worker heartbeat: `worker_beats` (the worker's
+one-a-second ticks that reached the page across the gap),
+`worker_max_late_ms` (the WORST lateness among them, omitted when no beat
+landed - a blocked main thread queues the ticks and delivers them in one
+burst), `worker_since_beat_ms` (how long before the frame the last tick
+arrived, absent until the first tick: that first arrival calibrates the
+clocks and reports a lateness of zero), `worker_expected_beats` (how many
+ticks the gap was due at `worker_tick_ms`), and `worker_tick_ms` itself.
+**Read the count AND the lateness - both axes decide:**
+`worker_beats` about equal to `worker_expected_beats` with a LOW
+`worker_max_late_ms` is a page that ran on its usual clock while frames
+stopped (a compositing or visibility gate, not a busy thread); the same
+count with the worst lateness APPROACHING the gap is the busy-main-thread
+burst, the ticks queued and delivered on release; about one beat against
+a far larger expected count is the suspended shape (a resumed page fires
+its one overdue interval); zero against at least one expected means
+nothing ticked. A slow frame's record is written one macrotask after the
+gap, so the ticks queued during a blocked gap - which the browser
+delivers after the frame callback that measured it - are on the record
+rather than reading as a page that stopped. A worker that fails to load
+writes one `heartbeat` record with `heartbeat: false` (its `name`
+carrying the event's own error, or the event's type where a plain Event
+has no error) and no beat fields from then on; a page with no Web Worker
+says `heartbeat: false` on its run line, so absence never reads as zero;
+a run line saying `heartbeat: true` with no beat field ever appearing is
+a worker that loaded but never ticked. **Measured in headless Chromium
+155:** a 2,500 ms block produced a record with a 2,999 ms gap, 3 beats,
+worst lateness 2,452 ms and 2 expected - the burst on the record, under
+both axes above; and in a page whose frames and own timers the engine had
+throttled, the worker kept its one-second cadence. That engine runs no
+rAF headless, so those captures drove the frame loop on a timer, and the
+ordering claim (block, queued messages, deferred record) is scoped to
+that measured engine - Chromium's task queues - not asserted for WebKit.
+**The packaged app is not exercised by any of this:** the captures ran a
+standalone page with the probe's logic copied, and the Tauri/WKWebView
+path - where the log actually lives - has no reproducer here; running
+the packaged window is what the read-only rig rule forbids for this
+watch. The custom-scheme worker-load question
+(tauri-apps/tauri#9975) is exactly what a `heartbeat: false` record will
+answer from the live log after the next release. **Not measured:** the
+tick rate in an occluded or locked WKWebView (this repo measured frames
+stopping there, not a worker's timer), so a silent heartbeat there is read
+against `worker_since_beat_ms` and the display state rather than assumed
+to be a stopped page. A seat's open
 writes its own records beside those: `switch` when its conversation
 opens (the column taking the seat on - a click, a deep link, a reload, a
 reconnect), `drawn` when the seat's terminal state is on screen, carrying

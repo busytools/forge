@@ -46,6 +46,24 @@ pub struct ClientPerfRecord {
     /// over one unknown word.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    /// The Web Worker heartbeat spanning a slow frame (#2374): how many
+    /// ticks arrived, the WORST lateness among them, when the last one
+    /// landed, and the tick interval those are read against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_beats: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_max_late_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_since_beat_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_expected_beats: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_tick_ms: Option<u64>,
+    /// Whether a Web Worker heartbeat is running: on `run_started`, that the
+    /// page has one at all; a `heartbeat` record with false says it failed
+    /// to load and the beat fields are absent from then on (#2374).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,6 +130,12 @@ mod tests {
             frame: Some(3),
             ms: Some(120.0),
             state: None,
+            worker_beats: None,
+            worker_max_late_ms: None,
+            worker_since_beat_ms: None,
+            worker_expected_beats: None,
+            worker_tick_ms: None,
+            heartbeat: None,
             name: None,
             surface: Some("session".to_owned()),
             session: Some("forge/lead".to_owned()),
@@ -177,6 +201,72 @@ mod tests {
         let parsed: ClientPerfRecord =
             serde_json::from_str(line).expect("an unknown state value is carried");
         assert_eq!(parsed.state.as_deref(), Some("invented"));
+    }
+
+    /// **The heartbeat evidence on a slow frame survives the write.** The
+    /// worker's beats are the only split between a busy main thread and a
+    /// page that stopped being scheduled, so the fields must reach the log
+    /// exactly as the page wrote them.
+    #[test]
+    fn the_heartbeat_evidence_on_a_slow_frame_survives_the_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut slow = record("frame");
+        slow.worker_beats = Some(2);
+        slow.worker_max_late_ms = Some(1200.5);
+        slow.worker_since_beat_ms = Some(80.0);
+        slow.worker_expected_beats = Some(5);
+        slow.worker_tick_ms = Some(1_000);
+        append(dir.path(), &[slow], MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let parsed: serde_json::Value = serde_json::from_str(text.trim()).expect("a JSON line");
+        assert_eq!(parsed["worker_beats"], 2, "the beat count survives: {text}");
+        assert_eq!(parsed["worker_max_late_ms"], 1200.5, "and the worst lateness: {text}");
+        assert_eq!(parsed["worker_since_beat_ms"], 80.0, "and the last arrival: {text}");
+        assert_eq!(parsed["worker_expected_beats"], 5, "and the beats the gap was due: {text}");
+        assert_eq!(parsed["worker_tick_ms"], 1_000, "and the tick it is read against: {text}");
+    }
+
+    /// A heartbeat record saying the worker failed to load survives too, so
+    /// a broken asset is visible in the log rather than reading as a quiet
+    /// page.
+    #[test]
+    fn a_heartbeat_record_saying_the_worker_failed_survives_the_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut failed = record("heartbeat");
+        failed.heartbeat = Some(false);
+        failed.name = Some("worker_load_failed: SecurityError: blocked".to_owned());
+        append(dir.path(), &[failed], MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let parsed: serde_json::Value = serde_json::from_str(text.trim()).expect("a JSON line");
+        assert_eq!(parsed["heartbeat"], false, "the failure flag survives: {text}");
+        assert_eq!(
+            parsed["name"], "worker_load_failed: SecurityError: blocked",
+            "and the cause it carries: {text}",
+        );
+    }
+
+    /// The other half: a record with none of the heartbeat fields writes no
+    /// key at all, so a frame on a page without a worker cannot read as a
+    /// zero-beat one. A dropped `skip_serializing_if` would write nulls.
+    #[test]
+    fn a_record_without_heartbeat_evidence_writes_no_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        append(dir.path(), &[record("frame")], MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let parsed: serde_json::Value = serde_json::from_str(text.trim()).expect("a JSON line");
+        for key in [
+            "worker_beats",
+            "worker_max_late_ms",
+            "worker_since_beat_ms",
+            "worker_expected_beats",
+            "worker_tick_ms",
+            "heartbeat",
+        ] {
+            assert!(parsed.get(key).is_none(), "no {key} on a page without one: {text}");
+        }
     }
 
     /// The other half: a record with no state writes no key at all, so a
