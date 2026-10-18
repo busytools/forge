@@ -298,8 +298,8 @@ describe('the page a height-bounded ask requests', () => {
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
-    // A 20 px turn in a 320 px viewport wants twenty-four; the client's own
-    // page is the ceiling the ask is held to.
+    // A 20 px turn in a 320 px viewport wants twenty-four; the ask's own
+    // clamp is the one line that holds it to the client page.
     resized(20);
     list()?.scrolledTo(0, 500, 320);
     flushSync();
@@ -339,6 +339,46 @@ describe('the page a height-bounded ask requests', () => {
     const asks = server.asks.filter((ask) => ask.kind === 'more');
     expect(asks[asks.length - 1]?.turns, 'nothing measured, the default page').toBe(20);
   });
+
+  it('asks for the protocol page when the column has no measured room', async () => {
+    const server = stub();
+    draw(server);
+    // A viewport that reports no height: a page cannot be sized from a room
+    // nobody has, so the fallback answers instead of dividing by zero.
+    setMeasured(900, 0);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    resized(100);
+
+    list()?.scrolledTo(0, 500, 0);
+    flushSync();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks[asks.length - 1]?.turns, 'no room, the default page').toBe(20);
+  });
+
+  it("carries the measured page on the pin's own echo", async () => {
+    const server = stub();
+    draw(server);
+    // A history whose foot sits inside the reach: the landing's own pin
+    // writes the foot, and the echo of that write is the event this test
+    // reads. The landing's echo asks before anything measured, so it takes
+    // the default page and is answered first.
+    setMeasured(500, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    server.page([turn('t0')], '1');
+    await tick();
+
+    // A settled move to the top that fires no event, then a size change: the
+    // column's watcher pins the foot from 0, and the pin's echo carries the
+    // reach ask.
+    list()?.settled(0, 500, 320);
+    resized(100);
+    await tick();
+
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks[asks.length - 1]?.turns, 'the echo asks the measured page').toBe(5);
+  });
 });
 
 describe('the page a walk requests', () => {
@@ -360,6 +400,16 @@ describe('the page a walk requests', () => {
     const lastAsk = asks[asks.length - 1];
     expect(lastAsk?.before, 'the walk asked above').toBe('2');
     expect(lastAsk?.turns, 'the walk keeps the protocol page, not the measured one').toBe(20);
+
+    // A walk's ask is a flight like any other, so the line says so; the page
+    // that ends the history settles it.
+    expect(
+      document.querySelector('.older-loading'),
+      'the walk asks through the same flight',
+    ).not.toBeNull();
+    server.page([turn('t0')], null);
+    await tick();
+    expect(document.querySelector('.older-loading'), 'the page settled it').toBeNull();
   });
 
   it('keeps the protocol page for the dispatch chase', async () => {
@@ -409,12 +459,15 @@ describe('the loading state over the column', () => {
   it('is not shown for an ask the socket refused, which nothing is coming for', async () => {
     const server = stub();
     draw(server);
+    setMeasured(900, 320);
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
+    const asks = server.asks.length;
 
     server.shut();
-    list()?.scrolledTo(0, 500, 320);
+    list()?.scrolledTo(0, 900, 320);
     flushSync();
+    expect(server.asks.length, 'the refusal never left: no ask went').toBe(asks);
     expect(document.querySelector('.older-loading'), 'no ask went, no state').toBeNull();
   });
 

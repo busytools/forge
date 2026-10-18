@@ -1297,20 +1297,20 @@
 
   /**
    * How many turns the reader's own pull asks for: a screen and a half of
-   * this column's own median turn, up to the client's page ceiling.
+   * this column's own median turn.
    *
    * **Measured, not assumed**: the median is what the column has watched its
    * rows measure, so the same rule gives three turns on a seat of long
    * transcript reads and eleven on a seat of short ones - and the landing
-   * jumps by about a screenful either way. The floor is the ask's own, since
-   * a rounded zero is still one turn.
+   * jumps by about a screenful either way. The ceiling and the floor are
+   * both the ask's (`Chat#ask`), which every caller crosses: this returns the
+   * measured size and leaves the wire's limits in one place.
    */
   function pageTurns(): number {
     const median = rowSizes.median();
     const room = viewport?.clientHeight ?? 0;
     if (median === undefined || room <= 0) return MORE_TURNS;
-    const want = Math.round((room * PAGE_VIEWPORTS) / median);
-    return Math.min(MORE_TURNS, want);
+    return Math.round((room * PAGE_VIEWPORTS) / median);
   }
 
   /**
@@ -1419,9 +1419,10 @@
       ...(item.key === arriving ? { class: 'arriving' } : {}),
       // **A row the list has not measured is drawn, not hidden.** virtua
       // paints the slot and sets `visibility: hidden` until a row reports its
-      // height, which is the black a fast scroll meets (#2398); the style
-      // rides after its own, so this draws the row at the estimate and the
-      // measurement corrects it. The foot's pin and the parked anchor both
+      // height, which is the black a fast scroll meets (#2398). The style
+      // rides after virtua's own, so the row is drawn at its natural height
+      // on the offset the list's estimate placed it at, and the measurement
+      // corrects the offsets. The foot's pin and the parked anchor both
       // absorb that correction.
       style: { visibility: 'visible' },
     })}

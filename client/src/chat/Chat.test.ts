@@ -1063,56 +1063,42 @@ describe('the chat column as it draws', () => {
     expect(held?.style.minHeight, 'the row holds the height it measured').toBe('512px');
   });
 
-  it('draws the row the queue gives back, rather than leaving its slot blank', async () => {
-    // **The re-add is the foot band's shape**: a queued prompt pulls its row
-    // out of the conversation, and the drain puts it back. The list renders
-    // that re-added row before anything has measured it, so a row left
-    // hidden is the blank band between the last drawn row and the queued
-    // strip (#2394). The visibility override is what draws it.
+  it('draws the row a drained queue opens, rather than leaving its slot blank', async () => {
+    // **The drain is the foot band's shape** (#2394): a prompt queued with no
+    // chat copy yet is claimed by the pile, and when it starts the drain
+    // opens a turn from the announcement's words alone. That turn's row is
+    // genuinely new - the list has never measured it - so it is the row the
+    // real list hides until it reports a size. A hidden row is the blank band
+    // between the last drawn row and the queued strip; the visibility
+    // override is what draws it.
     const server = stub();
     draw({}, server);
     server.answer([]);
 
+    // Queued with no prior `chat_appended`: nothing drawn yet.
     server.send({
       kind: 'update',
       update: {
-        chat_appended: {
-          key: LEAD,
-          msg: {
-            type: 'user',
-            uuid: 'u-returned',
-            message: { role: 'user', content: [{ type: 'text', text: 'draw me again' }] },
-          },
-        },
+        prompt_queued: { key: LEAD, uuid: 'u-fresh', source: 'you', text: 'draw me fresh' },
       },
     });
     await painted();
-    resized(512);
-    server.send({
-      kind: 'update',
-      update: {
-        prompt_queued: { key: LEAD, uuid: 'u-returned', source: 'you', text: 'draw me again' },
-      },
-    });
-    await painted();
-    expect(
-      document.querySelector<HTMLElement>('[data-t]')?.textContent,
-      'held, drawing nothing',
-    ).not.toContain('draw me again');
+    expect(document.querySelector('[data-t]'), 'nothing drawn while it waits').toBeNull();
 
-    // The drain: the prompt starts, the row is put back with its words.
+    // The drain opens the turn.
     server.send({
       kind: 'update',
-      update: { prompt_lifecycle: { key: LEAD, uuid: 'u-returned', state: 'started' } },
+      update: { prompt_lifecycle: { key: LEAD, uuid: 'u-fresh', state: 'started' } },
     });
     await painted();
 
-    const returned = document.querySelector<HTMLElement>('[data-t]');
-    expect(returned?.textContent, 'the row is back with its words').toContain('draw me again');
-    // The item wrapper carries the list's own style first and the column's
-    // after it; the merged result is what a browser paints.
+    const opened = document.querySelector<HTMLElement>('[data-t]');
+    expect(opened?.textContent, 'the drain drew its words').toContain('draw me fresh');
+    // The item wrapper carries the list's own style first (hidden, for a row
+    // it has not measured) and the column's after it; the merge is what a
+    // browser paints.
     const item = document.querySelector<HTMLElement>('.conv > .turn');
-    expect(item?.style.visibility, 'and the re-added row is painted, not hidden').toBe('visible');
+    expect(item?.style.visibility, 'and the new row is painted, not hidden').toBe('visible');
   });
 
   it('lets the pin go when the column moves to another seat', async () => {

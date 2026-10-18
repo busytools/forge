@@ -106,11 +106,11 @@ happened, collapsed, with the header's count saying how many and the mark
 saying where.
 
 **A row is drawn before the list has measured it.** The virtualised list
-places a row at an estimated height and corrects it the moment the row
-reports its own; drawn rather than left blank, so a fast scroll through
-fresh history reads as moving content instead of a black column. The
-correction is the list's, and the column's foot and parked anchor absorb
-it, so the reader's place does not move under them.
+places a row on an estimate-derived offset and corrects it the moment the
+row reports its own height; drawn rather than left blank, so a fast scroll
+through fresh history reads as moving content instead of a black column.
+The correction is the list's, and the column's foot and parked anchor
+absorb it, so the reader's place does not move under them.
 
 **The column's top edge says when it is fetching.** An older page is
 asked for when the reader reaches the top and answered a moment later;
