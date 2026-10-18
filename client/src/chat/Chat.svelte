@@ -890,16 +890,6 @@
   });
 
   /**
-   * Every message the page holds, across every turn.
-   *
-   * **A dispatch's row reads its instance's frames from here, not from its own
-   * turn.** A backgrounded instance runs on past the turn that dispatched it,
-   * so its calls arrive in LATER turns - looked for in the dispatch row's own
-   * turn alone, a backgrounded instance's timeline reads empty.
-   */
-  const history = $derived(held.turns.flatMap((one) => one.messages));
-
-  /**
    * The dispatches the loaded conversation can reach, published for the
    * agents list.
    *
@@ -1411,7 +1401,7 @@
         <Turn
           {turn}
           {slot}
-          {history}
+          turns={held.turns}
           carried={turn.key === newest ? (pinned?.key ?? null) : null}
           onreadoutput={readOutput}
         />
