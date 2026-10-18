@@ -7,7 +7,7 @@
 //! the conversation window reads too, and the envelope parser
 //! ([`crate::envelope`]) is the one the read path uses.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use forge_primitives::runtime::RuntimeSessionState;
 use forge_primitives::{ContentBlock, Message, StopReason, ToolCallStatus};
@@ -57,6 +57,34 @@ pub struct Rendered {
 /// workspace's row.
 fn forge_minted(uuid: Option<&str>) -> bool {
     uuid.is_some_and(|id| id.starts_with("forge_prompt_") || id.starts_with("forge_nudge_"))
+}
+
+/// The calls the conversation holds a result for, by id.
+///
+/// The fold's answer to whether the result the open turn waits on ever comes:
+/// a transcript keeps a call whose result never arrived - the restart shape
+/// (#1836) - and a guard keyed on "a call is out" alone would read that call as
+/// still running for the rest of the conversation, swallowing every forge row
+/// after it into one crash turn. The membership question is asked only of ids
+/// still open, and an id leaves the open set as the walk passes its result, so
+/// "in here" means the result is still ahead.
+fn answered_calls(messages: &[Message]) -> HashSet<&str> {
+    let mut answered = HashSet::new();
+    for message in messages {
+        let Message::User { message: envelope, .. } = message else {
+            continue;
+        };
+        for block in &envelope.content {
+            match block {
+                ContentBlock::ToolResult { tool_use_id, .. }
+                | ContentBlock::ServerToolResult { tool_use_id, .. } => {
+                    answered.insert(tool_use_id.as_str());
+                }
+                _ => {}
+            }
+        }
+    }
+    answered
 }
 
 /// Open a turn, answering the span it opened: the one a page is cut on and the
@@ -115,12 +143,16 @@ pub fn render(messages: &[Message]) -> Rendered {
     // that turn rather than opening one; the note claims the call by content
     // in the views, and this only keeps the two in one turn.
     let mut turn_calls = false;
-    // How many of the open turn's calls are still waiting on their results.
-    // A running turn's row that would otherwise open one - the chase's board
+    // The open turn's calls still waiting on their results, oldest first. A
+    // running turn's row that would otherwise open one - the chase's board
     // notice, a mid-turn prompt - is DELIVERED into this turn, and opening a
     // turn for it cuts the calls above it off from the answers below: every
     // reader of the fold then draws the call failed with no result (#2379).
-    let mut turn_open_calls: usize = 0;
+    let mut open_calls: Vec<String> = Vec::new();
+    // The calls the conversation answers at all, which bounds that delivery
+    // rule: a call whose result never comes - the restart shape (#1836) - is
+    // not a running turn, so the rows after it open their own.
+    let answered = answered_calls(messages);
     for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
         if is_dispatched(message) {
@@ -140,7 +172,7 @@ pub fn render(messages: &[Message]) -> Rendered {
             name_open(&mut turns, open, key);
             traced = TurnTrace::default();
             running_turn = false;
-            turn_open_calls = 0;
+            open_calls.clear();
             continue;
         }
         // A state frame is the turn boundary the wire alone reports, and the
@@ -216,7 +248,10 @@ pub fn render(messages: &[Message]) -> Rendered {
                     // draws the despawn failed with no result while it came
                     // back cleanly (#2379). A row the CLI wrote itself is not
                     // this - it opens a turn as it always did.
-                    if !assistant && forge_minted(row_uuid) && open.is_some() && turn_open_calls > 0
+                    if !assistant
+                        && forge_minted(row_uuid)
+                        && open.is_some()
+                        && open_calls.iter().any(|id| answered.contains(id.as_str()))
                     {
                         continue;
                     }
@@ -229,7 +264,7 @@ pub fn render(messages: &[Message]) -> Rendered {
                         turn_skills.clear();
                         turn_boundary = false;
                         turn_calls = false;
-                        turn_open_calls = 0;
+                        open_calls.clear();
                     }
                 }
                 ContentBlock::QueuedCommand { prompt, command_mode, source_uuid, .. } => {
@@ -250,7 +285,7 @@ pub fn render(messages: &[Message]) -> Rendered {
                     // the scan hoisted it.
                     if (forge_minted(source_uuid.as_deref()) || forge_minted(row_uuid))
                         && open.is_some()
-                        && turn_open_calls > 0
+                        && open_calls.iter().any(|id| answered.contains(id.as_str()))
                     {
                         continue;
                     }
@@ -259,12 +294,12 @@ pub fn render(messages: &[Message]) -> Rendered {
                     turn_skills.clear();
                     turn_boundary = false;
                     turn_calls = false;
-                    turn_open_calls = 0;
+                    open_calls.clear();
                 }
-                ContentBlock::ToolUse { name, input, .. }
-                | ContentBlock::ServerToolUse { name, input, .. } => {
+                ContentBlock::ToolUse { id, name, input, .. }
+                | ContentBlock::ServerToolUse { id, name, input, .. } => {
                     turn_calls = true;
-                    turn_open_calls += 1;
+                    open_calls.push(id.clone());
                     // A `Skill` call's own name for the skill it loads, held
                     // until that skill's body arrives: the body is what this
                     // claim decides the turn of.
@@ -279,8 +314,9 @@ pub fn render(messages: &[Message]) -> Rendered {
                 // A result answers a call of the open turn: the turn is no
                 // longer waiting on it, which is what tells a row arriving
                 // later it was pressed into a running turn - or not.
-                ContentBlock::ToolResult { .. } | ContentBlock::ServerToolResult { .. } => {
-                    turn_open_calls = turn_open_calls.saturating_sub(1);
+                ContentBlock::ToolResult { tool_use_id, .. }
+                | ContentBlock::ServerToolResult { tool_use_id, .. } => {
+                    open_calls.retain(|open| open != tool_use_id);
                 }
                 // A result is not a row of its own: it is what the call
                 // it answers already carries.
@@ -883,6 +919,26 @@ mod tests {
         assert_eq!(rendered.turns[1].opens_at, 3, "on the row it arrived in");
     }
 
+    /// **A call whose result never comes does not latch the delivery rule.**
+    ///
+    /// The restart shape (#1836): the transcript keeps a `tool_use` with no
+    /// `tool_result`, and no `Result` frame either - a transcript holds none -
+    /// so a guard keyed on "a call is out" alone would read that turn as
+    /// running for the rest of the conversation and swallow every forge row
+    /// into one crash turn: the auto-continue a restarted seat gets, every
+    /// nudge, every queued write.
+    #[test]
+    fn a_call_whose_result_never_comes_does_not_hold_the_next_turn_shut() {
+        let rendered = render(&[
+            reader_row("run the checks"),
+            despawn_call(),
+            forge_row("forge_prompt_9_aaaaaaaa", "continue where you left off"),
+        ]);
+
+        assert_eq!(rendered.turns.len(), 2, "the later forge row opens its own turn");
+        assert_eq!(rendered.turns[1].opens_at, 2, "on its own row, after the crash turn");
+    }
+
     /// The harness's background-completion notice is not a turn.
     ///
     /// It reaches the fold as the same `queued_command` block a prompt does -
@@ -1094,6 +1150,13 @@ mod tests {
             // the window could cut inside the turn the marker stays in.
             text("[Request interrupted by user]"),
             text("\n[Request interrupted by user]"),
+            // **A forge-minted notice delivered mid-call** (#2379): the CLI
+            // presses it into the running turn, and the fold keeps it there -
+            // so the scan must name it too, or the window could start inside
+            // the turn whose call is still out.
+            call("Bash", serde_json::json!({ "command": "ls" }), "toolu_9"),
+            forge_row("forge_nudge_9_deadbeef", "task board: a row lost its owner"),
+            tool_result("toolu_9", false),
         ];
 
         let opened: Vec<usize> = render(&messages).turns.iter().map(|span| span.opens_at).collect();
@@ -1130,6 +1193,15 @@ mod tests {
             !opened.contains(&27) && !opened.contains(&28),
             "and the fold keeps both inside the turn it ended: fold {opened:?}",
         );
+        // A forge-minted notice delivered at an open call (#2379) is the
+        // forbidden direction this fixture exists for: the fold keeps it in
+        // the running turn, so a scan naming it would cut the window inside
+        // that turn.
+        assert!(
+            !opened.contains(&30),
+            "the fold keeps the mid-call notice inside the turn whose call is out: fold {opened:?}",
+        );
+        assert!(!named.contains(&30), "and the scan names no head there either: scan {named:?}",);
     }
 
     /// A persisted notice IS an ending, and it says the same three things the
