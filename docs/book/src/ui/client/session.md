@@ -119,7 +119,10 @@ pill at the top edge says the older messages are loading rather than
 leaving the column reading as a dead scroll. The reader's own page is
 sized by what the column has measured - about a screen and a half of its
 own turns where the turns allow, one turn at minimum - while a walk
-toward a distant row keeps the full page.
+toward a distant row keeps the full page. **A conversation that fits the
+room has no top to scroll to**, so it asks for the page above on the
+fitting state itself and keeps asking as pages land, until the history
+fills the room or ends.
 
 ## The strip
 

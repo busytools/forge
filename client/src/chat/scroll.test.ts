@@ -433,6 +433,88 @@ describe('the page a walk requests', () => {
   });
 });
 
+describe('the history above a column that fits', () => {
+  it('asks for the page above, because there is no scroll to reach the top with', async () => {
+    const server = stub();
+    draw(server);
+    // The whole newest page fits the room: the list cannot scroll, so no
+    // reach ask can ever ride a scroll event (#2139).
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    // The rows report, and the deferred check reads the settled layout.
+    resized(100);
+    await frame();
+    await tick();
+
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    const lastAsk = asks[asks.length - 1];
+    expect(lastAsk?.before, 'the fitting column asked above').toBe('2');
+    expect(lastAsk?.turns, 'and with the measured page').toBe(5);
+  });
+
+  it('leaves a window that overflows to the scroll', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const before = server.asks.length;
+    resized(100);
+    await frame();
+    await tick();
+    expect(server.asks.length, 'nothing to fill: the column already scrolls').toBe(before);
+  });
+
+  it('asks nothing when the history has no page above', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], null);
+    await tick();
+    resized(100);
+    await frame();
+    await tick();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks, 'the first page is all there is').toHaveLength(1);
+  });
+
+  it('asks nothing before the list has a layout to read', async () => {
+    const server = stub();
+    draw(server);
+    // An unmeasured list reports no height at all, which reads as fitting. A
+    // fill asked on that takes a page the column does not need.
+    setMeasured(0, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    resized(100);
+    await frame();
+    await tick();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks, 'no layout, no fit to trust').toHaveLength(1);
+  });
+
+  it('waits for every held turn to measure before it trusts the fit', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    // No row has reported a height: a list still drawing reads short, and a
+    // fill asked on that would take a page it does not need.
+    await frame();
+    expect(server.asks, 'nothing measured, nothing asked').toHaveLength(1);
+
+    // Two deliveries, as a browser gives two: the first measures the rows,
+    // the second is the batch after they reported, where the fit is known.
+    resized(100);
+    resized(100);
+    await tick();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks.length, 'measured and fitting, the page above is asked').toBe(2);
+  });
+});
+
 describe('the loading state over the column', () => {
   it('says an older page is loading while the ask is out, and stops when it lands', async () => {
     const server = stub();

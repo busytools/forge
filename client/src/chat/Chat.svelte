@@ -457,6 +457,9 @@
       if (holdsEverything()) {
         working?.following(true);
         anchor = null;
+        // The layout has settled and the whole held window still fits the
+        // room, so the reach ask has no scroll to ride (#2139).
+        fillFittingRoom();
       }
       if (held.following) land();
       // A reader away from the foot has a place of their own, and a size change
@@ -1103,6 +1106,52 @@
   $effect(() => {
     if (follows === null || !held.loaded || !held.following) return;
     land();
+  });
+
+  /**
+   * **A conversation that does not fill the column has no top to scroll to.**
+   * The reach ask rides a scroll event, and a column whose whole held window
+   * fits its room never fires one - so a seat that opens on a page with
+   * history above it could not page back at all until a turn grew enough to
+   * overflow (#2139). The fitting state is its own trigger: while everything
+   * held fits the room and the walk has somewhere to go, ask for the page
+   * above; every landing publishes the record, so the check runs again and
+   * the fill continues until the column overflows or the history ends.
+   *
+   * **Nothing is read before there is a layout to read**: an unmeasured list
+   * reports no height, which reads as fitting, and a fill asked on that would
+   * take a page it does not need.
+   */
+  function fillFittingRoom(): void {
+    if (viewport === null || viewport.scrollHeight === 0) return;
+    if (!held.loaded || held.cursor === null) return;
+    // **Every held turn has to have reported its height.** A list still
+    // drawing its rows reads short, and one read short takes a page it does
+    // not need; a window that fits is a window whose every row was drawn, so
+    // the measured set is the honest test of "there is nothing left to
+    // scroll".
+    for (const turn of held.turns) {
+      if (rowSizes.sizeOf(turn.key) === undefined) return;
+    }
+    if (holdsEverything()) loadOlder(pageTurns());
+  }
+
+  /**
+   * The frame-deferred check, run on every landing.
+   *
+   * **The read waits a frame**, because the sizes right after a landing are
+   * the layout BEFORE the rows it added are measured: a column that is about
+   * to overflow reads as fitting there. The size observer below catches the
+   * other half - the layout settling - so a check that waits here and finds
+   * nothing still gets one when the rows report.
+   */
+  $effect(() => {
+    const element = viewport;
+    if (element === null || !held.loaded || held.cursor === null) return;
+    const frame = requestAnimationFrame(() => {
+      fillFittingRoom();
+    });
+    return () => cancelAnimationFrame(frame);
   });
 
   /**
