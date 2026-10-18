@@ -350,6 +350,13 @@ describe('the chat column as it draws', () => {
     // "nothing said yet" here tells the reader the seat is new when the truth
     // is that nothing has come back.
     expect(drawn()).toContain('Reading the conversation');
+    // Ved, 2026-10-18: the wait reads like the wake, not as a flat line - the
+    // same hold and shimmer, only the words differ. The selector pins the
+    // whole shape, the way the wake tests do.
+    const wait = document.querySelector('.hold .shimmer');
+    expect(wait?.textContent, "the reading wait lost the waking line's shimmer").toContain(
+      'Reading the conversation',
+    );
   });
 
   it('hands back the words the server turned the conversation down with', () => {
