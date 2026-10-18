@@ -1277,6 +1277,35 @@ mod tests {
         );
     }
 
+    /// A `Failed` entry's slot can still read as connected when the fire comes;
+    /// it is not live, so the fire is refused, not dispatched.
+    #[test]
+    fn deliver_worker_cron_does_not_dispatch_to_a_connected_failed_entry() {
+        let (ws, key, _db, _project) = stranded_owner_fixture("reviewer");
+        let mut failed = live_worker_entry("proj", "reviewer");
+        failed.status = forge_primitives::WorkerLiveness::Failed;
+        ws.insert_live_worker(&key, failed.clone());
+        ws.mark_session_connected_for_test(&failed.slot, "reviewer-uuid");
+
+        ws.enable_test_dispatch_intercept();
+        let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
+        assert!(
+            matches!(outcome, crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. }),
+            "a failed worker's slot is not a dispatch target, however connected it still \
+             reads; got {}",
+            outcome_name(&outcome),
+        );
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            !dispatched.iter().any(|c| matches!(
+                c,
+                Command::Prompt { key, .. } | Command::PromptUnder { key, .. }
+                    if key == &failed.slot
+            )),
+            "and no prompt was dispatched into the failed worker: {dispatched:?}",
+        );
+    }
+
     #[tokio::test]
     async fn deliver_asleep_dynamic_worker_cron_buffers_and_wakes_the_project() {
         let (ws, _rx) = Workspace::testing_stub();
