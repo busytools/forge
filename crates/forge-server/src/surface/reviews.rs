@@ -70,6 +70,7 @@ impl ViewSurface {
         threads: Vec<ReviewThread>,
     ) -> Vec<TreeThreadView> {
         let cwd = self.roster().cwd_for(seat);
+        let roots = self.roster().vault_roots_for(seat);
         let ceiling = self.workspace.document_max_bytes();
         let mut files: std::collections::HashMap<String, Option<Vec<String>>> =
             std::collections::HashMap::new();
@@ -80,6 +81,7 @@ impl ViewSurface {
                     let lines = files.entry(thread.anchor.path.clone()).or_insert_with(|| {
                         forge_workspace::env::documents::read(
                             cwd,
+                            &roots,
                             &thread.anchor.path,
                             false,
                             ceiling,
@@ -257,5 +259,63 @@ mod tests {
         let threads = view.threads.expect("the threads read answered");
         assert_eq!(threads.len(), 1, "the thread survives an unreadable file");
         assert_eq!(threads[0].placement, None, "no landing rather than a guess");
+    }
+
+    /// The placement read hands the seat's project's vault roots to the
+    /// read, so a thread anchored on a vault document places against it.
+    /// Dropping the roots from the placement read leaves the thread
+    /// unplaced.
+    #[test]
+    fn tree_reviews_places_a_thread_on_a_vault_document() {
+        use forge_primitives::review::tree_scope_ref;
+        use forge_workspace::env::git_diff::resolver::{AnchorPlacement, anchor_hash};
+
+        let tree = tempfile::tempdir().expect("tempdir");
+        let vault = tempfile::tempdir().expect("tempdir");
+        let file = vault.path().join("plan.md");
+        std::fs::write(&file, "line one\nline two\n").expect("the vault document");
+        let (workspace, _dir) =
+            crate::surface::testing::workspace_with_vault_roots(tree.path(), vault.path());
+
+        let worker = SessionSlot::worker("TestOrg", "forge", "reader");
+        let project = ViewSurface::new(Arc::clone(&workspace))
+            .roster()
+            .project_named("forge")
+            .expect("declared project")
+            .key
+            .clone();
+        workspace.insert_live_worker(
+            &project,
+            forge_workspace::WorkerEntry {
+                label: "reader".to_owned(),
+                charter: "charter".to_owned(),
+                slot: worker.clone(),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        let scope = tree_scope_ref(&worker);
+        let mut seeded = thread("v1", 2);
+        seeded.anchor.path = file.to_string_lossy().into_owned();
+        seeded.anchor.content_hash = anchor_hash("line two");
+        seeded.anchor.context = vec!["line one".to_owned()];
+        assert!(workspace.upsert_review_thread("forge", &scope, seeded), "seeded thread");
+
+        let view = ViewSurface::new(Arc::clone(&workspace)).tree_reviews(&worker);
+        let threads = view.threads.expect("the threads read answered");
+        assert_eq!(threads.len(), 1);
+        assert_eq!(
+            threads[0].placement,
+            Some(AnchorPlacement::Placed { line: 2, moved_from: None }),
+            "in place against the vault document",
+        );
     }
 }

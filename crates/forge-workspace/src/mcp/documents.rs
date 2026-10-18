@@ -11,8 +11,9 @@
 //!
 //! **Any-caller and not toggleable, like the browser**: every session may
 //! hand a document out of its own tree, and the read resolves against that
-//! tree - so there is nothing a project could withhold. Every state the read
-//! can refuse is the call's failure, with the read's own sentence in it.
+//! tree or its project's `vault_roots` - so there is nothing a project
+//! could withhold. Every state the read can refuse is the call's failure,
+//! with the read's own sentence in it.
 
 use std::sync::Arc;
 
@@ -51,10 +52,12 @@ pub(crate) fn add_tools(
 /// What the model reads about the tool before calling it: what it hands
 /// over, when `reviewable` earns its place, and which moment this answers.
 const DESCRIPTION: &str = "\
-Hand the reader a document from this session's working tree, opened in their \
-own viewer. Use it when a document is the thing the reader should see - a \
-plan, a report, a spec - rather than part of the conversation. `path` is \
-relative to the working directory. Set `reviewable` when you want review \
+Hand the reader a document from this session's working tree, or from one of \
+the project's vault roots, opened in their own viewer. Use it when a \
+document is the thing the reader should see - a plan, a report, a spec - \
+rather than part of the conversation. `path` is relative to the working \
+directory, or absolute under one of the project's `vault_roots` in \
+`forge.toml`. Set `reviewable` when you want review \
 comments back: the reader opens it, comments on lines and finishes, and \
 their review then arrives filed under the document's own scope. A PDF \
 always opens read-only. The reader is asked to open it or not, and **this \
@@ -88,7 +91,8 @@ impl Tool for HandOffTool {
                 "path": {
                     "type": "string",
                     "description": "The document's path, relative to the session's working \
-                                    directory.",
+                                    directory, or absolute under one of the project's \
+                                    `vault_roots` in `forge.toml`.",
                 },
                 "reviewable": {
                     "type": "boolean",
@@ -129,7 +133,7 @@ impl HandOffTool {
     async fn hand_off(&self, args: Value) -> Result<String, String> {
         let Some(path) = args.get("path").and_then(Value::as_str) else {
             return Err("documents__hand_off needs `path`: the document's path, relative to this \
-                 session's working directory"
+                 session's working directory or absolute under one of the project's vault_roots"
                 .to_owned());
         };
         let reviewable = match args.get("reviewable") {

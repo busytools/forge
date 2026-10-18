@@ -1377,6 +1377,7 @@ mod tests {
             env: std::collections::HashMap::new(),
             max_workers: None,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
+            vault_roots: Vec::new(),
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
             .expect("the stub config is well-formed");

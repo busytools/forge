@@ -16,10 +16,10 @@ use crate::workspace::Workspace;
 /// The hand-off, as one tool call sees it.
 #[async_trait]
 pub trait DocumentFacade: Send + Sync {
-    /// Read the document out of `seat`'s own tree, ask the clients drawing
-    /// that seat to open it, and **park until the reader answers** -
-    /// answering with the resolved path and the ending the park released
-    /// on.
+    /// Read the document out of `seat`'s own tree or its project's
+    /// `vault_roots`, ask the clients drawing that seat to open it, and
+    /// **park until the reader answers** - answering with the resolved
+    /// path and the ending the park released on.
     ///
     /// A refused read raises nothing and parks on nothing; a forge with no
     /// attached client is the read's sibling failure, its own sentence.

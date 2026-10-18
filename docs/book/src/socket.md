@@ -297,10 +297,11 @@ if its connection had gone - a take-over is loud on both sides rather than
 half-done.
 
 **`document_read {session, path, reviewable}`** - one document out of a
-seat's own working tree, for the client's viewer. `path` resolves against
-that tree and nothing outside it reads, however the path is spelled: a `..`
-walk, an absolute path elsewhere and a symlink pointing out are each refused
-BY NAME. `reviewable` is what a hand-off asked for - the hand-off's own
+seat's own working tree or its project's `vault_roots` in `forge.toml`,
+for the client's viewer. `path` resolves against that tree, and nothing
+outside the tree or those roots reads, however the path is spelled: a
+`..` walk, an absolute path elsewhere and a symlink pointing out are each
+refused BY NAME. `reviewable` is what a hand-off asked for - the hand-off's own
 fact rather than the reader's, so it decides nothing about whether the
 viewer offers the document's review - and a PDF asked reviewable is refused
 with the reason rather than quietly dropped. The read is
