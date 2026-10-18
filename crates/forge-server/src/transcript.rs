@@ -47,6 +47,18 @@ pub struct Rendered {
     pub endings: HashMap<String, TaskEnding>,
 }
 
+/// Whether a user row's id says forge minted it: a reader's own send
+/// (`forge_prompt_*`) or the machinery's dispatch (`forge_nudge_*`), the two
+/// namespaces `forge_sdk::request_id` mints.
+///
+/// **The id is the one fact about the sender the CLI carries into the
+/// transcript**, so it is what tells a row the CLI is pressing into a running
+/// turn from a row that opens one - an id minted elsewhere is not this
+/// workspace's row.
+fn forge_minted(uuid: Option<&str>) -> bool {
+    uuid.is_some_and(|id| id.starts_with("forge_prompt_") || id.starts_with("forge_nudge_"))
+}
+
 /// Open a turn, answering the span it opened: the one a page is cut on and the
 /// one a later report names.
 ///
@@ -103,6 +115,12 @@ pub fn render(messages: &[Message]) -> Rendered {
     // that turn rather than opening one; the note claims the call by content
     // in the views, and this only keeps the two in one turn.
     let mut turn_calls = false;
+    // How many of the open turn's calls are still waiting on their results.
+    // A running turn's row that would otherwise open one - the chase's board
+    // notice, a mid-turn prompt - is DELIVERED into this turn, and opening a
+    // turn for it cuts the calls above it off from the answers below: every
+    // reader of the fold then draws the call failed with no result (#2379).
+    let mut turn_open_calls: usize = 0;
     for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
         if is_dispatched(message) {
@@ -122,6 +140,7 @@ pub fn render(messages: &[Message]) -> Rendered {
             name_open(&mut turns, open, key);
             traced = TurnTrace::default();
             running_turn = false;
+            turn_open_calls = 0;
             continue;
         }
         // A state frame is the turn boundary the wire alone reports, and the
@@ -133,9 +152,13 @@ pub fn render(messages: &[Message]) -> Rendered {
             running_turn = running;
             continue;
         }
-        let (assistant, content) = match message {
-            Message::Assistant { message: envelope, .. } => (true, envelope.content.as_slice()),
-            Message::User { message: envelope, .. } => (false, envelope.content.as_slice()),
+        let (assistant, row_uuid, content) = match message {
+            Message::Assistant { message: envelope, .. } => {
+                (true, None, envelope.content.as_slice())
+            }
+            Message::User { message: envelope, uuid, .. } => {
+                (false, uuid.as_deref(), envelope.content.as_slice())
+            }
             _ => continue,
         };
         for block in content {
@@ -184,6 +207,19 @@ pub fn render(messages: &[Message]) -> Rendered {
                         close_traced(&mut traced, true, &mut keys, &mut turns, open);
                         continue;
                     }
+                    // **A forge-minted row arriving while the open turn waits
+                    // on a call was delivered INTO it**: the CLI presses a
+                    // mid-turn write into the running turn, and the chase's
+                    // board notice while an `agents__despawn` is out is the
+                    // everyday one. A turn opened for it cuts the call off
+                    // from the result below, and every reader of the fold
+                    // draws the despawn failed with no result while it came
+                    // back cleanly (#2379). A row the CLI wrote itself is not
+                    // this - it opens a turn as it always did.
+                    if !assistant && forge_minted(row_uuid) && open.is_some() && turn_open_calls > 0
+                    {
+                        continue;
+                    }
                     // The user's own row opens a turn, so the work above it is
                     // named first; the assistant's prose stays inside the turn
                     // already open.
@@ -193,9 +229,10 @@ pub fn render(messages: &[Message]) -> Rendered {
                         turn_skills.clear();
                         turn_boundary = false;
                         turn_calls = false;
+                        turn_open_calls = 0;
                     }
                 }
-                ContentBlock::QueuedCommand { prompt, command_mode, .. } => {
+                ContentBlock::QueuedCommand { prompt, command_mode, source_uuid, .. } => {
                     // The harness's own background-completion notice rides the
                     // same block as a prompt, and the scan hoists it into a
                     // user envelope without reading the mode - so a turn opened
@@ -205,15 +242,29 @@ pub fn render(messages: &[Message]) -> Rendered {
                     if is_completion_notice(command_mode.as_deref(), prompt) {
                         continue;
                     }
+                    // The same rule as the plain row above: a forge-minted
+                    // queued write pressed into a running turn - a call still
+                    // waiting on its result - stays in that turn (#2379). The
+                    // marker rides the block's `source_uuid` when the CLI keeps
+                    // the attachment shape, and the enclosing row's id when
+                    // the scan hoisted it.
+                    if (forge_minted(source_uuid.as_deref()) || forge_minted(row_uuid))
+                        && open.is_some()
+                        && turn_open_calls > 0
+                    {
+                        continue;
+                    }
                     close_traced(&mut traced, true, &mut keys, &mut turns, open);
                     open = Some(open_turn(&mut turns, index));
                     turn_skills.clear();
                     turn_boundary = false;
                     turn_calls = false;
+                    turn_open_calls = 0;
                 }
                 ContentBlock::ToolUse { name, input, .. }
                 | ContentBlock::ServerToolUse { name, input, .. } => {
                     turn_calls = true;
+                    turn_open_calls += 1;
                     // A `Skill` call's own name for the skill it loads, held
                     // until that skill's body arrives: the body is what this
                     // claim decides the turn of.
@@ -224,6 +275,12 @@ pub fn render(messages: &[Message]) -> Rendered {
                     {
                         turn_skills.push(want.to_owned());
                     }
+                }
+                // A result answers a call of the open turn: the turn is no
+                // longer waiting on it, which is what tells a row arriving
+                // later it was pressed into a running turn - or not.
+                ContentBlock::ToolResult { .. } | ContentBlock::ServerToolResult { .. } => {
+                    turn_open_calls = turn_open_calls.saturating_sub(1);
                 }
                 // A result is not a row of its own: it is what the call
                 // it answers already carries.
@@ -734,6 +791,96 @@ mod tests {
 
         assert_eq!(rendered.turns.len(), 1, "the queued prompt opens one turn");
         assert_eq!(rendered.turns[0].opens_at, 0, "at the row the prompt arrived in");
+    }
+
+    /// The reader's own row, which opens the turn.
+    fn reader_row(text: &str) -> Message {
+        user(vec![ContentBlock::Text { text: text.to_owned(), extras: serde_json::Map::new() }])
+    }
+
+    /// The same row under an id forge minted for a send or a dispatch.
+    fn forge_row(uuid: &str, text: &str) -> Message {
+        let mut row = reader_row(text);
+        if let Message::User { uuid: id, .. } = &mut row {
+            *id = Some(uuid.to_owned());
+        }
+        row
+    }
+
+    /// The call a running turn is waiting on.
+    fn despawn_call() -> Message {
+        assistant(vec![ContentBlock::ToolUse {
+            id: "call_1".to_owned(),
+            name: "mcp__forge__agents__despawn".to_owned(),
+            input: serde_json::json!({ "label": "probe" }),
+            extras: serde_json::Map::new(),
+        }])
+    }
+
+    /// **A forge-minted row pressed into a running turn stays in that turn.**
+    ///
+    /// The CLI delivers a mid-turn write into the running turn, and the board
+    /// chase's notice while an `agents__despawn` is out is the everyday one:
+    /// the transcript shows it between the call and the result the call waits
+    /// on. A turn opened for it cuts the call off from its answer, and every
+    /// reader of the fold - a page, a re-attach, a transcript read - draws the
+    /// despawn failed with no result while it came back cleanly (#2379).
+    #[test]
+    fn a_mid_call_forge_row_stays_in_the_turn_it_was_pressed_into() {
+        let rendered = render(&[
+            reader_row("despawn probe"),
+            despawn_call(),
+            forge_row(
+                "forge_nudge_38_d56ff2d2",
+                "task board: \"probe holds no row\" has no live owner",
+            ),
+            tool_result("call_1", false),
+        ]);
+
+        assert_eq!(
+            rendered.turns.len(),
+            1,
+            "the notice opens no turn of its own while the call is out",
+        );
+        assert_eq!(rendered.turns[0].opens_at, 0, "the turn still opens on the prompt row");
+    }
+
+    /// The same marker on the queued carrier, which rides `source_uuid`.
+    #[test]
+    fn a_mid_call_queued_write_stays_too() {
+        let mut notice = queued_prompt("task board: \"probe holds no row\" has no live owner");
+        if let Message::User { message, .. } = &mut notice
+            && let Some(ContentBlock::QueuedCommand { source_uuid, .. }) =
+                message.content.first_mut()
+        {
+            *source_uuid = Some("forge_nudge_38_d56ff2d2".to_owned());
+        }
+        let rendered = render(&[
+            reader_row("despawn probe"),
+            despawn_call(),
+            notice,
+            tool_result("call_1", false),
+        ]);
+
+        assert_eq!(rendered.turns.len(), 1, "the queued write opens no turn either");
+    }
+
+    /// The same row at a settled turn opens one, as the reader's own rows do:
+    /// the call's result has landed, so nothing is being waited on.
+    #[test]
+    fn a_forge_row_at_a_settled_turn_opens_one() {
+        let rendered = render(&[
+            reader_row("despawn probe"),
+            despawn_call(),
+            tool_result("call_1", false),
+            forge_row(
+                "forge_nudge_38_d56ff2d2",
+                "task board: \"probe holds no row\" has no live owner",
+            ),
+        ]);
+
+        assert_eq!(rendered.turns.len(), 2, "a settled turn's notice opens its own");
+        assert_eq!(rendered.turns[1].opens_at, 3, "on the row it arrived in");
     }
 
     /// The harness's background-completion notice is not a turn.
