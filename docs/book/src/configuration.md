@@ -242,10 +242,12 @@ consult the seat's project's roots; the file-index walk does not, because
 it lists the session's tree.
 
 The check canonicalizes both sides and resolves symlinks before
-comparing, so a symlink out of every root refuses like any other escape,
-and a path inside a root reads exactly as an in-tree path does. A path
-outside the tree and outside every root keeps the refusal it always had:
-`the path resolves outside the session's tree: <path>`.
+comparing, so a symlink whose target exists and sits out of every root
+refuses like any other escape - a dangling one reports the document
+missing, exactly as it does in-tree - and a path inside a root reads
+exactly as an in-tree path does. A path outside the tree and outside
+every root keeps the refusal it always had: `the path resolves outside
+the session's tree: <path>`.
 
 Each entry is an absolute path, `~` (your home directory) or a `~/`
 path. Anything else fails the load naming the key and the entry:

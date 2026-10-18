@@ -478,6 +478,16 @@ mod tests {
 
         let real = base.join("vault/real.md").to_str().expect("utf8").to_owned();
         read(&cwd, &roots, &real, false, CEILING).expect("the root's own file still reads");
+
+        // A DANGLING link out of every root reports missing rather than
+        // an escape: its target does not exist, and the in-tree twin of
+        // the same shape reports missing too. configuration.md states
+        // this classification, so this pins it.
+        std::os::unix::fs::symlink(base.join("elsewhere/gone.md"), base.join("vault/dangling.md"))
+            .expect("the dangling symlink");
+        let dangling = base.join("vault/dangling.md").to_str().expect("utf8").to_owned();
+        let refusal = read(&cwd, &roots, &dangling, false, CEILING).expect_err("nothing there");
+        assert!(matches!(refusal, DocumentRefusal::Missing { .. }), "{refusal:?}");
     }
 
     /// A missing document under a vault root reports MISSING, exactly as
