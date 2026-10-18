@@ -14,8 +14,8 @@ use forge_primitives::{ContentBlock, Message, StopReason, ToolCallStatus};
 // The row predicates the fold opens a turn by, which the conversation window
 // reads too: they live in the window's crate so the two share one copy.
 use forge_workspace::conversation_turns::{
-    claims_skill_call, is_continuation, is_dispatched, is_image_note, is_interrupt_marker,
-    is_task_notice,
+    claims_skill_call, forge_minted, is_continuation, is_dispatched, is_image_note,
+    is_interrupt_marker, is_task_notice,
 };
 
 use crate::envelope::detect_inbound;
@@ -45,18 +45,6 @@ pub struct Rendered {
     /// from this answer do not walk the conversation again for it. A page is
     /// the case that pays: it is built while a reader scrolls.
     pub endings: HashMap<String, TaskEnding>,
-}
-
-/// Whether a user row's id says forge minted it: a reader's own send
-/// (`forge_prompt_*`) or the machinery's dispatch (`forge_nudge_*`), the two
-/// namespaces `forge_sdk::request_id` mints.
-///
-/// **The id is the one fact about the sender the CLI carries into the
-/// transcript**, so it is what tells a row the CLI is pressing into a running
-/// turn from a row that opens one - an id minted elsewhere is not this
-/// workspace's row.
-fn forge_minted(uuid: Option<&str>) -> bool {
-    uuid.is_some_and(|id| id.starts_with("forge_prompt_") || id.starts_with("forge_nudge_"))
 }
 
 /// The calls the conversation holds a result for, by id.
