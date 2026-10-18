@@ -138,9 +138,12 @@ pub fn render(messages: &[Message], live: bool) -> Rendered {
     // While the seat's turn is live, an open call is mid-flight whatever the
     // list holds - on the live walk the result is not written yet, so a bound
     // read off the list alone would stop protecting exactly the window #2379
-    // is about. A settled shape with no result is the crash one (#1836): there
-    // the open call is never coming back and the row after it opens its own
-    // turn, which is what `answered_later` decides.
+    // is about. The flag is the whole seat's, so an older crash-shaped turn
+    // sitting in the window keeps its early row too while a later turn runs -
+    // the same "whatever the list holds" policy, read on the window rather
+    // than the turn. A settled shape with no result is the crash one (#1836):
+    // there the open call is never coming back and the row after it opens its
+    // own turn, which is what `answered_later` decides.
     let mut open_calls: Vec<String> = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
@@ -231,8 +234,7 @@ pub fn render(messages: &[Message], live: bool) -> Rendered {
                         && forge_minted(row_uuid)
                         && open.is_some()
                         && !open_calls.is_empty()
-                        && ((live && !open_calls.is_empty())
-                            || answered_later(messages, index, &open_calls))
+                        && (live || answered_later(messages, index, &open_calls))
                     {
                         continue;
                     }
@@ -267,8 +269,7 @@ pub fn render(messages: &[Message], live: bool) -> Rendered {
                     if (forge_minted(source_uuid.as_deref()) || forge_minted(row_uuid))
                         && open.is_some()
                         && !open_calls.is_empty()
-                        && ((live && !open_calls.is_empty())
-                            || answered_later(messages, index, &open_calls))
+                        && (live || answered_later(messages, index, &open_calls))
                     {
                         continue;
                     }
@@ -394,10 +395,10 @@ impl TurnTrace {
 /// trace. A turn the wire already settled is named by its own result frame and
 /// this one nothing, so the two never name one turn twice.
 ///
-/// `known_over` is whether whatever closed the turn says so - the next prompt
-/// or a state frame. A turn closing at the end of a conversation has nothing
-/// saying it, and needs its own last frame to have stopped rather than handed
-/// back for a tool call.
+/// `known_over` is whether whatever closed the turn says so - the next prompt.
+/// A turn closing at the end of a conversation has nothing saying it, and
+/// needs its own last frame to have stopped rather than handed back for a
+/// tool call.
 fn close_traced(
     trace: &mut TurnTrace,
     known_over: bool,

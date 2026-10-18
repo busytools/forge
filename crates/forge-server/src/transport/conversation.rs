@@ -706,6 +706,10 @@ impl Conversations {
     }
 
     /// The seat's conversation if one is held.
+    pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Held>> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone)
+    }
+
     /// Whether the seat's turn is in flight right now, from its own frames.
     ///
     /// `false` for a seat this transport has not heard of: nothing holds a
@@ -713,10 +717,6 @@ impl Conversations {
     /// conversation.
     pub fn live_of(&self, slot: &SessionSlot) -> bool {
         self.get(slot).is_some_and(|held| held.lock().live)
-    }
-
-    pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Held>> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone)
     }
 
     /// Hold `conversation` for `slot`, unless the stream got there first.
@@ -1095,6 +1095,69 @@ mod tests {
             "duration_api_ms": 9,
         }))
         .expect("a result frame")
+    }
+
+    /// An assistant frame calling `id`, which is both a call and the frame
+    /// that opens a turn's liveness.
+    fn a_call_frame(id: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "uuid": format!("a-{id}"),
+            "message": {
+                "id": "msg_call",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{
+                    "type": "tool_use",
+                    "id": id,
+                    "name": "mcp__forge__agents__despawn",
+                    "input": { "label": "probe" },
+                }],
+            },
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        }))
+        .expect("an assistant frame")
+    }
+
+    /// The chase's board notice, as the CLI presses it into a running turn:
+    /// a text row under the id forge minted for the dispatch.
+    fn a_forge_row(uuid: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "uuid": uuid,
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "task board: \"probe holds no row\" has no live owner",
+                }],
+            },
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        }))
+        .expect("a user frame")
+    }
+
+    /// **The hop that carries the seat's flag into the fold is pinned.**
+    ///
+    /// The fold's own tests hand `render` the flag directly, so nothing there
+    /// would notice a caller passing `false` - and #2379's fix would revert
+    /// quietly with a full green suite. This folds THROUGH `Held` with a live
+    /// seat and the mid-call shape, asserting the one boundary the hop exists
+    /// to protect.
+    #[test]
+    fn a_live_seats_mid_call_notice_folds_into_one_turn_through_held() {
+        let held = Held::new(Conversation::new(
+            vec![
+                a_frame("despawn the probe"),
+                a_call_frame("call_1"),
+                a_forge_row("forge_nudge_1_deadbeef"),
+            ],
+            0,
+            0,
+        ));
+
+        let turns = held.read(|held| held.rendered().turns.len());
+        assert_eq!(turns, 1, "the notice stays in the turn the seat's ladder reports live");
     }
 
     /// **The seat's turn state travels to the fold, folded off its frames.**
