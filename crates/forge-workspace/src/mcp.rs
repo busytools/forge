@@ -365,8 +365,12 @@ pub fn build_forge_server(
 /// characters, so the critical half leads; the shipped-text gate (rule
 /// 17) covers the wording.
 pub(crate) const TASK_BOARD_INSTRUCTIONS: &str = "\
-forge's task board is the shared surface for work in flight. Read it with \
-tasks__list: a `ready` mark means a row can be started, `worked` and the \
+forge's task board is the shared surface for work in flight. It is for running \
+work: a landed row with no children and no epic above it is deleted in the same \
+pass, never left completed; a landed child of an epic - open or already terminal \
+- is completed and left terminal so the epic can read `to close` (a verify=user \
+child parks in waiting on the user first). Read it \
+with tasks__list: a `ready` mark means a row can be started, `worked` and the \
 `overdue` mark say how long it has run against its estimate, and a message \
 about an over-estimate row is an answer you owe. Claim before working: \
 tasks__claim by `id`, or by `epic` to pull that epic's top ready row; one \
@@ -461,6 +465,36 @@ mod tests {
                  the decision model, peers and your own review"
             ),
             "the parking test rides the kind: decision clause, channels and bar together",
+        );
+    }
+
+    /// The board's shape is stated before any tool call (#2377): the
+    /// board is for running work, so a landed row with no children and no
+    /// epic above it is deleted in the same pass - the discipline the
+    /// instructions owe a session that reads no description. The claim is
+    /// the discipline rather than a filter: the drawn board keeps its
+    /// terminal lanes, so "shows only running rows" would be false of the
+    /// surface a caller is about to read. The epic carve-out rides here
+    /// too, since the instructions are all some sessions read.
+    #[test]
+    fn the_task_instructions_name_the_board_shape() {
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.contains(
+                "It is for running work: a landed row with no children and no epic above it \
+                 is deleted in the same pass, never left completed; a landed child of an \
+                 epic - open or already terminal - is completed and left terminal so the \
+                 epic can read `to close` (a verify=user child parks in waiting on the user \
+                 first)"
+            ),
+            "the instructions name the board's shape: {TASK_BOARD_INSTRUCTIONS}",
+        );
+        // The archive case rides the shape too (#2377): a later edit
+        // dropping "completing the ROOT row ... archives the tree" would
+        // leave the carve-out pointing at a close signal nothing acts on.
+        assert!(
+            TASK_BOARD_INSTRUCTIONS
+                .contains("completing the ROOT row of an epic closes it and archives the tree"),
+            "the instructions state the archive that closes an epic: {TASK_BOARD_INSTRUCTIONS}",
         );
     }
 
