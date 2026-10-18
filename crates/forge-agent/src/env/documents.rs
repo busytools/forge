@@ -135,10 +135,17 @@ fn reviewable_kind(kind: &DocumentKind) -> bool {
 /// Whether `resolved` sits under one of the vault roots. The comparison
 /// is by path component - `Path::starts_with` - so `MadnessX` is not
 /// under a `Madness` root.
+///
+/// The root is compared both as it resolves and as it was written: a
+/// MISSING path falls back to a lexical walk built from the request's
+/// own spelling, so a root reached through a symlink would otherwise
+/// refuse a missing document as an escape that its in-tree twin reports
+/// missing. The spelled arm can only ever match a path that is not on
+/// disk, which is what keeps it from admitting an escape.
 fn under_any_root(vault_roots: &[PathBuf], resolved: &Path) -> bool {
     vault_roots.iter().any(|vault| {
-        let vault = vault.canonicalize().unwrap_or_else(|_| lexical(vault));
-        resolved.starts_with(vault)
+        let canonical = vault.canonicalize().unwrap_or_else(|_| lexical(vault));
+        resolved.starts_with(&canonical) || resolved.starts_with(lexical(vault))
     })
 }
 
@@ -471,6 +478,27 @@ mod tests {
 
         let real = base.join("vault/real.md").to_str().expect("utf8").to_owned();
         read(&cwd, &roots, &real, false, CEILING).expect("the root's own file still reads");
+    }
+
+    /// A missing document under a vault root reports MISSING, exactly as
+    /// it does in-tree. The root here is reached through a symlink and
+    /// the request is spelled the same way, with no chain below it on
+    /// disk - the case where a canonical root compared against a
+    /// lexically-collapsed path would refuse as an escape instead.
+    #[test]
+    fn a_missing_document_under_a_symlinked_vault_root_reports_missing() {
+        let dir = fixture();
+        let base = dir.path().canonicalize().expect("canonical");
+        let cwd = base.join("tree");
+        std::fs::create_dir_all(&cwd).expect("the session tree");
+        std::fs::create_dir_all(base.join("vault")).expect("the vault");
+        std::os::unix::fs::symlink(base.join("vault"), base.join("spelled")).expect("the symlink");
+        let roots = vec![base.join("spelled")];
+
+        let gone = base.join("spelled/gone/plan.md").to_str().expect("utf8").to_owned();
+        let refusal = read(&cwd, &roots, &gone, false, CEILING).expect_err("nothing to read");
+        assert!(matches!(refusal, DocumentRefusal::Missing { .. }), "{refusal:?}");
+        assert!(refusal.to_string().contains("gone/plan.md"), "names the path: {refusal}");
     }
 
     /// A sibling whose name starts with a root's is NOT inside it: the
