@@ -2233,7 +2233,7 @@ impl DespawnCleanup {
             // worktree remove` never deletes one. With the directory gone the
             // branch is certainly not checked out, so this is the one place
             // reaping it is unambiguously safe.
-            Some(_) if worktree_already_gone => {
+            Some(path) if worktree_already_gone => {
                 tracing::debug!(
                     target: "forge_workspace::spawn",
                     event_name = "despawn_stranded_worktree_already_gone",
@@ -2242,6 +2242,12 @@ impl DespawnCleanup {
                     worktree = %worktree_display,
                     "despawn: the stranded row's worktree is already gone; nothing to remove",
                 );
+                // The directory is gone, so any earlier admission for this
+                // label is spent; retract it rather than let it authorize
+                // deleting a directory that later takes its place.
+                if let Some(root) = worktree_root.as_deref() {
+                    forge_agent::env::worktree::record_worktree_gone(root, label, path);
+                }
                 branch_cleanup_warning = reap_branch_and_reviews(
                     &workspace,
                     worktree_root.as_deref(),
@@ -2257,7 +2263,19 @@ impl DespawnCleanup {
                 // it against the worktree as it is now: `--force` discards
                 // uncommitted work, so it stands in only for a verdict taken
                 // here rather than one taken before the worker was torn down.
-                let removal = match forge_agent::env::worktree::remove_worktree(path, force) {
+                // The admitted removal is recorded before git runs, so a
+                // removal that dies part-way leaves the record the
+                // leftover clear deletes on. `worktree_root` is Some
+                // whenever `worktree_path` is (the path is derived from
+                // the root above), so the plain-removal arm is a fallback
+                // the flow cannot reach today.
+                let remove = |force: bool| match worktree_root.as_deref() {
+                    Some(root) => {
+                        forge_agent::env::worktree::remove_owned_worktree(root, label, path, force)
+                    }
+                    None => forge_agent::env::worktree::remove_worktree(path, force),
+                };
+                let removal = match remove(force) {
                     Err(err)
                         if !force
                             && forge_agent::env::worktree::worktree_dirty_reason(path)
@@ -2272,7 +2290,7 @@ impl DespawnCleanup {
                             error = %err,
                             "despawn: git refused the removal of a clean worktree; retrying with --force",
                         );
-                        forge_agent::env::worktree::remove_worktree(path, true)
+                        remove(true)
                     }
                     other => other,
                 };
@@ -2281,11 +2299,12 @@ impl DespawnCleanup {
                 // into `target/`) leaves the directory with no
                 // registration: the re-check above can no longer read the
                 // tree and every later `git worktree remove` refuses it.
-                // With the tree unreadable, the fallback re-checks only
-                // the path's shape and that git no longer lists it; the
-                // cleanliness behind the delete is the verdict taken
-                // before teardown (or the caller's `force`), since a
-                // deregistered tree cannot be asked again.
+                // With the tree unreadable, the fallback re-checks the
+                // path's shape, that git no longer lists it, and the
+                // removal record written above; the cleanliness behind
+                // the delete is the verdict taken before teardown (or the
+                // caller's `force`), since a deregistered tree cannot be
+                // asked again.
                 let removal = match removal {
                     Ok(()) => Ok(()),
                     Err(git_error) => match worktree_root.as_deref() {
@@ -2315,11 +2334,11 @@ impl DespawnCleanup {
                                     "{git_error}; and its leftover directory could not be \
                                      deleted: {error}"
                                 )),
-                                // A refusal means git's own verdict
-                                // stands - a registered worktree, or a
-                                // path that is not the verified one - so
-                                // the caller keeps the message it always
-                                // got.
+                                // A refusal means the directory was kept -
+                                // a registered worktree, a foreign one, or
+                                // one with no admitted removal. Carry its
+                                // detail so the operator sees why, and the
+                                // remedy, rather than git's bare error.
                                 Err(refusal) => {
                                     tracing::debug!(
                                         target: "forge_workspace::spawn",
@@ -2330,7 +2349,10 @@ impl DespawnCleanup {
                                         error = %refusal,
                                         "despawn: the leftover path was left in place",
                                     );
-                                    Err(git_error.to_string())
+                                    Err(format!(
+                                        "{git_error}; and the leftover directory was kept: \
+                                         {refusal}"
+                                    ))
                                 }
                             }
                         }
@@ -6776,6 +6798,15 @@ provider = "anthropic"
             !branch_exists(repo.path(), "worktree-reviewer"),
             "the worktree branch is reaped, not left behind"
         );
+        let record = std::fs::read_to_string(repo.path().join(".git").join("forge-worktrees"))
+            .expect("the despawn recorded the removal");
+        assert!(
+            record.lines().any(|line| {
+                line.starts_with("cleared\treviewer\t")
+                    && line.contains(".claude/worktrees/reviewer")
+            }),
+            "the removal is admitted before git runs and cleared after it: {record}",
+        );
     }
 
     /// The git fixture with its live entry gone and a durable row left
@@ -6923,6 +6954,16 @@ provider = "anthropic"
             "the branch outlives the worktree - `git worktree remove` never deletes one - so a \
              worktree that is already gone is still a branch to reap, and with the directory gone \
              it is not checked out",
+        );
+        let record = std::fs::read_to_string(repo.path().join(".git").join("forge-worktrees"))
+            .expect("the despawn recorded the gone worktree");
+        assert!(
+            record.lines().any(|line| {
+                line.starts_with("cleared\treviewer\t")
+                    && line.contains(".claude/worktrees/reviewer")
+            }),
+            "the already-gone arm retracts any admission rather than leaving one to outlive it: \
+             {record}",
         );
     }
 
