@@ -31,6 +31,7 @@ import { subjectKey } from '../protocol';
 import type { SessionSlot } from '../wire/types';
 import Chat from './Chat.svelte';
 import { installResizeObserver } from './testing/viewport';
+import { subagents } from './subagents.svelte';
 import { fold, turnFold } from './units';
 
 installResizeObserver();
@@ -38,6 +39,36 @@ installResizeObserver();
 vi.mock('virtua/svelte', async () => {
   const { default: List } = await import('./testing/List.svelte');
   return { VList: List };
+});
+
+/**
+ * What a dispatch row's timeline reader is handed, and what it hands back.
+ *
+ * The seam guards both ends of the reader's own call. Its argument catches a
+ * copy made BETWEEN the page and here, whatever its spelling (`flatMap`, a
+ * spread, `concat`, `Array.from`) - it arrives as a flattened messages array.
+ * A copy made INSIDE the generator is downstream of the argument, so the
+ * return is guarded too; the generator's own live read is pinned where it
+ * lives (`timeline.test.ts`).
+ */
+const seam = vi.hoisted(() => ({ seen: [] as unknown[] }));
+
+vi.mock('./timeline', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./timeline')>();
+  return {
+    ...real,
+    historyFrames: (turns: Parameters<typeof real.historyFrames>[0]) => {
+      seam.seen.push(turns);
+      if (!turns.every((turn) => Array.isArray(turn.messages))) {
+        throw new Error('the timeline reader was handed a flattened history, not the page turns');
+      }
+      const frames = real.historyFrames(turns);
+      if (Array.isArray(frames)) {
+        throw new Error('historyFrames built a flat array of the page');
+      }
+      return frames;
+    },
+  };
 });
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -247,6 +278,7 @@ afterEach(async () => {
   document.body.innerHTML = '';
   git.sync(null);
   pinnedRow.set(PIN, null);
+  subagents.sync(null);
 });
 
 describe('the column as the frames arrive', () => {
@@ -338,6 +370,126 @@ describe('the column as the frames arrive', () => {
     // under and a single re-introduced walk of the turn - any one of the three
     // the fix deleted - does not.
     expect(perFrame, 'the counter costs the frame, not the turn').toBeLessThan(whole / 20);
+  });
+});
+
+/**
+ * The page's history, as a SEAM (#2354).
+ *
+ * `Chat.svelte` held `held.turns.flatMap((one) => one.messages)`: every message
+ * the page held, rebuilt into one array. The derived was invalidated on EVERY
+ * arriving frame, so the copy never waited on the page changing - only on a
+ * read, an open dispatch row's timeline being the one this test drives. A copy
+ * reintroduced between the page and the reader pays the whole page per frame,
+ * whatever its spelling (`flatMap`, a spread, `concat`, `Array.from`), and
+ * shows up here as a flattened argument; a copy inside `historyFrames` is
+ * guarded by the mock's return check and pinned in `timeline.test.ts`.
+ */
+describe('the page history a turn is handed', () => {
+  /** A page of `turns` turns of `size` frames each, the first opening a dispatch. */
+  function page(turns: number, size: number): unknown[] {
+    const rows: unknown[] = [];
+    for (let at = 0; at < turns; at += 1) {
+      const messages: unknown[] = [
+        {
+          type: 'assistant',
+          uuid: `a-${at}`,
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: at === 0 ? 'toolu_task' : `c${at}`,
+                name: at === 0 ? 'Task' : 'Bash',
+                input: at === 0 ? { description: 'review', prompt: 'read' } : { command: 'true' },
+              },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          uuid: `r-${at}`,
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: at === 0 ? 'toolu_task' : `c${at}`,
+                content: 'ok',
+              },
+            ],
+          },
+        },
+      ];
+      while (messages.length < size) messages.push(counter(at * size + messages.length));
+      rows.push({ key: `t${at}`, messages });
+    }
+    return rows;
+  }
+
+  it('hands the dispatch timeline the page turns, not a rebuilt history', async () => {
+    const TURNS = 60;
+    const SIZE = 20;
+    const rows = page(TURNS, SIZE);
+
+    const server = stub();
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.send({ kind: 'page', conversation: LEAD, turns: rows, cursor: null });
+    await painted();
+    // A dispatch row opened the way a reader opens one: its timeline is where
+    // the page history is read at all.
+    subagents.sync([
+      {
+        name: 'review the fold',
+        dispatch_id: 'toolu_task',
+        agent_type: 'code-reviewer',
+        running: true,
+        failed: false,
+        backgrounded: false,
+        ended_at: null,
+        calls: 1,
+        tail: [],
+        usage: null,
+      },
+    ]);
+    flushSync();
+    const dispatchRow = document.querySelector('details[data-sg="toolu_task"]');
+    if (!(dispatchRow instanceof HTMLDetailsElement)) throw new Error('the dispatch row drew');
+    // A shut row reads no history, and an arriving frame does not make it -
+    // a read hoisted out of the opened branch would show up here.
+    seam.seen = [];
+    expect(seam.seen, 'a shut dispatch row reads no history').toEqual([]);
+    server.send(appended(counter(4999)));
+    await painted();
+    expect(seam.seen, 'a frame arriving at a shut dispatch row reads no history').toEqual([]);
+    dispatchRow.open = true;
+    dispatchRow.dispatchEvent(new Event('toggle'));
+    flushSync();
+    expect(dispatchRow.open, 'the row whose timeline reads the history is open').toBe(true);
+
+    const FRAMES = 8;
+    for (let at = 0; at < FRAMES; at += 1) {
+      server.send(appended(counter(5000 + at)));
+      await painted();
+    }
+    // A probe that saw nothing would pass the shape checks below vacuously,
+    // so the reader has to have run on the arriving frames at all.
+    expect(
+      seam.seen.length,
+      'the timeline reader ran on every arriving frame',
+    ).toBeGreaterThanOrEqual(FRAMES);
+    for (const seen of seam.seen) {
+      expect(Array.isArray(seen), 'the reader is handed an array').toBe(true);
+      expect((seen as unknown[]).length, 'the turns, not their messages').toBe(TURNS);
+      expect(
+        (seen as { messages?: unknown }[]).every((turn) => Array.isArray(turn.messages)),
+        'every entry is a turn with its messages',
+      ).toBe(true);
+    }
   });
 });
 

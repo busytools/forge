@@ -27,17 +27,24 @@
   let {
     turn,
     slot = null,
-    history = null,
+    turns = null,
     carried = null,
     onreadoutput = null,
   }: {
     turn: HeldTurn;
     slot?: Self | null;
     /**
-     * Every message the page holds, for a dispatch row's own timeline: a
-     * backgrounded instance's frames arrive in later turns than its dispatch.
+     * The page's turns, for a dispatch row's own timeline.
+     *
+     * **The turns rather than their messages flattened.** A backgrounded
+     * instance runs on past the turn that dispatched it, so its calls arrive
+     * in LATER turns - and flattening them here would copy the page's whole
+     * history into a fresh array on every read of this row's timeline. This
+     * page invalidates its turns on every arriving frame, so a read under an
+     * open dispatch row is every frame; an eager read anywhere would make it
+     * unconditional.
      */
-    history?: readonly unknown[] | null;
+    turns?: readonly { messages: readonly unknown[] }[] | null;
     /**
      * The key of this turn's report row that the pin above the box is drawing,
      * or `null` where the pin is drawing none of them.
@@ -148,7 +155,7 @@
           {#if unit.kind === 'text'}
             <Prose text={unit.text} />
           {:else if unit.kind === 'leaves'}
-            <Leaves rows={unit.rows} messages={history ?? turn.messages} {onreadoutput} />
+            <Leaves rows={unit.rows} turns={turns ?? [turn]} {onreadoutput} />
           {:else if unit.kind === 'question'}
             <Card asked={unit.asked} />
           {:else if unit.kind === 'notice'}

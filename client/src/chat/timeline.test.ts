@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { dispatchFrames } from './timeline';
+import { dispatchFrames, historyFrames } from './timeline';
 
 /** The dispatch itself, as the session's own assistant frame carries it. */
 const dispatch = (over: Record<string, unknown> = {}) => ({
@@ -305,5 +305,29 @@ describe('a dispatch read into its timeline', () => {
     expect(frames.brief, 'the brief still reads off the dispatch itself').toBe(
       'Read the pane and report two nits.',
     );
+  });
+});
+
+describe('the page frames a timeline reads', () => {
+  /**
+   * #2354: the page's turns are walked where they lie. A materialised array is
+   * the copy the cut deleted, and a copy taken when the walk starts would also
+   * miss a frame that lands while the row is open - both are what this pins.
+   */
+  it('reads the turns where they lie, a frame landing mid-walk included', () => {
+    const first = said('first');
+    const second = said('second');
+    const late = said('late');
+    const earlier = { messages: [first] };
+    const later = { messages: [second] };
+    const frames = historyFrames([earlier, later]);
+
+    expect(Array.isArray(frames), 'an iterator, not a materialised array').toBe(false);
+    const iterator = frames[Symbol.iterator]();
+    expect(iterator.next().value, 'the first frame').toBe(first);
+    // A frame that lands after the walk began is still read: the walk follows
+    // the page, not a copy taken when it started.
+    later.messages.push(late);
+    expect([...iterator], 'the rest, the late frame included').toEqual([second, late]);
   });
 });

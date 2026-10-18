@@ -16,7 +16,7 @@
   import { firstLine, searchHits, stripEscapes } from './text';
   import Thought from './Thought.svelte';
   import { subagents } from './subagents.svelte';
-  import { dispatchFrames } from './timeline';
+  import { dispatchFrames, historyFrames } from './timeline';
 
   /**
    * One call: what it was, whether it came back, and what it came back with.
@@ -35,22 +35,23 @@
     call,
     open = false,
     k,
-    messages = null,
+    turns = null,
     onreadoutput = null,
   }: {
     call: ToolLeaf;
     open?: boolean;
     /**
-     * The page's messages, across every turn, as the wire carried them.
+     * The page's turns, as the wire carried them.
      *
      * Read only by a dispatch row that is open: the instance's own frames
      * (its calls, their results, the prose between them) carry the parent id
      * that names the dispatch, and the row's timeline is read from them here
      * rather than from the card, whose tail caps at four. Every turn rather
      * than the row's own, because a backgrounded instance's frames arrive in
-     * LATER turns than the dispatch that opened it.
+     * LATER turns than the dispatch that opened it - and the turns rather than
+     * one flattened array, so reading them costs no copy of the whole page.
      */
-    messages?: readonly unknown[] | null;
+    turns?: readonly { messages: readonly unknown[] }[] | null;
     /**
      * The way the row asks for a backgrounded call's own output, handed down
      * by the column - which holds the connection the ask goes over.
@@ -401,7 +402,7 @@
    * pays nothing for a timeline nobody is looking at.
    */
   const sub = $derived(
-    card !== undefined && opened ? dispatchFrames(messages ?? [], call.id) : null,
+    card !== undefined && opened ? dispatchFrames(historyFrames(turns ?? []), call.id) : null,
   );
 
   /** Whether this dispatch owns its RESULT text on the row: only a foreground

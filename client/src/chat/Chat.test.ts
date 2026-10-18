@@ -13,6 +13,7 @@ import { Stores } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import Chat from './Chat.svelte';
 import { pinnedRow } from './pinnedRow.svelte';
+import { subagents } from './subagents.svelte';
 import SeatSwitch from './testing/seat-switch.svelte';
 import { installResizeObserver, resized } from './testing/viewport';
 
@@ -188,6 +189,7 @@ afterEach(async () => {
   // The publish store is one per client, so a pin left behind is read by the
   // next test as its own.
   pinnedRow.set(PIN, null);
+  subagents.sync(null);
 });
 
 describe('the chat column as it draws', () => {
@@ -710,6 +712,96 @@ describe('the chat column as it draws', () => {
       (document.querySelector('details.leaf') as HTMLDetailsElement).open,
       'the call the reader closed',
     ).toBe(false);
+  });
+
+  it("draws a dispatch's own frames from a turn later than its dispatch", async () => {
+    // A backgrounded instance runs on past the turn that dispatched it, so its
+    // calls arrive in LATER turns - the row's timeline reads the page's turns,
+    // never only the turn the dispatch sits in. That is the prop path #2354
+    // moved from one flattened array to the turns themselves; nothing may drop
+    // the frames that made the read worth doing.
+    const dispatch = {
+      type: 'assistant',
+      uuid: 'a-dispatch',
+      message: {
+        id: 'm-dispatch',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_task',
+            name: 'Task',
+            input: { description: 'review', subagent_type: 'code-reviewer', prompt: 'read' },
+          },
+        ],
+      },
+    };
+    const ack = {
+      type: 'user',
+      uuid: 'u-ack',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_task', content: 'launched' }],
+      },
+    };
+    /** One call the instance made, in whichever turn its frame landed. */
+    const instanceCall = (id: string, command: string) => ({
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_task',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }],
+      },
+    });
+    // One in the dispatch's OWN turn and one in a later turn: both have to
+    // draw, which is what rules out newest-only as well as own-turn-only.
+    const inOwnTurn = instanceCall('child-1', 'own-turn-work');
+    const inLaterTurn = instanceCall('child-2', 'later-turn-work');
+
+    const between = {
+      type: 'user',
+      uuid: 'u-between',
+      message: { role: 'user', content: [{ type: 'text', text: 'between' }] },
+    };
+
+    const server = stub();
+    draw({}, server);
+    server.answer([
+      { key: 't1', messages: [dispatch, inOwnTurn, ack] },
+      { key: 't2', messages: [between] },
+    ]);
+    subagents.sync([
+      {
+        name: 'review',
+        dispatch_id: 'toolu_task',
+        agent_type: 'code-reviewer',
+        running: true,
+        failed: false,
+        backgrounded: true,
+        ended_at: null,
+        calls: 1,
+        tail: [],
+        usage: null,
+      },
+    ]);
+    // The instance's own frame lands in the newest turn, which is NOT the one
+    // its dispatch drew in.
+    server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: inLaterTurn } } });
+    await painted();
+
+    const row = document.querySelector('details[data-sg="toolu_task"]');
+    if (!(row instanceof HTMLDetailsElement)) throw new Error('the dispatch row drew');
+    row.open = true;
+    row.dispatchEvent(new Event('toggle'));
+    flushSync();
+
+    // Both turns contribute: the dispatch's own and the later one. A read of
+    // the newest turn alone, or of the dispatch's turn alone, loses one. The
+    // assertions read the opened row, so a surface drawing child frames
+    // elsewhere cannot keep them green.
+    const timeline = row.textContent ?? '';
+    expect(timeline, "the dispatch's own turn draws").toContain('own-turn-work');
+    expect(timeline, 'the later turn draws').toContain('later-turn-work');
   });
 
   it('draws a peer message the socket sends live, through the frame the server forges', async () => {

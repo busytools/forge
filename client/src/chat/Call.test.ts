@@ -757,15 +757,19 @@ describe('the dispatch row, joined to its instance', () => {
         call: dispatch(),
         k: 'task',
         open: true,
-        messages: [
-          dispatchFrame(),
+        turns: [
           {
-            type: 'system',
-            subtype: 'task_started',
-            tool_use_id: 'toolu_task',
-            task_id: 't1',
-            task_type: 'local_agent',
-            spawn_depth: 1,
+            messages: [
+              dispatchFrame(),
+              {
+                type: 'system',
+                subtype: 'task_started',
+                tool_use_id: 'toolu_task',
+                task_id: 't1',
+                task_type: 'local_agent',
+                spawn_depth: 1,
+              },
+            ],
           },
         ],
       },
@@ -788,23 +792,27 @@ describe('the dispatch row, joined to its instance', () => {
         call: dispatch(),
         k: 'task',
         open: true,
-        messages: [
-          dispatchFrame(),
+        turns: [
           {
-            type: 'assistant',
-            parent_tool_use_id: 'toolu_task',
-            message: {
-              role: 'assistant',
-              content: [{ type: 'text', text: 'unique-report-text' }],
-            },
-          },
-          {
-            type: 'system',
-            subtype: 'task_notification',
-            tool_use_id: 'toolu_task',
-            task_id: 't1',
-            status: 'completed',
-            summary: 'unique-report-text',
+            messages: [
+              dispatchFrame(),
+              {
+                type: 'assistant',
+                parent_tool_use_id: 'toolu_task',
+                message: {
+                  role: 'assistant',
+                  content: [{ type: 'text', text: 'unique-report-text' }],
+                },
+              },
+              {
+                type: 'system',
+                subtype: 'task_notification',
+                tool_use_id: 'toolu_task',
+                task_id: 't1',
+                status: 'completed',
+                summary: 'unique-report-text',
+              },
+            ],
           },
         ],
       },
@@ -870,7 +878,7 @@ describe('the dispatch row, joined to its instance', () => {
     ];
 
     const drawn = render(Call, {
-      props: { call: dispatch(), k: 'task', open: true, messages },
+      props: { call: dispatch(), k: 'task', open: true, turns: [{ messages }] },
     }).body;
 
     expect(drawn, 'the brief it was given').toContain('do the thing');

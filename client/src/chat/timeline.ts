@@ -87,13 +87,26 @@ interface CallDraft {
 }
 
 /**
+ * Every frame the page holds, turn after turn, read where it lies.
+ *
+ * **No array is built**, which is the point: a dispatch row's timeline reads
+ * the page's whole history on every frame it is open, and flattening the turns
+ * first copied every message into a fresh array on each read (#2354).
+ */
+export function* historyFrames(
+  turns: readonly { messages: readonly unknown[] }[],
+): Generator<unknown> {
+  for (const turn of turns) yield* turn.messages;
+}
+
+/**
  * The dispatch's own frames, read into what the row draws.
  *
- * `messages` is the turn's messages as the wire carried them - the fold hands
- * the row's timeline these rather than the units, because the units are the
+ * `messages` is the frames as the wire carried them - the fold hands the row's
+ * timeline these rather than the units, because the units are the
  * conversation's and a dispatched agent's frames are not in them.
  */
-export function dispatchFrames(messages: readonly unknown[], dispatchId: string): DispatchFrames {
+export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string): DispatchFrames {
   const lines: (CallDraft | { kind: 'prose' | 'thought' | 'hook'; text: string })[] = [];
   const at = new Map<string, CallDraft>();
   const beats = new Set<string>();
