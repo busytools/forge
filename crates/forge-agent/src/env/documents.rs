@@ -5,9 +5,11 @@
 //! outside that tree reads unless it sits under one of the project's
 //! configured vault roots - the check is on the canonicalized path, so a
 //! `..` walk, an absolute path and a symlink pointing out are all refused
-//! the same way. The read is bounded by a ceiling and detects the kind by
-//! extension. Every refusal is a sentence naming its reason, because the
-//! reason is what a viewer draws and what a hand-off returns.
+//! the same way, and a spell the filesystem will not resolve is refused
+//! rather than read through its lexical collapse. The read is bounded by
+//! a ceiling and detects the kind by extension. Every refusal is a
+//! sentence naming its reason, because the reason is what a viewer draws
+//! and what a hand-off returns.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -59,9 +61,18 @@ pub fn read(
         path: cwd.display().to_string(),
         why: err.to_string(),
     })?;
-    let resolved = resolve(&root, path);
+    let (resolved, walked) = match resolve(&root, path) {
+        Landed::Walked(resolved) => (resolved, true),
+        Landed::Collapsed(resolved) => (resolved, false),
+    };
     if !resolved.starts_with(&root) && !under_any_root(vault_roots, &resolved) {
         return Err(DocumentRefusal::OutsideTheTree { path: path.to_owned() });
+    }
+    if !walked {
+        // The spell does not resolve and the collapse is a different
+        // path, so nothing is opened through it: the spell names
+        // nothing, which is the miss it reports.
+        return Err(DocumentRefusal::Missing { path: path.to_owned() });
     }
     let metadata = std::fs::metadata(&resolved).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
@@ -149,23 +160,42 @@ fn under_any_root(vault_roots: &[PathBuf], resolved: &Path) -> bool {
     })
 }
 
-/// The canonical target of `path` under `root`. A missing file has no
-/// canonical path, so its PARENT is canonicalized instead - what keeps the
-/// prefix check honest for a path whose directory is a symlink out. A path
-/// that canonicalizes neither way is collapsed LEXICALLY before the prefix
-/// check, so a `..` climbing past the root is still an escape when the chain
-/// it climbs through is not on disk.
-fn resolve(root: &Path, path: &str) -> PathBuf {
+/// What a requested path resolved to under `root`.
+enum Landed {
+    /// The path the read may open: canonical (every symlink in it
+    /// resolved), or the spelled path itself when only its tail is
+    /// missing - a `..` over a component that does not exist, say - so
+    /// metadata on it can only report the miss.
+    Walked(PathBuf),
+    /// A spell the filesystem would not resolve, collapsed LEXICALLY
+    /// into a DIFFERENT path. The rewrite can pop a `..` over a
+    /// component that does not exist and expose a later symlink, so this
+    /// path may exist, and may leave every root once its symlinks
+    /// resolve. It is judged for the refusal's classification only, and
+    /// never opened.
+    Collapsed(PathBuf),
+}
+
+/// Where `path` lands under `root`. A missing file has no canonical
+/// path, so its PARENT is canonicalized instead - what keeps the prefix
+/// check honest for a path whose directory is a symlink out. A path that
+/// canonicalizes neither way and needs no rewriting is `Walked` as the
+/// spelled path itself; one the collapse rewrites is `Collapsed`, so a
+/// `..` climbing past the root is still an escape when the chain it
+/// climbs through is not on disk, and a spell that collapses onto a
+/// symlink out is never read through the rewrite.
+fn resolve(root: &Path, path: &str) -> Landed {
     let joined = root.join(path);
     if let Ok(full) = joined.canonicalize() {
-        return full;
+        return Landed::Walked(full);
     }
-    match (joined.parent(), joined.file_name()) {
-        (Some(parent), Some(name)) => {
-            parent.canonicalize().map_or_else(|_| lexical(&joined), |parent| parent.join(name))
-        }
-        _ => lexical(&joined),
+    if let (Some(parent), Some(name)) = (joined.parent(), joined.file_name())
+        && let Ok(parent) = parent.canonicalize()
+    {
+        return Landed::Walked(parent.join(name));
     }
+    let collapsed = lexical(&joined);
+    if collapsed == joined { Landed::Walked(joined) } else { Landed::Collapsed(collapsed) }
 }
 
 /// `path` with `.` dropped and `..` popped, filesystem untouched. Popping
@@ -530,6 +560,41 @@ mod tests {
         let sibling = base.join("MadnessX/plan.md").to_str().expect("utf8").to_owned();
         let refusal =
             read(&cwd, &roots, &sibling, false, CEILING).expect_err("a sibling is not inside");
+        assert!(matches!(refusal, DocumentRefusal::OutsideTheTree { .. }), "{refusal:?}");
+    }
+
+    /// A spell whose `..` pops over a component that does not exist must
+    /// never be READ through its lexical collapse: `nope/../link/passwd`
+    /// collapses to `link/passwd`, and `link` is a symlink out of the
+    /// tree, so opening the collapsed path would read the link's target.
+    /// The spell names nothing, so it reports missing and nothing is
+    /// opened through it. A plain missing file under the tree still
+    /// reports missing, and the link asked for directly still refuses
+    /// as the escape it is - the controls.
+    #[test]
+    fn a_spell_that_collapses_onto_an_escaping_symlink_reads_nothing() {
+        let dir = fixture();
+        let base = dir.path().canonicalize().expect("canonical");
+        let cwd = base.join("tree");
+        std::fs::create_dir_all(&cwd).expect("the session tree");
+        let outside = base.join("elsewhere");
+        std::fs::create_dir_all(&outside).expect("the outside dir");
+        write(&base, "elsewhere/passwd", b"secret");
+        std::os::unix::fs::symlink(&outside, cwd.join("link")).expect("the escaping symlink");
+
+        let refusal = read(&cwd, &[], "nope/../link/passwd", false, CEILING)
+            .expect_err("a spell that names nothing never reads");
+        assert!(
+            matches!(refusal, DocumentRefusal::Missing { .. }),
+            "the spell names nothing: {refusal:?}"
+        );
+
+        let refusal = read(&cwd, &[], "gone/deeper/missing.md", false, CEILING)
+            .expect_err("a plain miss under the tree still reads missing");
+        assert!(matches!(refusal, DocumentRefusal::Missing { .. }), "{refusal:?}");
+
+        let refusal = read(&cwd, &[], "link/passwd", false, CEILING)
+            .expect_err("the link asked for directly is the escape");
         assert!(matches!(refusal, DocumentRefusal::OutsideTheTree { .. }), "{refusal:?}");
     }
 
