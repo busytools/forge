@@ -1345,7 +1345,7 @@
     <!-- Connected, and the first page has not come back. It is its own state:
          the empty copy here would say the seat has no history when the truth
          is that nothing has answered yet. -->
-    <p class="hold">Reading the conversation...</p>
+    <div class="hold"><span class="shimmer">Reading the conversation...</span></div>
   </div>
 {:else if held.turns.length === 0}
   <div class="conv">
