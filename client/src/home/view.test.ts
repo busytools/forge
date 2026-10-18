@@ -70,6 +70,7 @@ import {
   chipFor,
   elapsedLabel,
   extensionsCard,
+  fleetGroups,
   fleetRows,
   gateLine,
   failureFile,
@@ -440,6 +441,7 @@ describe('the fleet the snapshot describes', () => {
             {
               label: 'lead',
               state: { kind: 'lifecycle', lifecycle: 'Idle' },
+              pending: null,
               href: '/session/TestOrg/proj/lead',
             },
           ],
@@ -603,6 +605,58 @@ describe('the fleet the snapshot describes', () => {
       branch: 'main',
       files: '3 files',
     });
+  });
+});
+
+describe('the fleet, grouped as the rail groups it', () => {
+  /**
+   * A project ranks by its strongest seat, not by its lead: the lead may sit
+   * idle while a worker holds a permission ask, and a page that read the lead
+   * alone would leave that project out of the section that needs a person.
+   */
+  it('answers a worker ask before its lead run', () => {
+    const asked = {
+      ...FLEET,
+      agents: FLEET.agents.map((row) =>
+        row.slot.project === 'forge' && row.slot.label === 'w1'
+          ? { ...row, pending: 'permission' as const }
+          : row,
+      ),
+    };
+    const groups = fleetGroups(fleetRows(asked));
+    expect(groups.map((group) => group.heading)).toEqual(['needs you', 'working', 'asleep']);
+    expect(
+      groups[0]?.rows.map((row) => row.name),
+      'the ask moves the project',
+    ).toEqual(['forge']);
+    expect(groups[0]?.count, 'and the heading counts what it holds').toBe(1);
+    // The project MOVED: a filter per heading over overlapping predicates
+    // would leave it in working as well, and the fleet would draw it twice.
+    expect(
+      groups[1]?.rows.map((row) => row.name),
+      'and it leaves working',
+    ).toEqual(['dotfiles']);
+    expect(
+      groups[2]?.rows.map((row) => row.name),
+      'while the sleeping project stays asleep',
+    ).toEqual(['notes']);
+  });
+
+  /**
+   * A project with no live seat is asleep, not working: the fleet sends its
+   * rows from the projects list, and a seatless project has no seat to rank.
+   * The rule a flat list got wrong is the one that sends it to `working`.
+   */
+  it('puts a project with no live seat under asleep', () => {
+    const groups = fleetGroups(fleetRows({ ...FLEET, agents: [] }));
+    expect(groups, 'no section without rows').toHaveLength(1);
+    expect(groups[0]?.heading).toBe('asleep');
+    expect(groups[0]?.rows.map((row) => row.name)).toEqual(['forge', 'notes', 'dotfiles']);
+    expect(groups[0]?.mark, 'the fold wears a dot class, not a row class').toBe('off');
+  });
+
+  it('drops a group the fleet has nothing for', () => {
+    expect(fleetGroups(fleetRows({ ...FLEET, fleet: [], projects: [], agents: [] }))).toEqual([]);
   });
 });
 

@@ -173,8 +173,9 @@ version, so the tag and the installed app carry the same number.
 
 The desktop shell checks for a newer release once at launch: one request to
 `releases/latest/download/latest.json` on `busytools/forge`, from the
-`plugins.updater` block in `tauri.conf.json`. The home header draws a
-`client ↑ v1.0.116 available` line when there is one; clicking downloads and
+`plugins.updater` block in `tauri.conf.json`. The home header draws an
+`↑ v1.0.116 available` notice beside the `client` build pair when there is
+one; clicking downloads and
 installs it, and the line then offers the restart that finishes the swap.
 Nothing restarts on its own. A browser tab against the same forge draws none
 of it - there is no shell to update.

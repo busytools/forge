@@ -51,8 +51,9 @@ these changed before it landed. Each is now drawn:
   reconstruct from the records, which is why it is carried rather than
   derived.
 - **`forge_version` and `forge_version_short` are new**, and the header
-  draws them rather than its own package version: the header states which
-  forge is RUNNING, and the client is a different program.
+  draws the short one as its labelled `server` build, beside the client's
+  own `client` pair: the header states which forge is RUNNING, and the
+  client is a different program.
 - Also: `agents[]` briefly gained `peer` and `peer_failure_at` for the peer
   inflight counters, and both are gone again with them - the badge they fed
   is not drawn any more - while `dictate` gained `enabled` and `device`, and

@@ -195,7 +195,12 @@ header.top.pagetop .back { margin-left: auto; font-family: var(--mono);
   border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
 header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
 .versions { font-family: var(--mono); font-size: 13.5px; color: var(--dim); }
-.versions b { color: var(--muted); font-weight: 500; }
+/* Each build is a labelled pair: the name quiet, the version brighter, and
+   an update notice in the warn tone. The label is what tells server, client
+   and claude apart, so a bare version cannot be read as another build's. */
+.versions .build { white-space: nowrap; }
+.versions .build .k { color: var(--dim); }
+.versions b { color: var(--muted); font-weight: 600; }
 /* The installed version is context; an available update is something to
    act on, so it carries the warn amber. */
 .versions .upd { color: var(--warn); }
@@ -787,7 +792,7 @@ button.b-epic-pill { cursor: pointer; }
   /* One track per cell (mark, name, tree, age, seats, counts, misses, the
      way in): a track short and the trailing cells wrap onto an implicit row,
      where the misses stack one word per line and the link draws over them. */
-  grid-template-columns: 22px minmax(0, 14rem) minmax(0, 1fr) auto auto auto auto auto;
+  grid-template-columns: 22px minmax(0, max-content) minmax(0, 1fr) auto auto auto auto auto;
   align-items: center; gap: 14px;
   border: 1px solid var(--line); border-radius: var(--r);
   background: var(--s1);
@@ -804,7 +809,10 @@ button.b-epic-pill { cursor: pointer; }
    mark falls through to the link whose surface it sits on. */
 .fleet-row .row { display: inline-flex; padding: 0; pointer-events: none; }
 .fleet-row .row::after { content: none; }
-.fleet-name { font-weight: 500; }
+/* The name takes the room it needs and no more: a fixed track wrapped the
+   long ones while the tree's track sat half empty beside them. */
+.fleet-name { font-weight: 500; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
 /* The row is the way into the lead's chat: this link's box stretches over
    the whole row, and the controls with targets of their own (a seat chip,
    the board) ride above it. */
@@ -812,7 +820,11 @@ button.b-epic-pill { cursor: pointer; }
 .fleet-go::after { content: ""; position: absolute; inset: 0; border-radius: var(--r); }
 .fleet-go:focus-visible { outline: none; }
 .fleet-go:focus-visible::after { outline: 2px solid var(--blue); outline-offset: 2px; }
-.fleet-where { color: var(--muted); font-size: var(--fs-label); font-family: var(--mono); }
+/* One line, truncated: a long branch name breaks at its own hyphens into a
+   stack of fragments, which reads as a broken row. */
+.fleet-where { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted); font-size: var(--fs-label); font-family: var(--mono); }
 .fleet-where .files { color: var(--text); }
 .fleet-when { color: var(--dim); font-size: var(--fs-label); font-family: var(--mono); }
 .fleet-seats { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -849,6 +861,9 @@ button.b-epic-pill { cursor: pointer; }
 @media (max-width: 900px) {
   .fleet-row { grid-template-columns: 22px minmax(0, 1fr) auto; row-gap: 8px; }
   .fleet-where, .fleet-when, .fleet-seats, .fleet-counts, .fleet-misses, .fleet-open { grid-column: 2 / -1; }
+  /* The stacked cells left-align with the name; the link keeps its own box
+     rather than stretching into a full-width button. */
+  .fleet-open { justify-self: start; }
 }
 
 /* the mark inside a row: the shared shapes, with the row's own reset so a
@@ -1295,9 +1310,13 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .refused { padding: 2px 8px 6px 0; color: var(--muted); }
 /* ---------- projects: three state groups, one row shape ---------- */
 
+/* The rail's section heading, shared with the home's fleet: the count rides
+   the heading where the surface draws one, and a lone word lays out as it
+   always did. */
 .state { padding: 12px 8px 4px; font-size: var(--fs-label); font-weight: 700;
   letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
 .state.needs { color: var(--warn); }
+.state .n { font-family: var(--mono); font-size: var(--fs-data); letter-spacing: 0; }
 /* The asleep heading, which folds what is under it. It carries the count of
    the rows it hides, so a folded section does not read as an empty one. */
 details.gfold > summary { list-style: none; cursor: pointer; display: flex;
@@ -3512,7 +3531,10 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    The page is two components (Files.svelte + Reader.svelte) and CodeMirror
    mounts its own DOM, so its rules live in the sheet, the way the review
    canvas's do. */
-.files { display: flex; flex-direction: column; height: 100dvh;
+/* `files-page`, not `files`: the bare name also matched the home's
+   changed-file count (`.fleet-where .files`), whose `height: 100dvh`
+   stretched a whole fleet row. */
+.files-page { display: flex; flex-direction: column; height: 100dvh;
   padding: 22px 26px 0; }
 .files-top { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
   padding-bottom: 14px; border-bottom: 1px solid var(--line); }
@@ -3649,7 +3671,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-reader .rv-thread .rv-acts { padding-top: 4px; }
 
 @media (max-width: 980px) {
-  .files { height: auto; min-height: 100dvh; padding: 18px 16px 0; }
+  .files-page { height: auto; min-height: 100dvh; padding: 18px 16px 0; }
   .files-body { grid-template-columns: minmax(0, 1fr); }
   /* The reader is the page; the tree and the comments are sheets behind the
      two doors, each pushed onto history so Back closes what it opened. */

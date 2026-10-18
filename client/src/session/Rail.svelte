@@ -7,7 +7,7 @@
   import CloseChip from './CloseChip.svelte';
   import { closeSeat, closingSeat } from './close';
   import type { RailMode } from './rail-mode';
-  import GroupFold from './GroupFold.svelte';
+  import GroupFold from '../components/GroupFold.svelte';
   import SleeperFold from './SleeperFold.svelte';
   import {
     failedLine,

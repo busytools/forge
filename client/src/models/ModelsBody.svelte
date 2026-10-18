@@ -1,7 +1,7 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
   import { FALLBACK_FLOOR_DB, fractionOf, meterWindow } from '../composer/meter';
-  import GroupFold from '../session/GroupFold.svelte';
+  import GroupFold from '../components/GroupFold.svelte';
   import type { SetRecorder } from './recorder.svelte';
   import type {
     BenchResult,

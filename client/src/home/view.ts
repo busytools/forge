@@ -132,7 +132,7 @@ interface Header {
   installed: string | null;
   /** The version to name when npm has a newer one than the installed CLI. */
   update: string | null;
-  /** The forge build serving the socket, which the client draws rather than its own. */
+  /** The forge build serving the socket, drawn as the header's `server` pair. */
   version: string;
 }
 
@@ -156,7 +156,7 @@ interface HomeView {
 }
 
 /** One fleet row, as the home draws it. */
-interface FleetViewRow {
+export interface FleetViewRow {
   org: string;
   name: string;
   /** Where the board control opens: the project's own board. */
@@ -175,7 +175,13 @@ interface FleetViewRow {
   state: RowState;
   place: { branch: string | null; files: string | null };
   gate: string | null;
-  seats: { label: string; state: RowState; href: string }[];
+  /** Each seat's state and its ask, which is what its rank is read from. */
+  seats: {
+    label: string;
+    state: RowState;
+    pending: 'question' | 'permission' | 'hand_off' | null;
+    href: string;
+  }[];
   /**
    * When the project last moved: the newest `last_activity` across its seats
    * and the sessions its catalog remembers, or null when nothing has ever
@@ -229,6 +235,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
     const seats = agents.map((agent) => ({
       label: agent.label,
       state: stateOf(agent, wire.unseen),
+      pending: agent.pending,
       href: hrefForSlot(agent.slot),
     }));
     // The newest write the project has: a live seat's, or a session the
@@ -288,6 +295,71 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       ],
     };
   });
+}
+
+/**
+ * One heading of the home's fleet: the rail's three states over project rows.
+ *
+ * The count is what the heading holds. A group the fleet has nothing for is
+ * dropped rather than drawn empty, so the page opens on the sections that
+ * exist.
+ */
+export interface FleetGroup {
+  heading: string;
+  klass: string;
+  count: number;
+  /** The strongest row's dot class, for a folded heading's `GroupFold`. */
+  mark: string | null;
+  rows: FleetViewRow[];
+}
+
+/** The three sections, in reading order; the rail and the home share them. */
+export const GROUP_HEADINGS = ['needs you', 'working', 'asleep'] as const;
+
+/** The heading's class for a rank: the attention section carries the warn tone. */
+export const groupClassOf = (rank: number): string => (rank === 0 ? 'state needs' : 'state');
+
+/**
+ * The fleet grouped the way the rail groups its projects: the same three
+ * states, read from the same `rankOf`, so a project reads in the same section
+ * on either surface.
+ *
+ * A row ranks by its strongest seat - an ask outranks a run, a run outranks a
+ * sleep - and a project with no live seat ranks asleep, which is what the
+ * home's flat list could not say.
+ */
+export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
+  const groups: FleetGroup[] = GROUP_HEADINGS.map((heading, rank) => ({
+    heading,
+    klass: groupClassOf(rank),
+    count: 0,
+    mark: null,
+    rows: [],
+  }));
+  for (const row of rows) {
+    const rank = row.seats.reduce(
+      (best, seat) => Math.min(best, rankOf(seat.state, seat.pending)),
+      2,
+    );
+    const group = groups[rank];
+    if (group === undefined) continue;
+    group.rows.push(row);
+    group.count += 1;
+  }
+  // Only the asleep section folds, and it is the last heading. Its rows can
+  // only rank at a sleep, so the strongest one's dot is a shape the global
+  // vocabulary styles; the two open sections draw no mark at all.
+  const folded = groups[GROUP_HEADINGS.length - 1];
+  if (folded !== undefined) {
+    const strongest = folded.rows.reduce<{ class: string; dot: string } | null>((best, row) => {
+      const mark = markOf(row.state);
+      return best === null || MARK_ORDER.indexOf(mark.class) < MARK_ORDER.indexOf(best.class)
+        ? mark
+        : best;
+    }, null);
+    folded.mark = strongest?.dot ?? null;
+  }
+  return groups.filter((group) => group.rows.length > 0);
 }
 
 /** The org a project row belongs to, from the projects list. */
@@ -362,6 +434,40 @@ export function markOf(state: RowState): { class: string; dot: string } {
     case 'Sleeping':
     case 'LoggedOut':
       return { class: 'asleep', dot: 'off' };
+  }
+}
+
+/**
+ * Where a row sits in the rail or the home's fleet. The three groups are also
+ * the order they read in, so the rank is the order and the array index both.
+ *
+ * Shared by both surfaces because the grouping must not diverge: the home's
+ * headings and the rail's sections are the same three states, and a rank
+ * computed twice would drift the first time one of them grew a state.
+ */
+export function rankOf(
+  state: RowState,
+  pending: 'question' | 'permission' | 'hand_off' | null,
+): number {
+  // An ask outranks the lifecycle: a session holds a prompt while the core
+  // still calls it idle, and what it is waiting on is a person.
+  if (pending !== null) return 0;
+  if (state.kind === 'unseen') return 1;
+  // A failed turn is the seat's own version of a needed person, so it ranks
+  // with the attention states rather than with the completions - and so does
+  // a death the reader has not been shown.
+  if (state.kind === 'failed-turn' || state.kind === 'died') return 0;
+  if (state.kind === 'never-started') return 2;
+  switch (state.lifecycle) {
+    case 'Attention':
+    case 'Failed':
+    case 'AuthRequired':
+      return 0;
+    case 'Sleeping':
+    case 'LoggedOut':
+      return 2;
+    default:
+      return 1;
   }
 }
 
