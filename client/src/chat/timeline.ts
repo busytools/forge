@@ -17,6 +17,7 @@
 
 import { taskStatus } from './families';
 import { blocksOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
+import { carriedValue } from './units';
 
 /** One line of the instance's own work. */
 type SubLine =
@@ -87,16 +88,80 @@ interface CallDraft {
 }
 
 /**
- * Every frame the page holds, turn after turn, read where it lies.
+ * Whether the timeline reads a frame at all, for `dispatchId`.
  *
- * **No array is built**, which is the point: a dispatch row's timeline reads
- * the page's whole history on every frame it is open, and flattening the turns
- * first copied every message into a fresh array on each read (#2354).
+ * **The carry may not keep the whole page.** A page is thousands of frames and
+ * a dispatch's own are tens, so a per-turn carry of everything would only move
+ * the walk. This is the reader's interest test and the arms below are where
+ * each shape is read, so a frame this drops is one no arm reaches: the
+ * instance's own frames under its dispatch id, a heartbeat's beat, the
+ * dispatch's own tool_use and roster rows, and the task frames that open or
+ * end a call the instance made (which name a tool_use id or a task id, never
+ * the dispatch).
+ *
+ * **A heartbeat is kept for any call**, because the filter reads one frame and
+ * cannot know whose call it beats; the reader drops a beat no line carries, so
+ * the cost is the frame, not a wrong pulse.
  */
-export function* historyFrames(
+function touches(frame: Frame, dispatchId: string): boolean {
+  const parent = str(frame.parent_tool_use_id);
+  if (frame.type === 'tool_progress') return parent !== null;
+  if (parent !== null) return parent === dispatchId;
+  if (frame.type === 'assistant') {
+    return blocksOf(frame.message?.content).some(
+      (block) => block.type === 'tool_use' && str(block.id) === dispatchId,
+    );
+  }
+  if (frame.type === 'system') {
+    return (
+      str(frame.tool_use_id) === dispatchId ||
+      frame.subtype === 'task_started' ||
+      frame.subtype === 'task_updated' ||
+      frame.subtype === 'task_notification'
+    );
+  }
+  return false;
+}
+
+/**
+ * The page's frames the timeline reads, carried across its turns.
+ *
+ * **A turn's frames are folded once and extended as the turn grows**, the same
+ * carry the conversation's own fold keeps (`units.ts`'s `carriedValue`) and
+ * for the same reason: the page is walked on every arriving frame while the
+ * row is open, and a turn that has not changed costs a lookup rather than its
+ * frames. A miss is always correct - the turn is read afresh.
+ */
+function* dispatchHistory(
   turns: readonly { messages: readonly unknown[] }[],
+  dispatchId: string,
 ): Generator<unknown> {
-  for (const turn of turns) yield* turn.messages;
+  const kind = `dispatch:${dispatchId}`;
+  for (const turn of turns) {
+    yield* carriedValue<unknown[]>(
+      turn,
+      kind,
+      () => [],
+      (held, frame) => {
+        if (touches(frame as Frame, dispatchId)) held.push(frame);
+      },
+    );
+  }
+}
+
+/**
+ * A dispatch's own frames off the page's turns, read where they lie.
+ *
+ * The row's timeline is read on every frame while it is open, so this carries
+ * each turn's share rather than walking the page again; the timeline itself is
+ * then built from those frames alone, which keeps a result paired with a call
+ * an EARLIER turn made.
+ */
+export function dispatchTimeline(
+  turns: readonly { messages: readonly unknown[] }[],
+  dispatchId: string,
+): DispatchFrames {
+  return dispatchFrames(dispatchHistory(turns, dispatchId), dispatchId);
 }
 
 /**

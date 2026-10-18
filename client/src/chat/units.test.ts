@@ -2959,6 +2959,75 @@ describe('a value carried off a turn, as the turn grows', () => {
       'a same-length array is answered off itself, seam or no',
     ).toEqual(['o1', 'u9', 'o3']);
   });
+
+  /**
+   * **A live page settles, and past the budget the coldest reader goes.** Nine
+   * open dispatch rows plus the conversation's own three readers is the shape
+   * the budget is sized for: a cap under it thrashes - each miss inserts at
+   * the end and evicts the next reader, so every read re-folds the turn - and
+   * that is the storm the cap exists to prevent.
+   */
+  it('carries every reader a live page holds, without a miss', () => {
+    const turn = { messages: [heard([text('one')])] as readonly unknown[] };
+    let seeds = 0;
+    const seed = () => {
+      seeds += 1;
+      return new Set<string>();
+    };
+    const add = () => undefined;
+    const kinds = [
+      'uuid',
+      'result',
+      'dispatch',
+      ...Array.from({ length: 9 }, (_, at) => `dispatch:row-${at}`),
+    ];
+
+    for (const kind of kinds) carriedValue(turn, kind, seed, add);
+    seeds = 0;
+    for (const kind of kinds) carriedValue(turn, kind, seed, add);
+    expect(seeds, 'a live page is carried whole, every frame').toBe(0);
+  });
+
+  /**
+   * **Past the budget, the reader read longest ago goes.** Recency is what a
+   * hit refreshes, so a row that has closed cannot evict one being read every
+   * frame; and the evicted reader is simply folded again when asked.
+   */
+  it('evicts the coldest reader past the bound, not the one just read', () => {
+    const turn = { messages: [heard([text('one')])] as readonly unknown[] };
+    const seed = () => new Set<string>();
+    const add = () => undefined;
+    const held = new Map<string, Set<string>>();
+    for (let at = 0; at < 24; at += 1) {
+      held.set(`reader-${at}`, carriedValue(turn, `reader-${at}`, seed, add));
+    }
+    // The first reader is read again, so the second is the coldest.
+    expect(carriedValue(turn, 'reader-0', seed, add), 'still carried at the bound').toBe(
+      held.get('reader-0'),
+    );
+    carriedValue(turn, 'reader-24', seed, add);
+    expect(carriedValue(turn, 'reader-0', seed, add), 'the reader just read survives').toBe(
+      held.get('reader-0'),
+    );
+    expect(carriedValue(turn, 'reader-1', seed, add), 'the coldest is evicted, not kept').not.toBe(
+      held.get('reader-1'),
+    );
+
+    // **A miss refreshes recency too.** A reader whose turn array was replaced
+    // is folded again while its kind is already held - and `set` alone would
+    // leave it where the first array put it, so the very next insertion could
+    // evict it: the thrash the budget exists to prevent, at a different seam.
+    const head = heard([text('a')]);
+    const swapped = { messages: [head, heard([text('x')])] as readonly unknown[] };
+    const hot = carriedValue(swapped, 'hot', seed, add);
+    // Fill to the bound, so the next insertion is the one that evicts.
+    for (let at = 0; at < 23; at += 1) carriedValue(swapped, `filler-${at}`, seed, add);
+    swapped.messages = [head, heard([text('y')])];
+    const again = carriedValue(swapped, 'hot', seed, add);
+    expect(again, 'the replaced array is folded again').not.toBe(hot);
+    carriedValue(swapped, 'filler-23', seed, add);
+    expect(carriedValue(swapped, 'hot', seed, add), 'the just-missed reader survives').toBe(again);
+  });
 });
 
 describe("the CLI's retry line", () => {

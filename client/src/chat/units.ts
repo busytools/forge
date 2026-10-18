@@ -2488,6 +2488,15 @@ function extendsFrom(held: readonly unknown[], next: readonly unknown[]): boolea
 /** A value read off one turn's frames, and the array it was read from. */
 interface CarriedValue<T> {
   messages: readonly unknown[];
+  /**
+   * How many of `messages` the value was folded from.
+   *
+   * Kept beside the array rather than read off it, because a frame pushed into
+   * the array in place grows the stored array too: the length test would then
+   * see the new length twice and answer "nothing changed", leaving the pushed
+   * frame out of the value for good.
+   */
+  folded: number;
   value: T;
 }
 
@@ -2504,12 +2513,38 @@ interface CarriedValue<T> {
  * The growth arm is sound for the reason the fold's is: a turn's frames are
  * only ever appended to (`conversation.ts` grows a turn as
  * `[...messages, frame]`), and every other array the store builds is a fresh
- * array or a prefix-preserving filter of one.
+ * array or a prefix-preserving filter of one. The seam test cannot tell an
+ * insert-then-append from an append; no producer in the store does the former,
+ * and one that did would be misread as growth - which costs a stale row, not
+ * a crash.
  */
-function grewFrom(held: readonly unknown[], next: readonly unknown[]): boolean {
-  if (next.length === held.length) return next === held;
-  return extendsFrom(held, next);
+function grewFrom(held: CarriedValue<unknown>, next: readonly unknown[]): boolean {
+  // A shorter array than the one folded is a cut, not a growth - including
+  // when it is the same array shrunk in place, which the seam test would
+  // otherwise read as an append of nothing.
+  if (next.length < held.folded) return false;
+  if (next.length === held.folded) return next === held.messages;
+  return extendsFrom(held.messages, next);
 }
+
+/**
+ * How many carried readers one turn keeps.
+ *
+ * A dispatch row's timeline carries a kind of its own per opened row, and a
+ * page loads every turn the reader has scrolled to - uncapped, a long-lived
+ * seat with many rows opened over its life keeps an entry per row per turn
+ * forever.
+ *
+ * **The budget is above what a live page holds**, because a cap under the live
+ * set thrashes: every read that misses inserts at the end and evicts the next
+ * reader, so all of them re-fold the turn on every frame. A turn carries the
+ * conversation's own kinds (`uuid` on every arriving frame, `result` on the
+ * newest, `dispatch` from the subagents list) plus one per open dispatch row:
+ * those three and fourteen open rows fit, with room for seven more. Recency is
+ * refreshed on a hit AND on a miss, so eviction takes the coldest reader - a
+ * closed row's kind - and never one that is being read every frame.
+ */
+const CARRIED_PER_TURN = 24;
 
 /**
  * The values read off the same turn, by what each of them reads.
@@ -2544,9 +2579,13 @@ export function carriedValue<T>(
   const head = messages[0];
   const keyed = head !== null && typeof head === 'object' ? carried.get(head) : undefined;
   const held = keyed?.get(kind) as CarriedValue<T> | undefined;
-  if (held !== undefined && grewFrom(held.messages, messages)) {
-    for (const frame of messages.slice(held.messages.length)) add(held.value, frame);
+  if (held !== undefined && grewFrom(held, messages)) {
+    for (const frame of messages.slice(held.folded)) add(held.value, frame);
     held.messages = messages;
+    held.folded = messages.length;
+    // A reader used this frame is not the coldest: eviction reads this order.
+    keyed?.delete(kind);
+    keyed?.set(kind, held);
     return held.value;
   }
   const value = seed();
@@ -2557,7 +2596,15 @@ export function carriedValue<T>(
       byKind = new Map();
       carried.set(head, byKind);
     }
-    byKind.set(kind, { messages, value });
+    // A miss refreshes recency too: its kind may be held from an earlier
+    // array, and `set` alone would leave it where that array was inserted.
+    byKind.delete(kind);
+    byKind.set(kind, { messages, folded: messages.length, value });
+    while (byKind.size > CARRIED_PER_TURN) {
+      const oldest = byKind.keys().next();
+      if (oldest.done === true) break;
+      byKind.delete(oldest.value);
+    }
   }
   return value;
 }

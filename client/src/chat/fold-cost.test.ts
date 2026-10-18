@@ -33,6 +33,7 @@ import Chat from './Chat.svelte';
 import { installResizeObserver } from './testing/viewport';
 import { subagents } from './subagents.svelte';
 import { fold, turnFold } from './units';
+import { dispatchTimeline } from './timeline';
 
 installResizeObserver();
 
@@ -42,14 +43,12 @@ vi.mock('virtua/svelte', async () => {
 });
 
 /**
- * What a dispatch row's timeline reader is handed, and what it hands back.
+ * What a dispatch row's timeline reader is handed.
  *
- * The seam guards both ends of the reader's own call. Its argument catches a
- * copy made BETWEEN the page and here, whatever its spelling (`flatMap`, a
- * spread, `concat`, `Array.from`) - it arrives as a flattened messages array.
- * A copy made INSIDE the generator is downstream of the argument, so the
- * return is guarded too; the generator's own live read is pinned where it
- * lives (`timeline.test.ts`).
+ * The seam catches a copy made BETWEEN the page and here, whatever its
+ * spelling (`flatMap`, a spread, `concat`, `Array.from`) - it would arrive as
+ * a flattened messages array rather than the page's turns. What the reader
+ * does with it is pinned where it lives (`timeline.test.ts`).
  */
 const seam = vi.hoisted(() => ({ seen: [] as unknown[] }));
 
@@ -57,16 +56,12 @@ vi.mock('./timeline', async (importOriginal) => {
   const real = await importOriginal<typeof import('./timeline')>();
   return {
     ...real,
-    historyFrames: (turns: Parameters<typeof real.historyFrames>[0]) => {
+    dispatchTimeline: (turns: Parameters<typeof real.dispatchTimeline>[0], id: string) => {
       seam.seen.push(turns);
       if (!turns.every((turn) => Array.isArray(turn.messages))) {
         throw new Error('the timeline reader was handed a flattened history, not the page turns');
       }
-      const frames = real.historyFrames(turns);
-      if (Array.isArray(frames)) {
-        throw new Error('historyFrames built a flat array of the page');
-      }
-      return frames;
+      return real.dispatchTimeline(turns, id);
     },
   };
 });
@@ -382,8 +377,8 @@ describe('the column as the frames arrive', () => {
  * read, an open dispatch row's timeline being the one this test drives. A copy
  * reintroduced between the page and the reader pays the whole page per frame,
  * whatever its spelling (`flatMap`, a spread, `concat`, `Array.from`), and
- * shows up here as a flattened argument; a copy inside `historyFrames` is
- * guarded by the mock's return check and pinned in `timeline.test.ts`.
+ * shows up here as a flattened argument. The reader's own cost is pinned
+ * beside it, in `the dispatch timeline a page is walked for`.
  */
 describe('the page history a turn is handed', () => {
   /** A page of `turns` turns of `size` frames each, the first opening a dispatch. */
@@ -482,14 +477,97 @@ describe('the page history a turn is handed', () => {
       seam.seen.length,
       'the timeline reader ran on every arriving frame',
     ).toBeGreaterThanOrEqual(FRAMES);
+    // The page the test sent, and the arrays in it, as the identity the reader
+    // must be handed: a per-turn copy (`{...turn, messages: [...]}`) is the
+    // same shape and the same values, and would defeat the carry - so the
+    // guard is identity, not `Array.isArray`. The arriving counters grow the
+    // NEWEST turn, so its array is the store's own by design; every other
+    // turn's must be the page's.
+    const sent = rows as { messages: unknown[] }[];
     for (const seen of seam.seen) {
+      const turns = seen as { messages?: unknown }[];
       expect(Array.isArray(seen), 'the reader is handed an array').toBe(true);
-      expect((seen as unknown[]).length, 'the turns, not their messages').toBe(TURNS);
+      expect(turns.length, 'the turns, not their messages').toBe(TURNS);
       expect(
-        (seen as { messages?: unknown }[]).every((turn) => Array.isArray(turn.messages)),
-        'every entry is a turn with its messages',
+        turns.slice(0, -1).every((turn, at) => turn.messages === sent[at]?.messages),
+        "the page's own turns and message arrays, not copies of them",
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * The timeline's own walk, as a COUNT (#2354's leftover).
+ *
+ * The flattening cut took the array copy out; the walk under it stayed. A
+ * dispatch row that is open read every message of the page on every arriving
+ * frame - the page is thousands of frames and a dispatch's own are tens. The
+ * carry answers each turn from what it folded before, so a frame costs its own
+ * worth; a miss folds that turn again, which is always correct.
+ */
+describe('the dispatch timeline a page is walked for', () => {
+  /** A page of `turns` turns of `size` counted frames, the first opening a dispatch. */
+  function page(turns: number, size: number): { messages: unknown[] }[] {
+    const rows: { messages: unknown[] }[] = [];
+    for (let at = 0; at < turns; at += 1) {
+      const messages: unknown[] = [
+        counted({
+          type: 'assistant',
+          uuid: `a-${at}`,
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: at === 0 ? 'toolu_task' : `c${at}`,
+                name: at === 0 ? 'Task' : 'Bash',
+                input: at === 0 ? { description: 'review', prompt: 'read' } : { command: 'true' },
+              },
+            ],
+          },
+        }),
+      ];
+      while (messages.length < size) messages.push(counter(at * size + messages.length));
+      rows.push({ messages });
+    }
+    return rows;
+  }
+
+  /**
+   * The carry may read a turn it has not folded yet, and the arriving frame -
+   * and nothing else.
+   *
+   * **The bound is the arriving turn's own size, not a share of the page.** A
+   * share of the page lets the very re-walk this pins through: with twenty
+   * turns on the page, one whole turn per frame stays under a twentieth of the
+   * page's whole walk. A frame costs a lookup per turn and its own property
+   * reads, so half a turn is orders of magnitude of room - and a re-walk of the
+   * grown turn is over it.
+   *
+   * **Opening the row is not measured.** The first read folds the page once,
+   * which is the price of showing a timeline at all; what this pins is what
+   * each ARRIVING frame costs after it.
+   */
+  it('reads the arriving frame rather than the page', () => {
+    const TURNS = 20;
+    const SIZE = 200;
+    const rows = page(TURNS, SIZE);
+    // The row opens: the carry folds the page once.
+    dispatchTimeline(rows, 'toolu_task');
+    const STEPS = 12;
+    let spent = 0;
+    let turns = rows;
+    for (let at = 0; at < STEPS; at += 1) {
+      // The store's growth: the newest turn replaced, its array extended.
+      const last = turns[turns.length - 1] as { messages: unknown[] };
+      turns = [...turns.slice(0, -1), { messages: [...last.messages, counter(9000 + at)] }];
+      reads = 0;
+      dispatchTimeline(turns, 'toolu_task');
+      spent += reads;
+    }
+    // A probe that recorded nothing would pass the bound vacuously.
+    expect(spent, 'the timeline reads its frames').toBeGreaterThan(0);
+    expect(spent / STEPS, 'property reads per arriving frame').toBeLessThan(SIZE / 2);
   });
 });
 

@@ -16,7 +16,7 @@
   import { firstLine, searchHits, stripEscapes } from './text';
   import Thought from './Thought.svelte';
   import { subagents } from './subagents.svelte';
-  import { dispatchFrames, historyFrames } from './timeline';
+  import { dispatchTimeline } from './timeline';
 
   /**
    * One call: what it was, whether it came back, and what it came back with.
@@ -399,10 +399,12 @@
 
   /**
    * The dispatch's own frames, read only while the row is open: a shut row
-   * pays nothing for a timeline nobody is looking at.
+   * pays nothing for a timeline nobody is looking at. The page is read through
+   * the carried turns, so an arriving frame costs its own worth rather than
+   * the page's (#2354).
    */
   const sub = $derived(
-    card !== undefined && opened ? dispatchFrames(historyFrames(turns ?? []), call.id) : null,
+    card !== undefined && opened ? dispatchTimeline(turns ?? [], call.id) : null,
   );
 
   /** Whether this dispatch owns its RESULT text on the row: only a foreground

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { dispatchFrames, historyFrames } from './timeline';
+import { dispatchFrames, dispatchTimeline } from './timeline';
 
 /** The dispatch itself, as the session's own assistant frame carries it. */
 const dispatch = (over: Record<string, unknown> = {}) => ({
@@ -309,25 +309,198 @@ describe('a dispatch read into its timeline', () => {
 });
 
 describe('the page frames a timeline reads', () => {
+  /** The whole-walk answer, which the carried one may never differ from. */
+  const whole = (turns: { messages: unknown[] }[], dispatchId: string) =>
+    dispatchFrames(
+      turns.flatMap((turn) => turn.messages),
+      dispatchId,
+    );
+
   /**
-   * #2354: the page's turns are walked where they lie. A materialised array is
-   * the copy the cut deleted, and a copy taken when the walk starts would also
-   * miss a frame that lands while the row is open - both are what this pins.
+   * **The carry may not move a line.** A dispatch's own frames can arrive in
+   * turns after the one that opened it - a result answering an earlier turn's
+   * call, a heartbeat whose answer lands later - so the carried read has to
+   * equal the whole walk across the page, frame for frame.
    */
-  it('reads the turns where they lie, a frame landing mid-walk included', () => {
+  it('answers the carried page as the whole walk does, across turns', () => {
+    const turns = [
+      {
+        messages: [
+          dispatch(),
+          call('c1', 'Grep', { pattern: 'x' }),
+          { type: 'system', subtype: 'task_started', tool_use_id: 'c1', task_id: 't1' },
+          { type: 'tool_progress', parent_tool_use_id: 'c1' },
+        ],
+      },
+      {
+        messages: [
+          answer('c1', '3 matches'),
+          said('between'),
+          call('c2', 'Bash', { command: 'true' }),
+          // A backgrounded child call, its task opened in this turn. The wire
+          // carries a task's status in `patch`, with no call id.
+          call('c3', 'Bash', { command: 'sleep 300' }),
+          { type: 'system', subtype: 'task_started', tool_use_id: 'c3', task_id: 't3' },
+          { type: 'system', subtype: 'task_updated', task_id: 't3', patch: { status: 'running' } },
+          answer('c3', 'Command running in background with ID: bg1.'),
+        ],
+      },
+      {
+        messages: [
+          answer('c2', 'ok'),
+          // A heartbeat whose answer never arrives stays on its line.
+          { type: 'tool_progress', parent_tool_use_id: 'c2' },
+          // A task settled by its patch alone, which names the task and never
+          // the call it opened.
+          { type: 'system', subtype: 'task_updated', task_id: 't1', patch: { status: 'failed' } },
+          // And an ending, which does name the call.
+          {
+            type: 'system',
+            subtype: 'task_notification',
+            tool_use_id: 'c3',
+            task_id: 't3',
+            status: 'stopped',
+          },
+        ],
+      },
+    ];
+
+    const carried = dispatchTimeline(turns, 'tu-task');
+    expect(carried, 'the carried page').toEqual(whole(turns, 'tu-task'));
+    // A result answers the call an EARLIER turn made, and the beat on the one
+    // still running is the caller's: a per-turn read would drop both.
+    expect(carried.beats, 'the open call keeps its beat').toEqual(new Set(['c2']));
+    // The frames that settle a call are in a later turn than the call and
+    // name it by task: an interest test that only knew the dispatch's own id
+    // would leave both calls running for good.
+    const status = (id: string): string | null => {
+      const line = carried.lines.find((one) => one.kind === 'call' && one.leaf.id === id);
+      return line?.kind === 'call' ? line.leaf.status : null;
+    };
+    expect(status('c1'), 'a task settled by its patch').toBe('failed');
+    expect(status('c3'), 'a task stopped by its notification').toBe('killed');
+    // The carried answer is the same one a second call gets.
+    expect(dispatchTimeline(turns, 'tu-task'), 'answered again').toEqual(whole(turns, 'tu-task'));
+  });
+
+  /**
+   * **Each dispatch carries its own frames.** Two instances on one page mean
+   * two carries over the same turns: a shared kind would hand the second row
+   * the first one's frames, and a filter that took every parented frame would
+   * keep the other instance's.
+   */
+  it('keeps two dispatches apart, and answers each as its whole walk', () => {
+    const other = (): unknown => ({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu-other', name: 'Task', input: { prompt: 'sweep' } }],
+      },
+    });
+    const underOther = (frame: Record<string, unknown>): unknown => ({
+      ...frame,
+      parent_tool_use_id: 'tu-other',
+    });
+    const turns = [
+      {
+        messages: [
+          dispatch(),
+          other(),
+          call('c1', 'Grep', { pattern: 'x' }),
+          underOther(call('o1', 'Bash', { command: 'true' })),
+        ],
+      },
+      {
+        messages: [answer('c1', '3 matches'), underOther(answer('o1', 'ok')), said('between')],
+      },
+    ];
+
+    const first = dispatchTimeline(turns, 'tu-task');
+    expect(first, 'the first dispatch').toEqual(whole(turns, 'tu-task'));
+    const second = dispatchTimeline(turns, 'tu-other');
+    expect(second, 'the second dispatch, off the same turns').toEqual(whole(turns, 'tu-other'));
+    expect(dispatchTimeline(turns, 'tu-task'), 'and the first again').toEqual(
+      whole(turns, 'tu-task'),
+    );
+    const ids = (lines: typeof first.lines): string[] =>
+      lines.flatMap((line) => (line.kind === 'call' ? [line.leaf.id] : []));
+    expect(ids(first.lines), "the first instance's own call").toEqual(['c1']);
+    expect(ids(second.lines), "the second instance's, and nothing of the first").toEqual(['o1']);
+  });
+
+  /**
+   * **A frame landing while the row is open is read on the next walk.** The
+   * store grows a turn by replacing its array, which the carry follows; a
+   * materialised copy of the page taken when the walk started would not.
+   *
+   * **The carried answer is compared, not a substring of it.** The second read
+   * is the memo's own path, so a carry that failed to take the growth in would
+   * still be answered from what it folded before - and a `toContain` on one
+   * frame would miss every other line that went with it.
+   */
+  it('follows a turn that grows while the row is open', () => {
     const first = said('first');
     const second = said('second');
     const late = said('late');
-    const earlier = { messages: [first] };
-    const later = { messages: [second] };
-    const frames = historyFrames([earlier, later]);
+    const turns = [{ messages: [first] }, { messages: [second] }];
+    expect(dispatchTimeline(turns, 'tu-task').lines, 'before the growth').toEqual(
+      whole(turns, 'tu-task').lines,
+    );
 
-    expect(Array.isArray(frames), 'an iterator, not a materialised array').toBe(false);
-    const iterator = frames[Symbol.iterator]();
-    expect(iterator.next().value, 'the first frame').toBe(first);
-    // A frame that lands after the walk began is still read: the walk follows
-    // the page, not a copy taken when it started.
-    later.messages.push(late);
-    expect([...iterator], 'the rest, the late frame included').toEqual([second, late]);
+    // The store's own growth shape: the turn replaced, its array extended.
+    const grown = [{ messages: [first] }, { messages: [second, late] }];
+    expect(dispatchTimeline(grown, 'tu-task'), 'the late frame is read').toEqual(
+      whole(grown, 'tu-task'),
+    );
+    // The same page again: the second read is answered from the carry.
+    expect(dispatchTimeline(grown, 'tu-task'), 'and answered from the carry').toEqual(
+      whole(grown, 'tu-task'),
+    );
+
+    // **A push in place is a growth too.** Nothing in the store grows a turn
+    // this way, but the carry's growth test is the only thing between a
+    // caller that does and a frame nobody ever reads: the folded length is
+    // what keeps it honest.
+    const pushed = [{ messages: [first] }, { messages: [second] as unknown[] }];
+    expect(dispatchTimeline(pushed, 'tu-task'), 'before the push').toEqual(
+      whole(pushed, 'tu-task'),
+    );
+    (pushed[1]?.messages as unknown[]).push(said('pushed'));
+    expect(dispatchTimeline(pushed, 'tu-task'), 'an in-place frame is read').toEqual(
+      whole(pushed, 'tu-task'),
+    );
+
+    // **A cut in place is not a growth.** The store always replaces a turn's
+    // array, so nothing shrinks one under the carry today - but a caller that
+    // did would have the seam read it as an append of nothing, and the folded
+    // length is what keeps the value off frames the page no longer has. The
+    // cut's own frames, so another case's memo on the same opening cannot
+    // answer for it.
+    const cutBefore = said('cut-before');
+    const cutAfter = said('cut-after');
+    const cut = [{ messages: [first] }, { messages: [cutBefore, cutAfter] as unknown[] }];
+    expect(dispatchTimeline(cut, 'tu-task'), 'before the cut').toEqual(whole(cut, 'tu-task'));
+    (cut[1]?.messages as unknown[]).pop();
+    expect(dispatchTimeline(cut, 'tu-task'), 'a cut in place is read afresh').toEqual(
+      whole(cut, 'tu-task'),
+    );
+
+    // A REPLACEMENT cut, whose carried head makes the growth test run: a
+    // shorter array in a new identity is a miss through `extendsFrom`'s own
+    // length check, even without the folded length. The in-place case above is
+    // what pins the guard; this pins the replacement shape beside it.
+    const replHead = said('replacement-head');
+    const replBefore = [
+      { messages: [first] },
+      { messages: [replHead, said('replacement-tail')] as unknown[] },
+    ];
+    expect(dispatchTimeline(replBefore, 'tu-task'), 'before the replacement').toEqual(
+      whole(replBefore, 'tu-task'),
+    );
+    const replCut = [{ messages: [first] }, { messages: [replHead] as unknown[] }];
+    expect(dispatchTimeline(replCut, 'tu-task'), 'a replacement cut is read afresh').toEqual(
+      whole(replCut, 'tu-task'),
+    );
   });
 });
