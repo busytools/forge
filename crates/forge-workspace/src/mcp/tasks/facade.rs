@@ -16,7 +16,7 @@ use forge_primitives::tasks::{
 
 use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
-use crate::tasks::IdError;
+use crate::tasks::{ClaimError, IdError, MoveError};
 use crate::workspace::Workspace;
 
 /// Why a `tasks__*` call failed.
@@ -30,6 +30,12 @@ pub(crate) enum TasksError {
     BadEstimate(String),
     /// The core refused the move (open children on a close).
     Refused(String),
+    /// No task in the caller's project carries that id.
+    NoSuchTask { id: String },
+    /// The id names a row another project owns. The last two are the
+    /// cases a refusal keeps apart: a caller told only "no such task"
+    /// takes a typo and another project's row for the same answer.
+    TaskInAnotherProject { id: String, project: String },
 }
 
 /// One link as a caller states it: the kind is derived from the target's
@@ -172,6 +178,17 @@ impl TaskPatch {
     }
 }
 
+/// The refusal for a stated id that names nothing in the caller's
+/// project: an id another project owns is named as such, so a caller
+/// cannot read "no such task" as proof the row was never there.
+fn missing_task_error(ws: &Workspace, project_name: &str, id: &TaskId) -> TasksError {
+    let stated = id.as_str().to_owned();
+    match ws.task_project_outside(project_name, id) {
+        Some(project) => TasksError::TaskInAnotherProject { id: stated, project },
+        None => TasksError::NoSuchTask { id: stated },
+    }
+}
+
 /// The parent a write stores: the row a stated id names when it lands on
 /// one, the words as stated when it names nothing (a child may point at a
 /// row that is gone), and a refusal naming the rows when it names several.
@@ -227,23 +244,23 @@ pub(crate) trait TasksFacade: Send + Sync {
     ) -> Vec<crate::board::BoardRow>;
 
     /// Apply `patch` to the task `id` in the caller's project and return
-    /// the record as the write left it. `Ok(None)` if no such task is
-    /// there. Open to every session in the project.
+    /// the record as the write left it. A missing id names its case:
+    /// [`TasksError::NoSuchTask`] when the project has no such id,
+    /// [`TasksError::TaskInAnotherProject`] when another project holds it.
+    /// Open to every session in the project.
     fn update_task(
         &self,
         caller: &SessionSlot,
         id: &TaskId,
         patch: TaskPatch,
-    ) -> Result<Option<Task>, TasksError>;
+    ) -> Result<Task, TasksError>;
 
     /// Remove the task `id` and its descendants within the caller's
     /// project, returning the named task as it stood and how many
-    /// descendants went with it. `Ok(None)` if no such task is there.
-    fn delete_task(
-        &self,
-        caller: &SessionSlot,
-        id: &TaskId,
-    ) -> Result<Option<RemovedTaskTree>, TasksError>;
+    /// descendants went with it. A missing id names its case the way
+    /// [`TasksFacade::update_task`] does.
+    fn delete_task(&self, caller: &SessionSlot, id: &TaskId)
+    -> Result<RemovedTaskTree, TasksError>;
 
     /// Claim `id`, or the first ready row of `epic` by rank, for the
     /// caller. Backs `tasks__claim`.
@@ -340,7 +357,7 @@ impl TasksFacade for ProdTasksFacade {
         caller: &SessionSlot,
         id: &TaskId,
         patch: TaskPatch,
-    ) -> Result<Option<Task>, TasksError> {
+    ) -> Result<Task, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
         let estimate = match patch.estimate.as_deref() {
@@ -357,33 +374,36 @@ impl TasksFacade for ProdTasksFacade {
         ws.update_task(&cx.project_name, id, By::Seat(caller.clone()), |task| {
             patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
         })
-        .map_err(|refused| TasksError::Refused(refused.to_string()))
+        .map_err(|refused| TasksError::Refused(refused.to_string()))?
+        .ok_or_else(|| missing_task_error(&ws, &cx.project_name, id))
     }
 
     fn delete_task(
         &self,
         caller: &SessionSlot,
         id: &TaskId,
-    ) -> Result<Option<RemovedTaskTree>, TasksError> {
+    ) -> Result<RemovedTaskTree, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
         // The stated id resolves before anything is removed: the cascade
         // also collects orphans pointing at the id, so "something was
         // removed" would be true for an id that never existed.
-        let id = match ws.resolve_task_id(&cx.project_name, id) {
-            Ok(id) => id,
-            Err(IdError::NotFound) => return Ok(None),
+        let resolved = match ws.resolve_task_id(&cx.project_name, id) {
+            Ok(resolved) => resolved,
+            Err(IdError::NotFound) => return Err(missing_task_error(&ws, &cx.project_name, id)),
             Err(error @ IdError::Ambiguous(_)) => {
                 return Err(TasksError::Refused(error.to_string()));
             }
         };
         let removed = ws
-            .remove_task_tree(&cx.project_name, &id)
+            .remove_task_tree(&cx.project_name, &resolved)
             .map_err(|refused| TasksError::Refused(refused.to_string()))?;
-        let Some(task) = removed.iter().find(|t| t.id == id).cloned() else {
-            return Ok(None);
+        // The tree can be gone by the time the removal runs only if
+        // another seat removed it between the resolve and the lock.
+        let Some(task) = removed.iter().find(|t| t.id == resolved).cloned() else {
+            return Err(missing_task_error(&ws, &cx.project_name, id));
         };
-        Ok(Some(RemovedTaskTree { task, descendants_removed: removed.len() - 1 }))
+        Ok(RemovedTaskTree { task, descendants_removed: removed.len() - 1 })
     }
 
     fn claim_task(
@@ -396,8 +416,19 @@ impl TasksFacade for ProdTasksFacade {
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
         let by_id = id.map(TaskId::from);
         let in_epic = epic.map(TaskId::from);
-        ws.claim_task(&cx.project_name, caller, by_id.as_ref(), in_epic.as_ref())
-            .map_err(|refused| TasksError::Refused(refused.to_string()))
+        match ws.claim_task(&cx.project_name, caller, by_id.as_ref(), in_epic.as_ref()) {
+            Ok(task) => Ok(task),
+            Err(ClaimError::NotFound) => {
+                // A claim states one of the two; the core answers
+                // NotReady when it states neither.
+                let stated = by_id.as_ref().or(in_epic.as_ref());
+                Err(match stated {
+                    Some(stated) => missing_task_error(&ws, &cx.project_name, stated),
+                    None => TasksError::Refused(ClaimError::NotFound.to_string()),
+                })
+            }
+            Err(refused) => Err(TasksError::Refused(refused.to_string())),
+        }
     }
 
     fn wait_task(
@@ -410,8 +441,22 @@ impl TasksFacade for ProdTasksFacade {
     ) -> Result<Task, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        ws.wait_task(&cx.project_name, id, caller, kind, detail, on)
-            .map_err(|refused| TasksError::Refused(refused.to_string()))
+        match ws.wait_task(&cx.project_name, id, caller, kind, detail, on) {
+            Ok(task) => Ok(task),
+            Err(MoveError::NotFound) => {
+                // The row resolves first, so a row that is there means
+                // the blocker is what named nothing.
+                let stated = match ws.resolve_task_id(&cx.project_name, id) {
+                    Ok(_) => on,
+                    Err(_) => Some(id),
+                };
+                Err(match stated {
+                    Some(stated) => missing_task_error(&ws, &cx.project_name, stated),
+                    None => TasksError::Refused(MoveError::NotFound.to_string()),
+                })
+            }
+            Err(refused) => Err(TasksError::Refused(refused.to_string())),
+        }
     }
 }
 
@@ -466,9 +511,9 @@ pub(crate) struct MockTasksFacade {
     pub rows: parking_lot::Mutex<Vec<crate::board::BoardRow>>,
     pub listed: parking_lot::Mutex<Vec<ListCall>>,
     pub updated: parking_lot::Mutex<Vec<(SessionSlot, TaskId, TaskPatch)>>,
-    pub update_result: parking_lot::Mutex<Option<Task>>,
+    pub update_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
     pub deleted: parking_lot::Mutex<Vec<(SessionSlot, TaskId)>>,
-    pub delete_result: parking_lot::Mutex<Option<RemovedTaskTree>>,
+    pub delete_result: parking_lot::Mutex<Option<Result<RemovedTaskTree, TasksError>>>,
     pub claimed: parking_lot::Mutex<Vec<ClaimCall>>,
     pub claim_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
     pub waited: parking_lot::Mutex<Vec<WaitCall>>,
@@ -562,18 +607,24 @@ impl TasksFacade for MockTasksFacade {
         caller: &SessionSlot,
         id: &TaskId,
         patch: TaskPatch,
-    ) -> Result<Option<Task>, TasksError> {
+    ) -> Result<Task, TasksError> {
         self.updated.lock().push((caller.clone(), id.clone(), patch));
-        Ok(self.update_result.lock().clone())
+        self.update_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Err(TasksError::NoSuchTask { id: id.as_str().to_owned() }))
     }
 
     fn delete_task(
         &self,
         caller: &SessionSlot,
         id: &TaskId,
-    ) -> Result<Option<RemovedTaskTree>, TasksError> {
+    ) -> Result<RemovedTaskTree, TasksError> {
         self.deleted.lock().push((caller.clone(), id.clone()));
-        Ok(self.delete_result.lock().clone())
+        self.delete_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Err(TasksError::NoSuchTask { id: id.as_str().to_owned() }))
     }
 }
 
@@ -642,6 +693,7 @@ mod prod_facade_tests {
     fn fixture() -> (Arc<Workspace>, Arc<dyn TasksFacade>, SessionSlot, SessionSlot) {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("myproj", "/tmp/b2-myproj");
+        ws.seed_test_project("otherproj", "/tmp/b2-otherproj");
         let key =
             ws.list_projects().into_iter().find(|v| v.name == "myproj").expect("seeded view").key;
         ws.record_connected_session("/tmp/b2-myproj", "lead-uuid", None);
@@ -705,8 +757,9 @@ mod prod_facade_tests {
         facade
             .create_task(&lead, draft("orphan", None, Some("ghost")))
             .expect("a child pointing at a parent that never existed");
-        assert!(
-            facade.delete_task(&lead, &TaskId::from("ghost")).expect("delete").is_none(),
+        assert_eq!(
+            facade.delete_task(&lead, &TaskId::from("ghost")),
+            Err(TasksError::NoSuchTask { id: "ghost".to_owned() }),
             "an id that was never there is not a successful delete, even with orphans pointing \
              at it",
         );
@@ -714,6 +767,142 @@ mod prod_facade_tests {
             facade.list_tasks(&lead, None, None, None, None).len(),
             1,
             "the orphan is not collected under a name nothing owns",
+        );
+    }
+
+    /// An id another project owns is a different answer from an id no
+    /// project has. Both reads refuse, but the refusal has to say which
+    /// case it is: a caller told only "no such task" cannot tell a typo
+    /// from a row sitting on another project's board.
+    #[test]
+    fn a_task_in_another_project_is_not_an_unknown_id() {
+        let (ws, facade, lead, _worker) = fixture();
+        let mut elsewhere = seeded_task("other-1", "another project's row");
+        elsewhere.project_name = "otherproj".to_owned();
+        ws.seed_test_task(elsewhere);
+
+        assert_eq!(
+            facade.update_task(
+                &lead,
+                &TaskId::from("other-1"),
+                TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
+            ),
+            Err(TasksError::TaskInAnotherProject {
+                id: "other-1".to_owned(),
+                project: "otherproj".to_owned(),
+            }),
+            "the update names the project that owns the row",
+        );
+        assert_eq!(
+            facade.delete_task(&lead, &TaskId::from("other-1")),
+            Err(TasksError::TaskInAnotherProject {
+                id: "other-1".to_owned(),
+                project: "otherproj".to_owned(),
+            }),
+            "the delete names the project that owns the row",
+        );
+        let rows = ws.tasks_for_project("otherproj");
+        assert_eq!(rows.len(), 1, "the other project's row is still there: {rows:?}");
+        assert_eq!(
+            rows[0].status,
+            TaskStatus::Pending,
+            "and neither refusal touched the other project's row",
+        );
+    }
+
+    /// A full id no project holds reads as absent, not as another
+    /// project's row - and a PREFIX of a foreign id is absent too: only
+    /// the row's own id names the other project, never a leading part of
+    /// it.
+    #[test]
+    fn an_id_no_project_has_reads_as_absent() {
+        let (ws, facade, lead, _worker) = fixture();
+        let mut elsewhere = seeded_task("other-1", "another project's row");
+        elsewhere.project_name = "otherproj".to_owned();
+        ws.seed_test_task(elsewhere);
+
+        for stated in ["other", "nope"] {
+            assert_eq!(
+                facade.update_task(&lead, &TaskId::from(stated), TaskPatch::default()),
+                Err(TasksError::NoSuchTask { id: stated.to_owned() }),
+                "{stated} names no row in this project",
+            );
+            assert_eq!(
+                facade.delete_task(&lead, &TaskId::from(stated)),
+                Err(TasksError::NoSuchTask { id: stated.to_owned() }),
+                "{stated} names no row in this project",
+            );
+        }
+    }
+
+    /// The claim and wait doors answer the same two cases: an id another
+    /// project owns names that project, an id no project has is absent -
+    /// including when the foreign id is the blocker a wait states.
+    #[test]
+    fn claim_and_wait_refusals_name_the_case() {
+        let (ws, facade, lead, _worker) = fixture();
+        let mut elsewhere = seeded_task("other-1", "another project's row");
+        elsewhere.project_name = "otherproj".to_owned();
+        ws.seed_test_task(elsewhere);
+        let own = facade
+            .create_task(&lead, draft("the waiting row", Some("lead"), None))
+            .expect("create");
+
+        let foreign = || TasksError::TaskInAnotherProject {
+            id: "other-1".to_owned(),
+            project: "otherproj".to_owned(),
+        };
+        assert_eq!(
+            facade.claim_task(&lead, Some("other-1"), None),
+            Err(foreign()),
+            "a claim naming another project's row says which project holds it",
+        );
+        assert_eq!(
+            facade.claim_task(&lead, None, Some("other-1")),
+            Err(foreign()),
+            "an epic naming another project's row says the same",
+        );
+        assert_eq!(
+            facade.wait_task(&lead, &TaskId::from("other-1"), WaitingKind::Resource, None, None),
+            Err(foreign()),
+            "the row a wait names is another project's",
+        );
+        assert_eq!(
+            facade.wait_task(
+                &lead,
+                &own.id,
+                WaitingKind::Dependency,
+                None,
+                Some(&TaskId::from("other-1")),
+            ),
+            Err(foreign()),
+            "the blocker a wait names is another project's",
+        );
+
+        assert_eq!(
+            facade.claim_task(&lead, Some("other"), None),
+            Err(TasksError::NoSuchTask { id: "other".to_owned() }),
+            "a prefix of another project's id names no row here",
+        );
+        assert_eq!(
+            facade.claim_task(&lead, Some("nope"), None),
+            Err(TasksError::NoSuchTask { id: "nope".to_owned() }),
+        );
+        assert_eq!(
+            facade.wait_task(&lead, &TaskId::from("nope"), WaitingKind::Resource, None, None),
+            Err(TasksError::NoSuchTask { id: "nope".to_owned() }),
+            "a missing row is absent, not another project's",
+        );
+        assert_eq!(
+            facade.wait_task(
+                &lead,
+                &own.id,
+                WaitingKind::Dependency,
+                None,
+                Some(&TaskId::from("nope")),
+            ),
+            Err(TasksError::NoSuchTask { id: "nope".to_owned() }),
+            "a missing blocker is absent, not another project's",
         );
     }
 
@@ -739,7 +928,6 @@ mod prod_facade_tests {
                 &TaskId::from("t-1"),
                 TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
             )
-            .expect("update")
             .expect("the task is there to move");
 
         assert_eq!(updated.id, TaskId::from("t-1"), "the echoed record is the task that moved");
@@ -788,7 +976,6 @@ mod prod_facade_tests {
                     ..TaskPatch::default()
                 },
             )
-            .expect("update")
             .expect("a unique prefix of the row's own id still names the row");
 
         assert_eq!(updated.id, TaskId::from(id), "the prefix resolves to the stored id");
@@ -824,8 +1011,12 @@ mod prod_facade_tests {
                     ..TaskPatch::default()
                 },
             )
-            .expect("a corrupted id is an answer, not a refusal");
-        assert!(updated.is_none(), "an id with a character dropped from inside names no row");
+            .expect_err("a corrupted id names no row");
+        assert_eq!(
+            updated,
+            TasksError::NoSuchTask { id: stated.to_owned() },
+            "an id with a character dropped from inside names no row",
+        );
 
         let stored = ws.tasks_for_project("myproj");
         assert_eq!(stored[0].detail, None, "the row's detail is untouched");
@@ -855,13 +1046,10 @@ mod prod_facade_tests {
                 &b.id,
                 TaskPatch { parent: Some(c.id.as_str().to_owned()), ..TaskPatch::default() },
             )
-            .expect("re-parent b under c")
             .expect("b is there to move");
 
-        let removed = facade
-            .delete_task(&lead, &c.id)
-            .expect("delete")
-            .expect("the task the call named is there to remove");
+        let removed =
+            facade.delete_task(&lead, &c.id).expect("the task the call named is there to remove");
 
         assert_eq!(
             removed.task.id, c.id,
@@ -897,8 +1085,7 @@ mod prod_facade_tests {
 
         let removed = facade
             .delete_task(&lead, &TaskId::from("7ed0bb"))
-            .expect("one row carries that prefix")
-            .expect("the row is there to remove");
+            .expect("one row carries that prefix");
         assert_eq!(removed.task.id, TaskId::from("7ed0bbbb-0000-4000-8000-000000000002"));
         assert_eq!(removed.task.subject, "add tests", "the prefix removed its own row");
         assert_eq!(
@@ -925,16 +1112,14 @@ mod prod_facade_tests {
                     ..TaskPatch::default()
                 },
             )
-            .expect("arm the gate")
-            .expect("the row is there");
+            .expect("arm the gate");
         facade
             .update_task(
                 &lead,
                 &gated.id,
                 TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
             )
-            .expect("the completion lands on the look")
-            .expect("the row is there");
+            .expect("the completion lands on the look");
 
         let said = match facade.delete_task(&lead, &gated.id) {
             Err(TasksError::Refused(said)) => said,
@@ -977,7 +1162,6 @@ mod prod_facade_tests {
                 &child.id,
                 TaskPatch { parent: Some("7ed0aaaa".to_owned()), ..TaskPatch::default() },
             )
-            .expect("update")
             .expect("the child is there");
         assert_eq!(moved.parent, Some(TaskId::from(epic)), "the patch resolves it the same way");
     }
@@ -1046,7 +1230,6 @@ mod prod_facade_tests {
                 &task.id,
                 TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
             )
-            .expect("no refusal")
             .expect("the row is there");
         assert_eq!(
             handed.status,
@@ -1096,7 +1279,6 @@ mod prod_facade_tests {
                 &task.id,
                 TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
             )
-            .expect("no refusal")
             .expect("the row is there");
 
         match facade.update_task(
@@ -1121,7 +1303,6 @@ mod prod_facade_tests {
                     ..TaskPatch::default()
                 },
             )
-            .expect("no refusal")
             .expect("the row is there");
         assert_eq!(withdrawn.status, TaskStatus::Canceled, "the withdraw lands");
         assert_eq!(withdrawn.waiting_on, None, "the ask leaves the waiting set");
@@ -1235,33 +1416,29 @@ mod prod_facade_tests {
     fn a_patch_moves_every_field_it_can_state() {
         let (ws, facade, lead, _worker) = fixture();
         let task = facade.create_task(&lead, draft("before", None, None)).expect("create");
-        assert!(
-            facade
-                .update_task(
-                    &lead,
-                    &task.id,
-                    TaskPatch {
-                        subject: Some("after".to_owned()),
-                        active_form: Some("doing".to_owned()),
-                        detail: Some("why".to_owned()),
-                        status: Some(TaskStatus::Waiting),
-                        owner: Some("lead".to_owned()),
-                        parent: Some("epic".to_owned()),
-                        links_add: vec![TaskLinkDraft {
-                            kind: None,
-                            label: None,
-                            target: "PR #9".to_owned(),
-                        }],
-                        estimate: Some("2d".to_owned()),
-                        rank: Some(3),
-                        verify: Some(forge_primitives::tasks::Verify::User),
-                        ..TaskPatch::default()
-                    },
-                )
-                .expect("update")
-                .is_some(),
-            "the task is there to move",
-        );
+        facade
+            .update_task(
+                &lead,
+                &task.id,
+                TaskPatch {
+                    subject: Some("after".to_owned()),
+                    active_form: Some("doing".to_owned()),
+                    detail: Some("why".to_owned()),
+                    status: Some(TaskStatus::Waiting),
+                    owner: Some("lead".to_owned()),
+                    parent: Some("epic".to_owned()),
+                    links_add: vec![TaskLinkDraft {
+                        kind: None,
+                        label: None,
+                        target: "PR #9".to_owned(),
+                    }],
+                    estimate: Some("2d".to_owned()),
+                    rank: Some(3),
+                    verify: Some(forge_primitives::tasks::Verify::User),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("the task is there to move");
         let stored = &ws.tasks_for_project("myproj")[0];
         assert_eq!(stored.subject, "after");
         assert_eq!(stored.active_form.as_deref(), Some("doing"));
@@ -1297,7 +1474,6 @@ mod prod_facade_tests {
                     ..TaskPatch::default()
                 },
             )
-            .expect("update")
             .expect("the task is there");
         assert_eq!(
             ws.tasks_for_project("myproj")[0].links.len(),
@@ -1310,7 +1486,6 @@ mod prod_facade_tests {
                 &task.id,
                 TaskPatch { links_remove: vec!["PR #9".to_owned()], ..TaskPatch::default() },
             )
-            .expect("update")
             .expect("the task is there");
         assert!(
             ws.tasks_for_project("myproj")[0].links.is_empty(),
@@ -1324,21 +1499,17 @@ mod prod_facade_tests {
         // A child row: a completing root closes and archives (own test).
         let task =
             facade.create_task(&worker, draft("review this", None, Some("epic"))).expect("create");
-        assert!(
-            facade
-                .update_task(
-                    &lead,
-                    &task.id,
-                    TaskPatch {
-                        status: Some(TaskStatus::Completed),
-                        owner: Some("lead".to_owned()),
-                        ..TaskPatch::default()
-                    }
-                )
-                .expect("update")
-                .is_some(),
-            "the lead completes a worker's task",
-        );
+        facade
+            .update_task(
+                &lead,
+                &task.id,
+                TaskPatch {
+                    status: Some(TaskStatus::Completed),
+                    owner: Some("lead".to_owned()),
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("the lead completes a worker's task");
         let stored = ws.tasks_for_project("myproj");
         assert_eq!(stored[0].status, TaskStatus::Completed, "the status moved");
         assert_eq!(

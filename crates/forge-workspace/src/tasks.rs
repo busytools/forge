@@ -333,6 +333,23 @@ impl Workspace {
         Ok(tasks[index].id.clone())
     }
 
+    /// The project holding a row whose exact id is `stated`, when that row
+    /// is outside `project_name`. Backs the refusal that keeps an id
+    /// another project owns apart from one no project has; a stated prefix
+    /// resolves only inside the caller's own project, so only a full id is
+    /// classified here.
+    pub(crate) fn task_project_outside(
+        &self,
+        project_name: &str,
+        stated: &TaskId,
+    ) -> Option<String> {
+        let tasks = self.tasks.lock();
+        tasks
+            .iter()
+            .find(|task| task.id == *stated && task.project_name != project_name)
+            .map(|task| task.project_name.clone())
+    }
+
     /// Append a task and persist, recording its creation in the history.
     /// Backs `tasks__create`.
     pub(crate) fn push_task(&self, task: Task) {

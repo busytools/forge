@@ -118,6 +118,12 @@ fn format_tasks_error(err: &TasksError) -> String {
         TasksError::Refused(why) => {
             format!("the move was refused: {why}")
         }
+        TasksError::NoSuchTask { id } => {
+            format!("no task with id {id} in your project")
+        }
+        TasksError::TaskInAnotherProject { id, project } => {
+            format!("task {id} exists in project {project}, not in your project")
+        }
     }
 }
 
@@ -354,11 +360,10 @@ impl Tool for Update {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         match self.facade.update_task(&self.slot, &TaskId::from(args.id.as_str()), args.patch) {
-            Ok(Some(task)) => match serde_json::to_string_pretty(&task_to_json(&task)) {
+            Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
             },
-            Ok(None) => tool_error(format!("no task with id {} in your project", args.id)),
             Err(err) => tool_error(format_tasks_error(&err)),
         }
     }
@@ -566,7 +571,7 @@ impl Tool for Delete {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         match self.facade.delete_task(&self.slot, &TaskId::from(args.id.as_str())) {
-            Ok(Some(removed)) => {
+            Ok(removed) => {
                 let mut envelope =
                     crate::mcp::deleted::removed_record(&task_to_json(&removed.task));
                 envelope["descendants_removed"] = serde_json::json!(removed.descendants_removed);
@@ -575,7 +580,6 @@ impl Tool for Delete {
                     Err(err) => tool_error(format!("response serialization failed: {err}")),
                 }
             }
-            Ok(None) => tool_error(format!("no task with id {} in your project", args.id)),
             Err(err) => tool_error(format_tasks_error(&err)),
         }
     }
@@ -834,6 +838,38 @@ mod tests {
         );
     }
 
+    /// The update refusal says which case it is: an id another project
+    /// owns reads differently from one no project has, so neither can be
+    /// taken for the other.
+    #[tokio::test]
+    async fn update_refusals_name_the_case() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let tool = Update { facade: facade.clone(), slot: lead_slot() };
+
+        *facade.update_result.lock() = Some(Err(TasksError::TaskInAnotherProject {
+            id: "t-9".to_owned(),
+            project: "otherproj".to_owned(),
+        }));
+        let elsewhere =
+            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending" }))).await;
+        assert!(elsewhere.is_error, "another project's row is refused");
+        assert_eq!(
+            text_of(&elsewhere),
+            "task t-9 exists in project otherproj, not in your project",
+            "the refusal names the project that owns the row",
+        );
+
+        *facade.update_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
+        let absent =
+            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending" }))).await;
+        assert!(absent.is_error, "an absent id is refused");
+        assert_eq!(
+            text_of(&absent),
+            "no task with id t-9 in your project",
+            "an id no project has must not read as another project's row",
+        );
+    }
+
     /// The update result is the record it wrote, so the caller can name
     /// the task it moved and read the state it now holds - `updated task
     /// <id>` named neither.
@@ -843,7 +879,7 @@ mod tests {
         let mut task = sample_task();
         task.status = TaskStatus::InProgress;
         task.owner = Some(SessionSlot::lead("TestOrg", "myproj"));
-        *facade.update_result.lock() = Some(task);
+        *facade.update_result.lock() = Some(Ok(task));
         let out = Update { facade, slot: lead_slot() }
             .call(input(serde_json::json!({ "id": "t-1", "status": "in_progress" })))
             .await;
@@ -865,7 +901,7 @@ mod tests {
     async fn delete_echoes_the_removed_record_and_the_cascade_count() {
         let facade = Arc::new(MockTasksFacade::default());
         *facade.delete_result.lock() =
-            Some(RemovedTaskTree { task: sample_task(), descendants_removed: 2 });
+            Some(Ok(RemovedTaskTree { task: sample_task(), descendants_removed: 2 }));
         let out = Delete { facade, slot: lead_slot() }
             .call(input(serde_json::json!({ "id": "t-1" })))
             .await;
@@ -889,7 +925,7 @@ mod tests {
     async fn a_delete_with_no_children_still_states_the_count() {
         let facade = Arc::new(MockTasksFacade::default());
         *facade.delete_result.lock() =
-            Some(RemovedTaskTree { task: sample_task(), descendants_removed: 0 });
+            Some(Ok(RemovedTaskTree { task: sample_task(), descendants_removed: 0 }));
         let out = Delete { facade, slot: lead_slot() }
             .call(input(serde_json::json!({ "id": "t-1" })))
             .await;
@@ -902,7 +938,7 @@ mod tests {
     #[tokio::test]
     async fn update_states_only_the_fields_it_was_given() {
         let facade = Arc::new(MockTasksFacade::default());
-        *facade.update_result.lock() = Some(sample_task());
+        *facade.update_result.lock() = Some(Ok(sample_task()));
         let out = Update { facade: facade.clone(), slot: lead_slot() }
             .call(input(serde_json::json!({
                 "id": "t-1",
@@ -1443,6 +1479,35 @@ mod tests {
         assert!(out.is_error, "an unknown id is an error, not a no-op");
     }
 
+    /// The delete refusal says which case it is, the same split the
+    /// update makes: a row another project owns is not an absent id.
+    #[tokio::test]
+    async fn delete_refusals_name_the_case() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let tool = Delete { facade: facade.clone(), slot: lead_slot() };
+
+        *facade.delete_result.lock() = Some(Err(TasksError::TaskInAnotherProject {
+            id: "t-9".to_owned(),
+            project: "otherproj".to_owned(),
+        }));
+        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        assert!(elsewhere.is_error, "another project's row is refused");
+        assert_eq!(
+            text_of(&elsewhere),
+            "task t-9 exists in project otherproj, not in your project",
+            "the refusal names the project that owns the row",
+        );
+
+        *facade.delete_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
+        let absent = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        assert!(absent.is_error, "an absent id is refused");
+        assert_eq!(
+            text_of(&absent),
+            "no task with id t-9 in your project",
+            "an id no project has must not read as another project's row",
+        );
+    }
+
     #[test]
     fn tool_names_are_the_task_family() {
         // Assert the base tool names only. Combined with the `forge`
@@ -1503,6 +1568,36 @@ mod tests {
         assert!(facade.claimed.lock().is_empty(), "invalid input never reaches the facade");
     }
 
+    /// The claim refusal says which case it is, the same split the
+    /// update and delete make: a row another project owns is not an
+    /// absent id.
+    #[tokio::test]
+    async fn claim_refusals_name_the_case() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let tool = Claim { facade: facade.clone(), slot: lead_slot() };
+
+        *facade.claim_result.lock() = Some(Err(TasksError::TaskInAnotherProject {
+            id: "t-9".to_owned(),
+            project: "otherproj".to_owned(),
+        }));
+        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        assert!(elsewhere.is_error, "another project's row is refused");
+        assert_eq!(
+            text_of(&elsewhere),
+            "task t-9 exists in project otherproj, not in your project",
+            "the refusal names the project that owns the row",
+        );
+
+        *facade.claim_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
+        let absent = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        assert!(absent.is_error, "an absent id is refused");
+        assert_eq!(
+            text_of(&absent),
+            "no task with id t-9 in your project",
+            "an id no project has must not read as another project's row",
+        );
+    }
+
     /// The core's refusal is read by the caller: the seat that holds the
     /// row is named, not hidden behind a generic failure.
     #[tokio::test]
@@ -1518,6 +1613,36 @@ mod tests {
             text_of(&out).contains("w-1 holds this row"),
             "and the refusal names the holder: {:?}",
             text_of(&out),
+        );
+    }
+
+    /// The wait refusal says which case it is: the row or its blocker
+    /// naming another project's id is not an absent id.
+    #[tokio::test]
+    async fn wait_refusals_name_the_case() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let tool = Wait { facade: facade.clone(), slot: lead_slot() };
+
+        *facade.wait_result.lock() = Some(Err(TasksError::TaskInAnotherProject {
+            id: "t-9".to_owned(),
+            project: "otherproj".to_owned(),
+        }));
+        let elsewhere =
+            tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource" }))).await;
+        assert!(elsewhere.is_error, "another project's row is refused");
+        assert_eq!(
+            text_of(&elsewhere),
+            "task t-9 exists in project otherproj, not in your project",
+            "the refusal names the project that owns the row",
+        );
+
+        *facade.wait_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
+        let absent = tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource" }))).await;
+        assert!(absent.is_error, "an absent id is refused");
+        assert_eq!(
+            text_of(&absent),
+            "no task with id t-9 in your project",
+            "an id no project has must not read as another project's row",
         );
     }
 
