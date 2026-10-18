@@ -1125,16 +1125,18 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 .vault_roots
                 .iter()
                 .map(|root| {
-                    let expanded = expand_home(root);
-                    if expanded.is_absolute() {
-                        Ok(expanded)
+                    // A bare `~` is home, the same intent as `~/`; anything
+                    // else that does not come out absolute is refused.
+                    let expanded = if root == "~" {
+                        dirs::home_dir()
                     } else {
-                        Err(WorkspaceError::ProjectVaultRootRelative {
-                            path: path.clone(),
-                            name: project_entry.name.clone(),
-                            root: root.clone(),
-                        })
-                    }
+                        Some(expand_home(root)).filter(|path| path.is_absolute())
+                    };
+                    expanded.ok_or_else(|| WorkspaceError::ProjectVaultRootRelative {
+                        path: path.clone(),
+                        name: project_entry.name.clone(),
+                        root: root.clone(),
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let env =
@@ -4366,12 +4368,16 @@ auto_compact_windows = 983040
     /// A relative `vault_roots` entry is refused at load, naming the key
     /// and the entry: a relative root would resolve against whatever
     /// working directory the read happened in, which is nobody's answer.
+    /// `~user/Madness` is the same refusal, and the sentence names the
+    /// remedy it accepts (`~` and `~/`).
     #[test]
     fn a_relative_vault_root_is_refused_at_load_naming_key_and_entry() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
+        for entry in ["Madness", "~user/Madness"] {
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &format!(
+                    r#"
 [[orgs]]
 name = "Personal"
 accounts = ["Stargate"]
@@ -4379,7 +4385,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-vault_roots = ["~/Madness", "Madness"]
+vault_roots = ["~/Madness", "{entry}"]
 
 [[accounts]]
 display_name = "Stargate"
@@ -4387,18 +4393,24 @@ token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
-        );
+                ),
+            );
 
-        let refusal = load_from_dir(dir.path()).expect_err("a relative entry is a load error");
-        assert!(matches!(refusal, WorkspaceError::ProjectVaultRootRelative { .. }), "{refusal:?}");
-        let why = refusal.to_string();
-        assert!(why.contains("vault_roots"), "names the key: {why}");
-        assert!(why.contains("'Madness'"), "names the entry: {why}");
-        assert!(why.contains("'forge'"), "and the project it sits on: {why}");
+            let refusal = load_from_dir(dir.path()).expect_err("a relative entry is a load error");
+            assert!(
+                matches!(refusal, WorkspaceError::ProjectVaultRootRelative { .. }),
+                "{entry}: {refusal:?}"
+            );
+            let why = refusal.to_string();
+            assert!(why.contains("vault_roots"), "{entry}: names the key: {why}");
+            assert!(why.contains(&format!("'{entry}'")), "{entry}: names the entry: {why}");
+            assert!(why.contains("'forge'"), "{entry}: and the project it sits on: {why}");
+            assert!(why.contains("start with ~/"), "{entry}: and the remedy it accepts: {why}");
+        }
     }
 
-    /// `vault_roots` defaults to empty, and an entry expands `~` while
-    /// an absolute one stays as itself.
+    /// `vault_roots` defaults to empty; an entry expands `~` and a bare
+    /// `~` is home, while an absolute one stays as itself.
     #[test]
     fn vault_roots_default_to_empty_and_expand_home() {
         let dir = tempdir().expect("tempdir");
@@ -4417,7 +4429,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-vault_roots = ["~/Madness", "/opt/vault"]
+vault_roots = ["~/Madness", "/opt/vault", "~"]
 
 [[accounts]]
 display_name = "Stargate"
@@ -4430,8 +4442,8 @@ provider = "anthropic"
         let home = dirs::home_dir().expect("home");
         assert_eq!(
             named(&config, "forge").vault_roots,
-            vec![home.join("Madness"), PathBuf::from("/opt/vault")],
-            "entries expand ~ and keep absolutes as themselves",
+            vec![home.join("Madness"), PathBuf::from("/opt/vault"), home],
+            "entries expand ~ and ~/, and keep absolutes as themselves",
         );
     }
 }

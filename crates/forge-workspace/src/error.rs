@@ -63,7 +63,7 @@ pub enum WorkspaceError {
     ProjectInvalidPermissionMode { path: PathBuf, name: String, value: String },
 
     #[error(
-        "project '{name}' in forge.toml at {} sets vault_roots entry '{root}', which is not absolute; every entry must be an absolute path or start with ~",
+        "project '{name}' in forge.toml at {} sets vault_roots entry '{root}', which is not absolute; every entry must be an absolute path, ~ or start with ~/",
         path.display()
     )]
     ProjectVaultRootRelative { path: PathBuf, name: String, root: String },
