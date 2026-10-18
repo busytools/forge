@@ -1656,7 +1656,7 @@ mod tests {
         let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
 
         let messages = surface.conversation(&seat, &cwd).messages;
-        let rendered = crate::transcript::render(&messages);
+        let rendered = crate::transcript::render(&messages, false);
         (messages, rendered)
     }
 

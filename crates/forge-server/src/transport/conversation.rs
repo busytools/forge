@@ -49,6 +49,10 @@ use forge_primitives::{Message, SessionSlot};
 // reads it is a page that cannot reach its cap. The ceilings' why, and what
 // the drop costs, are stated there.
 use forge_workspace::conversation_window::Window;
+// The delivered liveness rule, folded off the frames this copy sees - the same
+// one the client's `inFlightOf` keeps and the core folds into a seat's own
+// turn state.
+use forge_workspace::{TurnLiveness, liveness_of};
 
 use crate::SessionUpdate;
 use crate::transcript::Rendered;
@@ -139,6 +143,16 @@ pub struct Conversation {
     /// between the two would otherwise pair the new epoch's count with the old
     /// run's rows: a copy whose occupant is not the seat's is no copy at all.
     occupant: Option<forge_primitives::SessionId>,
+    /// Whether the seat's turn is in flight right now, folded off the frames
+    /// this copy has seen (`liveness_of` - the delivered rule: the model's
+    /// own frames open a turn, its `Result` or error closes it).
+    ///
+    /// **The fold's caller carries this**, because the frame that would say it
+    /// directly (`session_state_changed`) is never sent: the fold reads it as
+    /// "the open turn the frames describe is live", which is what keeps a
+    /// mid-call delivery from being cut off from a result that has not
+    /// streamed yet (#2379).
+    live: bool,
 }
 
 impl Conversation {
@@ -160,6 +174,11 @@ impl Conversation {
         // the wire carried; and the cut is still what bounds what the copy
         // costs, so a resume's transient is the history it handed over plus a
         // window rather than two transcripts.
+        //
+        // The liveness is read before the cut, off the same frames: the
+        // seed's own ladder is what a copy materialised mid-turn reads from
+        // before any frame arrives.
+        let live = live_of_seed(&messages);
         let (window, dropped) = Window::tail_of(&as_blocks(messages));
         let dropped = carried.saturating_add(dropped);
         Self {
@@ -171,6 +190,7 @@ impl Conversation {
             folding: false,
             forged: std::collections::HashSet::new(),
             occupant: None,
+            live,
         }
     }
 
@@ -219,7 +239,9 @@ impl Conversation {
         // they would read a reseed of the same window as a different one. The
         // cut then runs over the converted history, so the window it keeps is
         // the one weighed.
+        let live = live_of_seed(&messages);
         let (kept, left) = Window::tail_of(&as_blocks(messages));
+        self.live = live;
         let seeded = carried.saturating_add(left);
         // **The numbering is carried over a replay, and only when the window
         // did not move.** The replay is the seat's own stream: the same frames
@@ -296,6 +318,12 @@ impl Conversation {
         // since - and a view draws a marker from it.
         if matches!(message, Message::CompactBoundary { .. }) {
             self.compaction_count = self.compaction_count.saturating_add(1);
+        }
+        // Every frame's own claim about the turn folds in here, the same walk
+        // a seat's `DomainSession` makes: the model's frames open a turn, its
+        // `Result` or error closes it, anything else says nothing.
+        if let Some(said) = liveness_of(&message) {
+            self.live = said == TurnLiveness::Working;
         }
         // **Before the push, so the drop pays for the room it makes.** After
         // it, this one frame is what tips the store into a doubling the drop
@@ -389,6 +417,13 @@ fn as_blocks(messages: Vec<Message>) -> Vec<Message> {
     crate::transcript::notices_as_blocks(messages)
 }
 
+/// The delivered ladder folded over a seed's own frames: the last frame that
+/// says anything about the turn wins, the way every frame appended later
+/// folds in (see [`Conversation::live`]).
+fn live_of_seed(messages: &[Message]) -> bool {
+    messages.iter().filter_map(liveness_of).next_back() == Some(TurnLiveness::Working)
+}
+
 /// One seat's conversation, and the fold that may be running over it.
 ///
 /// **Two locks, because a fold must not be held against the stream and a
@@ -471,7 +506,7 @@ impl Held {
         let Some(taken) = Folding::begin(self) else {
             return;
         };
-        let rendered = crate::transcript::render(taken.messages());
+        let rendered = crate::transcript::render(taken.messages(), taken.live());
         taken.finish(rendered);
     }
 }
@@ -493,6 +528,7 @@ impl Held {
 struct Folding<'a> {
     held: &'a Held,
     window: Option<Window>,
+    live: bool,
 }
 
 impl<'a> Folding<'a> {
@@ -507,12 +543,20 @@ impl<'a> Folding<'a> {
             return None;
         }
         let window = conversation.take_dirty()?;
-        Some(Self { held, window: Some(window) })
+        // Read with the window, under the same lock: the state the fold is
+        // handed is the seat's own at the moment its messages went out.
+        let live = conversation.live;
+        Some(Self { held, window: Some(window), live })
     }
 
     /// The messages this fold took.
     fn messages(&self) -> &[Message] {
         self.window.as_ref().map_or(&[], Window::messages)
+    }
+
+    /// Whether the seat's turn was in flight when the window went out.
+    fn live(&self) -> bool {
+        self.live
     }
 
     /// Put the fold back and wake the readers.
@@ -662,6 +706,15 @@ impl Conversations {
     }
 
     /// The seat's conversation if one is held.
+    /// Whether the seat's turn is in flight right now, from its own frames.
+    ///
+    /// `false` for a seat this transport has not heard of: nothing holds a
+    /// turn there, and a reader folding its transcript is reading a settled
+    /// conversation.
+    pub fn live_of(&self, slot: &SessionSlot) -> bool {
+        self.get(slot).is_some_and(|held| held.lock().live)
+    }
+
     pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Held>> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone)
     }
@@ -1013,6 +1066,73 @@ mod tests {
         );
     }
 
+    /// A frame the model produced, which is what opens a turn's liveness.
+    fn a_working_frame() -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "uuid": "a-working",
+            "message": {
+                "id": "msg_working",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{ "type": "text", "text": "working" }],
+            },
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        }))
+        .expect("an assistant frame")
+    }
+
+    /// The frame that ends a turn, per the delivered ladder.
+    fn a_result_frame() -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "uuid": "r-1",
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            "is_error": false,
+            "num_turns": 1,
+            "duration_ms": 12,
+            "duration_api_ms": 9,
+        }))
+        .expect("a result frame")
+    }
+
+    /// **The seat's turn state travels to the fold, folded off its frames.**
+    ///
+    /// The frame that would say a turn is running (`session_state_changed`)
+    /// is never sent, so the fold cannot read liveness off its own list: the
+    /// transport derives the delivered ladder - the model's own frames open a
+    /// turn, its `Result` (or the error it gives up with) closes it - and the
+    /// fold reads that as "the open turn is live", which is what keeps a
+    /// mid-call delivery from being cut off from a result that has not
+    /// streamed yet (#2379). A seed materialised mid-turn starts live for the
+    /// same reason.
+    #[test]
+    fn the_seats_live_turn_travels_to_the_fold() {
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::empty());
+        assert!(!held.live_of(&a_seat()), "nothing is open on an empty seat");
+
+        held.apply(&SessionUpdate::ChatAppended {
+            key: a_seat(),
+            msg: a_working_frame(),
+            origin: None,
+            source: None,
+        });
+        assert!(held.live_of(&a_seat()), "the model's own frame opens a turn");
+
+        held.apply(&SessionUpdate::ChatAppended {
+            key: a_seat(),
+            msg: a_result_frame(),
+            origin: None,
+            source: None,
+        });
+        assert!(!held.live_of(&a_seat()), "and the turn's report closes it");
+
+        held.apply(&a_replay(vec![a_frame("mid-turn"), a_working_frame()], 0));
+        assert!(held.live_of(&a_seat()), "a seed materialised mid-turn reads live");
+    }
+
     /// A frame the session emits after the seed joins the conversation, which
     /// is what the held copy is for.
     #[test]
@@ -1359,7 +1479,7 @@ mod tests {
     #[test]
     fn the_drop_leaves_the_newest_page_exactly_as_it_was() {
         let messages = a_long_history(CONVERSATION_CAP + CONVERSATION_SLACK);
-        let whole = crate::transcript::render(&messages);
+        let whole = crate::transcript::render(&messages, false);
         let unbounded = crate::transport::wire::page(
             &messages,
             &whole,
