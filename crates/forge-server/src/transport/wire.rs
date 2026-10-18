@@ -791,6 +791,81 @@ fn turn_wire(
     TurnWire { key: key.map(str::to_owned), messages: frames }
 }
 
+/// The keys a client actually draws out of a structured record: a mutation's
+/// patch and its outside-edit mark, a question's answers and the notes typed
+/// beside them.
+const DRAWN_RECORD_KEYS: [&str; 4] = ["structuredPatch", "userModified", "answers", "annotations"];
+
+/// Bound one served `tool_use_result` to `cap` bytes (#2374).
+///
+/// **The record is REDUCED before it is dropped.** A Write update carries the
+/// whole file in `content`/`originalFile`, which no client reads, so keeping
+/// the drawn keys leaves the hunks intact and the page bounded. The bare
+/// marker is the fallback for a record whose drawn keys alone are over the
+/// cap; `userModified` rides it because the row's outside-edit mark reads it.
+pub(crate) fn cap_tool_record(record: &mut Value, cap: usize) {
+    if cap == usize::MAX {
+        return;
+    }
+    let Ok(text) = serde_json::to_string(&*record) else {
+        return;
+    };
+    if text.len() <= cap {
+        return;
+    }
+    let bytes = text.len();
+    let reduced = record.as_object().and_then(|held| {
+        let mut kept = serde_json::Map::new();
+        for key in DRAWN_RECORD_KEYS {
+            if let Some(value) = held.get(key) {
+                kept.insert(key.to_owned(), value.clone());
+            }
+        }
+        let reduced = Value::Object(kept);
+        let fits = serde_json::to_string(&reduced).is_ok_and(|text| text.len() <= cap);
+        (fits && reduced.as_object().is_some_and(|held| !held.is_empty())).then_some(reduced)
+    });
+    if let Some(reduced) = reduced {
+        *record = reduced;
+        return;
+    }
+    let mut marker = serde_json::json!({ "omitted": true, "bytes": bytes });
+    if record.get("userModified").and_then(Value::as_bool) == Some(true) {
+        marker["userModified"] = Value::Bool(true);
+    }
+    *record = marker;
+}
+
+/// Bound every frame's `tool_use_result` in a page about to be SERVED (#2374).
+///
+/// **Only what a client is served is bounded; the transcript and the visible
+/// `tool_result` block are untouched.** The structured record is drawn only
+/// for mutations and questions - everything else is parsed and kept for
+/// nothing - and one seat's mailbox records made a single page 70 MB, so the
+/// page caps the record by `[server] tool_record_cap_kb` and leaves a marker
+/// the client draws where it would have read the record. `usize::MAX` (the
+/// `0` key) serves records whole.
+pub(crate) fn cap_tool_records(turns: &mut [TurnWire], cap: usize) {
+    if cap == usize::MAX {
+        return;
+    }
+    for turn in turns {
+        for frame in &mut turn.messages {
+            if let Some(result) = frame.get_mut("tool_use_result") {
+                cap_tool_record(result, cap);
+            }
+        }
+    }
+}
+
+/// The same bound on a live frame's record, before it goes to a client
+/// (#2374): a reload and a live frame draw the same record or the marker.
+pub(crate) fn cap_message_record(msg: &mut Message, cap: usize) {
+    if let Message::User { tool_use_result: Some(record), .. } = msg {
+        cap_tool_record(record, cap);
+    }
+}
+
 /// The endings that name a call this turn holds and that the turn does not
 /// already carry.
 fn owed_endings<'a>(
@@ -1508,12 +1583,15 @@ async fn session(
     // remainder is read against would go short by the whole read - worst on
     // exactly the slow cold open the line exists to explain.
     timings.conversation_ms = at.elapsed().as_secs_f64() * 1000.0 - timings.seed_ms;
+    // The served page's records are bounded here, off the lock like the page
+    // itself: a mailbox seat's structured records made one page 70 MB (#2374).
+    let cap = surface.tool_record_cap_bytes();
     let (turns, compaction_count, page_ms) = match conversation {
         Some(held) => {
             let seat = slot.clone();
             tokio::task::spawn_blocking(move || {
                 let at = std::time::Instant::now();
-                let (turns, count) = held.read(|held| {
+                let (mut turns, count) = held.read(|held| {
                     (
                         page(
                             held.messages(),
@@ -1526,6 +1604,7 @@ async fn session(
                         held.compaction_count(),
                     )
                 });
+                cap_tool_records(&mut turns, cap);
                 (turns, count, at.elapsed().as_secs_f64() * 1000.0)
             })
             .await
@@ -3103,6 +3182,168 @@ mod tests {
         assert!(
             encoded.get("pricing_available").is_some(),
             "and the flag that blanks costs rather than reading a misleading zero: {encoded}"
+        );
+    }
+
+    /// **The served page caps an oversized `tool_use_result` (#2374), and
+    /// only there.** The held copy keeps the record whole - the transcript
+    /// and the visible block are untouched - while the page replaces it
+    /// with an `omitted` marker; a record under the cap crosses as it is.
+    #[tokio::test]
+    async fn the_served_page_caps_an_oversized_tool_record() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+        let huge = "x".repeat(100_000);
+        let frame = |uuid: &str, record: Value| -> Message {
+            serde_json::from_value(serde_json::json!({
+                "type": "user",
+                "uuid": uuid,
+                "message": {"role": "user", "content": "the call"},
+                "tool_use_result": record,
+                "session_id": "s",
+            }))
+            .expect("a user frame")
+        };
+        let big = frame("b1", serde_json::json!({"payload": huge}));
+        let small = frame("s1", serde_json::json!({"answers": {"q": "a"}}));
+        state.conversations.insert(
+            &fixture_seat(),
+            crate::transport::conversation::Conversation::new(
+                vec![big.clone(), small.clone()],
+                0,
+                0,
+            ),
+        );
+
+        let (value, _) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
+            .await
+            .expect("the seat encodes");
+        let turns = value["conversation"]["turns"].as_array().expect("the page carries turns");
+        let frame = |uuid: &str| -> &Value {
+            turns
+                .iter()
+                .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
+                .find(|frame| frame["uuid"] == uuid)
+                .unwrap_or_else(|| panic!("the page carries the frame {uuid}"))
+        };
+        let capped = &frame("b1")["tool_use_result"];
+        assert_eq!(capped["omitted"], true, "the big record is marked: {capped}");
+        assert!(
+            capped["bytes"].as_u64().is_some_and(|bytes| bytes > 100_000),
+            "and says how much it weighed: {capped}",
+        );
+        assert_eq!(
+            frame("s1")["tool_use_result"],
+            serde_json::json!({"answers": {"q": "a"}}),
+            "a record under the cap crosses as it is",
+        );
+
+        // The page is bounded by the cap rather than by the record.
+        let conversation = serde_json::to_vec(&value["conversation"]).expect("serialises");
+        assert!(
+            conversation.len() < 30_000,
+            "the served conversation is bounded: {} bytes",
+            conversation.len(),
+        );
+
+        // **And the held copy still carries it whole**: the cap is the
+        // page's, not the transcript's.
+        let held = state.conversations.get(&fixture_seat()).expect("the seat is held");
+        let kept = held.lock().messages()[0].clone();
+        let Message::User { tool_use_result, .. } = kept else {
+            panic!("the held frame is the user frame it was seeded with");
+        };
+        assert_eq!(
+            tool_use_result.expect("the held copy keeps its record")["payload"]
+                .as_str()
+                .map(str::len),
+            Some(100_000),
+            "the held copy is untouched by the page's cap",
+        );
+    }
+
+    /// **The cap keeps what a client draws before it drops the record**
+    /// (#2374). A Write update carries the whole file in
+    /// `content`/`originalFile`, which nothing draws; keeping the patch and
+    /// the outside-edit mark leaves the row intact under the cap.
+    #[test]
+    fn an_oversized_record_keeps_the_keys_a_client_draws() {
+        let patch = serde_json::json!([
+            {"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": ["-one", "+two"]}
+        ]);
+        let mut record = serde_json::json!({
+            "content": "x".repeat(100_000),
+            "originalFile": "x".repeat(100_000),
+            "structuredPatch": patch,
+            "userModified": true,
+        });
+        cap_tool_record(&mut record, 64 * 1024);
+        assert_eq!(record["structuredPatch"], patch, "the drawn patch survives the cap: {record}");
+        assert_eq!(record["userModified"], true, "and the outside-edit mark with it: {record}");
+        assert!(record.get("content").is_none(), "the unread whole file is dropped: {record}");
+        assert!(record.get("omitted").is_none(), "nothing was omitted: {record}");
+    }
+
+    /// The reduction keeps a question's drawn keys too: `answers` and
+    /// `annotations` survive an over-cap record, so the card still draws what
+    /// was picked and typed (#2374).
+    #[test]
+    fn an_oversized_question_record_keeps_its_answers() {
+        let mut record = serde_json::json!({
+            "answers": {"Which one?": "the second"},
+            "annotations": {"Which one?": {"notes": "because"}},
+            "debug": "x".repeat(100_000),
+        });
+        cap_tool_record(&mut record, 64 * 1024);
+        assert_eq!(
+            record["answers"]["Which one?"], "the second",
+            "the picked answer survives the cap: {record}",
+        );
+        assert_eq!(
+            record["annotations"]["Which one?"]["notes"], "because",
+            "and the typed note with it: {record}",
+        );
+        assert!(record.get("omitted").is_none(), "nothing was omitted: {record}");
+    }
+
+    /// **A record exactly at the cap crosses whole**: the bound is `<=`, so a
+    /// page does not mark a record it fully carries (#2374).
+    #[test]
+    fn a_record_at_the_cap_is_not_capped() {
+        let record = serde_json::json!({"payload": "x".repeat(100_000)});
+        let exact = serde_json::to_string(&record).expect("serialises").len();
+        let mut at = record.clone();
+        cap_tool_record(&mut at, exact);
+        assert_eq!(at, record, "a record at the cap is served as it is");
+        let mut over = record.clone();
+        cap_tool_record(&mut over, exact - 1);
+        assert_eq!(over["omitted"], true, "one byte over and it is marked: {over}");
+    }
+
+    /// When even the drawn keys are over the cap the record becomes the
+    /// marker, and `userModified` rides it so the row still says the file
+    /// changed outside the edit (#2374).
+    #[test]
+    fn a_record_over_the_cap_after_reduction_is_the_marker() {
+        let mut record = serde_json::json!({
+            "structuredPatch": [{"lines": ["x".repeat(100_000)]}],
+            "userModified": true,
+        });
+        cap_tool_record(&mut record, 64 * 1024);
+        assert_eq!(record["omitted"], true, "the record is the marker: {record}");
+        assert_eq!(record["userModified"], true, "and keeps the outside-edit mark: {record}");
+        assert!(
+            record["bytes"].as_u64().is_some_and(|bytes| bytes > 100_000),
+            "and says how much it weighed: {record}",
         );
     }
 

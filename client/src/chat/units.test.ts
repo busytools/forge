@@ -313,6 +313,32 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(units)[1], 'and that call is the unit in the middle').toBe('question');
   });
 
+  it('draws an omitted question record as the call it was, not as no answer', () => {
+    // The served page caps a frame's structured record, and a question's
+    // answers live in it: the card has nothing to read, so the call draws as
+    // its leaf - whose body names the omission - rather than the row
+    // vanishing (#2374).
+    const question = [
+      said([
+        use('toolu_q', 'AskUserQuestion', {
+          questions: [{ question: 'Which one?', options: [{ label: 'a' }] }],
+        }),
+      ]),
+      heard([result('toolu_q', 'answered')], {
+        tool_use_result: { omitted: true, bytes: 5_200_000 },
+      }),
+    ];
+
+    const units = fold(question);
+    expect(kinds(units), 'the call still draws').toEqual(['leaves']);
+    const [row] = callsOf(units[0]);
+    expect(row?.leaf.body, 'and its body says what was omitted').toContainEqual({
+      kind: 'text',
+      text: 'omitted, 5.0 MB',
+    });
+    expect(row?.leaf.title, 'and the row is titled by the question it asked').toBe('Which one?');
+  });
+
   it('keeps a peer message from closing the calls around it, as rows of one list', () => {
     // A message is a row, not a separator: the call below it joins the list
     // the call above it opened, and every row keeps its arrival place.

@@ -616,4 +616,122 @@ describe('what one hunk line costs to read', () => {
       long,
     );
   });
+
+  /**
+   * **An omitted record draws its marker where the call would have read it**
+   * (#2374): the served page caps a frame's structured record and leaves
+   * `{omitted, bytes}` in its place, so an edit says the patch was omitted
+   * rather than reading as a change with no patch, and a question's answers
+   * are named missing rather than the row reading as one nobody answered.
+   */
+  it('draws the omitted marker an over-cap record leaves behind', () => {
+    const omitted = { omitted: true, bytes: 5_200_000 };
+    const edit = leafOf(
+      't1',
+      'Edit',
+      { file_path: 'a.rs', old_string: 'one', new_string: 'two' },
+      answered('The file a.rs has been updated.'),
+      omitted,
+    );
+    expect(edit.body, 'the marker names what is missing').toContainEqual({
+      kind: 'text',
+      text: 'omitted, 5.0 MB',
+    });
+    expect(
+      edit.body.some((part) => part.kind === 'diff' || part.kind === 'hunk'),
+      'the call input still draws its own two sides beside the marker',
+    ).toBe(true);
+    expect(edit.body[0]?.kind, 'the diff comes first').toBe('diff');
+    expect(edit.body.at(-1), 'and the marker after it').toEqual({
+      kind: 'text',
+      text: 'omitted, 5.0 MB',
+    });
+
+    const question = leafOf(
+      't2',
+      'AskUserQuestion',
+      { questions: [{ question: 'Which?', options: [{ label: 'A' }] }] },
+      answered('User has answered your questions: Which?="A"'),
+      omitted,
+    );
+    expect(question.body, 'the answers are named missing too').toContainEqual({
+      kind: 'text',
+      text: 'omitted, 5.0 MB',
+    });
+    expect(question.title, 'and its row is titled by the question it asked').toBe('Which?');
+
+    // **A call that never reads the record draws no marker**: its visible
+    // result is the whole of what it shows, so an omitted record changes
+    // nothing on the row (#2374).
+    const bash = leafOf('t3', 'Bash', { command: 'ls' }, answered('ok'), omitted);
+    expect(
+      bash.body.some((part) => part.kind === 'text' && part.text.includes('omitted')),
+      'a call that never reads the record says nothing about it',
+    ).toBe(false);
+  });
+
+  /** The marker's figure reads in the unit the size belongs to. */
+  it('draws the omitted size in bytes, kilobytes or megabytes', () => {
+    const marker = (bytes: number): string => {
+      const body = leafOf(
+        't5',
+        'Edit',
+        { file_path: 'a.rs', old_string: 'one', new_string: 'two' },
+        answered('The file a.rs has been updated.'),
+        { omitted: true, bytes },
+      ).body;
+      const last = body.at(-1);
+      return last?.kind === 'text' ? last.text : '';
+    };
+    expect(marker(500), 'under a kilobyte').toBe('omitted, 500 bytes');
+    expect(marker(80_000), 'kilobytes').toBe('omitted, 78 KB');
+    expect(marker(5_200_000), 'megabytes').toBe('omitted, 5.0 MB');
+  });
+
+  /** The question title branch belongs to the capped row alone (#2374). */
+  it('titles only a capped question row by the question it asked', () => {
+    const asked = { questions: [{ question: 'Which one?\nA second line' }] };
+    const capped = leafOf('q1', 'AskUserQuestion', asked, undefined, {
+      omitted: true,
+      bytes: 10,
+    });
+    expect(capped.title, 'a capped question takes the first line of its question').toBe(
+      'Which one?',
+    );
+    const whole = leafOf('q2', 'AskUserQuestion', asked, undefined, {
+      answers: { 'Which one?': 'A' },
+    });
+    expect(whole.title, 'an ordinary question leaf keeps the title it had').toBe('AskUserQuestion');
+    const unnamed = leafOf('q3', 'AskUserQuestion', { questions: [] }, undefined, {
+      omitted: true,
+      bytes: 10,
+    });
+    expect(unnamed.title, 'a capped question that named none keeps the tool name').toBe(
+      'AskUserQuestion',
+    );
+  });
+
+  /** Under the cap the record is untouched: the hunks still draw, no marker. */
+  it('draws a record under the cap exactly as before', () => {
+    const record = {
+      structuredPatch: [
+        { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-one', '+two'] },
+      ],
+    };
+    const leaf = leafOf(
+      't4',
+      'Edit',
+      { file_path: 'a.rs', old_string: 'one', new_string: 'two' },
+      answered('The file a.rs has been updated.'),
+      record,
+    );
+    expect(
+      leaf.body.some((part) => part.kind === 'hunk'),
+      'the patch draws',
+    ).toBe(true);
+    expect(
+      leaf.body.some((part) => part.kind === 'text' && part.text.includes('omitted')),
+      'and nothing says omitted',
+    ).toBe(false);
+  });
 });

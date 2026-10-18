@@ -22,7 +22,7 @@ import {
   rowOf,
 } from './families';
 import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
-import { headline, stripEscapes, toolName } from './text';
+import { firstLine, headline, stripEscapes, toolName } from './text';
 
 /** What a call's row opens on. */
 export type CallBody =
@@ -465,13 +465,48 @@ function headerOf(hunk: {
 }
 
 /**
+ * How many bytes a frame's structured record carried, when the served page
+ * omitted it (#2374): the server caps `tool_use_result` and leaves
+ * `{ omitted, bytes }` in its place, so a call that read the record says so
+ * rather than drawing blank.
+ */
+export function omittedRecord(record: unknown): number | null {
+  const held = record as { omitted?: unknown; bytes?: unknown } | null;
+  return held?.omitted === true && typeof held.bytes === 'number' ? held.bytes : null;
+}
+
+/** `omitted, N bytes`, in the units a reader thinks in. */
+function omittedText(bytes: number): string {
+  if (bytes >= 1_048_576) return `omitted, ${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1_024) return `omitted, ${Math.round(bytes / 1_024)} KB`;
+  return `omitted, ${bytes} bytes`;
+}
+
+/**
+ * Whether the call's own body reads the frame's structured record: an edit's
+ * patch, a question's answers. Every other call draws its visible result, so
+ * an omitted record changes nothing it draws.
+ */
+function readsRecord(name: string): boolean {
+  return isEdit(name) || name.toLowerCase() === 'askuserquestion';
+}
+
+/**
  * What a mutation's body draws: the CLI's hunks where the result carries them,
  * and the call's own two sides where it does not.
+ *
+ * **An omitted record draws its marker where the body would have read it** -
+ * the edit's patch, a question's answers - so the reader sees that something
+ * was there and is not read as a change with no patch or a question nobody
+ * answered (#2374).
  */
 function mutationBody(name: string, input: unknown, record: unknown): CallBody[] {
-  if (!isEdit(name)) return [];
+  if (!readsRecord(name)) return [];
+  const omitted = omittedRecord(record);
+  const marker: CallBody[] = omitted === null ? [] : [{ kind: 'text', text: omittedText(omitted) }];
+  if (!isEdit(name)) return marker;
   const hunks = hunksOf(record);
-  return hunks.length > 0 ? hunks : diffsOf(name, input);
+  return [...(hunks.length > 0 ? hunks : diffsOf(name, input)), ...marker];
 }
 
 /**
@@ -547,6 +582,18 @@ function hunk(old: string, added: string): CallBody[] {
   return [{ kind: 'diff', old, new: added }];
 }
 
+/** The line an asked question titles its row by, or null when it asked none. */
+function questionTitle(input: unknown): string | null {
+  const questions = (input as { questions?: unknown } | null)?.questions;
+  const first = Array.isArray(questions)
+    ? (questions[0] as { question?: unknown } | undefined)
+    : undefined;
+  const asked = first?.question;
+  if (typeof asked !== 'string') return null;
+  const line = firstLine(asked);
+  return line === '' ? null : line;
+}
+
 /**
  * What names a call on its row: its input where that says something, its tool otherwise.
  *
@@ -556,13 +603,21 @@ function hunk(old: string, added: string): CallBody[] {
  * about which file it is. The view this client replaced put the whole of it on
  * the row (`Edit /Users/.../home.css`), which is the reference this follows.
  */
-function titleOf(name: string, input: unknown): string {
+function titleOf(name: string, input: unknown, record: unknown): string {
   // A decision's row IS the question it asked: the tool word reads as plumbing
   // a reader scans past, and the question is the one thing they scan for
   // (Ved, 2026-10-12). A call that named nothing keeps the word, which is the
   // same fallback every other family's row has.
   const word = decisionWord(name);
   if (word !== null) return decisionTitle(input) ?? word;
+  // **An asked question's row is titled the same way, and only a CAPPED one
+  // is this branch's**: a question whose answers were served draws as a card,
+  // and an ordinary question leaf (a subagent dispatch timeline) keeps the
+  // title it had (#2374).
+  if (name.toLowerCase() === 'askuserquestion' && omittedRecord(record) !== null) {
+    const asked = questionTitle(input);
+    if (asked !== null) return asked;
+  }
   const said = headline(name, input);
   const named = said === name ? toolName(name) : said;
   // **A browser call says `browser`, not the driver's server name.** These
@@ -646,7 +701,7 @@ export function leafOf(
         input,
         settled === 'failed' || settled === 'killed' ? 'failed' : 'running',
       ) ??
-      titleOf(name, input),
+      titleOf(name, input, record),
     command: field(input, 'command')?.trim() || null,
     status: settled,
     backgrounded: task?.backgrounded === true,
