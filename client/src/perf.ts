@@ -41,6 +41,18 @@ const SLOW_FRAME_MS = 50;
  *  client replaced used. */
 const SUMMARY_INTERVAL_MS = 10_000;
 
+/**
+ * Which terminal drawing is on screen for a seat's open (#2374).
+ *
+ * **`conversation` and `empty` are the seat's own answer** - rows on screen,
+ * or the loaded-and-empty state. `waking` and `refused` are the column
+ * saying something else, and one of those does NOT end the open: the
+ * content's own drawing follows it. `waking` is the umbrella for the waking
+ * line and the not-running line - one state to the reader, and the four
+ * words are the whole vocabulary on purpose.
+ */
+export type DrawnState = 'conversation' | 'empty' | 'waking' | 'refused';
+
 /** One line of the perf log, as the shell writes it. */
 export interface PerfRecord {
   schema: string;
@@ -55,6 +67,13 @@ export interface PerfRecord {
    * `quiet` - the time since the switch record the mark belongs to.
    */
   ms?: number;
+  /**
+   * For a `drawn`: WHICH terminal state completed the open. Only
+   * `conversation` and `empty` are the seat's own answer; a `waking` or
+   * `refused` line is the column saying something else, and must never read
+   * as the content arriving (#2374).
+   */
+  state?: DrawnState;
   /** A long task's own name. */
   name?: string;
   /**
@@ -83,9 +102,8 @@ interface PerfProbe {
    *  reconnect or a palette move, written where the column takes the seat on
    *  (#2374). */
   noteConversationOpened(seat: string): void;
-  /** The open seat's terminal drawing has landed: its conversation, or the
-   *  seat's own empty/waking/refused line (#2374). */
-  noteDrawn(): void;
+  /** The open seat's terminal drawing has landed, in `state` (#2374). */
+  noteDrawn(state: DrawnState): void;
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
@@ -157,18 +175,26 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let cancelFrame: (() => void) | null = null;
   let cancelObserver: (() => void) | null = null;
   /**
-   * The open conversation's own seat, when it started, and whether its state
-   * has drawn (#2374).
+   * The open conversation's own seat, when it started, and what has drawn
+   * for it (#2374).
    *
    * **The marks name the seat that OPENED, not whatever the page shows
    * next**: a reader who leaves the seat before its first normal frame would
    * otherwise read the seat's own delta attributed to the home they moved
    * to. And the open is dropped the moment the page leaves that seat: a mark
    * left armed across the move would land on an unrelated moment.
+   *
+   * **One placeholder and one content drawing per open.** A `waking` or
+   * `refused` line is the column saying something else, and it does NOT end
+   * the open: when the seat's content lands after one, its own `drawn`
+   * follows and only then can a `quiet` settle the open. Two flags, because
+   * the column re-runs the mark on every update it holds and the log wants
+   * the first of each, not a burst.
    */
   let openSeat: string | null = null;
   let openAt: number | null = null;
-  let drawnSeen = false;
+  let placeholderSeen = false;
+  let contentSeen = false;
 
   function emit(record: PerfRecord): void {
     sink([record]);
@@ -216,7 +242,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           surface,
           session,
         });
-      } else if (openAt !== null && drawnSeen) {
+      } else if (openAt !== null && contentSeen) {
         // **The open seat's work is done**: its state is drawn and the frame
         // loop is back to a normal cadence, which is the quiet the switch's
         // own timing is measured to.
@@ -246,7 +272,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       maxMs = 0;
       openAt = null;
       openSeat = null;
-      drawnSeen = false;
+      placeholderSeen = false;
+      contentSeen = false;
       windowStart = now();
       // Boot's own reading: the router has usually not wired a route yet,
       // so null here is the honest answer rather than a gap.
@@ -301,7 +328,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     noteConversationOpened(seat: string): void {
       openSeat = seat;
       openAt = now();
-      drawnSeen = false;
+      placeholderSeen = false;
+      contentSeen = false;
       emit({
         schema: SCHEMA,
         kind: 'switch',
@@ -311,15 +339,25 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         session: seat,
       });
     },
-    noteDrawn(): void {
-      if (openAt === null || drawnSeen) return;
-      drawnSeen = true;
+    noteDrawn(state: DrawnState): void {
+      if (openAt === null) return;
+      const content = state === 'conversation' || state === 'empty';
+      // **One placeholder and one content drawing per open** (#2374): the
+      // column re-runs the mark on every update it holds, so the first of
+      // each is what the log carries.
+      if (content ? contentSeen : placeholderSeen) return;
+      if (content) {
+        contentSeen = true;
+      } else {
+        placeholderSeen = true;
+      }
       emit({
         schema: SCHEMA,
         kind: 'drawn',
         run_id: runId,
         ts_ms: Date.now(),
         ms: now() - openAt,
+        state,
         surface: 'session',
         session: openSeat,
       });
@@ -370,13 +408,15 @@ export function noteConversationOpened(slot: SessionSlot): void {
 }
 
 /**
- * The open seat's terminal drawing has landed - its conversation, or the
- * seat's own empty/waking/refused line. The mark a switch's own timing is
- * measured to, written where the drawing lands rather than where the click
- * happened (#2374).
+ * The open seat's terminal drawing has landed, in `state`: its conversation,
+ * the empty state, or the column's own waking or refused line. The mark a
+ * switch's own timing is measured to, written where the drawing lands rather
+ * than where the click happened (#2374). **An open can carry two of these**:
+ * a placeholder first (`waking`/`refused`) and the seat's content after it
+ * (`conversation`/`empty`) - only the content drawing lets a `quiet` follow.
  */
-export function noteDrawn(): void {
-  running?.noteDrawn();
+export function noteDrawn(state: DrawnState): void {
+  running?.noteDrawn(state);
 }
 
 /**
