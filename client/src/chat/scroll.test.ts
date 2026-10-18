@@ -187,7 +187,7 @@ describe('the compensation the list is handed', () => {
 
     // The queue pulls the words into the card. The ROW stays the same element
     // - removed, the list splices its measured size away and the drain's
-    // re-add draws it at the estimate for one frame.
+    // re-add draws it on the estimate's offset for one frame.
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
     await frame();
     const after = [...document.querySelectorAll('.turn .turn')];
@@ -401,8 +401,9 @@ describe('the page a walk requests', () => {
     expect(lastAsk?.before, 'the walk asked above').toBe('2');
     expect(lastAsk?.turns, 'the walk keeps the protocol page, not the measured one').toBe(20);
 
-    // A walk's ask is a flight like any other, so the line says so; the page
-    // that ends the history settles it.
+    // The walk's FIRST ask is the column's own, so it arms the line; the
+    // pages the walk asks on from there are the conversation's, which arm
+    // nothing, and the page that ends the history settles the line.
     expect(
       document.querySelector('.older-loading'),
       'the walk asks through the same flight',
@@ -505,7 +506,7 @@ describe('a row the list has not measured', () => {
     expect(row, 'the page drew a row').not.toBeNull();
     // virtua sets `visibility: hidden` on a row it has not measured; the
     // column's own item attribute rides after it, which is what paints the
-    // row at the estimate instead (#2398).
+    // row at its natural height on the estimate's offset instead (#2398).
     expect(row?.style.visibility, 'the unmeasured row is painted').toBe('visible');
   });
 });

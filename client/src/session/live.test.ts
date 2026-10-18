@@ -479,28 +479,30 @@ describe('the session page over a socket', () => {
     // The open's own refreshes can still be in flight when the page first
     // draws, and an ask already out swallows this one, so the reader pulls
     // until the ask gets out.
-    const pulled = Date.now() + WAIT_MS;
-    while (Date.now() < pulled && box?.querySelector('.older-loading') === null) {
+    await until(() => {
+      if (box?.querySelector('.older-loading') !== null) return true;
       list()?.scrolledTo(0, 500, 320);
       flushSync();
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+      return false;
+    }, "the reader's older ask to go out");
+    expect(
+      server.heldCount(),
+      "no older ask went: the reader's pull never reached the server",
+    ).toBe(1);
     expect(
       box?.querySelector('.older-loading'),
-      'the loading line is outside the conversation box',
+      'the ask is out and the loading line did not draw inside the conversation box',
     ).not.toBeNull();
     expect(
       box?.querySelector('.follow'),
-      'the way back is outside the conversation box',
+      'the way back did not draw inside the conversation box',
     ).not.toBeNull();
 
     server.answerHeld();
-    const deadline = Date.now() + WAIT_MS;
-    while (Date.now() < deadline && document.querySelector('.older-loading') !== null) {
-      flushSync();
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    expect(document.querySelector('.older-loading'), 'the page settled it').toBeNull();
+    await until(
+      () => document.querySelector('.older-loading') === null,
+      'the held page to settle the loading line',
+    );
   });
 
   /**
