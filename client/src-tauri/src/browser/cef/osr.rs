@@ -406,4 +406,34 @@ mod tests {
         assert_eq!(header.paints.load(Ordering::Relaxed), 1, "a mismatched frame is not written");
         Ring::unlink(name);
     }
+
+    /// **A dirty-rect write lands exactly what a whole-frame write would.**
+    /// CEF sends only the changed rectangle on most paints; a single stale
+    /// pixel outside it is the kind of drift a full-frame test cannot see.
+    #[test]
+    fn a_dirty_rect_write_matches_the_whole_frame() {
+        let name = "/forge-cef-test-dirty";
+        let ring = Ring::create(name, 6, 4).expect("a test ring");
+        let first: Vec<u8> = (0..6 * 4 * 4).map(|at| at as u8).collect();
+        // SAFETY: both buffers are full 6x4 BGRA frames.
+        unsafe { ring.write_frame(None, first.as_ptr(), 6, 4) };
+        // CEF hands the whole view buffer with the changed rectangle marked;
+        // only the marked pixels differ.
+        let mut second = first.clone();
+        for row in 1..3 {
+            for column in 2..5 {
+                for channel in 0..4 {
+                    let at = (row * 6 + column) * 4 + channel;
+                    second[at] = second[at].wrapping_add(7);
+                }
+            }
+        }
+        let dirty = [Rect { x: 2, y: 1, width: 3, height: 2 }];
+        // SAFETY: as above; the dirty rect covers the only changed pixels.
+        unsafe { ring.write_frame(Some(&dirty), second.as_ptr(), 6, 4) };
+        // SAFETY: the ring holds the 6x4 pixels the header names.
+        let written = unsafe { std::slice::from_raw_parts(ring.pixels(), second.len()) };
+        assert_eq!(written, &second[..], "the dirty rect is the whole difference");
+        Ring::unlink(name);
+    }
 }

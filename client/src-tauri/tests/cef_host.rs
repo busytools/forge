@@ -113,6 +113,108 @@ async fn a_spawned_host_is_ended_by_its_pid() {
     assert!(!spawn::running(pid), "the end takes the process down");
 }
 
+/// **A live record is adopted, not replaced.** The endpoint answers and the
+/// ring maps, so the client takes the host the record names as its own: no
+/// second host on the profile, and the pid it answers with is the recorded
+/// one.
+#[tokio::test]
+async fn a_live_record_is_adopted() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = paths(dir.path());
+    let host = BrowserHost::new(paths.clone());
+    let cache = paths.cef_shared();
+    std::fs::create_dir_all(&cache).expect("the cache root");
+
+    let stub = dir.path().join("stub-host.sh");
+    std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").expect("the stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("the stub is executable");
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = listener.local_addr().expect("the address").port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else { continue };
+            let mut buffer = [0_u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+            let body = "{\"Browser\":\"Chrome/154.0\"}";
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(answer.as_bytes()).await;
+        }
+    });
+    let ring_name = "/forge-cef-adopt-test";
+    let ring = osr::Ring::create(ring_name, 64, 64).expect("a ring");
+    std::mem::forget(ring);
+    let pid = spawn::spawn_with(&stub, &cache, port, ring_name, 800, 600).expect("the stub");
+    spawn::write_record(&cache, &spawn::Record { pid, port, ring: ring_name.to_owned() })
+        .expect("the record");
+
+    let adopted = host.start().await.expect("the live record is adopted");
+    assert_eq!(adopted.pid, pid, "the recorded pid is the host");
+    assert_eq!(adopted.port, port, "on the recorded port");
+    spawn::end(pid).await;
+    spawn::remove_record(&cache);
+    osr::Ring::unlink(ring_name);
+}
+
+/// **A record whose host still answers is ended, not left running.** The
+/// owning client is gone (the claim is free), so this client's sweep ends the
+/// recorded host - a pid it spawned in this test, so the kill is its own.
+#[tokio::test]
+async fn the_boot_sweep_ends_a_recorded_host_that_still_answers() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = paths(dir.path());
+    let host = BrowserHost::new(paths.clone());
+    let cache = paths.cef_shared();
+    std::fs::create_dir_all(&cache).expect("the cache root");
+
+    let stub = dir.path().join("stub-host.sh");
+    std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").expect("the stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("the stub is executable");
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = listener.local_addr().expect("the address").port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else { continue };
+            let mut buffer = [0_u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+            let body = "{\"Browser\":\"Chrome/154.0\"}";
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(answer.as_bytes()).await;
+        }
+    });
+    let pid = spawn::spawn_with(&stub, &cache, port, "/forge-cef-sweep-test", 800, 600)
+        .expect("the stub");
+    spawn::write_record(
+        &cache,
+        &spawn::Record { pid, port, ring: "/forge-cef-sweep-test".to_owned() },
+    )
+    .expect("the record");
+
+    let reaped = host.reap_orphans().await;
+    assert!(reaped.iter().any(|name| name == "cef-profile"), "the root is named: {reaped:?}");
+    assert!(!spawn::running(pid), "the recorded host is ended");
+    assert_eq!(spawn::read_record(&cache), None, "and its record goes");
+}
+
 /// **Another live client's browser is not this sweep's.** A cache root whose
 /// claim is held - by a client still running, here this test - keeps its host
 /// and its record: the exit reap and the boot sweep both read the claim, and

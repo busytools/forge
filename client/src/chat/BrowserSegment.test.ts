@@ -260,13 +260,17 @@ describe('the browser segment', () => {
   });
 
   it("keeps the panel and says the shell's own reason when the window cannot open", async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce('no browser to drive: install Brave');
+    vi.mocked(showBrowser).mockResolvedValueOnce(
+      'the client is missing its Chromium framework - reinstall forge',
+    );
     const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     click(list(shown.target)?.querySelector('.bz-show'));
 
     await vi.waitFor(() => {
-      expect(shownText(shown.target)).toContain('no browser to drive: install Brave');
+      expect(shownText(shown.target)).toContain(
+        'the client is missing its Chromium framework - reinstall forge',
+      );
     });
     expect(list(shown.target), 'the row stays for a door that failed').not.toBeNull();
     shown.stop();

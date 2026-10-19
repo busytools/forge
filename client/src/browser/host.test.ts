@@ -206,7 +206,7 @@ describe('the shell command names', () => {
         return () => undefined;
       },
     } as unknown as Connection;
-    invoke.mockRejectedValueOnce('no browser to drive: install Brave or Google Chrome');
+    invoke.mockRejectedValueOnce('the client is missing its Chromium framework - reinstall forge');
     hostTheBrowser(connection);
 
     const ask: BrowserAsk = {
@@ -218,7 +218,7 @@ describe('the shell command names', () => {
     const answer = await asked(ask);
 
     expect(answer, 'the reason is the answer, not a throw').toEqual({
-      error: 'no browser to drive: install Brave or Google Chrome',
+      error: 'the client is missing its Chromium framework - reinstall forge',
     });
   });
 

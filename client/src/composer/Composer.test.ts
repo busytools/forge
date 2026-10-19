@@ -5659,11 +5659,11 @@ describe('the dock', () => {
   it("says the raise failed in the shell's own words", async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
     vi.mocked(showBrowser).mockResolvedValueOnce(
-      'no browser to drive: this client drives the browser already on the machine - install Brave or Google Chrome',
+      'the client is missing its Chromium framework - reinstall forge',
     );
 
     action('Open browser').click();
-    await vi.waitFor(() => expect(drawn()).toContain('install Brave or Google Chrome'));
+    await vi.waitFor(() => expect(drawn()).toContain('reinstall forge'));
 
     expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
   });
