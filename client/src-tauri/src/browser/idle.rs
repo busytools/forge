@@ -16,9 +16,9 @@
 //! **The two numbers are `[client]` keys** (`browser_idle_minutes`,
 //! `browser_grace_minutes`), read off the greeting this client was sent;
 //! absent means the built-in pair below. A close ends the host, not the page:
-//! the next call brings the browser back on the page the last raise carried,
-//! so a session finds what it prepared where it left it - the trade the
-//! warning's own words name.
+//! the next call brings the browser back on the page last shown, so a session
+//! finds what it prepared where it left it - the trade the warning's own
+//! words name.
 
 use std::path::PathBuf;
 use std::sync::Arc;
