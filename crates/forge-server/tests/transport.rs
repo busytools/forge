@@ -3957,6 +3957,55 @@ async fn an_answer_through_a_reseed_carries_the_copys_own_number() {
     );
 }
 
+/// **A replay's answer carries the number its window reaches** (#2443).
+///
+/// The replay route reseeds with the seat's own frames, so the copy is current
+/// through the replay's number. An answer that did not take it would carry the
+/// new window's first number instead, and the client would draw frames the copy
+/// already holds. A seal's reset covers the Fresh route; this pins the other.
+#[tokio::test]
+async fn a_replay_answers_with_the_number_its_window_reaches() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+
+    fleet.emit(SessionUpdate::HistoryReplayed {
+        key: seat.clone(),
+        history: vec![a_said_frame("the replayed row")],
+        compaction_count: 0,
+    });
+    let settled = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
+    assert!(
+        state.conversations.await_consumed(&seat, settled, SEED_WAIT).await,
+        "the replay never reached the copy: the watermark is {}",
+        state.conversations.consumed_for(&seat),
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+
+    assert_eq!(
+        data["header"]["seq"].as_u64(),
+        Some(2),
+        "the answer's number follows the replay's own, which its window covers: {data}",
+    );
+    assert_eq!(
+        says_times(&data, "the replayed row"),
+        1,
+        "and the replay's rows are what it carries: {data}",
+    );
+}
+
 /// **A seal the fold has not applied must not be answered with the previous
 /// run's transcript copy** (#2256).
 ///
