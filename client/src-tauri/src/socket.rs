@@ -90,6 +90,10 @@ struct Held {
     answering: bool,
     browser: bool,
     count: usize,
+    /// Set by an unsubscribe that leaves the entry standing: a subscribe
+    /// that follows is a refresh (`records::refresh`), and its ask
+    /// supersedes the subject's outstanding asks rather than adding to them.
+    given_back: bool,
 }
 
 impl Held {
@@ -122,8 +126,16 @@ fn hold(held: &mut Vec<Held>, what: Value, answering: bool, browser: bool) -> Op
             h.answering |= answering;
             h.browser |= browser;
             h.count += 1;
+            h.given_back = false;
         }
-        None => held.push(Held { key: key.clone(), what, answering, browser, count: 1 }),
+        None => held.push(Held {
+            key: key.clone(),
+            what,
+            answering,
+            browser,
+            count: 1,
+            given_back: false,
+        }),
     }
     Some(key)
 }
@@ -135,6 +147,7 @@ fn unhold(held: &mut Vec<Held>, awaiting: &mut Vec<String>, what: &Value) {
     let gone = match held.iter_mut().find(|h| h.key == key) {
         Some(h) => {
             h.count = h.count.saturating_sub(1);
+            h.given_back = true;
             h.count == 0
         }
         None => true,
@@ -472,7 +485,7 @@ async fn run(
         // **The declaration is re-asked, once per OPEN subscription** - the
         // server counts, so a subject two callers hold is asked for twice -
         // with the flags it carried: this is how the role survives a drop.
-        for h in &held {
+        for h in &mut held {
             for _ in 0..h.count {
                 if writer.send(h.subscribe_frame()).await.is_err() {
                     break;
@@ -483,6 +496,9 @@ async fn run(
                 // `askFor` and `answered` are the pair being mirrored).
                 awaiting.push(h.key.clone());
             }
+            // The re-asks are the wire's count now, so no half refresh
+            // survives the drop.
+            h.given_back = false;
         }
         let mut pending: HashMap<u64, oneshot::Sender<Result<Value, String>>> = HashMap::new();
         let mut closing = false;
@@ -512,7 +528,17 @@ async fn run(
                             break;
                         }
                         Outbound::Subscribe { what, answering, browser } => {
+                            // A subscribe that follows a given-back one is
+                            // the refresh pair, which the server counts
+                            // evenly - so the subject's outstanding asks are
+                            // superseded rather than added to.
+                            let key = subject_key(&what);
+                            let refreshing =
+                                held.iter().any(|h| h.key == key && h.given_back);
                             if let Some(key) = hold(&mut held, what, answering, browser) {
+                                if refreshing {
+                                    awaiting.retain(|k| k != &key);
+                                }
                                 if let Some(h) = held.iter().find(|h| h.key == key) {
                                     let _ = writer.send(h.subscribe_frame()).await;
                                 }
@@ -1273,5 +1299,72 @@ pub(crate) mod tests {
         let seen = event_of(&mut rx, "message").await;
         let SocketEvent::Message(message) = seen else { unreachable!("filtered") };
         assert_eq!(message["what"], "subscribe", "nothing outstanding reads as a plain frame");
+    }
+
+    /// **A refresh re-asks the same subscription, so the bookkeeping is
+    /// net-zero.** The pair leaves a subject two callers hold with the asks
+    /// it already had; adding a third puts a spent key in front of a live
+    /// one, and a later refusal - which takes the oldest key - is handed to
+    /// that subject instead of the subscription the server refused (the
+    /// same FIFO desync `socket.ts`'s `forget` fixes on the web side).
+    #[tokio::test]
+    async fn a_refresh_supersedes_a_two_caller_subjects_asks() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true, false);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
+
+        // The pair `records::refresh` sends.
+        socket.unsubscribe(json!("home"));
+        socket.subscribe(json!("home"), true, false);
+        let _ = stub.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
+
+        // The re-ask is answered.
+        stub.say
+            .send(json!({ "kind": "snapshot", "subject": "home", "data": {} }))
+            .expect("the answer");
+        let _ = event_of(&mut rx, "message").await;
+
+        // A newer ask is refused: it must land on ITS subject, not on the
+        // one the refresh superseded.
+        socket.subscribe(json!("usage"), true, false);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("usage")).await;
+        stub.say
+            .send(json!({ "kind": "error", "what": "subscribe", "why": "no" }))
+            .expect("the refusal");
+        let refused = event_of(&mut rx, "refused").await;
+        let SocketEvent::Refused { key, .. } = refused else { unreachable!("filtered") };
+        assert_eq!(
+            key, "usage",
+            "the refusal lands on the subscription the server refused, not the spent one"
+        );
+    }
+
+    /// One caller giving a subject back is not a refresh: the survivor's ask
+    /// is still owed, and the next refusal must still find it.
+    #[tokio::test]
+    async fn one_caller_leaving_keeps_the_survivors_ask() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true, false);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
+
+        // One caller leaves; the other still holds the subject.
+        socket.unsubscribe(json!("home"));
+        let _ = stub.heard_until(|v| v["kind"] == "unsubscribe").await;
+
+        socket.subscribe(json!("usage"), true, false);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("usage")).await;
+        stub.say
+            .send(json!({ "kind": "error", "what": "subscribe", "why": "no" }))
+            .expect("the refusal");
+        let refused = event_of(&mut rx, "refused").await;
+        let SocketEvent::Refused { key, .. } = refused else { unreachable!("filtered") };
+        assert_eq!(key, "home", "the surviving caller's ask is still outstanding");
     }
 }
