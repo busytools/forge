@@ -41,3 +41,26 @@ cef::wrap_dialog_handler! {
 pub fn handler() -> DialogHandler {
     FileDialogHandler::new()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The host never shows a dialog of its own.** A click on a file input
+    /// is answered by the client's panel; this handler must refuse CEF's, or
+    /// a person gets two pickers and a frozen pump behind the host's.
+    #[test]
+    fn the_host_refuses_a_file_dialog() {
+        let answer = handler().on_file_dialog(
+            None,
+            FileDialogMode::OPEN,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(answer, 1, "CEF's own dialog is blocked");
+    }
+}
