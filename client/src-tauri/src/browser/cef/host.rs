@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use cef::*;
@@ -57,10 +57,31 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Option<Args> {
     Some(Args { profile: profile?, port: port?, ring: ring?, width: size.0, height: size.1 })
 }
 
+/// Set by SIGTERM/SIGINT, read by the pump loop.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn stop_on_signal(_signal: i32) {
+    STOP.store(true, Ordering::Release);
+}
+
+/// **A kill is a shutdown, not a stop.** The client ends a host with a
+/// signal; without a handler that is an immediate death, and Chromium's
+/// cookie and storage writes since its last flush (up to half a minute) go
+/// with it. The handler only raises a flag; the loop closes the browser and
+/// calls CEF's own shutdown.
+fn stop_on_termination() {
+    // SAFETY: the handler stores an atomic and does nothing else.
+    unsafe {
+        libc::signal(libc::SIGTERM, stop_on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, stop_on_signal as *const () as libc::sighandler_t);
+    }
+}
+
 /// The host process's whole life.
 pub fn run(args: Args) -> ! {
     // AppKit's application object, before CEF initializes.
     super::client_application::setup();
+    stop_on_termination();
 
     // **A background app is napped.** A host with no window of its own reads
     // as an idle app to macOS; the activity keeps its pump and frames out of
@@ -91,11 +112,15 @@ pub fn run(args: Args) -> ! {
         external_begin_frame_enabled: 1,
         ..Default::default()
     };
+    // **Opaque, unlike CEF's default.** A page with no background rule is
+    // transparent, and the takeover's dark ground shows through it as a
+    // blank surface; the app's own background is what the browser fills.
+    let browser_settings = BrowserSettings { background_color: 0xFF04_050A, ..Default::default() };
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
         Some(&mut client),
         Some(&CefString::from("about:blank")),
-        Some(&BrowserSettings::default()),
+        Some(&browser_settings),
         None,
         None,
     );
@@ -110,8 +135,12 @@ pub fn run(args: Args) -> ! {
     }
     ring.set_state(STATE_LIVE);
     ring.set_visible(true, true);
-    tauri_plugin_log::log::info!(
-        "a CEF host is live (event_name cef_host_live, pid {}, profile {}, port {}, ring {})",
+    // **stderr, which the client redirects into this profile's
+    // `cef-host.log`.** The tracing logger is initialized by the client's
+    // Tauri builder, and the host exits before it; a log call here goes
+    // nowhere, so the host speaks on the stream the launcher captures.
+    eprintln!(
+        "cef host: live (pid {}, profile {}, port {}, ring {})",
         std::process::id(),
         args.profile.display(),
         args.port,
@@ -122,6 +151,9 @@ pub fn run(args: Args) -> ! {
     // SAFETY: the header is mapped for this process's whole life.
     let mut last_request = unsafe { (*ring.header()).request_seq.load(Ordering::Acquire) };
     loop {
+        if STOP.load(Ordering::Acquire) {
+            break;
+        }
         let header = ring.header();
         // SAFETY: the header is mapped for this process's whole life.
         let header_ref = unsafe { &*header };
@@ -156,6 +188,18 @@ pub fn run(args: Args) -> ! {
         pump();
         std::thread::sleep(Duration::from_millis(1));
     }
+    // **The profile's own writes go before the process does.** Closing the
+    // browser lets CEF's store flush; the bounded pump is what carries the
+    // close through the same message loop that painted it.
+    if let Some(host) = browser.host() {
+        host.close_browser(1);
+    }
+    for _ in 0..100 {
+        pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    shutdown();
+    std::process::exit(0);
 }
 
 fn fail(why: &str) -> ! {
@@ -206,7 +250,47 @@ cef::wrap_life_span_handler! {
             // only on the host's own terms.
             0
         }
+
+        /// **One target, always.** A `target=_blank` (or `window.open`) would
+        /// create a second page target on this host's endpoint: invisible,
+        /// unclosable, and a coin flip for which one input binds to. The
+        /// popup is refused, and a web address it asked for is loaded in this
+        /// same browser instead - the page the person clicked for, in the
+        /// surface they are looking at.
+        fn on_before_popup(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _popup_id: i32,
+            target_url: Option<&CefString>,
+            _target_frame_name: Option<&CefString>,
+            _target_disposition: WindowOpenDisposition,
+            _user_gesture: i32,
+            _popup_features: Option<&PopupFeatures>,
+            _window_info: Option<&mut WindowInfo>,
+            _client: Option<&mut Option<Client>>,
+            _settings: Option<&mut BrowserSettings>,
+            _extra_info: Option<&mut Option<DictionaryValue>>,
+            _no_javascript_access: Option<&mut i32>,
+        ) -> i32 {
+            let url = target_url.map(ToString::to_string).unwrap_or_default();
+            if let Some(url) = popup_redirect(&url)
+                && let Some(frame) = browser.and_then(|browser| browser.main_frame())
+            {
+                frame.load_url(Some(&CefString::from(url)));
+            }
+            1
+        }
     }
+}
+
+/// The address a popup asked for, when the same browser should load it.
+///
+/// **Anything but a web page is blocked outright**: `about:blank` and a
+/// `javascript:` popup have no page of their own to show, and loading one
+/// into the surface would replace the page the person is on.
+fn popup_redirect(url: &str) -> Option<&str> {
+    (url.starts_with("http://") || url.starts_with("https://")).then_some(url)
 }
 
 cef::wrap_client! {
@@ -230,5 +314,23 @@ cef::wrap_client! {
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
             Some(HostLifeSpanHandler::new())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::popup_redirect;
+
+    /// **A popup never becomes a second target, but a web page it asked for
+    /// still opens.** The first is what keeps one page per host - and input
+    /// bound to the page the person sees; the second is what a job site's
+    /// "open in a new tab" link means.
+    #[test]
+    fn a_web_popup_loads_here_and_anything_else_is_blocked() {
+        assert_eq!(popup_redirect("https://example.com/job"), Some("https://example.com/job"));
+        assert_eq!(popup_redirect("http://example.com/"), Some("http://example.com/"));
+        assert_eq!(popup_redirect("about:blank"), None);
+        assert_eq!(popup_redirect("javascript:window.close()"), None);
+        assert_eq!(popup_redirect(""), None);
     }
 }

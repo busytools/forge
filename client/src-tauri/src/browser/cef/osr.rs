@@ -108,9 +108,7 @@ impl Ring {
             }
             if existed {
                 // A segment left by a dead host: replaced, not reused.
-                tauri_plugin_log::log::info!(
-                    "replaced a stale frame ring (event_name cef_ring_replaced, ring {name})"
-                );
+                eprintln!("cef host: replaced a stale frame ring ({name})");
             }
             let ring = Ring { name: name.to_owned(), ptr: ptr.cast(), len };
             let header = ring.header();
@@ -358,14 +356,19 @@ cef::wrap_render_handler! {
             if type_ != PaintElementType::VIEW {
                 return;
             }
+            let width = width.max(0) as u32;
+            let height = height.max(0) as u32;
+            // **The delivered size is the view's size.** The DIP round trip
+            // through `view_rect` and `screen_info` can land a pixel off the
+            // request, and a frame painted at a different size than the
+            // header names used to be dropped for ever. The host adopts what
+            // CEF actually painted, so the ring always describes its frame.
+            let header = unsafe { &*self.ring.header() };
+            header.width.store(width, Ordering::Relaxed);
+            header.height.store(height, Ordering::Relaxed);
             // SAFETY: CEF hands a BGRA frame of exactly this size.
             unsafe {
-                self.ring.write_frame(
-                    dirty_rects,
-                    buffer,
-                    width.max(0) as u32,
-                    height.max(0) as u32,
-                );
+                self.ring.write_frame(dirty_rects, buffer, width, height);
             }
         }
     }
@@ -374,4 +377,33 @@ cef::wrap_render_handler! {
 /// The render handler: the view's size and the paint destination.
 pub fn handler(ring: Arc<Ring>) -> RenderHandler {
     OsrRenderHandler::new(ring)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The frame is the bytes and the counter is a seqlock.** A reader
+    /// takes an even counter and the pixels behind it; a frame of another
+    /// size must not be written into a rectangle the header does not name,
+    /// which is the dropped-paint defect the adoption in `on_paint` fixes.
+    #[test]
+    fn a_frame_is_written_whole_and_never_at_another_size() {
+        let name = "/forge-cef-test-frame";
+        let ring = Ring::create(name, 4, 4).expect("a test ring");
+        let pixels: Vec<u8> = (0..4 * 4 * 4).map(|at| at as u8).collect();
+        // SAFETY: the buffer is a 4x4 BGRA frame.
+        unsafe { ring.write_frame(None, pixels.as_ptr(), 4, 4) };
+        let header = unsafe { &*ring.header() };
+        assert_eq!(header.frame.load(Ordering::Acquire), 2, "one write opens and closes the lock");
+        assert_eq!(header.paints.load(Ordering::Relaxed), 1, "one paint is counted");
+        // SAFETY: the ring holds the 4x4 pixels the header names.
+        let written = unsafe { std::slice::from_raw_parts(ring.pixels(), pixels.len()) };
+        assert_eq!(written, &pixels[..], "the frame's bytes are the ring's");
+
+        // SAFETY: as above; this frame is the wrong size for the header.
+        unsafe { ring.write_frame(None, pixels.as_ptr(), 3, 4) };
+        assert_eq!(header.paints.load(Ordering::Relaxed), 1, "a mismatched frame is not written");
+        Ring::unlink(name);
+    }
 }

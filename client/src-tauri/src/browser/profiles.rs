@@ -527,6 +527,13 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
                     | "host.json"
                     | "owner.json"
                     | "cef"
+                    // **Caches, not profile.** They are the other engine's
+                    // HTTP and code caches: huge, rebuilt on first use, and
+                    // meaningless to the engine reading the copy.
+                    | "Cache"
+                    | "Code Cache"
+                    | "GPUCache"
+                    | "DawnCache"
             )
         ) {
             continue;

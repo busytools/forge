@@ -78,10 +78,18 @@ pub fn framework_path(exe: &std::path::Path, helper: bool) -> Option<std::path::
 }
 
 /// Whether this bundle carries the framework, so a host can be spawned.
+///
+/// **Only a bundled executable is checked.** A `cargo` test or dev binary
+/// lives outside `Contents/MacOS`, where the framework has no position to be
+/// found at; its launch fails with the host's own words instead, and the
+/// check that matters - a shipped app missing its engine - stays exact.
 pub fn available() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
+    if !exe.to_string_lossy().contains(".app/Contents/MacOS/") {
+        return true;
+    }
     framework_path(&exe, false).is_some_and(|path| path.is_file())
 }
 
@@ -129,6 +137,12 @@ pub fn initialize(profile: &std::path::Path, port: u16, app: &mut App, args: &ar
         no_sandbox: 1,
         external_message_pump: 1,
         windowless_rendering_enabled: 1,
+        // **Both paths, to the profile itself.** `cache_path` is the one that
+        // makes the profile persistent (cookies, storage, logins); alone,
+        // `root_cache_path` only names the shared parent and CEF runs the
+        // profile incognito. The Brave migration's copied `Default` is read
+        // from here.
+        cache_path: CefString::from(profile.to_string_lossy().as_ref()),
         root_cache_path: CefString::from(profile.to_string_lossy().as_ref()),
         remote_debugging_port: i32::from(port),
         ..Default::default()

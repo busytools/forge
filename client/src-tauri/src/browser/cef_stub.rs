@@ -9,6 +9,11 @@
 /// The one sentence a browser door answers on these platforms.
 pub const REFUSAL: &str = "the embedded browser is packaged for macOS; this client cannot open it";
 
+/// No framework is packaged on these platforms.
+pub fn available() -> bool {
+    false
+}
+
 /// The frame ring: no host ever writes one here, so the type exists only to
 /// keep the client's own host bookkeeping compiling.
 #[derive(Clone, Copy, Debug)]
@@ -129,6 +134,12 @@ pub mod spawn {
     pub async fn wait_ready_within(_port: u16, _bound: Duration) -> Result<(), String> {
         Err(REFUSAL.to_owned())
     }
+
+    pub async fn wait_ready_for(_pid: u32, _port: u16, _profile: &Path) -> Result<(), String> {
+        Err(REFUSAL.to_owned())
+    }
+
+    pub async fn end_verified(_pid: u32, _port: u16) {}
 
     pub async fn probe(_port: u16) -> bool {
         false

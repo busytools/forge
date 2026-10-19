@@ -18,6 +18,25 @@ pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// How often the wait asks the endpoint.
 const PROBE_EVERY: Duration = Duration::from_millis(50);
 
+/// The children this client spawned, so a launch failure is read from the
+/// child's own exit rather than a blind timeout, and a pid another process
+/// has since reused is never signalled.
+fn children() -> &'static std::sync::Mutex<std::collections::HashMap<u32, std::process::Child>> {
+    static CHILDREN: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<u32, std::process::Child>>,
+    > = std::sync::OnceLock::new();
+    CHILDREN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn locked() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, std::process::Child>> {
+    children().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Whether `pid` is a child this client spawned and that has not exited.
+fn is_ours(pid: u32) -> bool {
+    locked().contains_key(&pid)
+}
+
 /// A running host, as the client keeps it.
 pub struct ActiveHost {
     pub pid: u32,
@@ -144,13 +163,72 @@ pub fn spawn_with(
         }
     }
     let child = command.spawn().map_err(|why| format!("the host did not start: {why}"))?;
-    Ok(child.id())
+    let pid = child.id();
+    locked().insert(pid, child);
+    Ok(pid)
 }
 
 /// Wait, bounded, for a host's endpoint to answer. A process that exits
 /// without ever answering is reported by the caller's own look at the child.
 pub async fn wait_ready(port: u16) -> Result<(), String> {
     wait_ready_within(port, LAUNCH_TIMEOUT).await
+}
+
+/// Wait for a host this client spawned, failing as soon as the child exits
+/// rather than after the blind timeout: the reason is the host log's own
+/// last words, which is what a refused launch is diagnosable by.
+pub async fn wait_ready_for(pid: u32, port: u16, profile: &Path) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
+    loop {
+        if probe(port).await {
+            return Ok(());
+        }
+        if !alive(pid) {
+            let tail = log_tail(profile);
+            return Err(if tail.is_empty() {
+                "the browser host exited before its endpoint answered".to_owned()
+            } else {
+                format!("the browser host exited before its endpoint answered: {tail}")
+            });
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "the browser host on port {port} did not answer within {} s",
+                LAUNCH_TIMEOUT.as_secs()
+            ));
+        }
+        tokio::time::sleep(PROBE_EVERY).await;
+    }
+}
+
+/// The host log's last few lines, for a launch that failed.
+fn log_tail(profile: &Path) -> String {
+    let Ok(body) = std::fs::read_to_string(profile.join("cef-host.log")) else {
+        return String::new();
+    };
+    let lines: Vec<&str> = body.lines().filter(|line| !line.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(4)..].join(" | ")
+}
+
+/// Whether a pid names a process this client started that is still running.
+/// A child that exited is reaped here, so a zombie never reads as alive.
+pub fn alive(pid: u32) -> bool {
+    let mut held = locked();
+    let waited = match held.get_mut(&pid) {
+        Some(child) => child.try_wait(),
+        None => return running(pid),
+    };
+    match waited {
+        Ok(Some(_)) => {
+            held.remove(&pid);
+            false
+        }
+        Ok(None) => true,
+        Err(_) => {
+            held.remove(&pid);
+            running(pid)
+        }
+    }
 }
 
 pub async fn wait_ready_within(port: u16, bound: Duration) -> Result<(), String> {
@@ -200,11 +278,26 @@ pub async fn probe(port: u16) -> bool {
         .is_some_and(|answer| answer.contains("\"Browser\""))
 }
 
+/// End a host this client spawned, or one still answering on `port`.
+///
+/// **A recorded pid is only a number**: another process may have been given
+/// it since. The signal goes only when the endpoint still answers as a
+/// browser host, or when the pid is one of this client's own children.
+pub async fn end_verified(pid: u32, port: u16) {
+    if !is_ours(pid) && !probe(port).await {
+        return;
+    }
+    end(pid).await;
+}
+
 /// End a host: ask it to go, then insist.
 pub async fn end(pid: u32) {
+    if !is_ours(pid) && !running(pid) {
+        return;
+    }
     signal(pid, libc::SIGTERM);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    while running(pid) {
+    while alive(pid) {
         if tokio::time::Instant::now() >= deadline {
             signal(pid, libc::SIGKILL);
             break;
@@ -214,15 +307,10 @@ pub async fn end(pid: u32) {
     // **Reap what this client spawned.** A killed child stays a zombie, and a
     // zombie answers `kill(pid, 0)` exactly like a live process; the wait is
     // what turns "ended" into a pid nobody can mistake for running. A pid
-    // that is not this client's child answers ECHILD and is left alone.
-    let until = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        // SAFETY: WNOHANG waitpid on a pid this client may own.
-        let reaped = unsafe { libc::waitpid(pid as i32, std::ptr::null_mut(), libc::WNOHANG) };
-        if reaped == pid as i32 || !running(pid) || tokio::time::Instant::now() >= until {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
+    // that is not this client's child has no handle here and is left to its
+    // own parent.
+    if let Some(mut child) = locked().remove(&pid) {
+        let _ = child.wait();
     }
 }
 
@@ -284,4 +372,23 @@ fn whole_body_len(answer: &[u8]) -> Option<usize> {
         name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok())?
     })?;
     Some(at + 4 + length)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **A recycled pid is never signalled.** This test's own pid stands in
+    /// for a record whose process has since been reused: no endpoint answers
+    /// on the port, so `end_verified` must leave it alone. The regression is
+    /// fatal to the test run, which is the point - the caller would have
+    /// killed an unrelated process.
+    #[tokio::test]
+    async fn a_pid_is_not_signalled_when_its_endpoint_is_silent() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a free port");
+        let port = listener.local_addr().expect("the bound address").port();
+        drop(listener);
+        end_verified(std::process::id(), port).await;
+        assert!(alive(std::process::id()), "the unrelated process is still running");
+    }
 }
