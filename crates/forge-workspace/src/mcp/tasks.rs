@@ -544,7 +544,9 @@ impl Tool for Delete {
          (a verify=user row parks in waiting on the user first). Nothing \
          is archived. A row waiting on the user is not a delete's to \
          take - the board's answer or approve settles it, and deleting it (or a tree holding \
-         it) is refused rather than taken as a way around the ask. \
+         it) is refused rather than taken as a way around the ask. A dependency wait is not \
+         such an ask: the row waits on the task it names, not on the user, even when the epic \
+         is `verify: user`. \
          An ask that has gone moot is withdrawn, not removed: `tasks__update` cancels it with \
          the reason it goes away, and the row records why. The task is named by its \
          full id or any unique \
@@ -679,7 +681,11 @@ impl Tool for Wait {
     fn description(&self) -> &'static str {
         "Put one of YOUR rows into waiting and state what it waits on. `kind` is decision \
          (which routes to the user), dependency (another task: put its id in `on`), or resource \
-         (an account, a CI run, a machine). Route a decision to the user only when the user \
+         (an account, a CI run, a machine). A dependency wait is on the task it names, not on \
+         the user. A blocker parked on the user's look has not ended, so the chain keeps \
+         waiting until the user approves it. The waiting row is not itself waiting on the \
+         user: an epic's `verify: user` gates a row's own completion, not its dependency \
+         wait, so the row stays movable and deletable. Route a decision to the user only when the user \
          explicitly asked for a hold, or something is still genuinely ambiguous after the \
          decision model, peer opinions and the team's own review. `detail` is the words. \
          A wait on the user that has gone moot is withdrawn, not stranded: a lead cancels the \
@@ -1245,6 +1251,36 @@ mod tests {
                 "tasks__delete does not state the rule ({clause}): {description}",
             );
         }
+    }
+
+    /// The dependency chain is shipped text (#2415): a dependency wait is
+    /// on the task it names, not on the user, so an epic's `verify: user`
+    /// leaves the waiting row movable and deletable and the chain is
+    /// released by the blocker's end.
+    #[test]
+    fn the_wait_and_delete_descriptions_state_the_dependency_chain() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let wait = Wait { facade: facade.clone(), slot: slot.clone() };
+        let delete = Delete { facade, slot };
+        for clause in [
+            "A dependency wait is on the task it names, not on the user",
+            "A blocker parked on the user's look has not ended, so the chain keeps waiting \
+             until the user approves it",
+            "an epic's `verify: user` gates a row's own completion, not its dependency wait",
+            "the row stays movable and deletable",
+        ] {
+            assert!(
+                wait.description().contains(clause),
+                "tasks__wait does not state the chain ({clause}): {}",
+                wait.description(),
+            );
+        }
+        assert!(
+            delete.description().contains("A dependency wait is not such an ask"),
+            "tasks__delete does not separate a dependency wait from the user's asks: {}",
+            delete.description(),
+        );
     }
 
     /// The withdraw door is shipped text (#2340): each verb that reaches a

@@ -95,6 +95,13 @@ fn parked_on_look(task: &Task) -> bool {
 /// `verification` is checked alongside the kind: today's only setter tags
 /// `decision` too, and the arm keeps a verification park on-user however
 /// it was built.
+///
+/// A dependency or resource wait is not this set's, however the rows
+/// around it are gated: the wait is on the task, not the user, and an
+/// epic's `verify: user` gates a row's own completion rather than its
+/// wait. A target that parks on the look has not ended, so the chain
+/// keeps waiting, but the waiting row stays the caller's to move or
+/// remove (#2415).
 fn parked_on_user(task: &Task) -> bool {
     task.waiting_on
         .as_ref()
@@ -2603,6 +2610,34 @@ mod tests {
             .remove_task_tree("proj", &TaskId::from("t-1"))
             .expect("no look is pending on an unstarted row");
         assert_eq!(removed.len(), 1, "the row went");
+    }
+
+    /// A dependency wait is on the task it names, not on the user: an
+    /// epic's `verify: user` gates the row's own completion, so it does
+    /// not make the waiting child a user ask the delete must refuse
+    /// (#2415).
+    #[test]
+    fn a_dependency_wait_under_a_verify_user_epic_is_deletable() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-dep-under-epic");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
+        ws.push_task(sample_task_with_parent("blocker", Some("epic"), "proj"));
+        ws.push_task(Task {
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: Some("the blocker lands first".to_owned()),
+                on: Some(TaskId::from("blocker")),
+                verification: false,
+            }),
+            ..sample_task_with_parent("t-1", Some("epic"), "proj")
+        });
+
+        let removed = ws
+            .remove_task_tree("proj", &TaskId::from("t-1"))
+            .expect("a dependency wait is not an ask on the user");
+        assert_eq!(subjects(&removed), ["subject t-1".to_owned()], "the waiting row went alone");
     }
 
     /// A parked row in ANOTHER project sharing the named id is not this
