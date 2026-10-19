@@ -2752,6 +2752,14 @@ mod tests {
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
         });
 
+        let rows = ws.tasks_for_project("proj");
+        let index = rows.iter().position(|task| task.id == TaskId::from("t-1")).expect("the row");
+        assert_eq!(
+            effective_verify(&rows, index),
+            Verify::User,
+            "premise: the epic's gate binds the waiting row",
+        );
+
         let removed = ws
             .remove_task_tree("proj", &TaskId::from("t-1"))
             .expect("a dependency wait is not an ask on the user");
