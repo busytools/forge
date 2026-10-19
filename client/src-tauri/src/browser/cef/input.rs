@@ -166,7 +166,9 @@ pub async fn start(port: u16, cancel: Arc<AtomicBool>) -> Result<Sender, String>
             }
             let Some(event) = rx.recv().await else { break };
             let (method, params) = method_and_params(&event);
-            if let Err(why) = cdp.call(method, params, None).await {
+            // **Sent, not awaited**: a round trip per keystroke is lag, and a
+            // drag's moves queue behind one another if each waits its reply.
+            if let Err(why) = cdp.send(method, params).await {
                 tauri_plugin_log::log::info!("an input event did not land: {why}");
             }
         }

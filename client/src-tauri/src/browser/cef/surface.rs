@@ -223,11 +223,23 @@ impl OverlayView {
         }
     }
 
-    fn draw_frame(&self, bytes: &[u8], width: usize, height: usize) {
+    /// Draw the ring's latest frame. **The bytes are the ring's own**: a
+    /// no-copy CFData and CGImage reference the shared mapping, so this side
+    /// copies nothing - a frame at this size is tens of megabytes, and a copy
+    /// per frame at 60 Hz is the difference between a live page and a
+    /// stuttering one.
+    ///
+    /// # Safety
+    ///
+    /// `pixels` points at `width * height * 4` readable bytes that outlive
+    /// the layer's use of them (the host's ring lives for its process).
+    unsafe fn draw_frame(&self, pixels: *const u8, width: usize, height: usize) {
         let Some(layer) = self.layer() else { return };
-        // SAFETY: a CFData copy of the frame, then a CGImage over it.
-        let Some(data) = (unsafe { CFData::new(None, bytes.as_ptr(), bytes.len() as isize) })
-        else {
+        // SAFETY: the ring's pixels outlive this image; the null deallocator
+        // says the bytes are not ours to free.
+        let Some(data) = (unsafe {
+            CFData::with_bytes_no_copy(None, pixels, (width * height * 4) as isize, None)
+        }) else {
             return;
         };
         let Some(provider) = CGDataProvider::with_cf_data(Some(&data)) else { return };
@@ -400,19 +412,7 @@ pub async fn attach(
             if width == 0 || height == 0 {
                 continue;
             }
-            let mut pixels = vec![0_u8; width * height * 4];
-            // SAFETY: the ring's pixels are `width * height * 4` bytes.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    host.ring.pixels(),
-                    pixels.as_mut_ptr(),
-                    pixels.len(),
-                );
-            }
-            if unsafe { (*header).frame.load(Ordering::Acquire) } != frame {
-                continue; // the host painted mid-copy
-            }
-            let draw_app = app.clone();
+            let ring = Arc::clone(&host.ring);
             let _ = app.run_on_main_thread(move || {
                 let slot = OVERLAY.lock().expect("the overlay slot");
                 let Some(overlay) = slot.as_ref() else { return };
@@ -420,11 +420,13 @@ pub async fn attach(
                     return;
                 }
                 // SAFETY: the view lives while this generation is current,
-                // both guarded on the main thread by the same slot.
-                let view = unsafe { &*(overlay.view as *const OverlayView) };
-                view.draw_frame(&pixels, width, height);
+                // both guarded on the main thread by the same slot; the ring
+                // outlives the layer's use of its pixels.
+                unsafe {
+                    let view = &*(overlay.view as *const OverlayView);
+                    view.draw_frame(ring.pixels(), width, height);
+                }
             });
-            let _ = draw_app;
         }
     });
     Ok(())

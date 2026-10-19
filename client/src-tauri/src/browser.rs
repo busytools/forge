@@ -1751,6 +1751,7 @@ pub async fn browser_hide(
 /// windowless surface cannot give, so a page that needs them is handed to a
 /// real browser over the same URL. It is a one-off page: what it holds does
 /// not carry back, and the session's browser keeps its own state.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn browser_open_external(
     host: tauri::State<'_, Arc<BrowserHost>>,
@@ -1763,6 +1764,7 @@ pub async fn browser_open_external(
 /// viewport's top-left, and the device pixel ratio it is drawn at. The
 /// surface is placed and sized from this; it is reported on mount and on
 /// every resize.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn browser_surface_rect(
     host: tauri::State<'_, Arc<BrowserHost>>,

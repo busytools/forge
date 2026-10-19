@@ -18,6 +18,21 @@ pub struct Cdp {
 }
 
 impl Cdp {
+    /// Send one call without waiting for its reply.
+    ///
+    /// **Input is ordered by the socket, not by the replies.** Awaiting each
+    /// event's answer puts a round trip in front of every keystroke and wheel
+    /// tick, which is exactly what a page feels as lag; the reply to an
+    /// `Input.*` call carries nothing a page needs.
+    pub async fn send(&mut self, method: &str, params: Value) -> Result<(), String> {
+        self.next_id += 1;
+        let message = json!({ "id": self.next_id, "method": method, "params": params });
+        self.stream
+            .send(Message::Text(message.to_string().into()))
+            .await
+            .map_err(|why| format!("{method} could not be sent: {why}"))
+    }
+
     /// Connect to the endpoint a host's page target names.
     pub async fn connect(port: u16, path: &str) -> Result<Self, String> {
         let url = format!("ws://127.0.0.1:{port}{path}");
