@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 /**
- * The Files page's own glyph wiring: the tree's root row wears the theme's
- * root folder, keyed off the seat's scanning path rather than the project
- * name, and the tree gets the page's own icon callback. **The seat's read is
- * mocked**, as the review page's test mocks it: what this file is about is
- * what the page hands the tree, not the subscription that carries the
- * record, which `session/live.test.ts` covers over a real socket.
+ * The Files page's own glyph wiring: the root row wears the theme's
+ * root-folder glyph (its path is the lookup key when the manifest names a
+ * root, and 5.39.0's root-name map is empty), a shut folder takes its shut
+ * glyph and an open one its open glyph, and a file row takes its own. **The
+ * seat's read is mocked**, as the review page's test mocks it: what this
+ * file is about is what the page hands the tree, not the subscription that
+ * carries the record, which `session/live.test.ts` covers over a real socket.
  */
 
 import { flushSync, mount, unmount } from 'svelte';
@@ -43,6 +44,7 @@ function record(scanCwd: string): unknown {
     file_index: {
       entries: {
         'src/main.rs': { rel_path: 'src/main.rs', depth: 1 },
+        'crates/forge/lib.rs': { rel_path: 'crates/forge/lib.rs', depth: 2 },
         README: { rel_path: 'README', depth: 0 },
       },
     },
@@ -84,10 +86,22 @@ describe('the files page tree', () => {
       'the theme root folder, keyed off the path',
     ).toMatch(/\/folder-root-open\.svg$/);
 
-    const folder = document.querySelector('[data-path="src"] img.rv-icon');
+    const shut = document.querySelector('[data-path="src"] img.rv-icon');
     expect(
-      (folder?.getAttribute('src') ?? '').split('?')[0],
-      'and a folder row its own glyph',
+      (shut?.getAttribute('src') ?? '').split('?')[0],
+      'a shut folder takes its shut glyph',
     ).toMatch(/\/folder-src\.svg$/);
+
+    const open = document.querySelector('[data-path="crates"] img.rv-icon');
+    expect(
+      (open?.getAttribute('src') ?? '').split('?')[0],
+      'a folder-only folder opens and takes its open glyph',
+    ).toMatch(/\/folder-lib-open\.svg$/);
+
+    const file = document.querySelector('[data-path="README"] img.rv-icon');
+    expect(
+      (file?.getAttribute('src') ?? '').split('?')[0],
+      'and a file row takes its own glyph',
+    ).toMatch(/\/readme\.svg$/);
   });
 });
