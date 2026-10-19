@@ -74,6 +74,18 @@ const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
   cursor,
 });
 
+/**
+ * The session record a subscribe is answered with, carrying `turns`.
+ *
+ * That snapshot IS the newest page a switch needs (#2420), so a test that
+ * opens a conversation the way a switch does sends this rather than a page.
+ */
+const record = (turns: PageTurn[], header: Record<string, unknown> = {}): ServerMessage => ({
+  kind: 'snapshot',
+  subject: { session: LEAD },
+  data: { header, conversation: { turns, compaction_count: 0 } },
+});
+
 /** One `system` frame: the thinking-token counter, which draws nothing. */
 const counted = (tokens: number): unknown => ({
   type: 'system',
@@ -437,48 +449,44 @@ describe('the conversation the chat draws', () => {
 
     // The window was occluded: the socket died and came back.
     server.reach('connecting');
+    const asked = server.more().length;
     server.reach('open');
-    expect(server.more().at(-1), 'the reconnect asks the newest page').toEqual({
-      kind: 'more',
-      conversation: LEAD,
-      before: null,
-      turns: 20,
-    });
+    expect(
+      server.more().length,
+      'the reconnect asks nothing: its subscribe answers with the page',
+    ).toBe(asked);
 
-    // The page as the transcript has it - the held frames and the ones that
+    // The record as the transcript has it - the held frames and the ones that
     // crossed while the socket was down, one turn.
     server.send(
-      page(
-        [
-          {
-            key: 't1',
-            messages: [
-              {
-                type: 'user',
-                uuid: 'u-before',
-                message: { role: 'user', content: [{ type: 'text', text: 'before the drop' }] },
+      record([
+        {
+          key: 't1',
+          messages: [
+            {
+              type: 'user',
+              uuid: 'u-before',
+              message: { role: 'user', content: [{ type: 'text', text: 'before the drop' }] },
+            },
+            {
+              type: 'assistant',
+              uuid: 'a-held',
+              message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'held before the drop' }],
               },
-              {
-                type: 'assistant',
-                uuid: 'a-held',
-                message: {
-                  role: 'assistant',
-                  content: [{ type: 'text', text: 'held before the drop' }],
-                },
+            },
+            {
+              type: 'assistant',
+              uuid: 'a-gap',
+              message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'crossed while down' }],
               },
-              {
-                type: 'assistant',
-                uuid: 'a-gap',
-                message: {
-                  role: 'assistant',
-                  content: [{ type: 'text', text: 'crossed while down' }],
-                },
-              },
-            ],
-          },
-        ],
-        null,
-      ),
+            },
+          ],
+        },
+      ]),
     );
 
     const drawn = words(chat);
@@ -791,15 +799,16 @@ describe('the conversation the chat draws', () => {
     chat.leaving();
     chat.showing();
     // The socket drops before the in-flight ask settles: the want goes with
-    // it, and the reconnect's own read is the ask a return gets.
+    // it, and the reconnect's own subscribe is the read a return gets.
     server.reach('closed');
     const asked = server.more().length;
     server.reach('open');
-    server.send(page([turn('t1', 'first')], null));
+    server.send(record([turn('t1', 'first')]));
 
-    expect(server.more().length, 'the reconnect asked once, and the want did not ask again').toBe(
-      asked + 1,
-    );
+    expect(
+      server.more().length,
+      'the reconnect answered from its subscribe, and the want asked nothing',
+    ).toBe(asked);
     stop();
   });
 
@@ -1147,20 +1156,63 @@ describe('the conversation the chat draws', () => {
     const chat = new Chat(server.connection, LEAD);
     chat.start();
 
-    // The newest page is the one with no cursor: `null` asks for what is at
-    // the end, and a cursor asks for what is above a row the reader already
-    // has. Asking with a cursor on the first ask is how the page opens at the
-    // top - the defect the gate rejected the last batch for.
-    expect(server.more()).toEqual([
-      { kind: 'more', conversation: LEAD, before: null, turns: MORE_TURNS },
-    ]);
-
-    server.send(page([turn('t1', 'first'), turn('t2', 'second')], '3'));
+    // **The subscribe's snapshot is the open's page** (#2420): it carries the
+    // newest turns, and no `more` is asked for them - the old ask fetched the
+    // same page a second time, 0.66-9.02 MB on the live seats.
+    expect(server.more(), 'the switch asks for no page of its own').toEqual([]);
+    server.send(record([turn('t1', 'first'), turn('t2', 'second')]));
 
     const read = get(chat.value);
     expect(read.loaded).toBe(true);
     expect(read.turns.map((held) => held.key)).toEqual(['t1', 't2']);
-    expect(read.cursor, 'and the page carries the handle for the turns above it').toBe('3');
+  });
+
+  it("learns the seeded page's cursor on the first pull, then asks for the history", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(record([turn('t2', 'second')]));
+    expect(server.more(), 'the seed asked nothing').toEqual([]);
+
+    chat.older();
+    expect(server.more().at(-1), 'the first pull probes one turn for the cursor').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+      turns: 1,
+    });
+
+    // The probe's answer is the newest turn and its own handle; the history
+    // the reader wanted goes out from that handle rather than from the seed.
+    server.send(page([turn('t2', 'second')], '7'));
+    expect(server.more().at(-1), 'then the history the pull wanted').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: '7',
+      turns: MORE_TURNS,
+    });
+    server.send(page([turn('t1', 'first')], null));
+    expect(get(chat.value).turns.map((row) => row.key)).toEqual(['t1', 't2']);
+  });
+
+  it('asks the page when the snapshot carries no page', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(record([]));
+
+    expect(server.more(), 'an empty snapshot asks for the page').toHaveLength(1);
+  });
+
+  it('asks the page when the subscribe itself was refused', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // The snapshot the load waits on never comes, so the old page ask is what
+    // draws the refusal (or finds the seat's history once it exists).
+    server.refuse('subscribe', 'forge holds no session for TestOrg/proj/lead');
+
+    expect(server.more(), 'the load falls back to the page').toHaveLength(1);
   });
 
   it('does not move the reader when an update arrives while they are scrolled up', () => {
@@ -2526,7 +2578,10 @@ describe('the conversation the chat draws', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
-    expect(server.more(), 'the first ask').toHaveLength(1);
+    // An empty snapshot carries no page, so the load asks for one - the arm a
+    // seat with nothing served yet keeps (#2420).
+    server.send(record([]));
+    expect(server.more(), 'the empty snapshot asks for the page').toHaveLength(1);
 
     // The core has not attached this conversation yet, and it refuses rather
     // than answering an empty page - an empty page reads as "nothing above"
@@ -2557,6 +2612,7 @@ describe('the conversation the chat draws', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
+    server.send(record([]));
 
     server.refuse('more', 'the conversation is not held yet; asking again may find it');
     stop();
@@ -2580,9 +2636,10 @@ describe('the conversation the chat draws', () => {
     const after = get(chat.value);
     expect(after.turns, 'the previous occupant turns are gone').toEqual([]);
     expect(after.loaded, 'and the column is not claiming to hold a page').toBe(false);
-    // The first page, the fresh fill it earned (one turn, with history above),
-    // and the swap's own ask for the new occupant.
-    expect(server.more().length, 'and it asks for the new occupant page').toBe(3);
+    // The fresh fill the one-turn page earned, and the swap's own ask for the
+    // new occupant - the switch itself asked no page, because its subscribe
+    // answered one (#2420).
+    expect(server.more().length, 'and it asks for the new occupant page').toBe(2);
   });
 
   /**
@@ -2916,7 +2973,7 @@ describe('the conversation the chat draws', () => {
     const held = get(chat.value).turns.map((row) => row.key);
 
     chat.older();
-    expect(server.more()[1], 'the second ask echoes the handle the first page carried').toEqual({
+    expect(server.more()[0], 'the pull asks from the handle the page carried').toEqual({
       kind: 'more',
       conversation: LEAD,
       before: '2',
@@ -2942,7 +2999,7 @@ describe('the conversation the chat draws', () => {
     chat.start();
     server.send(page([turn('t2', 'second')], 'r:900'));
     chat.older();
-    expect(server.more()[1], 'the walk asked from the page it holds').toEqual({
+    expect(server.more()[0], 'the walk asked from the page it holds').toEqual({
       kind: 'more',
       conversation: LEAD,
       before: 'r:900',
@@ -3060,7 +3117,7 @@ describe('the conversation the chat draws', () => {
     // conversation, and every page between is fetched a second time.
     chat.refresh();
     expect(get(chat.value).cursor, 'the walk is where it was').toBe('1');
-    expect(server.more()[2]).toEqual({
+    expect(server.more()[1]).toEqual({
       kind: 'more',
       conversation: LEAD,
       before: null,

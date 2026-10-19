@@ -795,6 +795,17 @@ export class Chat {
    * the end of it.
    */
   private inFlight: 'newest' | 'older' | null = null;
+  /**
+   * Whether the cursor above the seeded page is still to be learned (#2420).
+   *
+   * The subscribe's snapshot carries the newest page but no handle above it -
+   * a page's own cursor is the only thing that names that place - so the first
+   * pull asks for a one-turn page to learn it, then asks for the history the
+   * reader wanted from there.
+   */
+  private cursorWanted = false;
+  /** The turns that pull went out for, delivered once the cursor lands. */
+  private cursorProbe: number | null = null;
 
   /**
    * Whether the seat's page was last announced as on screen.
@@ -1109,7 +1120,7 @@ export class Chat {
   }
 
   /**
-   * Hold the seat, listen to it, and ask for its newest page.
+   * Hold the seat, listen to it, and take the page its snapshot carries.
    *
    * **The hold lives with the conversation, not with the page** (Ved,
    * 2026-10-09): the server sends a seat's frames to a subscriber of that
@@ -1124,10 +1135,12 @@ export class Chat {
    * subscription goes with the last holder, so a page leaving a seat this
    * conversation still folds sends nothing at all.
    *
-   * **And a subscription is not what fills the list.** The snapshot carries
-   * the newest turns rather than the whole conversation; the page draws a
-   * window of those and asks `more` for what is above, so the ask is where
-   * its turns come from.
+   * **The snapshot carries the newest page, so the switch does not ask for
+   * it twice** (#2420). The subscribe's own answer is seeded as this
+   * conversation's first page; a `more` is asked only when that answer
+   * carries none (an empty seat, or a refused subscribe), and the first pull
+   * above the seed asks for one turn to learn the cursor the snapshot cannot
+   * carry.
    */
   start(): () => void {
     if (this.running !== null) return this.running;
@@ -1139,9 +1152,10 @@ export class Chat {
       this.receive(message),
     );
     // A page is a question asked over one connection, and a dropped socket
-    // takes the answer with it - nothing replays a `more`. So the reconnect is
-    // where the conversation is asked for again, and the reader keeps what
-    // they have until the fresh answer lands.
+    // takes the answer with it - nothing replays a `more`. **The reconnect's
+    // own subscribe is the fresh answer** (#2420): its snapshot carries the
+    // newest page, so the hold's re-ask is where the conversation is read
+    // again rather than a `more` beside it.
     const stopStatus = this.connection.onStatus((status) => {
       // A dropped socket takes any page in flight with it, and the reconnect
       // answers with an ask of its own - so an ask this conversation was told
@@ -1165,7 +1179,6 @@ export class Chat {
         if (held) this.forgot();
       } else {
         this.clearRetry();
-        this.ask(null);
       }
     });
     // A dispatch refused before it left the browser draws its line here: the
@@ -1214,7 +1227,6 @@ export class Chat {
       this.clearRetry();
       this.running = null;
     };
-    this.ask(null);
     return this.running;
   }
 
@@ -1235,9 +1247,19 @@ export class Chat {
    */
   older(turns: number = MORE_TURNS): boolean {
     const { cursor, loaded } = this.read();
-    // Nothing above the page already drawn is the server's own `null`, and
-    // asking again on it would walk the same page forever.
-    if (!loaded || cursor === null || this.inFlight !== null) return false;
+    if (!loaded || this.inFlight !== null) return false;
+    if (cursor === null) {
+      // **The seeded page's handle is not in the snapshot** (#2420). A
+      // snapshot carries the newest page but no cursor, so the first pull asks
+      // for a one-turn page to learn the handle - `more` answers the newest
+      // page and its own cursor - and the history the reader wanted is asked
+      // from there once it lands. A conversation with nothing above it asks
+      // nothing, which is the same refusal it always had.
+      if (!this.cursorWanted) return false;
+      this.cursorWanted = false;
+      this.cursorProbe = turns;
+      return this.ask(null, 1);
+    }
     // An empty page kept the walk where it was, and the retry costs the server
     // a transcript read - so one ask a beat, not one per scroll event, and the
     // beat doubles per consecutive empty (on the 84MB seat a futile retry is
@@ -1266,6 +1288,11 @@ export class Chat {
   showing(): void {
     if (this.shown) return;
     this.shown = true;
+    // **A conversation with no page yet waits on its subscribe** (#2420): the
+    // snapshot carries the newest page, so a refresh here would ship it a
+    // second time. A RETURN to a loaded conversation keeps its refresh, which
+    // is the reconcile for a read that failed or a stamp missed while away.
+    if (!this.held.loaded) return;
     if (!this.refresh()) this.returnWanted = true;
   }
 
@@ -1372,6 +1399,14 @@ export class Chat {
         // socket hands a listener EVERY message it receives - so a page that
         // took any error as its own would draw a refused subscription, or a
         // refused command, as a conversation this forge will not answer for.
+        //
+        // **A refused subscribe is the one answer that leaves no snapshot**
+        // (#2420): the load would wait on a page that is never coming, so the
+        // old `more` is asked and its answer - or its own refusal - draws.
+        if (message.what === 'subscribe' && !this.held.loaded) {
+          this.ask(null);
+          return;
+        }
         if (message.what !== 'more') return;
         // **And a refusal for ANOTHER seat is not this conversation's.** The
         // connection is shared, so every chat hears every error: a background
@@ -1411,7 +1446,27 @@ export class Chat {
         // refresh or a seat switch mid-queue meets the card and the row at
         // once, the exact duplicate the quieting exists to stop.
         if (subjectKey(message.subject) === this.key) {
+          // **The snapshot IS the newest page** (#2420): every session
+          // subscribe is answered with the page a `more` would fetch, so a
+          // switch that asked for both would ship the conversation twice.
+          // Seed it instead, and ask `more` only when the answer brought no
+          // page. A reconnect's snapshot is the same heal - the frames missed
+          // in the gap are what the fresh page carries.
+          const fresh = !this.held.loaded || this.missed;
           this.heard(runningOf(message.data));
+          if (fresh) {
+            const data = (message.data ?? {}) as { conversation?: unknown };
+            const conversation = (data.conversation ?? {}) as { turns?: unknown };
+            const rows = pageTurns(conversation.turns);
+            if (rows.length > 0) {
+              this.takePage(rows, null, 'newest');
+              // A snapshot carries no cursor, so the first pull above it asks
+              // for a one-turn page to learn the handle.
+              this.cursorWanted = this.read().cursor === null;
+            } else {
+              this.ask(null);
+            }
+          }
           this.armed(message.data);
         }
         return;
@@ -1934,6 +1989,15 @@ export class Chat {
     // above already asked.
     if (walk.fill) {
       this.older();
+    }
+    // **The cursor probe's answer is the pointer to the page the reader
+    // wanted** (#2420): the one-turn page above is the newest turn, and its
+    // own cursor names the place just above it - so the history the pull asked
+    // for goes out now, from the page's cursor rather than the record's.
+    if (this.cursorProbe !== null) {
+      const wanted = this.cursorProbe;
+      this.cursorProbe = null;
+      if (cursor !== null) this.ask(cursor, wanted);
     }
     this.returnIfWanted();
   }

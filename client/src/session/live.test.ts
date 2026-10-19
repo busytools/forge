@@ -139,10 +139,30 @@ async function stubServer(
       }
       if (message.kind !== 'subscribe') return;
       received.push(message);
+      // **A session snapshot carries that seat's newest page** (#2420), which
+      // is what the real server answers a subscribe with - so the per-seat
+      // override the test hands this stub has to ride it, not only the `more`.
+      const what = message.what;
+      let body: unknown = session;
+      if (what === 'home') {
+        body = home;
+      } else if (what !== null && typeof what === 'object' && 'session' in what) {
+        const key = subjectKey(what as { session: SessionSlot });
+        const turns =
+          conversations[key] ??
+          (session as { conversation: { turns: unknown[] } }).conversation.turns;
+        body = {
+          ...(session as object),
+          conversation: {
+            ...(session as { conversation: object }).conversation,
+            turns,
+          },
+        };
+      }
       const snapshot: ServerMessage = {
         kind: 'snapshot',
         subject: message.what as ServerMessage extends { subject: infer S } ? S : never,
-        data: message.what === 'home' ? home : session,
+        data: body,
       };
       socket.send(JSON.stringify(snapshot));
     });
