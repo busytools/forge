@@ -109,7 +109,7 @@ describe('what the shell is told', () => {
   });
 });
 
-describe('the four commands that answer through a reply', () => {
+describe('the five commands that answer through a reply', () => {
   it('a reply command answers with its body and every other command returns null', async () => {
     const connection = await opened();
     invoke.mockImplementation((command: string) => {
@@ -134,6 +134,28 @@ describe('the four commands that answer through a reply', () => {
       command: { cancel: { key: slot } },
       reply: false,
     });
+  });
+
+  /**
+   * A thread's delete has no update behind it, so the reply is the only way
+   * the page learns it happened - and the server refuses the command outright
+   * when it arrives without `reply_to`. The set this test exercises had
+   * drifted from the server's and left exactly this command reply-less.
+   */
+  it('a review thread deletion carries a reply channel', async () => {
+    const connection = await opened();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      if (command === 'client_dispatch') return Promise.resolve(true);
+      return Promise.resolve(undefined);
+    });
+    const command = {
+      delete_review_thread: { project: 'forge', branch: 'b', thread_id: 't1' },
+    };
+    const answered = connection.dispatch(command);
+    expect(answered, 'the delete promises its outcome').toBeInstanceOf(Promise);
+    await expect(answered).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith('client_dispatch', { command, reply: true });
   });
 
   it('a dispatch while closed throws before anything is registered, and the seat is noted', async () => {

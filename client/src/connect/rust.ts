@@ -68,6 +68,7 @@ const ANSWERS_THROUGH_A_REPLY = new Set([
   'spawn_worker',
   'despawn_worker',
   'upsert_review_thread',
+  'delete_review_thread',
   'submit_review',
 ]);
 
