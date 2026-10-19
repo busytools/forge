@@ -1989,9 +1989,7 @@ pub(crate) fn handle_despawn_worker_within(
     let dirty_reason = if force || worktree_already_gone {
         None
     } else {
-        worktree_path
-            .as_ref()
-            .and_then(|path| forge_agent::env::worktree::worktree_dirty_reason(path))
+        worktree_path.as_ref().and_then(|path| worktree_dirty_verdict(path))
     };
     tracing::info!(
         target: "forge_workspace::spawn",
@@ -2198,13 +2196,28 @@ fn warn_teardown_wait_expired(project_key: &ProjectKey, label: &str, wait: std::
     );
 }
 
+/// The despawn's dirty verdict, taken off the runtime's worker: `git status`
+/// walks the tracked tree, and the verdict gates the teardown, so the caller
+/// cannot await a `spawn_blocking` handle (#1923). `block_in_place` hands the
+/// worker's tasks to another thread for the call; a current-thread runtime has
+/// no other thread, and stays inline.
+fn worktree_dirty_verdict(path: &std::path::Path) -> Option<String> {
+    let on_runtime_worker = tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+    if on_runtime_worker {
+        return tokio::task::block_in_place(|| {
+            forge_agent::env::worktree::worktree_dirty_reason(path)
+        });
+    }
+    forge_agent::env::worktree::worktree_dirty_reason(path)
+}
+
 /// The despawn's filesystem half, handed to the blocking pool.
 ///
 /// Split out of [`handle_despawn_worker`] so the fast part - the peek, the
 /// dirty verdict and the teardown - keeps its ordering on the calling task
 /// while the cleanup's own `git` calls, the `git worktree remove` above
-/// all, run off the runtime. The dirty verdict is the one `git` call that
-/// stays inline.
+/// all, run off the runtime.
 struct DespawnCleanup {
     workspace: Arc<Workspace>,
     project_key: ProjectKey,
@@ -6894,6 +6907,74 @@ provider = "anthropic"
             "the cleanup still runs to completion behind the caller: {result:?}"
         );
         assert!(!wt.exists(), "and it still removes the worktree");
+    }
+
+    /// The despawn's dirty probe runs off the runtime's worker. `git status`
+    /// walks the tracked tree, so on a big repository it can hold a worker -
+    /// and the frames it serves - for a beat (#1923).
+    ///
+    /// The probe is slowed deterministically through git's own fsmonitor hook,
+    /// which waits for a RUNTIME task to release it and records whether that
+    /// happened. The despawn and that task share the single worker below, so
+    /// an inline probe starves the task and the hook records the timeout; a
+    /// probe handed off to another thread lets it run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_despawn_probes_the_worktree_off_the_runtime() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("probe");
+        let dir = tempdir().expect("hook tempdir");
+        let started = dir.path().join("probe-started");
+        let release = dir.path().join("probe-release");
+        let released = dir.path().join("probe-released");
+        let hook = dir.path().join("fsmonitor.sh");
+        // Bounded so the inline shape fails by verdict rather than by hanging
+        // the machine's test run; the release arrives in milliseconds. The
+        // trailing NUL-separated `/` is the hook's "all files changed" answer,
+        // which leaves the probe's full scan - and so its verdict - untouched.
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\n: > {started}\ni=0\n\
+                 while [ ! -e {release} ] && [ $i -lt 100 ]; do sleep 0.01; i=$((i+1)); done\n\
+                 [ -e {release} ] && : > {released}\n\
+                 printf 'forge-probe\\0/\\0'\n",
+                started = started.display(),
+                release = release.display(),
+                released = released.display(),
+            ),
+        )
+        .expect("write the fsmonitor hook");
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("+x");
+        run_git(&wt, &["config", "core.fsmonitor", hook.to_str().expect("utf8 hook")]);
+
+        // The task the hook waits on. It shares the single worker with the
+        // despawn, so only a probe that does not hold the worker lets it run.
+        let (task_started, task_release) = (started.clone(), release.clone());
+        tokio::spawn(async move {
+            while !task_started.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            fs::write(&task_release, b"go").expect("release the probe");
+        });
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let despawn = tokio::spawn(async move {
+            handle_despawn_worker(&workspace, &project_key, "probe", false, tx);
+        });
+        despawn.await.expect("the despawn task ran");
+        assert!(started.exists(), "fixture precondition: git ran the fsmonitor hook");
+        assert!(
+            released.exists(),
+            "the probe held the runtime: the task that releases its hook never ran",
+        );
+
+        let result = rx.await.expect("despawn result");
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
+            "the verdict is still clean and the despawn still lands: {result:?}",
+        );
+        assert!(!wt.exists(), "and the worktree is still removed");
     }
 
     /// A despawn's cleanup reserves its label: a spawn offered the same
