@@ -198,8 +198,8 @@ impl Tool for List {
     fn description(&self) -> &'static str {
         "List the agents you can reach, one row per seat, each addressed \
          by its slot (org, project, label). Two kinds of row: every \
-         project's own agent, which has label 'lead', and the live \
-         workers of YOUR project, each under its own label. Pass \
+         project's own agent, which has label 'lead', and every \
+         project's live workers, each under its own label. Pass \
          `project` to narrow the list to one project. \
          \
          A project's own agent is reachable whether or not it is \
@@ -212,10 +212,6 @@ impl Tool for List {
          path and liveness, a worker reports its charter, current \
          activity and session id. Every row carries the slot to pass \
          back to agents__send_message. \
-         \
-         Only your own project's workers are listed. Another project's \
-         workers are addressed by their labels, and those labels come \
-         from that project's own agent rather than from here. \
          \
          CROSS-PROJECT RULE (mutations only): whenever the user asks you \
          to CHANGE state in a project other than your own - edit files, \
@@ -306,9 +302,8 @@ impl Tool for SendMessage {
          `org` and `project` name it, and `label` names the seat inside \
          that project. Omit `label` to reach the project's own agent; \
          set it to a worker's label to reach that worker. Run \
-         agents__list for a label in your own project; a worker in \
-         another project is addressed by whatever label that project's \
-         own agent gives you. \
+         agents__list for a label in any project; a worker is addressed \
+         by its slot. \
          \
          Every message is the same kind of thing, including a reply: to \
          answer an agent that sent you one, address it by its own slot \
@@ -494,7 +489,7 @@ fn format_despawn_error(err: &WorkerDespawnError) -> String {
             "could not resolve caller to a known project (forge bug)".to_owned()
         }
         WorkerDespawnError::UnknownLabel { label, project_key } => format!(
-            "no live worker with label '{label}' in project '{project_key}'. Call agents__list for your own project's pool; a worker in another project is addressed by whatever label that project's own agent gives you."
+            "no live worker with label '{label}' in project '{project_key}'. Call agents__list for the project's live workers."
         ),
         WorkerDespawnError::DispatchFailed { message } => {
             format!("worker despawn failed: {message}")
