@@ -70,12 +70,14 @@ sequence, a wheel is a pixel delta, printable text is inserted as text, the
 specials (Enter, Tab, the arrows, Escape) are key events, and Cmd+V reads the
 pasteboard as text. Widgets that gate on trusted input commit, which is the
 whole reason the events are replayed rather than synthesised in the page.
-**Cmd+W is the takeover's own.** AppKit offers key equivalents before the
-page's keys, and the surface claims that one to lower itself the way back to
-chat does, so a keyboard-only person can leave it and reach the bar's actions.
-The page receives the editing chords (Cmd+A, X, C, V, Z) and plain typing;
-every other Command chord is the app menu's, exactly as it is outside the
-takeover.
+**The surface claims the menu's chords while it has the keyboard.** AppKit
+offers key equivalents before the page's keys, and Tauri's default menu takes
+Cmd+A, X, C, V and Z (and Close Window on Cmd+W) even with the surface
+focused. So while the overlay holds first responder, those five go to the
+page over CDP - Cmd+V as the pasteboard's text - and Cmd+W lowers the takeover
+the way back to chat does. With the bar's own feedback field focused, the
+menu keeps its editing as it does everywhere else, and every other Command
+chord belongs to the app.
 
 **The native edges have their own doors.** A file chooser the page opens - a
 click on the input, a click on its label, a scripted `input.click()` - is

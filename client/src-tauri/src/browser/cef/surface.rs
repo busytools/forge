@@ -135,26 +135,37 @@ define_class!(
 
         /// **Command chords arrive here first.** AppKit routes key
         /// equivalents through `performKeyEquivalent:` before `keyDown:`,
-        /// and with no app menu of its own Tauri's default menu carries
-        /// Close Window on Cmd+W. Claiming the lower key here is what keeps
-        /// Cmd+W from closing the client's only window; every other
-        /// equivalent defers to the superclass, which is where the app's own
-        /// menu gets it.
+        /// and Tauri's default menu matches Cmd+W (Close Window) and the
+        /// Edit menu's Cmd+A/X/C/V/Z even with no responder of its own. The
+        /// surface claims those six while IT holds first responder: Cmd+W
+        /// lowers the takeover, the editing chords go to the page over CDP,
+        /// and everything else defers to the superclass, which is the app's
+        /// menu - including when the DOM bar's feedback field has focus.
         #[unsafe(method(performKeyEquivalent:))]
         unsafe fn perform_key_equivalent(
             &self,
             event: &objc2_app_kit::NSEvent,
         ) -> objc2::runtime::Bool {
             let flags = event.modifierFlags();
-            if claims_key_equivalent(
-                event.keyCode(),
+            let route = route_equivalent(
+                character_of(event).unwrap_or('\0'),
                 flags.contains(objc2_app_kit::NSEventModifierFlags::Command),
                 flags.contains(objc2_app_kit::NSEventModifierFlags::Shift),
-            ) {
-                self.lower_surface();
-                return true.into();
+                flags.contains(objc2_app_kit::NSEventModifierFlags::Option),
+                flags.contains(objc2_app_kit::NSEventModifierFlags::Control),
+                self.holds_keyboard(),
+            );
+            match route {
+                Equivalent::Lower => {
+                    self.lower_surface();
+                    true.into()
+                }
+                Equivalent::Page(character) => {
+                    self.send_command(character, modifiers(event));
+                    true.into()
+                }
+                Equivalent::Defer => objc2::msg_send![super(self), performKeyEquivalent: event],
             }
-            objc2::msg_send![super(self), performKeyEquivalent: event]
         }
 
         #[unsafe(method(keyDown:))]
@@ -162,30 +173,13 @@ define_class!(
             let flags = event.modifierFlags();
             let command = flags.contains(objc2_app_kit::NSEventModifierFlags::Command);
             let keycode = event.keyCode();
-            // Cmd+V is a text paste: the host has no native edit menu, and a
-            // widget cannot read the pasteboard itself.
-            if command && keycode == 9 {
-                if let Some(text) = pasteboard_text() {
-                    self.send(InputEvent::Text(text));
-                }
-                return;
-            }
+            // A menu that does not consume an editing chord still leaves it
+            // here; dispatch it the same way the equivalent route does.
             if command {
-                if let Some((key, code, vk)) = command_key(keycode) {
-                    self.send(InputEvent::Key {
-                        down: true,
-                        key,
-                        code,
-                        windows_vk: vk,
-                        modifiers: modifiers(event),
-                    });
-                    self.send(InputEvent::Key {
-                        down: false,
-                        key,
-                        code,
-                        windows_vk: vk,
-                        modifiers: modifiers(event),
-                    });
+                if let Some(character) = character_of(event)
+                    && editing_key(character).is_some()
+                {
+                    self.send_command(character, modifiers(event));
                 }
                 return;
             }
@@ -270,6 +264,29 @@ impl OverlayView {
         }
     }
 
+    /// Whether this view is the window's first responder - the gate that
+    /// keeps the bar's DOM feedback field on the webview's own menu editing.
+    fn holds_keyboard(&self) -> bool {
+        let Some(window) = self.window() else { return false };
+        let Some(responder) = window.firstResponder() else { return false };
+        std::ptr::eq(&*responder as *const NSResponder, self as *const Self as *const NSResponder)
+    }
+
+    /// An editing chord to the page: pasteboard text for Cmd+V - the host has
+    /// no native edit menu, and a widget cannot read the pasteboard itself -
+    /// and a key pair for the rest.
+    fn send_command(&self, character: char, modifiers: i32) {
+        if character == 'v' {
+            if let Some(text) = pasteboard_text() {
+                self.send(InputEvent::Text(text));
+            }
+            return;
+        }
+        let Some((key, code, windows_vk)) = editing_key(character) else { return };
+        self.send(InputEvent::Key { down: true, key, code, windows_vk, modifiers });
+        self.send(InputEvent::Key { down: false, key, code, windows_vk, modifiers });
+    }
+
     /// Draw the ring's latest frame. **The bytes are the ring's own**: a
     /// no-copy CFData and CGImage reference the shared mapping, so this side
     /// copies nothing - a frame at this size is tens of megabytes, and a copy
@@ -330,24 +347,42 @@ impl OverlayView {
     }
 }
 
-/// A key the takeover answers itself, before the page sees it.
+/// What a Command key equivalent does when the surface has the keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SurfaceKey {
-    /// Cmd+W: back to the chat, the hand-off still parked.
+pub enum Equivalent {
+    /// Lower the takeover: back to the chat, the hand-off still parked.
     Lower,
+    /// Send this editing chord to the page.
+    Page(char),
+    /// Leave it to the app's menu.
+    Defer,
 }
 
-/// **The keyboard's way out of the takeover.** The bar's buttons live in the
-/// webview and the overlay holds first responder, so Cmd+W lowers the surface.
-/// It is a key EQUIVALENT, not a page key: AppKit offers it here before
-/// keyDown, and every other equivalent defers to the app.
-pub fn surface_key(keycode: u16, command: bool, shift: bool) -> Option<SurfaceKey> {
-    (command && !shift && keycode == 13).then_some(SurfaceKey::Lower)
-}
-
-/// Whether this key is the takeover's to claim as a key equivalent.
-pub fn claims_key_equivalent(keycode: u16, command: bool, shift: bool) -> bool {
-    surface_key(keycode, command, shift).is_some()
+/// **Key equivalents match characters, not physical keys.** `character` is
+/// `charactersIgnoringModifiers`, lowercased: the menu's own matching is
+/// character-based, so on Dvorak the keycode that is W on QWERTY is a comma
+/// and must not lower anything.
+///
+/// **Only EXACTLY Command is the takeover's.** Cmd+Shift+W, Cmd+Option+W and
+/// Cmd+Control+W belong to the app, as they do outside the takeover. And only
+/// while the overlay holds first responder: with the bar's feedback field
+/// focused the webview keeps its own menu editing, paste included.
+pub fn route_equivalent(
+    character: char,
+    command: bool,
+    shift: bool,
+    option: bool,
+    control: bool,
+    focused: bool,
+) -> Equivalent {
+    if !focused || !command || shift || option || control {
+        return Equivalent::Defer;
+    }
+    match character.to_ascii_lowercase() {
+        'w' => Equivalent::Lower,
+        character @ ('a' | 'x' | 'c' | 'v' | 'z') => Equivalent::Page(character),
+        _ => Equivalent::Defer,
+    }
 }
 
 fn modifiers(event: &objc2_app_kit::NSEvent) -> i32 {
@@ -363,15 +398,21 @@ fn modifiers(event: &objc2_app_kit::NSEvent) -> i32 {
 
 /// A letter key with Command held: the browser's own edit shortcuts, which a
 /// text insert cannot express.
-fn command_key(keycode: u16) -> Option<(&'static str, &'static str, i32)> {
-    Some(match keycode {
-        0 => ("a", "KeyA", 65),
-        7 => ("x", "KeyX", 88),
-        8 => ("c", "KeyC", 67),
-        9 => ("v", "KeyV", 86),
-        6 => ("z", "KeyZ", 90),
+fn editing_key(character: char) -> Option<(&'static str, &'static str, i32)> {
+    Some(match character.to_ascii_lowercase() {
+        'a' => ("a", "KeyA", 65),
+        'x' => ("x", "KeyX", 88),
+        'c' => ("c", "KeyC", 67),
+        'v' => ("v", "KeyV", 86),
+        'z' => ("z", "KeyZ", 90),
         _ => return None,
     })
+}
+
+/// The character a key event names, as the menu would match it.
+fn character_of(event: &objc2_app_kit::NSEvent) -> Option<char> {
+    let characters = event.charactersIgnoringModifiers()?;
+    characters.to_string().chars().next().map(|ch| ch.to_ascii_lowercase())
 }
 
 fn pasteboard_text() -> Option<String> {
@@ -775,18 +816,44 @@ mod tests {
         assert_eq!(raster(one_x), 1.0, "a 1x display is never out-sampled");
     }
 
-    /// **Cmd+W is claimed as a key EQUIVALENT, and nothing else is.** AppKit
-    /// offers equivalents before keyDown, which is why the close-window menu
-    /// item would otherwise quit the client under a parked hand-off; the
-    /// claim is what a keyboard-only person's way out rides on. Everything
-    /// else defers to the app.
+    /// **Cmd+W and the five editing chords are the takeover's, and only
+    /// while it holds the keyboard.** The menu matches characters and exact
+    /// modifiers, so the routing does too: a Dvorak comma is not W, and
+    /// Cmd+Shift/Option/Control+W are the app's.
     #[test]
-    fn the_takeover_claims_cmd_w_and_defers_the_rest() {
-        assert!(claims_key_equivalent(13, true, false), "Cmd+W is the takeover's");
-        assert_eq!(surface_key(13, true, false), Some(SurfaceKey::Lower));
-        assert!(!claims_key_equivalent(13, true, true), "Cmd+Shift+W is not");
-        assert!(!claims_key_equivalent(13, false, false), "a bare W is text");
-        assert!(!claims_key_equivalent(0, true, false), "Cmd+A is not the surface's");
+    fn the_takeover_routes_cmd_w_and_the_editing_chords_only_while_focused() {
+        assert_eq!(route_equivalent('w', true, false, false, false, true), Equivalent::Lower);
+        assert_eq!(
+            route_equivalent('w', true, false, false, false, false),
+            Equivalent::Defer,
+            "the bar's field keeps the menu's own editing"
+        );
+        assert_eq!(
+            route_equivalent(',', true, false, false, false, true),
+            Equivalent::Defer,
+            "Dvorak: the W keycode is a comma, and the menu matches characters"
+        );
+        assert_eq!(route_equivalent('w', true, true, false, false, true), Equivalent::Defer);
+        assert_eq!(route_equivalent('w', true, false, true, false, true), Equivalent::Defer);
+        assert_eq!(route_equivalent('w', true, false, false, true, true), Equivalent::Defer);
+        for character in ['a', 'x', 'c', 'v', 'z'] {
+            assert_eq!(
+                route_equivalent(character, true, false, false, false, true),
+                Equivalent::Page(character),
+                "Cmd+{character} goes to the page"
+            );
+            assert_eq!(
+                route_equivalent(character, true, false, false, false, false),
+                Equivalent::Defer,
+                "an unfocused surface leaves Cmd+{character} to the menu"
+            );
+            assert_eq!(
+                route_equivalent(character, true, true, false, false, true),
+                Equivalent::Defer,
+                "Cmd+Shift+{character} is the app's"
+            );
+        }
+        assert_eq!(route_equivalent('q', true, false, false, false, true), Equivalent::Defer);
     }
 
     #[test]
