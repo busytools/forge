@@ -31,6 +31,19 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 const RETRY_MS: u64 = 50;
 const MAX_RETRY_MS: u64 = 2000;
 
+/// The bound one reply-carrying dispatch is given. The socket is loopback and
+/// its server answers in milliseconds; a reply that outlives this is the
+/// version-skew case an `error` frame answers without a reply id, or a wedge -
+/// and a caller parked on it would never return. **A despawn is exempt**: its
+/// server path removes a worktree and reaps a branch first, which can run for
+/// minutes (#1922, #1113), so no finite bound is honest.
+const REPLY_BOUND: Duration = Duration::from_secs(10);
+
+/// The dispatch error a bound produces: the command went, and no reply came
+/// before the bound. Shared so a caller can tell it from a connection that is
+/// down, which is not the same problem.
+pub(crate) const NO_REPLY: &str = "the server did not answer the command";
+
 /// The largest frame this side will read. A seat's whole conversation
 /// snapshot crosses as ONE frame and the window it carries is frame-capped
 /// (4,000 + 1,000), not byte-capped - measured snapshots reach 146.9 MB, so
@@ -206,6 +219,11 @@ enum Outbound {
         sent: oneshot::Sender<Result<(), String>>,
         replied: Option<oneshot::Sender<Result<Value, String>>>,
     },
+    /// A reply its caller has stopped waiting for: the entry goes, so a late
+    /// answer is reported as unmatched rather than swallowed.
+    ForgetReply {
+        id: u64,
+    },
     Answer {
         id: u64,
         parts: Value,
@@ -221,15 +239,26 @@ enum Outbound {
 pub struct Socket {
     tx: mpsc::UnboundedSender<Outbound>,
     next_reply: Arc<AtomicU64>,
+    reply_bound: Duration,
 }
 
 impl Socket {
     /// Dial `url` and keep the connection up for as long as this handle
     /// lives. Events land on `events`; the task ends on [`Socket::close`].
     pub fn open(url: String, events: mpsc::UnboundedSender<SocketEvent>) -> Self {
+        Self::open_with_reply_bound(url, events, REPLY_BOUND)
+    }
+
+    /// The same, with the reply bound stated: tests inject a short one rather
+    /// than wait the shipping bound out.
+    fn open_with_reply_bound(
+        url: String,
+        events: mpsc::UnboundedSender<SocketEvent>,
+        reply_bound: Duration,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let next_reply = Arc::new(AtomicU64::new(1));
-        let socket = Self { tx: tx.clone(), next_reply: Arc::clone(&next_reply) };
+        let socket = Self { tx: tx.clone(), next_reply: Arc::clone(&next_reply), reply_bound };
         tokio::spawn(run(url, events, rx));
         socket
     }
@@ -293,21 +322,34 @@ impl Socket {
     /// Send one command. With `reply` the call awaits the core's reply
     /// (`reply_to` is minted here, so correlation needs no caller
     /// bookkeeping); without it the call answers once the frame is on the
-    /// wire. Err means the command was NOT sent - a command is refused
-    /// rather than sent nowhere.
+    /// wire. Err means the command was not sent, or was sent with no answer
+    /// inside the bound: a caller cannot tell the two apart, and a retry may
+    /// run a command that already executed.
     pub async fn dispatch(&self, command: Value, reply: bool) -> Result<Option<Value>, String> {
         let (sent, sent_rx) = oneshot::channel();
         if reply {
             let id = self.next_reply.fetch_add(1, Ordering::Relaxed);
+            let bound = reply_bound_for(&command, self.reply_bound);
             let (tx, rx) = oneshot::channel();
             self.tx
                 .send(Outbound::Dispatch { command, reply: Some(id), sent, replied: Some(tx) })
                 .map_err(|_| "the socket is closed".to_owned())?;
-            sent_rx.await.map_err(|_| "the socket is closed".to_owned())??;
-            return rx
-                .await
-                .map_err(|_| "the socket dropped before answering".to_owned())?
-                .map(Some);
+            // **The write and the reply share one bound**: a wedged writer
+            // parks the caller exactly as a reply that never comes does.
+            let answer = async {
+                sent_rx.await.map_err(|_| "the socket is closed".to_owned())??;
+                rx.await.map_err(|_| "the socket dropped before answering".to_owned())?
+            };
+            return match bound {
+                Some(bound) => match tokio::time::timeout(bound, answer).await {
+                    Ok(received) => received.map(Some),
+                    Err(_) => {
+                        let _ = self.tx.send(Outbound::ForgetReply { id });
+                        Err(NO_REPLY.to_owned())
+                    }
+                },
+                None => answer.await.map(Some),
+            };
         }
         self.tx
             .send(Outbound::Dispatch { command, reply: None, sent, replied: None })
@@ -346,6 +388,25 @@ impl Socket {
     /// End the connection for good: no retry follows.
     pub fn close(&self) {
         let _ = self.tx.send(Outbound::Close);
+    }
+}
+
+/// The command's variant name, as the wire tags it: the one key of the
+/// command object, or the string a unit variant crosses as.
+fn variant_of(command: &Value) -> Option<&str> {
+    match command {
+        Value::String(name) => Some(name.as_str()),
+        Value::Object(map) if map.len() == 1 => map.keys().next().map(String::as_str),
+        _ => None,
+    }
+}
+
+/// The bound this dispatch gets: the shipping bound, except a despawn, whose
+/// removal can outlast it.
+fn reply_bound_for(command: &Value, bound: Duration) -> Option<Duration> {
+    match variant_of(command) {
+        Some("despawn_worker") => None,
+        _ => Some(bound),
     }
 }
 
@@ -399,6 +460,7 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         | Outbound::FileContent { .. }
         | Outbound::SeatRange { .. }
         | Outbound::DocumentRead { .. }
+        | Outbound::ForgetReply { .. }
         | Outbound::Answer { .. }
         | Outbound::TakeRole
         | Outbound::Binary(_)
@@ -612,6 +674,9 @@ async fn run(
                                 pending.insert(id, tx);
                             }
                         }
+                        Outbound::ForgetReply { id } => {
+                            pending.remove(&id);
+                        }
                         Outbound::Answer { id, parts, error } => {
                             let _ = writer
                                 .send(Message::Text(
@@ -699,8 +764,9 @@ fn receive(
                 // A reply nothing is waiting on is a fact about the two
                 // sides' reply spaces, and a silent drop is a command whose
                 // failure nobody can read (`socket.ts` reports the same).
-                // WARN: it should never happen, and the Info filter would
-                // swallow a debug line in the shipping client.
+                // WARN: a dispatch that gave up on its bound leaves its late
+                // reply to land here, and the Info filter would swallow a
+                // debug line in the shipping client.
                 None => tauri_plugin_log::log::warn!(
                     "socket_reply_unmatched: id {id:?} has nothing waiting on it"
                 ),
@@ -1273,5 +1339,97 @@ pub(crate) mod tests {
         let seen = event_of(&mut rx, "message").await;
         let SocketEvent::Message(message) = seen else { unreachable!("filtered") };
         assert_eq!(message["what"], "subscribe", "nothing outstanding reads as a plain frame");
+    }
+
+    /// **A reply the server never sends is not a caller parked forever.** An
+    /// older server answers a command it does not know with an `error` frame
+    /// that names no reply, so nothing resolves the pending oneshot; the
+    /// dispatch gives up on its own bound instead of waiting for the socket
+    /// to drop.
+    #[tokio::test]
+    async fn a_dispatch_whose_reply_never_comes_gives_up_on_its_bound() {
+        let mut stub = stub().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let socket = Socket::open_with_reply_bound(stub.url.clone(), tx, Duration::from_millis(50));
+        loop {
+            if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
+                break;
+            }
+        }
+        let waiting = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                socket
+                    .dispatch(
+                        json!({ "spawn_worker": { "project_key": "proj", "label": "w1" } }),
+                        true,
+                    )
+                    .await
+            }
+        });
+        let _ = stub.heard_until(|v| v["kind"] == "command").await;
+        // The version-skew refusal, exactly as an older server writes it: it
+        // names no reply, because the frame it could not read named none to it.
+        stub.say
+            .send(json!({
+                "kind": "error",
+                "what": "client_message",
+                "why": "that is not a message this server knows",
+                "seat": null,
+                "dispatch_id": null,
+            }))
+            .expect("the refusal");
+        let why = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("the dispatch gives up on its own bound")
+            .expect("the task joins")
+            .expect_err("no reply was sent");
+        assert!(why.contains("did not answer"), "{why}");
+    }
+
+    /// **A despawn is exempt from the bound.** Its server path removes a
+    /// worktree and reaps a branch before it answers, and that removal can
+    /// run for minutes (#1922 measured 5-23 s, #1113 minutes); a bound would
+    /// report a failure while the server is still deleting, and the retry
+    /// would meet a tree that is going away.
+    #[tokio::test]
+    async fn a_despawn_whose_reply_never_comes_is_not_bounded() {
+        let mut stub = stub().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let socket = Socket::open_with_reply_bound(stub.url.clone(), tx, Duration::from_millis(50));
+        loop {
+            if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
+                break;
+            }
+        }
+        let mut waiting = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                socket
+                    .dispatch(
+                        json!({ "despawn_worker": { "project_key": "proj", "label": "w1" } }),
+                        true,
+                    )
+                    .await
+            }
+        });
+        let sent = stub.heard_until(|v| v["kind"] == "command").await;
+        let id = sent["reply_to"].as_u64().expect("a reply id");
+        // Several times the injected bound: the dispatch must still be
+        // waiting, because a despawn has no honest finite bound.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut waiting).await.is_err(),
+            "the despawn waits past the reply bound"
+        );
+        // And its reply still finds the caller.
+        stub.say
+            .send(json!({ "kind": "reply", "reply_to": id, "body": "gone" }))
+            .expect("the reply");
+        let body = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("the reply resolves the dispatch")
+            .expect("the task joins")
+            .expect("the dispatch resolves");
+        assert_eq!(body, Some(json!("gone")));
     }
 }

@@ -77,7 +77,7 @@ export interface Connection {
   /**
    * Send a core command.
    *
-   * Answers with a promise for the four commands whose outcome rides a reply
+   * Answers with a promise for the five commands whose outcome rides a reply
    * because no update carries it, and `null` for every other command, whose
    * outcome arrives through the subscription.
    *
@@ -99,11 +99,12 @@ export interface Connection {
    * throws instead. Read `Promise<unknown> | null` as "went, answering
    * through a reply or through the subscription" - never as "may reject".
    * The rejection is the other case: a command already sent, whose
-   * connection then closes, has the promise it returned rejected, because
-   * the reply died with the connection and a caller waiting on a channel
-   * that stays empty is worse off than one told.
+   * connection then closes or whose reply the server never sends - an older
+   * server answers a command it does not know with an `error` frame naming
+   * no reply - has the promise it returned rejected, because a caller
+   * waiting on a channel that stays empty is worse off than one told.
    *
-   * A caller that dispatches one of the four owes the returned promise an
+   * A caller that dispatches one of the five owes the returned promise an
    * answer: nothing else carries the outcome.
    */
   dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null;
@@ -239,11 +240,12 @@ export interface Connection {
 }
 
 /**
- * The commands that answer through a reply, mirroring the server's
- * `answers_through_a_reply`.
+ * The commands a PAGE dispatches that answer through a reply.
  *
- * These are the ones with nothing behind them on the wire: a client that
- * omits `reply_to` for one of them has no second way to learn what happened.
+ * The server's own set is `answers_through_a_reply`; it also carries
+ * `browser_idle_warning`, which only the shell's idle sweep sends. These are
+ * the page commands with nothing behind them on the wire: a client that omits
+ * `reply_to` for one of them has no second way to learn what happened.
  */
 const ANSWERS_THROUGH_A_REPLY = new Set([
   'spawn_worker',
@@ -252,6 +254,29 @@ const ANSWERS_THROUGH_A_REPLY = new Set([
   'delete_review_thread',
   'submit_review',
 ]);
+
+/**
+ * The bound one reply-carrying dispatch is given. The server answers in
+ * milliseconds; a reply that outlives this is the version-skew case an
+ * `error` frame answers without a reply id, or a wedge - and a caller parked
+ * on it would never return. **A despawn is exempt**: its server path removes a
+ * worktree and reaps a branch first, which can run for minutes (#1922, #1113),
+ * so no finite bound is honest.
+ */
+const REPLY_BOUND_MS = 10_000;
+
+/** The bound this command gets, or `null` for a despawn. */
+function replyBoundFor(variant: string, bound: number): number | null {
+  return variant === 'despawn_worker' ? null : bound;
+}
+
+/** One command's caller, waiting for the reply that answers it. */
+type PendingReply = {
+  resolve: (body: unknown) => void;
+  reject: (why: Error) => void;
+  /** Absent for a command with no bound (a despawn). */
+  timer?: ReturnType<typeof setTimeout>;
+};
 
 /** How long to wait before the first re-ask, and the ceiling it doubles up to. */
 const RETRY_MS = 50;
@@ -312,7 +337,11 @@ export function report(what: string, why: unknown): void {
   console.warn(`forge client: ${what}`, why);
 }
 
-export function connect(url: string, boundMs: number = READ_BOUND_MS): Connection {
+export function connect(
+  url: string,
+  boundMs: number = READ_BOUND_MS,
+  replyBoundMs: number = REPLY_BOUND_MS,
+): Connection {
   const stores = new Stores();
   /**
    * The bound on a subscription's first read: a subject still loading when
@@ -342,10 +371,7 @@ export function connect(url: string, boundMs: number = READ_BOUND_MS): Connectio
   /** The sweep notices this connection will never raise (no host lives on
    *  the web side); kept so the interface is implemented, not faked. */
   const profilesListeners = new Set<() => void>();
-  const pending = new Map<
-    number,
-    { resolve: (body: unknown) => void; reject: (why: Error) => void }
-  >();
+  const pending = new Map<number, PendingReply>();
   /**
    * The subscribes that have gone and not been answered, oldest first, which
    * is the order the server answers them in.
@@ -396,7 +422,10 @@ export function connect(url: string, boundMs: number = READ_BOUND_MS): Connectio
   }
 
   function failPending(why: string): void {
-    for (const { reject } of pending.values()) reject(new Error(why));
+    for (const { reject, timer } of pending.values()) {
+      if (timer !== undefined) clearTimeout(timer);
+      reject(new Error(why));
+    }
     pending.clear();
   }
 
@@ -525,6 +554,7 @@ export function connect(url: string, boundMs: number = READ_BOUND_MS): Connectio
           return;
         }
         pending.delete(message.reply_to);
+        if (waiting.timer !== undefined) clearTimeout(waiting.timer);
         waiting.resolve(message.body);
         return;
       }
@@ -831,10 +861,21 @@ export function connect(url: string, boundMs: number = READ_BOUND_MS): Connectio
 
     const replyTo = nextReplyId;
     nextReplyId += 1;
+    const bound = replyBoundFor(variant, replyBoundMs);
     // Registered before it goes, because a refusal can come back as fast as
     // the send returns.
     const answer = new Promise<unknown>((resolve, reject) => {
-      pending.set(replyTo, { resolve, reject });
+      const entry: PendingReply = { resolve, reject };
+      // A reply that never comes has no frame to resolve it: the skew answer
+      // is an `error` that names no reply id, so a bounded command's only way
+      // out is its timer. A despawn has none, and waits.
+      if (bound !== null) {
+        entry.timer = setTimeout(() => {
+          if (!pending.delete(replyTo)) return;
+          reject(new Error('the server did not answer the command'));
+        }, bound);
+      }
+      pending.set(replyTo, entry);
     });
     try {
       sendNow({ kind: 'command', command, reply_to: replyTo });
@@ -842,6 +883,8 @@ export function connect(url: string, boundMs: number = READ_BOUND_MS): Connectio
       // `JSON.stringify` is the one thing between the registration and the
       // send that can throw - a BigInt in a command - and an entry left
       // behind would be rejected later as though the command had gone.
+      const registered = pending.get(replyTo);
+      if (registered?.timer !== undefined) clearTimeout(registered.timer);
       pending.delete(replyTo);
       throw why;
     }
