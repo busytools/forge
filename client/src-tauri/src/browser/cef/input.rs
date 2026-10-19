@@ -92,16 +92,33 @@ pub fn method_and_params(event: &InputEvent) -> (&'static str, Value) {
                 "modifiers": modifiers,
             }),
         ),
-        InputEvent::Key { down, key, code, windows_vk, modifiers } => (
-            "Input.dispatchKeyEvent",
-            json!({
+        InputEvent::Key { down, key, code, windows_vk, modifiers } => {
+            let mut params = json!({
                 "type": if *down { "keyDown" } else { "keyUp" },
                 "key": key,
                 "code": code,
                 "windowsVirtualKeyCode": windows_vk,
                 "modifiers": modifiers,
-            }),
-        ),
+            });
+            // **Cmd+A/X/C/Z are editing commands, not printable keys.** A
+            // keyDown without `commands` moves no selection and touches no
+            // clipboard; Playwright sends them the same way.
+            if *down && modifiers & 4 != 0 {
+                let shift = modifiers & 8 != 0;
+                let command = match *code {
+                    "KeyA" => Some("selectAll"),
+                    "KeyC" => Some("copy"),
+                    "KeyX" => Some("cut"),
+                    "KeyZ" if shift => Some("redo"),
+                    "KeyZ" => Some("undo"),
+                    _ => None,
+                };
+                if let Some(command) = command {
+                    params["commands"] = json!([command]);
+                }
+            }
+            ("Input.dispatchKeyEvent", params)
+        }
         InputEvent::Text(text) => ("Input.insertText", json!({ "text": text })),
     }
 }
@@ -273,6 +290,30 @@ async fn set_files(cdp: &mut Cdp, paths: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Cmd+A/X/C/Z carry the editing command, and only on the down.** A
+    /// keyDown with no `commands` selects nothing and touches no clipboard;
+    /// a keyUp carrying one would fire the command twice.
+    #[test]
+    fn an_editing_shortcut_carries_its_command_once() {
+        let key = |down: bool, code: &'static str, modifiers: i32| {
+            let (_, params) = method_and_params(&InputEvent::Key {
+                down,
+                key: "a",
+                code,
+                windows_vk: 65,
+                modifiers,
+            });
+            params.get("commands").cloned()
+        };
+        assert_eq!(key(true, "KeyA", 4), Some(json!(["selectAll"])), "Cmd+A selects all");
+        assert_eq!(key(true, "KeyC", 4), Some(json!(["copy"])), "Cmd+C copies");
+        assert_eq!(key(true, "KeyX", 4), Some(json!(["cut"])), "Cmd+X cuts");
+        assert_eq!(key(true, "KeyZ", 4), Some(json!(["undo"])), "Cmd+Z undoes");
+        assert_eq!(key(true, "KeyZ", 4 | 8), Some(json!(["redo"])), "Shift+Cmd+Z redoes");
+        assert_eq!(key(false, "KeyA", 4), None, "the up carries no command");
+        assert_eq!(key(true, "KeyA", 0), None, "a plain A is text, not a command");
+    }
 
     #[test]
     fn a_press_is_a_left_button_press_with_its_clicks() {
