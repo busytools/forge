@@ -165,6 +165,10 @@ pub mod spawn {
         None
     }
 
+    pub async fn page_url(_port: u16) -> Option<String> {
+        None
+    }
+
     pub fn ws_prefix(port: u16) -> String {
         format!("ws://127.0.0.1:{port}")
     }
