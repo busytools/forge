@@ -30,7 +30,7 @@
   import { mount, unmount } from 'svelte';
 
   import FileTree from '../components/FileTree.svelte';
-  import { toggleClosed, type TreeRow } from '../components/tree';
+  import type { TreeRow } from '../components/tree';
   import { boxKey } from '../composer/box.svelte';
   import {
     bindPushToTalk,
@@ -73,7 +73,14 @@
   import Reader from './Reader.svelte';
   import { contextForComment, railRows, threadsOnPath, treeScope, type RailRow } from './comments';
   import type { ReaderBlock, ReaderHandle } from './reader';
-  import { indexTreeRows, matchedEntries } from './tree';
+  import {
+    foldsFor,
+    indexTreeRows,
+    matchedEntries,
+    NO_MANUAL_FOLDS,
+    openedForJump,
+    withFold,
+  } from './tree';
 
   let {
     connection,
@@ -100,7 +107,9 @@
   const entries = $derived(record === null ? [] : filesOnly(filesFrom(record.file_index)));
 
   let query = $state('');
-  const closed = new SvelteSet<string>();
+  /** The folds the reader set themselves: true shut, false open. A folder
+   *  absent here follows the page's defaults. */
+  let folded = $state<ReadonlyMap<string, boolean>>(NO_MANUAL_FOLDS);
   /** The file the reader shows, which the tree marks as current. */
   let open = $state<string | null>(null);
   /** The live reader, so the rail's jump-backs can reach its lines. */
@@ -560,22 +569,25 @@
         case 'ArrowLeft':
         case 'ArrowRight': {
           const row = tree.find((held) => held.path === keyRow);
-          if (row?.kind !== 'dir') return;
+          // A filter's folder rows draw no disclosure, so a fold key has
+          // nothing to act on and takes nothing from the browser.
+          if (row?.kind !== 'dir' || query.trim() !== '') return;
           event.preventDefault();
           const isClosed = closed.has(row.path);
           if (
             (event.key === 'ArrowRight' && isClosed) ||
             (event.key === 'ArrowLeft' && !isClosed)
           ) {
-            toggleClosed(closed, row.path);
+            fold(row.path);
           }
           break;
         }
         case 'Enter': {
           const row = tree.find((held) => held.path === keyRow);
           if (row === undefined) return;
+          if (row.kind === 'dir' && query.trim() !== '') return;
           event.preventDefault();
-          if (row.kind === 'dir') toggleClosed(closed, row.path);
+          if (row.kind === 'dir') fold(row.path);
           else open = row.path;
           break;
         }
@@ -768,10 +780,27 @@
     tab = 'files';
     open = row.thread.anchor.path;
     pendingLine = row.line ?? row.thread.anchor.line;
+    // A jumped file may not match the filter, and a tree without its row
+    // would open the reader on nothing.
+    query = '';
+    reveal(row.thread.anchor.path);
   }
 
   const shown = $derived(matchedEntries(entries, query));
+  const closed = $derived(foldsFor(shown, query, folded));
   const tree = $derived(indexTreeRows(shown, closed));
+
+  /** Fold or open a folder, whichever the press or key asks for. A filter's
+   *  tree is a match list, so its folds are not the reader's to set. */
+  function fold(path: string): void {
+    if (query.trim() !== '') return;
+    folded = withFold(folded, path, !closed.has(path));
+  }
+
+  /** Open every folder above `path`, so a jump lands on a visible row. */
+  function reveal(path: string): void {
+    folded = openedForJump(folded, path);
+  }
 
   /** Comments dropped on one file, from the seat-tree half - the row's pill. */
   function droppedCount(path: string): number {
@@ -992,7 +1021,8 @@
               {closed}
               here={open}
               active={keyRow}
-              ondir={(path) => toggleClosed(closed, path)}
+              foldable={query.trim() === ''}
+              ondir={fold}
               onfile={(path) => (open = path)}
             >
               {#snippet trailing(row: TreeRow<unknown>)}

@@ -1,3 +1,4 @@
+import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
@@ -14,6 +15,9 @@ import { subagents } from './chat/subagents.svelte';
 import { tasks } from './chat/tasks.svelte';
 import Composer from './composer/Composer.svelte';
 import type { ComposerProps, ComposerRecord } from './composer/view';
+import type { FileEntry } from './composer/wire';
+import FileTree from './components/FileTree.svelte';
+import { foldsFor, indexTreeRows } from './files/tree';
 import {
   permissionAsk,
   questionAsk,
@@ -522,6 +526,66 @@ describe('axe over the rendered pages', () => {
       },
     }).body;
     expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The folded tree, which is the first state a screen reader meets: a
+   * folder holding a file says it is closed, a folder holding only folders
+   * says it is open, and the keyboard's row keeps its mark through a fold.
+   */
+  it('draws the folded tree with its closed rows named, with no violations', async () => {
+    const entries: FileEntry[] = [
+      'client/src/files/Files.svelte',
+      'client/package.json',
+      'crates/forge-server/src/surface.rs',
+      'README.md',
+    ].map((relPath) => ({
+      relPath,
+      relPathLower: relPath.toLowerCase(),
+      basenameLower: (relPath.split('/').pop() ?? relPath).toLowerCase(),
+      depth: relPath.split('/').length - 1,
+    }));
+    const closed = foldsFor(entries, '', new Map());
+    const draw = (shut: ReadonlySet<string>, foldable = true): string =>
+      render(FileTree, {
+        props: {
+          rows: indexTreeRows(entries, shut),
+          heading: 'Tree',
+          label: "the seat's tree",
+          count: entries.length,
+          closed: shut,
+          here: null,
+          active: 'client',
+          foldable,
+          ondir: () => {},
+          onfile: () => {},
+        },
+      }).body;
+    const html = draw(closed);
+    const doc = new JSDOM(html).window.document;
+    const row = (path: string): Element | null => doc.querySelector(`[data-path="${path}"]`);
+    expect(
+      row('client')?.getAttribute('aria-expanded'),
+      'a folder holding a file starts shut',
+    ).toBe('false');
+    expect(
+      row('crates')?.getAttribute('aria-expanded'),
+      'a folder holding only folders starts open',
+    ).toBe('true');
+    expect(
+      row('client')?.classList.contains('key'),
+      'the keyboard mark is on the active row, not any row',
+    ).toBe(true);
+    expect(await idsOf(html)).toEqual([]);
+
+    // Under a filter the folder rows are a match list's, not controls.
+    const filtered = new JSDOM(draw(foldsFor(entries, 'surface', new Map()), false)).window
+      .document;
+    const plain = filtered.querySelector('[data-path="crates"]');
+    expect(plain?.tagName, 'a filtered folder row is not a control').toBe('DIV');
+    expect(plain?.hasAttribute('aria-expanded'), 'and announces no disclosure').toBe(false);
+    expect(plain?.querySelector('.rv-arw')?.textContent, 'and draws no chevron').toBe('');
+    expect(await idsOf(filtered.body.innerHTML)).toEqual([]);
   });
 
   /**
