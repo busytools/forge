@@ -662,6 +662,15 @@ impl BrowserHost {
     /// directory, so a close ends the run and never the logins.
     #[cfg(desktop)]
     pub async fn close(&self, name: &str) -> Result<(), String> {
+        let _launching = self.launch.lock().await;
+        self.close_locked(name).await
+    }
+
+    /// [`BrowserHost::close`] with the launch mutex already held, so the
+    /// idle sweep - which holds it across its verdict - can close without
+    /// waiting on its own guard.
+    #[cfg(desktop)]
+    async fn close_locked(&self, name: &str) -> Result<(), String> {
         let dir = {
             let named = self.named.lock().await;
             match named.get(name).map(|entry| entry.dir.clone()) {
@@ -673,7 +682,8 @@ impl BrowserHost {
             return Err(format!("no browser profile is open under '{name}'"));
         }
         let cache = profiles::cef_cache(&dir);
-        self.end_host(&cache).await;
+        let _lock = profiles::LaunchLock::acquire(&cache).await.ok();
+        self.end_host_locked(&cache).await;
         let mut named = self.named.lock().await;
         named.remove(name);
         Ok(())
@@ -872,6 +882,10 @@ impl BrowserHost {
     /// shared browser is closed where it stands - it is not a profile to
     /// remove. **The clock goes with it**: the entry a closed profile leaves
     /// would otherwise re-nudge and re-close a dead browser every pass.
+    ///
+    /// **The caller holds the launch mutex** (the idle sweep's
+    /// `close_guarded` does), so this uses the locked paths: taking it again
+    /// here would wait on its own future for ever.
     #[cfg(desktop)]
     pub(crate) async fn close_idle(&self, name: Option<&str>) {
         match name {
@@ -880,15 +894,17 @@ impl BrowserHost {
                     let named = self.named.lock().await;
                     named.get(name).map(|entry| profiles::cef_cache(&entry.dir))
                 };
-                let _ = self.close(name).await;
+                let _ = self.close_locked(name).await;
                 if let Some(cache) = dir {
                     self.touches.lock().await.remove(&cache);
                 }
             }
             None => {
                 if let Ok(paths) = self.paths.clone() {
-                    self.end_host(&paths.cef_shared()).await;
-                    self.touches.lock().await.remove(&paths.cef_shared());
+                    let cache = paths.cef_shared();
+                    let _lock = profiles::LaunchLock::acquire(&cache).await.ok();
+                    self.end_host_locked(&cache).await;
+                    self.touches.lock().await.remove(&cache);
                 }
             }
         }
