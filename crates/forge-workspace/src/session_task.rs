@@ -5950,6 +5950,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         }
     }
 

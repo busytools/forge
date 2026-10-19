@@ -122,6 +122,10 @@ pub(crate) struct TaskPatch {
     pub rank: Option<i64>,
     #[serde(default)]
     pub verify: Option<forge_primitives::tasks::Verify>,
+    /// Whether the lead parks this wait by design: the chase leaves it
+    /// alone rather than nudging it. Applies to a row that is waiting.
+    #[serde(default)]
+    pub parked: Option<bool>,
     /// Links to attach; a target already present on the row is left as it
     /// is, so the same PR linked twice stays one link.
     #[serde(default)]
@@ -167,6 +171,11 @@ impl TaskPatch {
         }
         if let Some(verify) = self.verify {
             task.verify = Some(verify);
+        }
+        if let Some(parked) = self.parked
+            && let Some(wait) = task.waiting_on.as_mut()
+        {
+            wait.parked = parked;
         }
         for draft in &self.links_add {
             if !task.links.iter().any(|l| l.target == draft.target) {

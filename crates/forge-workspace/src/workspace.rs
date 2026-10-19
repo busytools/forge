@@ -5435,10 +5435,8 @@ impl Workspace {
                                 ),
                             );
                         }
-                        Ok(None) => self.board_edit_refused(
-                            "a reopen",
-                            "the row it named is no longer there",
-                        ),
+                        Ok(None) => self
+                            .board_edit_refused("a reopen", "the row it named is no longer there"),
                         Err(refused) => {
                             tracing::debug!(
                                 target: "forge_workspace::tasks",
@@ -5459,10 +5457,9 @@ impl Workspace {
                             "a reservation",
                             "the row it named is no longer there",
                         ),
-                        Err(refused) => self.board_edit_refused(
-                            "a reservation",
-                            &refused.to_string(),
-                        ),
+                        Err(refused) => {
+                            self.board_edit_refused("a reservation", &refused.to_string())
+                        }
                     }
                 }
                 Command::TaskAssign { project, id, owner } => {
@@ -10174,6 +10171,7 @@ path = "{}"
                 last_fire: None,
                 next_fire: t0,
                 team_role: Some("steward".to_owned()),
+                wake: true,
             });
         }
 
@@ -10591,6 +10589,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: team_role.map(str::to_owned),
+            wake: true,
         }
     }
 
@@ -13510,6 +13509,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         }
     }
 

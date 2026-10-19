@@ -344,12 +344,7 @@ pub fn build_forge_server(
         builder = gotify::add_tools(builder, gotify, slot.clone());
     }
     if families.contains(&McpFamily::Tasks) {
-        builder = tasks::add_tools(
-            builder,
-            tasks,
-            slot.clone(),
-            matches!(kind, SessionKind::Lead),
-        );
+        builder = tasks::add_tools(builder, tasks, slot.clone(), matches!(kind, SessionKind::Lead));
     }
     // Doubly gated: the family is selected AND a client exists - a
     // disabled `[systemone]` leaves no tool a session could try.

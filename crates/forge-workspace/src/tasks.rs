@@ -222,10 +222,9 @@ impl std::fmt::Display for MoveError {
                 "\"{subject}\" is waiting on the user; the board's answer or approve settles it, \
                  and closing the epic cannot take the ask away"
             ),
-            Self::AttestLeadOnly => write!(
-                f,
-                "only the project lead may attest an approval; this session is a worker"
-            ),
+            Self::AttestLeadOnly => {
+                write!(f, "only the project lead may attest an approval; this session is a worker")
+            }
             Self::AttestNeedsEvidence => write!(
                 f,
                 "an attestation needs the approval quoted in `approval`, and it must not be empty"
@@ -968,13 +967,8 @@ impl Workspace {
                 None => None,
             };
             let prior = tasks[index].status;
-            tasks[index].waiting_on = Some(Waiting {
-                kind: Some(kind),
-                detail,
-                on,
-                verification: false,
-                parked: false,
-            });
+            tasks[index].waiting_on =
+                Some(Waiting { kind: Some(kind), detail, on, verification: false, parked: false });
             tasks[index].status = TaskStatus::Waiting;
             tasks[index].updated_at = at;
             self.persist_task(&tasks[index]);
@@ -1831,9 +1825,8 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-reopen-none");
         row_awaiting_look(&ws, "t-1");
 
-        let refused = ws
-            .reopen_task("proj", &TaskId::from("t-1"))
-            .expect_err("nothing was attested");
+        let refused =
+            ws.reopen_task("proj", &TaskId::from("t-1")).expect_err("nothing was attested");
         assert_eq!(refused, MoveError::NotAttested);
         assert_eq!(ws.tasks_for_project("proj")[0].status, TaskStatus::Waiting);
     }

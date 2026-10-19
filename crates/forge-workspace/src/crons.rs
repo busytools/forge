@@ -342,6 +342,20 @@ impl Workspace {
                         self.advance_or_remove_cron(id, now);
                     }
                 }
+                // The owner is asleep and this cron may not wake it: leave
+                // the fire due, unadvanced, so the next session start (or a
+                // tick while the owner is awake) runs it. Nothing to warn
+                // about - the cron asked for exactly this.
+                CronFireOutcome::SkippedAsleep => {
+                    tracing::debug!(
+                        target: "forge_workspace::crons",
+                        event_name = "cron_skipped_asleep",
+                        project = %cron.project_name,
+                        cron_id = %id,
+                        "the cron's owner is asleep and this cron does not wake it; the fire \
+                         stays due",
+                    );
+                }
                 // Command channel closed (shutting down): leave the cron
                 // due so the next boot catch-up re-fires it - don't consume
                 // a fire that never handed off.
@@ -545,6 +559,7 @@ mod tests {
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: owner.map(str::to_owned),
+            wake: true,
         }
     }
 
@@ -735,6 +750,7 @@ mod tests {
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         };
 
         ws.push_cron(entry.clone());
@@ -874,6 +890,7 @@ mod tests {
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         });
         ws.advance_or_remove_cron(&CronId::from("r"), fired);
         let after = ws.crons_for_project("forge");
@@ -891,6 +908,7 @@ mod tests {
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         });
         ws.advance_or_remove_cron(&CronId::from("o"), fired);
         assert!(
@@ -923,6 +941,7 @@ mod tests {
             last_fire: None,
             next_fire: past,
             team_role: None,
+            wake: true,
         });
         ws.push_cron(CronEntry {
             id: CronId::from("later"),
@@ -934,6 +953,7 @@ mod tests {
             last_fire: None,
             next_fire: far_future,
             team_role: None,
+            wake: true,
         });
 
         ws.enable_test_dispatch_intercept();
@@ -991,6 +1011,7 @@ mod tests {
                 last_fire: None,
                 next_fire: past,
                 team_role: None,
+                wake: true,
             },
             CronEntry {
                 id: CronId::from("once"),
@@ -1002,6 +1023,7 @@ mod tests {
                 last_fire: None,
                 next_fire: past,
                 team_role: None,
+                wake: true,
             },
             CronEntry {
                 id: CronId::from("future"),
@@ -1013,6 +1035,7 @@ mod tests {
                 last_fire: None,
                 next_fire: far_future,
                 team_role: None,
+                wake: true,
             },
         ] {
             ws.push_cron(entry);
@@ -1334,6 +1357,53 @@ mod tests {
         );
     }
 
+    /// A standing cron that may not wake its owner (#2423/C): while the
+    /// owner sleeps the fire is skipped and the entry stays due, so the
+    /// next session start (or a tick while it is awake) runs it. The same
+    /// entry with `wake: true` spawns, which is the control.
+    #[test]
+    fn a_no_wake_cron_skips_a_sleeping_owner_and_stays_due() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("proj", "/tmp/wc-nowake");
+        ws.enable_test_dispatch_intercept();
+        let now = std::time::SystemTime::now();
+
+        let mut sweep = schedule("sweep", "proj", "sweep", None);
+        sweep.next_fire = std::time::SystemTime::UNIX_EPOCH;
+        sweep.wake = false;
+        ws.push_cron(sweep);
+        ws.fire_due_crons(now);
+
+        let stored = ws.crons_for_project("proj");
+        assert_eq!(stored.len(), 1, "the skipped fire left the cron in place");
+        assert_eq!(stored[0].last_fire, None, "and did not count as a fire");
+        assert_eq!(
+            stored[0].next_fire,
+            std::time::SystemTime::UNIX_EPOCH,
+            "the entry stays due, so a session start runs it",
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "no session was woken");
+        assert!(parked_crons(&ws, "proj", None).is_empty(), "and nothing was parked");
+
+        // Control: the same entry with wake on spawns its sleeping owner.
+        let mut wakeful = schedule("wakeful", "proj", "stand-up", None);
+        wakeful.next_fire = std::time::SystemTime::UNIX_EPOCH;
+        ws.push_cron(wakeful);
+        ws.fire_due_crons(now);
+        assert!(
+            !ws.drain_test_dispatch_buffer().is_empty(),
+            "a wakeful cron still wakes its owner",
+        );
+        assert_eq!(
+            ws.crons_for_project("proj")
+                .iter()
+                .find(|cron| cron.id == forge_primitives::cron::CronId::from("wakeful"))
+                .and_then(|cron| cron.last_fire),
+            Some(now),
+            "and its fire advances the schedule",
+        );
+    }
+
     #[test]
     fn deliver_worker_cron_with_owner_conclusively_gone_is_target_gone() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -1600,6 +1670,7 @@ mod tests {
             crate::spawn::CronFireOutcome::TargetGone => "TargetGone",
             crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. } => "TargetCannotBeWoken",
             crate::spawn::CronFireOutcome::DispatchFailed => "DispatchFailed",
+            crate::spawn::CronFireOutcome::SkippedAsleep => "SkippedAsleep",
         }
     }
 
@@ -1717,6 +1788,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire,
             team_role: None,
+            wake: true,
         };
         // Due one tick ago: within the jitter window, on-time. Due three
         // ticks ago: a genuine catch-up, missed.
@@ -1759,6 +1831,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH, // overdue -> due now
             team_role: None,
+            wake: true,
         });
 
         ws.enable_test_dispatch_intercept();
@@ -1803,6 +1876,7 @@ provider = "anthropic"
                 last_fire: None,
                 next_fire: past,
                 team_role: Some("steward".to_owned()),
+                wake: true,
             });
         }
 
@@ -1847,6 +1921,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         });
         ws.advance_or_remove_cron(&CronId::from("impossible"), std::time::SystemTime::now());
         assert!(
@@ -1876,6 +1951,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH, // overdue -> due at the first tick
             team_role: None,
+            wake: true,
         });
 
         ws.enable_test_dispatch_intercept();

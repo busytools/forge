@@ -106,10 +106,9 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             map.insert(key.to_owned(), serde_json::json!(value));
         }
     }
-    for (key, value) in [
-        ("verify", task.verify.map(verify_str)),
-        ("reserved", task.reserved.map(|_| "user")),
-    ] {
+    for (key, value) in
+        [("verify", task.verify.map(verify_str)), ("reserved", task.reserved.map(|_| "user"))]
+    {
         if let Some(value) = value {
             map.insert(key.to_owned(), serde_json::json!(value));
         }
@@ -186,8 +185,9 @@ impl Tool for Create {
          minted `verify: \"user\"` explicitly: it ends parked on the user, and the board's \
          approve is what completes it. The gate is minted on the row that owes the look; an \
          epic's `verify: \"user\"` governs the epic's own completion, and a child never \
-         inherits it - a child that owes no look completes on its own terms. Returns the \
-         stored task \
+         inherits it - a child that owes no look completes on its own terms. `reserved: \
+         \"user\"` reserves the pick for the user, and the board sweep leaves it for them. \
+         Returns the stored task \
          with its id (use it with tasks__update / tasks__delete). Any session in the project \
          may call this."
     }
@@ -239,6 +239,13 @@ impl Tool for Create {
                                     its epic's. A row whose deliverable IS the user's own \
                                     read or decision states `user`; anything else owes no \
                                     look, even under a `user` epic.",
+                },
+                "reserved": {
+                    "type": "string",
+                    "enum": ["user"],
+                    "description": "Set `user` to reserve this pick for the user: the board \
+                                    sweep leaves a reserved row for them instead of \
+                                    dispatching it.",
                 },
                 "links": {
                     "type": "array",
@@ -369,6 +376,12 @@ impl Tool for Update {
                                     Can be set here, but a `user` gate is the user's to \
                                     clear: an update cannot clear it. The gate is minted on \
                                     the row, so moving the row changes nothing.",
+                },
+                "parked": {
+                    "type": "boolean",
+                    "description": "Mark a waiting row's wait as parked by design - the user's \
+                                    own deferral - so the chase leaves it alone. Only a \
+                                    waiting row takes it.",
                 },
                 "links_add": {
                     "type": "array",
@@ -912,6 +925,7 @@ mod tests {
                 "parent": "epic",
                 "rank": 10,
                 "verify": "user",
+                "reserved": "user",
                 "links": [
                     { "kind": "issue", "label": "PR #1173", "target": "https://example.invalid/pull/1173" },
                     { "target": "docs/plan.md" }
@@ -929,6 +943,11 @@ mod tests {
         assert_eq!(draft.parent.as_deref(), Some("epic"));
         assert_eq!(draft.rank, Some(10));
         assert_eq!(draft.verify, Some(forge_primitives::tasks::Verify::User));
+        assert_eq!(
+            draft.reserved,
+            Some(forge_primitives::tasks::ReservedBy::User),
+            "the reserved pick reaches the facade",
+        );
         assert_eq!(draft.links.len(), 2);
         assert_eq!(draft.links[0].kind, Some(LinkKind::Issue));
         assert_eq!(

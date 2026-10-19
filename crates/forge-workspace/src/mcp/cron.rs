@@ -80,6 +80,9 @@ fn cron_to_json(entry: &CronEntry) -> serde_json::Value {
     });
     if let (Some(desc), Some(map)) = (&entry.description, obj.as_object_mut()) {
         map.insert("description".to_owned(), serde_json::Value::String(desc.clone()));
+        if !entry.wake {
+            map.insert("wake".to_owned(), serde_json::Value::Bool(false));
+        }
     }
     obj
 }
@@ -113,6 +116,8 @@ struct CreateArgs {
     prompt: String,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    wake: Option<bool>,
 }
 
 #[async_trait::async_trait]
@@ -129,7 +134,9 @@ impl Tool for Create {
          text delivered as a user turn when it fires). Optionally pass `description` - a short \
          human summary of what the job does and why - which the UI shows as the schedule's \
          headline. If that session isn't open at fire time, forge spawns it first, unless it can \
-         no longer be started (a worker whose directory is gone). Returns the cron's id (use it \
+         no longer be started (a worker whose directory is gone); pass `wake: false` for a \
+         standing sweep, where a tick that finds the session asleep is skipped and the entry \
+         stays due for the next session start. Returns the cron's id (use it \
          with cron__delete). Recurring crons repeat; run-once crons delete themselves after \
          firing. A run-once cron is a poor fit for retrying a transient failure - a rate limit \
          or a blip clears in seconds, so the retry fires later as a user turn into a session \
@@ -162,6 +169,13 @@ impl Tool for Create {
                                     (e.g. \"Morning summary\"). Shown as the schedule's \
                                     headline in the UI; falls back to the prompt's first line \
                                     when omitted.",
+                },
+                "wake": {
+                    "type": "boolean",
+                    "description": "Whether a fire may wake a sleeping session (default true). \
+                                    Set false for a standing sweep: a tick that finds the \
+                                    session asleep is skipped and the entry stays due, so the \
+                                    next session start (or a tick while it is awake) runs it.",
                 },
             },
             "required": ["prompt"],
@@ -202,7 +216,13 @@ impl Tool for Create {
             let trimmed = d.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_owned())
         });
-        match self.facade.create_cron(&self.slot, kind, args.prompt, description) {
+        match self.facade.create_cron(
+            &self.slot,
+            kind,
+            args.prompt,
+            description,
+            args.wake.unwrap_or(true),
+        ) {
             Ok(entry) => match serde_json::to_string_pretty(&cron_to_json(&entry)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -329,6 +349,7 @@ mod tests {
             last_fire: None,
             next_fire: SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         }
     }
 
@@ -353,6 +374,25 @@ mod tests {
         assert!(matches!(&calls[0].1, CronKind::Recurring(e) if e == "0 9 * * *"));
         assert_eq!(calls[0].2, "stand-up");
         assert_eq!(calls[0].3, None, "no description arg reaches the facade as None");
+        assert!(calls[0].4, "an unstated `wake` reaches the facade as the waking default");
+    }
+
+    /// A standing sweep passes `wake: false`, and the tool threads it: the
+    /// scheduler then skips a sleeping owner instead of spawning it.
+    #[tokio::test]
+    async fn create_threads_wake_false_for_a_standing_sweep() {
+        let mock = Arc::new(MockCronFacade::new());
+        let tool = Create { facade: mock.clone(), slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "schedule": "*/30 * * * *",
+                "prompt": "sweep the board",
+                "wake": false
+            })))
+            .await;
+        assert!(!out.is_error, "a no-wake create succeeds: {}", text_of(&out));
+        assert!(!mock.create_calls.lock()[0].4, "the no-wake flag reaches the facade");
     }
 
     #[tokio::test]
