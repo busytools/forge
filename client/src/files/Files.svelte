@@ -73,7 +73,7 @@
   import Reader from './Reader.svelte';
   import { contextForComment, railRows, threadsOnPath, treeScope, type RailRow } from './comments';
   import type { ReaderBlock, ReaderHandle } from './reader';
-  import { closedFolders, indexTreeRows, foldedByDefault, matchedEntries, NO_FOLDS } from './tree';
+  import { ancestorsOf, foldsFor, indexTreeRows, matchedEntries } from './tree';
 
   let {
     connection,
@@ -770,31 +770,26 @@
     tab = 'files';
     open = row.thread.anchor.path;
     pendingLine = row.line ?? row.thread.anchor.line;
+    // A jumped file may not match the filter, and a tree without its row
+    // would open the reader on nothing.
+    query = '';
     reveal(row.thread.anchor.path);
   }
 
   const shown = $derived(matchedEntries(entries, query));
-  /** A filter's job is to show what matched, so the defaults stand down
-   *  while one is on; a fold the reader set still holds. */
-  const filtering = $derived(query.trim() !== '');
-  const startFolded = $derived(filtering ? NO_FOLDS : foldedByDefault(shown));
-  const closed = $derived(closedFolders(startFolded, folded));
+  const closed = $derived(foldsFor(shown, query, folded));
   const tree = $derived(indexTreeRows(shown, closed));
 
-  /** Fold or open a folder, whichever the press or key asks for. */
+  /** Fold or open a folder, whichever the press or key asks for. A filter's
+   *  tree is a match list, so its folds are not the reader's to set. */
   function fold(path: string): void {
+    if (query.trim() !== '') return;
     folded.set(path, !closed.has(path));
   }
 
   /** Open every folder above `path`, so a jump lands on a visible row. */
   function reveal(path: string): void {
-    const parts = path.split('/');
-    parts.pop();
-    let prefix = '';
-    for (const part of parts) {
-      prefix = prefix === '' ? part : `${prefix}/${part}`;
-      folded.set(prefix, false);
-    }
+    for (const ancestor of ancestorsOf(path)) folded.set(ancestor, false);
   }
 
   /** Comments dropped on one file, from the seat-tree half - the row's pill. */

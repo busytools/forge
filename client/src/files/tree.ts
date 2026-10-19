@@ -23,7 +23,8 @@ export function indexTreeRows(
 /**
  * The folders that start folded: one holding a file directly, because a
  * file makes it leaf-bearing. A folder holding only folders starts open, so
- * the tree's skeleton reads without a click and no file rows show.
+ * the tree's skeleton reads without a click and no file rows inside folders
+ * show.
  */
 export function foldedByDefault(files: FileEntry[]): Set<string> {
   const dirs = new Set<string>();
@@ -35,7 +36,7 @@ export function foldedByDefault(files: FileEntry[]): Set<string> {
 }
 
 /** No folder folded: what a filter shows, since its job is the matches. */
-export const NO_FOLDS: ReadonlySet<string> = new Set<string>();
+const NO_FOLDS: ReadonlySet<string> = new Set<string>();
 
 /**
  * The folders drawn shut: the defaults, with the reader's own folds over
@@ -50,6 +51,33 @@ export function closedFolders(
   for (const path of defaults) if (folded.get(path) !== false) shut.add(path);
   for (const [path, isShut] of folded) if (isShut && !defaults.has(path)) shut.add(path);
   return shut;
+}
+
+/**
+ * The folders drawn shut for `files` under `query`. A filter's job is to
+ * show what matched, so every fold stands down while one is on, the
+ * reader's own included; clearing it brings their folds back.
+ */
+export function foldsFor(
+  files: FileEntry[],
+  query: string,
+  folded: ReadonlyMap<string, boolean>,
+): ReadonlySet<string> {
+  if (query.trim() !== '') return NO_FOLDS;
+  return closedFolders(foldedByDefault(files), folded);
+}
+
+/** Every folder above `path`, outermost first: what a jump opens. */
+export function ancestorsOf(path: string): string[] {
+  const parts = path.split('/');
+  parts.pop();
+  const out: string[] = [];
+  let prefix = '';
+  for (const part of parts) {
+    prefix = prefix === '' ? part : `${prefix}/${part}`;
+    out.push(prefix);
+  }
+  return out;
 }
 
 /**

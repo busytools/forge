@@ -14,6 +14,9 @@ import { subagents } from './chat/subagents.svelte';
 import { tasks } from './chat/tasks.svelte';
 import Composer from './composer/Composer.svelte';
 import type { ComposerProps, ComposerRecord } from './composer/view';
+import type { FileEntry } from './composer/wire';
+import FileTree from './components/FileTree.svelte';
+import { foldsFor, indexTreeRows } from './files/tree';
 import {
   permissionAsk,
   questionAsk,
@@ -504,6 +507,43 @@ describe('axe over the rendered pages', () => {
         dictation: false,
       },
     }).body;
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The folded tree, which is the first state a screen reader meets: a
+   * folder holding a file says it is closed, a folder holding only folders
+   * says it is open, and the keyboard's row keeps its mark through a fold.
+   */
+  it('draws the folded tree with its closed rows named, with no violations', async () => {
+    const entries: FileEntry[] = [
+      'client/src/files/Files.svelte',
+      'client/package.json',
+      'crates/forge-server/src/surface.rs',
+      'README.md',
+    ].map((relPath) => ({
+      relPath,
+      relPathLower: relPath.toLowerCase(),
+      basenameLower: (relPath.split('/').pop() ?? relPath).toLowerCase(),
+      depth: relPath.split('/').length - 1,
+    }));
+    const closed = foldsFor(entries, '', new Map());
+    const html = render(FileTree, {
+      props: {
+        rows: indexTreeRows(entries, closed),
+        heading: 'Tree',
+        label: "the seat's tree",
+        count: entries.length,
+        closed,
+        here: null,
+        active: 'client',
+        ondir: () => {},
+        onfile: () => {},
+      },
+    }).body;
+    expect(html, 'a folder holding a file starts shut').toContain('aria-expanded="false"');
+    expect(html, 'a folder holding only folders starts open').toContain('aria-expanded="true"');
+    expect(html, 'the keyboard mark stays on the folded row').toContain('class="rv-dir key"');
     expect(await idsOf(html)).toEqual([]);
   });
 

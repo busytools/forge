@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { filesOnly, type FileEntry } from '../composer/wire';
-import { closedFolders, indexTreeRows, foldedByDefault, matchedEntries } from './tree';
+import {
+  ancestorsOf,
+  closedFolders,
+  foldsFor,
+  indexTreeRows,
+  foldedByDefault,
+  matchedEntries,
+} from './tree';
 
 function entry(relPath: string): FileEntry {
   return {
@@ -43,6 +50,48 @@ describe('the seat index as a tree', () => {
     expect([...closedFolders(defaults, new Map())]).toEqual(['src']);
     expect([...closedFolders(defaults, new Map([['src', false]]))]).toEqual([]);
     expect([...closedFolders(defaults, new Map([['docs', true]]))].sort()).toEqual(['docs', 'src']);
+  });
+
+  /**
+   * The filter wins over every fold, the reader's own included: a match
+   * inside a folder they shut still draws, because a search that hides its
+   * hits is not a search. Clearing the query restores their folds.
+   */
+  it("a filter opens the tree past the reader's folds, and clearing restores them", () => {
+    const entries = [entry('client/src/files/Files.svelte')];
+    const folded = new Map<string, boolean>([
+      ['client', true],
+      ['client/src', true],
+    ]);
+    const filtering = foldsFor(entries, 'Files.svelte', folded);
+    expect([...filtering]).toEqual([]);
+    expect(indexTreeRows(entries, filtering).map((row) => row.path)).toContain(
+      'client/src/files/Files.svelte',
+    );
+
+    const cleared = foldsFor(entries, '', folded);
+    expect([...cleared].sort()).toEqual(['client', 'client/src', 'client/src/files']);
+  });
+
+  /**
+   * A rail jump clears the filter and opens the folders above the file, so
+   * its row is drawn and marked rather than the reader opening on nothing.
+   */
+  it('a rail jump opens the folders above its file', () => {
+    const entries = [entry('crates/forge-server/src/surface.rs'), entry('README.md')];
+    expect(ancestorsOf('crates/forge-server/src/surface.rs')).toEqual([
+      'crates',
+      'crates/forge-server',
+      'crates/forge-server/src',
+    ]);
+    expect(ancestorsOf('README.md'), 'a root file has no folders above it').toEqual([]);
+
+    const folded = new Map<string, boolean>();
+    for (const ancestor of ancestorsOf('crates/forge-server/src/surface.rs')) {
+      folded.set(ancestor, false);
+    }
+    const rows = indexTreeRows(entries, foldsFor(entries, '', folded));
+    expect(rows.map((row) => row.path)).toContain('crates/forge-server/src/surface.rs');
   });
 
   it('a folder with files stays folded, so its subfolders start hidden too', () => {
