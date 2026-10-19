@@ -2413,6 +2413,47 @@ describe('the conversation the chat draws', () => {
     ).toEqual(['t0', 't1', 't1b']);
   });
 
+  /**
+   * The fill's stop is the conversation's own bookkeeping, written where its
+   * ask bookkeeping is (#2411 round 3).
+   *
+   * **Behaviour cannot separate every edge** - a landing clears the mark
+   * whatever it hit - but the state is what the column reads, so the contract
+   * is pinned here: an older ask marks the cursor it went out for, a page
+   * repeating that cursor keeps it, and a refusal, a dropped socket and a
+   * swap each answer the ask with nothing and clear it.
+   */
+  it('keeps the fill stop in the conversation, and clears it wherever an ask ends', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first'), turn('t1b', 'and then')], '2'));
+
+    chat.older();
+    expect(get(chat.value).askedFor, 'an older ask marks the cursor it went out for').toBe('2');
+
+    server.send(page([turn('t0', 'a repeat')], '2'));
+    expect(get(chat.value).askedFor, 'a page that repeats the cursor keeps the stop').toBe('2');
+
+    chat.older();
+    server.refuse('more', 'the conversation is not held yet; asking again may find it');
+    expect(get(chat.value).askedFor, 'a refusal answers the ask with nothing').toBeNull();
+
+    chat.older();
+    server.reach('connecting');
+    expect(get(chat.value).askedFor, 'a dropped socket answers the ask with nothing').toBeNull();
+
+    server.reach('open');
+    server.send(page([turn('t0', 'a repeat')], '0'));
+    expect(get(chat.value).askedFor, "the reconnect's own answer frees the walk cursor").toBeNull();
+    chat.older();
+    expect(get(chat.value).askedFor, 'the walk marks the cursor it asks').toBe('2');
+
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+    expect(get(chat.value).askedFor, 'a swap starts from nothing').toBeNull();
+    stop();
+  });
+
   it('asks a refused page again while the column is live, and stops once one lands', () => {
     vi.useFakeTimers();
     const server = fakeConnection();

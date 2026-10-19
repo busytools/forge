@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientMessage, ServerMessage } from '../protocol';
-import type { Connection } from '../socket';
+import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 
 /**
@@ -28,6 +28,7 @@ vi.mock('./conversation', async (importOriginal) => {
 
 const { clear, firstGrowth, last, list, setMeasured } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
+const { default: SeatSwitch } = await import('./testing/seat-switch.svelte');
 const { scrollAsk } = await import('../session/scroll-ask');
 const { installResizeObserver, resized } = await import('./testing/viewport');
 
@@ -49,6 +50,7 @@ const turn = (key: string): unknown => ({
  */
 function stub() {
   const listeners = new Set<(message: ServerMessage) => void>();
+  const statuses = new Set<(status: ConnectionStatus) => void>();
   const asks: ClientMessage[] = [];
   let open = true;
   const connection = {
@@ -65,7 +67,10 @@ function stub() {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    onStatus: () => () => undefined,
+    onStatus: (fn: (status: ConnectionStatus) => void) => {
+      statuses.add(fn);
+      return () => statuses.delete(fn);
+    },
     store: () => undefined,
     settings: () => null,
     browserRole: () => false,
@@ -85,6 +90,19 @@ function stub() {
       for (const fn of listeners) {
         fn({ kind: 'page', conversation: LEAD, turns, cursor });
       }
+      flushSync();
+    },
+    /** One page for a named seat, which a switch test draws the other column from. */
+    pageFor(slot: SessionSlot, turns: unknown[], cursor: string | null): void {
+      for (const fn of listeners) {
+        fn({ kind: 'page', conversation: slot, turns, cursor });
+      }
+      flushSync();
+    },
+    /** The socket going down or coming back, as the connection reports it. */
+    reach(status: ConnectionStatus): void {
+      open = status === 'open';
+      for (const fn of statuses) fn(status);
       flushSync();
     },
     /** One session update for this seat, as the socket delivers it. */
@@ -132,6 +150,15 @@ function draw(server: ReturnType<typeof stub>): void {
     props: { slot: LEAD, connection: server.connection },
   });
   flushSync();
+}
+
+/** The older asks one seat was sent, in the order they went. */
+type MoreAsk = Extract<ClientMessage, { kind: 'more' }>;
+
+function asksFor(server: ReturnType<typeof stub>, slot: SessionSlot): MoreAsk[] {
+  return server.asks.filter(
+    (ask): ask is MoreAsk => ask.kind === 'more' && ask.conversation.label === slot.label,
+  );
 }
 
 /** Let the tick a settling compensation waits on run. */
@@ -683,6 +710,11 @@ describe('the history above a column that fits', () => {
       expect(server.asks.length, 'the beat passed, the same cursor is asked again').toBe(
         before + 1,
       );
+      const retried = server.asks[server.asks.length - 1];
+      expect(
+        retried?.kind === 'more' ? retried.before : undefined,
+        'the same cursor is the one asked',
+      ).toBe('2');
     } finally {
       vi.useRealTimers();
     }
@@ -761,6 +793,42 @@ describe('the history above a column that fits', () => {
   });
 
   it('asks again when a landing clears the beat without answering it', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw(server);
+      setMeasured(300, 320);
+      server.page([turn('t1'), turn('t2')], '2');
+      flushSync();
+      resized(100);
+      resized(100);
+      flushSync();
+      const before = server.asks.length;
+
+      // The empty page stamps the beat; then a newest page lands inside it (a
+      // seat return or a reconnect) and clears the beat without answering the
+      // beat's ask. The landing's own frame is the wake, before the beat.
+      server.page([], null);
+      flushSync();
+      expect(server.asks.length, 'the beat has not passed').toBe(before);
+      server.page([turn('t1'), turn('t2')], '2');
+      await vi.advanceTimersByTimeAsync(34);
+      flushSync();
+      const last = server.asks[server.asks.length - 1];
+      expect(server.asks.length, 'the cleared beat lets the fill ask again').toBe(before + 1);
+      expect(last?.kind === 'more' ? last.before : null, 'and it asks the same cursor').toBe('2');
+
+      // The cancelled beat's timer went with the landing: its own moment
+      // passing asks nothing.
+      await vi.advanceTimersByTimeAsync(2_100);
+      flushSync();
+      expect(server.asks.length, 'the cancelled beat asks nothing').toBe(before + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks the cursor a landing moved to, with no row reporting it', async () => {
     const server = stub();
     draw(server);
     setMeasured(300, 320);
@@ -770,20 +838,120 @@ describe('the history above a column that fits', () => {
     resized(100);
     await settleFrames();
     const before = server.asks.length;
+    expect(before, 'precondition: the fill asked above').toBe(2);
 
-    // The empty page stamps the beat; then a newest page lands inside it (a
-    // seat return or a reconnect) and clears the beat without answering the
-    // beat's ask. The mark it left goes with the beat.
-    server.page([], null);
+    // A page that repeats both rows under a cursor one above them: nothing
+    // new draws and no row reports a height, so the size observer has no
+    // event to run on. The landing's own deferred check is the trigger.
+    server.page([turn('t1'), turn('t2')], '1');
     await settleFrames();
-    expect(server.asks.length, 'the beat has not passed').toBe(before);
+    const asks = asksFor(server, LEAD);
+    expect(asks.length, 'the landing woke the fill').toBe(3);
+    expect(asks[asks.length - 1]?.before, 'for the cursor the landing moved to').toBe('1');
+  });
+
+  it('asks the cursor again after a dropped socket answers with it', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
     server.page([turn('t1'), turn('t2')], '2');
     await settleFrames();
     resized(100);
+    resized(100);
     await settleFrames();
-    const last = server.asks[server.asks.length - 1];
-    expect(server.asks.length, 'the cleared beat lets the fill ask again').toBe(before + 1);
-    expect(last?.kind === 'more' ? last.before : null, 'and it asks the same cursor').toBe('2');
+    expect(asksFor(server, LEAD).at(-1)?.before, 'precondition: the fill asked above').toBe('2');
+    const before = server.asks.length;
+
+    // The socket dies with that ask in flight. The reconnect answers with the
+    // newest page, which spells the very cursor the fill last asked - so the
+    // landing count is the only thing that says the fill may ask it again.
+    server.reach('closed');
+    server.reach('open');
+    server.pageFor(LEAD, [turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    const asks = asksFor(server, LEAD);
+    expect(asks.length, 'the reconnect and the fill both asked').toBe(4);
+    expect(asks[asks.length - 2]?.before, 'the reconnect asks the newest page').toBeNull();
+    expect(asks[asks.length - 1]?.before, 'and the fill asks the same cursor again').toBe('2');
+    expect(server.asks.length, 'nothing else asked').toBe(before + 2);
+  });
+
+  it('does not ask at the beat once the room has overflowed', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw(server);
+      setMeasured(300, 320);
+      server.page([turn('t1'), turn('t2')], '2');
+      flushSync();
+      resized(100);
+      resized(100);
+      flushSync();
+      const before = server.asks.length;
+
+      // An empty page stamps the beat; before it fires the column grows and
+      // overflows. The beat wakes the fill, and the fit guard inside it - the
+      // one the timer reaches without the observer's wrapper - is what keeps
+      // the ask from going.
+      server.page([], null);
+      flushSync();
+      expect(server.asks.length, 'the beat has not passed').toBe(before);
+      setMeasured(900, 320);
+      await vi.advanceTimersByTimeAsync(2_100);
+      flushSync();
+      expect(server.asks.length, 'an overflowing column asks nothing on the beat').toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fills the seat it switches to, whose cursor spells the one it left', async () => {
+    const server = stub();
+    clear();
+    const other: SessionSlot = { ...LEAD, label: 'w1' };
+    const column = mount(SeatSwitch, {
+      target: document.body,
+      props: { connection: server.connection, first: LEAD, second: other },
+    }) as unknown as { flip: () => void };
+    app = column;
+    setMeasured(300, 320);
+    flushSync();
+
+    // The first seat loads and fills.
+    server.pageFor(LEAD, [turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    expect(
+      asksFor(server, LEAD).map((ask) => ask.before),
+      'the first seat filled',
+    ).toEqual([null, '2']);
+
+    // The second seat's conversation loads while the first is drawn, so the
+    // column never ran a fill for it: it arrives held, loaded and fitting,
+    // with nothing of it asked.
+    column.flip();
+    await settleFrames();
+    column.flip();
+    await settleFrames();
+    server.pageFor(other, [turn('t1'), turn('t2')], '2');
+    await settleFrames();
+
+    // Back to the second seat: its record spells the same cursor as the one
+    // the column was drawing. The return asks the newest page, and that
+    // answer lands the fill on the second seat's own bookkeeping.
+    column.flip();
+    await settleFrames();
+    server.pageFor(other, [turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    expect(
+      asksFor(server, other).map((ask) => ask.before),
+      'the second seat filled on its own cursor',
+    ).toEqual([null, null, '2']);
   });
 });
 
