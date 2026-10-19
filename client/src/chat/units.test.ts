@@ -1858,8 +1858,8 @@ describe('one turn folded into the units a view draws', () => {
       'The lead charter.md, does it get included as part of the Rust binary itself?',
     );
 
-    // A prompt that carried an image beside its words draws its words, and
-    // the image as the attachment row a typed turn's image draws.
+    // A prompt that carried attachments beside its words draws its words, and
+    // the image and document as the attachment rows a typed turn draws.
     const multi = fold([
       heard([
         {
@@ -1868,6 +1868,7 @@ describe('one turn folded into the units a view draws', () => {
           prompt: [
             { type: 'text', text: 'What is wrong with this layout?' },
             { type: 'image', source: { media_type: 'image/png' } },
+            { type: 'document', source: { media_type: 'application/pdf' } },
           ],
         },
       ]),
@@ -1875,7 +1876,34 @@ describe('one turn folded into the units a view draws', () => {
     expect(multi[0]?.kind === 'user' ? multi[0].text : '').toBe('What is wrong with this layout?');
     expect(multi[0]?.kind === 'user' ? multi[0].files : []).toEqual([
       { kind: 'image', mime: 'image/png', bytes: null },
+      { kind: 'document', mime: 'application/pdf', bytes: null },
     ]);
+  });
+
+  it('draws an image-only queued prompt as its attachment row, with no words', () => {
+    // The empty-text branch: nothing was typed beside the file, so the row is
+    // the attachment alone. The payload is what states the size.
+    const only = fold([
+      heard([
+        {
+          type: 'queued_command',
+          commandMode: 'prompt',
+          prompt: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+            },
+          ],
+        },
+      ]),
+    ]);
+
+    expect(only[0]?.kind).toBe('user');
+    expect(only[0]?.kind === 'user' ? only[0].text : 'x').toBe('');
+    expect(
+      only[0]?.kind === 'user' ? only[0].files : [],
+      'four base64 characters carry three bytes',
+    ).toEqual([{ kind: 'image', mime: 'image/png', bytes: 3 }]);
   });
 
   it('draws a queued peer envelope as the peer card it is', () => {

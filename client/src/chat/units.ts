@@ -514,9 +514,10 @@ function measuredBytes(block: Block): number | null {
 /** One block as the row an attachment draws, or `null` for anything else. */
 function attachedFile(block: Block): AttachedFile | null {
   if (block.type !== 'image' && block.type !== 'document') return null;
-  // Both kinds nest their mime and their bytes under `source`, which is the
-  // shape a tool result's image is read in too. A read turn sends the figure
-  // instead of the payload, so the size it measured stands in for it.
+  // Both kinds nest their mime and their bytes under `source`, the shape a
+  // tool result's image is read in too. Bytes come from the payload where it
+  // rides, or the size a read turn measured in its place; a queued prompt's
+  // nested payload is not stripped on replay, and #2440 covers that cost.
   const source = obj(block.source);
   return {
     kind: block.type,
@@ -535,10 +536,9 @@ function attachmentsOf(content: readonly unknown[]): AttachedFile[] {
       continue;
     }
     if (block.type !== 'queued_command' || !Array.isArray(block.prompt)) continue;
-    // A queued prompt's image rides inside its `prompt` array, and the same
-    // row a typed turn's image draws draws it.
+    // A queued prompt's attachment rides inside its `prompt` array, and the
+    // same row a typed turn's attachment draws draws it.
     for (const inner of blocksOf(block.prompt)) {
-      if (inner.type !== 'image') continue;
       const queued = attachedFile(inner);
       if (queued !== null) out.push(queued);
     }
@@ -560,9 +560,9 @@ function noteOf(frame: Frame): string | undefined {
 /**
  * The words a `queued_command` block carries: a plain string for a typed
  * prompt, or a content-block array for a multi-modal one, where only the text
- * blocks are what the reader typed. An image is not words: the attachment row
- * draws it from the block itself. Every other block draws as a `[type]`
- * placeholder so the row shows something rather than a blank.
+ * blocks are what the reader typed. An image or document is not words: the
+ * attachment row draws it from the block itself. Every other block draws as a
+ * `[type]` placeholder so the row shows something rather than a blank.
  *
  * A port of `queued_command_text` in forge-server's transcript fold.
  */
@@ -576,7 +576,7 @@ function queuedText(prompt: unknown): string {
     .map((block) => {
       const type = str(block, 'type');
       if (type === 'text') return str(block, 'text');
-      if (type === 'image') return null;
+      if (type === 'image' || type === 'document') return null;
       return type === null ? null : `[${type}]`;
     })
     .filter((part): part is string => part !== null)

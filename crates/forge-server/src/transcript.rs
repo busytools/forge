@@ -546,10 +546,10 @@ fn task_status(word: &str) -> Option<ToolCallStatus> {
 
 /// The text a `queued_command` block carries: a plain string for a typed
 /// prompt, or a content-block array for a multi-modal one, where only the
-/// text blocks are the words the user typed. An image is not text: a view
-/// draws it as an attachment row, from the block itself. Every other block
-/// renders as a `[type]` placeholder so the reader sees something rather
-/// than a blank.
+/// text blocks are the words the user typed. An image or document is not
+/// text: a view draws it as an attachment row, from the block itself. Every
+/// other block renders as a `[type]` placeholder so the reader sees
+/// something rather than a blank.
 pub fn queued_command_text(prompt: &serde_json::Value) -> String {
     if let Some(text) = prompt.as_str() {
         return text.to_owned();
@@ -563,8 +563,9 @@ pub fn queued_command_text(prompt: &serde_json::Value) -> String {
             Some("text") => {
                 block.get("text").and_then(serde_json::Value::as_str).map(str::to_owned)
             }
-            // `image` is drawn by a view's own attachment row, not as words.
-            Some("image") | None => None,
+            // `image` and `document` draw in a view's attachment row, not as
+            // words.
+            Some("image" | "document") | None => None,
             Some(other) => Some(format!("[{other}]")),
         })
         .collect::<Vec<String>>()
@@ -1507,11 +1508,12 @@ mod queued_command_tests {
 
     #[test]
     fn multi_block_prompt_concatenates_text_blocks() {
-        // An image is drawn by a view's own attachment row from the block it
-        // carries, so it is not words here as well.
+        // An image or document is drawn by a view's own attachment row from
+        // the block it carries, so it is not words here as well.
         let prompt = json!([
             {"type": "text", "text": "look at this"},
             {"type": "image", "source": {"type": "base64", "data": "..."}},
+            {"type": "document", "source": {"type": "base64", "data": "..."}},
         ]);
         assert_eq!(queued_command_text(&prompt), "look at this");
     }
