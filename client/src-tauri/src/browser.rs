@@ -1476,10 +1476,11 @@ impl BrowserHost {
         // **The page this raise shows is the page a restart reopens.** The
         // probe is outside the lock (its 2 s bound must not hold every
         // launch), and the write takes the short lock a call's refresh does.
-        let url = cef::spawn::page_url(host.port).await;
-        {
+        // A probe that finds nothing keeps the previous carry rather than
+        // clearing it.
+        if let Some(url) = cef::spawn::page_url(host.port).await {
             let _launching = self.launch.lock().await;
-            write_carried_page(&cache, url.as_deref());
+            write_carried_page(&cache, Some(&url));
         }
         Ok(host)
     }
@@ -1509,9 +1510,13 @@ impl BrowserHost {
                 },
             }
         };
-        let url = cef::spawn::page_url(port).await;
-        let _launching = self.launch.lock().await;
-        write_carried_page(cache, url.as_deref());
+        // **A failed probe keeps the carry.** Only an answer - even a blank
+        // or non-web one - may rewrite or clear it; a transient /json/list
+        // fault must not wipe the page the next launch would open.
+        if let Some(url) = cef::spawn::page_url(port).await {
+            let _launching = self.launch.lock().await;
+            write_carried_page(cache, Some(&url));
+        }
     }
 
     /// The page said where its takeover's page area is: place the overlay
@@ -2285,6 +2290,126 @@ mod tests {
         assert!(dropped.expect("bounded").is_none(), "a dead host is no host");
         assert!(host.hosts.lock().await.get(&cache).is_none(), "and it was dropped");
         cef::osr::Ring::unlink("/forge-cef-deadlock-test");
+    }
+
+    /// **A successful browsing call rewrites the carried page.** The driver is
+    /// a stub MCP server on stdio behind the real `Profile::call`, so this
+    /// drives `BrowserHost::call` itself: deleting the refresh from the call
+    /// path leaves the marker at its old value and this goes red.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_successful_call_rewrites_the_carried_page() {
+        use serde_json::json;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        // The vendored layout, with a stub in node's place: the wrapper runs
+        // the "cli" with python, which speaks the newline-delimited MCP
+        // handshake the driver expects.
+        let node = driver::node_path(&paths.stack);
+        std::fs::create_dir_all(node.parent().expect("the node dir")).expect("the node dir");
+        std::fs::write(&node, "#!/bin/sh\nexec python3 \"$@\"\n").expect("the node wrapper");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("the wrapper is executable");
+        let cli = driver::cli_path(&paths.stack);
+        std::fs::create_dir_all(cli.parent().expect("the cli dir")).expect("the cli dir");
+        std::fs::write(
+            &cli,
+            r#"import sys, json
+for line in sys.stdin:
+    try:
+        message = json.loads(line)
+    except Exception:
+        continue
+    if message.get("id") is None:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        version = message.get("params", {}).get("protocolVersion", "2025-06-18")
+        result = {"protocolVersion": version, "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "stub", "version": "0"}}
+    elif method == "tools/list":
+        result = {"tools": []}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": "ok"}]}
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}) + "\n")
+    sys.stdout.flush()
+"#,
+        )
+        .expect("the stub driver");
+        std::fs::create_dir_all(&paths.output).expect("the output dir");
+
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        let cache = paths.cef_shared();
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        let stub_host = dir.path().join("stub-host.sh");
+        std::fs::write(&stub_host, "#!/bin/sh\nexec sleep 30\n").expect("the stub host");
+        std::fs::set_permissions(&stub_host, std::fs::Permissions::from_mode(0o755))
+            .expect("the stub host is executable");
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
+        let port = listener.local_addr().expect("the address").port();
+        listener.set_nonblocking(true).expect("non-blocking");
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            loop {
+                match listener.accept() {
+                    Ok((mut socket, _)) => {
+                        let mut buffer = [0_u8; 2048];
+                        let read = socket.read(&mut buffer).unwrap_or(0);
+                        let request = String::from_utf8_lossy(&buffer[..read]);
+                        let body = if request.starts_with("GET /json/list") {
+                            r#"[{"type":"page","url":"https://example.com/after-call"}]"#
+                        } else {
+                            r#"{"Browser":"Chrome/154.0"}"#
+                        };
+                        let answer = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = socket.write_all(answer.as_bytes());
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+                }
+            }
+        });
+        let ring_name = "/forge-cef-call-test";
+        let ring = Arc::new(cef::osr::Ring::create(ring_name, 64, 64).expect("a ring"));
+        let pid = cef::spawn::spawn_with(&stub_host, &cache, port, ring_name, 800, 600)
+            .expect("the stub host starts");
+        cef::spawn::write_record(
+            &cache,
+            &cef::spawn::Record { pid, port, ring: ring_name.to_owned() },
+        )
+        .expect("the record");
+        host.hosts.lock().await.insert(
+            cache.clone(),
+            Arc::new(cef::spawn::ActiveHost { pid, port, ring, profile: cache.clone() }),
+        );
+        write_carried_page(&cache, Some("https://example.com/before"));
+
+        let parts = host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://example.com/after-call" }))
+            .await
+            .expect("the stub driver answers");
+        assert_eq!(parts.len(), 1, "the stub's one part is the call's answer");
+        assert_eq!(
+            std::fs::read_to_string(cache.join("page")).expect("the call wrote the page"),
+            "https://example.com/after-call",
+            "a successful call rewrites the carry"
+        );
+
+        cef::spawn::end(pid).await;
+        cef::spawn::remove_record(&cache);
+        cef::osr::Ring::unlink(ring_name);
     }
 
     /// **The strip reads the surface, not the host.** A profile whose host is
