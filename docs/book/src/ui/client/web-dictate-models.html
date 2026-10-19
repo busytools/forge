@@ -13,12 +13,12 @@
      forge - the dictation models page, as the client draws it.
      The palette and the type scale are the shipped ones, token for
      token; the page's own rules are `client/src/assets/web.css`'s
-     `.models` block, and the frame around them is this drawing's.
+     `.models-page` block, and the frame around them is this drawing's.
 
      Reconciling the two: compare rule for rule, and expect exactly
      ONE spelling difference - the empty box's rules are scoped here
-     (`.models .empty`, `.models .empty .t`, `.models .empty .d`,
-     `.models .empty code`) and unscoped in the sheet (`.empty`, ...)
+     (`.models-page .empty`, `.models-page .empty .t`, `.models-page .empty .d`,
+     `.models-page .empty code`) and unscoped in the sheet (`.empty`, ...)
      because there they sit inside the page's own root. Values are
      equal; nothing else differs.
      ============================================================ */
@@ -66,7 +66,7 @@
   .tcap b { color: var(--text); font-weight: 400; }
   .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
 
-  /* ---------- the page's own rules (web.css, `.models`) ---------- */
+  /* ---------- the page's own rules (web.css, `.models-page`) ---------- */
 
   .wrap { padding: 0; }
   header.top {
@@ -92,112 +92,112 @@
   header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
   /* The two one-line states the route draws before a read: the loading line,
      and the server's own words for a refused subscription. */
-  .models .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+  .models-page .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
     text-align: center; }
 
-  .models .block { margin-bottom: 30px; }
-  .models .hd4 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  .models-page .block { margin-bottom: 30px; }
+  .models-page .hd4 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
     font-size: var(--fs-label); font-weight: 600; letter-spacing: .11em;
     text-transform: uppercase; color: var(--muted); padding: 0 0 9px; }
-  .models .hd4 .why { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+  .models-page .hd4 .why { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
     text-transform: none; color: var(--dim); font-weight: 400; }
 
-  .models .model { display: flex; align-items: center; gap: 14px;
+  .models-page .model { display: flex; align-items: center; gap: 14px;
     background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
     border: 1px solid var(--line); border-radius: var(--r);
     padding: 13px 15px; margin-bottom: 10px; }
-  .models .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
+  .models-page .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
     color: var(--dim); flex: 0 0 118px; }
-  .models .facts { min-width: 0; flex: 1; }
-  .models .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  .models-page .facts { min-width: 0; flex: 1; }
+  .models-page .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .models .meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 3px; }
-  .models .meta b { color: var(--muted); font-weight: 500; }
-  .models .side { display: flex; align-items: center; gap: 8px; flex: none; }
+  .models-page .meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 3px; }
+  .models-page .meta b { color: var(--muted); font-weight: 500; }
+  .models-page .side { display: flex; align-items: center; gap: 8px; flex: none; }
 
-  .models .chip { display: inline-flex; align-items: center; gap: 7px;
+  .models-page .chip { display: inline-flex; align-items: center; gap: 7px;
     font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
     border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
     background: none; white-space: nowrap; }
   /* A chip is a state when it is a span and an action when it is a button. */
-  .models button.chip { cursor: pointer; }
-  .models button.chip:hover { border-color: var(--ctl); color: var(--text); }
+  .models-page button.chip { cursor: pointer; }
+  .models-page button.chip:hover { border-color: var(--ctl); color: var(--text); }
   /* One download and one activation run at a time, so a second control is
      disabled rather than offered and then refused; a disabled one still says
      what it would do. */
-  .models button.chip:disabled { opacity: .5; cursor: default; }
-  .models button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
+  .models-page button.chip:disabled { opacity: .5; cursor: default; }
+  .models-page button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
 
-  .models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  .models-page .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
     padding: 12px 15px; margin-bottom: 10px; }
-  .models .status .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
-  .models .status .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-  .models .status .spacer { margin-left: auto; }
-  .models .status.warn { border-color: rgba(201,161,59,.35); }
-  .models .status.warn .t { color: var(--warn); }
-  .models .status.failed { border-color: rgba(224,104,62,.4); }
-  .models .status.failed .t { color: var(--bad); }
-  .models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
+  .models-page .status .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+  .models-page .status .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .models-page .status .spacer { margin-left: auto; }
+  .models-page .status.warn { border-color: rgba(201,161,59,.35); }
+  .models-page .status.warn .t { color: var(--warn); }
+  .models-page .status.failed { border-color: rgba(224,104,62,.4); }
+  .models-page .status.failed .t { color: var(--bad); }
+  .models-page .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); padding-left: 19px; }
-  .models .status .detail b { color: var(--muted); font-weight: 500; }
-  .models .status .detail.passage { max-width: 84ch; }
+  .models-page .status .detail b { color: var(--muted); font-weight: 500; }
+  .models-page .status .detail.passage { max-width: 84ch; }
   /* The recording's own meter: one bar per level reading, bottom-aligned. */
-  .models .status .bars.meter { display: flex; align-items: flex-end; gap: 1px;
+  .models-page .status .bars.meter { display: flex; align-items: flex-end; gap: 1px;
     height: 16px; flex: 0 0 200px; }
-  .models .status .bars.meter i { flex: 1 0 1px; border-radius: 1px;
+  .models-page .status .bars.meter i { flex: 1 0 1px; border-radius: 1px;
     min-height: 2px; background: linear-gradient(180deg, var(--hot), var(--accent)); }
-  .models .status .bars.meter i.mid { background: linear-gradient(180deg, #ffc98f, #ab6100); }
-  .models .status .bars.meter i.hot { background: var(--hot); }
+  .models-page .status .bars.meter i.mid { background: linear-gradient(180deg, #ffc98f, #ab6100); }
+  .models-page .status .bars.meter i.hot { background: var(--hot); }
   /* The download's bar: the figure the words beside it carry, drawn the way
      the platform draws it rather than as a div sized by a style attribute. */
-  .models .status progress { flex: none; width: 140px; height: 7px;
+  .models-page .status progress { flex: none; width: 140px; height: 7px;
     accent-color: var(--accent); }
 
-  .models .find { display: block; width: 100%; min-width: 0; font-family: var(--mono);
+  .models-page .find { display: block; width: 100%; min-width: 0; font-family: var(--mono);
     font-size: var(--fs-data); color: var(--text); background: var(--s1);
     border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
-  .models .find::placeholder { color: var(--dim); }
-  .models .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
+  .models-page .find::placeholder { color: var(--dim); }
+  .models-page .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
   /* What can be searched before a reader knows a name: the feed's families as
      chips, and its fastest rows as links in the note under them. */
-  .models .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-  .models .chip b { color: var(--dim); font-weight: 400; }
-  .models .link { border: 0; background: none; padding: 0; font: inherit; cursor: pointer;
+  .models-page .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .models-page .chip b { color: var(--dim); font-weight: 400; }
+  .models-page .link { border: 0; background: none; padding: 0; font: inherit; cursor: pointer;
     color: var(--muted); text-decoration: underline; }
-  .models .link:hover { color: var(--text); }
+  .models-page .link:hover { color: var(--text); }
 
-  .models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
+  .models-page .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
     overflow: hidden; background: rgba(13,17,26,.4); }
   /* The hairline is the li's: the row inside it is an anchor with its control
      beside it, so a `:last-child` on the row would match none of them and the
      separator would die in the whole list. */
-  .models .list li { display: flex; align-items: center; gap: 10px; padding-right: 12px;
+  .models-page .list li { display: flex; align-items: center; gap: 10px; padding-right: 12px;
     border-bottom: 1px solid var(--line); }
-  .models .list li:last-child { border-bottom: 0; }
+  .models-page .list li:last-child { border-bottom: 0; }
   /* A row's control sits beside its link, never inside it: an anchor holding a
      button is markup no browser will run. */
-  .models .list li > .chip { flex: none; }
-  .models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
+  .models-page .list li > .chip { flex: none; }
+  .models-page .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
     color: inherit; text-decoration: none; }
-  .models .cand:hover { background: var(--s2); }
-  .models .cand .nm { flex: 1 1 auto; min-width: 0; }
-  .models .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: var(--fs-label);
+  .models-page .cand:hover { background: var(--s2); }
+  .models-page .cand .nm { flex: 1 1 auto; min-width: 0; }
+  .models-page .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .models .cand .col b { color: var(--muted); font-weight: 500; }
-  .models .cand .go { margin-left: auto; flex: none; color: var(--dim); }
-  .models .cand:hover .go { color: var(--accent); }
+  .models-page .cand .col b { color: var(--muted); font-weight: 500; }
+  .models-page .cand .go { margin-left: auto; flex: none; color: var(--dim); }
+  .models-page .cand:hover .go { color: var(--accent); }
   /* The app sheet's own rule, unscoped there and here: the candidate list is
      a ul, and its markers are the sheet's business rather than the page's. */
   .list { list-style: none; }
 
-  .models .empty { border: 1px dashed var(--line); border-radius: var(--r);
+  .models-page .empty { border: 1px dashed var(--line); border-radius: var(--r);
     padding: 46px 24px; text-align: center; }
-  .models .empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
-  .models .empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
+  .models-page .empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+  .models-page .empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
   /* The empty box's code is the shipped one; a code inside a NOTE has no
      shipped rule and renders as plain text, so neither does one here. */
-  .models .empty code {
+  .models-page .empty code {
     font-family: var(--mono); font-size: 11.5px; color: var(--muted);
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
 
@@ -224,48 +224,48 @@
   }
 
   @media (pointer: coarse) {
-    .models .back, .models .cand { min-height: 44px; }
-    .models .back { display: inline-flex; align-items: center; }
+    .models-page .back, .models-page .cand { min-height: 44px; }
+    .models-page .back { display: inline-flex; align-items: center; }
   }
 
   @media (max-width: 760px) {
-    .models .model { flex-wrap: wrap; gap: 8px; }
-    .models .role, .models .side { flex-basis: 100%; }
-    .models .cand { flex-wrap: wrap; }
-    .models .cand .col { flex-basis: 100%; }
+    .models-page .model { flex-wrap: wrap; gap: 8px; }
+    .models-page .role, .models-page .side { flex-basis: 100%; }
+    .models-page .cand { flex-wrap: wrap; }
+    .models-page .cand .col { flex-basis: 100%; }
   }
 
   /* **The whole row is the selector.** The hit target is an overlay rather
      than the card itself, because the card carries controls of its own and a
      button inside a button is not HTML; the row's own controls sit above it. */
-  .models .model { position: relative; }
-  .models .pick { position: absolute; inset: 0; width: 100%; border: 0; padding: 0;
+  .models-page .model { position: relative; }
+  .models-page .pick { position: absolute; inset: 0; width: 100%; border: 0; padding: 0;
     background: none; border-radius: var(--r); cursor: pointer; }
-  .models .pick:hover { background: rgba(27,33,48,.45); }
-  .models .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .models .model.shown { border-color: rgba(244,118,0,.45); }
-  .models .side { position: relative; z-index: 2; }
+  .models-page .pick:hover { background: rgba(27,33,48,.45); }
+  .models-page .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .models-page .model.shown { border-color: rgba(244,118,0,.45); }
+  .models-page .side { position: relative; z-index: 2; }
 
   /* One recording's row: the length as its own column, the facts beside it. */
-  .models .rec { display: flex; align-items: center; gap: 14px; padding: 9px 0 9px 12px;
+  .models-page .rec { display: flex; align-items: center; gap: 14px; padding: 9px 0 9px 12px;
     flex: 1 1 auto; min-width: 0; }
-  .models .rec .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  .models-page .rec .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
     flex: 0 0 42px; }
-  .models .rec .facts { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  .models-page .rec .facts { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     flex: 1 1 auto; min-width: 0; }
-  .models .rec .facts b { color: var(--muted); font-weight: 500; }
+  .models-page .rec .facts b { color: var(--muted); font-weight: 500; }
   /* A candidate's own runs hang under it, and the group's hairline comes
      after its last run rather than between a name and its own numbers. */
-  .models .list li.run { display: block; margin-left: 16px; padding: 0 12px 9px 10px;
+  .models-page .list li.run { display: block; margin-left: 16px; padding: 0 12px 9px 10px;
     border-left: 2px solid var(--line); border-bottom: 0;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-  .models .list li.run:not(:has(+ li.run)) { border-bottom: 1px solid var(--line); }
-  .models .list li:has(+ li.run) { border-bottom: 0; }
+  .models-page .list li.run:not(:has(+ li.run)) { border-bottom: 1px solid var(--line); }
+  .models-page .list li:has(+ li.run) { border-bottom: 0; }
   /* The bench list's own row: a name and its role, controls beside it. */
-  .models .bench-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
+  .models-page .bench-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
     padding: 9px 0 9px 12px; }
-  .models .bench-row .nm { flex: 1 1 auto; }
-  .models .bench-row .col { font-family: var(--mono); font-size: var(--fs-label);
+  .models-page .bench-row .nm { flex: 1 1 auto; }
+  .models-page .bench-row .col { font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); white-space: nowrap; }
   /* The doors: a heading that carries its count, so a shut one is never an
      empty one. */
@@ -296,7 +296,7 @@
   <h2>The page</h2>
   <div class="tile">
     <div class="tcap">the ordinary case, with the feed proposing one model - the candidate already installed here, so its control is the activation</div>
-    <main class="wrap models">
+    <main class="wrap models-page">
       <header class="top pagetop">
         <div class="brand">
           <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
@@ -475,7 +475,7 @@
 
   <div class="tile">
     <div class="tcap">the two one-line states before a read lands: <b>reading</b>, and a <b>refused</b> subscription in the server's own words</div>
-    <div class="models">
+    <div class="models-page">
       <p class="pending" style="margin-top:0">Reading the models...</p>
       <p class="pending" style="margin-top:12px">This forge would not answer for the models: no models on this forge</p>
     </div>
@@ -484,7 +484,7 @@
 
   <div class="tile">
     <div class="tcap">the check line, in the states the feed can be in - <b>not checked yet</b>, <b>checking</b>, <b>unreachable</b>, and a state this client cannot read</div>
-    <div class="models">
+    <div class="models-page">
       <div class="status">
         <span class="dot off"></span>
         <span class="t">not checked yet</span>
@@ -515,7 +515,7 @@
 
   <div class="tile">
     <div class="tcap">dictation off: <b>[dictate] enabled</b> unset, so nothing is pinned, nothing proposed, and the catalogue has not been read at all</div>
-    <div class="models">
+    <div class="models-page">
       <div class="empty">
         <p class="t">dictation is off</p>
         <p class="d"><code>[dictate] enabled</code> is not set in <code>forge.toml</code>, so no models are loaded and a take has nothing to run through. Add it and restart forge.</p>
@@ -532,7 +532,7 @@
 
   <div class="tile">
     <div class="tcap">the pin mid-load: the chip carries the preflight state, and the download carries its fraction</div>
-    <div class="models">
+    <div class="models-page">
       <div class="model">
         <span class="role">transcribing</span>
         <div class="facts">
@@ -559,7 +559,7 @@
 
   <div class="tile">
     <div class="tcap">the page's own state, under the header: a <b>download in flight</b> with its bar, a <b>download that did not finish</b>, an <b>activation in flight</b>, and a <b>refused action</b> in the core's words</div>
-    <div class="models">
+    <div class="models-page">
       <div class="status" role="status">
         <span class="dot live"></span>
         <span class="t">downloading granite-speech-5.0-470m-turboctc-Q4_K_M.gguf</span>
@@ -589,7 +589,7 @@
 
   <div class="tile">
     <div class="tcap">a role <span class="mono">forge.toml</span> pins: the row names the key, the installed model draws as a state, and the download stays</div>
-    <div class="models">
+    <div class="models-page">
       <div class="model">
         <span class="role">transcribing</span>
         <div class="facts">
@@ -626,7 +626,7 @@
 
   <div class="tile">
     <div class="tcap">the <b>benchmark</b>'s other states: <b>off</b>, the <b>read-aloud set empty</b>, a set <b>this client cannot read</b>, a <b>recording</b> in flight, a <b>sweep running</b>, the <b>consensus note</b> with <b>benchmark again</b>, a <b>sweep that ended on a corpus move</b>, and a <b>run that did not finish</b> with its close</div>
-    <div class="models">
+    <div class="models-page">
       <p class="note" style="margin-top:0">the bench runs only with <code>[dictate] enabled</code> set &middot; it scores a model on the takes forge has recorded here</p>
       <div class="status" role="status">
         <span class="dot off"></span>
@@ -674,7 +674,7 @@
 
   <div class="tile">
     <div class="tcap">a search that matches a family, and one that matches nothing</div>
-    <div class="models">
+    <div class="models-page">
       <p class="note" style="margin-top:0">2 of 74 entries &middot; each opens its catalogue entry</p>
       <ul class="list" aria-label="Catalogue results">
         <li>

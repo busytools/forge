@@ -41,7 +41,7 @@
   };
 </script>
 
-<div class="app">
+<div class="session-page">
   <main class="chat">
     <Queue rows={held} {slot} {connection} />
   </main>

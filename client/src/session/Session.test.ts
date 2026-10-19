@@ -311,9 +311,9 @@ describe('the header brand as both sheets draw it', () => {
       '.needchip.calm',
       '.rail-btn',
       '.pal-btn',
-      '.app .rail.left',
-      '.app.rail-open .rail.left',
-      '.app.rail-static .rail.left',
+      '.session-page .rail.left',
+      '.session-page.rail-open .rail.left',
+      '.session-page.rail-static .rail.left',
       '.pal .grp',
     ]) {
       const app = ruleText(sheet, selector);
@@ -695,17 +695,21 @@ describe('the app grid', () => {
    * conversation nothing while it is away.
    */
   it('draws the column by default and the parked rail for the other modes', () => {
-    expect(body('.app.rail-static .rail.left'), 'the static rail is the column').toContain(
+    expect(body('.session-page.rail-static .rail.left'), 'the static rail is the column').toContain(
       'position: static',
     );
-    expect(body('.app .rail.left'), 'the summoned rail is fixed').toContain('position: fixed');
-    expect(body('.app .rail.left'), 'and parked off-canvas').toContain(
+    expect(body('.session-page .rail.left'), 'the summoned rail is fixed').toContain(
+      'position: fixed',
+    );
+    expect(body('.session-page .rail.left'), 'and parked off-canvas').toContain(
       'translateX(calc(-100% - 24px))',
     );
-    expect(body('.app.rail-open .rail.left'), 'sliding in when summoned').toContain(
+    expect(body('.session-page.rail-open .rail.left'), 'sliding in when summoned').toContain(
       'translateX(0)',
     );
-    expect(body('.app main.chat'), 'the chat owns the first column').toContain('grid-column: 1');
+    expect(body('.session-page main.chat'), 'the chat owns the first column').toContain(
+      'grid-column: 1',
+    );
   });
 
   /**

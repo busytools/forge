@@ -303,7 +303,7 @@
 
 <!--
   The listener goes on the body rather than on a wrapper element, because the
-  sheet already owns `.app`: it is the session page's three-column grid, and a
+  sheet already owns `.session-page`: it is the session page's three-column grid, and a
   same-named wrapper here would hand the shell the session's columns.
 -->
 <svelte:body onclick={follow} />

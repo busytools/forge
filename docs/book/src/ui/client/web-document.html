@@ -12,7 +12,7 @@
     />
     <style>
       /* The same token set the client ships (theme.ts) and the same class names
-     the page draws with (`client/src/assets/web.css`, the `.doc` block), so
+     the page draws with (`client/src/assets/web.css`, the `.doc-page` block), so
      this file and the page can be read side by side. The prose rules are
      web-session.html's own block, repeated here because the viewer renders
      markdown through the chat's exact renderer and Prose component. */
@@ -72,11 +72,11 @@
         -webkit-font-smoothing: antialiased;
       }
 
-      /* ---------- the viewer's column (web.css `.wrap.doc`) ---------- */
+      /* ---------- the viewer's column (web.css `.wrap.doc-page`) ---------- */
       .wrap {
         padding: 30px 40px 64px;
       }
-      .doc {
+      .doc-page{
         max-width: none;
         margin: 0;
       }
@@ -566,7 +566,7 @@
           d="M12 18v3" /></symbol
       >
     </svg>
-    <main class="wrap doc">
+    <main class="wrap doc-page">
       <article class="doc-body">
         <div class="doc-blocks">
           <div class="doc-block">

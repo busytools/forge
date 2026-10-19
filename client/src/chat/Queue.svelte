@@ -147,7 +147,7 @@
    * which is where the walk's next up goes older from.
    */
   function onfocus(): void {
-    holder = pile?.closest('.app')?.querySelector<HTMLElement>('.composer') ?? null;
+    holder = pile?.closest('.session-page')?.querySelector<HTMLElement>('.composer') ?? null;
     focused = true;
     if (active === null && rows.length > 0) {
       cursor = rows[rows.length - 1]?.uuid ?? null;

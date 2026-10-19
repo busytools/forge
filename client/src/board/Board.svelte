@@ -537,7 +537,7 @@
 
 <svelte:window onpointermove={move} onpointerup={up} onpointercancel={up} />
 
-<main class="wrap board" class:dragging={dragging !== null} bind:this={boardEl}>
+<main class="wrap board-page" class:dragging={dragging !== null} bind:this={boardEl}>
   <div class="b-top" class:dragging={dragging !== null}>
     <button type="button" class="b-back" onclick={close}>{'\u{2190}'} back</button>
     <span class="b-id">

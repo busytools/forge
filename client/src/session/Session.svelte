@@ -538,7 +538,7 @@
 </script>
 
 <div
-  class="app"
+  class="session-page"
   class:rail-static={columned}
   class:rail-open={overlaid && !columned}
   class:rail-peek={peekOnly}

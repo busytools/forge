@@ -202,7 +202,7 @@ draws markdown, PDFs and text.` - and a name with no extension says that
 - The call's own chat row draws under the **documents** family - the name's
   first segment is the family, so `mcp__forge__documents__hand_off` gets
   its glyph and its row line like every other forge tool.
-- The page's own classes are `doc-*` under a `.doc` scope - a new component
+- The page's own classes are `doc-*` under a `.doc-page` scope - a new component
   takes its own stem rather than reusing a bare name the sheet already
   styles.
 

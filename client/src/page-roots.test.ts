@@ -1,6 +1,5 @@
 /**
- * The sheet's page roots are namespaced to their page, or on the list of
- * roots the rename cut still owes.
+ * The sheet's page roots are namespaced to their page: `<page>-page`.
  *
  * **The incident.** The files page's root was `.files`, the same name the
  * home puts on its changed-file count (`.fleet-where .files`). The page's
@@ -9,12 +8,11 @@
  * mounted subtree and cannot see a page root reaching another surface.
  *
  * **Checked at the definition, not at every application.** The seven page
- * routes are enumerated here. A root must be `<page>-page` unless it is one
- * of the pre-convention roots listed as an exception, and each exception
- * names the cut that renames it and removes the exception. The sheet must
- * scope rules BY the root (a selector whose subject is the root, not a
- * mention of it), and the route union must be covered so a new page cannot
- * arrive unnamed.
+ * routes are enumerated here; each root is the page's name plus `-page`, the
+ * sheet must scope rules BY the root (a selector whose subject is the root,
+ * not a mention of it), and the route union must be covered so a new page
+ * cannot arrive unnamed. A new page starts namespaced: there is no exception
+ * list.
  *
  * **The branch scan is per root kind**: a page whose root is its `<main>`
  * has every `<main>` in its component checked, because those are its
@@ -34,9 +32,6 @@ import { JSDOM } from 'jsdom';
 import { parse } from 'svelte/compiler';
 import { describe, expect, it } from 'vitest';
 
-/** The row that renames the pre-convention roots and deletes their exceptions. */
-const RENAME_CUT = '9436b492-13e4-455f-a3c4-e9a4723cfdbf';
-
 /** One page's root: the route it draws, the components that draw it, its class. */
 interface PageRoot {
   /** The page's name, which its root must be namespaced to. */
@@ -53,41 +48,27 @@ interface PageRoot {
    * branch is a root), or the one top-level element they open with.
    */
   rootTag: 'main' | 'first';
-  /**
-   * Why this root does not follow the `<page>-page` rule yet, naming the cut
-   * that renames it and removes this line.
-   */
-  exception?: string;
 }
 
-/**
- * The seven page routes and their roots.
- *
- * `files-page` is the worked example and is enforced. The rest are the
- * pre-convention bare roots; the rename cut renames each to `<page>-page`
- * and deletes its exception here in the same pass.
- */
+/** The seven page routes and their roots. */
 const PAGES: PageRoot[] = [
   {
     page: 'board',
     components: ['src/board/Board.svelte'],
-    root: 'board',
+    root: 'board-page',
     rootTag: 'main',
-    exception: `row ${RENAME_CUT} renames .board to .board-page and removes this exception`,
   },
   {
     page: 'doc',
     components: ['src/doc/Document.svelte'],
-    root: 'doc',
+    root: 'doc-page',
     rootTag: 'main',
-    exception: `row ${RENAME_CUT} renames .doc to .doc-page and removes this exception`,
   },
   {
     page: 'extensions',
     components: ['src/extensions/Extensions.svelte'],
-    root: 'extensions',
+    root: 'extensions-page',
     rootTag: 'main',
-    exception: `row ${RENAME_CUT} renames .extensions to .extensions-page and removes this exception`,
   },
   {
     page: 'files',
@@ -98,23 +79,20 @@ const PAGES: PageRoot[] = [
   {
     page: 'models',
     components: ['src/models/Models.svelte', 'src/models/ModelsBody.svelte'],
-    root: 'models',
+    root: 'models-page',
     rootTag: 'main',
-    exception: `row ${RENAME_CUT} renames .models to .models-page and removes this exception`,
   },
   {
     page: 'review',
     components: ['src/review/Review.svelte'],
-    root: 'review',
+    root: 'review-page',
     rootTag: 'main',
-    exception: `row ${RENAME_CUT} renames .review to .review-page and removes this exception`,
   },
   {
     page: 'session',
     components: ['src/session/Session.svelte'],
-    root: 'app',
+    root: 'session-page',
     rootTag: 'first',
-    exception: `row ${RENAME_CUT} renames .app to .session-page and removes this exception`,
   },
 ];
 
@@ -126,20 +104,14 @@ const PAGES: PageRoot[] = [
  */
 const SHARED_ROOT_ROUTES = new Set(['connect', 'fixture', 'home', 'notFound']);
 
-/** Whether an exception names exactly the rename cut, not a longer number. */
-function namesRenameCut(exception: string): boolean {
-  return new RegExp(`row ${RENAME_CUT}(?![\\w-])`).test(exception);
-}
-
-/** The roots that break the naming rule without an exception naming its cut. */
+/** The roots that are not `<page>-page`. */
 function namingProblems(pages: PageRoot[]): string[] {
   return pages
-    .filter((page) => page.exception === undefined)
     .filter((page) => page.root !== `${page.page}-page`)
     .map(
       (page) =>
         `.${page.root} is not namespaced to the ${page.page} page; ` +
-        `a new root is .${page.page}-page`,
+        `a root is .${page.page}-page`,
     );
 }
 
@@ -283,13 +255,13 @@ function stylesRoot(selectors: string[], root: string): boolean {
 }
 
 describe("the sheet's page roots", () => {
-  it('fails a bare page root with no exception', () => {
+  it('fails a bare page root at the definition', () => {
     expect(
       namingProblems([
         { page: 'files', components: ['src/files/Files.svelte'], root: 'files', rootTag: 'first' },
       ]),
       'the incident name cannot be a page root',
-    ).toEqual(['.files is not namespaced to the files page; a new root is .files-page']);
+    ).toEqual(['.files is not namespaced to the files page; a root is .files-page']);
   });
 
   it('reads a root selector, not a mention or another subject naming the root', () => {
@@ -317,11 +289,6 @@ describe("the sheet's page roots", () => {
     expect(topLevelClassTokens(markup)).toHaveLength(2);
   });
 
-  it('reads the exact rename-cut id, not a longer number', () => {
-    expect(namesRenameCut(`row ${RENAME_CUT} renames .board`), 'the exact id').toBe(true);
-    expect(namesRenameCut(`row ${RENAME_CUT}1 renames .board`), 'an appended digit').toBe(false);
-  });
-
   it('reads both quote styles in the route union, camelCase included', () => {
     const source =
       'export type Route =\n  | { name: \'home\' }\n  | { name: "models" }\n' +
@@ -345,15 +312,6 @@ describe("the sheet's page roots", () => {
     }
     for (const page of PAGES) {
       expect(routes.has(page.page), `.${page.root}'s page is still a route`).toBe(true);
-    }
-
-    // An exception is a debt with an owner: it names the exact cut that
-    // removes it, so a stray digit cannot pass as the row.
-    for (const page of PAGES) {
-      if (page.exception === undefined) continue;
-      expect(namesRenameCut(page.exception), `.${page.root}'s exception names the rename cut`).toBe(
-        true,
-      );
     }
 
     const selectors = sheetSelectors();
@@ -383,12 +341,11 @@ describe("the sheet's page roots", () => {
     // component and scoped by the sheet, so an empty table cannot pass.
     const files = PAGES.find((page) => page.page === 'files');
     expect(files?.root, 'the files page root is the namespaced one').toBe('files-page');
-    expect(files?.exception, 'and it carries no exception').toBeUndefined();
     expect(
       rootTokens(readFileSync('src/files/Files.svelte', 'utf8'), 'first')[0],
       'the files component still draws its root',
     ).toContain('files-page');
 
-    expect(namingProblems(PAGES), 'no page root is a bare name without an exception').toEqual([]);
+    expect(namingProblems(PAGES), 'no page root is a bare name').toEqual([]);
   });
 });

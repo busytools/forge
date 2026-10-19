@@ -882,7 +882,7 @@ describe('the session page over a socket', () => {
     matchMediaTo(true);
     await open(sessionFixture);
 
-    const app = document.querySelector('.app')?.className ?? '';
+    const app = document.querySelector('.session-page')?.className ?? '';
     expect(app, 'the rail claimed a column on a narrow page').not.toContain('rail-open');
     expect(app, 'the width did not fold the column').not.toContain('rail-static');
     expect(document.querySelector('.rail.left'), 'the rail is drawn, to summon').not.toBeNull();
@@ -900,7 +900,7 @@ describe('the session page over a socket', () => {
     matchMediaTo(false);
     await open(sessionFixture);
 
-    const app = document.querySelector('.app')?.className ?? '';
+    const app = document.querySelector('.session-page')?.className ?? '';
     expect(app, 'the default did not pin the rail').toContain('rail-static');
     expect(document.querySelector('.banner .pin'), 'the pin is the way to float it').not.toBeNull();
   });
@@ -960,7 +960,7 @@ describe('the session page over a socket', () => {
 
     expect(document.querySelector('.pal'), 'the peek left the palette up').toBeNull();
     expect(
-      document.querySelector('.app')?.className ?? '',
+      document.querySelector('.session-page')?.className ?? '',
       'the peek did not open the rail',
     ).toContain('rail-open');
     const state = history.state as { forgeRail?: string } | null;
@@ -968,11 +968,11 @@ describe('the session page over a socket', () => {
 
     history.back();
     await until(
-      () => !(document.querySelector('.app')?.className ?? '').includes('rail-open'),
+      () => !(document.querySelector('.session-page')?.className ?? '').includes('rail-open'),
       'Back to close the rail',
     );
     expect(
-      document.querySelector('.app')?.className ?? '',
+      document.querySelector('.session-page')?.className ?? '',
       'one Back did not close the rail',
     ).not.toContain('rail-open');
   });
@@ -987,7 +987,7 @@ describe('the session page over a socket', () => {
     matchMediaTo(true);
     await open(sessionFixture);
     expect(
-      document.querySelector('.app')?.className ?? '',
+      document.querySelector('.session-page')?.className ?? '',
       'the folded rail opened by itself',
     ).not.toContain('rail-open');
 
@@ -996,7 +996,7 @@ describe('the session page over a socket', () => {
       ?.dispatchEvent(new PointerEvent('pointerenter', { pointerType: 'mouse' }));
     flushSync();
     expect(
-      document.querySelector('.app')?.className ?? '',
+      document.querySelector('.session-page')?.className ?? '',
       'the folded rail ignored the chip hover',
     ).toContain('rail-open');
   });
