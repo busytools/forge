@@ -437,6 +437,24 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   }
 }
 
+/* ---------- shared control: the door ----------
+   A link that is a CONTROL, not a reference in a sentence: the wait card's
+   artifact and the row page's use the same door, so one wait reads the same
+   on either surface. It wears the sheet's link colour inside a quiet ring
+   rather than the browser's default anchor, and its name is the thing it
+   opens. */
+.b-door {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; color: var(--blue); font: inherit; font-size: 13px;
+  font-weight: 560; padding: 7px 13px; border-radius: 10px; cursor: pointer;
+  text-decoration: none; box-shadow: inset 0 0 0 1px rgba(97,160,224,.45);
+  transition: background .12s ease;
+}
+.b-door:hover { background: rgba(97,160,224,.10); }
+.b-door .nm { color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .b-door { transition: none; } }
+@media (pointer: coarse) { .b-door { min-height: 44px; } }
+
 /* ---------- one project's board ---------- */
 
 /* The takeover: a slim bar with back and done, the strip of rows waiting
@@ -486,9 +504,33 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-asks { display: flex; gap: 24px; flex-wrap: wrap; }
 .b-ask { flex: 1; min-width: 320px; }
 .b-ask + .b-ask { border-left: 1px solid var(--line); padding-left: 24px; }
-.b-q { font-size: 15px; font-weight: 550; color: var(--text); }
+/* A row's detail accumulates send-back words, so the strip's ask is bounded
+   to four lines; the whole of it stays on the title and in the row page. */
+.b-q {
+  font-size: 15px; font-weight: 550; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .b-why { display: flex; gap: 10px; font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 2px; }
 .b-detail { font-size: var(--fs-label); color: var(--muted); margin-top: 4px; }
+/* A wait card's references: the sheet's link colour with an underline set
+   off the text, so a reference reads as one at rest and not only under the
+   pointer. A bare anchor never reaches the strip, so none draws the
+   browser's default purple. */
+.b-ref {
+  color: var(--blue); text-decoration: underline;
+  text-decoration-thickness: 1px; text-underline-offset: 3px;
+  text-decoration-color: rgba(97,160,224,.45);
+  border-radius: 4px;
+}
+.b-ref:hover { text-decoration-color: currentColor; text-decoration-thickness: 2px; }
+/* A finger needs the same target a control gets: the line grows to a 44px
+   row and each link holds a 44px width, with no negative margin borrowing
+   space from its neighbours. */
+@media (pointer: coarse) {
+  .b-ref { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px;
+    padding: 0 4px; }
+}
 .b-do { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 9px; }
 /* Why a verify row cannot be approved yet: the children it still waits on. */
 .b-hold { font-size: var(--fs-label); color: var(--warn); }
@@ -512,6 +554,10 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   border-radius: 10px; color: var(--text); font: inherit; font-size: var(--fs-data);
   padding: 8px 11px; min-width: 220px;
 }
+/* In a wait card the field shares the row with the approve and send-back
+   controls: it gives up width before the controls clip, and it can shrink
+   under a finger's width rather than forcing the placeholder to truncate. */
+.b-do .b-in { min-width: 0; flex: 1 1 160px; }
 .b-in::placeholder { color: var(--dim); }
 .b-in:focus { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px rgba(244,118,0,.12); }
 .b-empty { color: var(--muted); font-size: var(--fs-data); margin: 4px 0 16px; }

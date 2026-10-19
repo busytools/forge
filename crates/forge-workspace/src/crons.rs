@@ -262,7 +262,9 @@ impl Workspace {
     }
 
     /// Fire every cron due at `now`: deliver each prompt into its project
-    /// session (spawning it if asleep) and advance/remove the entry.
+    /// session (spawning it if asleep, unless the entry carries
+    /// `wake: false` - a standing sweep - in which case a sleeping owner
+    /// leaves the fire due and unadvanced) and advance/remove the entry.
     /// Delivery routes through the Command bus (a session action); the
     /// advance is a direct state write - kept separate per the cron
     /// state-vs-delivery split. `now` is injected so tests are
@@ -341,6 +343,20 @@ impl Workspace {
                     if recurring {
                         self.advance_or_remove_cron(id, now);
                     }
+                }
+                // The owner is asleep and this cron may not wake it: leave
+                // the fire due, unadvanced, so the next session start (or a
+                // tick while the owner is awake) runs it. Nothing to warn
+                // about - the cron asked for exactly this.
+                CronFireOutcome::SkippedAsleep => {
+                    tracing::debug!(
+                        target: "forge_workspace::crons",
+                        event_name = "cron_skipped_asleep",
+                        project = %cron.project_name,
+                        cron_id = %id,
+                        "the cron's owner is asleep and this cron does not wake it; the fire \
+                         stays due",
+                    );
                 }
                 // Command channel closed (shutting down): leave the cron
                 // due so the next boot catch-up re-fires it - don't consume
@@ -545,6 +561,7 @@ mod tests {
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: owner.map(str::to_owned),
+            wake: true,
         }
     }
 
@@ -735,6 +752,7 @@ mod tests {
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         };
 
         ws.push_cron(entry.clone());
@@ -874,6 +892,7 @@ mod tests {
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         });
         ws.advance_or_remove_cron(&CronId::from("r"), fired);
         let after = ws.crons_for_project("forge");
@@ -891,6 +910,7 @@ mod tests {
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         });
         ws.advance_or_remove_cron(&CronId::from("o"), fired);
         assert!(
@@ -923,6 +943,7 @@ mod tests {
             last_fire: None,
             next_fire: past,
             team_role: None,
+            wake: true,
         });
         ws.push_cron(CronEntry {
             id: CronId::from("later"),
@@ -934,6 +955,7 @@ mod tests {
             last_fire: None,
             next_fire: far_future,
             team_role: None,
+            wake: true,
         });
 
         ws.enable_test_dispatch_intercept();
@@ -991,6 +1013,7 @@ mod tests {
                 last_fire: None,
                 next_fire: past,
                 team_role: None,
+                wake: true,
             },
             CronEntry {
                 id: CronId::from("once"),
@@ -1002,6 +1025,7 @@ mod tests {
                 last_fire: None,
                 next_fire: past,
                 team_role: None,
+                wake: true,
             },
             CronEntry {
                 id: CronId::from("future"),
@@ -1013,6 +1037,7 @@ mod tests {
                 last_fire: None,
                 next_fire: far_future,
                 team_role: None,
+                wake: true,
             },
         ] {
             ws.push_cron(entry);
@@ -1334,6 +1359,109 @@ mod tests {
         );
     }
 
+    /// A standing cron that may not wake its owner (#2423/C): while the
+    /// owner sleeps the fire is skipped and the entry stays due, so the
+    /// next session start (or a tick while it is awake) runs it. The same
+    /// entry with `wake: true` spawns, which is the control.
+    #[test]
+    fn a_no_wake_cron_skips_a_sleeping_owner_and_stays_due() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("proj", "/tmp/wc-nowake");
+        ws.enable_test_dispatch_intercept();
+        let now = std::time::SystemTime::now();
+
+        let mut sweep = schedule("sweep", "proj", "sweep", None);
+        sweep.next_fire = std::time::SystemTime::UNIX_EPOCH;
+        sweep.wake = false;
+        ws.push_cron(sweep);
+        ws.fire_due_crons(now);
+
+        let stored = ws.crons_for_project("proj");
+        assert_eq!(stored.len(), 1, "the skipped fire left the cron in place");
+        assert_eq!(stored[0].last_fire, None, "and did not count as a fire");
+        assert_eq!(
+            stored[0].next_fire,
+            std::time::SystemTime::UNIX_EPOCH,
+            "the entry stays due, so a session start runs it",
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "no session was woken");
+        assert!(parked_crons(&ws, "proj", None).is_empty(), "and nothing was parked");
+
+        // Control: the same entry with wake on spawns its sleeping owner.
+        let mut wakeful = schedule("wakeful", "proj", "stand-up", None);
+        wakeful.next_fire = std::time::SystemTime::UNIX_EPOCH;
+        ws.push_cron(wakeful);
+        ws.fire_due_crons(now);
+        assert!(
+            !ws.drain_test_dispatch_buffer().is_empty(),
+            "a wakeful cron still wakes its owner",
+        );
+        assert_eq!(
+            ws.crons_for_project("proj")
+                .iter()
+                .find(|cron| cron.id == forge_primitives::cron::CronId::from("wakeful"))
+                .and_then(|cron| cron.last_fire),
+            Some(now),
+            "and its fire advances the schedule",
+        );
+    }
+
+    /// A no-wake cron is skipped only while the owner SLEEPS: with a live
+    /// lead the fire lands and the schedule advances, which is the
+    /// standing cadence (#2423/C).
+    #[test]
+    fn a_no_wake_cron_fires_normally_while_the_owner_is_awake() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/wc-nowake-awake");
+        let cwd = project_expanded_path(&ws, "proj");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-session".to_owned(),
+            },
+        );
+        ws.mark_session_connected_for_test(&lead, "lead-uuid");
+
+        let now = std::time::SystemTime::now();
+        let mut sweep = schedule("sweep", "proj", "sweep", None);
+        sweep.next_fire = std::time::SystemTime::UNIX_EPOCH;
+        sweep.wake = false;
+        ws.push_cron(sweep);
+        ws.enable_test_dispatch_intercept();
+
+        ws.fire_due_crons(now);
+        let texts: Vec<String> = ws
+            .drain_test_dispatch_buffer()
+            .iter()
+            .filter_map(|command| match command {
+                Command::Prompt { text, .. } | Command::PromptUnder { text, .. } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| text.contains("sweep")),
+            "the awake owner is given its sweep: {texts:?}",
+        );
+        assert_eq!(
+            ws.crons_for_project("proj")
+                .iter()
+                .find(|cron| cron.id == forge_primitives::cron::CronId::from("sweep"))
+                .and_then(|cron| cron.last_fire),
+            Some(now),
+            "and the fire advances the schedule",
+        );
+    }
+
     #[test]
     fn deliver_worker_cron_with_owner_conclusively_gone_is_target_gone() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -1600,6 +1728,7 @@ mod tests {
             crate::spawn::CronFireOutcome::TargetGone => "TargetGone",
             crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. } => "TargetCannotBeWoken",
             crate::spawn::CronFireOutcome::DispatchFailed => "DispatchFailed",
+            crate::spawn::CronFireOutcome::SkippedAsleep => "SkippedAsleep",
         }
     }
 
@@ -1717,6 +1846,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire,
             team_role: None,
+            wake: true,
         };
         // Due one tick ago: within the jitter window, on-time. Due three
         // ticks ago: a genuine catch-up, missed.
@@ -1759,6 +1889,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH, // overdue -> due now
             team_role: None,
+            wake: true,
         });
 
         ws.enable_test_dispatch_intercept();
@@ -1803,6 +1934,7 @@ provider = "anthropic"
                 last_fire: None,
                 next_fire: past,
                 team_role: Some("steward".to_owned()),
+                wake: true,
             });
         }
 
@@ -1847,6 +1979,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         });
         ws.advance_or_remove_cron(&CronId::from("impossible"), std::time::SystemTime::now());
         assert!(
@@ -1876,6 +2009,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH, // overdue -> due at the first tick
             team_role: None,
+            wake: true,
         });
 
         ws.enable_test_dispatch_intercept();

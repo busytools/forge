@@ -83,10 +83,12 @@ pub(crate) struct TaskDraft {
     /// Queue order; lower reads first.
     #[serde(default)]
     pub rank: Option<i64>,
-    /// Whether completion waits on the user; the epic's default applies
-    /// when unset.
+    /// The gate the row is minted with; an epic's is never inherited.
     #[serde(default)]
     pub verify: Option<forge_primitives::tasks::Verify>,
+    /// The user reserved this pick: the sweep leaves it for them.
+    #[serde(default)]
+    pub reserved: Option<forge_primitives::tasks::ReservedBy>,
     #[serde(default)]
     pub links: Vec<TaskLinkDraft>,
 }
@@ -120,6 +122,10 @@ pub(crate) struct TaskPatch {
     pub rank: Option<i64>,
     #[serde(default)]
     pub verify: Option<forge_primitives::tasks::Verify>,
+    /// Whether the lead parks this wait by design: the chase leaves it
+    /// alone rather than nudging it. Applies to a row that is waiting.
+    #[serde(default)]
+    pub parked: Option<bool>,
     /// Links to attach; a target already present on the row is left as it
     /// is, so the same PR linked twice stays one link.
     #[serde(default)]
@@ -165,6 +171,11 @@ impl TaskPatch {
         }
         if let Some(verify) = self.verify {
             task.verify = Some(verify);
+        }
+        if let Some(parked) = self.parked
+            && let Some(wait) = task.waiting_on.as_mut()
+        {
+            wait.parked = parked;
         }
         for draft in &self.links_add {
             if !task.links.iter().any(|l| l.target == draft.target) {
@@ -280,6 +291,15 @@ pub(crate) trait TasksFacade: Send + Sync {
         detail: Option<String>,
         on: Option<&TaskId>,
     ) -> Result<Task, TasksError>;
+
+    /// The lead completes a look wait with the approval the user gave,
+    /// quoted. Backs `tasks__approve`; the core refuses a non-lead.
+    fn attest_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        approval: &str,
+    ) -> Result<Task, TasksError>;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -321,6 +341,8 @@ impl TasksFacade for ProdTasksFacade {
             estimate,
             rank: draft.rank,
             verify: draft.verify,
+            attested: None,
+            reserved: draft.reserved,
             links,
             attempt: 0,
             archived_at: None,
@@ -458,6 +480,21 @@ impl TasksFacade for ProdTasksFacade {
             Err(refused) => Err(TasksError::Refused(refused.to_string())),
         }
     }
+
+    fn attest_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        approval: &str,
+    ) -> Result<Task, TasksError> {
+        let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        match ws.attest_task(&cx.project_name, id, caller, approval) {
+            Ok(Some(task)) => Ok(task),
+            Ok(None) => Err(missing_task_error(&ws, &cx.project_name, id)),
+            Err(refused) => Err(TasksError::Refused(refused.to_string())),
+        }
+    }
 }
 
 /// One recorded `create_task` call: caller, draft, the record returned.
@@ -481,6 +518,8 @@ fn mock_task(caller: &SessionSlot) -> Task {
         estimate: None,
         rank: None,
         verify: None,
+        attested: None,
+        reserved: None,
         links: Vec::new(),
         attempt: 0,
         archived_at: None,
@@ -518,6 +557,7 @@ pub(crate) struct MockTasksFacade {
     pub claim_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
     pub waited: parking_lot::Mutex<Vec<WaitCall>>,
     pub wait_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
+    pub attested: parking_lot::Mutex<Vec<(SessionSlot, TaskId, String)>>,
 }
 
 #[cfg(test)]
@@ -553,6 +593,8 @@ impl TasksFacade for MockTasksFacade {
             estimate: draft.estimate.as_deref().and_then(Estimate::parse),
             rank: draft.rank,
             verify: draft.verify,
+            attested: None,
+            reserved: draft.reserved,
             links: draft.links.iter().map(|draft| draft.to_link(now)).collect(),
             attempt: 0,
             archived_at: None,
@@ -583,6 +625,21 @@ impl TasksFacade for MockTasksFacade {
     ) -> Result<Task, TasksError> {
         self.waited.lock().push((caller.clone(), id.clone(), kind, detail, on.cloned()));
         self.wait_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
+    }
+
+    fn attest_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        approval: &str,
+    ) -> Result<Task, TasksError> {
+        self.attested.lock().push((caller.clone(), id.clone(), approval.to_owned()));
+        let mut task = mock_task(caller);
+        task.attested = Some(forge_primitives::tasks::Attestation {
+            evidence: approval.to_owned(),
+            at: SystemTime::UNIX_EPOCH,
+        });
+        Ok(task)
     }
 
     fn list_tasks(
@@ -667,6 +724,8 @@ mod prod_facade_tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -686,6 +745,7 @@ mod prod_facade_tests {
             estimate: None,
             rank: None,
             verify: None,
+            reserved: None,
             links: Vec::new(),
         }
     }
@@ -913,6 +973,47 @@ mod prod_facade_tests {
     /// **The seeded row carries an epoch `updated_at`**, so a record
     /// echoed without the write's own stamp reads as a pass on a fresh
     /// task and fails here.
+    /// The update patch's `parked` door (#2423/C): it marks a waiting
+    /// row's wait as the user's own deferral, and a row that is not waiting
+    /// has no wait to mark, so the patch leaves it alone rather than
+    /// inventing one.
+    #[test]
+    fn an_update_parks_a_wait_and_only_a_wait() {
+        let (ws, facade, lead, _worker) = fixture();
+        let mut waiting = seeded_task("waiting", "a deferral");
+        waiting.status = TaskStatus::Waiting;
+        waiting.waiting_on = Some(forge_primitives::tasks::Waiting {
+            kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+        });
+        ws.seed_test_task(waiting);
+        ws.seed_test_task(seeded_task("plain", "a row with no wait"));
+
+        let parked = facade
+            .update_task(
+                &lead,
+                &TaskId::from("waiting"),
+                TaskPatch { parked: Some(true), ..TaskPatch::default() },
+            )
+            .expect("the waiting row is there");
+        assert!(
+            parked.waiting_on.as_ref().is_some_and(|wait| wait.parked),
+            "the wait is the user's by design: {parked:?}",
+        );
+
+        let untouched = facade
+            .update_task(
+                &lead,
+                &TaskId::from("plain"),
+                TaskPatch { parked: Some(true), ..TaskPatch::default() },
+            )
+            .expect("the plain row is there");
+        assert_eq!(untouched.waiting_on, None, "a row with no wait invents none");
+    }
+
     #[test]
     fn update_returns_the_record_it_wrote() {
         let (ws, facade, lead, _worker) = fixture();

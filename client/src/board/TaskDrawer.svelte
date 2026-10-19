@@ -3,7 +3,8 @@
   import { hrefForSlot } from '../routes';
   import type { ServiceReport } from '../wire/fleet';
   import type { BoardRow, ByWire, TaskStatus } from '../wire/home';
-  import { fmtSecs, type WaitingView } from './view';
+  import { followable } from '../home/view';
+  import { artifactOf, fmtSecs, waitOnUser, type WaitingView } from './view';
 
   /**
    * One row's own page, over the board: what the row IS (its fields and
@@ -46,6 +47,41 @@
 
   const task = $derived(row.task);
   const seatHref = $derived(task.owner === null ? null : hrefForSlot(task.owner));
+
+  /**
+   * The artifact a look is asking the reader to see: the first followable
+   * PR or path link on a look wait. The reader should not have to hunt the
+   * row's field list to find what to look at (#2423 look).
+   */
+  const lookArtifact = $derived(
+    task.waiting_on !== null && task.waiting_on.verification && waitOnUser(task)
+      ? artifactOf(task)
+      : null,
+  );
+
+  /**
+   * The ask block's references. The artifact the door presents is dropped
+   * from this line: one reference, one showing. The fields above still
+   * carry the row's whole list - that is the record, not the ask's doors.
+   */
+  const refs = $derived(
+    task.links
+      .map((link) => ({ label: link.label ?? link.target, href: followable(link.target) }))
+      .filter((link) => lookArtifact === null || link.href !== lookArtifact.href),
+  );
+
+  /** A row can take a reservation while it is still live, not once it ended. */
+  const live = $derived(
+    task.status !== 'completed' && task.status !== 'failed' && task.status !== 'canceled',
+  );
+
+  /** A blank detail is no detail, on either side of the wait. */
+  const waitAsk = $derived(task.waiting_on?.detail?.trim() ?? '');
+  const rowAsk = $derived(task.detail?.trim() ?? '');
+  const ask = $derived(waitAsk !== '' ? waitAsk : rowAsk);
+
+  /** The row's prose is the ask itself when the wait states none. */
+  const detailIsAsk = $derived(task.waiting_on !== null && waitAsk === '' && rowAsk !== '');
 
   /** How many moves the row's own carry withholds, from its whole count. */
   const withheld = $derived(Math.max(0, row.history_total - row.history.length));
@@ -122,7 +158,7 @@
 >
   <div class="dr-head" class:tree={row.parent_subject !== null}>
     {#if task.status === 'waiting'}
-      <span class="dr-state warn">waiting on you</span>
+      <span class="dr-state warn">{waitOnUser(task) ? 'waiting on you' : 'waiting'}</span>
     {:else if task.status === 'completed'}
       <span class="dr-state ok"><Icon name="check" /> done</span>
     {:else if task.status === 'failed'}
@@ -164,15 +200,41 @@
           <span class="b-chip blue b-epic-pill">&#8627; {row.parent_subject}</span>
         {:else}none{/if}
       </dd>
+      {#if live}
+        <dt>pick</dt>
+        <dd>
+          {#if task.reserved === 'user'}
+            <span>reserved for you</span>
+            <button
+              type="button"
+              class="dr-btn"
+              onclick={() =>
+                onact({
+                  task_reserve: { project: task.project_name, id: task.id, reserved: false },
+                })}>release</button
+            >
+          {:else}
+            <button
+              type="button"
+              class="dr-btn"
+              onclick={() =>
+                onact({
+                  task_reserve: { project: task.project_name, id: task.id, reserved: true },
+                })}>reserve for you</button
+            >
+          {/if}
+        </dd>
+      {/if}
       <dt>links</dt>
       <dd>
         {#if task.links.length === 0}<span class="dim">none</span>{:else}
           <!-- Keyed on the position: the entries carry no identity the wire
                guarantees unique. -->
           {#each task.links as link, at (at)}
+            {@const href = followable(link.target)}
             {#if at > 0}<span class="dim"> · </span>{/if}
-            {#if link.target.startsWith('http')}
-              <a href={link.target} target="_blank" rel="noreferrer">{link.label ?? link.target}</a>
+            {#if href !== null}
+              <a {href} target="_blank" rel="noreferrer">{link.label ?? link.target}</a>
             {:else}
               <span>{link.label ?? link.target}</span>
             {/if}
@@ -181,7 +243,9 @@
       </dd>
     </dl>
 
-    {#if task.detail !== null}
+    {#if task.detail !== null && !detailIsAsk}
+      <!-- When the wait states no ask of its own, the row's prose IS the ask
+           in the section below; drawing it here too would say it twice. -->
       <p class="dr-detail">{task.detail}</p>
     {/if}
 
@@ -204,25 +268,68 @@
 
     {#if task.waiting_on !== null}
       <h3>
-        {#if task.waiting_on.verification || task.waiting_on.kind === 'decision'}Waiting on you{:else}What
-          it waits on{/if}
+        {#if waitOnUser(task)}Waiting on you{:else}What it waits on{/if}
       </h3>
       <div class="dr-ask">
+        <!-- The ASK leads: the wait's own detail where it states one, else
+             the row's detail - a look parks with no wait detail, and its ask
+             is the row's own words - else the state's own sentence. A seeded
+             or legacy wait with no detail keeps that sentence. -->
         <div class="q">
-          {#if task.waiting_on.verification}
+          {#if ask !== ''}
+            {ask}
+          {:else if waitOnUser(task) && task.waiting_on.verification}
             This row is finished and waits on your approval.
-          {:else if task.waiting_on.kind === 'decision'}
+          {:else if waitOnUser(task) && task.waiting_on.kind === 'decision'}
             A decision is waiting on you.
           {:else if task.waiting_on.kind === 'dependency'}
             Waiting on {task.waiting_on.on ?? 'another row'}.
-          {:else}
+          {:else if task.waiting_on.kind === 'resource'}
             Waiting on a resource.
+          {:else}
+            Waiting.
           {/if}
         </div>
-        {#if task.waiting_on.detail !== null}
-          <div class="from">{task.waiting_on.detail}</div>
+        {#if ask !== ''}
+          <!-- What the ask is, in the state's own words, under the ask itself. -->
+          <div class="from">
+            {#if waitOnUser(task) && task.waiting_on.verification}
+              A look: this row is finished and waits on your approval.
+            {:else if waitOnUser(task) && task.waiting_on.kind === 'decision'}
+              A decision is waiting on you.
+            {:else if task.waiting_on.kind === 'dependency'}
+              Waiting on {task.waiting_on.on ?? 'another row'}.
+            {:else if task.waiting_on.kind === 'resource'}
+              Waiting on a resource.
+            {:else}
+              Waiting.
+            {/if}
+          </div>
         {/if}
-        {#if task.waiting_on.verification || task.waiting_on.kind === 'decision'}
+        {#if refs.length > 0}
+          <!-- The row's references are doors here: the ask usually needs one.
+               The artifact the door below presents is left out of this line. -->
+          <div class="from">
+            {#each refs as link, at (at)}
+              {#if at > 0}<span class="dim"> &middot; </span>{/if}
+              {#if link.href !== null}
+                <a class="b-ref" href={link.href} target="_blank" rel="noreferrer">{link.label}</a>
+              {:else}
+                <span>{link.label}</span>
+              {/if}
+            {/each}
+          </div>
+        {/if}
+        {#if lookArtifact !== null}
+          <div class="from">
+            <!-- The artifact is a DOOR in the same grammar the board's wait
+                 card uses, so the two surfaces read one control. -->
+            <a class="b-door" href={lookArtifact.href} target="_blank" rel="noreferrer"
+              >look at <span class="nm">{lookArtifact.label}</span></a
+            >
+          </div>
+        {/if}
+        {#if waitOnUser(task)}
           {#if task.waiting_on.verification}
             <div class="answer">
               {#if waiting !== null && waiting.root && waiting.open > 0}
@@ -247,6 +354,7 @@
                 data-editor="board"
                 type="text"
                 placeholder="what to change"
+                aria-label="what to change (sent back with it)"
                 bind:value={sendBack}
                 onkeydown={(event: KeyboardEvent) => {
                   // **Enter is the box's own action** (Ved, 2026-10-15): the
@@ -310,6 +418,20 @@
         {#if seatHref !== null}
           <a class="dr-ses" href={seatHref}>or open the session &rarr;</a>
         {/if}
+      </div>
+    {/if}
+
+    {#if task.attested != null}
+      <h3>Lead-attested look</h3>
+      <div class="dr-ask">
+        <div class="q">The lead completed this row's look, citing your approval:</div>
+        <div class="from">"{task.attested.evidence}"</div>
+        <button
+          type="button"
+          class="dr-btn no"
+          onclick={() => onact({ task_reopen: { project: task.project_name, id: task.id } })}
+          >reopen</button
+        >
       </div>
     {/if}
 

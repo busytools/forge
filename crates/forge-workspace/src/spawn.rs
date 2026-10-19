@@ -444,6 +444,10 @@ pub(crate) enum CronFireOutcome {
     /// The Command channel is closed (workspace shutting down). The caller
     /// leaves the cron due so the next boot catch-up re-fires it.
     DispatchFailed,
+    /// The owner is asleep and this cron may not wake it (`wake: false`).
+    /// The caller leaves the entry due without advancing, so the next
+    /// session start (or a tick while the owner is awake) delivers it.
+    SkippedAsleep,
 }
 
 /// Text delivered for a cron fire: the raw prompt, prefixed with a plain
@@ -523,10 +527,21 @@ pub(crate) fn deliver_cron_prompt(
     match cron_slot_exists(workspace, &view, team_role) {
         CronOwnerCheck::Exists => {}
         CronOwnerCheck::CannotBeWoken { directory } => {
-            return CronFireOutcome::TargetCannotBeWoken { directory };
+            if cron.wake {
+                return CronFireOutcome::TargetCannotBeWoken { directory };
+            }
         }
         CronOwnerCheck::Absent => return CronFireOutcome::TargetGone,
-        CronOwnerCheck::Unknown => return CronFireOutcome::DispatchFailed,
+        CronOwnerCheck::Unknown => {
+            if cron.wake {
+                return CronFireOutcome::DispatchFailed;
+            }
+        }
+    }
+    // No live slot and no wake: skip the tick and leave the entry due, so
+    // the next session start runs it. A standing sweep asked for this.
+    if !cron.wake {
+        return CronFireOutcome::SkippedAsleep;
     }
     // A spawn needs the account map settled: the walk skips every account
     // still `Loading`, so a project whose only account for its model has
@@ -6384,6 +6399,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: Some("stranded".to_owned()),
+            wake: true,
         });
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();

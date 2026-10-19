@@ -157,6 +157,7 @@ describe("one project's board", () => {
     const wire = wireWith([
       row(
         task('verify', 'a look', 'waiting', {
+          verify: 'user',
           waiting_on: { kind: 'decision', detail: 'the mock', on: null, verification: true },
         }),
         // An epic with two of its four children still open: the strip has to
@@ -197,6 +198,42 @@ describe("one project's board", () => {
   });
 
   /**
+   * A verification wait belongs to the row's OWN gate (#2423): the strip
+   * and the chip show a look only where the row carries `verify: 'user'`,
+   * so a park left behind by an inherited epic gate reads as a plain wait
+   * rather than claiming the reader owes a look.
+   */
+  it('keeps a verification park without an own gate out of the reader strip', () => {
+    const wire = wireWith([
+      row(
+        task('own', 'a minted look', 'waiting', {
+          verify: 'user',
+          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+        }),
+      ),
+      row(
+        task('inherited', 'an inherited park', 'waiting', {
+          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+        }),
+      ),
+    ]);
+
+    const view = boardView(wire, 'TestOrg', 'proj');
+    expect(view.waiting.map((entry) => entry.id)).toEqual(['own']);
+    const cards = view.lanes.flatMap((lane) => lane.cards);
+    const chips = (id: string) => cards.find((card) => card.id === id)?.chips ?? [];
+    expect(chips('own').map((chip) => chip.label)).toContain('waiting on you');
+    expect(
+      chips('inherited').map((chip) => chip.label),
+      'an inherited park claimed the reader',
+    ).not.toContain('waiting on you');
+    expect(
+      chips('inherited').map((chip) => chip.label),
+      'and it reads as the plain wait it is, not as no wait at all',
+    ).toEqual(['waiting']);
+  });
+
+  /**
    * **What the hold counts, and over what.** The core refuses a root's close
    * only while a child is NOT TERMINAL (`Completed | Failed | Canceled`), and
    * only a root's completion closes a tree at all - so the held set is the
@@ -223,6 +260,7 @@ describe("one project's board", () => {
     const gated = wireWith([
       row(
         task('epic2', 'the epic', 'waiting', {
+          verify: 'user',
           waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
         }),
         { rollup: [1, 3] },
@@ -242,6 +280,7 @@ describe("one project's board", () => {
       row(
         task('kid', 'a child', 'waiting', {
           parent: 'root3',
+          verify: 'user',
           waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
         }),
         { rollup: [0, 1] },
@@ -251,6 +290,28 @@ describe("one project's board", () => {
     const childRow = boardView(asChild, 'TestOrg', 'proj').waiting[0];
     expect(childRow?.root, 'a child row read as a root').toBe(false);
     expect(childRow?.open, 'a child counted children the close never waits on').toBe(1);
+  });
+
+  /**
+   * The lead's attested completion and the user's own reserved pick are
+   * named in words on the card (#2423/B, /C).
+   */
+  it('marks a lead attestation and a reserved pick in words', () => {
+    const wire = wireWith([
+      row(
+        task('a', 'an attested look', 'completed', {
+          attested: {
+            evidence: 'Looks right',
+            at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+          },
+        }),
+      ),
+      row(task('r', 'a reserved pick', 'pending', { reserved: 'user' })),
+    ]);
+    const cards = boardView(wire, 'TestOrg', 'proj').lanes.flatMap((lane) => lane.cards);
+    const chips = (id: string) => cards.find((card) => card.id === id)?.chips ?? [];
+    expect(chips('a').map((chip) => chip.label)).toContain('lead attested');
+    expect(chips('r').map((chip) => chip.label)).toContain('reserved for you');
   });
 
   /** The marks become words, and the wait's kind decides the chip. */

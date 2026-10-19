@@ -11,7 +11,9 @@
 use std::time::SystemTime;
 
 use forge_primitives::tasks::Verify;
-use forge_primitives::tasks::{By, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind};
+use forge_primitives::tasks::{
+    Attestation, By, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
+};
 
 use crate::SessionSlot;
 use crate::protocol::RankMove;
@@ -76,36 +78,54 @@ pub(crate) enum MoveError {
     /// by close is not a way to settle it either. The row's SUBJECT rides
     /// it, as the delete's does.
     ClosingLook(String),
+    /// An attestation came from a session that is not the project's lead:
+    /// only the lead may stand behind the user's recorded approval.
+    AttestLeadOnly,
+    /// An attestation stated no quoted approval, so there is nothing to
+    /// stand behind.
+    AttestNeedsEvidence,
+    /// A reopen named a row carrying no lead attestation: there is no
+    /// attested look to strike.
+    NotAttested,
 }
 
 /// Whether a row is parked on the user's own look - the verification wait
 /// the gate lands a user-bound completion on. The completion guard reads
 /// it: only the user's approve completes such a row. A row merely BOUND
 /// by the gate, never parked on it, is work the caller may abandon.
+///
+/// The park belongs to the row's OWN gate (#2423): a verification wait a
+/// row left behind while its gate was inherited from the epic stops
+/// counting, so a seat can complete it rather than being refused by a
+/// look nobody owes.
 fn parked_on_look(task: &Task) -> bool {
-    task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+    task.verify == Some(Verify::User)
+        && task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
 }
 
 /// Whether a row presents as waiting on the user: a decision wait or a
 /// verification park. The removal guards and the withdraw door read this
 /// set - an ask on the user leaves by the user's own answer or approve,
-/// or by a reasoned withdraw. The fleet count and the board's waiting
-/// strip derive the same set from the stored fields.
+/// or by a reasoned withdraw. The fleet count and the chase's user nudge
+/// derive the same set from the stored fields.
 ///
-/// `verification` is checked alongside the kind: today's only setter tags
-/// `decision` too, and the arm keeps a verification park on-user however
-/// it was built.
+/// A verification park is the user's only when the row carries its own
+/// gate (#2423): the gate is minted on the row, never inherited from its
+/// epic, so a park an inherited gate left behind is not an ask on the
+/// user and a seat may move the row.
 ///
 /// A dependency or resource wait is not this set's, however the rows
-/// around it are gated: the wait is on the task, not the user, and an
-/// epic's `verify: user` gates a row's own completion rather than its
-/// wait. A target that parks on the look has not ended, so the chain
-/// keeps waiting, but the waiting row stays the caller's to move or
-/// remove (#2415).
-fn parked_on_user(task: &Task) -> bool {
-    task.waiting_on
-        .as_ref()
-        .is_some_and(|wait| wait.verification || wait.kind == Some(WaitingKind::Decision))
+/// around it are gated: the wait is on the task, not the user, and
+/// `verify: user` gates a row's own completion rather than its wait. A
+/// target that parks on the look has not ended, so the chain keeps
+/// waiting, but the waiting row stays the caller's to move or remove
+/// (#2415).
+pub(crate) fn parked_on_user(task: &Task) -> bool {
+    let Some(wait) = task.waiting_on.as_ref() else { return false };
+    if wait.verification {
+        return task.verify == Some(Verify::User);
+    }
+    wait.kind == Some(WaitingKind::Decision)
 }
 
 /// The words a refusal names a wait by: its kind, and the row it waits on
@@ -124,11 +144,17 @@ fn wait_words(wait: Option<&Waiting>) -> String {
     }
 }
 
-/// Append the user's words to a row's detail, keeping what was there.
+/// Append the user's words to a row's detail, keeping what was there. A
+/// blank append writes nothing - an empty detail is no detail, and a
+/// `Some("")` left by a wordless send-back would read as an empty ask.
 fn append_words(task: &mut Task, words: &str) {
+    let words = words.trim();
+    if words.is_empty() {
+        return;
+    }
     let prior = task.detail.take().unwrap_or_default();
     task.detail =
-        Some(if prior.is_empty() { words.to_owned() } else { format!("{prior}\n{words}") });
+        Some(if prior.trim().is_empty() { words.to_owned() } else { format!("{prior}\n{words}") });
 }
 
 impl std::fmt::Display for ClaimError {
@@ -202,6 +228,16 @@ impl std::fmt::Display for MoveError {
                 "\"{subject}\" is waiting on the user; the board's answer or approve settles it, \
                  and closing the epic cannot take the ask away"
             ),
+            Self::AttestLeadOnly => {
+                write!(f, "only the project lead may attest an approval; this session is a worker")
+            }
+            Self::AttestNeedsEvidence => write!(
+                f,
+                "an attestation needs the approval quoted in `approval`, and it must not be empty"
+            ),
+            Self::NotAttested => {
+                write!(f, "this row carries no lead attestation to reopen")
+            }
         }
     }
 }
@@ -296,21 +332,17 @@ fn is_terminal(status: TaskStatus) -> bool {
     matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled)
 }
 
-/// The verify a row is bound by: its own, else its epic's, else none.
-fn bound_verify(row: &Task, tasks: &[Task]) -> Verify {
-    if let Some(verify) = row.verify {
-        return verify;
-    }
-    row.parent
-        .as_ref()
-        .and_then(|parent| tasks.iter().find(|t| t.id == *parent))
-        .and_then(|parent| parent.verify)
-        .unwrap_or(Verify::None)
+/// The verify a row is bound by: the gate it was MINTED with, or none.
+/// An epic's `verify: user` governs the epic's own completion, never its
+/// children's (#2423) - a child that owes no look is not parked on one
+/// because its epic carries the gate.
+fn bound_verify(row: &Task) -> Verify {
+    row.verify.unwrap_or(Verify::None)
 }
 
 /// The verify the row at `index` is bound by.
 fn effective_verify(tasks: &[Task], index: usize) -> Verify {
-    bound_verify(&tasks[index], tasks)
+    bound_verify(&tasks[index])
 }
 
 impl Workspace {
@@ -403,10 +435,10 @@ impl Workspace {
     /// when no such task is there). Open to every session in the project.
     ///
     /// Rules ride on top of `f`, so no caller can forget them: a
-    /// transition into `completed` on a verify=user row lands in
-    /// `waiting` (the verify gate); a patch cannot take a user-bound
-    /// row's look gate away - clearing its verify or moving it out of its
-    /// epic is refused by name; a completion of a row already waiting on
+    /// transition into `completed` on a row minted verify=user lands in
+    /// `waiting` (the verify gate, never inherited from the epic); a
+    /// patch cannot take a user-bound row's look gate away - clearing its
+    /// verify is refused by name; a completion of a row already waiting on
     /// the user's look is refused by name; a cancel of a row waiting on
     /// the user is the withdraw door - it records the reason the caller
     /// states in `detail`, and a cancel without one is refused (#2340);
@@ -458,11 +490,10 @@ impl Workspace {
             f(&mut next)?;
 
             // The look gate is the user's to clear: an update that would
-            // leave a user-bound row unbound - by clearing its verify or
-            // by moving it out of its epic - is refused by name.
+            // clear a row's own gate is refused by name.
             if gate
                 && effective_verify(tasks, index) == Verify::User
-                && bound_verify(&next, tasks) != Verify::User
+                && bound_verify(&next) != Verify::User
             {
                 return Err(MoveError::ClearingLookGate);
             }
@@ -511,6 +542,7 @@ impl Workspace {
                     detail: None,
                     on: None,
                     verification: true,
+                    parked: false,
                 });
                 next.status = TaskStatus::Waiting;
             }
@@ -624,6 +656,78 @@ impl Workspace {
         self.update_task(project_name, id, By::User, |task| {
             task.waiting_on = None;
             task.status = to;
+        })
+    }
+
+    /// The lead completes a row waiting on the user's look, recording the
+    /// approval the user gave. Only a lead attests, only a look wait is
+    /// the look's to clear (a decision is the user's to answer), and the
+    /// quoted evidence is required. The row completes as the user's own
+    /// approve would, wearing the attestation the board draws.
+    pub(crate) fn attest_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        slot: &SessionSlot,
+        evidence: &str,
+    ) -> Result<Option<Task>, MoveError> {
+        if slot.label() != crate::LEAD_LABEL {
+            return Err(MoveError::AttestLeadOnly);
+        }
+        let quote = evidence.trim();
+        if quote.is_empty() {
+            return Err(MoveError::AttestNeedsEvidence);
+        }
+        let at = SystemTime::now();
+        self.move_task(project_name, id, By::Seat(slot.clone()), false, |task| {
+            if task.status != TaskStatus::Waiting || !parked_on_look(task) {
+                return Err(MoveError::NotWaitingVerification);
+            }
+            task.waiting_on = None;
+            task.verify = Some(Verify::None);
+            task.attested = Some(Attestation { evidence: quote.to_owned(), at });
+            append_words(task, &format!("Lead-attested look, quoted: \"{quote}\""));
+            task.status = TaskStatus::Completed;
+            Ok(())
+        })
+    }
+
+    /// The user reserves a row's pick (or releases it): the sweep leaves a
+    /// reserved row for them rather than dispatching it.
+    pub(crate) fn reserve_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        reserved: bool,
+    ) -> Result<Option<Task>, MoveError> {
+        self.update_task(project_name, id, By::User, |task| {
+            task.reserved = reserved.then_some(ReservedBy::User);
+        })
+    }
+
+    /// The user strikes a lead attestation: the look gate is re-minted
+    /// and the row parks on the user again, recorded in the history.
+    pub(crate) fn reopen_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+    ) -> Result<Option<Task>, MoveError> {
+        self.move_task(project_name, id, By::User, false, |task| {
+            if task.attested.is_none() {
+                return Err(MoveError::NotAttested);
+            }
+            task.attested = None;
+            task.verify = Some(Verify::User);
+            task.waiting_on = Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: None,
+                on: None,
+                verification: true,
+                parked: false,
+            });
+            task.status = TaskStatus::Waiting;
+            append_words(task, "Reopened by the user: the look is owed again.");
+            Ok(())
         })
     }
 
@@ -800,6 +904,7 @@ impl Workspace {
                                 && t.status == TaskStatus::Pending
                                 && t.waiting_on.is_none()
                                 && t.owner.is_none()
+                                && t.reserved.is_none()
                         })
                         .map(|(i, _)| i)
                         .collect();
@@ -812,7 +917,8 @@ impl Workspace {
             };
             let status = tasks[index].status;
             let waiting = tasks[index].waiting_on.is_some();
-            if status != TaskStatus::Pending || waiting {
+            let reserved = tasks[index].reserved.is_some();
+            if status != TaskStatus::Pending || waiting || reserved {
                 return Err(ClaimError::NotReady);
             }
             let holder = tasks[index].owner.clone();
@@ -870,7 +976,7 @@ impl Workspace {
             };
             let prior = tasks[index].status;
             tasks[index].waiting_on =
-                Some(Waiting { kind: Some(kind), detail, on, verification: false });
+                Some(Waiting { kind: Some(kind), detail, on, verification: false, parked: false });
             tasks[index].status = TaskStatus::Waiting;
             tasks[index].updated_at = at;
             self.persist_task(&tasks[index]);
@@ -1170,6 +1276,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -1578,6 +1686,159 @@ mod tests {
         assert_eq!(last.by, By::User, "the verdict is stamped as the user's own move");
     }
 
+    /// The lead's attestation completes a look wait the lead watched the
+    /// user approve: the quoted words land on the row, the gate is
+    /// satisfied, and the history stamps the lead's own move.
+    #[test]
+    fn a_lead_attests_the_look_with_the_quoted_approval() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-attest");
+        install_db(&ws, dir.path());
+        row_awaiting_look(&ws, "t-1");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        let attested = ws
+            .attest_task("proj", &TaskId::from("t-1"), &lead, "looks good, merge it")
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(attested.status, TaskStatus::Completed, "the attestation completes the row");
+        assert_eq!(attested.waiting_on, None, "and clears the wait");
+        assert_eq!(attested.verify, Some(Verify::None), "the gate is satisfied, not re-armed");
+        let mark = attested.attested.as_ref().expect("the row carries the attestation");
+        assert_eq!(mark.evidence, "looks good, merge it", "the quote is the record");
+        assert!(
+            attested.detail.as_deref().unwrap_or_default().contains("looks good, merge it"),
+            "the quote lands on the row: {:?}",
+            attested.detail,
+        );
+        let history = history_of(&ws, "proj");
+        let last = history.last().expect("a last transition");
+        assert_eq!((last.from, last.to), (Some(TaskStatus::Waiting), TaskStatus::Completed));
+        assert_eq!(last.by, By::Seat(lead), "the attestation is the lead's own move");
+    }
+
+    /// Only the project's lead stands behind the user's approval.
+    #[test]
+    fn a_worker_cannot_attest_a_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-attest-worker");
+        row_awaiting_look(&ws, "t-1");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w1");
+
+        let refused = ws
+            .attest_task("proj", &TaskId::from("t-1"), &worker, "looks good")
+            .expect_err("a worker cannot attest");
+        assert_eq!(refused, MoveError::AttestLeadOnly);
+        let stored = ws.tasks_for_project("proj");
+        let row = stored.iter().find(|task| task.id == TaskId::from("t-1")).expect("t-1");
+        assert_eq!(row.status, TaskStatus::Waiting, "the row stays parked");
+        assert_eq!(row.attested, None, "and carries no attestation");
+    }
+
+    /// The quote is the whole point: an attestation stating nothing is
+    /// refused rather than recorded as a blank claim.
+    #[test]
+    fn an_attestation_needs_the_quoted_approval() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-attest-empty");
+        row_awaiting_look(&ws, "t-1");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        let refused = ws
+            .attest_task("proj", &TaskId::from("t-1"), &lead, "   ")
+            .expect_err("an empty approval is nothing to stand behind");
+        assert_eq!(refused, MoveError::AttestNeedsEvidence);
+        assert_eq!(ws.tasks_for_project("proj")[0].status, TaskStatus::Waiting);
+    }
+
+    /// A decision is the user's to answer; the lead's door is the look's
+    /// only.
+    #[test]
+    fn a_decision_wait_is_not_the_leads_to_attest() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-attest-decision");
+        ws.push_task(Task {
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: Some("which shape".to_owned()),
+                on: None,
+                verification: false,
+                parked: false,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        let refused = ws
+            .attest_task("proj", &TaskId::from("t-1"), &lead, "he said yes to something")
+            .expect_err("a decision is not the lead's to attest");
+        assert_eq!(refused, MoveError::NotWaitingVerification);
+        assert_eq!(ws.tasks_for_project("proj")[0].status, TaskStatus::Waiting);
+    }
+
+    /// The user strikes an attestation: the row parks on the look again,
+    /// the gate is re-minted, and the history records the user's move. A
+    /// child row, so the completion stays live - an attested ROOT closes
+    /// its tree as the user's own approve does.
+    #[test]
+    fn the_users_reopen_strikes_the_attestation_and_parks_the_row() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-reopen");
+        install_db(&ws, dir.path());
+        ws.push_task(sample_task("epic", "proj"));
+        ws.push_task(Task {
+            verify: Some(Verify::User),
+            parent: Some(TaskId::from("epic")),
+            ..sample_task("t-1", "proj")
+        });
+        ws.update_task("proj", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.attest_task("proj", &TaskId::from("t-1"), &lead, "looks good")
+            .expect("no refusal")
+            .expect("the row is there");
+
+        let reopened = ws
+            .reopen_task("proj", &TaskId::from("t-1"))
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(reopened.status, TaskStatus::Waiting, "the row is back on the look");
+        assert_eq!(reopened.attested, None, "the attestation is struck");
+        assert_eq!(reopened.verify, Some(Verify::User), "the gate is re-minted");
+        assert!(
+            reopened.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "and parked on the user: {:?}",
+            reopened.waiting_on,
+        );
+        let history = history_of(&ws, "proj");
+        let last = history.last().expect("a last transition");
+        assert_eq!((last.from, last.to), (Some(TaskStatus::Completed), TaskStatus::Waiting));
+        assert_eq!(last.by, By::User, "the reopen is the user's own move");
+    }
+
+    /// A row with no attestation has nothing to reopen.
+    #[test]
+    fn a_reopen_without_an_attestation_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-reopen-none");
+        row_awaiting_look(&ws, "t-1");
+
+        let refused =
+            ws.reopen_task("proj", &TaskId::from("t-1")).expect_err("nothing was attested");
+        assert_eq!(refused, MoveError::NotAttested);
+        assert_eq!(ws.tasks_for_project("proj")[0].status, TaskStatus::Waiting);
+    }
+
     /// The user drags a row across the board: the state moves, the wait the
     /// row was holding drops, and the move is stamped as the user's own.
     #[test]
@@ -1592,6 +1853,7 @@ mod tests {
             detail: None,
             on: None,
             verification: false,
+            parked: false,
         });
         ws.push_task(waiting);
 
@@ -1647,6 +1909,22 @@ mod tests {
             Some("the rail elides wrong"),
             "and the words are in the detail",
         );
+    }
+
+    /// A wordless send-back appends nothing: an empty detail is no detail,
+    /// and a `Some("")` there would read as an empty ask on the card.
+    #[test]
+    fn a_wordless_send_back_leaves_the_detail_untouched() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-sendback-blank");
+        row_awaiting_look(&ws, "t-1");
+
+        let sent = ws
+            .send_back_task("proj", &TaskId::from("t-1"), "   ")
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(sent.detail, None, "a blank send-back writes no detail");
     }
 
     #[test]
@@ -1865,6 +2143,65 @@ mod tests {
             .claim_task("proj", &worker, None, Some(&TaskId::from("epic")))
             .expect("a ready row is there");
         assert_eq!(claimed.id, TaskId::from("early"), "the top ready row by rank");
+    }
+
+    /// A pick reserved for the user is nobody's to claim: neither by id nor
+    /// through its epic's ready row (#2423/C).
+    #[test]
+    fn a_reserved_pick_is_not_claimable() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-claim-reserved");
+        ws.push_task(sample_task_with_parent("epic", None, "proj"));
+        // The reserved row OUTRANKS the free one, so only the reservation
+        // filter can keep the epic pull off it.
+        ws.push_task(Task {
+            rank: Some(1),
+            reserved: Some(ReservedBy::User),
+            ..sample_task_with_parent("kept", Some("epic"), "proj")
+        });
+        ws.push_task(Task {
+            rank: Some(10),
+            ..sample_task_with_parent("free", Some("epic"), "proj")
+        });
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        assert_eq!(
+            ws.claim_task("proj", &worker, Some(&TaskId::from("kept")), None),
+            Err(ClaimError::NotReady),
+            "a named reserved row is refused as not ready",
+        );
+        let claimed = ws
+            .claim_task("proj", &worker, None, Some(&TaskId::from("epic")))
+            .expect("the free row is still there");
+        assert_eq!(claimed.id, TaskId::from("free"), "the epic pull skips the reserved row");
+    }
+
+    /// The reservation is the user's to set and release, and the write
+    /// returns the row as it stands after it.
+    #[test]
+    fn a_pick_is_reserved_and_released() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-reserve");
+        ws.push_task(sample_task("t-1", "proj"));
+
+        let reserved = ws
+            .reserve_task("proj", &TaskId::from("t-1"), true)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(reserved.reserved, Some(ReservedBy::User), "the pick is the user's");
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].reserved,
+            Some(ReservedBy::User),
+            "and the write persists",
+        );
+
+        let released = ws
+            .reserve_task("proj", &TaskId::from("t-1"), false)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(released.reserved, None, "releasing clears it");
     }
 
     /// A worker is handed a row by the short id a person writes, so an
@@ -2210,6 +2547,7 @@ mod tests {
                 detail: Some("the board read has to land first".to_owned()),
                 on: Some(TaskId::from("blocker")),
                 verification: false,
+                parked: false,
             }),
             "and the wait it held, not a look park the caller never asked for",
         );
@@ -2280,6 +2618,7 @@ mod tests {
                 detail: None,
                 on: None,
                 verification: false,
+                parked: false,
             }),
             ..sample_task("t-1", "proj")
         });
@@ -2304,6 +2643,7 @@ mod tests {
             detail: None,
             on,
             verification: false,
+            parked: false,
         };
         assert_eq!(wait_words(None), "a wait", "no stored wait");
         assert_eq!(wait_words(Some(&wait(None, None))), "a wait", "a legacy unstated wait");
@@ -2493,11 +2833,96 @@ mod tests {
         assert_eq!(moved.waiting_on, None, "and the wait goes with it");
     }
 
+    /// A child row completes on its own terms under a verify=user epic
+    /// (#2423): `verify: user` is a property a row is MINTED with, and an
+    /// epic's gate governs the epic's own completion rather than its
+    /// children's.
+    #[test]
+    fn a_child_of_a_verify_user_epic_completes_without_a_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-child-gate");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w1");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
+        ws.push_task(sample_task_with_parent("t-1", Some("epic"), "proj"));
+
+        let completed = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(worker), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(completed.status, TaskStatus::Completed, "the child owes no look");
+        assert_eq!(completed.waiting_on, None, "and nothing parks it");
+    }
+
+    /// The boundary the rule keeps (#2423): the epic's OWN gate still
+    /// governs the epic's completion - the root parks on the look, and the
+    /// board's approve is what completes it.
+    #[test]
+    fn an_epic_root_still_parks_on_its_own_gate() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-epic-gate");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
+
+        let parked = ws
+            .update_task("proj", &TaskId::from("epic"), By::Seat(lead), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(parked.status, TaskStatus::Waiting, "the root's own gate parks it");
+        assert!(
+            parked.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "the wait is the look's: {:?}",
+            parked.waiting_on,
+        );
+
+        let approved = ws
+            .approve_task("proj", &TaskId::from("epic"))
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(approved.status, TaskStatus::Completed, "the approve completes the epic");
+    }
+
+    /// A park an inherited gate left behind stops reading as a user wait
+    /// (#2423): the row's own `verify` is unchanged, and a seat's
+    /// completion lands instead of being refused by the look.
+    #[test]
+    fn a_park_minted_by_an_inherited_gate_stops_reading_as_a_user_wait() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-stale-park");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w1");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
+        ws.push_task(Task {
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: None,
+                on: None,
+                verification: true,
+                parked: false,
+            }),
+            ..sample_task_with_parent("t-1", Some("epic"), "proj")
+        });
+
+        let completed = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(worker), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("an inherited park is not the look's to refuse")
+            .expect("the row is there");
+        assert_eq!(completed.status, TaskStatus::Completed, "the child completes");
+        assert_eq!(completed.waiting_on, None, "and the stale wait drops with the move");
+    }
+
     /// The look gate is not an update's to clear. A `verify: none` patch on
-    /// a user-bound row is refused by name whether the binding is the
-    /// row's own or inherited from its epic, so the two-call path (clear,
+    /// a user-bound row is refused by name, so the two-call path (clear,
     /// then complete) has no first step - and the stored row keeps the
-    /// gate it was bound by.
+    /// gate it was minted with.
     #[test]
     fn an_update_cannot_clear_a_user_verify() {
         let dir = tempdir().expect("tempdir");
@@ -2505,32 +2930,22 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-verify-clear");
         let lead = SessionSlot::lead("TestOrg", "proj");
         ws.push_task(Task { verify: Some(Verify::User), ..sample_task("t-1", "proj") });
-        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
-        ws.push_task(Task { parent: Some(TaskId::from("epic")), ..sample_task("t-2", "proj") });
+        ws.push_task(sample_task("t-2", "proj"));
 
-        for id in ["t-1", "t-2"] {
-            let refused = ws
-                .update_task("proj", &TaskId::from(id), By::Seat(lead.clone()), |task| {
-                    task.verify = Some(Verify::None);
-                })
-                .expect_err("an update cannot clear the user's look gate");
-            assert_eq!(
-                refused,
-                MoveError::ClearingLookGate,
-                "{id}: the clear's own refusal, not another move error",
-            );
-        }
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(lead.clone()), |task| {
+                task.verify = Some(Verify::None);
+            })
+            .expect_err("an update cannot clear the user's look gate");
+        assert_eq!(
+            refused,
+            MoveError::ClearingLookGate,
+            "the clear's own refusal, not another move error",
+        );
 
         let stored = ws.tasks_for_project("proj");
         let own = stored.iter().find(|t| t.id == TaskId::from("t-1")).expect("t-1");
         assert_eq!(own.verify, Some(Verify::User), "t-1 keeps its own gate");
-        let inherited = stored.iter().find(|t| t.id == TaskId::from("t-2")).expect("t-2");
-        assert_eq!(inherited.verify, None, "t-2 never grew a gate of its own");
-        assert_eq!(
-            effective_verify(&stored, stored.iter().position(|t| t.id == inherited.id).expect("i")),
-            Verify::User,
-            "and it is still bound by its epic's",
-        );
 
         // Setting the gate is still the lead's: a row may be armed.
         ws.update_task("proj", &TaskId::from("t-2"), By::Seat(lead), |task| {
@@ -2540,42 +2955,39 @@ mod tests {
         .expect("the row is there");
     }
 
-    /// The other way an update can drop a gate it does not state: the
-    /// binding follows the epic, so moving a row out of a user-bound epic
-    /// un-gates it. Refused like the clear is - while a move between two
-    /// gated epics, or a row carrying its own gate, changes nothing and
-    /// stays allowed.
+    /// Reparenting never touches a gate (#2423): a child of a verify=user
+    /// epic carries no gate of its own, so moving it out is not the look's
+    /// to refuse - and a row carrying its own gate keeps it wherever it
+    /// moves, since the gate is minted on the row rather than inherited.
     #[test]
-    fn an_update_cannot_move_a_gated_row_out_of_its_epic() {
+    fn reparenting_does_not_touch_a_row_s_own_gate() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-verify-reparent");
         let lead = SessionSlot::lead("TestOrg", "proj");
         ws.push_task(Task { verify: Some(Verify::User), ..sample_task("gated", "proj") });
-        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("gated-too", "proj") });
         ws.push_task(Task { ..sample_task("free", "proj") });
         ws.push_task(Task { parent: Some(TaskId::from("gated")), ..sample_task("t-2", "proj") });
-
-        let refused = ws
-            .update_task("proj", &TaskId::from("t-2"), By::Seat(lead.clone()), |task| {
-                task.parent = Some(TaskId::from("free"));
-            })
-            .expect_err("moving a gated row out of its epic takes the look away");
-        assert_eq!(refused, MoveError::ClearingLookGate);
-        let stored = ws.tasks_for_project("proj");
-        let row = stored.iter().find(|t| t.id == TaskId::from("t-2")).expect("t-2");
-        assert_eq!(row.parent, Some(TaskId::from("gated")), "and it stays where it was");
+        ws.push_task(Task {
+            parent: Some(TaskId::from("gated")),
+            verify: Some(Verify::User),
+            ..sample_task("t-3", "proj")
+        });
 
         ws.update_task("proj", &TaskId::from("t-2"), By::Seat(lead.clone()), |task| {
-            task.parent = Some(TaskId::from("gated-too"));
-        })
-        .expect("no refusal")
-        .expect("the row is there");
-        ws.update_task("proj", &TaskId::from("gated"), By::Seat(lead), |task| {
             task.parent = Some(TaskId::from("free"));
         })
         .expect("no refusal")
-        .expect("a row carrying its own gate may move anywhere");
+        .expect("a child never inherited the epic's gate");
+
+        let moved = ws
+            .update_task("proj", &TaskId::from("t-3"), By::Seat(lead), |task| {
+                task.parent = Some(TaskId::from("free"));
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(moved.verify, Some(Verify::User), "its own gate travels with it");
+        assert_eq!(moved.parent, Some(TaskId::from("free")), "and the reparent landed");
     }
 
     /// The third door around the look gate (#2251): the update path refuses
@@ -2730,10 +3142,10 @@ mod tests {
         assert_eq!(removed.len(), 1, "the row went");
     }
 
-    /// A dependency wait is on the task it names, not on the user: an
-    /// epic's `verify: user` gates the row's own completion, so it does
-    /// not make the waiting child a user ask the delete must refuse
-    /// (#2415).
+    /// A dependency wait is on the task it names, not on the user: a row's
+    /// `verify: user` gates that row's own completion, so neither it nor
+    /// its epic's gate makes the waiting child a user ask the delete must
+    /// refuse (#2415, #2423).
     #[test]
     fn a_dependency_wait_under_a_verify_user_epic_is_deletable() {
         let dir = tempdir().expect("tempdir");
@@ -2748,6 +3160,7 @@ mod tests {
                 detail: Some("the blocker lands first".to_owned()),
                 on: Some(TaskId::from("blocker")),
                 verification: false,
+                parked: false,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
         });
@@ -2756,8 +3169,8 @@ mod tests {
         let index = rows.iter().position(|task| task.id == TaskId::from("t-1")).expect("the row");
         assert_eq!(
             effective_verify(&rows, index),
-            Verify::User,
-            "premise: the epic's gate binds the waiting row",
+            Verify::None,
+            "premise: the epic's gate does not bind the waiting child",
         );
 
         let removed = ws
@@ -2919,6 +3332,7 @@ mod tests {
                 detail: None,
                 on: None,
                 verification: true,
+                parked: false,
             }),
             "the wait is the verify gate, which the board draws as approve / send back",
         );

@@ -523,6 +523,8 @@ impl Fleet {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: artifact
                 .map(|target| forge_primitives::tasks::TaskLink {
                     kind: forge_primitives::tasks::LinkKind::for_target(target),
@@ -554,6 +556,7 @@ impl Fleet {
             last_fire: None,
             next_fire: std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
             team_role: None,
+            wake: true,
         });
         Ok(())
     }

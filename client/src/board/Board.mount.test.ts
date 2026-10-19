@@ -109,6 +109,7 @@ describe("the board's controls", () => {
     const waiting = (id: string, verification: boolean) =>
       row(
         task(id, `subject ${id}`, 'waiting', {
+          verify: verification ? 'user' : null,
           waiting_on: { kind: 'decision', detail: 'the words', on: null, verification },
         }),
       );
@@ -119,8 +120,10 @@ describe("the board's controls", () => {
     expect(acts[0]).toEqual({ task_verdict: { project: 'proj', id: 'v1', approve: true } });
 
     // The send-back carries whatever the reader typed into its own box.
+    // The field says `what to change`; the longer phrase lives in its
+    // accessible name, where a narrow card cannot truncate it (#2423 look).
     const words = document.querySelector<HTMLInputElement>(
-      'input[placeholder="what to change (sent back with it)"]',
+      'input[placeholder="what to change"][aria-label="what to change (sent back with it)"]',
     );
     if (words === null) throw new Error('the send-back box is not on the page');
     words.value = 'the rail elides wrong';
@@ -558,6 +561,7 @@ describe("the board's controls", () => {
       wireWith([
         row(
           task('epic', 'the epic', 'waiting', {
+            verify: 'user',
             waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
           }),
           { rollup: [2, 4] },
@@ -589,6 +593,7 @@ describe("the board's controls", () => {
         row(
           task('kid', 'a child', 'waiting', {
             parent: 'root',
+            verify: 'user',
             waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
           }),
           { rollup: [0, 1] },
@@ -600,11 +605,107 @@ describe("the board's controls", () => {
     expect(document.querySelector('.b-hold'), 'a child row drew a hold').toBeNull();
   });
 
+  /**
+   * **The wait card leads with the ASK** (#2423 look): what is being decided
+   * or looked at, then the row's links as doors, then a look's artifact.
+   * The row's subject is context under the ask, not the title.
+   */
+  it('leads a wait card with its ask, its links and a look artifact', () => {
+    const mock = {
+      kind: 'pr' as const,
+      label: 'the mock',
+      target: 'https://example.invalid/mock',
+      state: null,
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    const note = {
+      kind: 'path' as const,
+      label: 'the design note',
+      target: 'https://example.invalid/note',
+      state: null,
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    summon(
+      wireWith([
+        row(
+          task('w1', 'the row subject', 'waiting', {
+            // A look parks with no wait detail: its ask is the row's own.
+            detail: 'Which mock should ship?',
+            verify: 'user',
+            waiting_on: {
+              kind: 'decision',
+              detail: null,
+              on: null,
+              verification: true,
+            },
+            links: [mock, note],
+          }),
+        ),
+      ]),
+    );
+
+    const card = document.querySelector('.b-ask');
+    const words = card?.textContent ?? '';
+    expect(words, 'the ask is on the card').toContain('Which mock should ship?');
+    expect(words.indexOf('Which mock should ship?'), 'the subject leads over the ask').toBeLessThan(
+      words.indexOf('the row subject'),
+    );
+    expect(
+      card?.querySelectorAll('a[href="https://example.invalid/mock"]').length,
+      'the artifact reference is presented once',
+    ).toBe(1);
+    expect(
+      card?.querySelector('a.b-door[href="https://example.invalid/mock"]'),
+      'the artifact is a door in the card grammar',
+    ).not.toBeNull();
+    expect(
+      card?.querySelector('a.b-ref[href="https://example.invalid/mock"]'),
+      'the artifact is not also a reference-line link',
+    ).toBeNull();
+    expect(
+      card?.querySelector('a.b-ref[href="https://example.invalid/note"]'),
+      'the other reference keeps its link',
+    ).not.toBeNull();
+    expect(words, 'the look names its artifact').toContain('look at');
+  });
+
+  /** A seeded or legacy wait with no ask keeps the state's own sentence. */
+  it('keeps the state sentence for a wait with no detail', () => {
+    summon(
+      wireWith([
+        row(
+          task('q1', 'a bare question', 'waiting', {
+            // A followable reference, so the no-door assertion below can only
+            // pass on the verification guard rather than on an empty link list.
+            links: [
+              {
+                kind: 'pr',
+                label: 'PR #2425',
+                target: 'https://example.invalid/pull/2425',
+                state: null,
+                added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+              },
+            ],
+            waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+          }),
+        ),
+      ]),
+    );
+    const card = document.querySelector('.b-ask');
+    expect(card?.textContent).toContain('A decision is waiting on you.');
+    expect(
+      card?.textContent,
+      'the subject still names the row when the state sentence is the ask',
+    ).toContain('a bare question');
+    expect(card?.querySelector('a.b-door'), 'a decision has no artifact door').toBeNull();
+  });
+
   it('offers the approve when the row has nothing left to close', () => {
     summon(
       wireWith([
         row(
           task('t1', 'a row', 'waiting', {
+            verify: 'user',
             waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
           }),
         ),
@@ -816,6 +917,161 @@ describe("the row's own page", () => {
   });
 
   /**
+   * **The row page leads with the ASK** (#2423 look): the wait's detail,
+   * then the row's links as doors, then a look's artifact. The subject is
+   * context under the ask, not the thing the page says first.
+   */
+  it("leads the row page with the wait's ask, links and artifact", () => {
+    const mock = {
+      kind: 'pr' as const,
+      label: 'the mock',
+      target: 'https://example.invalid/mock',
+      state: null,
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    const note = {
+      kind: 'path' as const,
+      label: 'the design note',
+      target: 'https://example.invalid/note',
+      state: null,
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    summon(
+      wireWith([
+        row(
+          task('w1', 'the row subject', 'waiting', {
+            // A look parks with no wait detail: its ask is the row's own.
+            detail: 'Which mock should ship?',
+            verify: 'user',
+            waiting_on: {
+              kind: 'decision',
+              detail: null,
+              on: null,
+              verification: true,
+            },
+            links: [mock, note],
+          }),
+        ),
+      ]),
+    );
+    const card = document.querySelector('.b-card[data-id="w1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    const drawer = document.querySelector('.dr');
+    const ask = drawer?.querySelector('.dr-ask');
+    expect(ask?.textContent, 'the ask leads the waiting section').toContain(
+      'Which mock should ship?',
+    );
+    expect(
+      ask?.textContent?.trim().startsWith('Which mock should ship?'),
+      'the ask is the first thing the section says, not the state sentence',
+    ).toBe(true);
+    expect(
+      ask?.querySelectorAll('a[href="https://example.invalid/mock"]').length,
+      'the artifact reference is presented once in the ask block',
+    ).toBe(1);
+    expect(
+      ask?.querySelector('a.b-door[href="https://example.invalid/mock"]'),
+      'the artifact is the same door control',
+    ).not.toBeNull();
+    expect(
+      ask?.querySelector('a.b-ref[href="https://example.invalid/mock"]'),
+      'the artifact is not also a reference-line link',
+    ).toBeNull();
+    expect(
+      ask?.querySelector('a.b-ref[href="https://example.invalid/note"]'),
+      'the other reference keeps its link',
+    ).not.toBeNull();
+    expect(drawer?.textContent, 'the look names its artifact').toContain('look at');
+  });
+
+  /**
+   * An inherited park is not the reader's (#2423/A): its page says a plain
+   * "Waiting." and offers no approve, never the look's sentence with no
+   * control behind it.
+   */
+  it('draws an inherited park as a plain wait with no look control', () => {
+    summon(
+      wireWith([
+        row(
+          task('i1', 'an inherited park', 'waiting', {
+            // A followable reference, so the drawer's no-door assertion can
+            // only pass on its own verification-and-own-gate guard.
+            links: [
+              {
+                kind: 'pr',
+                label: 'PR #2425',
+                target: 'https://example.invalid/pull/2425',
+                state: null,
+                added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+              },
+            ],
+            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          }),
+        ),
+      ]),
+    );
+    const card = document.querySelector('.b-card[data-id="i1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    const drawer = document.querySelector('.dr');
+    expect(
+      drawer?.querySelector('.dr-state')?.textContent?.trim(),
+      'the header names the plain state, not a look',
+    ).toBe('waiting');
+    expect(drawer?.textContent, 'the park reads as a plain wait').toContain('Waiting.');
+    expect(drawer?.textContent, 'the look sentence is not drawn').not.toContain(
+      'waits on your approval',
+    );
+    expect(byText('approve'), 'and no approve is offered').toBeNull();
+    expect(drawer?.querySelector('a.b-door'), 'and no artifact door is drawn').toBeNull();
+  });
+
+  /**
+   * A lead-attested completion carries its mark on the card and the quoted
+   * approval in the drawer, and the drawer's reopen hands the user's own
+   * strike back as one command (#2423/B).
+   */
+  it('draws a lead-attested row and hands reopen out as a command', () => {
+    const attested = {
+      evidence: 'Looks right - merge',
+      at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    summon(wireWith([row(task('a1', 'an attested look', 'completed', { attested }))]));
+    expect(document.body.textContent, 'the card lost the mark').toContain('lead attested');
+
+    const card = document.querySelector('.b-card[data-id="a1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    const drawer = document.querySelector('.dr');
+    expect(drawer?.textContent, 'the quote the lead recorded').toContain('Looks right - merge');
+    byText('reopen')?.click();
+    flushSync();
+    expect(acts[0]).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
+  });
+
+  /** The user reserves a pick from the row page, and the board says so. */
+  it('reserves and releases a pick from the drawer', () => {
+    summon(wireWith([row(task('r1', 'a pick', 'pending'))]));
+    const card = document.querySelector('.b-card[data-id="r1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    byText('reserve for you')?.click();
+    flushSync();
+    expect(acts[0]).toEqual({ task_reserve: { project: 'proj', id: 'r1', reserved: true } });
+
+    // And a reserved row draws the mark, with the release door.
+    summon(wireWith([row(task('r2', 'a reserved pick', 'pending', { reserved: 'user' }))]));
+    expect(document.body.textContent, 'the reserved mark is missing').toContain('reserved for you');
+    const reserved = document.querySelector('.b-card[data-id="r2"]');
+    if (reserved === null) throw new Error('no reserved card');
+    press(reserved);
+    byText('release')?.click();
+    flushSync();
+    expect(acts[1]).toEqual({ task_reserve: { project: 'proj', id: 'r2', reserved: false } });
+  });
+
+  /**
    * A row whose links collide draws on the card and in the drawer: the lists
    * key on the position, since the entries carry no identity the wire
    * guarantees unique.
@@ -976,6 +1232,7 @@ describe("the row's own page", () => {
   const gated = (open: TaskStatus): BoardRow[] => [
     row(
       task('e1', 'the epic', 'waiting', {
+        verify: 'user',
         waiting_on: { kind: 'decision', detail: 'the words', on: null, verification: true },
       }),
     ),

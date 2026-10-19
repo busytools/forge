@@ -148,6 +148,8 @@
     "TaskCreate": "task_create",
     "TaskMove": "task_move",
     "TaskRank": "task_rank",
+    "TaskReopen": "task_reopen",
+    "TaskReserve": "task_reserve",
     "TaskVerdict": "task_verdict",
     "UpsertReviewThread": "upsert_review_thread"
   },
@@ -1057,6 +1059,25 @@
       "/marketplace_add": [
         "dispatch_id",
         "source"
+      ]
+    },
+    "TaskReopen": {
+      "": [
+        "task_reopen"
+      ],
+      "/task_reopen": [
+        "id",
+        "project"
+      ]
+    },
+    "TaskReserve": {
+      "": [
+        "task_reserve"
+      ],
+      "/task_reserve": [
+        "id",
+        "project",
+        "reserved"
       ]
     }
   },

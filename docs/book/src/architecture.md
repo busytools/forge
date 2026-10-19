@@ -268,10 +268,12 @@ machine-global client rather than a project's scope - the session asks
 the client that holds the browser role, and with none connected the tool
 answers the named error - and a hand-off reads the caller's own tree or
 its project's `vault_roots`, so there is nothing a project could withhold
-of either. The split that varies by session kind is inside `agents`: any session may
-`list`, `tell`, `ask` and read its own identity, while the four verbs
+of either. Two groups vary by session kind: inside `agents`, any session
+may `list`, `tell`, `ask` and read its own identity, while the four verbs
 that act on the caller's own project - `spawn`, `despawn`, `update` and
-`capacity` - are lead-only. Reach is the same for both: a target is a
+`capacity` - are lead-only; and inside `tasks`, `tasks__approve` is the
+lead's own door (it attests a look the user already gave) and is not
+offered to a worker. Reach is the same for both: a target is a
 slot, `(org, project, label)`, so a worker addresses another project's
 agent as directly as its own lead.
 

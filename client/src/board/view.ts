@@ -142,7 +142,12 @@ export interface WaitingView {
   owner: string | null;
   /** The verify gate, or a question the worker raised. */
   verification: boolean;
-  detail: string | null;
+  /** The card's title: the wait's own detail, else the row's, else the state's sentence. */
+  ask: string;
+  /** The row's references, as doors, beside the ask. */
+  links: { label: string; href: string | null }[];
+  /** The artifact a look points at, when the row carries a followable one. */
+  artifact: { label: string; href: string } | null;
   /** How long it has waited. */
   age: string;
   /**
@@ -192,19 +197,31 @@ export function fmtSecs(secs: number): string {
   return `${secs}s`;
 }
 
+/**
+ * Whether a row's wait is the READER's: a decision, or a look park on a row
+ * carrying its own `verify: 'user'`. The gate is minted on the row, never
+ * inherited from its epic (#2423), so a verification wait an inherited gate
+ * left behind is a plain wait, not an ask on the reader.
+ */
+export function waitOnUser(task: Task): boolean {
+  const wait = task.waiting_on;
+  if (wait === null) return false;
+  return wait.verification ? task.verify === 'user' : wait.kind === 'decision';
+}
+
 /** The chips a row's marks and its wait imply, in reading order. */
 function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardView['chips'] {
   const chips: BoardCardView['chips'] = [];
   if (task.waiting_on !== null) {
     const wait = task.waiting_on;
     chips.push(
-      wait.verification
+      waitOnUser(task)
         ? { label: 'waiting on you', tone: 'warn' }
-        : wait.kind === 'decision'
-          ? { label: 'waiting on you', tone: 'warn' }
-          : wait.kind === 'dependency'
-            ? { label: `on ${wait.on ?? 'another row'}`, tone: 'warn' }
-            : { label: 'waiting on a resource', tone: 'warn' },
+        : wait.kind === 'dependency'
+          ? { label: `on ${wait.on ?? 'another row'}`, tone: 'warn' }
+          : wait.kind === 'resource'
+            ? { label: 'waiting on a resource', tone: 'warn' }
+            : { label: 'waiting', tone: 'warn' },
     );
     if (marks.waiting_too_long)
       chips.push({ label: `waiting ${fmtSecs(updatedSecsAgo)}`, tone: 'bad' });
@@ -215,9 +232,45 @@ function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardVie
   }
   if (marks.stale) chips.push({ label: 'owner gone', tone: 'bad' });
   if (marks.in_review) chips.push({ label: 'in review', tone: 'blue' });
+  if ((task.attested ?? null) !== null) chips.push({ label: 'lead attested', tone: 'blue' });
   if (marks.to_close) chips.push({ label: 'to close', tone: 'blue' });
+  if (task.reserved === 'user') chips.push({ label: 'reserved for you', tone: 'dim' });
   if (task.attempt > 1) chips.push({ label: `attempt ${task.attempt}`, tone: 'dim' });
   return chips;
+}
+
+/**
+ * The sentence a wait's card says when it states no ask of its own: the
+ * state, in the reader's terms. A seeded or legacy wait keeps this, and a
+ * wait with a detail leads with the detail instead (#2423 look).
+ */
+export function waitSentence(task: Task): string {
+  const wait = task.waiting_on;
+  if (wait === null) return 'Waiting.';
+  if (waitOnUser(task) && wait.verification) {
+    return 'This row is finished and waits on your approval.';
+  }
+  if (waitOnUser(task) && wait.kind === 'decision') return 'A decision is waiting on you.';
+  if (wait.kind === 'dependency') return `Waiting on ${wait.on ?? 'another row'}.`;
+  if (wait.kind === 'resource') return 'Waiting on a resource.';
+  return 'Waiting.';
+}
+
+/**
+ * The artifact a look points at, where the row carries one: the first
+ * followable PR or path link. A look's ask usually names a mock, an
+ * approach or a view, and the reader should reach it in one press.
+ */
+export function artifactOf(task: Task): { label: string; href: string } | null {
+  const link = task.links.find(
+    (candidate) =>
+      (candidate.kind === 'pr' || candidate.kind === 'path') &&
+      followable(candidate.target) !== null,
+  );
+  if (link === undefined) return null;
+  const href = followable(link.target);
+  if (href === null) return null;
+  return { label: link.label ?? shortTarget(link.target), href };
 }
 
 /** The links a row shows: short labels, with a href when the target is a URL. */
@@ -350,25 +403,42 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
   }
   for (const lane of lanes) lane.count = lane.cards.length;
   const waiting = ordered
-    .filter(
-      (entry) => entry.task.status === 'waiting' && entry.task.waiting_on?.kind === 'decision',
-    )
-    .map((entry) => ({
-      id: entry.task.id,
-      subject: entry.task.subject,
-      owner: entry.task.owner === null ? null : entry.task.owner.label,
-      verification: entry.task.waiting_on?.verification === true,
-      detail: entry.task.waiting_on?.detail ?? null,
-      age: fmtSecs(entry.updated_secs_ago),
-      root: entry.task.parent === null,
-      // Counted from the rows themselves, NOT from the rollup: the rollup's
-      // first number counts completed children, and a failed or canceled
-      // child is one the close no longer waits for.
-      open: ordered.filter(
-        (child) => child.task.parent === entry.task.id && !terminal(child.task.status),
-      ).length,
-      rollup: entry.rollup === null ? null : `${entry.rollup[0]}/${entry.rollup[1]}`,
-    }));
+    .filter((entry) => entry.task.status === 'waiting' && waitOnUser(entry.task))
+    .map((entry) => {
+      const artifact =
+        entry.task.waiting_on?.verification === true && waitOnUser(entry.task)
+          ? artifactOf(entry.task)
+          : null;
+      // A blank detail is no detail: a send-back that once appended nothing
+      // must not turn into an empty ask.
+      const waitAsk = entry.task.waiting_on?.detail?.trim() ?? '';
+      const rowAsk = entry.task.detail?.trim() ?? '';
+      return {
+        id: entry.task.id,
+        subject: entry.task.subject,
+        owner: entry.task.owner === null ? null : entry.task.owner.label,
+        verification: entry.task.waiting_on?.verification === true,
+        // The ask is the wait's own detail where it states one, else the row's
+        // detail - a look parks with no wait detail, and its ask is the row's
+        // own words - else the state's sentence.
+        ask: waitAsk !== '' ? waitAsk : rowAsk !== '' ? rowAsk : waitSentence(entry.task),
+        // The artifact is a reference the row already carries, presented once:
+        // the door is its only showing, so the links line keeps the others.
+        links: linksOf(entry.task).filter(
+          (link) => artifact === null || link.href !== artifact.href,
+        ),
+        artifact,
+        age: fmtSecs(entry.updated_secs_ago),
+        root: entry.task.parent === null,
+        // Counted from the rows themselves, NOT from the rollup: the rollup's
+        // first number counts completed children, and a failed or canceled
+        // child is one the close no longer waits for.
+        open: ordered.filter(
+          (child) => child.task.parent === entry.task.id && !terminal(child.task.status),
+        ).length,
+        rollup: entry.rollup === null ? null : `${entry.rollup[0]}/${entry.rollup[1]}`,
+      };
+    });
   return {
     name: project,
     org,

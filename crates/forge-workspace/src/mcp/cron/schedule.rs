@@ -105,6 +105,7 @@ mod tests {
             last_fire: None,
             next_fire: epoch(next_fire),
             team_role: None,
+            wake: true,
         }
     }
 
