@@ -741,6 +741,22 @@ mod tests {
         }
     }
 
+    /// A stale block carries its age between the ts and the member count;
+    /// the parser still has to read it as the same conversation block.
+    #[test]
+    fn a_stale_bundle_header_reads_as_the_same_block() {
+        let prose = "[Slack - workspace 'acme', general] id C1 ts 2.2, 8d old (2 messages)\n\
+                     alice: one [ts 1.1]\n\
+                     bob: two [ts 2.2]";
+        match detect_inbound(prose).expect("slack") {
+            PeerInboundKind::Slack { author, body, .. } => {
+                assert_eq!(author, None, "the age clause keeps the bundle shape");
+                assert!(body.contains("bob: two"), "the body keeps every member: {body}");
+            }
+            other => panic!("expected Slack, got {other:?}"),
+        }
+    }
+
     /// One message's own text wraps over as many lines as a bundle's
     /// members do, so the member count - never the line count - is what
     /// tells the two apart.

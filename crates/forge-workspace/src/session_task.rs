@@ -1507,7 +1507,12 @@ impl SessionTask {
             by_conversation.entry(message.conversation.clone()).or_default().push(message);
         }
         for messages in by_conversation.into_values() {
-            let prose = crate::spawn::slack_bundle_to_prose(&messages);
+            let Some(first) = messages.first() else { continue };
+            let prose = crate::spawn::slack_bundle_to_prose(
+                &messages,
+                workspace.slack_stale_after(&first.workspace),
+                std::time::SystemTime::now(),
+            );
             let uuid = forge_sdk::request_id::next_prompt_id();
             crate::spawn::push_slack_message_into_chat(workspace, &self.key, &prose, &uuid);
             if let Err(err) = workspace.dispatch_workspace_prompt_under(
@@ -3272,17 +3277,21 @@ mod tests {
             "the buffered message arrives as the session's own prompt: {dispatched:?}",
         );
 
-        let mut echoed = false;
+        let mut echoed = None;
         while let Ok(frame) = update_rx.try_recv() {
-            if matches!(
-                frame.update,
-                SessionUpdate::SlackMessageAppended { key, prose, .. }
-                    if key == session_key &&prose.contains("the buffered text")
-            ) {
-                echoed = true;
+            if let SessionUpdate::SlackMessageAppended { key, prose, .. } = frame.update
+                && key == session_key
+                && prose.contains("the buffered text")
+            {
+                echoed = Some(prose);
             }
         }
-        assert!(echoed, "an asleep-buffered Slack message echoes a SlackMessageAppended on drain");
+        let prose = echoed
+            .expect("an asleep-buffered Slack message echoes a SlackMessageAppended on drain");
+        assert!(
+            prose.contains("d old"),
+            "the drain reads the workspace's stale threshold: {prose}",
+        );
 
         assert!(
             workspace.take_parked_for_slot(&session_key).slack.is_empty(),

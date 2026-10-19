@@ -30,6 +30,10 @@ pub struct SlackConfig {
     /// one that quiet is resolved in practice, whatever its parent's age.
     #[serde(default = "default_thread_idle_days")]
     pub thread_idle_days: u64,
+    /// A block whose newest message is at or past this many hours old carries
+    /// its age in its header. Zero turns the mark off; nothing is dropped.
+    #[serde(default = "default_stale_after_hours")]
+    pub stale_after_hours: u64,
 }
 
 /// Sweep interval a workspace gets when it names none. Slack's API
@@ -40,6 +44,9 @@ pub const DEFAULT_POLL_SECONDS: u64 = 5;
 
 /// Idle window a workspace gets when it names none.
 pub const DEFAULT_THREAD_IDLE_DAYS: u64 = 14;
+
+/// Age a delivered block may reach before its header says so.
+pub const DEFAULT_STALE_AFTER_HOURS: u64 = 24;
 
 /// DM-class sweep interval a workspace gets when it names none.
 ///
@@ -74,6 +81,10 @@ fn default_thread_idle_days() -> u64 {
     DEFAULT_THREAD_IDLE_DAYS
 }
 
+fn default_stale_after_hours() -> u64 {
+    DEFAULT_STALE_AFTER_HOURS
+}
+
 /// Hand-written because the token must never be printed, the same reason
 /// `SlackClient` writes its own.
 impl std::fmt::Debug for SlackConfig {
@@ -84,6 +95,7 @@ impl std::fmt::Debug for SlackConfig {
             .field("poll_seconds", &self.poll_seconds)
             .field("dm_poll_seconds", &self.dm_poll_seconds)
             .field("thread_idle_days", &self.thread_idle_days)
+            .field("stale_after_hours", &self.stale_after_hours)
             .finish()
     }
 }
@@ -370,6 +382,7 @@ mod tests {
             poll_seconds: 30,
             dm_poll_seconds: 150,
             thread_idle_days: 14,
+            stale_after_hours: 24,
         };
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("supersecret"), "token leaked: {rendered}");

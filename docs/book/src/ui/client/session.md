@@ -65,7 +65,9 @@ read as one system.
   `from` name the counterparty and its org, `failed` carries the
   delivery's own reason, and `whoami` and `list` open onto their facts.
 - **A delivery** - a cron fire, a Slack message, a Gotify push - is a row
-  of its own kind, a cron fire titled by the schedule that fired it.
+  of its own kind, a cron fire titled by the schedule that fired it. A
+  Slack row whose block is late adds its age to the title, so a week-old
+  message reads as history before the row is opened.
 - **A nudge** - a chase warning, a browser's idle message, a worker's
   kick - is the machinery's own words, so it draws as a work row under
   the board's own mark rather than as the reader's: nobody typed it, and
