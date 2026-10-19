@@ -72,7 +72,7 @@
   import Rail from './Rail.svelte';
   import Reader from './Reader.svelte';
   import { contextForComment, railRows, threadsOnPath, treeScope, type RailRow } from './comments';
-  import { fileIcon, folderIcon } from './icons';
+  import { fileIcon, folderIcon, rootIcon } from './icons';
   import type { ReaderBlock, ReaderHandle } from './reader';
   import {
     foldsFor,
@@ -110,7 +110,7 @@
   const projectRow = $derived(
     record === null
       ? null
-      : { name: slot.project, path: record.state.scan_cwd, icon: folderIcon(slot.project, true) },
+      : { name: slot.project, path: record.state.scan_cwd, icon: rootIcon(record.state.scan_cwd) },
   );
 
   let query = $state('');
@@ -1032,7 +1032,7 @@
               icon={(row: TreeRow<unknown>) =>
                 row.kind === 'file'
                   ? fileIcon(row.path)
-                  : folderIcon(row.name, !closed.has(row.path))}
+                  : folderIcon(row.path, !closed.has(row.path))}
               root={projectRow}
               ondir={fold}
               onfile={(path) => (open = path)}

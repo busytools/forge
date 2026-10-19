@@ -111,6 +111,7 @@
   .rv-fcount { text-align: right; }
   .rv-ccnum { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
     border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; }
+  .rv-h { margin: 0.83em 0; font-size: 1.5em; font-weight: 700; }
   .rv-icon { flex: none; width: 16px; height: 16px; align-self: center; }
   .rv-fname { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .rv-root { display: flex; align-items: center; gap: 6px; min-width: 0;
@@ -259,8 +260,9 @@
     <div class="files-side">
       <input class="files-filter" type="text" placeholder="filter files">
       <nav class="rv-files" aria-label="the seat's tree">
+        <h2 class="rv-h">Tree <span class="rv-n">1,166</span></h2>
         <div class="rv-root">
-          <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M14.483 6H4.721a1 1 0 0 0-.949.684L2 12V5h12a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232l-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h11l2.403-5.606A1 1 0 0 0 14.483 6" fill="#90a4ae"/></svg>
+          <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#90a4ae" stroke-width="2"/></svg>
           <span class="rv-rootname">forge</span>
           <span class="rv-rootpath">/Users/me/proj/.claude/worktrees/tree-review-survey</span>
         </div>

@@ -560,7 +560,7 @@ describe('axe over the rendered pages', () => {
           active: 'client',
           foldable,
           icon: (row: TreeRow<unknown>) =>
-            row.kind === 'file' ? fileIcon(row.path) : folderIcon(row.name, true),
+            row.kind === 'file' ? fileIcon(row.path) : folderIcon(row.path, true),
           ondir: () => {},
           onfile: () => {},
         },
