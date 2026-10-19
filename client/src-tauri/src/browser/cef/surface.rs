@@ -68,11 +68,13 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 struct OverlayIvars {
     sender: Mutex<Option<Sender>>,
+    /// The app, for the one key that acts on the surface itself (Cmd+W).
+    app: Mutex<Option<tauri::AppHandle>>,
 }
 
 impl Default for OverlayIvars {
     fn default() -> Self {
-        Self { sender: Mutex::new(None) }
+        Self { sender: Mutex::new(None), app: Mutex::new(None) }
     }
 }
 
@@ -136,6 +138,20 @@ define_class!(
             let flags = event.modifierFlags();
             let command = flags.contains(objc2_app_kit::NSEventModifierFlags::Command);
             let keycode = event.keyCode();
+            // **One key is the surface's own.** The bar's buttons are in the
+            // webview and the overlay holds first responder, so a keyboard
+            // person needs a way out of the takeover: Cmd+W lowers it, and
+            // the page's bar then has its back-to-chat, Done and Not now.
+            if let Some(SurfaceKey::Lower) = surface_key(
+                keycode,
+                command,
+                flags.contains(objc2_app_kit::NSEventModifierFlags::Shift),
+            ) {
+                if let Some(app) = self.ivars().app.lock().ok().and_then(|slot| slot.clone()) {
+                    let _ = app.emit("browser_surface_lower", ());
+                }
+                return;
+            }
             // Cmd+V is a text paste: the host has no native edit menu, and a
             // widget cannot read the pasteboard itself.
             if command && keycode == 9 {
@@ -229,6 +245,12 @@ impl OverlayView {
         }
     }
 
+    fn set_app(&self, app: tauri::AppHandle) {
+        if let Ok(mut slot) = self.ivars().app.lock() {
+            *slot = Some(app);
+        }
+    }
+
     /// Draw the ring's latest frame. **The bytes are the ring's own**: a
     /// no-copy CFData and CGImage reference the shared mapping, so this side
     /// copies nothing - a frame at this size is tens of megabytes, and a copy
@@ -287,6 +309,20 @@ impl OverlayView {
         };
         unsafe { layer.setContents(Some(contents)) };
     }
+}
+
+/// A key the takeover answers itself, before the page sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceKey {
+    /// Cmd+W: back to the chat, the hand-off still parked.
+    Lower,
+}
+
+/// **The keyboard's way out of the takeover.** The bar's buttons live in the
+/// webview and the overlay holds first responder, so Cmd+W lowers the surface;
+/// Cmd+Shift+W and the bare key stay the page's.
+pub fn surface_key(keycode: u16, command: bool, shift: bool) -> Option<SurfaceKey> {
+    (command && !shift && keycode == 13).then_some(SurfaceKey::Lower)
 }
 
 fn modifiers(event: &objc2_app_kit::NSEvent) -> i32 {
@@ -356,6 +392,7 @@ pub async fn attach(
     let (placed_tx, placed_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let cancel_for_closure = Arc::clone(&cancel);
     let ring_for_view = Arc::clone(&host.ring);
+    let app_for_view = app.clone();
     let scheduled = window.with_webview(move |platform| {
         // SAFETY: this runs on the main thread, and the platform view is the
         // webview's own NSView for the window's lifetime.
@@ -369,6 +406,7 @@ pub async fn attach(
                             frame_for(&superview, rect),
                         );
                         overlay.set_sender(sender);
+                        overlay.set_app(app_for_view.clone());
                         overlay.setWantsLayer(true);
                         superview.addSubview(&overlay);
                         let area = NSTrackingArea::initWithRect_options_owner_userInfo(
@@ -710,6 +748,17 @@ mod tests {
         assert!(scale < 1.5, "and comes down from the default to do it");
         let one_x = Rect { x: 0.0, y: 0.0, width: 900.0, height: 500.0, scale: 1.0 };
         assert_eq!(raster(one_x), 1.0, "a 1x display is never out-sampled");
+    }
+
+    /// **Cmd+W is the takeover's, and nothing else is.** A keyboard-only
+    /// person who opened a hand-off must be able to leave it without a
+    /// pointer; the page keeps Cmd+Shift+W and a bare W.
+    #[test]
+    fn the_takeover_answers_cmd_w_and_leaves_the_page_its_other_keys() {
+        assert_eq!(surface_key(13, true, false), Some(SurfaceKey::Lower));
+        assert_eq!(surface_key(13, true, true), None, "Cmd+Shift+W is the page's");
+        assert_eq!(surface_key(13, false, false), None, "a bare W is the page's");
+        assert_eq!(surface_key(0, true, false), None, "Cmd+A is not the surface's");
     }
 
     #[test]

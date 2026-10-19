@@ -146,8 +146,15 @@ export function installSurfaceFailure(): void {
   if (watching || !canHost()) return;
   watching = true;
   void import('@tauri-apps/api/event')
-    .then(({ listen }) =>
-      listen<string>('browser_surface_failed', (event) => {
+    .then(async ({ listen }) => {
+      // **The keyboard's way out.** The overlay holds first responder while
+      // the surface is up; Cmd+W arrives as this event, and the page lowers
+      // the surface the same way back-to-chat does - the hand-off stays
+      // parked for the bar's Done or Not now.
+      await listen('browser_surface_lower', () => {
+        void closeSurface();
+      });
+      await listen<string>('browser_surface_failed', (event) => {
         const why =
           typeof event.payload === 'string' && event.payload !== ''
             ? event.payload
@@ -157,8 +164,8 @@ export function installSurfaceFailure(): void {
         // The shell's surface is gone with the host; the page's keeps the
         // sentence up until the person answers the hand-off.
         void hideBrowser(surface.profile);
-      }),
-    )
+      });
+    })
     .catch(() => {
       // No event API (a plain page, a test harness): the failure state is
       // the shell's, and there is nothing here to listen with.

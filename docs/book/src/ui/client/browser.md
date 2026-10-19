@@ -70,6 +70,9 @@ sequence, a wheel is a pixel delta, printable text is inserted as text, the
 specials (Enter, Tab, the arrows, Escape) are key events, and Cmd+V reads the
 pasteboard as text. Widgets that gate on trusted input commit, which is the
 whole reason the events are replayed rather than synthesised in the page.
+**Cmd+W is the takeover's own**: it lowers the surface the way back to chat
+does, so a keyboard-only person can leave it and reach the bar's actions - the
+page keeps Cmd+Shift+W and a bare W.
 
 **The native edges have their own doors.** A file chooser the page opens - a
 click on the input, a click on its label, a scripted `input.click()` - is
