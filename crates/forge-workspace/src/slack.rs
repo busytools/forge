@@ -13,10 +13,10 @@ use std::time::Duration;
 
 use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
-    DEFAULT_DM_POLL_SECONDS, DEFAULT_POLL_SECONDS, DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS,
-    SlackConfig, SlackDraft, SlackDraftEnding, SlackFollowedThread, SlackMessage,
-    SlackSubscription, SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord,
-    SlackWatchMode,
+    DEFAULT_DM_POLL_SECONDS, DEFAULT_POLL_SECONDS, DEFAULT_STALE_AFTER_HOURS,
+    DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS, SlackConfig, SlackDraft, SlackDraftEnding,
+    SlackFollowedThread, SlackMessage, SlackSubscription, SlackSubscriptionTarget,
+    SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -511,6 +511,18 @@ impl Workspace {
             .iter()
             .find(|config| config.workspace.trim() == workspace)
             .map_or(DEFAULT_THREAD_IDLE_DAYS, |config| config.thread_idle_days)
+    }
+
+    /// The age a delivered block reaches before its header says so, from its
+    /// `[[slack]]` entry. A workspace whose entry is gone keeps the default.
+    pub(crate) fn slack_stale_after(&self, workspace: &str) -> Duration {
+        let hours = self
+            .config
+            .slack
+            .iter()
+            .find(|config| config.workspace.trim() == workspace)
+            .map_or(DEFAULT_STALE_AFTER_HOURS, |config| config.stale_after_hours);
+        Duration::from_secs(hours.saturating_mul(3_600))
     }
 
     /// The threads tracked for a conversation, pruned while listed: an
@@ -1277,6 +1289,7 @@ mod tests {
             poll_seconds: 30,
             dm_poll_seconds: 150,
             thread_idle_days: 14,
+            stale_after_hours: 24,
         }
     }
 
@@ -1891,6 +1904,24 @@ mod tests {
         }
     }
 
+    /// The stale threshold is the workspace's own, and a workspace with no
+    /// entry keeps the default.
+    #[test]
+    fn a_workspace_configures_its_own_stale_age() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.slack = vec![SlackConfig { stale_after_hours: 6, ..cfg("acme", "xoxp-test") }];
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
+
+        assert_eq!(ws.slack_stale_after("acme"), Duration::from_secs(6 * 3_600));
+        assert_eq!(
+            ws.slack_stale_after("gone"),
+            Duration::from_secs(DEFAULT_STALE_AFTER_HOURS * 3_600),
+            "a workspace with no entry keeps the default",
+        );
+    }
+
     /// The workspace label the live test configures, and the project whose
     /// running lead receives the block.
     const LIVE_WORKSPACE: &str = "live-test";
@@ -1980,6 +2011,7 @@ mod tests {
             poll_seconds: 1,
             dm_poll_seconds: 1,
             thread_idle_days: 14,
+            stale_after_hours: 24,
         }];
         let (ws, mut update_rx) =
             Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)

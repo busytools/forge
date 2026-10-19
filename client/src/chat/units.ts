@@ -945,12 +945,17 @@ export function inbound(text: string, self: Self | null): Envelope | null {
     const said = rest.slice(split + 2);
     // A bundle's members each name their own author, so the header names none
     // of them - and an id or the producer's `unknown` is not a name.
-    const bundle = /\(\d+ messages\)/.test(tail.slice(0, cut));
+    const tailHead = tail.slice(0, cut);
+    const bundle = /\(\d+ messages\)/.test(tailHead);
     const named = bundle || author === 'unknown' || isSlackId(author) ? null : author;
+    // A late block carries its age in the tail; the title says so, or a
+    // week-old message reads as a fresh ask until the row is opened.
+    const age = /, (\d+)([dh]) old/.exec(tailHead);
+    const stale = age === null ? '' : ` \u{b7} ${age[1] ?? ''}${age[2] ?? ''} old`;
     const head =
-      named === null
+      (named === null
         ? `${parts[0]} \u{b7} ${parts[1]}`
-        : `${parts[0]} \u{b7} ${parts[1]} \u{b7} ${named}`;
+        : `${parts[0]} \u{b7} ${parts[1]} \u{b7} ${named}`) + stale;
     return {
       kind: 'inbound',
       inbound: 'slack',

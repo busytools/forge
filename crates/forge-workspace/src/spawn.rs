@@ -6,6 +6,7 @@
 //! The matching `Connected` arrives later under the same key.
 
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use forge_agent::client::SessionLaunchSettings;
 
@@ -805,15 +806,22 @@ pub(crate) fn deliver_gotify_message(
 /// those back to `slack__post` or `slack__edit`.
 /// `forge_server::envelope::detect_inbound` parses this shape into a Slack
 /// envelope and a view renders that as a block,
-/// so the bracketed header, its member count and the one-line-per-member body
-/// are a contract with the parser.
-pub(crate) fn slack_bundle_to_prose(messages: &[SlackMessage]) -> String {
+/// so the bracketed header, its optional age clause, its member count and the
+/// one-line-per-member body are a contract with the parser.
+pub(crate) fn slack_bundle_to_prose(
+    messages: &[SlackMessage],
+    stale_after: Duration,
+    now: SystemTime,
+) -> String {
     let Some(head) = messages.first() else { return String::new() };
     let newest = messages.iter().map(|message| message.ts.as_str()).max().unwrap_or(&head.ts);
     let mut out = format!(
         "[Slack - workspace '{}', {}] id {} ts {newest}",
         head.workspace, head.conversation_label, head.conversation,
     );
+    if let Some(age) = stale_age_clause(newest, stale_after, now) {
+        out.push_str(&age);
+    }
     if messages.len() > 1 {
         let _ = write!(out, " ({} messages)", messages.len());
     }
@@ -822,6 +830,29 @@ pub(crate) fn slack_bundle_to_prose(messages: &[SlackMessage]) -> String {
         out.push_str(&member_line(message));
     }
     out
+}
+
+const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+
+/// The `, 8d old` clause a header carries when its newest message is at or
+/// past the workspace's stale age. Zero turns the mark off; a future or
+/// unparseable ts carries none.
+fn stale_age_clause(newest: &str, stale_after: Duration, now: SystemTime) -> Option<String> {
+    if stale_after.is_zero() {
+        return None;
+    }
+    let seconds: u64 =
+        newest.split_once('.').map_or(newest, |(seconds, _)| seconds).parse().ok()?;
+    let now = now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
+    let age = now.checked_sub(seconds)?;
+    if age < stale_after.as_secs() {
+        return None;
+    }
+    Some(if age >= 2 * SECONDS_PER_DAY {
+        format!(", {}d old", age / SECONDS_PER_DAY)
+    } else {
+        format!(", {}h old", age / 3_600)
+    })
 }
 
 /// The bundle's members in reading order: oldest first, with a thread's
@@ -896,6 +927,7 @@ pub(crate) fn deliver_slack_message(
     // delivered" is success for the caller: the cursor may advance.
     let Some(head) = messages.first() else { return true };
     let conversation = head.conversation.clone();
+    let workspace_label = head.workspace.clone();
     let pending: Vec<SlackMessage> = messages
         .into_iter()
         .filter(|message| !workspace.slack_delivery_seen(project, team_role, message))
@@ -909,7 +941,11 @@ pub(crate) fn deliver_slack_message(
         );
         return true;
     }
-    let prose = slack_bundle_to_prose(&pending);
+    let prose = slack_bundle_to_prose(
+        &pending,
+        workspace.slack_stale_after(&workspace_label),
+        SystemTime::now(),
+    );
 
     if let Some(role) = team_role
         && let Some(worker_key) = team_worker_key(workspace, project, role)
@@ -3198,6 +3234,16 @@ provider = "anthropic"
         SlackMessage { ts: ts.to_owned(), user: Some(user.to_owned()), ..slack_msg(text) }
     }
 
+    /// The prose at a fixed moment below the default stale threshold, for the
+    /// shape tests that do not exercise the age clause.
+    fn fresh_prose(messages: &[SlackMessage]) -> String {
+        slack_bundle_to_prose(
+            messages,
+            Duration::from_secs(24 * 60 * 60),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(200),
+        )
+    }
+
     #[test]
     fn a_slack_message_for_a_worker_targets_the_worker_not_the_lead() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -3318,6 +3364,80 @@ provider = "anthropic"
         assert!(
             echoed,
             "a connected worker's delivery emits a SlackMessageAppended echo with the body",
+        );
+    }
+
+    /// The delivery path reads the workspace's own threshold, in both
+    /// directions: a million-hour threshold leaves the 1970 fixture unmarked
+    /// where a wrong key would fall back to 24 hours and mark it, and a
+    /// one-hour threshold marks a two-hour-old message where a zero (the
+    /// feature off) would not.
+    #[test]
+    fn a_workspace_threshold_bounds_what_delivery_marks() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.slack = vec![
+            forge_primitives::slack::SlackConfig {
+                workspace: "acme".to_owned(),
+                token: "xoxp-test".to_owned(),
+                poll_seconds: 30,
+                dm_poll_seconds: 150,
+                thread_idle_days: 14,
+                stale_after_hours: 1_000_000_000,
+            },
+            forge_primitives::slack::SlackConfig {
+                workspace: "live".to_owned(),
+                token: "xoxp-test".to_owned(),
+                poll_seconds: 30,
+                dm_poll_seconds: 150,
+                thread_idle_days: 14,
+                stale_after_hours: 1,
+            },
+        ];
+        let (ws, mut update_rx) =
+            Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub config's [[slack]] entries are well-formed");
+        ws.seed_test_project("forge", "/tmp/slack-stale-threshold");
+        let key = ws.list_projects().into_iter().find(|v| v.name == "forge").expect("seeded").key;
+        ws.insert_live_worker(&key, fake_worker_entry("tester", "worker-uuid"));
+        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
+        ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
+        ws.enable_test_dispatch_intercept();
+
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("the clock is past the epoch")
+            .as_secs();
+        let mut recent = slack_msg_at(&format!("{}.000000", now - 2 * 3_600), "U9", "recent");
+        recent.workspace = "live".to_owned();
+
+        deliver_slack_message(&ws, "forge", Some("tester"), vec![slack_msg("hello")]);
+        deliver_slack_message(&ws, "forge", Some("tester"), vec![recent]);
+
+        let mut echoes = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackMessageAppended { key, prose, .. } =
+                frame.update
+                && key == worker_key
+            {
+                echoes.push(prose);
+            }
+        }
+        let unmarked = echoes
+            .iter()
+            .find(|prose| prose.contains("hello"))
+            .expect("the huge-threshold delivery echoes its block");
+        assert!(
+            !unmarked.contains(" old"),
+            "a million-hour threshold leaves the header unmarked: {unmarked}",
+        );
+        let marked = echoes
+            .iter()
+            .find(|prose| prose.contains("recent"))
+            .expect("the small-threshold delivery echoes its block");
+        assert!(
+            marked.contains(", 2h old"),
+            "a one-hour threshold marks a two-hour-old message: {marked}",
         );
     }
 
@@ -4734,7 +4854,7 @@ provider = "anthropic"
             url_private: "https://files.slack.com/x".to_owned(),
         }];
 
-        let prose = slack_bundle_to_prose(&[message]);
+        let prose = fresh_prose(&[message]);
         assert!(prose.contains("D1"), "the conversation id is present: {prose}");
         assert!(prose.contains("100.000001"), "the ts is present: {prose}");
         assert!(prose.contains("in thread 100.0"), "the thread is present: {prose}");
@@ -4746,11 +4866,97 @@ provider = "anthropic"
     /// pinned: a reformat here silently reverts the block to painting nothing.
     #[test]
     fn slack_prose_names_the_workspace_and_the_author() {
-        let prose = slack_bundle_to_prose(&[slack_msg("hello there")]);
+        let prose = fresh_prose(&[slack_msg("hello there")]);
         assert_eq!(
             prose,
             "[Slack - workspace 'acme', U9] id D1 ts 100.000001\nU9: hello there [ts 100.000001]",
             "the exact prose forge_server::envelope::detect_inbound keys on",
+        );
+    }
+
+    /// A block that waited, in the parked bucket or across a sweep gap, says
+    /// how old its newest message is, before the member count. The oldest
+    /// member is older still, so the label has to be read off the newest.
+    #[test]
+    fn a_stale_bundle_carries_its_age_in_the_header() {
+        let day = 24 * 60 * 60;
+        // Ten-digit seconds, as Slack sends them: the header takes the newest
+        // by string order, which is only time order at that width.
+        let oldest = 1_001_827_200;
+        let prose = slack_bundle_to_prose(
+            &[
+                slack_msg_at("1001827200.0", "alice", "hi"),
+                slack_msg_at("1002000000.0", "bob", "there"),
+            ],
+            Duration::from_secs(day),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(oldest + 10 * day),
+        );
+        assert!(
+            prose.starts_with(
+                "[Slack - workspace 'acme', U9] id D1 ts 1002000000.0, 8d old (2 messages)\n"
+            ),
+            "the header carries the newest message's age: {prose}",
+        );
+    }
+
+    /// A single message is marked the same way a bundle is: the clause is
+    /// written by the header, not by the count branch.
+    #[test]
+    fn a_stale_single_message_carries_its_age() {
+        let prose = slack_bundle_to_prose(
+            &[slack_msg("hi")],
+            Duration::from_secs(3_600),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(100 + 3 * 3_600),
+        );
+        assert!(
+            prose.starts_with("[Slack - workspace 'acme', U9] id D1 ts 100.000001, 3h old\n"),
+            "a one-message block carries its age too: {prose}",
+        );
+    }
+
+    /// The threshold is a floor: below it the header is untouched, at it the
+    /// block is marked, and the label reads in hours up to two days and days
+    /// from there. A future or unparseable ts carries nothing.
+    #[test]
+    fn a_stale_age_reads_hours_below_two_days_and_days_from_there() {
+        let day = 24 * 60 * 60;
+        let at = |age: u64| {
+            stale_age_clause(
+                "100.0",
+                Duration::from_secs(day),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(100 + age),
+            )
+        };
+        assert_eq!(at(day - 1), None, "below the threshold carries nothing");
+        assert_eq!(at(day).as_deref(), Some(", 24h old"), "the threshold itself is marked");
+        assert_eq!(at(2 * day - 1).as_deref(), Some(", 47h old"), "hours up to the day switch");
+        assert_eq!(at(2 * day).as_deref(), Some(", 2d old"), "two days reads in days");
+        assert_eq!(
+            stale_age_clause(
+                "100.0",
+                Duration::ZERO,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(100),
+            ),
+            None,
+            "zero turns the mark off, even for a fresh message",
+        );
+        assert_eq!(
+            stale_age_clause(
+                "100.0",
+                Duration::from_secs(day),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(50),
+            ),
+            None,
+            "a ts in the future carries nothing",
+        );
+        assert_eq!(
+            stale_age_clause(
+                "not-a-ts",
+                Duration::from_secs(day),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(9 * day),
+            ),
+            None,
+            "an unparseable ts carries nothing",
         );
     }
 
@@ -4762,7 +4968,7 @@ provider = "anthropic"
         let mut message = slack_msg("deploy is RED");
         message.edited = Some("150.0".to_owned());
 
-        let prose = slack_bundle_to_prose(&[message]);
+        let prose = fresh_prose(&[message]);
         assert!(
             prose.contains("[ts 100.000001 edited]"),
             "the correction is marked in the member's own bracket: {prose}",
@@ -4773,10 +4979,8 @@ provider = "anthropic"
     /// answers one message with without touching the others.
     #[test]
     fn a_bundle_names_every_member_with_its_own_ts() {
-        let prose = slack_bundle_to_prose(&[
-            slack_msg_at("1.1", "alice", "hi"),
-            slack_msg_at("1.2", "bob", "there"),
-        ]);
+        let prose =
+            fresh_prose(&[slack_msg_at("1.1", "alice", "hi"), slack_msg_at("1.2", "bob", "there")]);
 
         assert!(prose.contains("[ts 1.1]"), "the first member's ts: {prose}");
         assert!(prose.contains("[ts 1.2]"), "and the second's: {prose}");
@@ -4791,7 +4995,7 @@ provider = "anthropic"
         let mut reply = slack_msg_at("1.3", "carol", "agreed");
         reply.thread_ts = Some("1.1".to_owned());
 
-        let prose = slack_bundle_to_prose(&[reply, slack_msg_at("1.1", "alice", "hi")]);
+        let prose = fresh_prose(&[reply, slack_msg_at("1.1", "alice", "hi")]);
 
         let parent_at = prose.find("[ts 1.1").expect("the parent is present");
         let reply_at = prose.find("[ts 1.3").expect("the reply is present");
@@ -4806,7 +5010,7 @@ provider = "anthropic"
         let mut reply = slack_msg_at("1.3", "carol", "agreed");
         reply.thread_ts = Some("1.1".to_owned());
 
-        let prose = slack_bundle_to_prose(&[reply]);
+        let prose = fresh_prose(&[reply]);
         assert!(prose.contains("in thread 1.1"), "the parent ts must survive: {prose}");
     }
 
@@ -4818,7 +5022,7 @@ provider = "anthropic"
         let mut message = slack_msg_at("1.1", "U0ATEK2EAGP", "hi");
         message.author = Some("architect2".to_owned());
 
-        let prose = slack_bundle_to_prose(&[message]);
+        let prose = fresh_prose(&[message]);
         assert!(prose.contains("architect2: hi"), "the resolved handle is shown: {prose}");
         assert!(!prose.contains("U0ATEK2EAGP"), "an id is never a name to print: {prose}");
     }
@@ -4831,7 +5035,7 @@ provider = "anthropic"
         let mut parent = slack_msg_at("1.1", "alice", "hi");
         parent.thread_ts = Some("1.1".to_owned());
 
-        let prose = slack_bundle_to_prose(&[parent]);
+        let prose = fresh_prose(&[parent]);
         assert!(!prose.contains("in thread"), "no self-referential thread clause: {prose}");
     }
 

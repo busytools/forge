@@ -2357,6 +2357,7 @@ token = "xoxp-test"
 poll_seconds = 45
 dm_poll_seconds = 120
 thread_idle_days = 30
+stale_after_hours = 6
 "#;
         let parsed: ForgeToml = toml::from_str(toml).expect("slack section parses");
         assert_eq!(parsed.slack.len(), 1);
@@ -2364,6 +2365,7 @@ thread_idle_days = 30
         assert_eq!(parsed.slack[0].poll_seconds, 45);
         assert_eq!(parsed.slack[0].dm_poll_seconds, 120);
         assert_eq!(parsed.slack[0].thread_idle_days, 30);
+        assert_eq!(parsed.slack[0].stale_after_hours, 6);
 
         let bad = r#"
 [[slack]]
@@ -2397,6 +2399,13 @@ poll_second = 45
         let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
         let parsed: ForgeToml = toml::from_str(toml).expect("parses without thread_idle_days");
         assert_eq!(parsed.slack[0].thread_idle_days, 14);
+    }
+
+    #[test]
+    fn slack_stale_after_hours_defaults_to_twenty_four() {
+        let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
+        let parsed: ForgeToml = toml::from_str(toml).expect("parses without stale_after_hours");
+        assert_eq!(parsed.slack[0].stale_after_hours, 24);
     }
 
     #[test]

@@ -1309,6 +1309,35 @@ describe('one turn folded into the units a view draws', () => {
     expect(rows[0]?.body).toBe('the gate is green');
   });
 
+  it("carries a late block's age in its row title", () => {
+    // The age sits past the bracket, next to the member count; a row that
+    // reads only the header would draw a week-old block as a fresh ask.
+    const single = heard([
+      text(
+        "[Slack - workspace 'Busytools', general] id C1 ts 1.2, 3h old\nsteward: the gate is green",
+      ),
+    ]);
+    const bundle = heard([
+      text(
+        "[Slack - workspace 'Busytools', general] id C1 ts 1.2, 8d old (2 messages)\nsteward: first\nplanner: second",
+      ),
+    ]);
+    const fresh = heard([
+      text("[Slack - workspace 'Busytools', general] id C1 ts 1.2\nsteward: the gate is green"),
+    ]);
+
+    const rows = inboundsOf(fold([single, bundle, fresh])[0]);
+    expect(rows[0]?.title, 'a single late message carries its age').toBe(
+      'Busytools \u{b7} general \u{b7} steward \u{b7} 3h old',
+    );
+    expect(rows[1]?.title, 'a late bundle carries its age').toBe(
+      'Busytools \u{b7} general \u{b7} 8d old',
+    );
+    expect(rows[2]?.title, 'a fresh block carries no age').toBe(
+      'Busytools \u{b7} general \u{b7} steward',
+    );
+  });
+
   it('draws a failed delivery as the outgoing row it belongs to, and a failed spawn as a warning', () => {
     const delivery = heard([
       text("[Message to agent 'companies' (org 'Busytools') failed to deliver: channel closed]"),

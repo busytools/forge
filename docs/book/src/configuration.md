@@ -481,8 +481,9 @@ means the Slack connector stays dormant.
 | `workspace`        | string  | none    | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`.                                                                                                                                  |
 | `token`            | string  | none    | User token, `xoxp-...`.                                                                                                                                                                                                     |
 | `poll_seconds`     | integer | `5`     | Sweep interval for this workspace's conversations, in seconds.                                                                                                                                                              |
-| `dm_poll_seconds`  | integer | `75`    | Sweep interval for the DM class, in seconds. It covers every DM in the workspace rather than a list, so it costs one history call per DM per pass whatever the subscription count, and it is swept on its own slower clock. |
+| `dm_poll_seconds`  | integer | `150`   | Sweep interval for the DM class, in seconds. It covers every DM in the workspace rather than a list, so it costs one history call per DM per pass whatever the subscription count, and it is swept on its own slower clock. |
 | `thread_idle_days` | integer | `14`    | Drop a followed thread with nothing new for this many days. A thread that quiet is resolved in practice, whatever its parent's age.                                                                                         |
+| `stale_after_hours` | integer | `24`    | Mark a delivered block's header with its newest message's age once that message is at or past this age. Zero turns the mark off; nothing is dropped.                                                                        |
 
 `workspace` and `token` are mandatory once an entry is present. Three
 mistakes fail the load rather than booting a connector that cannot work:
@@ -724,8 +725,9 @@ client_token = "CxxxxxxxxxxxxxxxA"
 workspace = "acme"
 token = "xoxp-xxxxxxxxxxxx"
 poll_seconds = 5
-dm_poll_seconds = 75
+dm_poll_seconds = 150
 thread_idle_days = 14
+stale_after_hours = 24
 
 [plugins]
 auto_update = true
