@@ -185,22 +185,6 @@ pub async fn page_websocket(port: u16) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The page target's current URL on a host's endpoint. `None` when nothing
-/// answers or no page is open.
-pub async fn page_url(port: u16) -> Option<String> {
-    let url = format!("{}/json/list", super::endpoint(port));
-    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
-    let body = answer.split_once("\r\n\r\n")?.1;
-    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
-    parsed
-        .as_array()?
-        .iter()
-        .find(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("page"))
-        .and_then(|entry| entry.get("url"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-}
-
 /// The prefix every websocket URL on `port` starts with.
 pub fn ws_prefix(port: u16) -> String {
     format!("ws://127.0.0.1:{port}")
