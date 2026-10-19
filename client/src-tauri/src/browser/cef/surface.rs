@@ -381,6 +381,14 @@ pub async fn attach(
                             None,
                         );
                         overlay.addTrackingArea(&area);
+                        // **The surface takes the keyboard on Open.** Waiting
+                        // for the first mouseDown left the keys going to the
+                        // hidden composer: a CAPTCHA code typed after Open
+                        // landed in an invisible draft.
+                        if let Some(window) = overlay.window() {
+                            let responder: &NSResponder = &overlay;
+                            window.makeFirstResponder(Some(responder));
+                        }
                         let view = &*overlay as *const OverlayView as usize;
                         *OVERLAY.lock().expect("the overlay slot") = Some(Overlay {
                             view,
@@ -560,7 +568,20 @@ pub fn detach(app: &tauri::AppHandle) {
             if let Some(layer) = view.layer() {
                 layer.setContents(None);
             }
+            let window = view.window();
+            let parent = view.superview();
             view.removeFromSuperview();
+            // **And the keyboard goes back to the page.** The overlay held
+            // first responder; without this the composer keeps none either.
+            if let (Some(window), Some(parent)) = (window, parent) {
+                for sibling in parent.subviews().iter() {
+                    let pointer = (&*sibling as *const NSView) as usize;
+                    if pointer != view as *const OverlayView as usize {
+                        let _ = window.makeFirstResponder(Some(&*sibling));
+                        break;
+                    }
+                }
+            }
         }
         // The ring's mapping drops after CoreAnimation has committed the
         // empty contents: the image references the mapped pixels until then.
@@ -633,7 +654,11 @@ fn paint_px(value: f64) -> u32 {
 /// paint exact at any size; the layout stays the CSS size either way.
 fn raster(rect: Rect) -> f64 {
     let fit = (f64::from(MAX_WIDTH) / rect.width).min(f64::from(MAX_HEIGHT) / rect.height);
-    fit.clamp(0.25, 1.5)
+    // **Never above the display's own ratio** - a 1x screen gains nothing
+    // from a 1.5x raster but pays for every pixel - and never above the 1.5
+    // the probe measured as the legible ceiling.
+    let ceiling = rect.scale.clamp(1.0, 1.5);
+    fit.min(ceiling).clamp(0.25, 1.5)
 }
 
 /// A point in the overlay's own (flipped) coordinates, in CSS pixels for the
@@ -683,6 +708,8 @@ mod tests {
         assert!(big.width * scale <= f64::from(MAX_WIDTH) + 1.0, "width fits the ring");
         assert!(big.height * scale <= f64::from(MAX_HEIGHT) + 1.0, "height fits the ring");
         assert!(scale < 1.5, "and comes down from the default to do it");
+        let one_x = Rect { x: 0.0, y: 0.0, width: 900.0, height: 500.0, scale: 1.0 };
+        assert_eq!(raster(one_x), 1.0, "a 1x display is never out-sampled");
     }
 
     #[test]

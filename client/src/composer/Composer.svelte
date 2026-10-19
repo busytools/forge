@@ -446,6 +446,27 @@
     });
   });
 
+  /** Whether the takeover was closed at the last run; the blur is on OPEN. */
+  let surfaceWasClosed = true;
+
+  /**
+   * **Opening the takeover gives the keyboard to the page, not the hidden
+   * composer.** The native overlay takes first responder on attach; this
+   * clears any DOM focus the composer still holds, so a keystroke cannot
+   * land in a draft nobody can see. A later phase change (a failure, a
+   * retry) leaves the bar's own field alone.
+   */
+  $effect(() => {
+    const open = surface.phase !== 'closed';
+    if (open && surfaceWasClosed) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.closest('.comp') !== null) {
+        active.blur();
+      }
+    }
+    surfaceWasClosed = !open;
+  });
+
   /**
    * A held hand-off leaving the core, the draft's own twin: the dock vanishes
    * with the update that drops it, and the ENDING is what tells this reader
