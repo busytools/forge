@@ -160,6 +160,17 @@ const frame = (uuid: string, input: number): unknown => ({
   },
 });
 
+/**
+ * The reader's own frame, which is the one kind a turn opens at: the
+ * transcript fold answers false for every Assistant frame, so a turn of the
+ * frames needs its prompt first (#2405).
+ */
+const prompting = (text: string): unknown => ({
+  type: 'user',
+  uuid: `u-${text}`,
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+
 /** The frame a turn ends on, which is the only carrier of a session cost. */
 const settledFrame = (uuid = 'r1', total = 12.5): unknown => ({
   type: 'result',
@@ -941,6 +952,7 @@ describe('the chat column as it draws', () => {
       await painted();
       expect(pinnedRow.of(PIN)?.session_cost_usd, 'the first finish is beating').not.toBeNull();
 
+      server.send(appended(prompting('next')));
       server.send(appended(frame('a-two', 700)));
       await painted();
       expect(pinnedRow.of(PIN)?.input_tokens, 'the next turn draws its own figures').toBe(700);
@@ -1184,6 +1196,7 @@ describe('the chat column as it draws', () => {
       { key: 't1', messages: [frame('a-one', 100), settledFrame()] },
       { key: 't2', messages: [frame('a-two', 200), settledFrame()] },
     ]);
+    server.send(appended(prompting('next')));
     server.send(appended(frame('a-three', 700)));
     await painted();
 

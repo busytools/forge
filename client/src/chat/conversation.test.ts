@@ -1646,8 +1646,11 @@ describe('the conversation the chat draws', () => {
     // looking at. A client that mapped every turn into a fresh object on each
     // frame would re-render the whole conversation to grow one row.
     expect(after[0], 'the first turn is the object it was').toBe(before[0]);
-    expect(after[1], 'and so is the one the frame did not touch').toBe(before[1]);
-    expect(after[2], 'the frame opened a turn of its own').toBeDefined();
+    expect(after, 'the frame joined the newest turn, not a third').toHaveLength(2);
+    expect(after[1], 'which is the one object rebuilt for it').not.toBe(before[1]);
+    expect(JSON.stringify(after[1]?.messages), 'and the line draws with that turn').toContain(
+      'a line arriving',
+    );
   });
 
   it('opens no row for a frame the fold draws nothing for', () => {
@@ -1970,9 +1973,9 @@ describe('the conversation the chat draws', () => {
     server.send(page([turn('t1', 'first')], null));
 
     // The call lands in a turn that has already ended (a late call joins the
-    // turn it was made in, which stays live), the turn's own result frame is
-    // in it, and a delivery - which draws - opens the next turn while the
-    // call is still out. The result that follows must come back HERE.
+    // turn it was made in), the turn's own result frame is in it, and a
+    // delivery - which draws - opens the next turn while the call is still
+    // out. The result that follows must come back HERE.
     server.update({ chat_appended: { key: LEAD, msg: ended() } });
     server.update({ chat_appended: { key: LEAD, msg: despawn('call-1') } });
     server.update({ chat_appended: { key: LEAD, msg: delivered('a message mid-call') } });
@@ -1989,7 +1992,10 @@ describe('the conversation the chat draws', () => {
       .map((held, at) => ({ at, leaf: leaves(held.messages).find((leaf) => leaf.id === 'call-1') }))
       .find((held) => held.leaf !== undefined);
 
-    expect(drawnIn?.at, 'the call draws in the turn it was made in').toBe(1);
+    // The turn the call was made in is the page's own turn, now holding the
+    // result and the call: the assistant frame that carries a call opens no
+    // turn of its own in the transcript fold, so the call draws there (#2405).
+    expect(drawnIn?.at, 'the call draws in the turn it was made in').toBe(0);
     expect(
       drawnIn?.leaf?.forge?.title,
       'and the card its own result built is on that row, not a missing answer',
@@ -2009,9 +2015,33 @@ describe('the conversation the chat draws', () => {
     );
   });
 
-  it('opens a row for a monitor call, which draws one now', () => {
-    // The converse of the rule above: a monitor is a call like any other, and
-    // a skipped one is a style nobody knows is missing.
+  it('opens a turn at the first frame that draws when the seat has none', () => {
+    // The pre-existing arm beside the prompt rule: a seat with no turn at all
+    // (a fresh attach whose page has not landed) opens one at the first frame
+    // that draws, whatever its kind - otherwise that frame is held with no
+    // row to carry it. That is unchanged by #2405; the prompt rule is what
+    // decides every frame above a turn that already exists.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: said('the first words') } });
+
+    const after = get(chat.value).turns;
+    expect(after.length, 'the first drawing frame opened a row').toBe(1);
+    expect(after[0]?.live, 'a frames-built turn').toBe(true);
+    expect(JSON.stringify(after[0]?.messages), 'and it carries that frame').toContain(
+      'the first words',
+    );
+  });
+
+  it('draws a monitor call in the turn it arrived in', () => {
+    // A monitor is a call like any other and draws (rule 25). The transcript
+    // fold opens a turn at a user row only, so over a settled page turn the
+    // call joins that turn rather than opening a row beside it - a row of its
+    // own was the client's old rule, and it is how one CLI turn split in two
+    // once a page settled the same frames (#2405).
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
@@ -2020,8 +2050,8 @@ describe('the conversation the chat draws', () => {
     server.update({ chat_appended: { key: LEAD, msg: monitoring() } });
 
     const after = get(chat.value).turns;
-    expect(after, 'the call opened a row of its own').toHaveLength(2);
-    const units = fold(after[1]?.messages ?? []);
+    expect(after, 'the call joined the turn it arrived in').toHaveLength(1);
+    const units = fold(after[0]?.messages ?? []);
     const calls = units.flatMap((unit) =>
       unit.kind === 'leaves'
         ? unit.rows.flatMap((row) => (row.tag === 'call' ? [row.leaf] : []))
@@ -2033,11 +2063,11 @@ describe('the conversation the chat draws', () => {
     ).toEqual(['Monitor']);
   });
 
-  it('opens a row for a thinking frame, which draws one now', () => {
-    // The converse of the rule above, and the reason the thinking came out of
-    // its list: a frame that draws something is a row of its own, and a
-    // thinking block carries words this page draws. Over a settled turn it
-    // opens one.
+  it('draws a thinking frame in the turn it arrived in', () => {
+    // A thinking frame belongs to the turn the frames before it were writing:
+    // the transcript fold opens no turn at an assistant frame, so above a
+    // settled page turn it joins that turn (#2405). This pins the row it
+    // lands in; that it draws at all is the units fold's, pinned there.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
@@ -2060,8 +2090,11 @@ describe('the conversation the chat draws', () => {
     });
 
     const after = get(chat.value).turns;
-    expect(after.length, 'the thinking opened a row of its own').toBe(2);
-    expect(after[1]?.live, 'and it is a live turn').toBe(true);
+    expect(after.length, 'the frame joined the turn it arrived in').toBe(1);
+    expect(
+      JSON.stringify(after[0]?.messages),
+      'and the thought still draws with that turn',
+    ).toContain('the model wondered');
   });
 
   it('carries the reader own words into the turn the frames are writing', () => {
@@ -2069,16 +2102,26 @@ describe('the conversation the chat draws', () => {
     const chat = new Chat(server.connection, LEAD);
     chat.start();
     server.send(page([turn('t1', 'first')], null));
+    // The core's own record says the seat has a turn in flight, so the row the
+    // assistant frame joins below is the turn being written - and the join
+    // keeps the running strip on it.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
 
-    // A frame that draws something opens the turn in flight when none is live.
+    // An assistant frame joins the turn in flight: the transcript fold opens
+    // no turn at one (#2405).
     server.update({ chat_appended: { key: LEAD, msg: said('working') } });
     // Then the reader says something. The turn it interrupts is the one it
     // belongs to, so the words draw inside it rather than beside it.
     server.update({ chat_appended: { key: LEAD, msg: typed('now do this') } });
 
     const after = get(chat.value).turns;
-    expect(after.length, 'the settled turn above, and the one being written').toBe(2);
-    expect(after[1]?.messages, 'the turn kept the words rather than losing them to a row').toEqual([
+    expect(after.length, 'one turn, the one being written').toBe(1);
+    expect(after[0]?.messages, 'which kept the words rather than losing them to a row').toEqual([
+      ...turn('t1', 'first').messages,
       said('working'),
       typed('now do this'),
     ]);
@@ -2128,9 +2171,12 @@ describe('the conversation the chat draws', () => {
 
   /**
    * **The marker is the reader's row, not any frame whose text opens with
-   * its words**: an assistant frame saying the same thing is the model
-   * talking and opens its own turn, the way every drawn assistant frame
-   * does. The server's arm is guarded the same way (`!assistant`).
+   * its words.** An assistant frame saying the same thing is the model
+   * talking: it joins the turn it arrived in under the ordinary assistant
+   * rule - the transcript fold opens no turn at one (#2405) - so it cannot
+   * show whether the marker arm read it. The arm's own effect is on the
+   * reader's row: above a settled turn, an ordinary prompt opens the next
+   * turn, and the same row carrying the marker joins the turn above instead.
    */
   it('reads the marker only on the reader own row', () => {
     const server = fakeConnection();
@@ -2141,8 +2187,29 @@ describe('the conversation the chat draws', () => {
     server.update({
       chat_appended: { key: LEAD, msg: said('[Request interrupted by user] but I keep going') },
     });
+    const afterAssistant = get(chat.value).turns;
+    expect(afterAssistant.length, 'the assistant words joined the turn they arrived in').toBe(1);
+    expect(JSON.stringify(afterAssistant[0]?.messages), 'and draw as the model own').toContain(
+      'but I keep going',
+    );
 
-    expect(get(chat.value).turns.length, 'an assistant frame is not the marker').toBe(2);
+    // The reader's prompt opens the next turn, and the turn ends on its own
+    // result frame - so the row above is settled when the next user frame
+    // arrives.
+    server.update({ chat_appended: { key: LEAD, msg: typed('an ordinary prompt') } });
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    expect(get(chat.value).turns.length, 'precondition: two settled rows').toBe(2);
+
+    // A marker above the settled row joins it; without the arm this user
+    // frame would open a third row, the way any prompt above a settled turn
+    // does.
+    server.update({ chat_appended: { key: LEAD, msg: typed('[Request interrupted by user]') } });
+    const afterMarker = get(chat.value).turns;
+    expect(afterMarker.length, 'the marker joins rather than opening').toBe(2);
+    expect(
+      JSON.stringify(afterMarker.at(-1)?.messages),
+      'and draws inside the row it ended',
+    ).toContain('[Request interrupted by user]');
   });
 
   /**
@@ -2611,11 +2678,10 @@ describe('the conversation the chat draws', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    // The wire's real order: the CLI never echoes a prompt, so a turn in
-    // flight is opened by the ASSISTANT's first frame and the reader's words
-    // reach the client only in a page - which is read while the turn is still
-    // being written, so it holds the words and the frame they landed before,
-    // and nothing after.
+    // The reader's prompt opens the turn, its first answer joins it, and the
+    // page read while the turn is still being written holds the words and the
+    // frame they landed before - and nothing after.
+    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
     server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
     server.send(
       page([turn('t1', 'first'), { key: null, messages: [typed('mine'), said('answer-1')] }], '1'),
@@ -2633,6 +2699,12 @@ describe('the conversation the chat draws', () => {
       rows.filter((messages) => messages.includes('answer-2')).length,
       'with no second row holding the tail',
     ).toBe(1);
+    // The page carries answer-1 and the live frames carry it too: once the row
+    // is one, so is the frame - the count that a split would double.
+    expect(
+      rows.filter((messages) => messages.includes('answer-1')).length,
+      'and its frames are held once',
+    ).toBe(1);
   });
 
   it('keeps the turn being written when a page of older turns lands', () => {
@@ -2641,8 +2713,8 @@ describe('the conversation the chat draws', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], '1'));
 
-    // The wire's real order: the CLI never echoes a prompt, so the turn in
-    // flight is opened by the assistant's first frame.
+    // The reader's prompt opens the turn in flight, and its answer joins it.
+    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
     server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
     // The reader scrolls up, which asks for the turns above what is held. That
     // page is the fold's account of OLDER turns, so it cannot carry this one -
@@ -2655,6 +2727,10 @@ describe('the conversation the chat draws', () => {
     expect(
       held.some((messages) => messages.includes('answer-1')),
       'an older page does not drop the turn being written',
+    ).toBe(true);
+    expect(
+      get(chat.value).turns.at(-1)?.live,
+      'and the row it was writing is still the live one',
     ).toBe(true);
     expect(get(chat.value).turns[0]?.key, 'and the older page still landed above').toBe('t0');
   });
@@ -2681,6 +2757,9 @@ describe('the conversation the chat draws', () => {
     const chat = new Chat(server.connection, LEAD);
     chat.start();
     server.send(page([turn('t1', 'first')], null));
+    // The reader's prompt opens the row, then its answer joins it - the order
+    // a real stream has, and the transcript fold opens no turn at an answer.
+    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
     server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
     const built = get(chat.value).turns.at(-1)?.key ?? '';
 
@@ -2709,15 +2788,12 @@ describe('the conversation the chat draws', () => {
     const chat = new Chat(server.connection, LEAD);
     chat.start();
     server.send(page([turn('t1', 'first')], null));
-    // A page read before the answer: the row this client holds carries the
-    // reader's words and nothing else, which is what a read taken early gives.
-    // The page still carries the turn above it, as every page does - whole
-    // turns, contiguous - so the merge reaches what is held.
-    server.send(page([turn('t1', 'first'), { key: null, messages: [typed('mine')] }], '1'));
-    const held = get(chat.value).turns.at(-1)?.key ?? '';
-    // The answer then arrives as frames, opening a live turn over that row.
+    // The reader's prompt opens a live turn and its answers join it - the
+    // order the stream has, since a turn opens at a user row.
+    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
     server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
     server.update({ chat_appended: { key: LEAD, msg: said('answer-2') } });
+    const built = get(chat.value).turns.at(-1)?.key ?? '';
 
     // The next page repeats that row, and its own copy carries the frames. A
     // repeated row is handed back as the object already held, whose messages
@@ -2732,13 +2808,17 @@ describe('the conversation the chat draws', () => {
       ),
     );
 
-    const rows = get(chat.value).turns.map((row) => JSON.stringify(row.messages));
+    const after = get(chat.value).turns;
+    const rows = after.map((row) => JSON.stringify(row.messages));
     expect(
       rows.filter((messages) => messages.includes('answer-2')).length,
       'the turn is held once, not as a stale copy beside a live one',
     ).toBe(1);
     expect(rows.length, 'and no extra row survives it').toBe(2);
-    expect(held, 'the row kept the name the page gave it').toBe('turn-u-mine');
+    expect(
+      after.map((row) => row.key).includes(built),
+      'the row kept the name it was built with',
+    ).toBe(true);
   });
 
   it('keeps a call and the frames that update it in one turn', () => {
@@ -2782,8 +2862,12 @@ describe('the conversation the chat draws', () => {
     server.update({ chat_appended: { key: LEAD, msg: started } });
 
     const after = get(chat.value).turns;
-    expect(after.length, 'the result opened no turn of its own').toBe(2);
-    expect(after[after.length - 1]?.messages, 'and is held with the call it answers').toEqual([
+    // The launch is an assistant frame, and the transcript fold opens no turn
+    // at one (#2405) - so the call, its result and the task frame all draw in
+    // the turn the page left open.
+    expect(after.length, 'the answer opened no turn of its own').toBe(1);
+    expect(after[0]?.messages, 'and is held with the call it answers').toEqual([
+      ...turn('t1', 'first').messages,
       launch,
       result('toolu_01Bg'),
       started,
@@ -3368,6 +3452,166 @@ describe('the conversation the chat draws', () => {
       'the second grows the same row rather than a row of its own',
     ).toBe(true);
     stop();
+  });
+
+  /**
+   * **The CLI's continuation after a stale page stays in the turn its page
+   * settled** (#2405). A delivery written after a turn's result is pressed by
+   * the CLI into the turn it was still writing; the page read at that
+   * boundary carries the earlier result and keeps the delivery in that turn,
+   * so the turn draws as one settled row. The continuation a model round trip
+   * later is an ASSISTANT frame, and the transcript fold opens a turn only at
+   * a user row - so it belongs to that turn, and a row of its own is one CLI
+   * turn drawn twice, with the report between the halves.
+   */
+  it('keeps the continuation in the turn its page settled', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    server.update({ chat_appended: { key: LEAD, msg: typed('do the thing') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('worked on it') } });
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    server.update({
+      chat_appended: { key: LEAD, msg: forgedUnder('from forge/gap-timings', 'forge_prompt_1') },
+    });
+
+    // The page read at the boundary: one turn holding the delivery and the
+    // result that came before it.
+    server.send(
+      page(
+        [
+          {
+            key: null,
+            messages: [
+              typed('do the thing'),
+              said('worked on it'),
+              ended(),
+              forgedUnder('from forge/gap-timings', 'forge_prompt_1'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+    // The seat is still running the continued turn.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+    // The continuation, a round trip later.
+    server.update({ chat_appended: { key: LEAD, msg: said('carried on') } });
+
+    const after = get(chat.value).turns;
+    expect(after, 'one row per CLI turn').toHaveLength(2);
+    const joined = after.find((row) => JSON.stringify(row.messages).includes('do the thing'));
+    expect(
+      JSON.stringify(joined?.messages ?? []).includes('carried on'),
+      'and the continuation draws inside it',
+    ).toBe(true);
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('carried on')),
+      'not beside it',
+    ).toHaveLength(1);
+    expect(joined?.running, 'with the strip on the row being written').toBe(true);
+
+    // The next page carries the turn as it now stands: a repeated row is the
+    // one already held, not a second copy of the continuation. It also lands
+    // AFTER the running answer, over a row that already carries the result -
+    // the ordering the strip has to survive.
+    server.send(
+      page(
+        [
+          {
+            key: null,
+            messages: [
+              typed('do the thing'),
+              said('worked on it'),
+              ended(),
+              forgedUnder('from forge/gap-timings', 'forge_prompt_1'),
+              said('carried on'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+    const repeated = get(chat.value).turns;
+    expect(
+      repeated.filter((row) => JSON.stringify(row.messages).includes('carried on')),
+      'still one row after the page',
+    ).toHaveLength(1);
+    const repeatedRow = repeated.find((row) => JSON.stringify(row.messages).includes('carried on'));
+    expect(repeatedRow?.running, 'and the strip survives the page landing').toBe(true);
+
+    // The turn really ends: the core's own answer clears the strip and the
+    // row stays the one it was.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false } },
+    });
+    const endedRow = get(chat.value).turns.find((row) =>
+      JSON.stringify(row.messages).includes('carried on'),
+    );
+    expect(endedRow?.running, 'and the strip clears with the turn').toBe(false);
+    stop();
+  });
+
+  /**
+   * The issue's fresh-connect ordering: a second reader attaches, its page
+   * stops before the continuation, and the continuation then arrives as a
+   * live frame while the seat says a turn is in flight. It joins the settled
+   * turn the page carried, so the fresh client draws one row - a client that
+   * opened a row of its own for it would draw the CLI's one turn twice, which
+   * is what this fails against on main.
+   */
+  it('keeps the continuation in one row when a second client attaches', () => {
+    const server = fakeConnection();
+    const first = new Chat(server.connection, LEAD);
+    const stopFirst = first.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The second reader attaches and its page is the turn as the store holds
+    // it at that moment: the settled turn, stopped before the continuation.
+    const second = new Chat(server.connection, LEAD);
+    const stopSecond = second.start();
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          {
+            key: null,
+            messages: [
+              typed('do the thing'),
+              said('worked on it'),
+              ended(),
+              forgedUnder('from forge/gap-timings', 'forge_prompt_1'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    // The seat is still running the continued turn, and the continuation
+    // reaches the fresh client as a live frame.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+    server.update({ chat_appended: { key: LEAD, msg: said('carried on') } });
+
+    const rows = get(second.value).turns;
+    expect(
+      rows.filter((row) => JSON.stringify(row.messages).includes('carried on')),
+      'one row on the fresh client',
+    ).toHaveLength(1);
+    expect(rows, 'and no second row beside it').toHaveLength(2);
+    stopFirst();
+    stopSecond();
   });
 
   it('keeps a repeat from taking a live turn an id-bearing frame opened', () => {
