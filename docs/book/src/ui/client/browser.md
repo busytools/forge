@@ -74,8 +74,9 @@ whole reason the events are replayed rather than synthesised in the page.
 **The native edges have their own doors.** A click on a file input opens the
 client's own NSOpenPanel - the app the person is looking at, so the panel
 takes focus - and the chosen paths are set on the input over CDP, so the page
-runs its own `change` handler. Cmd+V is a text paste. IME, a rich clipboard
-and context menus are not part of this cut.
+runs its own `change` handler. Cmd+A, X, C and Z send the page's editing
+commands, and Cmd+V is a text paste. IME, a rich clipboard, context menus and
+the old open-in-your-browser door are not part of this cut.
 
 **The catalogued engine's limits are named, not hidden.** The prebuilt CEF
 has no H.264 decoder (the job sites the probe exercised do not need it), it

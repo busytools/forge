@@ -77,27 +77,26 @@ the browser process, its profile and the driver, and answers the asks the
 socket routes to it. `just vendor-browser-stack` fetches and verifies the
 driver into the gitignored `src-tauri/browser-stack/` directory - node
 and `@playwright/mcp` - and `bundle.resources` carries that tree into the
-bundle, so nothing downloads at first use. **The browser itself is the
-machine's own**: the host drives the installed Brave, else Google Chrome,
-started with no window at all and its window born hidden - a hand-off's
-Open, or the strip's show, is what brings it forward - install one of those
-for the browser tools to answer, as there is no vendored fallback. The
-bundling recipes run the vendoring themselves; `just client-tauri-check`
-does not, because it copies no resources.
+bundle, so nothing downloads at first use. **The engine is the app's own
+Chromium**: `just bundle-cef` lays the CEF framework and its five helper
+apps into the built `forge.app`, and each profile's browser is a windowless
+host process launched from that bundle - a hand-off's Open, or the strip's
+show, draws its frames as the full-window takeover. No installed browser is
+needed, and a bundle built without the framework refuses the browser doors
+by name. The bundling recipes run both steps themselves;
+`just client-tauri-check` does not, because it copies no resources.
 
 `src-tauri/src/browser/` is the host, and four things in it are worth
 knowing before changing them:
 
-- **The browser is launched detached, and it dies with the client that
+- **The browser host is launched detached, and it dies with the client that
   launched it**: the client claims each profile it launches or adopts, reaps
-  its browsers on exit, and sweeps at boot for the ones a dead client left.
-  The profile under the app's data directory is what survives a restart, and
-  a launch is found again by the `DevToolsActivePort` file Chromium writes
-  into that profile. Measured on
-  Chrome for Testing 155 and true of the Brave and Chrome builds this runs
-  against: the file appears only when the launch asks for
-  `--remote-debugging-port=0` - handed a number the browser writes none - so
-  the port is the browser's own choice, read back, rather than a constant.
+  its hosts on exit, and sweeps at boot for the ones a dead client left. The
+  profile under the app's data directory is what survives a restart: the CEF
+  cache path is the profile itself, and the host's DevTools port and ring
+  name are recorded beside it. The client picks the port and writes the
+  record before it waits, so a host that dies mid-launch is swept rather
+  than left holding the profile's singleton lock.
 - **The driver is upstream's own** `@playwright/mcp`, spawned as a child
   process and spoken to as an MCP client through `rmcp`, pointed at the
   browser's CDP endpoint with `--no-webmcp` (without which the tool surface
