@@ -1058,29 +1058,47 @@ impl BrowserHost {
                 cef::spawn::remove_record(cache);
             }
         }
-        let port = cef::spawn::free_port()
-            .ok_or_else(|| "no free port for a browser host's devtools endpoint".to_owned())?;
-        let ring_name = cef::spawn::ring_name(port);
-        // The page reports the surface's own box shortly after it opens; this
-        // is only the size a host paints before that report.
+        // **The page reports the surface's own box shortly after it opens**;
+        // this is only the size a host paints before that report.
         let (width, height) = (1100_u32, 620_u32);
-        let pid = cef::spawn::spawn(cache, port, &ring_name, width, height)?;
-        // **The record is written before the wait.** A host that dies between
-        // spawn and this line would otherwise be invisible to the boot sweep,
-        // and CEF's singleton lock would keep the profile unusable until
-        // someone killed the process by hand.
-        let record = cef::spawn::Record { pid, port, ring: ring_name.clone() };
-        if let Err(why) = cef::spawn::write_record(cache, &record) {
-            cef::spawn::end(pid).await;
-            cef::osr::Ring::unlink(&ring_name);
-            return Err(why);
+        // **A port that was free a moment ago can be taken by the time the
+        // host binds it** - the check and the bind are not one act. A launch
+        // that dies that fast is retried on the next free port rather than
+        // reported as a browser failure; a launch that fails for its own
+        // reason stops at the first attempt's words.
+        let mut launched: Option<(u32, u16, String)> = None;
+        let mut last = String::new();
+        for _ in 0..3 {
+            let port = cef::spawn::free_port()
+                .ok_or_else(|| "no free port for a browser host's devtools endpoint".to_owned())?;
+            let ring_name = cef::spawn::ring_name(port);
+            let pid = cef::spawn::spawn(cache, port, &ring_name, width, height)?;
+            // **The record is written before the wait.** A host that dies
+            // between spawn and this line would otherwise be invisible to the
+            // boot sweep, and CEF's singleton lock would keep the profile
+            // unusable until someone killed the process by hand.
+            let record = cef::spawn::Record { pid, port, ring: ring_name.clone() };
+            if let Err(why) = cef::spawn::write_record(cache, &record) {
+                cef::spawn::end(pid).await;
+                cef::osr::Ring::unlink(&ring_name);
+                return Err(why);
+            }
+            match cef::spawn::wait_ready_for(pid, port, cache).await {
+                Ok(()) => {
+                    launched = Some((pid, port, ring_name));
+                    break;
+                }
+                Err(why) => {
+                    cef::spawn::end(pid).await;
+                    cef::osr::Ring::unlink(&ring_name);
+                    cef::spawn::remove_record(cache);
+                    last = why;
+                }
+            }
         }
-        if let Err(why) = cef::spawn::wait_ready_for(pid, port, cache).await {
-            cef::spawn::end(pid).await;
-            cef::osr::Ring::unlink(&ring_name);
-            cef::spawn::remove_record(cache);
-            return Err(why);
-        }
+        let Some((pid, port, ring_name)) = launched else {
+            return Err(last);
+        };
         let ring = match cef::osr::Ring::open(&ring_name) {
             Ok(ring) => Arc::new(ring),
             Err(why) => {
