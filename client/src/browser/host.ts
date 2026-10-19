@@ -145,19 +145,17 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
 }
 
 /**
- * Bring the browser's window forward, which is what a hand-off's Open asks
- * for: the person's own browser over the profile the agents drive, its
- * window born hidden and moved out of every screen until this raises it.
- * **`profile` names which one**: `null` is the shared profile, a name is
- * that profile's own window over its own browser - the CAPTCHA in the right
- * session, not a lookalike in the wrong one. The page a session prepared is
- * the page that comes up: the raise moves a window and relaunches nothing.
+ * Put the browser surface up, which is what a hand-off's Open asks for: the
+ * client's own CEF host over the profile the agents drive, drawn into the
+ * takeover. **`profile` names which one**: `null` is the shared profile, a
+ * name is that profile's own host - the CAPTCHA in the right session, not a
+ * lookalike in the wrong one. The page a session prepared is the page that
+ * comes up: this attaches the surface and relaunches nothing.
  *
- * **Answers why it could not be raised, or `null` when it was.** The shell
- * carries the actionable sentence - a machine with no browser to drive is
- * told which one to install - and a caller that drew a reason of its own
- * would throw that away. Outside the shell the reason is the page's own.
- * A dock that claimed a window was up over a raise that never happened
+ * **Answers why it could not open, or `null` when it did.** The shell
+ * carries the actionable sentence and a caller that drew a reason of its
+ * own would throw that away. Outside the shell the reason is the page's own.
+ * A dock that claimed the browser was up over an open that never happened
  * would have the person press Done and tell the session they acted.
  */
 export async function showBrowser(
@@ -175,15 +173,14 @@ export async function showBrowser(
 }
 
 /**
- * Take the hand-off's window back out of sight: the browser keeps running,
- * with its tabs and its page, and the next agent call drives that same
- * browser. **The hand-off itself is answered separately** - Done or Not now
- * - and answering it lowers the window, so the cycle opens and closes as
- * one act.
+ * Take the takeover down: the browser keeps running, with its tabs and its
+ * page, and the next agent call drives that same browser. **The hand-off
+ * itself is answered separately** - Done or Not now - and answering it also
+ * takes the takeover down, so the cycle opens and closes as one act.
  *
  * **Answers why it could not come down, or `null` when it did** - the same
- * shape a raise answers with, so a strip button that said hide and then
- * drew nothing on a refusal cannot happen.
+ * shape an open answers with, so a button that said back and then drew
+ * nothing on a refusal cannot happen.
  */
 export async function hideBrowser(profile: string | null = null): Promise<string | null> {
   if (!canHost()) return 'this page is not the client';
@@ -197,9 +194,10 @@ export async function hideBrowser(profile: string | null = null): Promise<string
 }
 
 /**
- * Where the conversation column is, for the shell to place the browser
- * surface: CSS pixels from the viewport's top-left and the device pixel
- * ratio. The surface is the page's own box, so the page is the measurer.
+ * Where the takeover's page area is, for the shell to place the native layer:
+ * CSS pixels from the viewport's top-left and the device pixel ratio. The
+ * page is the measurer, so the bar's own height is in the rect rather than a
+ * number the shell would have to guess.
  */
 export async function reportSurfaceRect(
   rect: { x: number; y: number; width: number; height: number },
@@ -208,22 +206,6 @@ export async function reportSurfaceRect(
   if (!canHost()) return;
   const { invoke } = await import('@tauri-apps/api/core');
   await invoke('browser_surface_rect', { ...rect, scale });
-}
-
-/**
- * Open the page the browser holds in the person's own default browser - the
- * edge door for what the windowless surface cannot give (IME, a rich
- * clipboard, context menus). A one-off page: its state does not come back.
- */
-export async function openInBrowser(profile: string | null = null): Promise<string | null> {
-  if (!canHost()) return 'this page is not the client';
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_open_external', { profile });
-    return null;
-  } catch (why) {
-    return whyText(why);
-  }
 }
 
 /** Whether a session has driven this client's browser since it came up. */

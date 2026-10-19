@@ -388,7 +388,7 @@ pub fn run() {
             browser::browser_show,
             browser::browser_hide,
             browser::browser_surface_rect,
-            browser::browser_open_external,
+            browser::browser_takeover,
             browser::browser_used,
             check_update,
             install_update,

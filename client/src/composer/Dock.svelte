@@ -1,8 +1,13 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
-  import { openInBrowser } from '../browser/host';
-  import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
+  import {
+    attachHandOff,
+    clearHandOff,
+    closeSurface,
+    openSurface,
+    surface,
+  } from '../browser/surface.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
@@ -573,29 +578,32 @@
   const raiseFailed = $derived(
     ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id
       ? (raiseWhy ??
-          'The browser window could not be opened - act where the browser is up, then press Done.')
+          'The browser could not be opened - act where the browser is up, then press Done.')
       : null,
   );
 
   /**
-   * Raise the browser window, which is the client's own act rather than the
+   * Raise the browser surface, which is the client's own act rather than the
    * core's.
    *
-   * **The window, not an in-app overlay** (Ved, 2026-10-07): the browser
-   * is the person's own, its window born hidden and kept out of every
-   * screen, and Open moves that window forward over the profile the agents
-   * drive - nothing is relaunched, so the page the session prepared is the
-   * page that comes up. A raise that does not land says so rather than
-   * claiming a window is up.
+   * **The takeover, not a separate window**: the app runs its own CEF host
+   * over the profile the agents drive, and Open puts that page over the whole
+   * window at full screen - nothing is relaunched, so the page the session
+   * prepared is the page that comes up. An open that does not land says so
+   * rather than claiming the browser is up.
    */
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    // **The hand-off's own profile, when it named one**: the window comes up
-    // over THAT profile's browser, on THAT profile's page - the CAPTCHA
-    // lands in the session the person needs to act in. **The asking seat
-    // rides the raise**: the shell refuses a profile another seat owns, so a
-    // hand-off cannot surface a browser holding someone else's logins.
+    // **The takeover marks itself live for this ask, and the composer's bar
+    // is what answers it.** Attaching also routes a take started from the
+    // bar's mic into this dock's own words box.
+    attachHandOff({ id, profile: ask.request.profile });
+    // **The hand-off's own profile, when it named one**: the takeover draws
+    // THAT profile's page - the CAPTCHA lands in the session the person
+    // needs to act in. **The asking seat rides the raise**: the shell
+    // refuses a profile another seat owns, so a hand-off cannot surface a
+    // browser holding someone else's logins.
     void openSurface(ask.request.profile, slot).then((why) => {
       if (why !== null) {
         raiseFailedFor = id;
@@ -605,10 +613,10 @@
   }
 
   /** A hand-off's answer, which is the only release for its blocked handler.
-   *  **Answering also lowers the window**: Open raises it, Done or Not now
-   *  sends it back out of sight, and the browser keeps running with its
-   *  page and tabs intact (Ved, 2026-10-07: "I said done, but the browser
-   *  is still open" - he stops seeing it, and the next call drives it). */
+   *  **Answering also lowers the takeover**: Open covers the chat, Done or
+   *  Not now gives it back, and the browser keeps running with its page and
+   *  tabs intact (Ved, 2026-10-07: "I said done, but the browser is still
+   *  open" - he stops seeing it, and the next call drives it). */
   function handOff(done: boolean): void {
     if (answered || ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
@@ -619,6 +627,7 @@
     onanswer(id);
     answer({ respond_browser_hand_off: { key: slot, id, done } });
     void closeSurface(profile);
+    clearHandOff(id);
   }
 
   /**
@@ -1012,7 +1021,7 @@
       <div class="preview"><Prose text={ask.request.text} /></div>
     {:else if ask.kind === 'document_hand_off'}
       <div class="d-head">
-        <span class="tag warn">&#9888; needs you</span>
+        <span class="tag warn"><Icon name="warn" class="ic" /> needs you</span>
         <span class="q mono">document hand-off</span>
       </div>
       <!-- The resolved path verbatim: it is the document's own address, and a
@@ -1025,7 +1034,7 @@
       </div>
     {:else}
       <div class="d-head">
-        <span class="tag warn">&#9888; needs you</span>
+        <span class="tag warn"><Icon name="warn" class="ic" /> needs you</span>
         <span class="q mono">{handOffTitle}</span>
       </div>
       <!-- The reason verbatim: it is what the session needs, in its own words,
@@ -1136,28 +1145,22 @@
 
     {#if ask.kind === 'browser_hand_off'}
       <div class="acts">
-        <!-- Open is the client's own act, not the core's: it replaces this
-           screen with the browser the sessions drive and answers nothing.
-           Done is the answer, and Not now declines - the session waits with
-           no timeout, so one of the two must be reachable from here.
-           While the surface is up, Hide lowers it without answering (the
-           session keeps waiting), and the door hands the page to the
-           person's own browser for the edges the windowless surface cannot
-           give. -->
+        <!-- **The takeover carries the actions once it is up.** Open is the
+           client's own act, not the core's: it replaces the window with the
+           browser the sessions drive and answers nothing; Done, Not now, the
+           feedback line and back-to-chat live on the takeover's own bar.
+           Before it opens, the card carries Open, Done and Not now - the
+           session waits with no timeout, so a way out must be reachable. -->
         {#if surface.phase === 'live' && surface.profile === ask.request.profile}
-          <button class="btn" onclick={() => void closeSurface()}>Hide</button>
-          <button
-            class="btn d door"
-            title="open this page in your own browser"
-            onclick={() => void openInBrowser(ask.request.profile)}
-          >
-            open in your browser
-          </button>
+          <span class="fo">the browser is open over the window</span>
         {:else}
+          <!-- **The card's three, as Ved asked (2026-10-19):** Open browser,
+               Done and Not now before the takeover; inside it the bar adds
+               the feedback line and back to chat. -->
           <button class="btn p" onclick={open}>Open browser</button>
+          <button class="btn" onclick={() => handOff(true)}>Done</button>
+          <button class="btn d" onclick={() => handOff(false)}>Not now</button>
         {/if}
-        <button class="btn" onclick={() => handOff(true)}>Done</button>
-        <button class="btn d" onclick={() => handOff(false)}>Not now</button>
       </div>
     {/if}
 

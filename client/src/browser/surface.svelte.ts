@@ -1,11 +1,16 @@
 /**
- * The browser surface: which profile's page the conversation column is
- * drawing, and every state between the person's Open and the surface going
- * away.
+ * The browser surface: the full-window takeover the person's Open opens, and
+ * every state between it and the chat they go back to.
  *
- * **One surface at a time, and the host outlives it.** Closing the surface
- * is not closing the browser: the sessions keep driving the same page, and
- * the next Open shows it exactly as they left it.
+ * **One surface at a time, and the host outlives it.** Going back to the
+ * chat is not closing the browser: the sessions keep driving the same page,
+ * and the next Open shows it exactly as they left it.
+ *
+ * **The takeover's actions are the hand-off's.** The bar that carries Done,
+ * Not now, the feedback line and back-to-chat is drawn by the dock that owns
+ * the ask; the dock marks the takeover as live for that ask when Open is
+ * pressed (`attachHandOff`), which is what routes a take's words to the
+ * bar's field.
  *
  * A superseded open never lands: the generation is read after every await,
  * so a second Open (or a close) while the first is still starting leaves the
@@ -17,26 +22,54 @@ import { hideBrowser, reportSurfaceRect, showBrowser } from './host';
 
 export type SurfacePhase = 'closed' | 'opening' | 'live' | 'failed';
 
+/** The parked hand-off the takeover is standing for. */
+export interface HandOff {
+  id: string;
+  profile: string | null;
+}
+
 interface Surface {
   phase: SurfacePhase;
   /** The name the person opened, `null` for the shared browser. */
   profile: string | null;
   /** The shell's sentence when the surface could not open. */
   reason: string | null;
+  /** The hand-off this takeover answers, while one is parked. */
+  hand_off: HandOff | null;
+  /**
+   * The dock's bar height, which the page area starts under.
+   *
+   * **The bar is DOM and the page is a native layer above the webview**, so
+   * anything the bar grows by (the feedback row, a take's card) has to move
+   * the page's rect down or the bar is drawn underneath the picture.
+   */
+  barHeight: number;
 }
 
 export const surface: Surface = $state({
   phase: 'closed',
   profile: null,
   reason: null,
+  hand_off: null,
+  barHeight: 38,
 });
+
+/** Mark the takeover live for this hand-off, on Open. */
+export function attachHandOff(hand_off: HandOff): void {
+  surface.hand_off = hand_off;
+}
+
+/** Forget the hand-off once it is answered or its dock is gone. */
+export function clearHandOff(id: string): void {
+  if (surface.hand_off?.id === id) surface.hand_off = null;
+}
 
 /** The request that is current; a result from an older one is dropped. */
 let generation = 0;
 
 /**
- * Open the surface over the column for `profile` (`null` is shared). Answers
- * why it could not open, or `null` when it did.
+ * Open the takeover for `profile` (`null` is shared). Answers why it could
+ * not open, or `null` when it did.
  */
 export async function openSurface(
   profile: string | null,

@@ -411,6 +411,15 @@ function action(label: string): HTMLElement {
   return found;
 }
 
+/** A button on the takeover's bar, which the composer draws outside the dock. */
+function barAction(label: string): HTMLElement {
+  const found = [...document.querySelectorAll('.takeover-bar .tb-btn')].find((button) =>
+    button.textContent?.trim().startsWith(label),
+  );
+  if (!(found instanceof HTMLElement)) throw new Error(`the takeover bar drew no ${label}`);
+  return found;
+}
+
 /**
  * The one behaviour here whose failure destroys something a person typed.
  *
@@ -5364,7 +5373,9 @@ describe('the dock', () => {
   it('says why an answer did not land when the hand-off left under the click', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
-    action('Done').click();
+    action('Open browser').click();
+    flushSync();
+    barAction('Done').click();
     flushSync();
     expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
 
@@ -5384,7 +5395,9 @@ describe('the dock', () => {
   it('answers the hand-off as the verb says: Done settles it', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
-    action('Done').click();
+    action('Open browser').click();
+    flushSync();
+    barAction('Done').click();
     flushSync();
 
     expect(commands(harness)).toEqual([
@@ -5477,7 +5490,10 @@ describe('the dock', () => {
   it('declines the hand-off with Not now, which is the same release', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
-    action('Not now').click();
+    // Not now is the takeover bar's; Open puts the surface up.
+    action('Open browser').click();
+    flushSync();
+    barAction('Not now').click();
     flushSync();
 
     expect(commands(harness)).toEqual([
@@ -5489,6 +5505,38 @@ describe('the dock', () => {
         },
       },
     ]);
+  });
+
+  it("sends the bar's feedback to the agent, then declines the hand-off", () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    const send = document.querySelector('.takeover-bar .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
+    send.click();
+    flushSync();
+
+    const [prompt, answer] = commands(harness);
+    expect((prompt?.['prompt_under'] as Record<string, unknown>)['text']).toBe(
+      'the submit button did nothing',
+    );
+    expect(answer).toEqual({
+      respond_browser_hand_off: {
+        key: { org: 'Busytools', project: 'forge', label: 'lead' },
+        id: '0192e1c0-0000-7000-8000-0000000000aa',
+        done: false,
+      },
+    });
   });
 
   it('declines the hand-off on Escape, which the dock row promises', () => {
@@ -5538,7 +5586,9 @@ describe('the dock', () => {
   it("does not narrate the reader's own answer to a hand-off", () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
-    action('Done').click();
+    action('Open browser').click();
+    flushSync();
+    barAction('Done').click();
     flushSync();
     expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
 

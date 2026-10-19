@@ -1242,39 +1242,6 @@ impl BrowserHost {
         Ok(host)
     }
 
-    /// Open the page the browser holds in the person's own default browser.
-    #[cfg(desktop)]
-    pub async fn open_page_in_browser(&self, profile: Option<&str>) -> Result<(), String> {
-        let paths = self.paths.clone()?;
-        let cache = match profile {
-            Some(name) => {
-                if let Some(refusal) = profiles::name_refusal(name) {
-                    return Err(refusal);
-                }
-                paths.cef_named(name)
-            }
-            None => paths.cef_shared(),
-        };
-        let port = match self.hosts.lock().await.get(&cache) {
-            Some(host) => Some(host.port),
-            None => cef::spawn::read_record(&cache).map(|record| record.port),
-        };
-        let Some(port) = port else {
-            return Err("the browser is not running, so there is no page to open".to_owned());
-        };
-        let Some(url) = cef::spawn::page_url(port).await else {
-            return Err("the browser holds no page to open".to_owned());
-        };
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err(format!("'{url}' is not a web address this door can open"));
-        }
-        std::process::Command::new("open")
-            .arg(&url)
-            .spawn()
-            .map_err(|why| format!("the page could not be opened in your browser: {why}"))?;
-        Ok(())
-    }
-
     /// The page said where its conversation column is: place the overlay
     /// there, and resize the host's view to match.
     #[cfg(desktop)]
@@ -1745,19 +1712,30 @@ pub async fn browser_hide(
     host.hide(profile.as_deref()).await
 }
 
-/// Open the page the browser holds in the person's own default browser.
+/// Take the client window full screen for the browser takeover, or give the
+/// window back.
 ///
-/// **The edge door**: IME, a rich clipboard and context menus are what the
-/// windowless surface cannot give, so a page that needs them is handed to a
-/// real browser over the same URL. It is a one-off page: what it holds does
-/// not carry back, and the session's browser keeps its own state.
-#[cfg(desktop)]
+/// **The shell owns the window, so the page asks it rather than reaching for
+/// the window API**: the takeover is the app's own shape, and the window's
+/// full-screen state is what makes it a takeover rather than a bigger column.
+///
+/// **The simple full screen, not the native Space toggle.** The green
+/// button's `toggleFullScreen:` was refused on this window (the app stays
+/// windowed, measured 2026-10-19, even activated at level 0); the runtime's
+/// simple full screen hides the title bar, dock and menu bar and sets the
+/// window to the screen's frame, which is the takeover the person sees.
 #[tauri::command]
-pub async fn browser_open_external(
-    host: tauri::State<'_, Arc<BrowserHost>>,
-    profile: Option<String>,
-) -> Result<(), String> {
-    host.open_page_in_browser(profile.as_deref()).await
+pub async fn browser_takeover(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Err("the client window is not there".to_owned());
+    };
+    let outcome = window.set_simple_fullscreen(on);
+    tauri_plugin_log::log::info!(
+        "the takeover changed the window's full screen (event_name browser_takeover_fullscreen, \
+         on {on}, ok {})",
+        outcome.is_ok(),
+    );
+    outcome.map_err(|why| format!("the window could not change full screen: {why}"))
 }
 
 /// Where the page's conversation column is, in CSS pixels from the
