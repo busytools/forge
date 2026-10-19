@@ -126,8 +126,8 @@ describe('the system bars', () => {
    */
   it('pads the page roots and every overlay by the bands the shell measures', () => {
     for (const [what, selector, bands] of [
-      ['the session page', '.app', ['top', 'right', 'bottom', 'left']],
-      ['the projects rail', '.app .rail.left', ['top', 'bottom', 'left']],
+      ['the session page', '.session-page', ['top', 'right', 'bottom', 'left']],
+      ['the projects rail', '.session-page .rail.left', ['top', 'bottom', 'left']],
       ['the board drawer', '.dr', ['top', 'right', 'bottom', 'left']],
       ['the palette panel', '.pal .panel', ['top']],
     ] as const) {

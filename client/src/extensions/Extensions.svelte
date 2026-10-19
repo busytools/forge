@@ -165,15 +165,15 @@
 </script>
 
 {#if page.refused !== null}
-  <main class="wrap extensions">
+  <main class="wrap extensions-page">
     <!-- The server turned the subscription down, in its own words. The
          address is not what is wrong, so the door is not what is drawn. -->
     <p class="pending">This forge would not answer for its extensions: {page.refused}</p>
   </main>
 {:else if page.read === null}
-  <main class="wrap extensions"><p class="pending">Reading the extensions...</p></main>
+  <main class="wrap extensions-page"><p class="pending">Reading the extensions...</p></main>
 {:else}
-  <main class="wrap extensions">
+  <main class="wrap extensions-page">
     <ExtensionsBody
       wire={page.read}
       {refusal}

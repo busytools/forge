@@ -149,7 +149,7 @@
 
   /* ---------- panes: checked is COLLAPSED, and the handle lives in the
      chat header so it stays clickable while the pane is gone ---------- */
-  .app { display: grid; grid-template-columns: minmax(0,1fr);
+  .session-page { display: grid; grid-template-columns: minmax(0,1fr);
     grid-template-rows: minmax(0, 1fr) auto;
     gap: var(--ins);
     padding: calc(var(--ins) + var(--safe-top)) calc(var(--ins) + var(--safe-right))
@@ -157,27 +157,27 @@
     height: 100vh; overflow: hidden; }
   /* The rail's two non-default modes are the summoned rail: parked
      off-canvas and slid in over a scrim. The drawing shows the DEFAULT,
-     `.rail-static`, below; these two `.app` rules mirror web.css rule for
+     `.rail-static`, below; these two `.session-page` rules mirror web.css rule for
      rule. */
-  .app .rail.left {
+  .session-page .rail.left {
     position: fixed; z-index: 55; width: 340px;
     inset: calc(10px + var(--safe-top)) auto calc(10px + var(--safe-bottom))
       calc(10px + var(--safe-left));
     transform: translateX(calc(-100% - 24px)); visibility: hidden;
     transition: transform .2s ease, visibility 0s .2s;
   }
-  .app.rail-open .rail.left {
+  .session-page.rail-open .rail.left {
     transform: translateX(0); visibility: visible; transition: transform .2s ease;
   }
   /* The default: the column, which the app grid carries. Mirrors web.css. */
-  .app.rail-static { grid-template-columns: 312px minmax(0,1fr); }
-  .app.rail-static .rail.left {
+  .session-page.rail-static { grid-template-columns: 312px minmax(0,1fr); }
+  .session-page.rail-static .rail.left {
     position: static; inset: auto; width: auto; z-index: auto;
     transform: none; visibility: visible; transition: none;
     grid-column: 1; grid-row: 1 / -1;
   }
-  .app.rail-static main.chat { grid-column: 2; }
-  .app.rail-static .composer { grid-column: 2; }
+  .session-page.rail-static main.chat { grid-column: 2; }
+  .session-page.rail-static .composer { grid-column: 2; }
 
   .dot { width: 11px; height: 11px; flex: 0 0 11px; }
   .dot.live { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
@@ -1429,7 +1429,7 @@
      design-phase drawing with no client surface behind it yet, and removing
      it - or re-homing its opener - is its own call. -->
 
-<div class="app rail-static">
+<div class="session-page rail-static">
 
   <!-- ============ PROJECTS ============ -->
   <aside class="rail left">

@@ -121,6 +121,8 @@ describe('the band card', () => {
     };
 
     expect(read('.band .dot.warn'), 'the band drew the verdict triangle').toBe('none');
-    expect(read('.models .dot.warn'), 'the page lost its verdict triangle').toContain('polygon');
+    expect(read('.models-page .dot.warn'), 'the page lost its verdict triangle').toContain(
+      'polygon',
+    );
   });
 });

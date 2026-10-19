@@ -435,13 +435,13 @@
 </script>
 
 {#if read.refused !== null}
-  <main class="wrap models">
+  <main class="wrap models-page">
     <!-- The server turned the subscription down, in its own words. The
          address is not what is wrong, so the door is not what is drawn. -->
     <p class="pending">This forge would not answer for the models: {read.refused}</p>
   </main>
 {:else if read.wire === null}
-  <main class="wrap models"><p class="pending">Reading the models...</p></main>
+  <main class="wrap models-page"><p class="pending">Reading the models...</p></main>
 {:else}
   <ModelsBody
     wire={read.wire}

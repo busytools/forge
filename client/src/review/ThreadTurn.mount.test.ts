@@ -51,7 +51,7 @@ afterEach(async () => {
 /** The turn, mounted where the page mounts it: inside the review page's root. */
 function draw(held: Turn, rounds: ReviewSetRecord[] = [], index = 0): HTMLElement {
   const page = document.createElement('div');
-  page.className = 'review';
+  page.className = 'review-page';
   document.body.append(page);
   app = mount(ThreadTurn, {
     target: page,
@@ -64,7 +64,7 @@ function draw(held: Turn, rounds: ReviewSetRecord[] = [], index = 0): HTMLElemen
 /** What the sheet computes for one element of the render. */
 function computed(host: HTMLElement, selector: string): CSSStyleDeclaration {
   const sheet = readFileSync('src/assets/web.css', 'utf8');
-  const dom = new JSDOM(`<style>${sheet}</style><div class="review">${host.innerHTML}</div>`);
+  const dom = new JSDOM(`<style>${sheet}</style><div class="review-page">${host.innerHTML}</div>`);
   const el = dom.window.document.querySelector(selector);
   if (el === null) throw new Error(`the render carries no ${selector}`);
   return dom.window.getComputedStyle(el);

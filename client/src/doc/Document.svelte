@@ -720,7 +720,7 @@
   }
 </script>
 
-<main class="wrap doc" class:wide={held.kind === 'pdf'}>
+<main class="wrap doc-page" class:wide={held.kind === 'pdf'}>
   {#if held.state === 'reading'}
     <p class="pending">Opening {path}...</p>
   {:else if held.state === 'refused'}

@@ -23,7 +23,7 @@ describe("the extensions page's rules", () => {
     // The grouped selector list carries the floor, so the pattern reads the
     // selector and the body together: a `.back` that survived the list
     // without its own rule would still be a smaller target than the rest.
-    const back = /\.extensions \.back[^{}]*\{[^{}]*min-height:\s*44px/.exec(coarse)?.[0] ?? '';
+    const back = /\.extensions-page \.back[^{}]*\{[^{}]*min-height:\s*44px/.exec(coarse)?.[0] ?? '';
     expect(back, 'the way back lost its height floor on a finger').not.toBe('');
 
     // **The floor is inert without this.** `.back` is an anchor, and
@@ -31,7 +31,7 @@ describe("the extensions page's rules", () => {
     // flex/inline-block display makes the 44px bite, so the pin requires
     // the same rule to carry one.
     const bites =
-      /\.extensions \.back[^{}]*\{[^{}]*display:\s*(inline-flex|inline-block)[^{}]*\}/.exec(
+      /\.extensions-page \.back[^{}]*\{[^{}]*display:\s*(inline-flex|inline-block)[^{}]*\}/.exec(
         coarse,
       )?.[0] ?? '';
     expect(

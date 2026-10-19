@@ -204,9 +204,9 @@ describe('the models page as it draws', () => {
   it('offers the families and the fastest rows, and a pick filters the list', () => {
     const host = open();
     const names = (): string[] =>
-      [...host.querySelectorAll('.models .cand .nm')].map((el) => el.textContent ?? '');
+      [...host.querySelectorAll('.models-page .cand .nm')].map((el) => el.textContent ?? '');
 
-    const link = host.querySelector<HTMLButtonElement>('.models .link');
+    const link = host.querySelector<HTMLButtonElement>('.models-page .link');
     expect(link, 'no fastest row was offered').not.toBeNull();
     // The control carries its own number too: `name 401.6x`.
     const pick = (link?.textContent ?? '').trim().split(' ')[0] ?? '';
@@ -228,7 +228,7 @@ describe('the models page as it draws', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
     }
-    const chip = host.querySelector<HTMLButtonElement>('.models .chips .chip');
+    const chip = host.querySelector<HTMLButtonElement>('.models-page .chips .chip');
     expect(chip, 'the page offered nothing to browse').not.toBeNull();
     expect(chip?.textContent, 'the biggest family is not first').toContain('granite');
     chip?.click();
@@ -296,10 +296,12 @@ describe('the models page as it draws', () => {
     }
 
     const sheet = readFileSync('src/assets/web.css', 'utf8');
-    const dom = new JSDOM(`<style>${sheet}</style><div class="models">${host.innerHTML}</div>`);
+    const dom = new JSDOM(
+      `<style>${sheet}</style><div class="models-page">${host.innerHTML}</div>`,
+    );
     // Only the CANDIDATE list's rows: the bench list draws `li`s too, and
     // they hold no anchor.
-    const rows = [...dom.window.document.querySelectorAll('.models .list li')].filter(
+    const rows = [...dom.window.document.querySelectorAll('.models-page .list li')].filter(
       (li) => li.querySelector('.cand') !== null,
     );
     expect(rows.length, 'the search drew no rows to read').toBeGreaterThan(1);
@@ -310,21 +312,21 @@ describe('the models page as it draws', () => {
     // whole list.
     for (const li of rows) {
       expect(
-        li.querySelector('.cand')?.matches('.models .cand:last-child'),
+        li.querySelector('.cand')?.matches('.models-page .cand:last-child'),
         "a row that IS its li's last child - the rule could key on the row",
       ).toBe(false);
     }
     // And the rules that decide it: the last li drops the hairline, and no
     // `.cand` rule claims one.
-    expect(rows[0]?.matches('.models .list li:last-child'), 'the first row is the last').toBe(
+    expect(rows[0]?.matches('.models-page .list li:last-child'), 'the first row is the last').toBe(
       false,
     );
     expect(
-      rows[rows.length - 1]?.matches('.models .list li:last-child'),
+      rows[rows.length - 1]?.matches('.models-page .list li:last-child'),
       'the last row does not carry the rule that drops its hairline',
     ).toBe(true);
     expect(sheet, 'the hairline rule is back on the row, which kills it list-wide').not.toContain(
-      '.models .cand:last-child',
+      '.models-page .cand:last-child',
     );
     // Read as text, because the computed value is what jsdom cannot give.
     // **Both halves, and the second is the one that needs its own pin**:
@@ -333,10 +335,10 @@ describe('the models page as it draws', () => {
     // flipping it to a selector that matches nothing) would ship a stray
     // hairline under the last row with every test green.
     expect(sheet, 'nothing draws the hairline on the li').toMatch(
-      /\.models \.list li \{[^}]*border-bottom/,
+      /\.models-page \.list li \{[^}]*border-bottom/,
     );
     expect(sheet, "nothing drops the last row's hairline").toMatch(
-      /\.models \.list li:last-child \{[^}]*border-bottom: 0/,
+      /\.models-page \.list li:last-child \{[^}]*border-bottom: 0/,
     );
   });
 
@@ -351,7 +353,10 @@ describe('the models page as it draws', () => {
     const host = open({ ...modelsWire, rows: [] });
 
     expect(host.textContent).toContain('the catalogue has not been read yet');
-    expect(host.querySelector('.models .chips'), 'chips drew with no rows behind them').toBeNull();
+    expect(
+      host.querySelector('.models-page .chips'),
+      'chips drew with no rows behind them',
+    ).toBeNull();
     expect(host.textContent, 'the page pointed at families that are not there').not.toContain(
       'pick a family below',
     );
@@ -655,7 +660,7 @@ describe('the models page as it draws', () => {
     expect(stop, 'the running bench offers no stop').not.toBeUndefined();
 
     // The list says what each row is: the model in use, the feed's pick.
-    const rows = [...host.querySelectorAll('.models .list li')].filter(
+    const rows = [...host.querySelectorAll('.models-page .list li')].filter(
       (li) => li.querySelector('.bench-row') !== null,
     );
     const marked = rows.map((li) => li.textContent ?? '');
@@ -1051,7 +1056,7 @@ describe('the models route as it draws', () => {
     drawn.push(component);
 
     expect(host.textContent).toContain('Reading the models...');
-    expect(host.querySelector('.models .block')).toBeNull();
+    expect(host.querySelector('.models-page .block')).toBeNull();
   });
 
   /** Mount the route on a connection a test drives, over the given host. */
