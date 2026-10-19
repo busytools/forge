@@ -1943,6 +1943,7 @@ mod tests {
     /// A devtools endpoint that stalls the identity probe mid-request: the
     /// port, a signal that the request arrived, and the gate whose send lets
     /// the answers - identity first, then one page - complete.
+    #[cfg(target_os = "macos")]
     async fn stalling_devtools(
         identity: &str,
     ) -> (u16, tokio::sync::oneshot::Receiver<()>, tokio::sync::oneshot::Sender<()>) {
@@ -2453,7 +2454,12 @@ mod tests {
 
     /// **The idle release's clock resets on every touch, and the candidates
     /// name the seat to warn** - while a browser that is not there, and a
-    /// window that is up, are never candidates at all.
+    /// surface that is up, are never candidates at all.
+    ///
+    /// macOS only: it stands a DevTools endpoint up and needs the real
+    /// probe behind it, and a platform without the engine has no host to
+    /// release.
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn the_idle_clock_resets_and_dead_or_raised_browsers_are_no_candidates() {
         let dir = tempfile::tempdir().expect("a temp dir");
