@@ -438,7 +438,12 @@ export type ServerMessage =
       kind: 'error';
       what: string;
       why: string;
-      seat?: SessionSlot;
+      /**
+       * The conversation the refusal belongs to, or `null` where it belongs
+       * to none. **The wire sends `null`, not an absent field**, so a reader
+       * tests it as a value rather than for presence (#2420).
+       */
+      seat?: SessionSlot | null;
       dispatch_id?: number | null;
     }
   /**

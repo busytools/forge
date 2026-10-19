@@ -1676,16 +1676,23 @@ async fn session(
                 // instead of asking `more` for the same page, and the handle
                 // is what names the history above it.
                 let (mut page, count) = held.read(|held| {
-                    (
-                        page(
-                            held.messages(),
-                            held.rendered(),
-                            held.dropped(),
-                            None,
-                            SUBSCRIBE_TURNS,
-                        ),
-                        held.compaction_count(),
-                    )
+                    let mut page = page(
+                        held.messages(),
+                        held.rendered(),
+                        held.dropped(),
+                        None,
+                        SUBSCRIBE_TURNS,
+                    );
+                    // **The window's own start is not the history's.** The
+                    // `more` arm hands the floor back when its page opens on
+                    // the window's front, and the record's page has to do the
+                    // same: a byte-capped giant serves its whole window, whose
+                    // page cursor is `None` while the history above begins at
+                    // the floor - seeded as it is, that would read as the end.
+                    if page.cursor.is_none() && held.dropped() > 0 {
+                        page.cursor = Some(held.dropped().to_string());
+                    }
+                    (page, held.compaction_count())
                 });
                 cap_tool_records(&mut page.turns, cap, &capped);
                 (page.turns, page.cursor, count, at.elapsed().as_secs_f64() * 1000.0)

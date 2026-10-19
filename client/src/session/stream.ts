@@ -314,7 +314,7 @@ export class StreamGate {
         return out;
       }
       case 'error': {
-        if (message.what === 'seat_range' && message.seat !== undefined) {
+        if (message.what === 'seat_range' && message.seat != null) {
           const key = subjectKey({ session: message.seat });
           const state = this.streams.get(key);
           if (state !== undefined) {

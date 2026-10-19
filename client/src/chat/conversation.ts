@@ -1124,12 +1124,11 @@ export class Chat {
    * subscription goes with the last holder, so a page leaving a seat this
    * conversation still folds sends nothing at all.
    *
-   * **The snapshot carries the newest page, so the switch does not ask for
-   * it twice** (#2420). The subscribe's own answer is seeded as this
-   * conversation's first page; a `more` is asked only when that answer
-   * carries none (an empty seat, or a refused subscribe), and the first pull
-   * above the seed asks for one turn to learn the cursor the snapshot cannot
-   * carry.
+   * **The snapshot carries the newest page and its cursor, so the switch does
+   * not ask for it twice** (#2420). The subscribe's own answer is seeded as
+   * this conversation's first page; a `more` is asked only when that answer
+   * carries none (an empty seat, or a refused subscribe), and the history
+   * above the seed is asked from the cursor the record carries.
    */
   start(): () => void {
     if (this.running !== null) return this.running;
@@ -1257,8 +1256,18 @@ export class Chat {
     return this.ask(cursor, turns);
   }
 
-  /** Ask for the newest page again, which is what replaces a settled turn. */
+  /**
+   * Ask for the newest page again, which is what replaces a settled turn.
+   *
+   * **Only over a loaded conversation.** A settle can land while the
+   * subscribe's snapshot is still being encoded - the queued-update race - and
+   * the page asked here would cross beside a snapshot that already carries the
+   * newest page: two carries on the big seats (#2420). A load in flight is
+   * the subscribe's to answer; a swap is not (see `replaced`, which asks
+   * directly because no snapshot follows one).
+   */
   refresh(): boolean {
+    if (!this.held.loaded) return false;
     return this.ask(null);
   }
 
@@ -1392,9 +1401,11 @@ export class Chat {
         // answer or refusal draws and retries. The error names the seat it
         // refused, so another seat's refused read is not this conversation's.
         if (message.what === 'subscribe') {
-          if (message.seat !== undefined && subjectKey({ session: message.seat }) !== this.key)
-            return;
-          this.refresh();
+          if (message.seat != null && subjectKey({ session: message.seat }) !== this.key) return;
+          // A load in flight was the subscribe's, and it just refused: the page
+          // ask is the old path and must go even unloaded, so this is `ask`
+          // rather than the guarded `refresh`.
+          this.ask(null);
           return;
         }
         if (message.what !== 'more') return;
@@ -1403,10 +1414,10 @@ export class Chat {
         // seat's refusal - the everyday no-session-yet state, re-asking every
         // couple of seconds - would otherwise drain THIS seat's count of asks
         // and let the restore run in the middle of a prepend it must leave
-        // alone. A seatless refusal, from a server that predates the field, is
+        // alone. **A seatless refusal is the wire's null, not an absent
+        // field** (#2420) - an older server, or a non-session subject - and is
         // read the old way: it is this seat's.
-        if (message.seat !== undefined && subjectKey({ session: message.seat }) !== this.key)
-          return;
+        if (message.seat != null && subjectKey({ session: message.seat }) !== this.key) return;
         // A refused ask is answered by no page at all, so the ask it belongs to
         // is over - and a count of asks this conversation was told to forget is
         // spent on pages that are never coming.
@@ -2044,6 +2055,11 @@ export class Chat {
     // from its absence, and it stays for the path that would.
     this.emptyAt = 0;
     this.emptyBeats = 0;
+    // **A swap is the one page ask a subscribe does not answer** (#2420): a
+    // `session_replaced` arrives on the subscription the client already holds,
+    // and nothing re-subscribes it, so no snapshot follows to seed the new
+    // occupant - this ask is the only way its page arrives. It is therefore
+    // `ask` rather than the guarded `refresh`.
     this.ask(null);
   }
 
