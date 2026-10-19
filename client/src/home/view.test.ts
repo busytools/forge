@@ -141,14 +141,19 @@ const FLEET: HomeWire = {
     agent('Busytools', 'notes', 'lead', 'Sleeping'),
     agent('Personal', 'dotfiles', 'lead', 'Idle'),
   ],
-  // The glance, one row per project: the fleet row names only its PROJECT,
-  // and the org it draws comes from the projects list beside it.
-  fleet: [fleetRow('forge', 2), fleetRow('notes', 1), fleetRow('dotfiles', 1)],
+  // The glance, one row per project: the row names the project's org and its
+  // name, which is what the projects list is matched on.
+  fleet: [
+    fleetRow('Busytools', 'forge', 2),
+    fleetRow('Busytools', 'notes', 1),
+    fleetRow('Personal', 'dotfiles', 1),
+  ],
 };
 
-/** One fleet row's counts, whose project the fixture's orgs resolve. */
-function fleetRow(project: string, live: number): FleetRow {
+/** One fleet row's counts, addressed by its project's org and name. */
+function fleetRow(org: string, project: string, live: number): FleetRow {
   return {
+    org,
     project,
     live_workers: live,
     slots: 2,
@@ -372,6 +377,43 @@ describe('the fleet the snapshot describes', () => {
     ]);
   });
 
+  /** A server older than the field states no org; the projects list is its resolution. */
+  it('resolves a fleet row from a server that states no org by name', () => {
+    const raw = {
+      ...FLEET,
+      fleet: [{ ...fleetRow('Busytools', 'forge', 1), org: undefined } as unknown as FleetRow],
+    };
+    const row = first(fleetRows(homeFrom(raw)), 'fleet row');
+    expect(row.org, "an older server's row resolves through the projects list").toBe('Busytools');
+  });
+
+  /** A row's org rides the row: resolving it by name hands both rows the first match. */
+  it('keeps two projects of one name in their own orgs', () => {
+    const wire: HomeWire = {
+      ...homeWire,
+      projects: [project('Busytools', 'forge'), project('Personal', 'forge')],
+      agents: [
+        agent('Busytools', 'forge', 'lead', 'Running'),
+        agent('Personal', 'forge', 'lead', 'Sleeping'),
+      ],
+      fleet: [fleetRow('Busytools', 'forge', 1), fleetRow('Personal', 'forge', 1)],
+    };
+
+    const rows = fleetRows(wire);
+    expect(
+      rows.map((row) => `${row.org}/${row.name}`),
+      'a row resolved its org by name, so both read the first match',
+    ).toEqual(['Busytools/forge', 'Personal/forge']);
+    expect(
+      rows.map((row) => row.leadHref),
+      "each row opens its own org's seat, not its namesake's",
+    ).toEqual(['/session/Busytools/forge/lead', '/session/Personal/forge/lead']);
+    expect(
+      rows.map((row) => row.seats.length),
+      'each row draws only the seats of its own org',
+    ).toEqual([1, 1]);
+  });
+
   /**
    * **The fleet row's age is the project's own**: the newest write among the
    * seats it holds, or nothing at all when none of them has written. It is
@@ -497,6 +539,7 @@ describe('the fleet the snapshot describes', () => {
       ...homeWire,
       fleet: [
         {
+          org: 'TestOrg',
           project: 'proj',
           live_workers: 1,
           slots: 2,

@@ -902,6 +902,7 @@
       "/data/fleet[]": [
         "live_workers",
         "misses",
+        "org",
         "project",
         "queue",
         "slots",

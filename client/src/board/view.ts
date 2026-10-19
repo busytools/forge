@@ -352,7 +352,7 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
     (entry) => entry.project.org === org && entry.project.name === project,
   );
   // The fleet row is where the server's own count of the board lives.
-  const fleet = wire.fleet.find((entry) => entry.project === project);
+  const fleet = wire.fleet.find((entry) => entry.org === org && entry.project === project);
   // The drawn order, which the keyboards' left/right walks: the pool of
   // everything not yet started leads, then the lane that wants the reader,
   // then the work. `pending` reads Backlog - the state never had a name of

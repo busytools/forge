@@ -202,6 +202,8 @@ export function missFrom(value: unknown): MissRow {
  * the glance.
  */
 export interface FleetRow {
+  /** The org the project is declared under; a row is addressed by (org, project). */
+  org: string;
   project: string;
   live_workers: number;
   /** The project's worker cap, resolved (override or default). */
@@ -675,10 +677,16 @@ export function homeFrom(data: HomeWire): HomeWire {
     // `unknown` rather than vanishing.
     // A server older than the board sends no `fleet`; an empty list draws
     // no rows rather than failing the whole read.
-    fleet: (data.fleet ?? []).map((row) => ({
-      ...row,
-      misses: (row.misses as unknown[]).map(missFrom),
-    })),
+    fleet: (data.fleet ?? []).map((row) => {
+      // A server older than the field states no org on a fleet row, and the
+      // projects list beside it is the one resolution such a server supports.
+      const legacy = row as { org?: unknown };
+      const org =
+        typeof legacy.org === 'string' && legacy.org !== ''
+          ? legacy.org
+          : (data.projects.find((entry) => entry.project.name === row.project)?.project.org ?? '');
+      return { ...row, org, misses: (row.misses as unknown[]).map(missFrom) };
+    }),
     accounts: {
       ...data.accounts,
       loading: data.accounts.loading.map((row) => ({

@@ -497,4 +497,34 @@ describe("one project's board", () => {
     expect(fmtSecs(90)).toBe('1m');
     expect(fmtSecs(7_200)).toBe('2h');
   });
+
+  /** The fleet count is the row's own: a lookup by name hands a namesake the first match. */
+  it("takes the fleet count from the project's own org, not its namesake's", () => {
+    const first = homeWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const personal = {
+      ...first,
+      project: { ...first.project, org: 'Personal', key: 'Personal-proj' },
+    };
+    const fleet = (org: string, waiting_on_user: number) => ({
+      org,
+      project: 'proj',
+      live_workers: 0,
+      slots: 2,
+      queue: 0,
+      waiting_on_user,
+      misses: [],
+    });
+    const wire: HomeWire = {
+      ...homeWire,
+      projects: [first, personal],
+      fleet: [fleet('TestOrg', 3), fleet('Personal', 7)],
+    };
+
+    expect(
+      boardView(wire, 'Personal', 'proj').read.onYou,
+      "the namesake's count drew on the other org's board",
+    ).toBe(7);
+    expect(boardView(wire, 'TestOrg', 'proj').read.onYou, 'the control').toBe(3);
+  });
 });

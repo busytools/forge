@@ -55,6 +55,7 @@
   ],
   "fleet": [
     {
+      "org": "TestOrg",
       "project": "proj",
       "live_workers": 1,
       "slots": 2,

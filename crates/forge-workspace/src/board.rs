@@ -105,6 +105,8 @@ pub enum Miss {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct FleetRow {
+    /// The org the project is declared under; a row is addressed by (org, project).
+    pub org: String,
     pub project: String,
     pub live_workers: usize,
     /// The project's worker cap, resolved (override or default).
@@ -264,6 +266,7 @@ impl Workspace {
                 }
                 misses.extend(self.unaccounted(&name).into_iter().map(Miss::UnaccountedWorker));
                 FleetRow {
+                    org: view.org.clone(),
                     project: name,
                     live_workers,
                     slots: Some(slots),

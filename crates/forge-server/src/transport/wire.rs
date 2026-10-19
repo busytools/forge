@@ -2626,6 +2626,37 @@ mod tests {
         );
     }
 
+    /// **A fleet row states its own org**, so a client never has to resolve
+    /// one by searching the projects list for a name.
+    #[tokio::test]
+    async fn a_fleet_row_carries_its_projects_org() {
+        let fleet =
+            crate::testing::Fleet::new(&[("Busytools", &["forge"]), ("Personal", &["dotfiles"])])
+                .expect("the fleet builds");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let rows: Vec<(Option<&str>, Option<&str>)> = encoded["fleet"]
+            .as_array()
+            .expect("fleet is a list")
+            .iter()
+            .map(|row| (row["org"].as_str(), row["project"].as_str()))
+            .collect();
+
+        assert_eq!(
+            rows,
+            vec![(Some("Busytools"), Some("forge")), (Some("Personal"), Some("dotfiles"))],
+            "each row names its project's own org"
+        );
+    }
+
     /// The home's fatal carries the words the server prints, not the serde
     /// tag: a view drawing the line words it from the field (#1638).
     #[tokio::test]

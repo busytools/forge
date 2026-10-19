@@ -223,14 +223,10 @@ const MARK_ORDER: string[] = [
 export function fleetRows(wire: HomeWire): FleetViewRow[] {
   return wire.fleet.map((row) => {
     const project = wire.projects.find(
-      (entry) =>
-        keyOf(entry.project.org, entry.project.name) ===
-        keyOf(orgOf(wire, row.project), row.project),
+      (entry) => keyOf(entry.project.org, entry.project.name) === keyOf(row.org, row.project),
     );
     const agents = wire.agents.filter(
-      (agent) =>
-        agent.slot.project === row.project &&
-        (project === undefined || agent.slot.org === project.project.org),
+      (agent) => agent.slot.org === row.org && agent.slot.project === row.project,
     );
     const seats = agents.map((agent) => ({
       label: agent.label,
@@ -264,7 +260,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
           : best,
       { kind: 'never-started' },
     );
-    const org = project?.project.org ?? orgOf(wire, row.project);
+    const org = row.org;
     // The lead is the row's own target; a project between lead sessions still
     // reads its slot, where the session page draws its start.
     const lead = seats.find((seat) => seat.label === 'lead');
@@ -360,11 +356,6 @@ export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
     folded.mark = strongest?.dot ?? null;
   }
   return groups.filter((group) => group.rows.length > 0);
-}
-
-/** The org a project row belongs to, from the projects list. */
-function orgOf(wire: HomeWire, project: string): string {
-  return wire.projects.find((entry) => entry.project.name === project)?.project.org ?? '';
 }
 
 /**
