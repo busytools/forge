@@ -41,8 +41,8 @@ impl Launched {
         if let Some(pid) = self.pid {
             kill(pid);
         }
-        if let Some(active) = forge_client::browser::chromium::read_active_port(&self.profile) {
-            kill_the_browser_on(active.port);
+        if let Some(record) = forge_client::browser::cef::spawn::read_record(&self.profile) {
+            kill(record.pid);
         }
         kill_the_browser_on(self.port);
     }

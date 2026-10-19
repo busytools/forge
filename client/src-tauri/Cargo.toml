@@ -4,6 +4,9 @@ version = "1.1.20"
 description = "The forge desktop client"
 edition = "2024"
 rust-version = "1.90"
+# Two binaries exist (the app and CEF's helper); the bundler needs to be told
+# which one the app is.
+default-run = "forge-client"
 
 # Its own workspace root, so the crate above is not a member of forge's: the
 # shell links the whole webview stack, and it is the shipping build - minutes
@@ -16,6 +19,12 @@ rust-version = "1.90"
 # The Android target links the app as a native library; a binary-only crate
 # gives `tauri android build` no library target to build.
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# CEF's subprocesses are these, laid out by `scripts/bundle-cef.sh` as the
+# `forge-client Helper*.app` bundles CEF looks for.
+[[bin]]
+name = "forge_client_helper"
+path = "src/bin/forge_client_helper.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -52,6 +61,44 @@ forge-capture = { path = "../../crates/forge-capture" }
 # through the system installer instead (a Kotlin side of its own).
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
+
+# **The app's own Chromium, macOS first.** Only the host process initializes
+# CEF; the client's UI process never does (see `browser::cef`). The framework
+# and the five helper apps are laid into the built bundle by
+# `scripts/bundle-cef.sh`.
+[target.'cfg(target_os = "macos")'.dependencies]
+cef = { version = "=154.5.0", features = ["build-util"] }
+libc = "0.2"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSArray",
+    "NSDate",
+    "NSProcessInfo",
+    "NSRunLoop",
+    "NSString",
+    "NSTimer",
+    "NSURL",
+] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSEvent",
+    "NSGraphics",
+    "NSOpenPanel",
+    "NSPanel",
+    "NSPasteboard",
+    "NSResponder",
+    "NSSavePanel",
+    "NSTrackingArea",
+    "NSView",
+    "NSWindow",
+] }
+objc2-core-foundation = { version = "0.3", features = ["CFData"] }
+objc2-core-graphics = { version = "0.3", features = [
+    "CGColorSpace",
+    "CGDataProvider",
+    "CGImage",
+] }
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 
 [dev-dependencies]
 tempfile = "3"

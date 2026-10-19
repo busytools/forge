@@ -301,7 +301,7 @@ async fn close_guarded(
     if step(fresh.at, fresh.warned, Instant::now(), idle, grace) != Step::Close {
         return;
     }
-    if crate::browser::chromium::windowed(&candidate.dir).await {
+    if host.surface_is(&candidate.dir).await {
         return;
     }
     host.close_idle(candidate.name.as_deref()).await;

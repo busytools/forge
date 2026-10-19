@@ -17,8 +17,8 @@
 //! window on its own page.
 //!
 //! The pieces:
-//! - [`chromium`] - where the machine's browser is found, how it is launched,
-//!   and how a launch is found again after a restart.
+//! - [`cef`] - the app's own Chromium: the host process, its frame ring, and
+//!   where a host is found again after a restart.
 //! - [`profiles`] - which names are usable and who owns one.
 //! - [`driver`] - upstream `@playwright/mcp` as a child process, spoken to as
 //!   an MCP client.
@@ -32,7 +32,8 @@
 
 #[cfg(target_os = "android")]
 pub mod android;
-pub mod chromium;
+#[cfg(target_os = "macos")]
+pub mod cef;
 pub mod custom;
 pub mod driver;
 #[cfg(desktop)]
@@ -135,6 +136,22 @@ impl StackPaths {
         }
     }
 
+    /// The shared browser's CEF cache root: **a directory of its own**, so the
+    /// Brave data the machine's old launches left is never mistaken for it.
+    #[cfg(desktop)]
+    pub fn cef_shared(&self) -> PathBuf {
+        self.user_data.parent().unwrap_or(&self.user_data).join("cef-profile")
+    }
+
+    /// A named profile's CEF cache root, beside its ownership record: the
+    /// record and the locks stay in the name's own directory, the cache hangs
+    /// under `cef/` so a Brave profile left in the same place is not read as
+    /// this profile's cookies.
+    #[cfg(desktop)]
+    pub fn cef_named(&self, name: &str) -> PathBuf {
+        self.profiles.join(name).join("cef")
+    }
+
     /// The unix socket the in-app driver dials, one per app run: beside the
     /// state directories, never inside one (nothing else may manage it).
     pub fn driver_socket(&self) -> PathBuf {
@@ -156,10 +173,10 @@ impl StackPaths {
 /// lives.
 pub struct BrowserHost {
     paths: Result<StackPaths, String>,
-    /// Every `chromium::ensure` runs under this, whichever profile asks for
-    /// one: a burst of first calls launches ONE browser rather than two onto
-    /// one profile - and a hand-off's `show` racing a first call cannot leave
-    /// two browsers on one profile either.
+    /// Every host ensure runs under this, whichever profile asks for one: a
+    /// burst of first calls launches ONE host rather than two onto one profile
+    /// - and a hand-off's `show` racing a first call cannot leave two hosts on
+    /// one profile either.
     #[cfg(desktop)]
     launch: Mutex<()>,
     /// The shared profile: the browser's own profile, one driver for every
@@ -173,7 +190,25 @@ pub struct BrowserHost {
     /// per directory, its lock held for the process lifetime. What the exit
     /// reap closes, and what the boot sweep must never read as an orphan.
     #[cfg(desktop)]
-    owned: Mutex<HashMap<PathBuf, chromium::ClientLock>>,
+    owned: Mutex<HashMap<PathBuf, profiles::ClientLock>>,
+    /// Every host this client has up, by cache root: **one CEF process per
+    /// profile**, the same count the machine's Brave had.
+    #[cfg(desktop)]
+    hosts: Mutex<HashMap<PathBuf, Arc<cef::spawn::ActiveHost>>>,
+    /// The open surface: the profile whose frames the page's column draws,
+    /// `None` while nothing is drawn. The host keeps running under it.
+    #[cfg(desktop)]
+    surface: Mutex<Option<OpenSurface>>,
+    /// Where the page last said its conversation column is, and the scale it
+    /// is drawn at.
+    #[cfg(desktop)]
+    surface_rect: Mutex<Option<cef::surface::Rect>>,
+    /// The host whose frames the native overlay is drawing, if one is.
+    #[cfg(desktop)]
+    attached: Mutex<Option<u16>>,
+    /// The running app, for the overlay's main-thread placement.
+    #[cfg(desktop)]
+    app: Mutex<Option<tauri::AppHandle>>,
     /// The idle release's clock per profile: when a seat last used it, when
     /// its seat was last warned, and who that seat was. In-memory on purpose
     /// (see [`idle`]): a client restart grants every browser a fresh window.
@@ -212,6 +247,16 @@ impl BrowserHost {
             #[cfg(desktop)]
             owned: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
+            hosts: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            surface: Mutex::new(None),
+            #[cfg(desktop)]
+            surface_rect: Mutex::new(None),
+            #[cfg(desktop)]
+            attached: Mutex::new(None),
+            #[cfg(desktop)]
+            app: Mutex::new(None),
+            #[cfg(desktop)]
             touches: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
             boot: std::time::Instant::now(),
@@ -248,6 +293,16 @@ impl BrowserHost {
             #[cfg(desktop)]
             owned: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
+            hosts: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            surface: Mutex::new(None),
+            #[cfg(desktop)]
+            surface_rect: Mutex::new(None),
+            #[cfg(desktop)]
+            attached: Mutex::new(None),
+            #[cfg(desktop)]
+            app: Mutex::new(None),
+            #[cfg(desktop)]
             touches: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
             boot: std::time::Instant::now(),
@@ -268,18 +323,29 @@ impl BrowserHost {
     /// setup closure so the invariant is drivable: a launch re-added inside
     /// it fails `the_boot_launches_nothing`.
     #[cfg(desktop)]
-    pub fn boot_browser(paths: Result<StackPaths, String>) -> Arc<Self> {
+    pub fn boot_browser(
+        paths: Result<StackPaths, String>,
+        app: Option<tauri::AppHandle>,
+    ) -> Arc<Self> {
         // The host is handed to the frontend whether or not its directories
         // resolve: a client that cannot host says so when it is asked, rather
         // than refusing to start.
         let host = match paths {
             Ok(paths) => {
                 tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
-                Arc::new(Self::new(paths))
+                let host = Self::new(paths);
+                if let Ok(mut slot) = host.app.try_lock() {
+                    *slot = app;
+                }
+                Arc::new(host)
             }
             Err(why) => {
                 tauri_plugin_log::log::warn!("browser host unavailable: {why}");
-                Arc::new(Self::unavailable(why))
+                let host = Self::unavailable(why);
+                if let Ok(mut slot) = host.app.try_lock() {
+                    *slot = app;
+                }
+                Arc::new(host)
             }
         };
         // The reap is the only cover for a client that never ran its exit - a
@@ -416,7 +482,7 @@ impl BrowserHost {
                     // call is about to drive.
                     {
                         let _launching = self.launch.lock().await;
-                        self.touch(&paths.user_data).await;
+                        self.touch(&paths.cef_shared()).await;
                     }
                     // **The seat's auto profile is ensured on its first
                     // unnamed reach**, before anything is driven: the record
@@ -432,17 +498,18 @@ impl BrowserHost {
                     // refused call never lights the mark.
                     self.used.store(true, std::sync::atomic::Ordering::Release);
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
+                    let identity = active.identity();
                     let shared = self.shared_profile().await;
                     let start = DriverStart {
                         node: &node,
                         cli: &cli,
                         endpoint: &endpoint,
-                        identity: &active.path,
+                        identity: &identity,
                         output: &paths.output,
                     };
                     let outcome = shared.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
-                        &paths.user_data,
+                        &paths.cef_shared(),
                         &shared,
                         active.port,
                         outcome.is_err(),
@@ -450,14 +517,6 @@ impl BrowserHost {
                     .await;
                     match outcome {
                         Ok(mut parts) => {
-                            // **What the window holds now is what a later
-                            // launch should open**: the call may have closed
-                            // a tab, opened one, or navigated - the carry is
-                            // rewritten from the browser as it is, best
-                            // effort, before the answer goes out.
-                            let led =
-                                (tool == "browser_navigate").then(|| landed_url(&parts)).flatten();
-                            self.refresh_carry(&paths.user_data, led.as_deref()).await;
                             if let Err(why) = auto {
                                 self.note_auto_failure(seat, why, &mut parts).await;
                             }
@@ -468,41 +527,35 @@ impl BrowserHost {
                 }
                 Some(name) => {
                     let named = self.named_profile(seat, &name).await?;
+                    let cache = profiles::cef_cache(&named.dir);
                     // The idle release's clock: the named profile is in use -
                     // under the launch lock, the same critical section the
                     // sweep's verdict-and-kill takes (see the shared arm).
                     {
                         let _launching = self.launch.lock().await;
-                        self.touch(&named.dir).await;
+                        self.touch(&cache).await;
                     }
-                    let active = self.browser_for(&named.dir).await?;
+                    let active = self.browser_for(&cache).await?;
                     self.used.store(true, std::sync::atomic::Ordering::Release);
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
+                    let identity = active.identity();
                     let start = DriverStart {
                         node: &node,
                         cli: &cli,
                         endpoint: &endpoint,
-                        identity: &active.path,
+                        identity: &identity,
                         output: &paths.output,
                     };
                     let outcome = named.profile.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
-                        &named.dir,
+                        &cache,
                         &named.profile,
                         active.port,
                         outcome.is_err(),
                     )
                     .await;
                     match outcome {
-                        Ok(parts) => {
-                            // The same refresh the shared arm makes, on this
-                            // profile's own directory: the carry follows the
-                            // tabs.
-                            let led =
-                                (tool == "browser_navigate").then(|| landed_url(&parts)).flatten();
-                            self.refresh_carry(&named.dir, led.as_deref()).await;
-                            Ok(parts)
-                        }
+                        Ok(parts) => Ok(parts),
                         Err(why) => Err(why),
                     }
                 }
@@ -562,34 +615,25 @@ impl BrowserHost {
         }
     }
 
-    /// The carry refresh, **under the launch lock the show and hide take**: a
-    /// session call completing while a hide is taking the marker down must
-    /// not put it back, or the strip reads "hide" over an off-screen window
-    /// until the next flip. Best effort - see [`chromium::note_pages`].
-    #[cfg(desktop)]
-    async fn refresh_carry(&self, dir: &Path, led: Option<&str>) {
-        let _launching = self.launch.lock().await;
-        chromium::note_pages(dir, led).await;
-    }
-
-    /// A call failed: is it the browser that is gone, rather than the tool?
+    /// A call failed: is it the host that is gone, rather than the tool?
     ///
     /// A plain tool failure - no such element, a refused navigation - leaves
-    /// the driver in place; only a browser that stopped answering on the port
-    /// this driver was built for drops it, so the next call rebuilds against
-    /// a relaunched browser. Bounded by the probe's own read timeout.
+    /// the driver in place; only a host that stopped answering on the port
+    /// this driver was built for is dropped, so the next call rebuilds
+    /// against a relaunched host.
     #[cfg(desktop)]
     async fn forget_a_dead_browser(
         &self,
-        user_data: &Path,
+        cache: &Path,
         profile: &Profile,
         port: u16,
         failed: bool,
     ) {
-        if !failed || chromium::answers_as(user_data, port).await {
+        if !failed || cef::spawn::probe(port).await {
             return;
         }
         profile.drop_driver().await;
+        self.hosts.lock().await.remove(cache);
     }
 
     /// Close a named profile, whoever opened it: the client's own UI acting on
@@ -603,17 +647,50 @@ impl BrowserHost {
     /// directory, so a close ends the run and never the logins.
     #[cfg(desktop)]
     pub async fn close(&self, name: &str) -> Result<(), String> {
-        let entry = {
+        let dir = {
             let named = self.named.lock().await;
-            let Some(entry) = named.get(name).map(Arc::clone) else {
-                return Err(format!("no browser profile is open under '{name}'"));
-            };
-            entry
+            match named.get(name).map(|entry| entry.dir.clone()) {
+                Some(dir) => dir,
+                None => self.paths.clone()?.profiles.join(name),
+            }
         };
-        chromium::close(&entry.dir).await;
+        if !self.named.lock().await.contains_key(name) && !dir.exists() {
+            return Err(format!("no browser profile is open under '{name}'"));
+        }
+        let cache = profiles::cef_cache(&dir);
+        self.end_host(&cache).await;
         let mut named = self.named.lock().await;
         named.remove(name);
         Ok(())
+    }
+
+    /// End the host on one cache root: the process, its record and its ring.
+    /// A `surface` drawing it closes first, so no frame outlives the host.
+    #[cfg(desktop)]
+    async fn end_host(&self, cache: &Path) {
+        {
+            let mut surface = self.surface.lock().await;
+            if surface.as_ref().is_some_and(|open| open.dir == cache) {
+                *surface = None;
+            }
+        }
+        let host = self.hosts.lock().await.remove(cache);
+        let record = host
+            .as_ref()
+            .map(|host| cef::spawn::Record {
+                pid: host.pid,
+                port: host.port,
+                ring: cef::spawn::ring_name(host.port),
+            })
+            .or_else(|| cef::spawn::read_record(cache));
+        if let Some(record) = record {
+            cef::spawn::end(record.pid).await;
+            cef::osr::Ring::unlink(&record.ring);
+            cef::spawn::remove_record(cache);
+        }
+        // A lock the host's own directory held is released with it; the
+        // client's claim stays until this client exits or deletes.
+        self.reconcile_surface().await;
     }
 
     /// Record that `dir` was just used. **A touch clears the streak**:
@@ -670,13 +747,14 @@ impl BrowserHost {
         };
         let mut out = Vec::new();
         for (name, dir, owner) in rows {
-            if chromium::verified(&dir).await.is_none() || chromium::windowed(&dir).await {
+            let cache = profiles::cef_cache(&dir);
+            if !self.host_up(&cache).await || self.surface_is(&cache).await {
                 continue;
             }
-            let touch = touches.get(&dir).cloned().unwrap_or_else(|| untouched.clone());
+            let touch = touches.get(&cache).cloned().unwrap_or_else(|| untouched.clone());
             out.push(idle::Candidate {
                 name: Some(name),
-                dir,
+                dir: cache,
                 // **The creator, not the last caller** (spam-control A1): a
                 // named profile's warning belongs to the seat that made it.
                 // The distinction is structural rather than observed - a
@@ -687,13 +765,31 @@ impl BrowserHost {
                 touch: idle::Touch { caller: Some(owner), ..touch },
             });
         }
-        if chromium::verified(&paths.user_data).await.is_some()
-            && !chromium::windowed(&paths.user_data).await
-        {
-            let touch = touches.get(&paths.user_data).cloned().unwrap_or(untouched);
-            out.push(idle::Candidate { name: None, dir: paths.user_data.clone(), touch });
+        let shared = paths.cef_shared();
+        if self.host_up(&shared).await && !self.surface_is(&shared).await {
+            let touch = touches.get(&shared).cloned().unwrap_or(untouched);
+            out.push(idle::Candidate { name: None, dir: shared, touch });
         }
         out
+    }
+
+    /// Whether a host answers on this cache root, whether this client
+    /// launched it or found it.
+    #[cfg(desktop)]
+    async fn host_up(&self, cache: &Path) -> bool {
+        if let Some(host) = self.hosts.lock().await.get(cache).cloned() {
+            return cef::spawn::probe(host.port).await;
+        }
+        if let Some(record) = cef::spawn::read_record(cache) {
+            return cef::spawn::probe(record.port).await;
+        }
+        false
+    }
+
+    /// Whether the page's column is drawing this cache root's frames.
+    #[cfg(desktop)]
+    pub(crate) async fn surface_is(&self, cache: &Path) -> bool {
+        self.surface.lock().await.as_ref().is_some_and(|open| open.dir == cache)
     }
 
     /// The idle release closing one profile: the named path takes the row's
@@ -707,17 +803,17 @@ impl BrowserHost {
             Some(name) => {
                 let dir = {
                     let named = self.named.lock().await;
-                    named.get(name).map(|entry| entry.dir.clone())
+                    named.get(name).map(|entry| profiles::cef_cache(&entry.dir))
                 };
                 let _ = self.close(name).await;
-                if let Some(dir) = dir {
-                    self.touches.lock().await.remove(&dir);
+                if let Some(cache) = dir {
+                    self.touches.lock().await.remove(&cache);
                 }
             }
             None => {
                 if let Ok(paths) = self.paths.clone() {
-                    chromium::close(&paths.user_data).await;
-                    self.touches.lock().await.remove(&paths.user_data);
+                    self.end_host(&paths.cef_shared()).await;
+                    self.touches.lock().await.remove(&paths.cef_shared());
                 }
             }
         }
@@ -751,7 +847,7 @@ impl BrowserHost {
     /// lock while taking a call lock; a future holder of both, launch first,
     /// would close the cycle. An in-flight call is WAITED for rather than
     /// refused. The close inside runs under the held launch lock, not
-    /// through `chromium::hide`, which would take it again.
+    /// through `hide`, which would take it again.
     #[cfg(desktop)]
     pub async fn delete(&self, name: &str) -> Result<(), String> {
         if let Some(refusal) = profiles::name_refusal(name) {
@@ -772,12 +868,16 @@ impl BrowserHost {
         if let Err(why) = std::fs::create_dir_all(&dir) {
             return Err(format!("the profile's directory cannot be made: {why}"));
         }
-        let _launch = chromium::LaunchLock::acquire(&dir).await?;
-        chromium::close_held_launch(&dir).await;
+        let cache = profiles::cef_cache(&dir);
+        if let Err(why) = std::fs::create_dir_all(&cache) {
+            return Err(format!("the profile's cache directory cannot be made: {why}"));
+        }
+        let _launch = profiles::LaunchLock::acquire(&cache).await?;
+        self.end_host(&cache).await;
         self.named.lock().await.remove(name);
         // The claim goes with the files: a stale entry would read as "this
         // client already owns the directory" for a name created again later.
-        self.owned.lock().await.remove(&dir);
+        self.owned.lock().await.remove(&cache);
         match tokio::fs::remove_dir_all(&dir).await {
             Ok(()) => Ok(()),
             Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -804,9 +904,9 @@ impl BrowserHost {
     /// browser's id comes back with its port, so a caller that must reap it
     /// (a live test that launched it) can; the call path ignores both.
     #[cfg(desktop)]
-    pub async fn start(&self) -> Result<chromium::ActivePort, String> {
+    pub async fn start(&self) -> Result<Arc<cef::spawn::ActiveHost>, String> {
         let paths = self.paths.clone()?;
-        self.browser_for(&paths.user_data).await
+        self.browser_for(&paths.cef_shared()).await
     }
 
     /// The phone's own start: the Kotlin engine comes up (WebView, relay,
@@ -830,16 +930,17 @@ impl BrowserHost {
     /// already holds is not claimed and not owned: this client still drives
     /// the browser on it, and the exit reap leaves it to its own client.
     #[cfg(desktop)]
-    async fn claim(&self, dir: &Path) {
+    async fn claim(&self, cache: &Path) -> bool {
         let mut owned = self.owned.lock().await;
-        if owned.contains_key(dir) {
-            return;
+        if owned.contains_key(cache) {
+            return true;
         }
-        match chromium::claim(dir) {
+        match profiles::claim(cache) {
             Ok(Some(lock)) => {
-                owned.insert(dir.to_path_buf(), lock);
+                owned.insert(cache.to_path_buf(), lock);
+                true
             }
-            Ok(None) => {}
+            Ok(None) => false,
             Err(why) => {
                 // Not fatal to the call - the browser is driven either way -
                 // but the profile has no owner this run, and the sweep
@@ -849,29 +950,123 @@ impl BrowserHost {
                 tauri_plugin_log::log::debug!(
                     "a browser profile could not be claimed by this client (event_name \
                      browser_client_lock_refused, profile {}): {why}",
-                    dir.display(),
+                    cache.display(),
                 );
+                false
             }
         }
     }
 
-    /// One profile's live browser, launched when nothing is up: the shared
-    /// profile's directory for most calls, a named profile's own for its.
+    /// One profile's live host, spawned when nothing is up: the shared
+    /// profile's cache root for most calls, a named profile's own for its.
     ///
-    /// **The machine's own browser, with its window born hidden.** CEF was
-    /// measured out on 2026-10-07: its windowed runtime drops CDP-dispatched
-    /// input whenever the window is not frontmost, and the pinned driver's
-    /// click wedges on its target bookkeeping - full playwright parity wins
-    /// over the native view (see `chromium::show` for how the person sees
-    /// it). A call launches with no carried page: a fresh browser a session
-    /// drives itself starts blank. The launch lock serializes across every
-    /// profile: one launch at a time, whichever directory it is for.
+    /// **Under the client's launch mutex and the profile's launch flock**,
+    /// so a burst of calls - and a second client - brings up ONE host onto a
+    /// cache root. What is already there is adopted (the record names its
+    /// port and ring); a record whose port no longer answers is cleaned up
+    /// and replaced.
     #[cfg(desktop)]
-    async fn browser_for(&self, user_data: &Path) -> Result<chromium::ActivePort, String> {
+    async fn browser_for(&self, cache: &Path) -> Result<Arc<cef::spawn::ActiveHost>, String> {
         let _launching = self.launch.lock().await;
-        self.claim(user_data).await;
-        let binary = chromium::browser_binary()?;
-        chromium::ensure(&binary, user_data, &[]).await
+        self.claim(cache).await;
+        // **A Brave-era profile moves once, on its first CEF launch.** Both
+        // engines write Chromium's own profile, so the migration is a copy;
+        // the client's own Brave launches used the same mock keychain the
+        // host sets, so their cookies decrypt here.
+        let paths = self.paths.clone()?;
+        let legacy = if cache == paths.cef_shared() {
+            paths.user_data.clone()
+        } else {
+            cache.parent().map(Path::to_path_buf).unwrap_or_else(|| cache.to_path_buf())
+        };
+        match profiles::migrate_brave(&legacy, cache) {
+            Ok(true) => tauri_plugin_log::log::info!(
+                "a Brave-era profile was moved into the CEF cache (event_name \
+                 cef_profile_migrated, profile {})",
+                cache.display(),
+            ),
+            Ok(false) => {}
+            Err(why) => tauri_plugin_log::log::warn!(
+                "a Brave-era profile could not be moved into the CEF cache (event_name \
+                 cef_profile_migration_failed, profile {}, {why})",
+                cache.display(),
+            ),
+        }
+        if let Some(host) = self.hosts.lock().await.get(cache).cloned() {
+            if cef::spawn::probe(host.port).await {
+                return Ok(host);
+            }
+            self.hosts.lock().await.remove(cache);
+        }
+        let _lock = profiles::LaunchLock::acquire(cache).await?;
+        if let Some(record) = cef::spawn::read_record(cache) {
+            if cef::spawn::probe(record.port).await {
+                match cef::osr::Ring::open(&record.ring) {
+                    Ok(ring) => {
+                        let host = Arc::new(cef::spawn::ActiveHost {
+                            pid: record.pid,
+                            port: record.port,
+                            ring: Arc::new(ring),
+                            profile: cache.to_path_buf(),
+                        });
+                        self.hosts.lock().await.insert(cache.to_path_buf(), Arc::clone(&host));
+                        return Ok(host);
+                    }
+                    Err(why) => {
+                        // A live browser whose ring is gone cannot be drawn:
+                        // it is ended and replaced rather than driven blind.
+                        tauri_plugin_log::log::warn!(
+                            "a browser host's ring could not be mapped; replacing it (event_name \
+                             cef_ring_missing, profile {}, {why})",
+                            cache.display(),
+                        );
+                        cef::spawn::end(record.pid).await;
+                        cef::spawn::remove_record(cache);
+                    }
+                }
+            } else {
+                // A stale record: the client that owned it never ran its
+                // exit. The ring outlives the host, so its name is removed
+                // here.
+                cef::osr::Ring::unlink(&record.ring);
+                cef::spawn::remove_record(cache);
+            }
+        }
+        let port = cef::spawn::free_port()
+            .ok_or_else(|| "no free port for a browser host's devtools endpoint".to_owned())?;
+        let ring_name = cef::spawn::ring_name(port);
+        // The page reports the surface's own box shortly after it opens; this
+        // is only the size a host paints before that report.
+        let (width, height) = (1100_u32, 620_u32);
+        let pid = cef::spawn::spawn(cache, port, &ring_name, width, height)?;
+        if let Err(why) = cef::spawn::wait_ready(port).await {
+            cef::spawn::end(pid).await;
+            cef::osr::Ring::unlink(&ring_name);
+            return Err(why);
+        }
+        let ring = match cef::osr::Ring::open(&ring_name) {
+            Ok(ring) => Arc::new(ring),
+            Err(why) => {
+                cef::spawn::end(pid).await;
+                cef::osr::Ring::unlink(&ring_name);
+                return Err(why);
+            }
+        };
+        let record = cef::spawn::Record { pid, port, ring: ring_name.clone() };
+        if let Err(why) = cef::spawn::write_record(cache, &record) {
+            cef::spawn::end(pid).await;
+            cef::osr::Ring::unlink(&ring_name);
+            return Err(why);
+        }
+        let host =
+            Arc::new(cef::spawn::ActiveHost { pid, port, ring, profile: cache.to_path_buf() });
+        self.hosts.lock().await.insert(cache.to_path_buf(), Arc::clone(&host));
+        tauri_plugin_log::log::info!(
+            "the browser host is up (event_name cef_host_spawned, pid {pid}, port {port}, profile \
+             {})",
+            cache.display(),
+        );
+        Ok(host)
     }
 
     /// The named profiles this host holds, by name, for its own strip. A
@@ -887,25 +1082,24 @@ impl BrowserHost {
     pub async fn profiles(&self, seat: Option<&Seat>) -> Vec<ProfileRow> {
         let named = self.named.lock().await;
         let mut rows: Vec<ProfileRow> = Vec::new();
-        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut caches: Vec<PathBuf> = Vec::new();
         for (name, entry) in named.iter() {
+            let cache = profiles::cef_cache(&entry.dir);
             rows.push(ProfileRow {
                 name: name.clone(),
                 owner: entry.owner.to_string(),
                 running: entry.profile.is_alive(),
-                opened: chromium::ever_opened(&entry.dir),
+                opened: cef_opened(&cache),
                 windowed: false,
                 closed: false,
             });
-            dirs.push(entry.dir.clone());
+            caches.push(cache);
         }
         drop(named);
-        // Probed outside the lock: each probe is a blocking devtools read
-        // with a seconds-long budget, and a profile open takes this lock.
-        for (row, dir) in rows.iter_mut().zip(&dirs) {
-            // The same predicate `show` keeps: the marker alone reads a
-            // window that an X-close already took down.
-            row.windowed = chromium::windowed(dir).await;
+        for (row, cache) in rows.iter_mut().zip(&caches) {
+            // The surface is the client's own state, not a probe: the strip's
+            // button says hide exactly while the column draws this profile.
+            row.windowed = self.surface_is(cache).await;
         }
         // **A closed profile is still a profile.** Its entry goes on close
         // while its files stay - the logins a person means to delete - so a
@@ -931,11 +1125,12 @@ impl BrowserHost {
                     Ok(Some(owner)) => owner.to_string(),
                     Ok(None) | Err(_) => String::new(),
                 };
-                // A window can be up over a closed profile - the strip's own
-                // show launches one without an entry - so the predicate is
-                // still asked, on the directory itself.
-                let windowed = chromium::windowed(&dir).await;
-                let opened = chromium::ever_opened(&dir);
+                // A surface can be open over a closed profile - the strip's
+                // own show spawns one without an entry - so the predicate is
+                // still asked, on the cache root itself.
+                let cache = profiles::cef_cache(&dir);
+                let windowed = self.surface_is(&cache).await;
+                let opened = cef_opened(&cache);
                 rows.push(ProfileRow {
                     name,
                     owner,
@@ -975,16 +1170,16 @@ impl BrowserHost {
     #[cfg(desktop)]
     pub async fn windowed(&self, profile: Option<&str>) -> Result<bool, String> {
         let paths = self.paths.clone()?;
-        let dir = match profile {
+        let cache = match profile {
             Some(name) => {
                 if let Some(refusal) = profiles::name_refusal(name) {
                     return Err(refusal);
                 }
-                paths.profiles.join(name)
+                paths.cef_named(name)
             }
-            None => paths.user_data,
+            None => paths.cef_shared(),
         };
-        Ok(chromium::windowed(&dir).await)
+        Ok(self.surface_is(&cache).await)
     }
 
     /// The phone's "window" is the takeover: up while the page is shown over
@@ -1020,9 +1215,9 @@ impl BrowserHost {
         &self,
         profile: Option<&str>,
         seat: Option<&Seat>,
-    ) -> Result<chromium::ActivePort, String> {
+    ) -> Result<Arc<cef::spawn::ActiveHost>, String> {
         let paths = self.paths.clone()?;
-        let dir = match profile {
+        let (name, dir) = match profile {
             Some(name) => {
                 if let Some(refusal) = profiles::name_refusal(name) {
                     return Err(refusal);
@@ -1030,17 +1225,101 @@ impl BrowserHost {
                 if let Some(seat) = seat {
                     profiles::raise_refusal(name, &paths.profiles.join(name), seat)?;
                 }
-                paths.profiles.join(name)
+                (Some(name.to_owned()), paths.profiles.join(name))
             }
-            None => paths.user_data,
+            None => (None, paths.cef_shared()),
         };
-        let _launching = self.launch.lock().await;
-        self.claim(&dir).await;
+        let cache = if profile.is_some() { profiles::cef_cache(&dir) } else { dir };
+        let host = self.browser_for(&cache).await?;
         // A raise is use: the person is being shown this browser, so the
         // idle release's clock restarts and any standing warning is spent.
-        self.touch(&dir).await;
-        let binary = chromium::browser_binary()?;
-        chromium::show(&binary, &dir).await
+        self.touch(&cache).await;
+        // One surface at a time: opening this profile's takes the column,
+        // and a previous profile's host keeps running under it.
+        *self.surface.lock().await =
+            Some(OpenSurface { profile: name, dir: cache, host: Arc::clone(&host) });
+        self.reconcile_surface().await;
+        Ok(host)
+    }
+
+    /// Open the page the browser holds in the person's own default browser.
+    #[cfg(desktop)]
+    pub async fn open_page_in_browser(&self, profile: Option<&str>) -> Result<(), String> {
+        let paths = self.paths.clone()?;
+        let cache = match profile {
+            Some(name) => {
+                if let Some(refusal) = profiles::name_refusal(name) {
+                    return Err(refusal);
+                }
+                paths.cef_named(name)
+            }
+            None => paths.cef_shared(),
+        };
+        let port = match self.hosts.lock().await.get(&cache) {
+            Some(host) => Some(host.port),
+            None => cef::spawn::read_record(&cache).map(|record| record.port),
+        };
+        let Some(port) = port else {
+            return Err("the browser is not running, so there is no page to open".to_owned());
+        };
+        let Some(url) = cef::spawn::page_url(port).await else {
+            return Err("the browser holds no page to open".to_owned());
+        };
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(format!("'{url}' is not a web address this door can open"));
+        }
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|why| format!("the page could not be opened in your browser: {why}"))?;
+        Ok(())
+    }
+
+    /// The page said where its conversation column is: place the overlay
+    /// there, and resize the host's view to match.
+    #[cfg(desktop)]
+    pub async fn set_surface_rect(&self, rect: cef::surface::Rect) {
+        *self.surface_rect.lock().await = Some(rect);
+        self.reconcile_surface().await;
+    }
+
+    /// Make the native half match the open surface: one overlay, drawing the
+    /// open profile's host, at the page's last reported rect. Idempotent -
+    /// every report calls it.
+    #[cfg(desktop)]
+    async fn reconcile_surface(&self) {
+        let open = self.surface.lock().await.clone();
+        let rect = *self.surface_rect.lock().await;
+        let app = self.app.lock().await.clone();
+        let mut attached = self.attached.lock().await;
+        match (open, rect, app.as_ref()) {
+            (Some(open), Some(rect), Some(app)) => {
+                if *attached == Some(open.host.port) {
+                    cef::surface::set_rect(app, &open.host, rect);
+                } else {
+                    if attached.take().is_some() {
+                        cef::surface::detach(app);
+                    }
+                    match cef::surface::attach(app, Arc::clone(&open.host), rect).await {
+                        Ok(()) => *attached = Some(open.host.port),
+                        Err(why) => {
+                            tauri_plugin_log::log::warn!(
+                                "the browser surface could not be opened (event_name \
+                                 cef_surface_failed, profile {}, {why})",
+                                open.dir.display(),
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {
+                if attached.take().is_some()
+                    && let Some(app) = app.as_ref()
+                {
+                    cef::surface::detach(app);
+                }
+            }
+        }
     }
 
     /// The phone's Open: raise the takeover (the approved Android pair - the
@@ -1065,29 +1344,32 @@ impl BrowserHost {
     #[cfg(desktop)]
     pub async fn hide(&self, profile: Option<&str>) -> Result<(), String> {
         let paths = self.paths.clone()?;
-        let dir = match profile {
+        let cache = match profile {
             Some(name) => {
                 // **The same refusal show makes.** A name that cannot be a
                 // profile resolves to no directory at all, and without this a
-                // `profile: "../user-data"` would close the SHARED browser
+                // `profile: "../user-data"` would close the SHARED surface
                 // while the answer claimed the named one came down.
                 if let Some(refusal) = profiles::name_refusal(name) {
                     return Err(refusal);
                 }
-                paths.profiles.join(name)
+                paths.cef_named(name)
             }
-            None => paths.user_data,
+            None => paths.cef_shared(),
         };
-        // **The same launch lock show takes.** A relaunch holds the lock for
-        // its whole span and its port file is absent - then present but
-        // unanswered - until the browser comes up; a hide racing it would
-        // no-op against a browser not yet up - Open then Done would leave the
-        // window raised after the answer crossed.
+        // **The same launch lock show takes.** A show holds it until the host
+        // answers; a hide racing it would no-op against a host not yet up -
+        // Open then Done would leave the surface up after the answer crossed.
         let _launching = self.launch.lock().await;
         // A lower is the same use a raise is: the browser was just in front
         // of someone, and the clock restarts with it.
-        self.touch(&dir).await;
-        chromium::hide(&dir).await;
+        self.touch(&cache).await;
+        let mut surface = self.surface.lock().await;
+        if surface.as_ref().is_none_or(|open| open.dir == cache) {
+            *surface = None;
+        }
+        drop(surface);
+        self.reconcile_surface().await;
         Ok(())
     }
 
@@ -1186,11 +1468,11 @@ impl BrowserHost {
     /// for those.
     #[cfg(desktop)]
     pub async fn reap_owned(&self) -> Vec<String> {
-        let dirs: Vec<PathBuf> = self.owned.lock().await.keys().cloned().collect();
+        let caches: Vec<PathBuf> = self.owned.lock().await.keys().cloned().collect();
         let mut reaped = Vec::new();
-        for dir in dirs {
-            chromium::close(&dir).await;
-            if let Some(name) = dir.file_name().and_then(std::ffi::OsStr::to_str) {
+        for cache in caches {
+            self.end_host(&cache).await;
+            if let Some(name) = cache.file_name().and_then(std::ffi::OsStr::to_str) {
                 reaped.push(name.to_owned());
             }
         }
@@ -1217,32 +1499,30 @@ impl BrowserHost {
     #[cfg(desktop)]
     pub async fn reap_orphans(&self) -> Vec<String> {
         let Ok(paths) = self.paths.clone() else { return Vec::new() };
-        let mut dirs = vec![paths.user_data.clone()];
+        let mut caches = vec![paths.cef_shared()];
         if let Ok(entries) = std::fs::read_dir(&paths.profiles) {
             for entry in entries.flatten() {
                 if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    dirs.push(entry.path());
+                    caches.push(profiles::cef_cache(&entry.path()));
                 }
             }
         }
         let mut reaped = Vec::new();
-        for dir in dirs {
-            if self.owned.lock().await.contains_key(&dir) {
+        for cache in caches {
+            if self.owned.lock().await.contains_key(&cache) {
                 continue;
             }
-            match chromium::claim(&dir) {
-                // The claim was free: the client that owned this directory is
-                // gone. The look and the close both run UNDER the claim, so
-                // no other sweep can interleave with them - and a browser
-                // that answers the look is what the dead client left. (A
-                // second live client attaching to that browser while the
-                // claim is held is not stopped by this - it cannot claim,
-                // and attaching is not gated on the claim - but its call
-                // fails and its next one relaunches.)
+            match profiles::claim(&cache) {
+                // The claim was free: the client that owned this cache root
+                // is gone. The record names the host it left - killed if it
+                // still answers - and the ring name, which macOS does NOT
+                // release when the host dies.
                 Ok(Some(lock)) => {
-                    if chromium::verified(&dir).await.is_some() {
-                        chromium::close(&dir).await;
-                        if let Some(name) = dir.file_name().and_then(std::ffi::OsStr::to_str) {
+                    if let Some(record) = cef::spawn::read_record(&cache) {
+                        cef::spawn::end(record.pid).await;
+                        cef::osr::Ring::unlink(&record.ring);
+                        cef::spawn::remove_record(&cache);
+                        if let Some(name) = cache.file_name().and_then(std::ffi::OsStr::to_str) {
                             reaped.push(name.to_owned());
                         }
                     }
@@ -1253,7 +1533,7 @@ impl BrowserHost {
                     tauri_plugin_log::log::debug!(
                         "a browser whose client may be gone could not be claimed by the sweep \
                          (event_name browser_orphan_sweep_refused, profile {}): {why}",
-                        dir.display(),
+                        cache.display(),
                     );
                 }
             }
@@ -1398,21 +1678,6 @@ fn phone_profile_refusal(name: &str) -> String {
     )
 }
 
-/// The URL a navigation really landed on, read from the driver's own answer
-/// (its snapshot leads with `Page URL: <url>`): a redirect, or a
-/// normalisation the request never named - `example.com` against the
-/// reported `example.com/` - is caught by this rather than missed by an
-/// exact-string match against the browser's page list.
-#[cfg(desktop)]
-fn landed_url(parts: &[ReplyPart]) -> Option<String> {
-    parts.iter().find_map(|part| match part {
-        ReplyPart::Text { text } => text
-            .lines()
-            .find_map(|line| line.split_once("Page URL: ").map(|(_, url)| url.trim().to_owned())),
-        ReplyPart::Image { .. } => None,
-    })
-}
-
 /// Take the `profile` argument off a call.
 ///
 /// It chooses the profile and no driver's schema declares it, so it never
@@ -1480,10 +1745,61 @@ pub async fn browser_hide(
     host.hide(profile.as_deref()).await
 }
 
+/// Open the page the browser holds in the person's own default browser.
+///
+/// **The edge door**: IME, a rich clipboard and context menus are what the
+/// windowless surface cannot give, so a page that needs them is handed to a
+/// real browser over the same URL. It is a one-off page: what it holds does
+/// not carry back, and the session's browser keeps its own state.
+#[tauri::command]
+pub async fn browser_open_external(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+    profile: Option<String>,
+) -> Result<(), String> {
+    host.open_page_in_browser(profile.as_deref()).await
+}
+
+/// Where the page's conversation column is, in CSS pixels from the
+/// viewport's top-left, and the device pixel ratio it is drawn at. The
+/// surface is placed and sized from this; it is reported on mount and on
+/// every resize.
+#[tauri::command]
+pub async fn browser_surface_rect(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+) -> Result<(), String> {
+    host.set_surface_rect(cef::surface::Rect { x, y, width, height, scale }).await;
+    Ok(())
+}
+
 /// Whether a session has driven this client's browser, for the strip's mark.
 #[tauri::command]
 pub async fn browser_used(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<bool, String> {
     host.used().await
+}
+
+/// Whether a browser has EVER run on this cache root: Chromium writes its
+/// `Default` directory on the first launch, while a profile carrying only the
+/// seat's record has never been opened.
+#[cfg(desktop)]
+fn cef_opened(cache: &Path) -> bool {
+    cache.join("Default").is_dir()
+}
+
+/// The surface the page's column is drawing: one profile's frames, from the
+/// host behind it. The host keeps running when the surface closes.
+#[cfg(desktop)]
+#[derive(Clone)]
+pub struct OpenSurface {
+    /// The name the person opened, `None` for the shared browser.
+    pub profile: Option<String>,
+    /// The host's cache root: one surface per profile at a time.
+    pub dir: PathBuf,
+    pub host: Arc<cef::spawn::ActiveHost>,
 }
 
 /// One named profile, as the client's own browser strip draws it.
@@ -1608,13 +1924,12 @@ mod tests {
         );
     }
 
-    /// **The rows read show's predicate, not the raw marker.** A profile
-    /// directory with the headed marker and nothing answering is NOT a
-    /// window (the X-close state), and the shell's own reads must say so -
-    /// reverting either call site to `launched_windowed` passes everything
-    /// else and fails exactly here.
+    /// **The strip reads the surface, not the host.** A profile whose host is
+    /// up but whose frames are not in the column reads as no surface, and one
+    /// whose column is drawing reads as up - the two states the button's
+    /// show/hide turns on.
     #[tokio::test]
-    async fn the_rows_keep_shows_predicate_not_the_raw_marker() {
+    async fn the_strip_reads_the_surface_not_the_host() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let paths = StackPaths {
             stack: dir.path().join("stack"),
@@ -1622,24 +1937,24 @@ mod tests {
             output: dir.path().join("output"),
             profiles: dir.path().join("profiles"),
         };
-        std::fs::create_dir_all(&paths.user_data).expect("the shared dir");
-        std::fs::write(paths.user_data.join("windowed"), b"").expect("the shared marker");
         let host = BrowserHost::new(paths.clone());
         assert!(
             !host.windowed(None).await.expect("the read"),
-            "a marker with nothing answering is not a window - the shared line keeps show's rule",
+            "no surface is open before anything is shown",
         );
-
-        let named = Named::open(seat(), "hunt", &paths).expect("the open");
-        std::fs::create_dir_all(&named.dir).expect("the profile dir");
-        std::fs::write(named.dir.join("windowed"), b"").expect("the profile marker");
-        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
-        let rows = host.profiles(None).await;
-        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
         assert!(
-            !row.windowed,
-            "a profile's row keeps show's rule too - a marker with no launch is no window",
+            !host.windowed(Some("hunt")).await.expect("the read"),
+            "a named profile with no surface reads as not up",
         );
+        // A host record alone - no surface - still reads as not drawn: the
+        // record is what the boot sweep uses, never what the button reads.
+        std::fs::create_dir_all(&paths.cef_named("hunt")).expect("the cache root");
+        std::fs::write(
+            cef::spawn::record_path(&paths.cef_named("hunt")),
+            br#"{"pid":999999,"port":9999,"ring":"/forge-cef-9999"}"#,
+        )
+        .expect("the record");
+        assert!(!host.windowed(Some("hunt")).await.expect("the read"), "a record is not a surface");
     }
 
     /// A devtools endpoint that stalls the identity probe mid-request: the
@@ -1727,7 +2042,9 @@ mod tests {
                     if let Some(gate) = gate.take() {
                         let _ = gate.await;
                     }
-                    format!("{{\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}{identity}\"}}")
+                    format!(
+                        "{{\"Browser\":\"Chrome/154.0\",\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}{identity}\"}}"
+                    )
                 } else {
                     "[{\"id\":\"P1\",\"type\":\"page\",\"url\":\"https://example.com/x\"}]"
                         .to_owned()
@@ -1741,60 +2058,6 @@ mod tests {
             }
         });
         (port, in_flight, release)
-    }
-
-    /// **The strip's list does not hold the registry lock across its probes.**
-    /// The window predicate is a blocking devtools read with a seconds-long
-    /// budget, and a profile open takes the same lock: held across the probes,
-    /// one list read parks an open behind every profile it has to ask about.
-    /// The endpoint stalls the probe mid-request, so the lock is asserted at
-    /// the one moment it must be free - and a second profile with no endpoint
-    /// pins which answer lands on which row.
-    #[tokio::test]
-    async fn a_list_does_not_hold_the_registry_lock_across_its_probes() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let paths = StackPaths {
-            stack: dir.path().join("stack"),
-            user_data: dir.path().join("user-data"),
-            output: dir.path().join("output"),
-            profiles: dir.path().join("profiles"),
-        };
-        let host = Arc::new(BrowserHost::new(paths.clone()));
-
-        let identity = "/devtools/browser/9d1f-77aa";
-        let (port, in_flight, release) = stalling_devtools(identity).await;
-        let named = Named::open(seat(), "hunt", &paths).expect("the open");
-        std::fs::write(named.dir.join("windowed"), b"").expect("the windowed marker");
-        std::fs::write(named.dir.join("DevToolsActivePort"), format!("{port}\n{identity}\n"))
-            .expect("the port file");
-        let quiet = Named::open(seat(), "quiet", &paths).expect("the open");
-        {
-            let mut registry = host.named.lock().await;
-            registry.insert("hunt".to_owned(), Arc::new(named));
-            registry.insert("quiet".to_owned(), Arc::new(quiet));
-        }
-
-        let listing = tokio::spawn({
-            let host = Arc::clone(&host);
-            async move { host.profiles(None).await }
-        });
-        // A hang guard, not a deadline: the probe reaches the endpoint in
-        // milliseconds, and a run that never signals has no probe at all.
-        tokio::time::timeout(std::time::Duration::from_secs(10), in_flight)
-            .await
-            .expect("the probe reaches the endpoint")
-            .expect("the endpoint signals the request");
-        assert!(
-            host.named.try_lock().is_ok(),
-            "the list holds the registry lock across its probe: a profile open waits the probe's \
-             whole budget out",
-        );
-        release.send(()).expect("the endpoint releases");
-        let rows = listing.await.expect("the list task");
-        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
-        assert!(row.windowed, "the probe's own answer lands on the row");
-        let quiet = rows.iter().find(|row| row.name == "quiet").expect("the quiet row");
-        assert!(!quiet.windowed, "a profile with no endpoint lists no window");
     }
 
     /// **A hide waits for a launch in flight** - the same lock `show` takes,
@@ -1840,9 +2103,9 @@ mod tests {
     #[tokio::test]
     async fn starting_a_host_with_no_directories_answers_why() {
         let host = BrowserHost::unavailable("the browser stack was never vendored".to_owned());
+        let refused = host.start().await.expect_err("the ensure says why");
         assert_eq!(
-            host.start().await,
-            Err("the browser stack was never vendored".to_owned()),
+            refused, "the browser stack was never vendored",
             "the ensure says why rather than launching anything",
         );
     }
@@ -1861,12 +2124,14 @@ mod tests {
             output: dir.path().join("output"),
             profiles: dir.path().join("profiles"),
         };
-        let watched = paths.user_data.clone();
+        let watched = paths.cef_shared();
         // The setup closure's own shape, driven directly: a registered setup
         // only runs on an event loop (the mock's `run` blocks until a window
         // closes), and the actions are what this pin is about.
         let setup = move |app: &mut tauri::App<tauri::test::MockRuntime>| {
-            let host = BrowserHost::boot_browser(Ok(paths));
+            // No app handle: the pin is about what the boot launches, and a
+            // surface cannot open with nothing shown.
+            let host = BrowserHost::boot_browser(Ok(paths), None);
             app.manage(host);
             Ok::<(), Box<dyn std::error::Error>>(())
         };
@@ -1886,12 +2151,11 @@ mod tests {
         let until = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
         while tokio::time::Instant::now() < until {
             assert!(
-                !watched.join("DevToolsActivePort").exists(),
+                cef::spawn::read_record(&watched).is_none(),
                 "the boot's browser act launches nothing",
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        assert!(chromium::verified(&watched).await.is_none(), "and no browser answers for it",);
     }
 
     /// **A name that cannot be a profile is refused before any directory is
@@ -2098,7 +2362,9 @@ mod tests {
         let host = Arc::new(BrowserHost::new(paths.clone()));
         let profile_dir = paths.profiles.join("hunt");
         std::fs::create_dir_all(&profile_dir).expect("the files");
-        let launch = chromium::LaunchLock::acquire(&profile_dir).await.expect("the launch lock");
+        let cache = profiles::cef_cache(&profile_dir);
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        let launch = profiles::LaunchLock::acquire(&cache).await.expect("the launch lock");
 
         let deleting = tokio::spawn({
             let host = Arc::clone(&host);
@@ -2130,23 +2396,15 @@ mod tests {
         let host = Arc::new(BrowserHost::new(paths.clone()));
         let profile_dir = paths.profiles.join("hunt");
         std::fs::create_dir_all(&profile_dir).expect("the files");
-        // A port nobody listens on, carried by a port file old enough that
-        // the close reads it as a launch gone rather than one coming up.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("a port")
-            .local_addr()
-            .expect("the address")
-            .port();
-        let port_file = profile_dir.join("DevToolsActivePort");
-        std::fs::write(&port_file, format!("{port}\n/devtools/browser/9d1f-77aa\n"))
-            .expect("the port file");
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&port_file)
-            .expect("the port file")
-            .set_times(std::fs::FileTimes::new().set_modified(old))
-            .expect("the age");
+        // A record naming a dead host: the close finds nothing to end and
+        // must not wait on its own lock to discover it.
+        let cache = profiles::cef_cache(&profile_dir);
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        cef::spawn::write_record(
+            &cache,
+            &cef::spawn::Record { pid: 999_999, port: 9999, ring: "/forge-cef-9999".to_owned() },
+        )
+        .expect("the record");
 
         let began = tokio::time::Instant::now();
         host.delete("hunt").await.expect("the delete");
@@ -2178,10 +2436,10 @@ mod tests {
             output: dir.path().join("output"),
             profiles: dir.path().join("profiles"),
         };
-        // A file where the shared browser's directory should be: the launch
-        // cannot make its directory, so nothing spawns, and the failure is
-        // past the ensure.
-        std::fs::write(&paths.user_data, b"").expect("a file where the shared dir goes");
+        // A file where the shared host's cache root should be: the launch
+        // cannot make its directory or take its lock, so nothing spawns, and
+        // the failure is past the ensure.
+        std::fs::write(paths.cef_shared(), b"").expect("a file where the shared cache goes");
         let host = BrowserHost::new(paths.clone());
         let who = seat();
 
@@ -2194,7 +2452,7 @@ mod tests {
         // discovery before it. Both are past the ensure, which is what the
         // assertions below pin.
         assert!(
-            why.contains("cannot be made") || why.contains("no browser to drive"),
+            why.contains("cannot be made") || why.contains("cannot be opened"),
             "the call failed for some other reason: {why}",
         );
 
@@ -2205,65 +2463,8 @@ mod tests {
             "the seat's own name is recorded, its project qualifying its label",
         );
         assert!(
-            !auto.join("DevToolsActivePort").exists(),
-            "and nothing was driven through it - the browser waits for a call that names it",
-        );
-    }
-
-    /// **The carry refresh takes the launch lock.** A session call completing
-    /// while a hide is taking the marker down must not put it back: the strip
-    /// would read "hide" over an off-screen window until the next flip.
-    #[tokio::test]
-    async fn the_carry_refresh_takes_the_launch_lock() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let paths = StackPaths {
-            stack: dir.path().join("stack"),
-            user_data: dir.path().join("user-data"),
-            output: dir.path().join("output"),
-            profiles: dir.path().join("profiles"),
-        };
-        let host = Arc::new(BrowserHost::new(paths.clone()));
-        std::fs::create_dir_all(&paths.user_data).expect("the shared directory");
-        std::fs::write(paths.user_data.join("windowed"), b"https://one.example")
-            .expect("a raise marker");
-
-        // The lock a hide holds across its act, taken here in its place.
-        let held = host.launch.lock().await;
-        let refresh = {
-            let host = Arc::clone(&host);
-            let profile = paths.user_data.clone();
-            tokio::spawn(async move { host.refresh_carry(&profile, None).await })
-        };
-        // Every chance to run: it must still be waiting on the lock.
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        assert!(!refresh.is_finished(), "the refresh wrote outside the launch lock");
-        drop(held);
-        refresh.await.expect("the refresh runs once the lock is free");
-
-        // Nothing answering on the port: the refresh left the carry as the
-        // raise wrote it - the point pinned here is the lock, not the write.
-        let marker = std::fs::read_to_string(paths.user_data.join("windowed")).expect("the marker");
-        assert_eq!(
-            marker, "https://one.example",
-            "the carry stays the raise's until a window answers",
-        );
-    }
-
-    /// **The landed URL comes from the driver's own answer**: the requested
-    /// URL is not trusted - a redirect, or a normalisation (`example.com`
-    /// against the reported `example.com/`), would miss an exact match and
-    /// the wrong page would lead the carry.
-    #[test]
-    fn the_landed_url_comes_from_the_drivers_answer() {
-        let parts = vec![ReplyPart::Text {
-            text: "- Page URL: https://example.com/\n- heading \"x\"".to_owned(),
-        }];
-        assert_eq!(landed_url(&parts), Some("https://example.com/".to_owned()));
-        assert_eq!(
-            landed_url(&[ReplyPart::Text { text: "no url here".to_owned() }]),
-            None,
-            "no URL line, nothing landed",
+            cef::spawn::read_record(&profiles::cef_cache(&auto)).is_none(),
+            "and nothing was driven through it - the host waits for a call that names it",
         );
     }
 
@@ -2284,20 +2485,29 @@ mod tests {
         let named = Named::open(who.clone(), "hunt", &paths).expect("the open");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
         let hunt = paths.profiles.join("hunt");
-        host.touch(&hunt).await;
+        let cache = profiles::cef_cache(&hunt);
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        host.touch(&cache).await;
 
-        // No endpoint: a browser that is not there is not idle.
+        // No record: a host that is not there is not idle.
         assert!(
             host.idle_candidates().await.is_empty(),
             "a dead profile and the unlaunched shared browser are no candidates",
         );
 
-        // A live endpoint, no raise marker: the candidate appears, and the
-        // clock carries the seat.
+        // A live host record: the candidate appears, and the clock carries
+        // the seat.
         let identity = "/devtools/browser/idle";
         let (port, in_flight, release) = stalling_devtools(identity).await;
-        std::fs::write(hunt.join("DevToolsActivePort"), format!("{port}\n{identity}\n"))
-            .expect("the port file");
+        cef::spawn::write_record(
+            &cache,
+            &cef::spawn::Record {
+                pid: std::process::id(),
+                port,
+                ring: "/forge-cef-idle".to_owned(),
+            },
+        )
+        .expect("the record");
         let first = tokio::spawn({
             let host = Arc::clone(&host);
             async move { host.idle_candidates().await }
@@ -2311,7 +2521,7 @@ mod tests {
         let row = candidates
             .iter()
             .find(|candidate| candidate.name.as_deref() == Some("hunt"))
-            .expect("the named row with a live launch");
+            .expect("the named row with a live host");
         // **The profile's creator, and the seat the warning goes to**: the
         // seat under test is both creator and caller - no other seat can
         // drive a named profile - so what this holds is the targeting, not a
@@ -2324,8 +2534,8 @@ mod tests {
         assert!(row.touch.warned.is_none(), "a fresh touch carries no warning");
 
         let warned_at = std::time::Instant::now();
-        host.note_warned(&hunt, warned_at).await;
-        host.touch(&hunt).await;
+        host.note_warned(&cache, warned_at).await;
+        host.touch(&cache).await;
         let candidates = host.idle_candidates().await;
         let row = candidates
             .iter()
@@ -2334,10 +2544,23 @@ mod tests {
         assert!(row.touch.warned.is_none(), "a touch clears the warning");
         assert_eq!(row.touch.caller, Some(who.clone()), "and keeps the seat it had");
 
-        // Marker over the live launch: the window is up, and a raised window
-        // is never a candidate - it is the person's.
-        std::fs::write(hunt.join("windowed"), b"https://example.com/x").expect("the marker");
-        assert!(host.idle_candidates().await.is_empty(), "a raised window is in use, not idle",);
+        // The surface over the live host: the column is drawing it, so it is
+        // in use and never a candidate - it is the person's.
+        let ring = Arc::new(
+            cef::osr::Ring::create("/forge-cef-idle-surface", 64, 64).expect("a test ring"),
+        );
+        *host.surface.lock().await = Some(OpenSurface {
+            profile: Some("hunt".to_owned()),
+            dir: cache.clone(),
+            host: Arc::new(cef::spawn::ActiveHost {
+                pid: std::process::id(),
+                port,
+                ring: Arc::clone(&ring),
+                profile: cache.clone(),
+            }),
+        });
+        assert!(host.idle_candidates().await.is_empty(), "a drawn surface is in use, not idle",);
+        cef::osr::Ring::unlink("/forge-cef-idle-surface");
 
         let shared = candidates.iter().find(|candidate| candidate.name.is_none());
         assert!(shared.is_none(), "the shared browser has not launched at all");
@@ -2787,11 +3010,12 @@ mod tests {
         assert!(!row.opened, "a record-only directory has never been launched");
         assert!(!row.running, "and nothing is running behind it");
 
-        // A launch writes Chromium's own state beside the record.
-        std::fs::write(paths.profiles.join("hunt").join("Local State"), b"").expect("the state");
+        // A host launch writes Chromium's own profile under the cache root.
+        let default = profiles::cef_cache(&paths.profiles.join("hunt")).join("Default");
+        std::fs::create_dir_all(&default).expect("the profile");
         let rows = host.profiles(None).await;
         let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
-        assert!(row.opened, "a launched Chromium leaves its own state in the directory");
+        assert!(row.opened, "a launched Chromium leaves its own profile in the cache root");
     }
 
     /// **The listing is served per seat.** A seat's read answers its own rows
