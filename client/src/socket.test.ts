@@ -395,11 +395,11 @@ describe('the connection', () => {
    * Which of the two envelope shapes it takes is the client's to decide, not
    * the caller's, because the server refuses both mismatches - and it refuses
    * them before dispatching, so getting this wrong is a command that silently
-   * never runs rather than one that reports an error. All four of the names
+   * never runs rather than one that reports an error. All five of the names
    * are dispatched, because a name that fell out of the set would show up as
    * a command sent with no reply channel at all.
    */
-  it('sets reply_to from the command, and only for the four that answer', async () => {
+  it('sets reply_to from the command, and only for the five that answer', async () => {
     const { server, conn } = await connected();
 
     const plain = [
@@ -410,9 +410,10 @@ describe('the connection', () => {
       conn.dispatch({ spawn_worker: { project_key: 'proj', label: 'w1' } }),
       conn.dispatch({ despawn_worker: { project_key: 'proj', label: 'w1', force: false } }),
       conn.dispatch({ upsert_review_thread: { project: 'proj', branch: 'main' } }),
+      conn.dispatch({ delete_review_thread: { project: 'proj', branch: 'main', thread_id: 't1' } }),
       conn.dispatch({ submit_review: { project: 'proj', branch: 'main' } }),
     ];
-    await until(() => commands(server.received).length === 6, 'all six commands');
+    await until(() => commands(server.received).length === 7, 'all seven commands');
 
     const sent = commands(server.received);
     expect(plain).toEqual([null, null]);
@@ -420,8 +421,8 @@ describe('the connection', () => {
 
     const ids = sent.slice(2).map((command) => command.reply_to);
     for (const id of ids) expect(typeof id).toBe('number');
-    // Four asks, four channels: a shared id hands a caller another's answer.
-    expect(new Set(ids).size).toBe(4);
+    // Five asks, five channels: a shared id hands a caller another's answer.
+    expect(new Set(ids).size).toBe(5);
 
     // Nothing here answers them, so they are settled rather than left to
     // reject unhandled when the connection closes.
@@ -549,7 +550,7 @@ describe('the connection', () => {
     const [sent] = commands(server.received);
     // The reply is answered on the id the command itself asked to hear it on.
     if (answer === null || sent === undefined || sent.reply_to === null) {
-      throw new Error('a despawn is one of the four that answer through a reply');
+      throw new Error('a despawn is one of the five that answer through a reply');
     }
 
     // A refusal is the server's own words in the body, which for this answer
@@ -582,6 +583,81 @@ describe('the connection', () => {
     conn.close();
 
     await expect(answer).rejects.toThrow('the connection was closed');
+  });
+
+  /**
+   * **A reply the server never sends is not a caller parked forever.** An
+   * older server answers a command it does not know with an `error` frame
+   * that names no reply, so nothing resolves the pending entry; the dispatch
+   * gives up on its own bound instead of waiting for the socket to drop.
+   */
+  it('gives up on a reply the server never answers', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    // The shipping bound is ten seconds; the rule is the bound, not the number.
+    const conn = connect(server.url, undefined, 40);
+    opened.push(conn);
+    await untilStatus(conn, 'open', 'the socket to open');
+
+    const started = Date.now();
+    const answer = conn.dispatch({ spawn_worker: { project_key: 'proj', label: 'w1' } });
+    // Attached before anything else awaits, so a fast rejection is never an
+    // unhandled one.
+    const failed = expect(answer).rejects.toThrow('did not answer');
+    await until(() => commands(server.received).length === 1, 'the command to arrive');
+    // The version-skew refusal, exactly as an older server writes it: it
+    // names no reply, because the frame it could not read named none to it.
+    server.send({
+      kind: 'error',
+      what: 'client_message',
+      why: 'that is not a message this server knows',
+      seat: null,
+      dispatch_id: null,
+    });
+
+    await failed;
+    // **The injected bound is the one in force.** The shipping ten seconds
+    // would satisfy the rejection too, so only the clock pins the seam.
+    expect(Date.now() - started, 'the injected bound, not the shipping one').toBeLessThan(2_000);
+  });
+
+  /**
+   * **A despawn is exempt from the bound.** Its server path removes a
+   * worktree and reaps a branch before it answers, and that removal can run
+   * for minutes (#1922 measured 5-23 s, #1113 minutes); a bound would report
+   * a failure while the server is still deleting.
+   */
+  it('does not bound a despawn whose reply is slow', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    // The shipping bound is ten seconds; the rule is the bound, not the number.
+    const conn = connect(server.url, undefined, 40);
+    opened.push(conn);
+    await untilStatus(conn, 'open', 'the socket to open');
+
+    const answer = conn.dispatch({
+      despawn_worker: { project_key: 'proj', label: 'w1', force: false },
+    });
+    await until(() => commands(server.received).length === 1, 'the command to arrive');
+    const [sent] = commands(server.received);
+    if (answer === null || sent === undefined || sent.reply_to === null) {
+      throw new Error('a despawn is one of the commands that answer through a reply');
+    }
+    let settled = false;
+    void answer.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    // Several times the injected bound: it must still be waiting.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(settled, 'the despawn waits past the reply bound').toBe(false);
+
+    server.send({ kind: 'reply', reply_to: sent.reply_to, body: 'gone' });
+    await expect(answer).resolves.toBe('gone');
   });
 
   /**

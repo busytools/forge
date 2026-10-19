@@ -41,14 +41,6 @@ pub const GRACE_MINUTES: u64 = 10;
 /// sitting a few seconds past its bound is not a fault.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
-/// The bound one idle dispatch is given. The socket is loopback and its
-/// server answers in milliseconds; a dispatch that outlives this is a skew or
-/// a wedge the sweep must not inherit - **an error frame never resolves a
-/// pending dispatch reply** (a gap in the transport, not this loop's), so an
-/// unbounded await here would stall every later pass for the client's
-/// lifetime, silently.
-const DISPATCH_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// One profile's clock, as the host keeps it.
 #[derive(Clone, Debug)]
 pub struct Touch {
@@ -230,14 +222,28 @@ async fn sweep(bridge: &Arc<Bridge>) {
         // is closed without it consulted**.
         let seat = if candidate.name.is_some() { candidate.touch.caller.as_ref() } else { None };
         let command = warning(&candidate, seat, idle_minutes, grace_minutes, at_close);
-        let verdict = match tokio::time::timeout(DISPATCH_TIMEOUT, socket.dispatch(command, true))
-            .await
-        {
-            Ok(answer) => verdict_of(answer.ok().flatten().as_ref()),
-            Err(_) => {
+        // The transport bounds the dispatch itself, and its expiry removes the
+        // pending entry; an outer timeout would cancel the future first and
+        // leak that entry.
+        let verdict = match socket.dispatch(command, true).await {
+            Ok(answer) => verdict_of(answer.as_ref()),
+            // The transport's own bound ran out: the command went and the
+            // server never answered, which is the skew or wedge this sweep
+            // must not inherit.
+            Err(why) if why == crate::socket::NO_REPLY => {
                 tauri_plugin_log::log::warn!(
-                    "the idle warning went unanswered (event_name browser_idle_dispatch_timeout, \
-                         profile {})",
+                    "the idle warning went unanswered (event_name \
+                     browser_idle_dispatch_timeout, profile {})",
+                    candidate.name.as_deref().unwrap_or("shared"),
+                );
+                Verdict::Unanswered
+            }
+            // A connection that is down is not forge's problem: the next
+            // sweep tries again, and the profile says whose warning it was.
+            Err(why) => {
+                tauri_plugin_log::log::debug!(
+                    "the idle warning could not be sent (event_name \
+                     browser_idle_dispatch_failed, profile {}): {why}",
                     candidate.name.as_deref().unwrap_or("shared"),
                 );
                 Verdict::Unanswered
