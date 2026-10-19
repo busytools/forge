@@ -1177,12 +1177,7 @@ impl WorkerFacade for MockWorkerFacade {
         let workers = self.workers.lock();
         let mut projects: Vec<&String> = workers.keys().collect();
         projects.sort();
-        projects
-            .into_iter()
-            .filter_map(|project| workers.get(project))
-            .flatten()
-            .cloned()
-            .collect()
+        projects.into_iter().filter_map(|project| workers.get(project)).flatten().cloned().collect()
     }
 
     fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity> {
