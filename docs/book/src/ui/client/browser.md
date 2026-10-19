@@ -27,7 +27,7 @@ process is the desktop's.
 | The takeover's bar | **back to chat**, the hand-off's title, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state and the parked hand-off |
 | The feedback line | a text field and **send**: the person's words go to the agent as a prompt and the hand-off is declined | the page's own state; the prompt rides the socket |
 | The surface | the profile's page, filling the window under the bar: no window, no tab strip, no browser chrome | the host's ring, drawn by the shell over the page area |
-| The strip's row | `browser` with its profile count, the work ring while a call runs, a disc when a window is up and a flat disc once it has been driven; **show** / **hide** | the host's own rows, and the surface state |
+| The strip's row | `browser` with its profile count, the work ring while a call runs, a disc when the takeover is up and a flat disc once it has been driven; **show** / **hide** | the host's own rows, and the surface state |
 | The engine line | `the app's own Chromium` on the desktop, `the app's own WebView` on the phone | the page's own platform |
 | A named profile | its own host, its own cache root, its own logins; closed rows keep their files and can be deleted | the shell's profile list |
 | The states | `opening the browser…`, the shell's sentence when it failed, **the browser stopped answering** when a host dies under the surface, and the page's own error page when a load fails | the page's surface state, the shell's failure event, and a liveness check of the host and its endpoint |

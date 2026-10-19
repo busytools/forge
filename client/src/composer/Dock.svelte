@@ -1032,7 +1032,7 @@
       <div class="preview"><Prose text={ask.request.text} /></div>
     {:else if ask.kind === 'document_hand_off'}
       <div class="d-head">
-        <span class="tag warn"><Icon name="warn" class="ic" /> needs you</span>
+        <span class="tag warn">&#9888; needs you</span>
         <span class="q mono">document hand-off</span>
       </div>
       <!-- The resolved path verbatim: it is the document's own address, and a
@@ -1045,7 +1045,7 @@
       </div>
     {:else}
       <div class="d-head">
-        <span class="tag warn"><Icon name="warn" class="ic" /> needs you</span>
+        <span class="tag warn">&#9888; needs you</span>
         <span class="q mono">{handOffTitle}</span>
       </div>
       <!-- The reason verbatim: it is what the session needs, in its own words,

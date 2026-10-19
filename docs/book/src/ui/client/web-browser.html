@@ -185,18 +185,42 @@
 
   <h2>The states before a frame</h2>
   <div class="tile">
-    <div class="tcap"><b>opening</b> and <b>failed</b> - drawn in the page area</div>
+    <div class="tcap"><b>opening</b> - drawn in the page area</div>
     <div class="takeover" style="min-height: 0;">
       <div class="bar">
         <span class="bt d">back to chat</span>
         <span class="btitle">browser hand-off</span>
+        <span class="bacts">
+          <span class="bt">Done</span>
+          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">Not now</span>
+        </span>
       </div>
       <div class="stage" style="display:flex;align-items:center;justify-content:center;background:var(--s1)">
         <span class="mono" style="color:var(--muted)">opening the browser&hellip;</span>
       </div>
     </div>
+  </div>
+  <div class="tile">
+    <div class="tcap"><b>failed</b> - the shell's sentence, the hand-off still parked</div>
+    <div class="takeover" style="min-height: 0;">
+      <div class="bar">
+        <span class="bt d">back to chat</span>
+        <span class="btitle">browser hand-off</span>
+        <span class="bacts">
+          <span class="bt">try again</span>
+          <span class="bt">Done</span>
+          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">Not now</span>
+        </span>
+      </div>
+      <div class="stage" style="display:flex;align-items:center;justify-content:center;background:var(--s1)">
+        <span class="mono" style="color:var(--bad)">the browser did not start in time - try again</span>
+      </div>
+    </div>
     <div class="tnote">a failure draws the shell's own sentence - the port, the profile or the
-    framework - and the hand-off stays parked until Done or Not now.</div>
+    framework - and the hand-off stays parked until Done or Not now; <b>try again</b> asks the
+    shell for the surface once more.</div>
   </div>
 </div>
 </body>
