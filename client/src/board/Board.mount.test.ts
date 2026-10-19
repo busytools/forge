@@ -120,8 +120,10 @@ describe("the board's controls", () => {
     expect(acts[0]).toEqual({ task_verdict: { project: 'proj', id: 'v1', approve: true } });
 
     // The send-back carries whatever the reader typed into its own box.
+    // The field says `what to change`; the longer phrase lives in its
+    // accessible name, where a narrow card cannot truncate it (#2423 look).
     const words = document.querySelector<HTMLInputElement>(
-      'input[placeholder="what to change (sent back with it)"]',
+      'input[placeholder="what to change"][aria-label="what to change (sent back with it)"]',
     );
     if (words === null) throw new Error('the send-back box is not on the page');
     words.value = 'the rail elides wrong';
@@ -642,8 +644,12 @@ describe("the board's controls", () => {
       words.indexOf('the row subject'),
     );
     expect(
-      card?.querySelector('a[href="https://example.invalid/mock"]'),
-      'the row link is a door beside the ask',
+      card?.querySelector('a.b-ref[href="https://example.invalid/mock"]'),
+      'the row link wears the sheet link grammar, not a bare anchor',
+    ).not.toBeNull();
+    expect(
+      card?.querySelector('a.door[href="https://example.invalid/mock"]'),
+      'the artifact is a door in the card grammar',
     ).not.toBeNull();
     expect(words, 'the look names its artifact').toContain('look at');
   });
@@ -924,8 +930,12 @@ describe("the row's own page", () => {
       'the ask is the first thing the section says, not the state sentence',
     ).toBe(true);
     expect(
-      drawer?.querySelector('a[href="https://example.invalid/mock"]'),
-      'the row link is an openable door',
+      drawer?.querySelector('a.b-ref[href="https://example.invalid/mock"]'),
+      'the row link wears the sheet link grammar',
+    ).not.toBeNull();
+    expect(
+      drawer?.querySelector('a.door[href="https://example.invalid/mock"]'),
+      'the artifact is the same door control',
     ).not.toBeNull();
     expect(drawer?.textContent, 'the look names its artifact').toContain('look at');
   });

@@ -284,7 +284,7 @@
             {#each task.links as link, at (at)}
               {#if at > 0}<span class="dim"> &middot; </span>{/if}
               {#if link.target.startsWith('http')}
-                <a href={link.target} target="_blank" rel="noreferrer"
+                <a class="b-ref" href={link.target} target="_blank" rel="noreferrer"
                   >{link.label ?? link.target}</a
                 >
               {:else}
@@ -295,8 +295,11 @@
         {/if}
         {#if lookArtifact !== null}
           <div class="from">
-            look at
-            <a href={lookArtifact.href} target="_blank" rel="noreferrer">{lookArtifact.label}</a>
+            <!-- The artifact is a DOOR in the same grammar the board's wait
+                 card uses, so the two surfaces read one control. -->
+            <a class="door" href={lookArtifact.href} target="_blank" rel="noreferrer"
+              >look at <span class="nm">{lookArtifact.label}</span></a
+            >
           </div>
         {/if}
         {#if waitOnUser(task)}
@@ -324,6 +327,7 @@
                 data-editor="board"
                 type="text"
                 placeholder="what to change"
+                aria-label="what to change (sent back with it)"
                 bind:value={sendBack}
                 onkeydown={(event: KeyboardEvent) => {
                   // **Enter is the box's own action** (Ved, 2026-10-15): the

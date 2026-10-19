@@ -122,11 +122,14 @@ on the wait's own `detail` where it states one, else the row's `detail` - a
 look parks with no wait detail, and its ask is the row's own words - and only
 a seeded or legacy wait with neither falls back to the state's sentence ("A
 decision is waiting on you", "This row is finished and waits on your
-approval"). The row's links follow the ask as doors, and a look names the
-artifact it points at (`look at <link>`) where the row carries a followable
-PR or path. A good ask says what the question is, why it needs the user, and
-links the thing to look at; a bare "waiting on you" is a card with no
-question on it.
+approval"). The row's links follow the ask as references in the sheet's own
+link grammar - the app's link colour with an underline set off the text, and
+a fuller rule under the pointer; no bare anchor reaches the strip, so none
+draws the browser's purple. In a look the artifact is its own door,
+`look at <name>`, wearing the same pill grammar as `approve` and `send back`
+rather than sitting in the sentence as another link. A good ask says what
+the question is, why it needs the user, and links the thing to look at; a
+bare "waiting on you" is a card with no question on it.
 
 The links come off the row's own list: a URL follows in a new tab under its
 label, and a path or a branch draws as text rather than a dead anchor.

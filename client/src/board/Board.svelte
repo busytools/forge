@@ -584,7 +584,9 @@
                 {#each row.links as link, at (at)}
                   {#if at > 0}<span> &middot; </span>{/if}
                   {#if link.href !== null}
-                    <a href={link.href} target="_blank" rel="noreferrer">{link.label}</a>
+                    <a class="b-ref" href={link.href} target="_blank" rel="noreferrer"
+                      >{link.label}</a
+                    >
                   {:else}
                     <span>{link.label}</span>
                   {/if}
@@ -593,8 +595,10 @@
             {/if}
             {#if row.artifact !== null}
               <div class="b-detail">
-                look at <a href={row.artifact.href} target="_blank" rel="noreferrer"
-                  >{row.artifact.label}</a
+                <!-- The artifact is a DOOR in the card's own control grammar,
+                     not a bare anchor in a sentence. -->
+                <a class="door" href={row.artifact.href} target="_blank" rel="noreferrer"
+                  >look at <span class="nm">{row.artifact.label}</span></a
                 >
               </div>
             {/if}
@@ -622,7 +626,8 @@
                   class="b-in"
                   data-editor="board"
                   type="text"
-                  placeholder="what to change (sent back with it)"
+                  placeholder="what to change"
+                  aria-label="what to change (sent back with it)"
                   bind:value={sendBackWords[row.id]}
                 />
                 <button
