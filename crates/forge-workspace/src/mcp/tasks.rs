@@ -143,6 +143,10 @@ impl Tool for Create {
          and the only required field; `active_form` is the in-progress wording (\"Adding tests\" \
          for \"Add tests\"), shown while the task is running. `owner` is the label of the session \
          holding it - a worker's label, or \"lead\" - and omitting it leaves the task unclaimed. \
+         A lead creating a row for a worker assigns it at creation: the worker's label in \
+         `owner`, and the kick says not to claim it. A row left in the lead's own hands \
+         refuses the worker's `tasks__claim` while the lead is live, and is chased as having \
+         no live owner once the lead goes. \
          `parent` names another task in the same project this one belongs under, `estimate` a \
          duration, `rank` the queue order, `verify` whether completion waits on the user, \
          `links` the references it carries (issues, PRs, specs, paths), `detail` free prose. \
@@ -616,8 +620,9 @@ impl Tool for Claim {
          full task id or any unique prefix of one; an exact id wins over any longer id that \
          starts with it, and a prefix matching more than one row is refused with the matching \
          rows named. Refused when a live seat holds the row (named), when it is not pending, or \
-         when you already have a row in progress: one in progress per worker. Returns the \
-         claimed record."
+         when you already have a row in progress: one in progress per worker. Claiming is for \
+         unassigned rows: a row a lead created for you already names you as `owner`, so work \
+         it without claiming. Returns the claimed record."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1441,6 +1446,41 @@ mod tests {
             ),
             "the verify property owes the mint where the caller sets it: {verify}",
         );
+    }
+
+    /// The assign-at-spawn path is shipped text (#2416): a lead creating
+    /// a row for a worker assigns it at creation and says in the kick not
+    /// to claim; claiming is for unassigned rows. Nothing else said so -
+    /// a worker met the refusal before it met the rule.
+    #[test]
+    fn the_create_and_claim_descriptions_state_the_assign_at_spawn_pattern() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let create = Create { facade: facade.clone(), slot: slot.clone() };
+        let claim = Claim { facade, slot };
+        for clause in [
+            "A lead creating a row for a worker assigns it at creation",
+            "the kick says not to claim it",
+            "refuses the worker's `tasks__claim` while the lead is live",
+            "chased as having no live owner once the lead goes",
+        ] {
+            assert!(
+                create.description().contains(clause),
+                "tasks__create does not state the pattern ({clause}): {}",
+                create.description(),
+            );
+        }
+        for clause in [
+            "Claiming is for unassigned rows",
+            "a row a lead created for you already names you as `owner`",
+            "work it without claiming",
+        ] {
+            assert!(
+                claim.description().contains(clause),
+                "tasks__claim does not state the pattern ({clause}): {}",
+                claim.description(),
+            );
+        }
     }
 
     #[tokio::test]
