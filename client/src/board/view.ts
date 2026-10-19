@@ -192,19 +192,31 @@ export function fmtSecs(secs: number): string {
   return `${secs}s`;
 }
 
+/**
+ * Whether a row's wait is the READER's: a decision, or a look park on a row
+ * carrying its own `verify: 'user'`. The gate is minted on the row, never
+ * inherited from its epic (#2423), so a verification wait an inherited gate
+ * left behind is a plain wait, not an ask on the reader.
+ */
+function waitOnUser(task: Task): boolean {
+  const wait = task.waiting_on;
+  if (wait === null) return false;
+  return wait.verification ? task.verify === 'user' : wait.kind === 'decision';
+}
+
 /** The chips a row's marks and its wait imply, in reading order. */
 function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardView['chips'] {
   const chips: BoardCardView['chips'] = [];
   if (task.waiting_on !== null) {
     const wait = task.waiting_on;
     chips.push(
-      wait.verification
+      waitOnUser(task)
         ? { label: 'waiting on you', tone: 'warn' }
-        : wait.kind === 'decision'
-          ? { label: 'waiting on you', tone: 'warn' }
-          : wait.kind === 'dependency'
-            ? { label: `on ${wait.on ?? 'another row'}`, tone: 'warn' }
-            : { label: 'waiting on a resource', tone: 'warn' },
+        : wait.kind === 'dependency'
+          ? { label: `on ${wait.on ?? 'another row'}`, tone: 'warn' }
+          : wait.kind === 'resource'
+            ? { label: 'waiting on a resource', tone: 'warn' }
+            : { label: 'waiting', tone: 'warn' },
     );
     if (marks.waiting_too_long)
       chips.push({ label: `waiting ${fmtSecs(updatedSecsAgo)}`, tone: 'bad' });
@@ -350,9 +362,7 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
   }
   for (const lane of lanes) lane.count = lane.cards.length;
   const waiting = ordered
-    .filter(
-      (entry) => entry.task.status === 'waiting' && entry.task.waiting_on?.kind === 'decision',
-    )
+    .filter((entry) => entry.task.status === 'waiting' && waitOnUser(entry.task))
     .map((entry) => ({
       id: entry.task.id,
       subject: entry.task.subject,

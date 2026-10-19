@@ -25,7 +25,7 @@ reader doing anything.
 |---|---|---|
 | Top bar | `back`, the project's name with its own read (`N waiting on you`, `N rows`, `N running`), `done` | the route and the snapshot |
 | Seats | one chip per seat this project holds, linking to its session page; a card dropped on one assigns it | `agents` filtered to the project |
-| Waiting on you | the rows whose wait is a decision: the verify gate (`approve`, a words box, `send back`) or a worker's question (an answer box). A root whose children are not all done draws the count and the send-back instead of `approve`, because a row closes only when its children do | `waiting_on` with `kind: decision`, and the row's `rollup` |
+| Waiting on you | the rows whose wait is a decision: the verify gate (`approve`, a words box, `send back`) on a row minted `verify: user`, or a worker's question (an answer box). A root whose children are not all done draws the count and the send-back instead of `approve`, because a row closes only when its children do | `waiting_on` with `kind: decision` (a verification park only where the row's own `verify` is `user`), and the row's `rollup` |
 | Lanes | every card, in its state's lane, with the grown groups folded - the finished ones to their five most recent, Backlog to its ten | `projects[].rows` |
 | Create | a subject box, an epic picker and `+ add`, which files the row at the queue's end | `task_create` |
 
@@ -92,9 +92,10 @@ The chips are the server's derived marks, named in words:
 
 | Chip | Tone | Means |
 |---|---|---|
-| `waiting on you` | warn | a decision wait, or the task's verify gate |
+| `waiting on you` | warn | a decision wait, or a look park on a row minted `verify: user` |
 | `on <row>` | warn | waiting on another row's completion |
 | `waiting on a resource` | warn | waiting on something outside the board |
+| `waiting` | warn | a verification wait whose row carries no own gate: an inherited park, left behind by the old rule |
 | `waiting <3h>` | bad | the wait has outlived the threshold |
 | `overdue` | bad | worked time has crossed the estimate |
 | `no movement <5h>` | dim | untouched, and nothing is waiting |

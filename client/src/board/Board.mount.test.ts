@@ -109,6 +109,7 @@ describe("the board's controls", () => {
     const waiting = (id: string, verification: boolean) =>
       row(
         task(id, `subject ${id}`, 'waiting', {
+          verify: verification ? 'user' : null,
           waiting_on: { kind: 'decision', detail: 'the words', on: null, verification },
         }),
       );
@@ -558,6 +559,7 @@ describe("the board's controls", () => {
       wireWith([
         row(
           task('epic', 'the epic', 'waiting', {
+            verify: 'user',
             waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
           }),
           { rollup: [2, 4] },
@@ -589,6 +591,7 @@ describe("the board's controls", () => {
         row(
           task('kid', 'a child', 'waiting', {
             parent: 'root',
+            verify: 'user',
             waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
           }),
           { rollup: [0, 1] },
@@ -605,6 +608,7 @@ describe("the board's controls", () => {
       wireWith([
         row(
           task('t1', 'a row', 'waiting', {
+            verify: 'user',
             waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
           }),
         ),
@@ -976,6 +980,7 @@ describe("the row's own page", () => {
   const gated = (open: TaskStatus): BoardRow[] => [
     row(
       task('e1', 'the epic', 'waiting', {
+        verify: 'user',
         waiting_on: { kind: 'decision', detail: 'the words', on: null, verification: true },
       }),
     ),
