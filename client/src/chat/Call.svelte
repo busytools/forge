@@ -139,6 +139,7 @@
   function textOf(piece: RunPiece): string {
     if (piece.kind === 'text') return piece.text;
     if (piece.kind === 'error') return piece.message;
+    if (piece.kind === 'omitted') return omittedText(piece.bytes);
     // Truthy rather than non-null, matching the image arm's own drawing: a
     // mime the wire sent as an empty string draws no separator after it.
     return piece.mime ? `image \u{b7} ${piece.mime}` : 'image';
@@ -748,6 +749,11 @@
         <div class="m">{piece.message}</div>
         {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
+    {:else if piece.kind === 'omitted'}
+      <!-- The size a served page left out, drawn in the marks line's own
+           style: the same font and size as the figures under a diff, not a
+           second kind of drawing (#2374). -->
+      <div class="patchline"><span class="patchmark">{omittedText(piece.bytes)}</span></div>
     {:else if asProse}
       <Prose text={stripEscapes(textOf(piece))} preserveLines />
     {:else if mcpParts(call.name) !== null || isBrowserTool(call.name)}

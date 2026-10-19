@@ -31,7 +31,9 @@ export type CallBody =
   | { kind: 'error'; message: string; detail: string }
   | { kind: 'diff'; old: string; new: string }
   | { kind: 'hunk'; header: string; lines: HunkLine[] }
-  | { kind: 'image'; mime: string | null; uri: string | null };
+  | { kind: 'image'; mime: string | null; uri: string | null }
+  /** The bytes a served page left out of a record the row would have read (#2374). */
+  | { kind: 'omitted'; bytes: number };
 
 /** One line of a hunk: context, removed, or added, with the number it holds on each side. */
 export interface HunkLine {
@@ -187,7 +189,13 @@ export function opensByDefault(name: string, body: CallBody[], decision: Decisio
   // point of the call, and a closed row would say only that something was
   // asked. The distribution's own bound keeps it safe - a choice tops out at
   // 255 options, far under the diff bound above.
-  return decision !== null || (isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES);
+  // A capped record opens for the same reason: the omission is the body, and
+  // a closed row would hide the one fact the row exists to say (#2374).
+  return (
+    decision !== null ||
+    body.some((piece) => piece.kind === 'omitted') ||
+    (isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES)
+  );
 }
 
 /** The most diff rows a mutation's row draws without being asked. */
@@ -488,14 +496,20 @@ export function omittedText(bytes: number): string {
  * What a mutation's body draws: the CLI's hunks where the result carries them,
  * and the call's own two sides where it does not.
  *
- * **An omitted record leaves the body to the call's input and names its size
- * on the marks line** (#2374): the row draws what it can still read - the
+ * **An omitted record leaves an edit's body to the call's input and names its
+ * size on the marks line** (#2374): the row draws what it can still read - the
  * edit's own two sides - and `MutationMarks.omitted` carries the bytes the
  * served page left out, so the marker reads as one more figure beside
- * `1 hunk · +1 -1` rather than as a body of its own.
+ * `1 hunk · +1 -1` rather than as a body of its own. A capped question has no
+ * patch to draw, so its body carries the omission alone and the row opens on
+ * it.
  */
 function mutationBody(name: string, input: unknown, record: unknown): CallBody[] {
-  if (!isEdit(name)) return [];
+  if (!isEdit(name)) {
+    const omitted = omittedRecord(record);
+    if (omitted === null || name.toLowerCase() !== 'askuserquestion') return [];
+    return [{ kind: 'omitted', bytes: omitted }];
+  }
   const hunks = hunksOf(record);
   return hunks.length > 0 ? hunks : diffsOf(name, input);
 }

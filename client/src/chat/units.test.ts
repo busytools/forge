@@ -313,11 +313,11 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(units)[1], 'and that call is the unit in the middle').toBe('question');
   });
 
-  it('keeps a capped question as its card, glyph and question intact', () => {
+  it('draws a capped question as its own row, opening on the omission', () => {
     // The served page caps a frame's structured record, and a question's
-    // answers live in it: the card has no answers to read, so it draws the
-    // question it asked with the omission named on its marks line, rather
-    // than falling back to a plain tool row (#2374).
+    // answers live in it: the card has no answers to read, so the row draws as
+    // a leaf - titled by the question it asked, wearing the question glyph,
+    // and opening on the size the page left out (#2374).
     const question = [
       said([
         use('toolu_q', 'AskUserQuestion', {
@@ -330,14 +330,17 @@ describe('one turn folded into the units a view draws', () => {
     ];
 
     const units = fold(question);
-    expect(kinds(units), 'the card still draws').toEqual(['question']);
-    const card = units[0];
-    if (card?.kind !== 'question') throw new Error('expected a question unit');
-    expect(
-      card.asked.map((pair) => pair.question),
-      'the question it asked',
-    ).toEqual(['Which one?']);
-    expect(card.omitted, 'and the size the page left out').toBe(5_200_000);
+    expect(kinds(units), 'the row still draws').toEqual(['leaves']);
+    const [row] = callsOf(units[0]);
+    expect(row?.leaf.title, 'titled by the question it asked').toBe('Which one?');
+    expect(row?.leaf.row, 'and wearing the question glyph').toEqual({
+      kind: 'family',
+      family: 'question',
+    });
+    expect(row?.leaf.body, 'opening on the size the page left out').toContainEqual({
+      kind: 'omitted',
+      bytes: 5_200_000,
+    });
   });
 
   it('keeps a peer message from closing the calls around it, as rows of one list', () => {

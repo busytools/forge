@@ -1,6 +1,5 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
-  import { omittedText } from './leaves';
   import type { AnsweredQuestion } from './units';
 
   /**
@@ -10,14 +9,8 @@
    * answers with a right arrow because the view this client replaced had
    * nothing else to draw with, and it reads as punctuation beside the icons on
    * every other row.
-   *
-   * `omitted` is the size of an answers record the served page left out
-   * (#2374): the question keeps the glyph and the words it asked, and the
-   * marker under it names what is missing in the diff's own marks line rather
-   * than a second kind of drawing.
    */
-  let { asked = [], omitted = null }: { asked?: AnsweredQuestion[]; omitted?: number | null } =
-    $props();
+  let { asked = [] }: { asked?: AnsweredQuestion[] } = $props();
 </script>
 
 {#each asked as pair, at (at)}
@@ -44,6 +37,3 @@
     {/if}
   </div>
 {/each}
-{#if omitted !== null}
-  <div class="patchline"><span class="patchmark">{omittedText(omitted)}</span></div>
-{/if}

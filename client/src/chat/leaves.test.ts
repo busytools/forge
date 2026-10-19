@@ -644,11 +644,34 @@ describe('what one hunk line costs to read', () => {
       'and the marker is not a body piece of its own',
     ).toBe(false);
 
+    // **A capped question has no patch to draw**, so its body is the omission
+    // alone and the row opens on it.
+    const question = leafOf(
+      't2',
+      'AskUserQuestion',
+      { questions: [{ question: 'Which?', options: [{ label: 'A' }] }] },
+      answered('User has answered your questions: Which?="A"'),
+      omitted,
+    );
+    expect(question.body, 'the body carries the size').toContainEqual({
+      kind: 'omitted',
+      bytes: 5_200_000,
+    });
+    expect(question.title, 'and the row says the question it asked').toBe('Which?');
+    expect(
+      opensByDefault(question.name, question.body, question.decision),
+      'opening on the omission',
+    ).toBe(true);
+
     // **A call that never reads the record draws no marker**: its visible
     // result is the whole of what it shows, so an omitted record changes
     // nothing on the row (#2374).
     const bash = leafOf('t3', 'Bash', { command: 'ls' }, answered('ok'), omitted);
     expect(bash.mutation, 'a call that draws no diff carries no marks').toBeNull();
+    expect(
+      bash.body.some((part) => part.kind === 'omitted'),
+      'a call that never reads the record says nothing about it',
+    ).toBe(false);
   });
 
   /** The marker's figure reads in the unit the size belongs to. */

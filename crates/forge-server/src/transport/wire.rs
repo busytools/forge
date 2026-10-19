@@ -797,24 +797,43 @@ fn turn_wire(
 const DRAWN_RECORD_KEYS: [&str; 4] = ["structuredPatch", "userModified", "answers", "annotations"];
 
 /// What the cap did to one served record, for the log line beside it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct RecordCap {
     /// The record's size before the cap saw it.
     pub bytes: usize,
-    /// Whether the drawn keys fit and were kept, or the bare marker replaced it.
-    pub reduced: bool,
+    /// The keys the served record kept, empty when the marker replaced it.
+    pub kept: String,
+}
+
+/// The record reduced to `keys`, or `None` when it holds none of them.
+fn reduced_to(record: &Value, keys: &[&str]) -> Option<Value> {
+    let held = record.as_object()?;
+    let mut kept = serde_json::Map::new();
+    for key in keys {
+        if let Some(value) = held.get(*key) {
+            kept.insert((*key).to_owned(), value.clone());
+        }
+    }
+    (!kept.is_empty()).then_some(Value::Object(kept))
+}
+
+/// Whether a value serialises into the cap.
+fn fits(record: &Value, cap: usize) -> bool {
+    serde_json::to_string(record).is_ok_and(|text| text.len() <= cap)
 }
 
 /// Bound one served `tool_use_result` to `cap` bytes (#2374).
 ///
-/// **The record is REDUCED before it is dropped.** A Write update carries the
-/// whole file in `content`/`originalFile`, which no client reads, so keeping
-/// the drawn keys leaves the hunks intact and the page bounded. The bare
-/// marker is the fallback for a record whose drawn keys alone are over the
-/// cap; `userModified` rides it because the row's outside-edit mark reads it.
+/// **The record is REDUCED before it is dropped, and the reduction is
+/// staged**: the drawn keys together first, then the one key that carries the
+/// row's own drawing - a question's `answers`, an edit's `structuredPatch`.
+/// A question whose typed notes are what pushed it over keeps its answer and
+/// loses only the notes, so it draws as the card it was, exactly as the live
+/// frame does. The bare marker is the last resort; `userModified` rides it
+/// because the row's outside-edit mark reads it.
 ///
-/// `Some` says the record was over the cap, and how it was bounded, so the
-/// caller can log what the served page left out.
+/// `Some` says the record was over the cap, and what it kept, so the caller
+/// can log what the served page left out.
 pub(crate) fn cap_tool_record(record: &mut Value, cap: usize) -> Option<RecordCap> {
     if cap == usize::MAX {
         return None;
@@ -826,27 +845,27 @@ pub(crate) fn cap_tool_record(record: &mut Value, cap: usize) -> Option<RecordCa
         return None;
     }
     let bytes = text.len();
-    let reduced = record.as_object().and_then(|held| {
-        let mut kept = serde_json::Map::new();
-        for key in DRAWN_RECORD_KEYS {
-            if let Some(value) = held.get(key) {
-                kept.insert(key.to_owned(), value.clone());
-            }
+    let stages: [&[&str]; 3] = [&DRAWN_RECORD_KEYS, &["answers"], &["structuredPatch"]];
+    for keys in stages {
+        let Some(reduced) = reduced_to(record, keys) else {
+            continue;
+        };
+        if !fits(&reduced, cap) {
+            continue;
         }
-        let reduced = Value::Object(kept);
-        let fits = serde_json::to_string(&reduced).is_ok_and(|text| text.len() <= cap);
-        (fits && reduced.as_object().is_some_and(|held| !held.is_empty())).then_some(reduced)
-    });
-    if let Some(reduced) = reduced {
+        let kept = reduced
+            .as_object()
+            .map(|held| held.keys().cloned().collect::<Vec<_>>().join(","))
+            .unwrap_or_default();
         *record = reduced;
-        return Some(RecordCap { bytes, reduced: true });
+        return Some(RecordCap { bytes, kept });
     }
     let mut marker = serde_json::json!({ "omitted": true, "bytes": bytes });
     if record.get("userModified").and_then(Value::as_bool) == Some(true) {
         marker["userModified"] = Value::Bool(true);
     }
     *record = marker;
-    Some(RecordCap { bytes, reduced: false })
+    Some(RecordCap { bytes, kept: String::new() })
 }
 
 /// Say what the cap did to an executed call's record (#2374).
@@ -854,14 +873,15 @@ pub(crate) fn cap_tool_record(record: &mut Value, cap: usize) -> Option<RecordCa
 /// Debug, because a bounded page is forge working as intended rather than a
 /// problem of its own - and named by seat and call, so "where did this payload
 /// go" is answered by one line rather than by a reproduction.
-fn log_record_cap(seat: &SessionSlot, id: Option<&str>, cap: usize, report: RecordCap) {
+fn log_record_cap(seat: &SessionSlot, id: Option<&str>, cap: usize, report: &RecordCap) {
     tracing::debug!(
         event_name = "tool_record_capped",
         slot = %seat.display(),
         tool_use_id = id.unwrap_or(""),
         bytes = report.bytes,
         cap,
-        disposition = if report.reduced { "reduced" } else { "omitted" },
+        kept = %report.kept,
+        disposition = if report.kept.is_empty() { "omitted" } else { "reduced" },
         "a served page bounded an executed tool call's record; the call ran and the transcript \
          keeps the whole record, and [server] tool_record_cap_kb = 0 serves it whole",
     );
@@ -897,7 +917,7 @@ pub(crate) fn cap_tool_records(turns: &mut [TurnWire], cap: usize, seat: &Sessio
             if let Some(result) = frame.get_mut("tool_use_result")
                 && let Some(report) = cap_tool_record(result, cap)
             {
-                log_record_cap(seat, id.as_deref(), cap, report);
+                log_record_cap(seat, id.as_deref(), cap, &report);
             }
         }
     }
@@ -913,7 +933,7 @@ pub(crate) fn cap_message_record(msg: &mut Message, cap: usize, seat: &SessionSl
             _ => None,
         });
         if let Some(report) = cap_tool_record(record, cap) {
-            log_record_cap(seat, id.as_deref(), cap, report);
+            log_record_cap(seat, id.as_deref(), cap, &report);
         }
     }
 }
@@ -3340,7 +3360,10 @@ mod tests {
             "userModified": true,
         });
         let report = cap_tool_record(&mut record, 64 * 1024).expect("the record is over the cap");
-        assert!(report.reduced, "the drawn keys fit, so the record was reduced");
+        assert_eq!(
+            report.kept, "structuredPatch,userModified",
+            "the drawn keys fit, so the record was reduced to them",
+        );
         assert_eq!(record["structuredPatch"], patch, "the drawn patch survives the cap: {record}");
         assert_eq!(record["userModified"], true, "and the outside-edit mark with it: {record}");
         assert!(record.get("content").is_none(), "the unread whole file is dropped: {record}");
@@ -3369,6 +3392,97 @@ mod tests {
         assert!(record.get("omitted").is_none(), "nothing was omitted: {record}");
     }
 
+    /// **A question whose notes are what pushed it over keeps its answer**
+    /// (#2374): the drawn keys do not fit together, so the reduction keeps
+    /// `answers` alone and the live and transcript pages draw the same card.
+    #[test]
+    fn a_question_over_the_cap_keeps_its_answer_and_drops_the_notes() {
+        let mut record = serde_json::json!({
+            "answers": {"Which one?": "the second"},
+            "annotations": {"Which one?": {"notes": "x".repeat(100_000)}},
+        });
+        let report = cap_tool_record(&mut record, 64 * 1024).expect("the record is over the cap");
+        assert_eq!(
+            record["answers"]["Which one?"], "the second",
+            "the answer survives the cap: {record}",
+        );
+        assert!(record.get("annotations").is_none(), "the notes are dropped: {record}");
+        assert_eq!(report.kept, "answers", "and the log says what was kept");
+    }
+
+    /// **A capped record is logged against the call it capped** (#2374): the
+    /// seat, the call's id, the record's own size, the cap and what survived,
+    /// so "where did this payload go" is answered by one line. Both entry
+    /// points are pinned, and a record under the cap logs nothing.
+    #[test]
+    fn a_capped_record_is_logged_with_its_seat_call_and_size() {
+        use crate::test_support::logged;
+
+        let seat = fixture_seat();
+        let record = serde_json::json!({
+            "structuredPatch": [
+                {"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+                 "lines": ["-one", format!("+{}", "x".repeat(100_000))]}
+            ],
+            "userModified": true,
+        });
+        let bytes = serde_json::to_string(&record).expect("serialises").len();
+        let mut turns = vec![TurnWire {
+            key: None,
+            messages: vec![serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_edit", "content": "ok"}
+                ]},
+                "tool_use_result": record.clone(),
+            })],
+        }];
+        let events = logged(|| cap_tool_records(&mut turns, 64 * 1024, &seat));
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::DEBUG
+                    && fields.contains(r#"event_name="tool_record_capped""#)
+                    && fields.contains(&format!("slot={}", seat.display()))
+                    && fields.contains(r#"tool_use_id="toolu_edit""#)
+                    && fields.contains(&format!("bytes={bytes}"))
+                    && fields.contains("cap=65536")
+                    && fields.contains(r#"disposition="omitted""#)
+            }),
+            "the page's cap is recorded against the call it capped: {events:?}",
+        );
+
+        // The live path has its own call site, so dropping one and keeping the
+        // other must not read green.
+        let live = |record: &Value| -> Message {
+            serde_json::from_value(serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_live", "content": "ok"}
+                ]},
+                "session_id": "s1",
+                "tool_use_result": record.clone(),
+            }))
+            .expect("the frame decodes")
+        };
+        let mut msg = live(&record);
+        let events = logged(|| cap_message_record(&mut msg, 64 * 1024, &seat));
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::DEBUG
+                    && fields.contains(r#"event_name="tool_record_capped""#)
+                    && fields.contains(r#"tool_use_id="toolu_live""#)
+            }),
+            "the live path records its own cap: {events:?}",
+        );
+
+        let mut under = live(&serde_json::json!({"payload": "x"}));
+        let events = logged(|| cap_message_record(&mut under, 64 * 1024, &seat));
+        assert!(
+            events.is_empty(),
+            "a record under the cap says nothing, and so logs nothing: {events:?}",
+        );
+    }
+
     /// **A record exactly at the cap crosses whole**: the bound is `<=`, so a
     /// page does not mark a record it fully carries (#2374).
     #[test]
@@ -3383,7 +3497,7 @@ mod tests {
         assert_eq!(at, record, "a record at the cap is served as it is");
         let mut over = record.clone();
         let report = cap_tool_record(&mut over, exact - 1).expect("one byte over is capped");
-        assert!(!report.reduced, "the drawn keys alone are over, so the marker replaced it");
+        assert_eq!(report.kept, "", "nothing drawable fits, so the marker replaced it");
         assert_eq!(report.bytes, exact, "the log line carries the record's own size");
         assert_eq!(over["omitted"], true, "one byte over and it is marked: {over}");
     }

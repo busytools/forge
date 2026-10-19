@@ -157,7 +157,7 @@
           {:else if unit.kind === 'leaves'}
             <Leaves rows={unit.rows} turns={turns ?? [turn]} {onreadoutput} />
           {:else if unit.kind === 'question'}
-            <Card asked={unit.asked} omitted={unit.omitted} />
+            <Card asked={unit.asked} />
           {:else if unit.kind === 'notice'}
             <Notice notice={unit.notice} />
           {:else if unit.kind === 'skill'}

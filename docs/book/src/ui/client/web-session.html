@@ -1935,13 +1935,15 @@ Every call, message and thought draws on its own row, in the order it arrived.</
             </div>
           </details>
 
-          <!-- A question whose answers the page could not carry keeps its
-               card: the question and its own glyph, then the omission in the
-               diff's marks line (#2374). -->
-          <div class="card">
-            <div class="q"><svg class="ic qm"><use href="#i-question"/></svg>Which colour do you prefer?</div>
-          </div>
-          <div class="patchline"><span class="patchmark">omitted, 5.0 MB</span></div>
+          <!-- A question whose answers the page could not carry draws as its
+               own row: the question glyph, the question it asked, and a body
+               that opens on the omission in the diff's marks line (#2374). -->
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-question"/></svg><span class="tn">Which colour do you prefer?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="patchline"><span class="patchmark">omitted, 5.0 MB</span></div>
+            </div>
+          </details>
 
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-square-terminal"/></svg><span class="tn">run the full workspace gate, then the feature-config build</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
