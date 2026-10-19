@@ -30,7 +30,7 @@ process is the desktop's.
 | The strip's row | `browser` with its profile count, the work ring while a call runs, a disc when a window is up and a flat disc once it has been driven; **show** / **hide** | the host's own rows, and the surface state |
 | The engine line | `the app's own Chromium` on the desktop, `the app's own WebView` on the phone | the page's own platform |
 | A named profile | its own host, its own cache root, its own logins; closed rows keep their files and can be deleted | the shell's profile list |
-| The states | `opening the browser…`, the shell's sentence when it failed, and the page's own error page when a load fails | the page's surface state |
+| The states | `opening the browser…`, the shell's sentence when it failed, **the browser stopped answering** when a host dies under the surface, and the page's own error page when a load fails | the page's surface state, the shell's failure event, and a liveness check of the host and its endpoint |
 | A refusal | the shell's own words: the profile another seat holds, no free port, the framework missing, the host not answering | the command's rejection |
 
 ## The rules
