@@ -3560,47 +3560,27 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
-   * The issue's fresh-connect ordering: a second reader attaches after the
-   * continuation has joined, and its page carries the turn as it stands - one
-   * row, the continuation inside it. A client that opened a row of its own for
-   * the continuation would draw it twice from the same page.
+   * The issue's fresh-connect ordering: a second reader attaches, its page
+   * stops before the continuation, and the continuation then arrives as a
+   * live frame while the seat says a turn is in flight. It joins the settled
+   * turn the page carried, so the fresh client draws one row - a client that
+   * opened a row of its own for it would draw the CLI's one turn twice, which
+   * is what this fails against on main.
    */
   it('keeps the continuation in one row when a second client attaches', () => {
     const server = fakeConnection();
-    const chat = new Chat(server.connection, LEAD);
-    const stop = chat.start();
+    const first = new Chat(server.connection, LEAD);
+    const stopFirst = first.start();
     server.send(page([turn('t1', 'first')], null));
-    server.update({ chat_appended: { key: LEAD, msg: typed('do the thing') } });
-    server.update({ chat_appended: { key: LEAD, msg: said('worked on it') } });
-    server.update({ chat_appended: { key: LEAD, msg: ended() } });
-    server.update({
-      chat_appended: { key: LEAD, msg: forgedUnder('from forge/gap-timings', 'forge_prompt_1') },
-    });
-    server.send(
-      page(
-        [
-          {
-            key: null,
-            messages: [
-              typed('do the thing'),
-              said('worked on it'),
-              ended(),
-              forgedUnder('from forge/gap-timings', 'forge_prompt_1'),
-            ],
-          },
-        ],
-        null,
-      ),
-    );
-    server.update({ chat_appended: { key: LEAD, msg: said('carried on') } });
 
-    // A second reader attaches: its own page is the conversation the store
-    // holds, with the continuation in the turn.
+    // The second reader attaches and its page is the turn as the store holds
+    // it at that moment: the settled turn, stopped before the continuation.
     const second = new Chat(server.connection, LEAD);
     const stopSecond = second.start();
     server.send(
       page(
         [
+          turn('t1', 'first'),
           {
             key: null,
             messages: [
@@ -3608,7 +3588,6 @@ describe('the conversation the chat draws', () => {
               said('worked on it'),
               ended(),
               forgedUnder('from forge/gap-timings', 'forge_prompt_1'),
-              said('carried on'),
             ],
           },
         ],
@@ -3616,12 +3595,22 @@ describe('the conversation the chat draws', () => {
       ),
     );
 
+    // The seat is still running the continued turn, and the continuation
+    // reaches the fresh client as a live frame.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+    server.update({ chat_appended: { key: LEAD, msg: said('carried on') } });
+
     const rows = get(second.value).turns;
     expect(
       rows.filter((row) => JSON.stringify(row.messages).includes('carried on')),
-      'one row on a fresh connect',
+      'one row on the fresh client',
     ).toHaveLength(1);
-    stop();
+    expect(rows, 'and no second row beside it').toHaveLength(2);
+    stopFirst();
     stopSecond();
   });
 
