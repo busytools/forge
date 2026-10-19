@@ -62,12 +62,11 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 struct OverlayIvars {
     sender: Mutex<Option<Sender>>,
-    scale: std::cell::Cell<f64>,
 }
 
 impl Default for OverlayIvars {
     fn default() -> Self {
-        Self { sender: Mutex::new(None), scale: std::cell::Cell::new(1.0) }
+        Self { sender: Mutex::new(None) }
     }
 }
 
@@ -115,10 +114,10 @@ define_class!(
         #[unsafe(method(scrollWheel:))]
         unsafe fn scroll_wheel(&self, event: &objc2_app_kit::NSEvent) {
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
-            let scale = self.ivars().scale.get();
+            let (x, y) = css_point(point);
             let event = InputEvent::Wheel {
-                x: point.x / scale,
-                y: point.y / scale,
+                x,
+                y,
                 delta_x: -event.scrollingDeltaX(),
                 delta_y: -event.scrollingDeltaY(),
                 modifiers: modifiers(event),
@@ -201,11 +200,11 @@ impl OverlayView {
 
     fn mouse(&self, kind: MouseKind, event: &objc2_app_kit::NSEvent) {
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
-        let scale = self.ivars().scale.get();
+        let (x, y) = css_point(point);
         self.send(InputEvent::Mouse {
             kind,
-            x: point.x / scale,
-            y: point.y / scale,
+            x,
+            y,
             button: event.buttonNumber() as i32,
             clicks: event.clickCount() as i32,
             modifiers: modifiers(event),
@@ -222,10 +221,6 @@ impl OverlayView {
         if let Ok(mut slot) = self.ivars().sender.lock() {
             *slot = Some(sender);
         }
-    }
-
-    fn set_scale(&self, scale: f64) {
-        self.ivars().scale.set(scale);
     }
 
     fn draw_frame(&self, bytes: &[u8], width: usize, height: usize) {
@@ -320,7 +315,6 @@ pub async fn attach(
     let cancel = Arc::new(AtomicBool::new(false));
 
     let sender = input::start(host.port, Arc::clone(&cancel)).await?;
-    let scale = rect.scale;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "the client window is not there".to_owned())?;
@@ -339,7 +333,6 @@ pub async fn attach(
                             frame_for(&superview, rect),
                         );
                         overlay.set_sender(sender);
-                        overlay.set_scale(scale);
                         overlay.setWantsLayer(true);
                         superview.addSubview(&overlay);
                         let area = NSTrackingArea::initWithRect_options_owner_userInfo(
@@ -458,7 +451,6 @@ pub fn set_rect(app: &tauri::AppHandle, host: &ActiveHost, rect: Rect) {
         // SAFETY: the view lives while this generation is current.
         unsafe {
             let view = &*(overlay.view as *const OverlayView);
-            view.set_scale(rect.scale);
             if let Some(superview) = view.superview() {
                 view.setFrame(frame_for(&superview, rect));
             }
@@ -496,6 +488,14 @@ fn paint_px(value: f64) -> u32 {
     value.round().clamp(1.0, f64::from(u32::MAX)) as u32
 }
 
+/// A point in the overlay's own (flipped) coordinates, in CSS pixels for the
+/// page's viewport. **The mapping is 1:1**: the overlay is placed and sized
+/// in points, and a point is the page's CSS pixel at the current zoom; the
+/// device scale only lives in the frame buffer.
+fn css_point(point: NSPoint) -> (f64, f64) {
+    (point.x, point.y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,5 +514,13 @@ mod tests {
     fn the_view_size_is_the_rect_in_device_pixels() {
         assert_eq!(paint_px(1100.0 * 2.0), 2200);
         assert_eq!(paint_px(0.0), 1);
+    }
+
+    #[test]
+    fn a_point_maps_one_to_one_into_the_page() {
+        // The overlay is placed in points, which are the page's CSS pixels:
+        // the device scale lives in the buffer, never in the input mapping.
+        assert_eq!(css_point(NSPoint::new(0.0, 0.0)), (0.0, 0.0));
+        assert_eq!(css_point(NSPoint::new(13.5, 620.0)), (13.5, 620.0));
     }
 }
