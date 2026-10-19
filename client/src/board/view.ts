@@ -198,7 +198,7 @@ export function fmtSecs(secs: number): string {
  * inherited from its epic (#2423), so a verification wait an inherited gate
  * left behind is a plain wait, not an ask on the reader.
  */
-function waitOnUser(task: Task): boolean {
+export function waitOnUser(task: Task): boolean {
   const wait = task.waiting_on;
   if (wait === null) return false;
   return wait.verification ? task.verify === 'user' : wait.kind === 'decision';
@@ -227,7 +227,9 @@ function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardVie
   }
   if (marks.stale) chips.push({ label: 'owner gone', tone: 'bad' });
   if (marks.in_review) chips.push({ label: 'in review', tone: 'blue' });
+  if ((task.attested ?? null) !== null) chips.push({ label: 'lead attested', tone: 'blue' });
   if (marks.to_close) chips.push({ label: 'to close', tone: 'blue' });
+  if (task.reserved === 'user') chips.push({ label: 'reserved for you', tone: 'dim' });
   if (task.attempt > 1) chips.push({ label: `attempt ${task.attempt}`, tone: 'dim' });
   return chips;
 }

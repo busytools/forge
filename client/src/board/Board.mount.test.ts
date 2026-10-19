@@ -820,6 +820,52 @@ describe("the row's own page", () => {
   });
 
   /**
+   * A lead-attested completion carries its mark on the card and the quoted
+   * approval in the drawer, and the drawer's reopen hands the user's own
+   * strike back as one command (#2423/B).
+   */
+  it('draws a lead-attested row and hands reopen out as a command', () => {
+    const attested = {
+      evidence: 'Looks right - merge',
+      at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    summon(wireWith([row(task('a1', 'an attested look', 'completed', { attested }))]));
+    expect(document.body.textContent, 'the card lost the mark').toContain('lead attested');
+
+    const card = document.querySelector('.b-card[data-id="a1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    const drawer = document.querySelector('.dr');
+    expect(drawer?.textContent, 'the quote the lead recorded').toContain(
+      'Looks right - merge',
+    );
+    byText('reopen')?.click();
+    flushSync();
+    expect(acts[0]).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
+  });
+
+  /** The user reserves a pick from the row page, and the board says so. */
+  it('reserves and releases a pick from the drawer', () => {
+    summon(wireWith([row(task('r1', 'a pick', 'pending'))]));
+    const card = document.querySelector('.b-card[data-id="r1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    byText('reserve for you')?.click();
+    flushSync();
+    expect(acts[0]).toEqual({ task_reserve: { project: 'proj', id: 'r1', reserved: true } });
+
+    // And a reserved row draws the mark, with the release door.
+    summon(wireWith([row(task('r2', 'a reserved pick', 'pending', { reserved: 'user' }))]));
+    expect(document.body.textContent, 'the reserved mark is missing').toContain('reserved for you');
+    const reserved = document.querySelector('.b-card[data-id="r2"]');
+    if (reserved === null) throw new Error('no reserved card');
+    press(reserved);
+    byText('release')?.click();
+    flushSync();
+    expect(acts[1]).toEqual({ task_reserve: { project: 'proj', id: 'r2', reserved: false } });
+  });
+
+  /**
    * A row whose links collide draws on the card and in the drawer: the lists
    * key on the position, since the entries carry no identity the wire
    * guarantees unique.

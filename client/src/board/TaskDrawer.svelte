@@ -3,7 +3,7 @@
   import { hrefForSlot } from '../routes';
   import type { ServiceReport } from '../wire/fleet';
   import type { BoardRow, ByWire, TaskStatus } from '../wire/home';
-  import { fmtSecs, type WaitingView } from './view';
+  import { fmtSecs, waitOnUser, type WaitingView } from './view';
 
   /**
    * One row's own page, over the board: what the row IS (its fields and
@@ -122,7 +122,7 @@
 >
   <div class="dr-head" class:tree={row.parent_subject !== null}>
     {#if task.status === 'waiting'}
-      <span class="dr-state warn">waiting on you</span>
+      <span class="dr-state warn">{waitOnUser(task) ? 'waiting on you' : 'waiting'}</span>
     {:else if task.status === 'completed'}
       <span class="dr-state ok"><Icon name="check" /> done</span>
     {:else if task.status === 'failed'}
@@ -164,6 +164,29 @@
           <span class="b-chip blue b-epic-pill">&#8627; {row.parent_subject}</span>
         {:else}none{/if}
       </dd>
+      <dt>pick</dt>
+      <dd>
+        {#if task.reserved === 'user'}
+          <span>reserved for you</span>
+          <button
+            type="button"
+            class="dr-btn"
+            onclick={() =>
+              onact({
+                task_reserve: { project: task.project_name, id: task.id, reserved: false },
+              })}>release</button
+          >
+        {:else}
+          <button
+            type="button"
+            class="dr-btn"
+            onclick={() =>
+              onact({
+                task_reserve: { project: task.project_name, id: task.id, reserved: true },
+              })}>reserve for you</button
+          >
+        {/if}
+      </dd>
       <dt>links</dt>
       <dd>
         {#if task.links.length === 0}<span class="dim">none</span>{:else}
@@ -204,8 +227,7 @@
 
     {#if task.waiting_on !== null}
       <h3>
-        {#if task.waiting_on.verification || task.waiting_on.kind === 'decision'}Waiting on you{:else}What
-          it waits on{/if}
+        {#if waitOnUser(task)}Waiting on you{:else}What it waits on{/if}
       </h3>
       <div class="dr-ask">
         <div class="q">
@@ -222,7 +244,7 @@
         {#if task.waiting_on.detail !== null}
           <div class="from">{task.waiting_on.detail}</div>
         {/if}
-        {#if task.waiting_on.verification || task.waiting_on.kind === 'decision'}
+        {#if waitOnUser(task)}
           {#if task.waiting_on.verification}
             <div class="answer">
               {#if waiting !== null && waiting.root && waiting.open > 0}
@@ -310,6 +332,20 @@
         {#if seatHref !== null}
           <a class="dr-ses" href={seatHref}>or open the session &rarr;</a>
         {/if}
+      </div>
+    {/if}
+
+    {#if task.attested != null}
+      <h3>Lead-attested look</h3>
+      <div class="dr-ask">
+        <div class="q">The lead completed this row's look, citing your approval:</div>
+        <div class="from">&ldquo;{task.attested.evidence}&rdquo;</div>
+        <button
+          type="button"
+          class="dr-btn no"
+          onclick={() => onact({ task_reopen: { project: task.project_name, id: task.id } })}
+          >reopen</button
+        >
       </div>
     {/if}
 

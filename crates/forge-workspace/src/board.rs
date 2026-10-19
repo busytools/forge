@@ -342,6 +342,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -571,6 +573,7 @@ mod tests {
             detail: None,
             on: None,
             verification: false,
+            parked: false,
         });
         ws.seed_test_task(held);
         ws.seed_test_task(task("t-plain", TaskStatus::Pending));
@@ -595,6 +598,7 @@ mod tests {
             detail: Some("which shape".to_owned()),
             on: None,
             verification: false,
+            parked: false,
         });
         waiting.updated_at = epoch(0);
         ws.seed_test_task(waiting);
@@ -660,6 +664,7 @@ mod tests {
                 detail: None,
                 on: None,
                 verification: true,
+                parked: false,
             });
             row
         };

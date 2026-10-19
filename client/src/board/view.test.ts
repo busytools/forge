@@ -288,6 +288,28 @@ describe("one project's board", () => {
     expect(childRow?.open, 'a child counted children the close never waits on').toBe(1);
   });
 
+  /**
+   * The lead's attested completion and the user's own reserved pick are
+   * named in words on the card (#2423/B, /C).
+   */
+  it('marks a lead attestation and a reserved pick in words', () => {
+    const wire = wireWith([
+      row(
+        task('a', 'an attested look', 'completed', {
+          attested: {
+            evidence: 'Looks right',
+            at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+          },
+        }),
+      ),
+      row(task('r', 'a reserved pick', 'pending', { reserved: 'user' })),
+    ]);
+    const cards = boardView(wire, 'TestOrg', 'proj').lanes.flatMap((lane) => lane.cards);
+    const chips = (id: string) => cards.find((card) => card.id === id)?.chips ?? [];
+    expect(chips('a').map((chip) => chip.label)).toContain('lead attested');
+    expect(chips('r').map((chip) => chip.label)).toContain('reserved for you');
+  });
+
   /** The marks become words, and the wait's kind decides the chip. */
   it('words the marks and the wait', () => {
     const wire = wireWith([

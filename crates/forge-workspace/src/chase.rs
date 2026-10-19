@@ -657,6 +657,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -975,6 +977,7 @@ mod tests {
             detail: None,
             on: None,
             verification,
+            parked: false,
         });
         row.updated_at = epoch(updated);
         ws.seed_test_task(row);
@@ -1056,6 +1059,7 @@ mod tests {
             detail: None,
             on: None,
             verification: true,
+            parked: false,
         });
         inherited.updated_at = epoch(0);
         ws.seed_test_task(inherited);
@@ -1181,6 +1185,7 @@ mod tests {
             detail: None,
             on: None,
             verification: false,
+            parked: false,
         });
         row.updated_at = epoch(0);
         ws.seed_test_task(row);

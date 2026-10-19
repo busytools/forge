@@ -10,7 +10,8 @@
 //! `tasks__delete` / `tasks__claim` / `tasks__wait`) are ANY-CALLER,
 //! scoped to the caller's own project - a worker creating its own
 //! subtasks is the normal case, and any session may move any task in its
-//! project. Task-list mutations are direct `Workspace` methods (state
+//! project; `tasks__approve` is the lead's own door and is not offered to
+//! a worker. Task-list mutations are direct `Workspace` methods (state
 //! writes), not Command-bus dispatches.
 //!
 //! - [`facade`] - the `TasksFacade` seam (prod over `Weak<Workspace>` +
@@ -36,14 +37,18 @@ pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn TasksFacade>,
     slot: SessionSlot,
+    lead: bool,
 ) -> McpServerBuilder {
     let create = Create { facade: facade.clone(), slot: slot.clone() };
     let update = Update { facade: facade.clone(), slot: slot.clone() };
     let list = List { facade: facade.clone(), slot: slot.clone() };
     let delete = Delete { facade: facade.clone(), slot: slot.clone() };
     let claim = Claim { facade: facade.clone(), slot: slot.clone() };
-    let wait = Wait { facade, slot };
-    builder.tool(create).tool(update).tool(list).tool(delete).tool(claim).tool(wait)
+    let wait = Wait { facade: facade.clone(), slot: slot.clone() };
+    let builder = builder.tool(create).tool(update).tool(list).tool(delete).tool(claim).tool(wait);
+    // `tasks__approve` is the lead's door: only the lead stands behind the
+    // user's recorded approval, so a worker is not offered the verb at all.
+    if lead { builder.tool(Approve { facade, slot }) } else { builder }
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -101,9 +106,34 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             map.insert(key.to_owned(), serde_json::json!(value));
         }
     }
+    for (key, value) in [
+        ("verify", task.verify.map(verify_str)),
+        ("reserved", task.reserved.map(|_| "user")),
+    ] {
+        if let Some(value) = value {
+            map.insert(key.to_owned(), serde_json::json!(value));
+        }
+    }
+    if let Some(attested) = &task.attested {
+        map.insert(
+            "attested".to_owned(),
+            serde_json::json!({
+                "evidence": attested.evidence,
+                "at": fmt_rfc3339(attested.at),
+            }),
+        );
+    }
     map.insert("created_at".to_owned(), serde_json::json!(fmt_rfc3339(task.created_at)));
     map.insert("updated_at".to_owned(), serde_json::json!(fmt_rfc3339(task.updated_at)));
     serde_json::Value::Object(map)
+}
+
+/// The gate as the tool schema spells it.
+fn verify_str(verify: forge_primitives::tasks::Verify) -> &'static str {
+    match verify {
+        forge_primitives::tasks::Verify::User => "user",
+        forge_primitives::tasks::Verify::None => "none",
+    }
 }
 
 fn format_tasks_error(err: &TasksError) -> String {
@@ -451,6 +481,7 @@ fn board_row_to_json(row: &crate::board::BoardRow) -> serde_json::Value {
                 "detail": wait.detail,
                 "on": wait.on.as_ref().map(TaskId::as_str),
                 "verification": wait.verification,
+                "parked": wait.parked,
             }),
         );
     }
@@ -768,6 +799,78 @@ impl Tool for Wait {
     }
 }
 
+struct Approve {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct ApproveArgs {
+    id: String,
+    /// The approval as the user gave it, quoted.
+    approval: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Approve {
+    fn name(&self) -> &'static str {
+        "tasks__approve"
+    }
+
+    fn description(&self) -> &'static str {
+        "Lead-only. Complete a row waiting on the user's LOOK by recording the approval the \
+         user already gave, quoted from the chat or the look record. `approval` is that quote \
+         and must not be empty: it lands in the row's detail and is the evidence the board \
+         draws as lead-attested. This door is for a look only - never a decision or a \
+         question, which are the user's to answer - and only the project lead may call it. \
+         The user's own approve, send-back and cancel doors stay; the user's reopen strikes \
+         the attestation, re-mints the look gate and parks the row on them again. A task is \
+         named by its full id or any unique prefix of one. Refused when the row is not \
+         waiting on a look, when the quote is empty, or when the caller is not the lead."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The row waiting on the look, or any unique prefix of its id.",
+                },
+                "approval": {
+                    "type": "string",
+                    "description": "The user's approval, quoted as they gave it (e.g. \
+                                    \"Looks right - merge\"). Required and non-empty.",
+                },
+            },
+            "required": ["id", "approval"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: ApproveArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let approval = args.approval.trim();
+        if approval.is_empty() {
+            return tool_error(
+                "an attestation needs the user's approval quoted in `approval`; it must not be \
+                 empty"
+                    .to_owned(),
+            );
+        }
+        match self.facade.attest_task(&self.slot, &TaskId::from(args.id.as_str()), approval) {
+            Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("response serialization failed: {err}")),
+            },
+            Err(err) => tool_error(format_tasks_error(&err)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,6 +947,54 @@ mod tests {
             .await;
         assert!(out.is_error, "subject is required");
         assert!(facade.created.lock().is_empty(), "invalid input never reaches the facade");
+    }
+
+    #[tokio::test]
+    async fn approve_threads_the_quote_and_the_caller_to_the_facade() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Approve { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1", "approval": " looks good " })))
+            .await;
+        assert!(!out.is_error, "approve succeeds: {out:?}");
+        let calls = facade.attested.lock();
+        assert_eq!(calls.len(), 1, "one attestation reached the facade");
+        assert_eq!(calls[0].1, TaskId::from("t-1"), "the row the caller named");
+        assert_eq!(calls[0].2, "looks good", "the quote is trimmed, not dropped");
+    }
+
+    #[tokio::test]
+    async fn approve_refuses_an_empty_quote_without_touching_the_facade() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Approve { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1", "approval": "   " })))
+            .await;
+        assert!(out.is_error, "an empty approval is nothing to stand behind");
+        assert!(facade.attested.lock().is_empty(), "invalid input never reaches the facade");
+    }
+
+    /// The lead door is shipped text (#2423/B): a caller learns it is
+    /// lead-only and look-only, that the quote is required, and that the
+    /// user's reopen is the way back.
+    #[test]
+    fn the_approve_description_states_the_lead_door() {
+        let approve = Approve { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        for clause in [
+            "Lead-only",
+            "never a decision or a question",
+            "must not be empty",
+            "the user's reopen strikes the attestation",
+        ] {
+            assert!(
+                approve.description().contains(clause),
+                "tasks__approve does not state the door ({clause}): {}",
+                approve.description(),
+            );
+        }
+        assert_eq!(
+            approve.input_schema()["required"],
+            serde_json::json!(["id", "approval"]),
+            "the quote is required at the schema",
+        );
     }
 
     #[tokio::test]
@@ -992,6 +1143,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,

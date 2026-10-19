@@ -101,8 +101,20 @@ The chips are the server's derived marks, named in words:
 | `no movement <5h>` | dim | untouched, and nothing is waiting |
 | `owner gone` | bad | its owner is no longer a live seat |
 | `in review` | blue | completed with the verify gate up |
+| `lead attested` | blue | the lead completed the look, citing the user's own approval |
 | `to close` | blue | a root whose children are all done, waiting for its close |
+| `reserved for you` | dim | the user reserved this pick; the sweep leaves it for them |
 | `attempt N` | dim | sent back with words N times |
+
+**The look has two doors, and the row page draws both.** The user's own
+`approve` sits on the waiting strip; a lead who watched the user approve in
+chat completes the row through `tasks__approve`, which requires the approval
+quoted and records it on the row. The completed card then wears
+`lead attested`, and the row page draws the quote with a `reopen` button:
+reopening strikes the attestation, re-mints the look gate and parks the row
+on the user again. The page's `pick` line is the other side of the sweep:
+`reserve for you` marks the row so the sweep never dispatches it, and
+`release` takes that back.
 
 The links come off the row's own list: a URL follows in a new tab under its
 label, and a path or a branch draws as text rather than a dead anchor.

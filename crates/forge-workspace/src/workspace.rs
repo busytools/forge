@@ -5422,6 +5422,49 @@ impl Workspace {
                         }
                     }
                 }
+                Command::TaskReopen { project, id } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.reopen_task(&project, &id) {
+                        Ok(Some(task)) => {
+                            self.tell_row_owner(
+                                &task,
+                                format!(
+                                    "task board: the user reopened \"{}\" - the look is owed \
+                                     again, so complete it and hand it back.",
+                                    task.subject,
+                                ),
+                            );
+                        }
+                        Ok(None) => self.board_edit_refused(
+                            "a reopen",
+                            "the row it named is no longer there",
+                        ),
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace::tasks",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a reopen was refused",
+                            );
+                            self.board_edit_refused("a reopen", &refused.to_string());
+                        }
+                    }
+                }
+                Command::TaskReserve { project, id, reserved } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.reserve_task(&project, &id, reserved) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => self.board_edit_refused(
+                            "a reservation",
+                            "the row it named is no longer there",
+                        ),
+                        Err(refused) => self.board_edit_refused(
+                            "a reservation",
+                            &refused.to_string(),
+                        ),
+                    }
+                }
                 Command::TaskAssign { project, id, owner } => {
                     // A project this forge does not carry has no seat to name
                     // and no row to hold: an assignment to it is refused
@@ -5495,6 +5538,8 @@ impl Workspace {
                         estimate: None,
                         rank: None,
                         verify: None,
+                        attested: None,
+                        reserved: None,
                         links: Vec::new(),
                         attempt: 0,
                         archived_at: None,
@@ -9236,6 +9281,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: Some(forge_primitives::tasks::Verify::User),
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9367,6 +9414,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9462,6 +9511,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9473,6 +9524,7 @@ mod tests {
             detail: None,
             on: None,
             verification: false,
+            parked: false,
         };
 
         // The wait, answered: the words ride the notice, and it goes to the
@@ -9588,6 +9640,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9633,6 +9687,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9676,6 +9732,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9768,6 +9826,8 @@ path = "{}"
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,

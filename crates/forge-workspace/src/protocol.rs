@@ -552,6 +552,19 @@ pub enum Command {
         #[serde(default)]
         place: Option<RankMove>,
     },
+    /// The user strikes a lead's attestation: the look gate is re-minted
+    /// and the row parks on the user again. App-level like `TaskVerdict`.
+    TaskReopen {
+        project: String,
+        id: String,
+    },
+    /// The user reserves a row's pick for themselves (or releases it): the
+    /// sweep leaves a reserved row alone rather than dispatching it.
+    TaskReserve {
+        project: String,
+        id: String,
+        reserved: bool,
+    },
     /// Cross-project delivery (#114 v1). Dispatched by the
     /// `mcp__forge__agents__send_message` tool impl via
     /// `WorkspaceFacade::deliver_peer_prompt`. Routed to
@@ -878,6 +891,8 @@ impl Command {
             | Self::TaskAssign { .. }
             | Self::TaskCreate { .. }
             | Self::TaskMove { .. }
+            | Self::TaskReopen { .. }
+            | Self::TaskReserve { .. }
             | Self::PluginInstall { .. }
             | Self::PluginUpdate { .. }
             | Self::PluginUpdateAll
@@ -1124,6 +1139,17 @@ impl std::fmt::Debug for Command {
                 .field("id", id)
                 .field("to", to)
                 .field("place", place)
+                .finish_non_exhaustive(),
+            Self::TaskReopen { project, id } => f
+                .debug_struct("TaskReopen")
+                .field("project", project)
+                .field("id", id)
+                .finish_non_exhaustive(),
+            Self::TaskReserve { project, id, reserved } => f
+                .debug_struct("TaskReserve")
+                .field("project", project)
+                .field("id", id)
+                .field("reserved", reserved)
                 .finish_non_exhaustive(),
             Self::PluginInstall { plugin_id, scope, project } => f
                 .debug_struct("PluginInstall")

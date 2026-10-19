@@ -11,7 +11,9 @@
 use std::time::SystemTime;
 
 use forge_primitives::tasks::Verify;
-use forge_primitives::tasks::{By, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind};
+use forge_primitives::tasks::{
+    Attestation, By, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
+};
 
 use crate::SessionSlot;
 use crate::protocol::RankMove;
@@ -76,6 +78,15 @@ pub(crate) enum MoveError {
     /// by close is not a way to settle it either. The row's SUBJECT rides
     /// it, as the delete's does.
     ClosingLook(String),
+    /// An attestation came from a session that is not the project's lead:
+    /// only the lead may stand behind the user's recorded approval.
+    AttestLeadOnly,
+    /// An attestation stated no quoted approval, so there is nothing to
+    /// stand behind.
+    AttestNeedsEvidence,
+    /// A reopen named a row carrying no lead attestation: there is no
+    /// attested look to strike.
+    NotAttested,
 }
 
 /// Whether a row is parked on the user's own look - the verification wait
@@ -211,6 +222,17 @@ impl std::fmt::Display for MoveError {
                 "\"{subject}\" is waiting on the user; the board's answer or approve settles it, \
                  and closing the epic cannot take the ask away"
             ),
+            Self::AttestLeadOnly => write!(
+                f,
+                "only the project lead may attest an approval; this session is a worker"
+            ),
+            Self::AttestNeedsEvidence => write!(
+                f,
+                "an attestation needs the approval quoted in `approval`, and it must not be empty"
+            ),
+            Self::NotAttested => {
+                write!(f, "this row carries no lead attestation to reopen")
+            }
         }
     }
 }
@@ -515,6 +537,7 @@ impl Workspace {
                     detail: None,
                     on: None,
                     verification: true,
+                    parked: false,
                 });
                 next.status = TaskStatus::Waiting;
             }
@@ -628,6 +651,78 @@ impl Workspace {
         self.update_task(project_name, id, By::User, |task| {
             task.waiting_on = None;
             task.status = to;
+        })
+    }
+
+    /// The lead completes a row waiting on the user's look, recording the
+    /// approval the user gave. Only a lead attests, only a look wait is
+    /// the look's to clear (a decision is the user's to answer), and the
+    /// quoted evidence is required. The row completes as the user's own
+    /// approve would, wearing the attestation the board draws.
+    pub(crate) fn attest_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        slot: &SessionSlot,
+        evidence: &str,
+    ) -> Result<Option<Task>, MoveError> {
+        if slot.label() != crate::LEAD_LABEL {
+            return Err(MoveError::AttestLeadOnly);
+        }
+        let quote = evidence.trim();
+        if quote.is_empty() {
+            return Err(MoveError::AttestNeedsEvidence);
+        }
+        let at = SystemTime::now();
+        self.move_task(project_name, id, By::Seat(slot.clone()), false, |task| {
+            if task.status != TaskStatus::Waiting || !parked_on_look(task) {
+                return Err(MoveError::NotWaitingVerification);
+            }
+            task.waiting_on = None;
+            task.verify = Some(Verify::None);
+            task.attested = Some(Attestation { evidence: quote.to_owned(), at });
+            append_words(task, &format!("Lead-attested look, quoted: \"{quote}\""));
+            task.status = TaskStatus::Completed;
+            Ok(())
+        })
+    }
+
+    /// The user reserves a row's pick (or releases it): the sweep leaves a
+    /// reserved row for them rather than dispatching it.
+    pub(crate) fn reserve_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        reserved: bool,
+    ) -> Result<Option<Task>, MoveError> {
+        self.update_task(project_name, id, By::User, |task| {
+            task.reserved = reserved.then_some(ReservedBy::User);
+        })
+    }
+
+    /// The user strikes a lead attestation: the look gate is re-minted
+    /// and the row parks on the user again, recorded in the history.
+    pub(crate) fn reopen_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+    ) -> Result<Option<Task>, MoveError> {
+        self.move_task(project_name, id, By::User, false, |task| {
+            if task.attested.is_none() {
+                return Err(MoveError::NotAttested);
+            }
+            task.attested = None;
+            task.verify = Some(Verify::User);
+            task.waiting_on = Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: None,
+                on: None,
+                verification: true,
+                parked: false,
+            });
+            task.status = TaskStatus::Waiting;
+            append_words(task, "Reopened by the user: the look is owed again.");
+            Ok(())
         })
     }
 
@@ -873,8 +968,13 @@ impl Workspace {
                 None => None,
             };
             let prior = tasks[index].status;
-            tasks[index].waiting_on =
-                Some(Waiting { kind: Some(kind), detail, on, verification: false });
+            tasks[index].waiting_on = Some(Waiting {
+                kind: Some(kind),
+                detail,
+                on,
+                verification: false,
+                parked: false,
+            });
             tasks[index].status = TaskStatus::Waiting;
             tasks[index].updated_at = at;
             self.persist_task(&tasks[index]);
@@ -1174,6 +1274,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -1582,6 +1684,160 @@ mod tests {
         assert_eq!(last.by, By::User, "the verdict is stamped as the user's own move");
     }
 
+    /// The lead's attestation completes a look wait the lead watched the
+    /// user approve: the quoted words land on the row, the gate is
+    /// satisfied, and the history stamps the lead's own move.
+    #[test]
+    fn a_lead_attests_the_look_with_the_quoted_approval() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-attest");
+        install_db(&ws, dir.path());
+        row_awaiting_look(&ws, "t-1");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        let attested = ws
+            .attest_task("proj", &TaskId::from("t-1"), &lead, "looks good, merge it")
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(attested.status, TaskStatus::Completed, "the attestation completes the row");
+        assert_eq!(attested.waiting_on, None, "and clears the wait");
+        assert_eq!(attested.verify, Some(Verify::None), "the gate is satisfied, not re-armed");
+        let mark = attested.attested.as_ref().expect("the row carries the attestation");
+        assert_eq!(mark.evidence, "looks good, merge it", "the quote is the record");
+        assert!(
+            attested.detail.as_deref().unwrap_or_default().contains("looks good, merge it"),
+            "the quote lands on the row: {:?}",
+            attested.detail,
+        );
+        let history = history_of(&ws, "proj");
+        let last = history.last().expect("a last transition");
+        assert_eq!((last.from, last.to), (Some(TaskStatus::Waiting), TaskStatus::Completed));
+        assert_eq!(last.by, By::Seat(lead), "the attestation is the lead's own move");
+    }
+
+    /// Only the project's lead stands behind the user's approval.
+    #[test]
+    fn a_worker_cannot_attest_a_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-attest-worker");
+        row_awaiting_look(&ws, "t-1");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w1");
+
+        let refused = ws
+            .attest_task("proj", &TaskId::from("t-1"), &worker, "looks good")
+            .expect_err("a worker cannot attest");
+        assert_eq!(refused, MoveError::AttestLeadOnly);
+        let stored = ws.tasks_for_project("proj");
+        let row = stored.iter().find(|task| task.id == TaskId::from("t-1")).expect("t-1");
+        assert_eq!(row.status, TaskStatus::Waiting, "the row stays parked");
+        assert_eq!(row.attested, None, "and carries no attestation");
+    }
+
+    /// The quote is the whole point: an attestation stating nothing is
+    /// refused rather than recorded as a blank claim.
+    #[test]
+    fn an_attestation_needs_the_quoted_approval() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-attest-empty");
+        row_awaiting_look(&ws, "t-1");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        let refused = ws
+            .attest_task("proj", &TaskId::from("t-1"), &lead, "   ")
+            .expect_err("an empty approval is nothing to stand behind");
+        assert_eq!(refused, MoveError::AttestNeedsEvidence);
+        assert_eq!(ws.tasks_for_project("proj")[0].status, TaskStatus::Waiting);
+    }
+
+    /// A decision is the user's to answer; the lead's door is the look's
+    /// only.
+    #[test]
+    fn a_decision_wait_is_not_the_leads_to_attest() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-attest-decision");
+        ws.push_task(Task {
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: Some("which shape".to_owned()),
+                on: None,
+                verification: false,
+                parked: false,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        let refused = ws
+            .attest_task("proj", &TaskId::from("t-1"), &lead, "he said yes to something")
+            .expect_err("a decision is not the lead's to attest");
+        assert_eq!(refused, MoveError::NotWaitingVerification);
+        assert_eq!(ws.tasks_for_project("proj")[0].status, TaskStatus::Waiting);
+    }
+
+    /// The user strikes an attestation: the row parks on the look again,
+    /// the gate is re-minted, and the history records the user's move. A
+    /// child row, so the completion stays live - an attested ROOT closes
+    /// its tree as the user's own approve does.
+    #[test]
+    fn the_users_reopen_strikes_the_attestation_and_parks_the_row() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-reopen");
+        install_db(&ws, dir.path());
+        ws.push_task(sample_task("epic", "proj"));
+        ws.push_task(Task {
+            verify: Some(Verify::User),
+            parent: Some(TaskId::from("epic")),
+            ..sample_task("t-1", "proj")
+        });
+        ws.update_task("proj", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.attest_task("proj", &TaskId::from("t-1"), &lead, "looks good")
+            .expect("no refusal")
+            .expect("the row is there");
+
+        let reopened = ws
+            .reopen_task("proj", &TaskId::from("t-1"))
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(reopened.status, TaskStatus::Waiting, "the row is back on the look");
+        assert_eq!(reopened.attested, None, "the attestation is struck");
+        assert_eq!(reopened.verify, Some(Verify::User), "the gate is re-minted");
+        assert!(
+            reopened.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "and parked on the user: {:?}",
+            reopened.waiting_on,
+        );
+        let history = history_of(&ws, "proj");
+        let last = history.last().expect("a last transition");
+        assert_eq!((last.from, last.to), (Some(TaskStatus::Completed), TaskStatus::Waiting));
+        assert_eq!(last.by, By::User, "the reopen is the user's own move");
+    }
+
+    /// A row with no attestation has nothing to reopen.
+    #[test]
+    fn a_reopen_without_an_attestation_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-reopen-none");
+        row_awaiting_look(&ws, "t-1");
+
+        let refused = ws
+            .reopen_task("proj", &TaskId::from("t-1"))
+            .expect_err("nothing was attested");
+        assert_eq!(refused, MoveError::NotAttested);
+        assert_eq!(ws.tasks_for_project("proj")[0].status, TaskStatus::Waiting);
+    }
+
     /// The user drags a row across the board: the state moves, the wait the
     /// row was holding drops, and the move is stamped as the user's own.
     #[test]
@@ -1596,6 +1852,7 @@ mod tests {
             detail: None,
             on: None,
             verification: false,
+            parked: false,
         });
         ws.push_task(waiting);
 
@@ -2214,6 +2471,7 @@ mod tests {
                 detail: Some("the board read has to land first".to_owned()),
                 on: Some(TaskId::from("blocker")),
                 verification: false,
+                parked: false,
             }),
             "and the wait it held, not a look park the caller never asked for",
         );
@@ -2284,6 +2542,7 @@ mod tests {
                 detail: None,
                 on: None,
                 verification: false,
+                parked: false,
             }),
             ..sample_task("t-1", "proj")
         });
@@ -2308,6 +2567,7 @@ mod tests {
             detail: None,
             on,
             verification: false,
+            parked: false,
         };
         assert_eq!(wait_words(None), "a wait", "no stored wait");
         assert_eq!(wait_words(Some(&wait(None, None))), "a wait", "a legacy unstated wait");
@@ -2568,6 +2828,7 @@ mod tests {
                 detail: None,
                 on: None,
                 verification: true,
+                parked: false,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
         });
@@ -2823,6 +3084,7 @@ mod tests {
                 detail: Some("the blocker lands first".to_owned()),
                 on: Some(TaskId::from("blocker")),
                 verification: false,
+                parked: false,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
         });
@@ -2994,6 +3256,7 @@ mod tests {
                 detail: None,
                 on: None,
                 verification: true,
+                parked: false,
             }),
             "the wait is the verify gate, which the board draws as approve / send back",
         );

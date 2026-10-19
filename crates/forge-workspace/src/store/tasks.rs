@@ -39,6 +39,10 @@ struct TaskRecord {
     #[serde(default)]
     verify: Option<forge_primitives::tasks::Verify>,
     #[serde(default)]
+    attested: Option<forge_primitives::tasks::Attestation>,
+    #[serde(default)]
+    reserved: Option<forge_primitives::tasks::ReservedBy>,
+    #[serde(default)]
     links: Vec<TaskLink>,
     #[serde(default)]
     attempt: u32,
@@ -106,7 +110,13 @@ impl TaskRecord {
             waiting_on: if blocked {
                 // The migration's unstated wait: the board draws it as a
                 // miss, which is what an old blocked row was.
-                Some(Waiting { kind: None, detail: None, on: None, verification: false })
+                Some(Waiting {
+                    kind: None,
+                    detail: None,
+                    on: None,
+                    verification: false,
+                    parked: false,
+                })
             } else {
                 self.waiting_on
             },
@@ -121,6 +131,8 @@ impl TaskRecord {
             }),
             rank: self.rank,
             verify: self.verify,
+            attested: self.attested,
+            reserved: self.reserved,
             links,
             attempt: self.attempt,
             archived_at: self.archived_at,
@@ -220,6 +232,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -354,7 +368,13 @@ mod tests {
         assert_eq!(read[0].status, TaskStatus::Waiting);
         assert_eq!(
             read[0].waiting_on,
-            Some(Waiting { kind: None, detail: None, on: None, verification: false }),
+            Some(Waiting {
+                kind: None,
+                detail: None,
+                on: None,
+                verification: false,
+                parked: false,
+            }),
             "no kind, no words - the miss the board shows",
         );
     }

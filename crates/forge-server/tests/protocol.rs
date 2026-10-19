@@ -40,6 +40,8 @@ async fn a_server() -> (String, Fleet) {
         estimate: Some(forge_primitives::tasks::Estimate { words: "1d".to_owned(), secs: 86_400 }),
         rank: None,
         verify: None,
+        attested: None,
+        reserved: None,
         links: vec![forge_primitives::tasks::TaskLink {
             kind: forge_primitives::tasks::LinkKind::Path,
             label: None,

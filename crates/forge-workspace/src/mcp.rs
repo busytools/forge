@@ -344,7 +344,12 @@ pub fn build_forge_server(
         builder = gotify::add_tools(builder, gotify, slot.clone());
     }
     if families.contains(&McpFamily::Tasks) {
-        builder = tasks::add_tools(builder, tasks, slot.clone());
+        builder = tasks::add_tools(
+            builder,
+            tasks,
+            slot.clone(),
+            matches!(kind, SessionKind::Lead),
+        );
     }
     // Doubly gated: the family is selected AND a client exists - a
     // disabled `[systemone]` leaves no tool a session could try.
@@ -385,8 +390,10 @@ next held row instead of sitting still. File what you find mid-flight at \
 once with tasks__create, under your epic, owned or unowned; nothing is \
 deferred. A row with verify=user cannot complete until the user approves \
 it, and that gate is minted on the row - never inherited from an epic, \
-whose own gate governs only its own completion; completing the ROOT row \
-of an epic closes it and archives the tree. \
+whose own gate governs only its own completion; a look the user already \
+gave in chat is completed by the lead with tasks__approve and the approval \
+quoted (never a decision, which is the user's to answer); completing the \
+ROOT row of an epic closes it and archives the tree. \
 The chase asks an over-estimate owner once and escalates to the lead once \
 - answer with an update, not silence.";
 
@@ -682,6 +689,19 @@ mod tests {
                 assert!(names.contains(&expected), "{expected} must register for {kind:?}");
             }
         }
+    }
+
+    /// The lead's attestation door is lead-only (#2423/B): a worker is not
+    /// offered the verb at all, and a lead is.
+    #[test]
+    fn tasks_approve_registers_for_a_lead_only() {
+        let lead = registered_names(SessionKind::Lead);
+        let worker = registered_names(SessionKind::Worker);
+        assert!(lead.contains(&"tasks__approve".to_owned()), "a lead misses the door: {lead:?}");
+        assert!(
+            !worker.contains(&"tasks__approve".to_owned()),
+            "a worker is offered the lead's door: {worker:?}",
+        );
     }
 
     /// The injection gate: without a configured `[systemone]` the decision
