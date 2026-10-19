@@ -1199,7 +1199,12 @@
     return untrack(() => {
       if (held.refused !== null) return;
       if (held.reaskAt !== null) {
-        const timer = setTimeout(() => fillFittingRoom(), Math.max(0, held.reaskAt - Date.now()));
+        // **One millisecond late on purpose.** `takePage` stamps `emptyAt`
+        // and `reaskAt` from separate clock reads, so a timer computed from
+        // `reaskAt` can land a fraction before `older`'s own beat gate, be
+        // refused, and leave a quiet fitting seat with nothing re-armed.
+        const delay = Math.max(0, held.reaskAt - Date.now()) + 1;
+        const timer = setTimeout(() => fillFittingRoom(), delay);
         return () => clearTimeout(timer);
       }
       const frame = requestAnimationFrame(() => fillFittingRoom());
