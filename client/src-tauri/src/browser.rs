@@ -714,9 +714,31 @@ impl BrowserHost {
             cef::osr::Ring::unlink(&record.ring);
             cef::spawn::remove_record(cache);
         }
+        self.reap_singleton(cache).await;
         // A lock the host's own directory held is released with it; the
         // client's claim stays until this client exits or deletes.
         let _ = self.reconcile_surface().await;
+    }
+
+    /// **A host with no record is still a host.** The record is the client's
+    /// trail; Chromium's own `SingletonLock` is the host's. One whose record
+    /// was lost, or whose record the sweep already removed, is read from
+    /// there: reaped only when the pid is this very executable, so a reused
+    /// number is never signalled.
+    #[cfg(desktop)]
+    async fn reap_singleton(&self, cache: &Path) {
+        if let Some(pid) = cef::spawn::singleton_pid(cache)
+            && cef::spawn::running(pid)
+            && cef::spawn::is_our_binary(pid)
+        {
+            tauri_plugin_log::log::info!(
+                "reaping a browser host its record no longer names (event_name \
+                 cef_singleton_reaped, profile {}, pid {pid})",
+                cache.display(),
+            );
+            cef::spawn::end(pid).await;
+        }
+        cef::spawn::clear_singleton(cache);
     }
 
     /// Record that `dir` was just used. **A touch clears the streak**:
@@ -1141,6 +1163,9 @@ impl BrowserHost {
                 );
                 cef::osr::Ring::unlink(&record.ring);
                 cef::spawn::remove_record(cache);
+                // The dead host's singleton files go too, so the replacement
+                // starts onto a clean profile.
+                cef::spawn::clear_singleton(cache);
             }
         }
         // **The page reports the surface's own box shortly after it opens**;
@@ -1682,6 +1707,7 @@ impl BrowserHost {
                             reaped.push(name.to_owned());
                         }
                     }
+                    self.reap_singleton(&cache).await;
                     drop(lock);
                 }
                 Ok(None) => {}
@@ -2666,7 +2692,11 @@ mod tests {
         // discovery before it. Both are past the ensure, which is what the
         // assertions below pin.
         assert!(
-            why.contains("cannot be made") || why.contains("cannot be opened"),
+            why.contains("cannot be made")
+                || why.contains("cannot be opened")
+                // A platform without the engine refuses by name before the
+                // directory is touched; the ensure above still ran.
+                || why.contains("packaged for macOS"),
             "the call failed for some other reason: {why}",
         );
 

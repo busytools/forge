@@ -141,6 +141,16 @@ pub mod spawn {
 
     pub async fn end_verified(_pid: u32, _port: u16) {}
 
+    pub fn singleton_pid(_profile: &Path) -> Option<u32> {
+        None
+    }
+
+    pub fn is_our_binary(_pid: u32) -> bool {
+        false
+    }
+
+    pub fn clear_singleton(_profile: &Path) {}
+
     pub async fn probe(_port: u16) -> bool {
         false
     }

@@ -314,6 +314,53 @@ pub async fn end(pid: u32) {
     }
 }
 
+/// The pid a profile's CEF singleton lock names, when it carries one.
+///
+/// **The record is not the only trail to a host.** Chromium writes
+/// `SingletonLock` as a `<hostname>-<pid>` symlink; a host whose record was
+/// lost or removed still leaves this, and a host that was SIGKILLed leaves
+/// it stale. The sweep reads it after the record's own path has run.
+pub fn singleton_pid(profile: &Path) -> Option<u32> {
+    let target = std::fs::read_link(profile.join("SingletonLock")).ok()?;
+    let text = target.to_string_lossy().into_owned();
+    let (_, pid) = text.rsplit_once('-')?;
+    pid.parse().ok()
+}
+
+/// Whether `pid` is the very executable this client runs as, so a reaper
+/// never signals an unrelated process that reused a recorded number.
+pub fn is_our_binary(pid: u32) -> bool {
+    let Ok(mine) = std::env::current_exe() else {
+        return false;
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let mut buffer = [0_i8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: `proc_pidpath` writes at most the buffer's length.
+        let wrote = unsafe {
+            libc::proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32)
+        };
+        if wrote <= 0 {
+            return false;
+        }
+        // SAFETY: a successful call NUL-terminates the path in the buffer.
+        let path = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
+        std::path::Path::new(path.to_string_lossy().as_ref()) == mine
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Remove the singleton files a dead host left behind.
+pub fn clear_singleton(profile: &Path) {
+    for name in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+        let _ = std::fs::remove_file(profile.join(name));
+    }
+}
+
 /// Whether a pid names a live process.
 pub fn running(pid: u32) -> bool {
     // SAFETY: signal 0 checks existence without delivering anything.
@@ -377,6 +424,23 @@ fn whole_body_len(answer: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The singleton lock names the host the record lost.** A profile
+    /// whose record is gone is still reaped from Chromium's own symlink, and
+    /// only when the pid is this executable.
+    #[test]
+    fn a_singleton_lock_names_its_pid_and_only_our_binary_is_ours() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let profile = dir.path();
+        assert_eq!(singleton_pid(profile), None, "no lock, no pid");
+        std::os::unix::fs::symlink("mac-studio-4242", profile.join("SingletonLock"))
+            .expect("the lock");
+        assert_eq!(singleton_pid(profile), Some(4242));
+        assert!(is_our_binary(std::process::id()), "this test binary is ours");
+        assert!(!is_our_binary(1), "launchd is not");
+        clear_singleton(profile);
+        assert_eq!(singleton_pid(profile), None, "and the lock is gone");
+    }
 
     /// **A recycled pid is never signalled.** This test's own pid stands in
     /// for a record whose process has since been reused: no endpoint answers
