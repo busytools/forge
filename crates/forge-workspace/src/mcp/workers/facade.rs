@@ -343,6 +343,10 @@ pub trait WorkerFacade: Send + Sync {
     /// empty Vec when the caller resolves to no project.
     fn list_workers(&self, caller: &SessionSlot) -> Vec<WorkerStatus>;
 
+    /// Snapshot of every project's workers: the real workspace walks
+    /// `list_projects` in config order, the mock sorts its project keys.
+    fn list_all_workers(&self) -> Vec<WorkerStatus>;
+
     /// The caller's project worker capacity: the cap the spawn path
     /// enforces (`max_workers` in the project's `[[orgs.projects]]`
     /// entry, else `DEFAULT_MAX_WORKERS_PER_PROJECT`) paired with the
@@ -831,6 +835,19 @@ impl WorkerFacade for ProdWorkerFacade {
             .collect()
     }
 
+    fn list_all_workers(&self) -> Vec<WorkerStatus> {
+        let Some(ws) = self.workspace.upgrade() else {
+            return Vec::new();
+        };
+        let mut all = Vec::new();
+        for project in ws.list_projects() {
+            for entry in ws.list_live_workers(&project.key) {
+                all.push(ws.worker_status_snapshot(&entry));
+            }
+        }
+        all
+    }
+
     fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity> {
         let cp = self.caller_project(caller)?;
         let ws = self.workspace.upgrade()?;
@@ -1156,6 +1173,18 @@ impl WorkerFacade for MockWorkerFacade {
         self.workers.lock().get(cp.project_key.as_str()).cloned().unwrap_or_default()
     }
 
+    fn list_all_workers(&self) -> Vec<WorkerStatus> {
+        let workers = self.workers.lock();
+        let mut projects: Vec<&String> = workers.keys().collect();
+        projects.sort();
+        projects
+            .into_iter()
+            .filter_map(|project| workers.get(project))
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
     fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity> {
         let cp = self.caller_project(caller)?;
         Some(self.capacity_reply.lock().clone().unwrap_or(WorkerCapacity {
@@ -1437,6 +1466,30 @@ mod mock_tests {
         };
         let res = mock.deliver_worker_prompt(&caller, "missing", wrapped).await;
         assert!(matches!(res, Err(WorkerDeliverError::UnknownLabel { .. })));
+    }
+
+    fn status(label: &str) -> WorkerStatus {
+        WorkerStatus {
+            label: label.into(),
+            charter: format!("{label}'s charter"),
+            status: forge_primitives::WorkerLiveness::Running,
+            session_id: format!("{label}-uuid"),
+            slot: SessionSlot::from_str_for_test(label),
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::from_str_for_test("lead"),
+            diagnostic: None,
+            activity: None,
+        }
+    }
+
+    #[test]
+    fn mock_list_all_workers_flattens_every_project_in_key_order() {
+        let mock = MockWorkerFacade::new();
+        mock.workers.lock().insert("zeta".into(), vec![status("z1")]);
+        mock.workers.lock().insert("alpha".into(), vec![status("a1"), status("a2")]);
+        let labels: Vec<String> =
+            mock.list_all_workers().into_iter().map(|worker| worker.label).collect();
+        assert_eq!(labels, ["a1", "a2", "z1"], "every project's pool, project keys sorted");
     }
 
     #[test]
