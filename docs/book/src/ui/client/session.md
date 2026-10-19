@@ -65,17 +65,33 @@ read as one system.
   `from` name the counterparty and its org, `failed` carries the
   delivery's own reason, and `whoami` and `list` open onto their facts.
 - **A delivery** - a cron fire, a Slack message, a Gotify push - is a row
-  of its own kind, a cron fire titled by the schedule that fired it.
+  of its own kind, a cron fire titled by the schedule that fired it. A
+  Slack row whose block is late adds its age to the title, so a week-old
+  message reads as history before the row is opened.
 - **A nudge** - a chase warning, a browser's idle message, a worker's
   kick - is the machinery's own words, so it draws as a work row under
   the board's own mark rather than as the reader's: nobody typed it, and
-  it never wears `.mine`. A long one - the user-wait digest, a browser
+  it never wears `.mine`. A long one - a user-wait nudge, a browser
   sentence - opens on the whole of what it said, the way a thought row
   does. The row is found by the id the machinery minted for the prompt,
   which survives into the transcript, so a reloaded row draws what the
   live one did.
 - **An edit** draws its diff: the hunks with both line numbers, and the
   marks that say how each line moved.
+  **An edit or a question whose structured record the page could not
+  carry** says so on its marks line: an `omitted` figure with its size,
+  scaled to the unit the size belongs to (`omitted, 5.0 MB`). On an edit it
+  is one more mark beside the hunk count; on a question, which has no hunk
+  count, it is alone on that line. A record over the cap
+  first keeps the keys the row draws and drops only what nothing reads, so
+  a large edit keeps its patch and a Write draws the file it created from
+  the call's own input, and a question whose huge typed notes pushed it
+  over keeps its `answers`. **A question answered live and the same
+  question read from the transcript draw identically** - the cap bounds
+  both paths the same way - so the answer card is the card either way.
+  Only a record with nothing drawable left falls back to the omission: an
+  edit names it on the marks line, and a question draws as its own row,
+  its question glyph and the question it asked, opening on the omission.
 - **A backgrounded call** is held open by its task fact, its result
   saying the command started, and the ending landing later as a frame of
   its own. **Its output box follows a call that is still out**: while the
@@ -119,7 +135,10 @@ pill at the top edge says the older messages are loading rather than
 leaving the column reading as a dead scroll. The reader's own page is
 sized by what the column has measured - about a screen and a half of its
 own turns where the turns allow, one turn at minimum - while a walk
-toward a distant row keeps the full page.
+toward a distant row keeps the full page. **A conversation that fits the
+room has no top to scroll to**, so it asks for the page above on the
+fitting state itself and keeps asking as pages land, until the history
+fills the room or ends.
 
 ## The strip
 

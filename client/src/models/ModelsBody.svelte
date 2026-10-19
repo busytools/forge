@@ -367,7 +367,7 @@
   {/if}
 {/snippet}
 
-<main class="wrap models">
+<main class="wrap models-page">
   <header class="top pagetop">
     <div class="brand">
       <Brand name={mark} />

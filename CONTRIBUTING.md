@@ -73,6 +73,14 @@ stops at the first failing step. Read that line rather than a pipeline's
 exit status: piping `just check` through `tail` reports tail's status,
 not the recipe's.
 
+A client page root is named for its page - `files-page`, `board-page` -
+never a bare noun: the sheet is shared by every surface, and
+`client/src/page-roots.test.ts` fails a root that is not `<page>-page`.
+The routes with no page-scoped root of their own - home, connect, notFound
+and the dev fixture - draw the shared `.wrap` root instead. A rename
+carries its descendant selectors and the page's component-scoped styles
+with it, or the page loses its layout.
+
 The toolchain comes from `rust-toolchain.toml`; rustup applies it
 automatically. Tests run through `cargo nextest`, not `cargo test`.
 

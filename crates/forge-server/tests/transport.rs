@@ -49,6 +49,13 @@ async fn a_server() -> (String, Fleet) {
 /// itself, which is what a sleeping seat's page gets.
 async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let (url, state) = serve_fleet(&fleet).await;
+    (url, fleet, state)
+}
+
+/// The socket a fleet answers on, for a test that built its own fleet (and
+/// so owns the config the server reads).
+async fn serve_fleet(fleet: &Fleet) -> (String, Arc<TransportState>) {
     let state = Arc::new(TransportState::for_workspace(
         &fleet.workspace(),
         forge_primitives::ClientConfig::default(),
@@ -59,7 +66,7 @@ async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     tokio::spawn(async move {
         let _ = serve(served, listener).await;
     });
-    (format!("ws://{addr}/socket"), fleet, state)
+    (format!("ws://{addr}/socket"), state)
 }
 
 /// A client connected to a server this test started, with the greeting
@@ -2894,12 +2901,20 @@ async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
     )
     .await;
 
-    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+    let ServerMessage::Error { what, why, seat, .. } = next_server(&mut socket).await else {
         panic!("expected an error")
     };
     assert_eq!(what, "subscribe", "the refusal comes from the subscribe arm: {why}");
     assert!(why.contains("Nowhere/nothing/lead"), "the seat is named in its own words: {why}");
     assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+    // **The error names the seat it refused** (#2420): a client holding
+    // several seats cannot tell its own refused read from another's without
+    // the field, and the `more` refusal has always carried it.
+    assert_eq!(
+        seat,
+        Some(SessionSlot::for_label("Nowhere", "nothing", Some("lead"))),
+        "the refusal names the seat it belongs to",
+    );
 
     let ServerMessage::BrowserRole { hosting } = next_server(&mut socket).await else {
         panic!("the refusal still owes the role its grant");
@@ -3017,6 +3032,183 @@ async fn a_more_is_answered_with_a_page_of_whole_turns() {
     assert!(cursor.is_some(), "and it carries the handle that asks for the ones above");
 }
 
+/// **A page above the window's floor caps an oversized record** (#2374).
+///
+/// The held window is the other producer of a served page, and without this
+/// the cap could be deleted from it with the suite green: the record would
+/// cross whole on every `more` a client asks for.
+#[tokio::test]
+async fn a_more_above_the_floor_caps_the_record_it_serves() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let rows: Vec<String> = (0..20)
+        .map(|turn| {
+            if turn == 19 {
+                serde_json::json!({
+                    "type": "user",
+                    "uuid": format!("u{turn}"),
+                    "session_id": "s",
+                    "message": {"role": "user", "content": format!("turn {turn}")},
+                    // A row the CLI wrote spells the record `toolUseResult`;
+                    // the wire spells it `tool_use_result`.
+                    "toolUseResult": {"payload": "x".repeat(100_000)},
+                })
+                .to_string()
+            } else {
+                a_turns_rows(turn)
+            }
+        })
+        .collect();
+    fleet
+        .seed_transcript(
+            "TestOrg",
+            "proj",
+            "lead",
+            &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
+        .await;
+
+    let ServerMessage::Page { turns, .. } = next_server(&mut socket).await else {
+        panic!("a page is the answer to a request for more")
+    };
+    let frame = turns
+        .iter()
+        .flat_map(|turn| turn.messages.iter())
+        .find(|frame| frame["uuid"] == "u19")
+        .expect("the oversized record's frame is in the page above the floor");
+    assert_eq!(frame["tool_use_result"]["omitted"], true, "the record is marked: {frame}");
+    assert!(
+        frame["tool_use_result"]["bytes"].as_u64().is_some_and(|bytes| bytes > 100_000),
+        "and says how much it weighed: {frame}",
+    );
+}
+
+/// **The record's cursor carries the window's floor** (#2420). A byte-capped
+/// giant serves its whole window, whose page names no handle of its own -
+/// the history above it begins at the floor - so the `more` arm hands the
+/// floor back. The record must hand the same handle: seeded without it, a
+/// client reads the history above as ended and scrolling back is dead.
+#[tokio::test]
+async fn the_records_cursor_carries_the_windows_floor() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let mut rows: Vec<String> = (0..20).map(a_turns_rows).collect();
+    // One final turn that alone carries more frames than the window's cap:
+    // the cut is turn-aligned and never empty, so the window keeps that turn
+    // whole and drops the rows before it - its page opens on the window's
+    // front while the history above begins at the floor.
+    rows.push(
+        serde_json::json!({
+            "type": "user",
+            "uuid": "u-giant",
+            "session_id": "s",
+            "message": {"role": "user", "content": "the giant turn"},
+        })
+        .to_string(),
+    );
+    for at in 0..5_100 {
+        rows.push(
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": format!("a-giant-{at}"),
+                "session_id": "s",
+                "message": {
+                    "id": format!("m-giant-{at}"),
+                    "role": "assistant",
+                    "model": "claude-opus-5",
+                    "content": [{"type": "text", "text": "tick"}],
+                },
+            })
+            .to_string(),
+        );
+    }
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: false,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
+        panic!("a snapshot is the answer to a subscribe")
+    };
+    let record = data["conversation"]["cursor"].as_str().map(str::to_owned);
+    assert!(record.is_some(), "the record names the floor rather than the history's end: {data}");
+
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 20 })
+        .await;
+    let ServerMessage::Page { cursor, .. } = next_server(&mut socket).await else {
+        panic!("a page is the answer to a request for more")
+    };
+    assert_eq!(record, cursor, "the record's handle is the one `more` hands back");
+}
+
+/// **The configured cap reaches the page it serves** (#2374): the key is
+/// pinned by EFFECT, not only by its parse. A fleet whose `forge.toml` says
+/// `0` serves a record whole, and one whose cap is 1 KB marks the same
+/// record.
+#[tokio::test]
+async fn the_configured_record_cap_reaches_the_served_page() {
+    for (kb, capped) in [("0", false), ("1", true)] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = Fleet::in_dir_with_server(
+            dir.path(),
+            &[("TestOrg", &["proj"])],
+            &format!("[server]\ntool_record_cap_kb = {kb}\n"),
+        )
+        .expect("the fleet builds");
+        let (url, state) = serve_fleet(&fleet).await;
+        let row = serde_json::json!({
+            "type": "user",
+            "uuid": "tool-result-1",
+            "session_id": "s",
+            "message": {"role": "user", "content": "the call"},
+            "toolUseResult": {"payload": "x".repeat(100_000)},
+        })
+        .to_string();
+        fleet
+            .seed_transcript("TestOrg", "proj", "lead", &[row.as_str()])
+            .expect("the transcript seeds");
+        fleet
+            .hold_conversation(&state, "TestOrg", "proj", "lead")
+            .expect("the seat's conversation is held");
+
+        let (_socket, data) = a_page_on(&url, Subject::Session(lead_seat())).await;
+        let frame = data["conversation"]["turns"]
+            .as_array()
+            .expect("the page carries turns")
+            .iter()
+            .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
+            .find(|frame| frame["uuid"] == "tool-result-1")
+            .expect("the page carries the record's frame");
+        let record = &frame["tool_use_result"];
+        if capped {
+            assert_eq!(record["omitted"], true, "a {kb} KB cap marks the record: {frame}");
+        } else {
+            assert_eq!(
+                record["payload"].as_str().map(str::len),
+                Some(100_000),
+                "a 0 cap serves the record whole: {frame}",
+            );
+        }
+    }
+}
+
 /// **A sleeping seat's history answers from the transcript it left.**
 ///
 /// The seat's last session wrote its file and the store still names its id,
@@ -3077,6 +3269,18 @@ fn a_said_frame(text: &str) -> forge_primitives::Message {
         "type": "user",
         "message": {"role": "user", "content": [{"type": "text", "text": text}]},
         "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+    }))
+    .expect("a user frame")
+}
+
+/// A user frame carrying a structured record, as a tool result does.
+fn a_recorded_frame(record: &serde_json::Value) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "user",
+        "uuid": "tool-result-1",
+        "message": {"role": "user", "content": [{"type": "text", "text": "the call"}]},
+        "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        "tool_use_result": record,
     }))
     .expect("a user frame")
 }
@@ -3878,6 +4082,46 @@ async fn a_repair_answer_carries_no_history() {
     assert!(!body.contains("the replayed words"), "the history crossed on a repair: {body}");
 }
 
+/// **A live frame carries the same bound a page does** (#2374): an over-cap
+/// record is capped on its way to a subscribed client, so the row drawn live
+/// and the row drawn after a switch are the same marker.
+#[tokio::test]
+async fn a_live_frame_caps_an_oversized_tool_record() {
+    let (url, fleet) = a_server().await;
+    wait_for_the_fold(&fleet).await;
+    let (mut socket, _) = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        origin: None,
+        source: None,
+        msg: a_recorded_frame(&serde_json::json!({"payload": "x".repeat(100_000)})),
+    });
+
+    let update = update_until(&mut socket, "the capped live frame", |update| {
+        matches!(
+            update,
+            SessionUpdate::ChatAppended {
+                msg: forge_primitives::Message::User { tool_use_result: Some(_), .. },
+                ..
+            }
+        )
+    })
+    .await;
+    let SessionUpdate::ChatAppended { msg, .. } = update else {
+        panic!("the update is the frame that was emitted")
+    };
+    let forge_primitives::Message::User { tool_use_result, .. } = msg else {
+        panic!("the frame is the user turn that carries the record")
+    };
+    let record = tool_use_result.expect("the frame carries its record");
+    assert_eq!(record["omitted"], true, "the live record is marked: {record}");
+    assert!(
+        record["bytes"].as_u64().is_some_and(|bytes| bytes > 100_000),
+        "and says how much it weighed: {record}",
+    );
+}
+
 /// A range ask is answered from the window the seat already keeps: the frames
 /// asked for, each carrying the number it was minted under, so a client that
 /// missed a stretch can fold exactly those and carry on.
@@ -3913,6 +4157,36 @@ async fn a_range_ask_inside_the_window_answers_exactly_the_asked_frames() {
     assert!(asked.contains("frame 2"), "with each frame's own content: {asked}");
 }
 
+/// **A ring repair caps the record it replays** (#2374): a `SeatRange` inside
+/// the window goes through the same client-facing bound as a live frame, so a
+/// repaired row and the one that streamed draw the same marker.
+#[tokio::test]
+async fn a_ring_repair_caps_an_oversized_tool_record() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_recorded_frame(&serde_json::json!({"payload": "x".repeat(100_000)})),
+    });
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::SeatRange { slot: seat, epoch: None, from: 1, to: 1 }).await;
+
+    let ServerMessage::SeatFrames { frames, .. } = next_server(&mut socket).await else {
+        panic!("a range ask is answered with the frames it asked for")
+    };
+    let SessionUpdate::ChatAppended { msg, .. } = &frames[0].update else {
+        panic!("the repaired frame is a chat frame")
+    };
+    let forge_primitives::Message::User { tool_use_result: Some(record), .. } = msg else {
+        panic!("the frame carries the record that was emitted")
+    };
+    assert_eq!(record["omitted"], true, "the ring repair caps the record: {record}");
+}
+
 /// **A range older than the window falls back to the transcript, and the
 /// frames still carry the range's own numbers.** Re-numbering them from one
 /// would leave the client's sequence looking gapped forever, and dropping them
@@ -3923,7 +4197,17 @@ async fn a_range_older_than_the_window_falls_back_to_the_transcript() {
     let seat = lead_seat();
     let rows: Vec<String> = (1..=4)
         .map(|at| {
-            format!(r#"{{"type":"user","uuid":"u{at}","message":{{"role":"user","content":"row {at}"}}}}"#)
+            // The transcript repair serves a record like every other path,
+            // so one row carries an oversized one (#2374).
+            let record = if at == 1 {
+                format!(",\"toolUseResult\":{{\"payload\":\"{}\"}}", "x".repeat(100_000))
+            } else {
+                String::new()
+            };
+            format!(
+                "{{\"type\":\"user\",\"uuid\":\"u{at}\",\"session_id\":\"s\",\
+                 \"message\":{{\"role\":\"user\",\"content\":\"row {at}\"}}{record}}}"
+            )
         })
         .collect();
     let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
@@ -3961,6 +4245,13 @@ async fn a_range_older_than_the_window_falls_back_to_the_transcript() {
         texts[0].contains("row 1") && texts[3].contains("row 4"),
         "and their content is the transcript's own rows, not the frames the window shed: {texts:?}",
     );
+    let SessionUpdate::ChatAppended { msg, .. } = &frames[0].update else {
+        panic!("a repaired frame is a chat frame")
+    };
+    let forge_primitives::Message::User { tool_use_result: Some(record), .. } = msg else {
+        panic!("the first row carries the record the cap was given")
+    };
+    assert_eq!(record["omitted"], true, "the transcript repair caps the record: {record}");
 }
 
 /// **A range ask naming an epoch the seat has left is refused.** Those numbers
@@ -5411,9 +5702,17 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
     // copy drops a prefix of it and the floor lands on a turn's own frame.
     let rows: Vec<String> = (0..5_200)
         .map(|at| {
+            // One row in the below-floor range carries an oversized record, so
+            // the transcript producer's cap is pinned where a held page cannot
+            // answer (#2374).
+            let record = if at == 1_197 {
+                format!(",\"toolUseResult\":{{\"payload\":\"{}\"}}", "x".repeat(100_000))
+            } else {
+                String::new()
+            };
             format!(
                 "{{\"type\":\"user\",\"uuid\":\"u{at}\",\"session_id\":\"s1\",\
-                 \"message\":{{\"role\":\"user\",\"content\":\"turn {at}\"}}}}"
+                 \"message\":{{\"role\":\"user\",\"content\":\"turn {at}\"}}{record}}}"
             )
         })
         .collect();
@@ -5475,6 +5774,15 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
         vec!["turn 1196", "turn 1197", "turn 1198", "turn 1199"],
         "the turns directly below the window's own front, which is where a page below the floor \
          starts",
+    );
+    let capped = page
+        .iter()
+        .flat_map(|turn| turn.messages.iter())
+        .find(|frame| frame["uuid"] == "u1197")
+        .expect("the oversized record's frame is in the page below the floor");
+    assert_eq!(
+        capped["tool_use_result"]["omitted"], true,
+        "the transcript producer caps the record it serves: {capped}",
     );
     let cursor = cursor.expect("a cursor below that one, so the walk carries on");
     assert!(

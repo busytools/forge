@@ -507,12 +507,19 @@ impl Bridge {
             let Some(turns) = record.get("conversation").and_then(|c| c.get("turns")) else {
                 continue;
             };
+            // **The record's own cursor rides the page** (#2420): the
+            // record's conversation is the newest window `more` with no
+            // `before` would have carried, handle and all - including the
+            // window's floor - so the catch-up preserves the walk above it.
+            let cursor = record
+                .get("conversation")
+                .and_then(|conversation| conversation.get("cursor"))
+                .cloned()
+                .unwrap_or_default();
             self.emit(ClientEvent::Inbound(json!({
                 "kind": "page",
                 "conversation": session,
-                // No cursor: this is the newest window, the answer `more`
-                // with no `before` would have carried.
-                "cursor": null,
+                "cursor": cursor,
                 "turns": turns,
                 // **Told apart from an answer**: a page read while an older
                 // ask is "in flight" would be spliced as an older page and
@@ -884,7 +891,10 @@ mod tests {
             &bridge,
             snapshot(json!({
                 "header": { "context": { "percent": 0.1 } },
-                "conversation": { "turns": [{ "key": "t1", "messages": [] }] },
+                "conversation": {
+                    "turns": [{ "key": "t1", "messages": [] }],
+                    "cursor": "7",
+                },
             })),
         );
         event(&mut rx, is_inbound()).await;
@@ -908,11 +918,7 @@ mod tests {
         let ClientEvent::Inbound(page) = event(&mut rx, is_inbound_kind("page")).await else {
             unreachable!("filtered to inbound");
         };
-        assert_eq!(
-            page["cursor"],
-            json!(null),
-            "the newest window, as `more` with no before answers"
-        );
+        assert_eq!(page["cursor"], json!("7"), "the record's own handle rides the catch-up");
         assert_eq!(page["reconciled"], json!(true), "and it says which kind of page it is");
         assert_eq!(page["turns"][0]["key"], json!("t1"));
         assert_eq!(page["conversation"], seat()["session"]);

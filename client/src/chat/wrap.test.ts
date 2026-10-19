@@ -45,7 +45,7 @@ const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8'
  * reader's own message, which mounts its prose under `.mine`.
  */
 const inPage = (fragment: string, turn: 'work' | 'mine' = 'work'): string =>
-  `<div class="app"><main class="chat"><div class="conv"><div><div class="turn">` +
+  `<div class="session-page"><main class="chat"><div class="conv"><div><div class="turn">` +
   `<div class="${turn}">${fragment}</div></div></div></div></main></div>`;
 
 /** A call carrying a diff and a command's own output, as the fold hands it over. */

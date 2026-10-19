@@ -15,9 +15,11 @@
 //! whatever happened in between.
 //!
 //! Delivery degrades, never wakes: a live owner is asked; with a dead
-//! owner the lead is; with every seat asleep the mark alone stands. A
-//! chase NEVER spawns a session - the board already shows the state, and
-//! waking a project is a cost the chase does not get to spend.
+//! owner the lead is; with every seat asleep the mark alone stands - except
+//! the user-wait nudge, whose one shot per row is kept unspent until a live
+//! lead takes it. A chase NEVER spawns a session - the board already shows
+//! the state, and waking a project is a cost the chase does not get to
+//! spend.
 
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -29,6 +31,7 @@ use tracing::Instrument;
 
 use crate::SessionSlot;
 use crate::board::BoardRow;
+use crate::tasks::parked_on_user;
 use crate::workspace::Workspace;
 
 /// How long between sweeps. The same number bounds how stale a
@@ -109,13 +112,6 @@ fn fired_since(fired: &[TaskChase], rung: ChaseRung, id: &TaskId, at: SystemTime
         .any(|chase| chase.rung == rung && chase.task_id.as_ref() == Some(id) && chase.at >= at)
 }
 
-/// Whether a project-level rung - one with no row to key on - has waited
-/// out its cadence.
-fn due_any(fired: &[TaskChase], rung: ChaseRung, cadence: u64, now: SystemTime) -> bool {
-    let last = fired.iter().filter(|chase| chase.rung == rung).map(|chase| chase.at).max();
-    last.is_none_or(|at| since_secs(at, now) >= cadence)
-}
-
 /// Whether a recurring rung has waited out its cadence: it is due when
 /// nothing fired since `since` (the instant its state appeared, where
 /// the history says), or when the newest firing since then is at least
@@ -146,6 +142,16 @@ fn failed_at(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
     history
         .iter()
         .filter(|transition| transition.task_id == *id && transition.to == TaskStatus::Failed)
+        .map(|transition| transition.at)
+        .max()
+}
+
+/// When the row entered waiting, if the history says: the newest transition
+/// into waiting is the episode a user nudge is deduped on.
+fn waiting_since(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
+    history
+        .iter()
+        .filter(|transition| transition.task_id == *id && transition.to == TaskStatus::Waiting)
         .map(|transition| transition.at)
         .max()
 }
@@ -340,36 +346,39 @@ pub(crate) fn crossings(
         }
     }
 
-    // The rows parked on the user: never chased before, so a decision
-    // wait sat forever with only a board count. ONE digest per project
-    // asks the lead to filter them - a touch or a move takes a row back
-    // out of it - and a dead lead leaves the mark alone, as every rung.
-    let parked: Vec<&BoardRow> = rows
-        .iter()
-        .filter(|row| {
-            row.task.status == TaskStatus::Waiting
-                && row.task.waiting_on.as_ref().is_some_and(|wait| {
-                    wait.verification || wait.kind == Some(WaitingKind::Decision)
-                })
-                && row.updated_secs_ago > CADENCE_STUCK_SECS
-        })
-        .collect();
-    if !parked.is_empty() && due_any(fired, ChaseRung::UserWaitDigest, CADENCE_STUCK_SECS, now) {
-        let named: Vec<String> = parked
-            .iter()
-            .map(|row| format!("\"{}\" ({})", row.task.subject, fmt_secs(row.updated_secs_ago)))
-            .collect();
-        let count = parked.len();
-        let verb = if count == 1 { "row is" } else { "rows are" };
+    // The rows parked on the user: ONE nudge per row per wait episode, so
+    // a row the lead has acted on (attested, withdrawn, or explicitly
+    // parked) drops out and is never named again. The set is the board's
+    // own derivation (`parked_on_user`), so a verification park a row left
+    // behind under an inherited gate is not chased as a user wait (#2423),
+    // and a wait the lead parked by design is left alone (#2423/D). Rows
+    // bounded by a dependency or a resource are not this list's either.
+    for row in rows.iter().filter(|row| {
+        row.task.status == TaskStatus::Waiting
+            && parked_on_user(&row.task)
+            && row.task.waiting_on.as_ref().is_some_and(|wait| !wait.parked)
+            && row.updated_secs_ago > CADENCE_STUCK_SECS
+    }) {
+        let since = waiting_since(history, &row.task.id).unwrap_or(SystemTime::UNIX_EPOCH);
+        if fired_since(fired, ChaseRung::UserWaitDigest, &row.task.id, since) {
+            continue;
+        }
+        let what = if row.task.waiting_on.as_ref().is_some_and(|wait| wait.verification) {
+            "a look - approve it on the board, or complete it with tasks__approve and the \
+             approval quoted"
+        } else {
+            "a decision - answer it on the board"
+        };
         out.push(Crossing {
             rung: ChaseRung::UserWaitDigest,
-            task_id: None,
+            task_id: Some(row.task.id.clone()),
             subject: None,
             seat: Some(lead.clone()),
             text: format!(
-                "task board: {count} {verb} waiting on the user: {} - confirm it's really \
+                "task board: \"{}\" ({}) is waiting on the user: {what}. Confirm it's really \
                  theirs, or re-plan.",
-                named.join(", "),
+                row.task.subject,
+                fmt_secs(row.updated_secs_ago),
             ),
         });
     }
@@ -533,10 +542,18 @@ impl Workspace {
             let crossings = crossings(&lead, &rows, &history, &unaccounted, &fired, now);
             for crossing in crossings {
                 let target = ladder(&crossing, &lead, |seat| self.seat_is_live(seat));
+                let mut landed = false;
                 if let Some(target) = &target
                     && deliver.to_seat(target, &crossing.text) == Delivery::Delivered
                 {
                     delivered += 1;
+                    landed = true;
+                }
+                // A user nudge is one shot per row: a tick that found every
+                // seat asleep must not consume it, or the row's only nudge is
+                // lost. Every other rung keeps its mark-alone behaviour.
+                if crossing.rung == ChaseRung::UserWaitDigest && !landed {
+                    continue;
                 }
                 self.record_chase(&TaskChase {
                     task_id: crossing.task_id.clone(),
@@ -622,7 +639,7 @@ mod tests {
     use crate::protocol::SessionUpdate;
     use forge_primitives::Message;
     use forge_primitives::tasks::{
-        By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, TaskTransition, Waiting,
+        By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, TaskTransition, Verify, Waiting,
     };
     use tempfile::tempdir;
 
@@ -655,6 +672,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -961,23 +980,28 @@ mod tests {
     }
 
     /// A row parked on the user - a decision wait, or the look's own
-    /// verification park - untouched since `updated`.
+    /// verification park - untouched since `updated`. A verification park
+    /// belongs to a row carrying its own gate (#2423).
     fn waiting_on_user(ws: &Workspace, id: &str, updated: u64, verification: bool) {
         let mut row = task(id, TaskStatus::Waiting);
+        if verification {
+            row.verify = Some(Verify::User);
+        }
         row.waiting_on = Some(Waiting {
             kind: Some(WaitingKind::Decision),
             detail: None,
             on: None,
             verification,
+            parked: false,
         });
         row.updated_at = epoch(updated);
         ws.seed_test_task(row);
     }
 
-    /// The rows parked on the user get ONE digest per project per window,
-    /// whatever their count.
+    /// Every row parked on the user gets ONE nudge of its own, and none
+    /// repeats on the cadence.
     #[test]
-    fn the_user_wait_digest_is_one_message_for_the_whole_set() {
+    fn every_user_wait_takes_one_nudge_and_none_repeats() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         let _lead_rx = live_lead(&ws);
@@ -987,24 +1011,29 @@ mod tests {
         let deliver = Recording::default();
 
         let now = WINDOW + 1;
-        assert_eq!(sweep(&ws, &deliver, now), 1, "one message, not three");
+        assert_eq!(sweep(&ws, &deliver, now), 3, "one message per row, not one digest");
         let seen = deliver.seen.lock();
-        let text = &seen[0].1;
-        assert!(text.contains("3 rows are waiting on the user"), "{text}");
+        assert_eq!(seen.len(), 3, "three rows, three nudges");
         for id in ["t-1", "t-2", "t-3"] {
-            assert!(text.contains(&format!("\"subject {id}\"")), "names {id}: {text}");
+            assert!(
+                seen.iter().any(|(_, text)| text.contains(&format!("\"subject {id}\""))),
+                "no nudge names {id}: {seen:?}",
+            );
         }
-        assert_eq!(seen[0].0, SessionSlot::lead("TestOrg", PROJECT), "it goes to the lead");
+        assert!(
+            seen.iter().all(|(seat, _)| *seat == SessionSlot::lead("TestOrg", PROJECT)),
+            "every nudge goes to the lead",
+        );
         drop(seen);
 
-        assert_eq!(sweep(&ws, &deliver, now + 1799), 0, "quiet inside the window");
-        assert_eq!(sweep(&ws, &deliver, now + 1800), 1, "one more at the cadence");
+        assert_eq!(sweep(&ws, &deliver, now + 1799), 0, "a row is nudged once");
+        assert_eq!(sweep(&ws, &deliver, now + 1800), 0, "and not again on the cadence");
     }
 
-    /// The lead's touch takes exactly that row out of the digest; a
-    /// verify=user row rides it like a decision wait.
+    /// A verification park takes its own nudge, once; a row that starts
+    /// waiting after the sweep gets one of its own.
     #[test]
-    fn a_touched_row_leaves_the_digest_and_a_verify_park_joins_it() {
+    fn a_verify_park_takes_its_own_nudge_once() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         let _lead_rx = live_lead(&ws);
@@ -1013,30 +1042,85 @@ mod tests {
         let deliver = Recording::default();
 
         let now = WINDOW + 1;
-        assert_eq!(sweep(&ws, &deliver, now), 1, "one digest");
+        assert_eq!(sweep(&ws, &deliver, now), 2, "a decision and a park, one nudge each");
         let seen = deliver.seen.lock();
-        assert!(seen[0].1.contains("2 rows are waiting on the user"), "{}", seen[0].1);
-        assert!(seen[0].1.contains("\"subject t-2\""), "the park joins it: {}", seen[0].1);
+        let park = seen.iter().find(|(_, text)| text.contains("subject t-2")).expect("t-2 named");
+        assert!(park.1.contains("a look"), "the park's nudge names the look: {}", park.1);
         drop(seen);
+        assert_eq!(sweep(&ws, &deliver, now + 1800), 0, "neither is nudged twice");
 
-        // The lead answers t-1: the touch ends that row's asks.
-        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
-            task.detail = Some("really on Ved".to_owned());
-        })
-        .expect("no refusal")
-        .expect("the row is there");
-        assert_eq!(sweep(&ws, &deliver, now + 1800), 1, "the digest repeats");
-        let seen = deliver.seen.lock();
-        let text = &seen.last().expect("a digest").1;
-        assert!(text.contains("1 row is waiting on the user"), "{text}");
-        assert!(text.contains("\"subject t-2\""), "the park still stands: {text}");
-        assert!(!text.contains("t-1"), "the touched row left: {text}");
+        // A row that starts waiting after this sweep is a new episode.
+        waiting_on_user(&ws, "t-3", 0, false);
+        assert_eq!(sweep(&ws, &deliver, now + 3600), 1, "the new wait gets its own nudge");
+        assert!(deliver.seen.lock().last().expect("a nudge").1.contains("subject t-3"));
     }
 
-    /// With no live lead the digest is mark-only: nothing is delivered
-    /// and nothing is spawned.
+    /// A wait the lead parked by design - the user's own deferral - is left
+    /// alone: no nudge, no repeat (#2423/D).
     #[test]
-    fn the_digest_with_no_live_lead_leaves_only_the_mark() {
+    fn a_parked_wait_is_left_alone() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Waiting);
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("backlog at Ved's word".to_owned()),
+            on: None,
+            verification: false,
+            parked: true,
+        });
+        row.updated_at = epoch(0);
+        ws.seed_test_task(row);
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 0, "a parked wait is not the user's chase");
+        assert!(deliver.seen.lock().is_empty());
+        assert!(
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .all(|chase| chase.rung != ChaseRung::UserWaitDigest),
+            "and no mark is left for it",
+        );
+    }
+
+    /// A verification park whose row owns no gate - the shape an inherited
+    /// gate left behind - is not a user wait (#2423): the digest does not
+    /// name it, and no one is asked to confirm it.
+    #[test]
+    fn a_verification_park_without_an_own_gate_stays_out_of_the_digest() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        waiting_on_user(&ws, "t-1", 0, true);
+        // The same wait on a row whose gate was never its own: the epic
+        // carried it, so the park is not an ask on the user.
+        let mut inherited = task("t-2", TaskStatus::Waiting);
+        inherited.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: true,
+            parked: false,
+        });
+        inherited.updated_at = epoch(0);
+        ws.seed_test_task(inherited);
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 1, "only the genuine park is nudged");
+        let seen = deliver.seen.lock();
+        assert_eq!(seen.len(), 1, "one nudge, for the row that owns the gate");
+        let text = &seen[0].1;
+        assert!(text.contains("\"subject t-1\""), "the own-gate park joins: {text}");
+        assert!(!text.contains("\"subject t-2\""), "the inherited park stays out: {text}");
+    }
+
+    /// The user nudge never wakes a sleeping lead, and a tick that found it
+    /// asleep does not consume the row's one nudge (#2423/D): nothing is
+    /// delivered and nothing is marked, so the first tick with a live lead
+    /// delivers it. Every other rung keeps its mark-alone behaviour.
+    #[test]
+    fn a_user_wait_nudge_waits_for_a_live_lead() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         waiting_on_user(&ws, "t-1", 0, false);
@@ -1045,11 +1129,21 @@ mod tests {
         assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 0, "nothing delivered");
         assert!(deliver.seen.lock().is_empty(), "no seat was reached");
         assert!(
+            !ws.chases_for_project(PROJECT)
+                .iter()
+                .any(|chase| chase.rung == ChaseRung::UserWaitDigest),
+            "a tick that found the lead asleep must not spend the row's one nudge",
+        );
+
+        let _lead_rx = live_lead(&ws);
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 2), 1, "the first awake tick delivers it");
+        assert!(
             ws.chases_for_project(PROJECT)
                 .iter()
                 .any(|chase| chase.rung == ChaseRung::UserWaitDigest),
-            "the mark alone stands on the log",
+            "and the landed nudge is on the log",
         );
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1800), 0, "then it is spent");
     }
 
     /// The estimate crossing asks the owner once, ever - a later sweep
@@ -1131,6 +1225,87 @@ mod tests {
         );
     }
 
+    /// One nudge per wait EPISODE: the row's own newest transition into
+    /// waiting is the episode key, so a row that left waiting and came back
+    /// takes a fresh nudge rather than inheriting the spent one (#2423/D).
+    #[test]
+    fn a_wait_re_entering_after_a_move_is_a_new_nudge() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Waiting);
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+        });
+        row.updated_at = epoch(100);
+        ws.seed_test_task(row);
+        let append = |from: Option<TaskStatus>, to: TaskStatus, at: u64| {
+            let guard = ws.db.lock();
+            crate::store::task_history::append(
+                guard.as_ref().expect("db"),
+                &[TaskTransition {
+                    task_id: TaskId::from("t-1"),
+                    project_name: PROJECT.to_owned(),
+                    from,
+                    to,
+                    at: epoch(at),
+                    by: By::System,
+                }],
+            )
+            .expect("history");
+        };
+        append(Some(TaskStatus::Pending), TaskStatus::Waiting, 100);
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, 3000), 1, "the episode's first nudge");
+        // Off waiting and back: a new episode at 4100.
+        append(Some(TaskStatus::Waiting), TaskStatus::InProgress, 4000);
+        append(Some(TaskStatus::InProgress), TaskStatus::Waiting, 4100);
+        assert_eq!(sweep(&ws, &deliver, 6000), 1, "the new episode is nudged");
+        assert_eq!(sweep(&ws, &deliver, 9000), 0, "and that nudge is spent in turn");
+    }
+
+    /// A dependency or a resource wait is not the user's: neither is nudged
+    /// as a user wait however the rows around it are gated (#2415).
+    #[test]
+    fn resource_and_dependency_waits_are_not_the_users() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        for (id, kind) in [("t-1", WaitingKind::Dependency), ("t-2", WaitingKind::Resource)] {
+            let mut row = task(id, TaskStatus::Waiting);
+            row.waiting_on = Some(Waiting {
+                kind: Some(kind),
+                detail: None,
+                on: None,
+                verification: false,
+                parked: false,
+            });
+            row.updated_at = epoch(0);
+            ws.seed_test_task(row);
+        }
+        let deliver = Recording::default();
+
+        sweep(&ws, &deliver, WINDOW + 1);
+        // The stuck-wait rung may name them to the LEAD ("unblock it"), which
+        // is the task's business; what neither may be is the user's.
+        assert!(
+            deliver.seen.lock().iter().all(|(_, text)| !text.contains("waiting on the user")),
+            "a dependency or resource wait was listed as the user's: {:?}",
+            deliver.seen.lock(),
+        );
+        assert!(
+            ws.chases_for_project(PROJECT)
+                .iter()
+                .all(|chase| chase.rung != ChaseRung::UserWaitDigest),
+            "and neither leaves a user-wait mark",
+        );
+    }
+
     /// A waiting row is never estimate-chased: its clock is stopped, and
     /// its wait's age is the signal - which has its own rung.
     #[test]
@@ -1145,6 +1320,7 @@ mod tests {
             detail: None,
             on: None,
             verification: false,
+            parked: false,
         });
         row.updated_at = epoch(0);
         ws.seed_test_task(row);

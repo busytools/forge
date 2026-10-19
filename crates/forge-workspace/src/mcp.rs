@@ -344,7 +344,7 @@ pub fn build_forge_server(
         builder = gotify::add_tools(builder, gotify, slot.clone());
     }
     if families.contains(&McpFamily::Tasks) {
-        builder = tasks::add_tools(builder, tasks, slot.clone());
+        builder = tasks::add_tools(builder, tasks, slot.clone(), matches!(kind, SessionKind::Lead));
     }
     // Doubly gated: the family is selected AND a client exists - a
     // disabled `[systemone]` leaves no tool a session could try.
@@ -372,9 +372,9 @@ pass, never left completed; a landed child of an epic - open or already terminal
 child parks in waiting on the user first). Read it \
 with tasks__list: a `ready` mark means a row can be started, `worked` and the \
 `overdue` mark say how long it has run against its estimate, and a message \
-about an over-estimate row is an answer you owe. Claim before working: \
-tasks__claim by `id`, or by `epic` to pull that epic's top ready row; one \
-row in progress per worker. Keep your row true: tasks__update on every \
+about an over-estimate row is an answer you owe. Claim an unassigned row \
+before working: tasks__claim by `id`, or by `epic` to pull that epic's top \
+ready row; one row in progress per worker. Keep your row true: tasks__update on every \
 state change - the update is also your alive signal - and attach the PR \
 the moment it exists. If you cannot proceed, tasks__wait: `kind` is \
 decision (a question for the user - only a hold the user explicitly asked \
@@ -384,7 +384,11 @@ in `on`) or resource (an account, a CI run, a machine); then move to your \
 next held row instead of sitting still. File what you find mid-flight at \
 once with tasks__create, under your epic, owned or unowned; nothing is \
 deferred. A row with verify=user cannot complete until the user approves \
-it; completing the ROOT row of an epic closes it and archives the tree. \
+it, and that gate is minted on the row - never inherited from an epic, \
+whose own gate governs only its own completion; a look the user already \
+gave in chat is completed by the lead with tasks__approve and the approval \
+quoted (never a decision, which is the user's to answer); completing the \
+ROOT row of an epic closes it and archives the tree. \
 The chase asks an over-estimate owner once and escalates to the lead once \
 - answer with an update, not silence.";
 
@@ -495,6 +499,32 @@ mod tests {
             TASK_BOARD_INSTRUCTIONS
                 .contains("completing the ROOT row of an epic closes it and archives the tree"),
             "the instructions state the archive that closes an epic: {TASK_BOARD_INSTRUCTIONS}",
+        );
+    }
+
+    /// The user gate is minted on the row and never inherited from its
+    /// epic (#2423): the always-on block states it, so no session reads
+    /// an epic's gate as its children's and parks a completed child on a
+    /// look nobody owes.
+    #[test]
+    fn the_task_instructions_state_the_minted_gate() {
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.contains(
+                "that gate is minted on the row - never inherited from an epic, whose own \
+                 gate governs only its own completion"
+            ),
+            "the instructions state where the gate lives: {TASK_BOARD_INSTRUCTIONS}",
+        );
+    }
+
+    /// The claim is scoped to unassigned rows (#2416): a lead assigns a
+    /// worker's row at creation, and a worker reading only this block
+    /// would otherwise pull a different row with `claim` by epic.
+    #[test]
+    fn the_task_instructions_claim_only_an_unassigned_row() {
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.contains("Claim an unassigned row before working"),
+            "the instructions scope the claim: {TASK_BOARD_INSTRUCTIONS}",
         );
     }
 
@@ -654,6 +684,19 @@ mod tests {
                 assert!(names.contains(&expected), "{expected} must register for {kind:?}");
             }
         }
+    }
+
+    /// The lead's attestation door is lead-only (#2423/B): a worker is not
+    /// offered the verb at all, and a lead is.
+    #[test]
+    fn tasks_approve_registers_for_a_lead_only() {
+        let lead = registered_names(SessionKind::Lead);
+        let worker = registered_names(SessionKind::Worker);
+        assert!(lead.contains(&"tasks__approve".to_owned()), "a lead misses the door: {lead:?}");
+        assert!(
+            !worker.contains(&"tasks__approve".to_owned()),
+            "a worker is offered the lead's door: {worker:?}",
+        );
     }
 
     /// The injection gate: without a configured `[systemone]` the decision

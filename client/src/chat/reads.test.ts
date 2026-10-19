@@ -104,9 +104,10 @@ describe('the chat column under a page that re-reads', () => {
     reads.set(2);
     flushSync();
 
-    expect(server.asks, "the page's own read asked the server for the conversation again").toEqual([
-      { kind: 'more', conversation: LEAD, before: null, turns: 20 },
-    ]);
+    expect(
+      server.asks,
+      "the page's own read asked the server nothing: the subscribe answered the page",
+    ).toEqual([]);
     expect(drawn(), "the page's own read put the column back to loading").not.toContain(
       'Reading the conversation',
     );

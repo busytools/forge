@@ -96,6 +96,18 @@ pub struct CronEntry {
     /// its lead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_role: Option<String>,
+    /// Whether a fire may wake a sleeping owner. False is for a standing
+    /// sweep: a tick that finds the owner asleep is skipped and the entry
+    /// stays due, so the next session start (or a tick while it is awake)
+    /// delivers it. `default` reads a legacy entry as waking, which is
+    /// what it did before the field existed.
+    #[serde(default = "wake_default")]
+    pub wake: bool,
+}
+
+/// A cron written before `wake` existed woke its owner, its only behaviour.
+fn wake_default() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -127,6 +139,7 @@ mod tests {
             last_fire: None,
             next_fire: epoch(1_700_032_400),
             team_role: None,
+            wake: true,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         assert!(json.contains("Morning summary"), "a set description serializes");
@@ -146,6 +159,7 @@ mod tests {
             last_fire: Some(epoch(1_700_050_000)),
             next_fire: epoch(1_700_100_000),
             team_role: None,
+            wake: true,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         assert!(!json.contains("description"), "an absent description is skipped");
@@ -166,5 +180,6 @@ mod tests {
         }"#;
         let back: CronEntry = serde_json::from_str(json).expect("legacy deserialize");
         assert_eq!(back.description, None);
+        assert!(back.wake, "an entry written before `wake` woke its owner");
     }
 }

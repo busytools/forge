@@ -41,7 +41,15 @@
 
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
-import { blocksOf, bodyOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
+import {
+  blocksOf,
+  bodyOf,
+  leafOf,
+  omittedRecord,
+  type Block,
+  type TaskFact,
+  type ToolLeaf,
+} from './leaves';
 import { formatRateLimitSummary, rateLimitNoticeKey } from './rate-limit';
 import { firstLine, isSlackId, stripEscapes } from './text';
 
@@ -945,12 +953,17 @@ export function inbound(text: string, self: Self | null): Envelope | null {
     const said = rest.slice(split + 2);
     // A bundle's members each name their own author, so the header names none
     // of them - and an id or the producer's `unknown` is not a name.
-    const bundle = /\(\d+ messages\)/.test(tail.slice(0, cut));
+    const tailHead = tail.slice(0, cut);
+    const bundle = /\(\d+ messages\)/.test(tailHead);
     const named = bundle || author === 'unknown' || isSlackId(author) ? null : author;
+    // A late block carries its age in the tail; the title says so, or a
+    // week-old message reads as a fresh ask until the row is opened.
+    const age = /, (\d+)([dh]) old/.exec(tailHead);
+    const stale = age === null ? '' : ` \u{b7} ${age[1] ?? ''}${age[2] ?? ''} old`;
     const head =
-      named === null
+      (named === null
         ? `${parts[0]} \u{b7} ${parts[1]}`
-        : `${parts[0]} \u{b7} ${parts[1]} \u{b7} ${named}`;
+        : `${parts[0]} \u{b7} ${parts[1]} \u{b7} ${named}`) + stale;
     return {
       kind: 'inbound',
       inbound: 'slack',
@@ -2345,13 +2358,20 @@ export function fold(
           continue;
         }
         if (isQuestion(name)) {
+          const record = records.get(id);
           const card = questionCard(
             block.input,
-            records.get(id),
+            record,
             id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
           );
-          if (card !== null) push(card);
-          continue;
+          if (card !== null) {
+            push(card);
+            continue;
+          }
+          // An omitted record is not a question nobody answered: the card has
+          // no answers to read, so the call falls through to its leaf, which
+          // opens on the omission rather than the row vanishing (#2374).
+          if (omittedRecord(record) === null) continue;
         }
         const leaf = leafOf(
           id,

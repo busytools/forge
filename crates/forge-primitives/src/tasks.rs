@@ -52,6 +52,24 @@ pub enum WaitingKind {
     Resource,
 }
 
+/// A lead's record of a look approval it witnessed, written when the lead
+/// completes a look wait on the user's behalf. Only a lead attests, and
+/// only a look: a decision is the user's to answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attestation {
+    /// The approval quoted from the user, as the lead read it.
+    pub evidence: String,
+    pub at: SystemTime,
+}
+
+/// Who reserved a row's pick. The sweep leaves a reserved pick for the
+/// user rather than dispatching it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReservedBy {
+    User,
+}
+
 /// Why a row cannot proceed. `kind` is absent only for a row migrated from
 /// the old `blocked` spelling, which the board draws as an unstated wait.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +81,10 @@ pub struct Waiting {
     /// The verify gate: the board's action is approve / send back rather
     /// than answer.
     pub verification: bool,
+    /// The lead classified this wait as parked by design - the user's own
+    /// deferral - so the chase leaves it alone rather than nudging it.
+    #[serde(default)]
+    pub parked: bool,
 }
 
 /// A duration estimate: the words a reader sees ("2h", "1d") and the
@@ -160,9 +182,17 @@ pub struct Task {
     /// Queue order; lower reads first, ties break by creation.
     #[serde(default)]
     pub rank: Option<i64>,
-    /// Whether completion waits on the user; a task inherits its epic's.
+    /// The user-look gate the row was minted with. An epic's gate governs
+    /// the epic's own completion; a child never inherits it.
     #[serde(default)]
     pub verify: Option<Verify>,
+    /// The lead's attestation when it completed the look on the user's
+    /// behalf; `None` for the user's own approve and for rows never gated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attested: Option<Attestation>,
+    /// The user reserved this row's pick: the sweep leaves it for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved: Option<ReservedBy>,
     #[serde(default)]
     pub links: Vec<TaskLink>,
     /// Claims and send-backs, so a loop is visible.
@@ -213,8 +243,9 @@ pub enum ChaseRung {
     Death,
     Retro,
     EpicClose,
-    /// Rows parked on the user, untouched: ONE digest per project asks
-    /// the lead to filter them - the chase never spawns a session for it.
+    /// One row parked on the user, untouched: one nudge per row per wait
+    /// episode asks the lead to act on it - the chase never spawns a
+    /// session for it.
     UserWaitDigest,
 }
 
@@ -251,6 +282,11 @@ mod tests {
             estimate: Some(Estimate { words: "1d".to_owned(), secs: 86_400 }),
             rank: Some(10),
             verify: Some(Verify::User),
+            attested: Some(Attestation {
+                evidence: "looks good".to_owned(),
+                at: std::time::SystemTime::UNIX_EPOCH,
+            }),
+            reserved: Some(ReservedBy::User),
             links: vec![TaskLink {
                 kind: LinkKind::Pr,
                 label: Some("PR #1889".to_owned()),
@@ -281,6 +317,7 @@ mod tests {
             detail: Some("the board read has to land first".to_owned()),
             on: Some(TaskId::from("t-9")),
             verification: false,
+            parked: false,
         };
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");
@@ -291,7 +328,8 @@ mod tests {
     /// the board draws it as a miss rather than a blank.
     #[test]
     fn waiting_without_a_kind_is_representable() {
-        let waiting = Waiting { kind: None, detail: None, on: None, verification: false };
+        let waiting =
+            Waiting { kind: None, detail: None, on: None, verification: false, parked: false };
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");
         assert_eq!(back.kind, None);

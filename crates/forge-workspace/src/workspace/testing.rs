@@ -956,6 +956,7 @@ mod tests {
             poll_seconds: 30,
             dm_poll_seconds: 150,
             thread_idle_days: 14,
+            stale_after_hours: 24,
         }];
         config
     }

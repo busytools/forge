@@ -193,11 +193,12 @@ describe('one row per running turn', () => {
   it('draws the bar for a turn the frames opened', () => {
     // The order the wire's own rule gives: with no turn to join, the first
     // frame the fold draws something out of opens one, and the counters land
-    // inside it.
+    // inside it. An assistant frame joins the turn above it, so the page here
+    // is empty and the row is a frames-built turn (#2405).
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
-    server.send(page([{ key: 't1', messages: [typed('mine')] }], null));
+    server.send(page([], null));
 
     server.update({ chat_appended: { key: LEAD, msg: said('working') } });
     server.update({ chat_appended: { key: LEAD, msg: counted(50) } });
@@ -522,9 +523,9 @@ describe('one row per running turn', () => {
   });
 
   it('holds one row when the newest page repeats the running turn', () => {
-    // What a reconnect does: `start`'s status handler asks the newest page
-    // again, and the newest page is built from the live conversation, so it
-    // repeats the turn the client already holds under the same key.
+    // What a reconnect does: its own page ask is answered with the newest
+    // page, built from the live conversation, so it repeats the turn the
+    // client already holds under the same key.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();

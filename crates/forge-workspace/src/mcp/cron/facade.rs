@@ -57,6 +57,7 @@ pub(crate) trait CronFacade: Send + Sync {
         kind: CronKind,
         prompt: String,
         description: Option<String>,
+        wake: bool,
     ) -> Result<CronEntry, CronCreateError>;
 
     /// The crons the caller registered, within its project.
@@ -89,6 +90,7 @@ impl CronFacade for ProdCronFacade {
         kind: CronKind,
         prompt: String,
         description: Option<String>,
+        wake: bool,
     ) -> Result<CronEntry, CronCreateError> {
         let ws = self.workspace.upgrade().ok_or(CronCreateError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(CronCreateError::UnknownCallerProject)?;
@@ -110,6 +112,7 @@ impl CronFacade for ProdCronFacade {
             last_fire: None,
             next_fire,
             team_role: cx.worker_label,
+            wake,
         };
         ws.push_cron(entry.clone());
         Ok(entry)
@@ -145,9 +148,9 @@ impl CronFacade for ProdCronFacade {
     }
 }
 
-/// One recorded `create_cron` call: caller, kind, prompt, description.
+/// One recorded `create_cron` call: caller, kind, prompt, description, wake.
 #[cfg(test)]
-type CreateCall = (SessionSlot, CronKind, String, Option<String>);
+type CreateCall = (SessionSlot, CronKind, String, Option<String>, bool);
 
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
@@ -180,12 +183,14 @@ impl CronFacade for MockCronFacade {
         kind: CronKind,
         prompt: String,
         description: Option<String>,
+        wake: bool,
     ) -> Result<CronEntry, CronCreateError> {
         self.create_calls.lock().push((
             caller.clone(),
             kind.clone(),
             prompt.clone(),
             description.clone(),
+            wake,
         ));
         if let Some(preloaded) = self.create_result.lock().clone() {
             return preloaded;
@@ -200,6 +205,7 @@ impl CronFacade for MockCronFacade {
             last_fire: None,
             next_fire: SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake,
         })
     }
 
@@ -219,6 +225,7 @@ impl CronFacade for MockCronFacade {
                 created_at: SystemTime::UNIX_EPOCH,
                 last_fire: None,
                 next_fire: SystemTime::UNIX_EPOCH,
+                wake: true,
                 team_role: None,
             })
         })
@@ -277,7 +284,7 @@ mod prod_facade_tests {
 
         let (lk, lp) = daily("lead-standup");
         let lead_cron = facade
-            .create_cron(&lead, lk, lp, Some("Lead stand-up".to_owned()))
+            .create_cron(&lead, lk, lp, Some("Lead stand-up".to_owned()), true)
             .expect("lead create");
         assert_eq!(lead_cron.team_role, None, "a lead cron is owner-less");
         assert_eq!(
@@ -286,7 +293,7 @@ mod prod_facade_tests {
             "the supplied description persists on the entry",
         );
         let (wk, wp) = daily("worker-standup");
-        let worker_cron = facade.create_cron(&worker, wk, wp, None).expect("worker create");
+        let worker_cron = facade.create_cron(&worker, wk, wp, None, true).expect("worker create");
         assert_eq!(worker_cron.description, None, "no description stays None");
         assert_eq!(
             worker_cron.team_role.as_deref(),
@@ -327,11 +334,11 @@ mod prod_facade_tests {
         let (_ws, facade, lead, _worker) = fixture();
         let (kind, prompt) = daily("worker digest");
         let neighbour = facade
-            .create_cron(&lead, kind, prompt, Some("Worker digest".to_owned()))
+            .create_cron(&lead, kind, prompt, Some("Worker digest".to_owned()), true)
             .expect("create the neighbour first");
         let (kind, prompt) = daily("morning summary");
         let cron = facade
-            .create_cron(&lead, kind, prompt, Some("Morning summary".to_owned()))
+            .create_cron(&lead, kind, prompt, Some("Morning summary".to_owned()), true)
             .expect("create");
 
         let removed = facade.delete_cron(&lead, &cron.id).expect("the lead deletes its own cron");
@@ -371,8 +378,9 @@ mod prod_facade_tests {
         ws.seed_test_project("otherproj", "/tmp/b2-otherproj");
         let other = SessionSlot::lead("TestOrg", "otherproj");
         let (kind, prompt) = daily("other-standup");
-        let other_cron =
-            facade.create_cron(&other, kind, prompt, None).expect("the other project's create");
+        let other_cron = facade
+            .create_cron(&other, kind, prompt, None, true)
+            .expect("the other project's create");
 
         assert_eq!(
             facade.delete_cron(&lead, &other_cron.id),

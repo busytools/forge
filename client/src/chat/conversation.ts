@@ -222,6 +222,40 @@ export interface Conversation {
   loaded: boolean;
   /** The handle the page carried for the turns above it, or `null` at the top. */
   cursor: string | null;
+  /**
+   * When the walk may ask again, after a page that came back empty.
+   *
+   * **An empty page keeps the cursor, so nothing else about the record moves.**
+   * A below-floor read that cannot resolve its anchor answers zero rows and a
+   * null cursor; the walk stays where it was and the next ask is paced
+   * against a beat that doubles per consecutive empty. A column filling a
+   * fitting room has no scroll to retry on, so it reads this stamp and waits
+   * the beat out (#2411).
+   */
+  reaskAt: number | null;
+  /**
+   * The walk cursor an older ask went out for, and no landing has moved past.
+   *
+   * **The fill's one stop** (#2411): a conversation that fits its column has
+   * no scroll to retry on, so the fill asks the page above and then has to
+   * know when asking the same cursor again would fetch the same page. It
+   * lives here with the ask bookkeeping rather than in the column, because
+   * every way an ask dies - a refusal, a dropped socket, a swap - is known
+   * here first: kept in the column, the mark missed the dropped socket and
+   * the fill stayed dead after the reconnect that answered it.
+   */
+  askedFor: string | null;
+  /**
+   * How many pages have landed, whichever direction.
+   *
+   * **The fill's wake.** A landing is when a column learns whether the room
+   * still fits, and a reconnect's newest page can answer with the very cursor
+   * and turns the record already held - so a trigger keyed on those fields
+   * woke for neither the drop nor the page that made the history answerable
+   * again. `prepends` counts the older half only, for the list's
+   * compensation, and cannot stand in for this.
+   */
+  pages: number;
   /** The server's own words when it turned the conversation down. */
   refused: string | null;
   /**
@@ -260,6 +294,9 @@ export const NOTHING: Conversation = {
   turns: [],
   loaded: false,
   cursor: null,
+  reaskAt: null,
+  askedFor: null,
+  pages: 0,
   refused: null,
   following: true,
   prepends: 0,
@@ -497,12 +534,15 @@ export class Frames {
  * Whether a frame opens a turn of its own rather than joining the live one:
  * what a person said.
  *
- * Its answer decides only while a turn is live: a non-`system` frame that
- * draws something and arrives above a settled turn opens one whatever this
- * says. **And a frame the fold draws nothing out of is not a row at all**,
- * whichever branch it takes - a call's own result arrives in a user frame and
- * draws nothing on its own, which is what holds a call and the frames that
- * update it in one turn.
+ * **This is the only kind that opens one**, matching the transcript fold
+ * (`TurnScan::opens` answers false for every Assistant frame): an assistant
+ * frame above a settled turn joins it, and a user frame above a running one
+ * joins it too. `last === undefined` is the one arm beside it - a seat with no
+ * turn at all opens one at the first frame that draws, pre-existing and
+ * pinned by its own test. **And a frame the fold draws nothing out of is not
+ * a row at all**, whichever branch it takes - a call's own result arrives in
+ * a user frame and draws nothing on its own, which is what holds a call and
+ * the frames that update it in one turn.
  */
 function opensATurn(message: unknown): boolean {
   const type = (message as { type?: unknown } | null)?.type;
@@ -816,7 +856,9 @@ export class Chat {
   private ridden = new Set<unknown>();
   /** Record that an ask which was in flight is now answered by nothing. */
   private forgot(): void {
-    this.fold((held) => ({ ...held, dropped: held.dropped + 1 }));
+    // The cursor it went out for is answered by nothing, so the fill may ask
+    // it again: the reconnect's own newest page can spell it unchanged.
+    this.fold((held) => ({ ...held, dropped: held.dropped + 1, askedFor: null }));
   }
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
@@ -1038,7 +1080,12 @@ export class Chat {
     const last = held.turns.length - 1;
     let changed = false;
     const turns = held.turns.map((turn, at) => {
-      const wanted = at === last && this.turnRunning && !carriesResult(turn);
+      // **A result the continuation joined is not the turn's end** (#2405):
+      // the append marked that row running when a drawn frame joined it, so
+      // the mark is kept while the core still says a turn is in flight -
+      // cleared when the core answers false, or when a newer row takes over.
+      const wanted =
+        at === last && this.turnRunning && (!carriesResult(turn) || turn.running === true);
       if ((turn.running === true) === wanted) return turn;
       changed = true;
       return { ...turn, running: wanted };
@@ -1062,7 +1109,7 @@ export class Chat {
   }
 
   /**
-   * Hold the seat, listen to it, and ask for its newest page.
+   * Hold the seat, listen to it, and take the page its snapshot carries.
    *
    * **The hold lives with the conversation, not with the page** (Ved,
    * 2026-10-09): the server sends a seat's frames to a subscriber of that
@@ -1077,10 +1124,11 @@ export class Chat {
    * subscription goes with the last holder, so a page leaving a seat this
    * conversation still folds sends nothing at all.
    *
-   * **And a subscription is not what fills the list.** The snapshot carries
-   * the newest turns rather than the whole conversation; the page draws a
-   * window of those and asks `more` for what is above, so the ask is where
-   * its turns come from.
+   * **The snapshot carries the newest page and its cursor, so the switch does
+   * not ask for it twice** (#2420). The subscribe's own answer is seeded as
+   * this conversation's first page; a `more` is asked only when that answer
+   * carries none (an empty seat, or a refused subscribe), and the history
+   * above the seed is asked from the cursor the record carries.
    */
   start(): () => void {
     if (this.running !== null) return this.running;
@@ -1092,9 +1140,10 @@ export class Chat {
       this.receive(message),
     );
     // A page is a question asked over one connection, and a dropped socket
-    // takes the answer with it - nothing replays a `more`. So the reconnect is
-    // where the conversation is asked for again, and the reader keeps what
-    // they have until the fresh answer lands.
+    // takes the answer with it - nothing replays a `more`. **The reconnect's
+    // own subscribe is the fresh answer** (#2420): its snapshot carries the
+    // newest page, so the hold's re-ask is where the conversation is read
+    // again rather than a `more` beside it.
     const stopStatus = this.connection.onStatus((status) => {
       // A dropped socket takes any page in flight with it, and the reconnect
       // answers with an ask of its own - so an ask this conversation was told
@@ -1106,6 +1155,11 @@ export class Chat {
         this.missed = true;
         const held = this.inFlight !== null;
         this.inFlight = null;
+        // **The cursor an ask went out for goes with the ask** (#2420): a
+        // reconnect's page can spell the very cursor the dead ask carried, and
+        // a landing read against it would mark the fill's stop on a page the
+        // fill never asked for.
+        this.askedBefore = null;
         this.abandoned = 0;
         // A held return-want dies with the socket: the reconnect answers with
         // an ask of its own, and firing the want after it would be a second
@@ -1118,7 +1172,13 @@ export class Chat {
         if (held) this.forgot();
       } else {
         this.clearRetry();
-        this.ask(null);
+        // **The reconnect reseeds through a page ask** (#2420): the subscribe's
+        // snapshot cannot be the answer to an older ask that may be in flight
+        // when it lands, so the newest page is asked for as it was before this
+        // PR - reserving the slot and taking its answer's own cursor - and the
+        // wait is one ask at a time. A FIRST open asks nothing: the subscribe
+        // answers it.
+        if (this.missed && this.held.loaded) this.ask(null);
       }
     });
     // A dispatch refused before it left the browser draws its line here: the
@@ -1167,7 +1227,6 @@ export class Chat {
       this.clearRetry();
       this.running = null;
     };
-    this.ask(null);
     return this.running;
   }
 
@@ -1189,7 +1248,9 @@ export class Chat {
   older(turns: number = MORE_TURNS): boolean {
     const { cursor, loaded } = this.read();
     // Nothing above the page already drawn is the server's own `null`, and
-    // asking again on it would walk the same page forever.
+    // asking again on it would walk the same page forever. **A seeded page's
+    // cursor comes from the record itself** (#2420), so its null is the same
+    // end.
     if (!loaded || cursor === null || this.inFlight !== null) return false;
     // An empty page kept the walk where it was, and the retry costs the server
     // a transcript read - so one ask a beat, not one per scroll event, and the
@@ -1202,8 +1263,18 @@ export class Chat {
     return this.ask(cursor, turns);
   }
 
-  /** Ask for the newest page again, which is what replaces a settled turn. */
+  /**
+   * Ask for the newest page again, which is what replaces a settled turn.
+   *
+   * **Only over a loaded conversation.** A settle can land while the
+   * subscribe's snapshot is still being encoded - the queued-update race - and
+   * the page asked here would cross beside a snapshot that already carries the
+   * newest page: two carries on the big seats (#2420). A load in flight is
+   * the subscribe's to answer; a swap is not (see `replaced`, which asks
+   * directly because no snapshot follows one).
+   */
   refresh(): boolean {
+    if (!this.held.loaded) return false;
     return this.ask(null);
   }
 
@@ -1219,6 +1290,11 @@ export class Chat {
   showing(): void {
     if (this.shown) return;
     this.shown = true;
+    // **The refresh is the guarded one** (#2420): it refuses over a
+    // conversation with no page yet - that load is the subscribe's to answer -
+    // so a return cannot ship a page beside the snapshot. A RETURN to a loaded
+    // conversation keeps the refresh, which is the reconcile for a read that
+    // failed or a stamp missed while away.
     if (!this.refresh()) this.returnWanted = true;
   }
 
@@ -1259,7 +1335,12 @@ export class Chat {
     // on a page that was never asked for - and the caller has to know, because
     // what it does with the answer is hold a reader's place while it arrives.
     const page = Math.max(1, Math.min(MORE_TURNS, Math.round(turns)));
-    if (this.connection.more(this.slot, before, page)) return true;
+    if (this.connection.more(this.slot, before, page)) {
+      // The cursor an older ask went out for is the fill's stop until a
+      // landing says what came back; a newest ask has none to record.
+      if (before !== null) this.fold((held) => ({ ...held, askedFor: before }));
+      return true;
+    }
     this.inFlight = null;
     this.askedBefore = null;
     return false;
@@ -1320,16 +1401,38 @@ export class Chat {
         // socket hands a listener EVERY message it receives - so a page that
         // took any error as its own would draw a refused subscription, or a
         // refused command, as a conversation this forge will not answer for.
+        //
+        // **A refused subscribe is the one answer that leaves no snapshot**
+        // (#2420): whatever this conversation holds is now stale, so the
+        // seat's page is asked - the old `more` path - and its own seated
+        // answer or refusal draws and retries. The error names the seat it
+        // refused, so another seat's refused read is not this conversation's.
+        if (message.what === 'subscribe') {
+          if (message.seat != null) {
+            if (subjectKey({ session: message.seat }) !== this.key) return;
+            // **This seat's refused subscribe** (#2420): no snapshot follows,
+            // so the page is asked - loaded or not - and its own seated
+            // answer or refusal draws and retries.
+            this.ask(null);
+            return;
+          }
+          // **A seatless refusal names no seat**: an older server's, or a
+          // non-session subject's. Asking on every open conversation would put
+          // another seat's refusal on this one, so only a load (nothing held
+          // yet) or a reconnect (a read it missed) asks.
+          if (!this.held.loaded || this.missed) this.ask(null);
+          return;
+        }
         if (message.what !== 'more') return;
         // **And a refusal for ANOTHER seat is not this conversation's.** The
         // connection is shared, so every chat hears every error: a background
         // seat's refusal - the everyday no-session-yet state, re-asking every
         // couple of seconds - would otherwise drain THIS seat's count of asks
         // and let the restore run in the middle of a prepend it must leave
-        // alone. A seatless refusal, from a server that predates the field, is
+        // alone. **A seatless refusal is the wire's null, not an absent
+        // field** (#2420) - an older server, or a non-session subject - and is
         // read the old way: it is this seat's.
-        if (message.seat !== undefined && subjectKey({ session: message.seat }) !== this.key)
-          return;
+        if (message.seat != null && subjectKey({ session: message.seat }) !== this.key) return;
         // A refused ask is answered by no page at all, so the ask it belongs to
         // is over - and a count of asks this conversation was told to forget is
         // spent on pages that are never coming.
@@ -1344,6 +1447,7 @@ export class Chat {
           refused: message.why,
           loaded: true,
           dropped: held.dropped + 1,
+          askedFor: null,
         }));
         this.retryAsk();
         return;
@@ -1358,7 +1462,42 @@ export class Chat {
         // refresh or a seat switch mid-queue meets the card and the row at
         // once, the exact duplicate the quieting exists to stop.
         if (subjectKey(message.subject) === this.key) {
+          // **The snapshot IS the newest page** (#2420): every session
+          // subscribe is answered with the page a `more` would fetch, so a
+          // switch that asked for both would ship the conversation twice.
+          // Seed it instead, and ask `more` only when the answer brought no
+          // page.
+          // **Only the first load is seeded from the subscribe's answer**
+          // (#2420). A reconnect asks a page for itself (the status handler),
+          // so its snapshot cannot steal an older ask's in-flight bookkeeping.
+          const fresh = !this.held.loaded;
           this.heard(runningOf(message.data));
+          if (fresh) {
+            const data = (message.data ?? {}) as { conversation?: unknown };
+            const conversation = (data.conversation ?? {}) as {
+              turns?: unknown;
+              cursor?: unknown;
+            };
+            const rows = pageTurns(conversation.turns);
+            if (rows.length > 0) {
+              if (!Object.hasOwn(conversation, 'cursor')) {
+                // **An older server's record has no `cursor` field at all**
+                // (#2420): the page itself can be seeded, but the history
+                // above it is only named by a real page - which the `more` arm
+                // answers with the window's floor - so ask rather than read
+                // the history as ended.
+                this.ask(null);
+              } else {
+                // **The record carries its page's handle**, so the seed is the
+                // whole of what a switch reads: the turns, and the cursor a
+                // pull above them asks from.
+                const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
+                this.takePage(rows, cursor, 'newest');
+              }
+            } else {
+              this.ask(null);
+            }
+          }
           this.armed(message.data);
         }
         return;
@@ -1459,6 +1598,9 @@ export class Chat {
     if (emptied) this.emptyBeats += 1;
     else this.emptyBeats = 0;
     this.emptyAt = emptied ? Date.now() : 0;
+    const reask = emptied
+      ? Date.now() + Math.min(RETRY_MS * 2 ** (this.emptyBeats - 1), EMPTY_RETRY_MAX_MS)
+      : null;
     // The page's frames, indexed once for everything below that asks what the
     // page carries: the heal, the ride, and the walk's own check.
     const fromPage = new Frames(pageRows.flatMap((row) => messagesOf(row)));
@@ -1798,6 +1940,14 @@ export class Chat {
         // refusal is about THAT ask rather than about the conversation, and
         // one that outlived its ask leaves every later page undrawable.
         refused: null,
+        // The empty-page beat, on the record so a column that cannot scroll
+        // can wait it out and ask again (#2411); a page with rows clears it.
+        reaskAt: reask,
+        // A page that answers with the cursor it was asked with is the
+        // walk's stop, and the fill's with it; any other landing frees the
+        // next read - moved, or empty and keeping the walk's cursor.
+        askedFor: cursor !== null && cursor === askedBefore ? cursor : null,
+        pages: held.pages + 1,
         // The newest page's own handle names a place just above itself, which
         // is no use to a reader who has walked further back: taking it would
         // send the walk to the top of the conversation and fetch every page
@@ -1909,7 +2059,8 @@ export class Chat {
     this.returnWanted = false;
     outputs.clear(this.key);
     // A swap is not a frame's draw: the reset lands now, whatever any paint
-    // was waiting for.
+    // was waiting for. The fill's mark and landing count go with it - they
+    // name the occupant that is gone.
     this.held = NOTHING;
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
@@ -1928,6 +2079,11 @@ export class Chat {
     // from its absence, and it stays for the path that would.
     this.emptyAt = 0;
     this.emptyBeats = 0;
+    // **A swap is the one page ask a subscribe does not answer** (#2420): a
+    // `session_replaced` arrives on the subscription the client already holds,
+    // and nothing re-subscribes it, so no snapshot follows to seed the new
+    // occupant - this ask is the only way its page arrives. It is therefore
+    // `ask` rather than the guarded `refresh`.
     this.ask(null);
   }
 
@@ -2547,11 +2703,18 @@ export class Chat {
         this.unturned.push(message);
         return held;
       }
-      // A frame that draws opens a row of its own only where no turn is being
-      // written. A row the core says is running is one of those too, whichever
-      // way the client learned it: a seat reached mid-turn has its row from a
-      // page, and a frame that opened a second row beside it would be one turn
-      // in two.
+      // A frame opens a row of its own only where no turn is being written,
+      // and only where it is a frame a turn opens at. **The transcript fold
+      // opens a turn at a user row and at nothing else** (`TurnScan::opens`
+      // in forge-workspace answers false for every Assistant frame), so above
+      // a settled row an assistant frame is the continuation of that turn,
+      // not the head of the next - the delivery the CLI pressed in after a
+      // result, whose page the client has already settled (#2405). A user row
+      // still opens the next turn's row wherever the row above it stands. A
+      // row the core says is running is being written without opening a
+      // second one, whichever way the client learned it: a seat reached
+      // mid-turn has its row from a page, and a frame that opened a row
+      // beside it would be one turn in two.
       //
       // **Being written is asked of the fold's own rule rather than of `live`**
       // - a turn the frames built stays live for good (#1486), so a row that
@@ -2559,9 +2722,7 @@ export class Chat {
       // prompt arriving after it must still open the next turn's row.
       const writing = last !== undefined && beingWritten(last) && !carriesResult(last);
       const opens =
-        draws &&
-        !isSystem(message) &&
-        (last === undefined || (!writing && (opensATurn(message) || !beingWritten(last))));
+        draws && !isSystem(message) && (last === undefined || (!writing && opensATurn(message)));
       // **The core's own line is the one `system` frame that opens a row**, and
       // only where there is no turn to join. Its only copy is this frame - the
       // CLI wrote none - so on a seat with no turn yet, which is every fresh
@@ -2590,9 +2751,22 @@ export class Chat {
         // The newest turn draws again with what joined it, so a hold taken by
         // the pile is released; an older turn is not the pile's, and its own
         // flag stands.
+        // **A drawn frame joining the newest row is that row being written
+        // again** (#2405): the continuation arrives after the page settled the
+        // turn, so the row carries a result `answered`'s own rule would read
+        // as the end. The core's running answer is what says otherwise - it
+        // marks the row here, and its next answer clears the mark when the
+        // turn really ends.
+        const continues =
+          draws && !isSystem(message) && at === held.turns.length - 1 && this.turnRunning;
         const grown: Turn =
           at === held.turns.length - 1
-            ? { ...target, messages: [...target.messages, message], held: false }
+            ? {
+                ...target,
+                messages: [...target.messages, message],
+                held: false,
+                ...(continues ? { running: true } : {}),
+              }
             : { ...target, messages: [...target.messages, message] };
         return this.answered({
           ...held,

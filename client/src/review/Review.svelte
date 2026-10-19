@@ -894,7 +894,7 @@
   />
 {/snippet}
 
-<main class="wrap review">
+<main class="wrap review-page">
   <header class="top">
     <a class="back" href={hrefForSlot(slot)}>&#8249; {slot.label}</a>
     <h1>Review</h1>
@@ -1144,8 +1144,8 @@
 
 <style>
   /* The page's own rules, over the sheet's furniture: `wrap` and `top` are
-     the app's, everything under `review` is this page's. */
-  .review {
+     the app's, everything under `review-page` is this page's. */
+  .review-page {
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -1283,7 +1283,7 @@
      scrolling column, because a phone has no room for panes each holding
      their own scroll. */
   @media (max-width: 980px) {
-    .review {
+    .review-page {
       height: auto;
       overflow: visible;
     }

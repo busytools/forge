@@ -523,7 +523,7 @@ describe('the box', () => {
     // up-entry reaches across. The pile is the minimal thing the query finds
     // - what the walk does once it has the keyboard is Queue's own test.
     const shell = document.createElement('div');
-    shell.className = 'app';
+    shell.className = 'session-page';
     const column = document.createElement('div');
     column.className = 'chat';
     const pile = document.createElement('div');

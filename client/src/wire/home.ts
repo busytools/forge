@@ -63,6 +63,8 @@ export interface WaitingWire {
   on: string | null;
   /** The verify gate: the board's action is approve / send back. */
   verification: boolean;
+  /** The lead parked the wait by design: the chase leaves it alone. */
+  parked?: boolean;
 }
 
 /** What a link points at. Generic to any VCS. */
@@ -95,6 +97,10 @@ export interface Task {
   estimate: { words: string; secs: number } | null;
   rank: number | null;
   verify: 'user' | 'none' | null;
+  /** A lead's record of the look it completed on the user's behalf. */
+  attested?: { evidence: string; at: WireTime } | null;
+  /** The user reserved this row's pick: the sweep leaves it for them. */
+  reserved?: 'user' | null;
   links: TaskLinkWire[];
   attempt: number;
   archived_at: WireTime | null;
@@ -450,13 +456,15 @@ function rowFrom(entry: unknown): BoardRow {
         task['verify'] === null || task['verify'] === undefined
           ? null
           : narrow(task['verify'] as string, VERIFY_VALUES, 'none'),
+      attested: attestedFrom(task['attested']),
+      reserved: task['reserved'] === 'user' ? 'user' : null,
       estimate: estimateFrom(task['estimate']),
       links: linksFrom(task),
       active_form: (task['active_form'] ?? null) as string | null,
       detail: (task['detail'] ?? null) as string | null,
       owner: (task['owner'] ?? null) as SessionSlot | null,
       parent: (task['parent'] ?? null) as string | null,
-      waiting_on: (task['waiting_on'] ?? null) as WaitingWire | null,
+      waiting_on: waitingFrom(task['waiting_on']),
       rank: (task['rank'] ?? null) as number | null,
       attempt: (task['attempt'] ?? 0) as number,
       archived_at: (task['archived_at'] ?? null) as WireTime | null,
@@ -577,6 +585,28 @@ function estimateFrom(raw: unknown): Task['estimate'] {
   return typeof held.words === 'string' && typeof held.secs === 'number'
     ? { words: held.words, secs: held.secs }
     : null;
+}
+
+/**
+ * The lead's attestation, where the row carries one. A record without its
+ * quoted evidence is not an attestation this client can draw, so it reads as
+ * none rather than as a blank claim.
+ */
+function attestedFrom(raw: unknown): { evidence: string; at: WireTime } | null {
+  if (raw === null || raw === undefined) return null;
+  const held = raw as { evidence?: unknown; at?: unknown };
+  if (typeof held.evidence !== 'string') return null;
+  return { evidence: held.evidence, at: held.at as WireTime };
+}
+
+/**
+ * A row's wait, with `parked` defaulted: a server older than the field sends
+ * none, and "not parked" is what its silence meant.
+ */
+function waitingFrom(raw: unknown): WaitingWire | null {
+  if (raw === null || raw === undefined) return null;
+  const held = raw as WaitingWire;
+  return { ...held, parked: held.parked === true };
 }
 
 /**

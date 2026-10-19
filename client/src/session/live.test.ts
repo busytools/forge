@@ -139,10 +139,33 @@ async function stubServer(
       }
       if (message.kind !== 'subscribe') return;
       received.push(message);
+      // **A session snapshot carries that seat's newest page** (#2420), which
+      // is what the real server answers a subscribe with - so the per-seat
+      // override the test hands this stub has to ride it, not only the `more`.
+      const what = message.what;
+      let body: unknown = session;
+      if (what === 'home') {
+        body = home;
+      } else if (what !== null && typeof what === 'object' && 'session' in what) {
+        const key = subjectKey(what as { session: SessionSlot });
+        const turns =
+          conversations[key] ??
+          (session as { conversation: { turns: unknown[] } }).conversation.turns;
+        body = {
+          ...(session as object),
+          conversation: {
+            ...(session as { conversation: object }).conversation,
+            turns,
+            // The snapshot is the page a `more` would answer, handle and all
+            // (#2420); a held stack needs a cursor for the reader's ask.
+            cursor: options.holdOlder ? 'c1' : null,
+          },
+        };
+      }
       const snapshot: ServerMessage = {
         kind: 'snapshot',
         subject: message.what as ServerMessage extends { subject: infer S } ? S : never,
-        data: message.what === 'home' ? home : session,
+        data: body,
       };
       socket.send(JSON.stringify(snapshot));
     });
@@ -882,7 +905,7 @@ describe('the session page over a socket', () => {
     matchMediaTo(true);
     await open(sessionFixture);
 
-    const app = document.querySelector('.app')?.className ?? '';
+    const app = document.querySelector('.session-page')?.className ?? '';
     expect(app, 'the rail claimed a column on a narrow page').not.toContain('rail-open');
     expect(app, 'the width did not fold the column').not.toContain('rail-static');
     expect(document.querySelector('.rail.left'), 'the rail is drawn, to summon').not.toBeNull();
@@ -900,7 +923,7 @@ describe('the session page over a socket', () => {
     matchMediaTo(false);
     await open(sessionFixture);
 
-    const app = document.querySelector('.app')?.className ?? '';
+    const app = document.querySelector('.session-page')?.className ?? '';
     expect(app, 'the default did not pin the rail').toContain('rail-static');
     expect(document.querySelector('.banner .pin'), 'the pin is the way to float it').not.toBeNull();
   });
@@ -960,7 +983,7 @@ describe('the session page over a socket', () => {
 
     expect(document.querySelector('.pal'), 'the peek left the palette up').toBeNull();
     expect(
-      document.querySelector('.app')?.className ?? '',
+      document.querySelector('.session-page')?.className ?? '',
       'the peek did not open the rail',
     ).toContain('rail-open');
     const state = history.state as { forgeRail?: string } | null;
@@ -968,11 +991,11 @@ describe('the session page over a socket', () => {
 
     history.back();
     await until(
-      () => !(document.querySelector('.app')?.className ?? '').includes('rail-open'),
+      () => !(document.querySelector('.session-page')?.className ?? '').includes('rail-open'),
       'Back to close the rail',
     );
     expect(
-      document.querySelector('.app')?.className ?? '',
+      document.querySelector('.session-page')?.className ?? '',
       'one Back did not close the rail',
     ).not.toContain('rail-open');
   });
@@ -987,7 +1010,7 @@ describe('the session page over a socket', () => {
     matchMediaTo(true);
     await open(sessionFixture);
     expect(
-      document.querySelector('.app')?.className ?? '',
+      document.querySelector('.session-page')?.className ?? '',
       'the folded rail opened by itself',
     ).not.toContain('rail-open');
 
@@ -996,7 +1019,7 @@ describe('the session page over a socket', () => {
       ?.dispatchEvent(new PointerEvent('pointerenter', { pointerType: 'mouse' }));
     flushSync();
     expect(
-      document.querySelector('.app')?.className ?? '',
+      document.querySelector('.session-page')?.className ?? '',
       'the folded rail ignored the chip hover',
     ).toContain('rail-open');
   });

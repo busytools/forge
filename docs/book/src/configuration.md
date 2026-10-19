@@ -481,8 +481,9 @@ means the Slack connector stays dormant.
 | `workspace`        | string  | none    | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`.                                                                                                                                  |
 | `token`            | string  | none    | User token, `xoxp-...`.                                                                                                                                                                                                     |
 | `poll_seconds`     | integer | `5`     | Sweep interval for this workspace's conversations, in seconds.                                                                                                                                                              |
-| `dm_poll_seconds`  | integer | `75`    | Sweep interval for the DM class, in seconds. It covers every DM in the workspace rather than a list, so it costs one history call per DM per pass whatever the subscription count, and it is swept on its own slower clock. |
+| `dm_poll_seconds`  | integer | `150`   | Sweep interval for the DM class, in seconds. It covers every DM in the workspace rather than a list, so it costs one history call per DM per pass whatever the subscription count, and it is swept on its own slower clock. |
 | `thread_idle_days` | integer | `14`    | Drop a followed thread with nothing new for this many days. A thread that quiet is resolved in practice, whatever its parent's age.                                                                                         |
+| `stale_after_hours` | integer | `24`    | Mark a delivered block's header with its newest message's age once that message is at or past this age. Zero turns the mark off; nothing is dropped.                                                                        |
 
 `workspace` and `token` are mandatory once an entry is present. Three
 mistakes fail the load rather than booting a connector that cannot work:
@@ -544,10 +545,13 @@ always. What it asks, and on what clock, is a constant in the code:
 - **A worker holding no row is named when it drifts, again every 5
   minutes while it stays drifted**, and at once after it accounts and
   drifts again.
-- **Rows waiting on the user, untouched for 30 minutes, get one digest
-  per project every 30 minutes** - one message, however many rows - which
-  asks the lead to filter them; a touch or a move takes that row back
-  out.
+- **Each row waiting on the user, untouched for 30 minutes, gets one
+  nudge of its own per wait episode** - one message per row, naming the
+  row's ask, and never a repeat while that wait holds. A row the lead
+  acts on (attested, withdrawn or parked by design) leaves the set, and a
+  row that leaves waiting and comes back is a new episode with a new
+  nudge. A tick that finds every seat asleep spends nothing: the nudge
+  waits for a live lead.
 
 ## `[server]`
 
@@ -560,6 +564,7 @@ On by default, so a restart leaves it serving.
 | `enabled` | boolean    | `true`      | Whether the server starts with forge. `false` is the opt-out, and the boot is identical either way - the socket simply does not bind.                                                                                                                                                                                                                                                                                                                                        |
 | `port`    | integer    | `8790`      | The port the server binds on `bind`, and a client is pointed at it by hand. `0` fails the load outright (`ServerPortInvalid`), and so does the gateway's own port (`ServerPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the socket is disabled: a stale port on a section that never binds cannot stop the boot.                                                                                        |
 | `bind`    | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching it from another machine means naming that machine's interface here, usually the WireGuard address. **forge is reached over loopback or a private network and is never exposed publicly.** That is the whole reason the socket carries no authentication - the private network is what the access control stands on, not a proxy to be added in front of a public bind. |
+| `tool_record_cap_kb` | integer | `64` | How large a frame's `tool_use_result` may be in anything a client is served, in kilobytes. **A record over it is reduced first**, keeping only the keys a client draws (a mutation's patch and outside-edit mark, a question's answers and notes); when those alone are still over, it keeps the one key the row's drawing needs - a question's `answers` or an edit's `structuredPatch` - so a question whose typed notes pushed it over keeps its answer and draws as the card it was. Only when nothing drawable fits does it become an `omitted` marker. Every path to a client is bounded - a page, a `more`, the live stream and both repairs - while the transcript keeps the record whole and the tool-result block draws as always. Every record a served copy bounds is logged at DEBUG as `tool_record_capped`, naming the seat, the tool call, the record's original size, the keys it kept and its `disposition` (`reduced` or `omitted`), so a reader asking where a payload went can find the exact call. **The line is per capped copy, not per record**: a subscribe caps the snapshot and its newest page separately, and a live frame is capped once per reading client, so the same call can log more than once in one open - the call's own id is what ties the lines together. `0` serves the records whole - the setting for a reader whose changes carry patches beyond the default. A seat whose mailbox tool results ran to ~4.9 MB each served a 70 MB page that took the client ~6.7 s to settle; the cap is what makes a page's size follow its conversation rather than its tool payloads. |
 
 The server starts no subsystem of its own - no cron scheduler, no
 connector, no second gateway - so the cost of a client is the listener
@@ -724,8 +729,9 @@ client_token = "CxxxxxxxxxxxxxxxA"
 workspace = "acme"
 token = "xoxp-xxxxxxxxxxxx"
 poll_seconds = 5
-dm_poll_seconds = 75
+dm_poll_seconds = 150
 thread_idle_days = 14
+stale_after_hours = 24
 
 [plugins]
 auto_update = true

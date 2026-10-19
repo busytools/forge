@@ -313,6 +313,36 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(units)[1], 'and that call is the unit in the middle').toBe('question');
   });
 
+  it('draws a capped question as its own row, opening on the omission', () => {
+    // The served page caps a frame's structured record, and a question's
+    // answers live in it: the card has no answers to read, so the row draws as
+    // a leaf - titled by the question it asked, wearing the question glyph,
+    // and opening on the size the page left out (#2374).
+    const question = [
+      said([
+        use('toolu_q', 'AskUserQuestion', {
+          questions: [{ question: 'Which one?', options: [{ label: 'a' }] }],
+        }),
+      ]),
+      heard([result('toolu_q', 'answered')], {
+        tool_use_result: { omitted: true, bytes: 5_200_000 },
+      }),
+    ];
+
+    const units = fold(question);
+    expect(kinds(units), 'the row still draws').toEqual(['leaves']);
+    const [row] = callsOf(units[0]);
+    expect(row?.leaf.title, 'titled by the question it asked').toBe('Which one?');
+    expect(row?.leaf.row, 'and wearing the question glyph').toEqual({
+      kind: 'family',
+      family: 'question',
+    });
+    expect(row?.leaf.body, 'opening on the size the page left out').toContainEqual({
+      kind: 'omitted',
+      bytes: 5_200_000,
+    });
+  });
+
   it('keeps a peer message from closing the calls around it, as rows of one list', () => {
     // A message is a row, not a separator: the call below it joins the list
     // the call above it opened, and every row keeps its arrival place.
@@ -1307,6 +1337,35 @@ describe('one turn folded into the units a view draws', () => {
     );
     expect(rows[0]?.title).toContain('steward');
     expect(rows[0]?.body).toBe('the gate is green');
+  });
+
+  it("carries a late block's age in its row title", () => {
+    // The age sits past the bracket, next to the member count; a row that
+    // reads only the header would draw a week-old block as a fresh ask.
+    const single = heard([
+      text(
+        "[Slack - workspace 'Busytools', general] id C1 ts 1.2, 3h old\nsteward: the gate is green",
+      ),
+    ]);
+    const bundle = heard([
+      text(
+        "[Slack - workspace 'Busytools', general] id C1 ts 1.2, 8d old (2 messages)\nsteward: first\nplanner: second",
+      ),
+    ]);
+    const fresh = heard([
+      text("[Slack - workspace 'Busytools', general] id C1 ts 1.2\nsteward: the gate is green"),
+    ]);
+
+    const rows = inboundsOf(fold([single, bundle, fresh])[0]);
+    expect(rows[0]?.title, 'a single late message carries its age').toBe(
+      'Busytools \u{b7} general \u{b7} steward \u{b7} 3h old',
+    );
+    expect(rows[1]?.title, 'a late bundle carries its age').toBe(
+      'Busytools \u{b7} general \u{b7} 8d old',
+    );
+    expect(rows[2]?.title, 'a fresh block carries no age').toBe(
+      'Busytools \u{b7} general \u{b7} steward',
+    );
   });
 
   it('draws a failed delivery as the outgoing row it belongs to, and a failed spawn as a warning', () => {

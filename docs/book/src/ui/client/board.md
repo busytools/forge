@@ -25,7 +25,7 @@ reader doing anything.
 |---|---|---|
 | Top bar | `back`, the project's name with its own read (`N waiting on you`, `N rows`, `N running`), `done` | the route and the snapshot |
 | Seats | one chip per seat this project holds, linking to its session page; a card dropped on one assigns it | `agents` filtered to the project |
-| Waiting on you | the rows whose wait is a decision: the verify gate (`approve`, a words box, `send back`) or a worker's question (an answer box). A root whose children are not all done draws the count and the send-back instead of `approve`, because a row closes only when its children do | `waiting_on` with `kind: decision`, and the row's `rollup` |
+| Waiting on you | the rows whose wait is a decision, each card leading with the wait's ask: the verify gate (`approve`, a words box, `send back`) on a row minted `verify: user`, or a worker's question (an answer box), with the row's links and a look's artifact beside it. A root whose children are not all done draws the count and the send-back instead of `approve`, because a row closes only when its children do | `waiting_on` with `kind: decision` (a verification park only where the row's own `verify` is `user`), the wait's `detail`, the row's links, and the row's `rollup` |
 | Lanes | every card, in its state's lane, with the grown groups folded - the finished ones to their five most recent, Backlog to its ten | `projects[].rows` |
 | Create | a subject box, an epic picker and `+ add`, which files the row at the queue's end | `task_create` |
 
@@ -92,16 +92,48 @@ The chips are the server's derived marks, named in words:
 
 | Chip | Tone | Means |
 |---|---|---|
-| `waiting on you` | warn | a decision wait, or the task's verify gate |
+| `waiting on you` | warn | a decision wait, or a look park on a row minted `verify: user` |
 | `on <row>` | warn | waiting on another row's completion |
 | `waiting on a resource` | warn | waiting on something outside the board |
+| `waiting` | warn | a verification wait whose row carries no own gate: an inherited park, left behind by the old rule |
 | `waiting <3h>` | bad | the wait has outlived the threshold |
 | `overdue` | bad | worked time has crossed the estimate |
 | `no movement <5h>` | dim | untouched, and nothing is waiting |
 | `owner gone` | bad | its owner is no longer a live seat |
 | `in review` | blue | completed with the verify gate up |
+| `lead attested` | blue | the lead completed the look, citing the user's own approval |
 | `to close` | blue | a root whose children are all done, waiting for its close |
+| `reserved for you` | dim | the user reserved this pick: the sweep leaves it, it never reads ready, and no claim takes it |
 | `attempt N` | dim | sent back with words N times |
+
+**The look has two doors, and the row page draws both.** The user's own
+`approve` sits on the waiting strip; a lead who watched the user approve in
+chat completes the row through `tasks__approve`, which requires the approval
+quoted and records it on the row. The completed card then wears
+`lead attested`, and the row page draws the quote with a `reopen` button:
+reopening strikes the attestation, re-mints the look gate and parks the row
+on the user again. The page's `pick` line is the other side of the sweep:
+`reserve for you` marks the row so the sweep never dispatches it, and
+`release` takes that back. A reserved row is not ready and no seat's claim
+takes it: the pick is the user's alone. The line draws only while the row is
+live - a completed, failed or canceled row has no pick left to reserve.
+
+**A wait leads with its ask.** The waiting card and the row page both open
+on the wait's own `detail` where it states one, else the row's `detail` - a
+look parks with no wait detail, and its ask is the row's own words - and a
+wait with neither falls back to the state's sentence ("A decision is waiting
+on you", "A look: this row is finished and waits on your approval"). That
+fallback is a seeded or legacy wait, or a look minted with no ask, and a
+blank detail counts as none. The row's links follow the ask as references in the sheet's own
+link grammar - the app's link colour with an underline set off the text, and
+a fuller rule under the pointer; no bare anchor reaches the strip, so none
+draws the browser's purple. In a look the artifact is its own door,
+`look at <name>`, wearing the same pill grammar as `approve` and `send back`
+rather than sitting in the sentence as another link; when the artifact is
+already one of the row's references, the door is its only showing and the
+links line keeps the others, so one reference appears once. A good ask says what
+the question is, why it needs the user, and links the thing to look at; a
+bare "waiting on you" is a card with no question on it.
 
 The links come off the row's own list: a URL follows in a new tab under its
 label, and a path or a branch draws as text rather than a dead anchor.
@@ -126,11 +158,12 @@ is a control like any other.
 ## The row's page
 
 A click - or Enter or Space on a focused card - opens the row over the board: its
-fields (state, owner, estimate, worked, both clocks, its parent and its
-links), **Its tasks** on a parent - each row a door that closes the page and
-lands on that card - **Waiting on you** when the wait is a decision, carrying
-the waiting strip's own controls (`approve`, the send-back box, the answer
-box), while a dependency or resource wait draws the section without them, its
+fields (state, owner, estimate, worked, both clocks, its parent, its `pick`
+line and its links), **Its tasks** on a parent - each row a door that closes
+the page and lands on that card - **Waiting on you** when the wait is a
+decision, carrying the wait's ask, its links and a look's artifact, then the
+waiting strip's own controls (`approve`, the send-back box, the answer box),
+while a dependency or resource wait draws the section without them, its
 **History** - the row's own transitions, which the core already records for
 the worked time - and the way into the owner's session. The read caps what a
 row carries at its newest twenty, so a long trail reaches the page without
@@ -144,9 +177,11 @@ reader never loses the lane they were in.
 `task_move` moves a row between lanes and lands it at the drop's place,
 `task_rank` re-orders it,
 `task_assign` changes its owner, `task_verdict` approves or sends back a
-verify row, `task_answer` answers a question, `task_create` files a row. A
-refused edit says so on the service line rather than silently reverting, and
-every one of them stamps the change as the user's.
+verify row, `task_answer` answers a question, `task_create` files a row,
+`task_reopen` strikes a lead's attestation and parks the row on the user
+again, and `task_reserve` reserves or releases the pick. A refused edit says
+so on the service line rather than silently reverting, and every one of them
+stamps the change as the user's.
 
 ## The states the page can be in
 

@@ -376,6 +376,12 @@
   function measureTurn(node: HTMLElement, key: string): () => void {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) rowSizes.remember(key, entry.contentRect.height);
+      // **The row's own report wakes the fill.** A landing's rows measure
+      // AFTER the size watcher's batch has already read them as unmeasured,
+      // and a row that measures at the list's estimate leaves the content
+      // height where it was - so no second watcher batch comes, and without
+      // this nothing asks the page above (#2411).
+      fillFittingRoom();
     });
     observer.observe(node);
     return () => observer.disconnect();
@@ -458,6 +464,12 @@
         working?.following(true);
         anchor = null;
       }
+      // The layout has settled, so the reach ask may have no scroll to ride
+      // (#2139). **The fit itself is read inside `fillFittingRoom` and not
+      // here**: the empty page's beat reaches that function on its own timer,
+      // without passing this wrapper, so a guard only here would let a column
+      // that overflowed during the beat ask a page it does not need.
+      fillFittingRoom();
       if (held.following) land();
       // A reader away from the foot has a place of their own, and a size change
       // is one of the two ways it moves under them. **Not while the prepend
@@ -1103,6 +1115,101 @@
   $effect(() => {
     if (follows === null || !held.loaded || !held.following) return;
     land();
+  });
+
+  /**
+   * **A conversation that does not fill the column has no top to scroll to.**
+   * The reach ask rides a scroll event, and a column whose whole held window
+   * fits its room never fires one - so a seat that opens on a page with
+   * history above it could not page back at all until a turn grew enough to
+   * overflow (#2139). The fitting state is its own trigger: while everything
+   * held fits the room and the walk has somewhere to go, ask for the page
+   * above; every landing publishes the record, so the check runs again and
+   * the fill continues until the column overflows or the history ends.
+   *
+   * **Nothing is read before there is a layout to read**: an unmeasured list
+   * reports no height, which reads as fitting, and a fill asked on that would
+   * take a page it does not need.
+   */
+  function fillFittingRoom(): void {
+    if (viewport === null || viewport.scrollHeight === 0) return;
+    // **A refused conversation is its own retry's to recover.** A refusal
+    // publishes; without this the fill re-asks on every refusal at the frame
+    // cadence, where `retryAsk` already owns the recovery (#2411).
+    if (!held.loaded || held.refused !== null) return;
+    // A page that repeats the cursor it was asked with is the walk's own
+    // stop; the fill stops on it too. **The mark is the conversation's**,
+    // cleared where its ask bookkeeping is cleared - so a refusal, a dropped
+    // socket and a swap all free the fill, and an empty page leaves the
+    // beat's own timer pacing the same cursor's retry.
+    if (held.cursor !== null && held.cursor === held.askedFor) return;
+    // Above the loop, so an overflowing column pays one read, not one per
+    // turn before it learns there is nothing to fill.
+    if (!holdsEverything()) return;
+    // **Every held turn has to have reported its height.** A list still
+    // drawing its rows reads short, and one read short takes a page it does
+    // not need; a window that fits is a window whose every row was drawn, so
+    // the measured set is the honest test of "there is nothing left to
+    // scroll". A held row draws nothing and reports nothing until its drain,
+    // so it is skipped.
+    for (const turn of held.turns) {
+      if (turn.held === true) continue;
+      if (rowSizes.sizeOf(turn.key) === undefined) return;
+    }
+    loadOlder(pageTurns());
+  }
+
+  /**
+   * The events the fill runs on: every landing and a refusal.
+   * **Not every published frame**: a seat emits on every frame it folds, and
+   * the fill has nothing to say about most of them.
+   *
+   * **The landing half is a COUNT, not the cursor.** A reconnect's newest page
+   * can answer with the very cursor and turns the record already held, so a
+   * key built from those fields woke for neither the drop nor the page that
+   * made the history answerable again - the mark's fourth missed edge, as a
+   * trigger (#2411). `pages` moves on every landing.
+   *
+   * **Neither the cursor nor the seat belongs here.** A return to a kept
+   * conversation asks its newest page on the way in (`showing`), so the
+   * column is never handed a conversation to draw with no landing behind it;
+   * a seat swapped for a fresh one arrives as the empty edge.
+   */
+  const fills = $derived(held.loaded ? `${held.pages}:${held.refused ?? ''}` : '');
+
+  /**
+   * The frame-deferred check, run on the edges above.
+   *
+   * **The read waits a frame**, because the sizes right after a landing are
+   * the layout BEFORE the rows it added are measured: a column that is about
+   * to overflow reads as fitting there. The size observer below catches the
+   * other half - the layout settling - so a check that waits here and finds
+   * nothing still gets one when the rows report.
+   *
+   * **An empty page's beat is waited out rather than refused.** Its ask is
+   * held off until the stamped beat, and a quiet seat publishes nothing to
+   * wake the fill, so the fill schedules the retry itself (#2411). No mark
+   * crosses the wait: the landing cleared it, and `older`'s own beat gate is
+   * what holds the early checks back.
+   */
+  $effect(() => {
+    const edge = fills;
+    const element = viewport;
+    if (edge === '' || element === null) return;
+    return untrack(() => {
+      if (held.refused !== null) return;
+      if (held.reaskAt !== null) {
+        // **One millisecond late on purpose.** `takePage` stamps `emptyAt`
+        // and `reaskAt` from separate clock reads, so a timer computed from
+        // `reaskAt` can land a fraction before `older`'s own beat gate, be
+        // refused, and leave a quiet fitting seat with nothing re-armed.
+        const delay = Math.max(0, held.reaskAt - Date.now()) + 1;
+        const timer = setTimeout(() => fillFittingRoom(), delay);
+        return () => clearTimeout(timer);
+      }
+      const frame = requestAnimationFrame(() => fillFittingRoom());
+      return () => cancelAnimationFrame(frame);
+    });
   });
 
   /**

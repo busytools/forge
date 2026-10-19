@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientMessage, ServerMessage } from '../protocol';
-import type { Connection } from '../socket';
+import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 
 /**
@@ -28,6 +28,7 @@ vi.mock('./conversation', async (importOriginal) => {
 
 const { clear, firstGrowth, last, list, setMeasured } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
+const { default: SeatSwitch } = await import('./testing/seat-switch.svelte');
 const { scrollAsk } = await import('../session/scroll-ask');
 const { installResizeObserver, resized } = await import('./testing/viewport');
 
@@ -49,6 +50,7 @@ const turn = (key: string): unknown => ({
  */
 function stub() {
   const listeners = new Set<(message: ServerMessage) => void>();
+  const statuses = new Set<(status: ConnectionStatus) => void>();
   const asks: ClientMessage[] = [];
   let open = true;
   const connection = {
@@ -65,7 +67,10 @@ function stub() {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    onStatus: () => () => undefined,
+    onStatus: (fn: (status: ConnectionStatus) => void) => {
+      statuses.add(fn);
+      return () => statuses.delete(fn);
+    },
     store: () => undefined,
     settings: () => null,
     browserRole: () => false,
@@ -85,6 +90,19 @@ function stub() {
       for (const fn of listeners) {
         fn({ kind: 'page', conversation: LEAD, turns, cursor });
       }
+      flushSync();
+    },
+    /** One page for a named seat, which a switch test draws the other column from. */
+    pageFor(slot: SessionSlot, turns: unknown[], cursor: string | null): void {
+      for (const fn of listeners) {
+        fn({ kind: 'page', conversation: slot, turns, cursor });
+      }
+      flushSync();
+    },
+    /** The socket going down or coming back, as the connection reports it. */
+    reach(status: ConnectionStatus): void {
+      open = status === 'open';
+      for (const fn of statuses) fn(status);
       flushSync();
     },
     /** One session update for this seat, as the socket delivers it. */
@@ -134,6 +152,15 @@ function draw(server: ReturnType<typeof stub>): void {
   flushSync();
 }
 
+/** The older asks one seat was sent, in the order they went. */
+type MoreAsk = Extract<ClientMessage, { kind: 'more' }>;
+
+function asksFor(server: ReturnType<typeof stub>, slot: SessionSlot): MoreAsk[] {
+  return server.asks.filter(
+    (ask): ask is MoreAsk => ask.kind === 'more' && ask.conversation.label === slot.label,
+  );
+}
+
 /** Let the tick a settling compensation waits on run. */
 async function tick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -144,6 +171,18 @@ async function tick(): Promise<void> {
 async function frame(): Promise<void> {
   await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
   flushSync();
+}
+
+/**
+ * Let every deferred fill pass run: the column's own frame, then the tick.
+ *
+ * The fill schedules a frame of its own, so a test that read around it would
+ * race the frame's delivery - under load the frame can land between any two
+ * awaits. Every fill test reads only after this.
+ */
+async function settleFrames(): Promise<void> {
+  await frame();
+  await tick();
 }
 
 afterEach(async () => {
@@ -208,7 +247,7 @@ describe('the compensation the list is handed', () => {
     // arrived would be arming after the change it exists for.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
-    expect(server.asks, 'the ask went').toHaveLength(2);
+    expect(server.asks, 'the ask went').toHaveLength(1);
 
     expect(last(), 'armed as the ask goes out').toEqual({ length: 2, shift: true });
 
@@ -255,7 +294,7 @@ describe('the compensation the list is handed', () => {
     // case, not a contrived one.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
-    expect(server.asks, 'two asks are out').toHaveLength(3);
+    expect(server.asks, 'two asks are out').toHaveLength(2);
     expect(last()?.shift, 'still armed for the second').toBe(true);
 
     await tick();
@@ -430,6 +469,581 @@ describe('the page a walk requests', () => {
     const lastAsk = asks[asks.length - 1];
     expect(lastAsk?.before, 'the chase walked above').toBe('2');
     expect(lastAsk?.turns, 'the chase keeps the protocol page, not the measured one').toBe(20);
+  });
+});
+
+describe('the history above a column that fits', () => {
+  it('asks for the page above, because there is no scroll to reach the top with', async () => {
+    const server = stub();
+    draw(server);
+    // The whole newest page fits the room: the list cannot scroll, so no
+    // reach ask can ever ride a scroll event (#2139).
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    // The landing's deferred pass runs with nothing measured yet; then the
+    // rows report over the harness's two deliveries and the settled batch
+    // asks.
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    const lastAsk = asks[asks.length - 1];
+    expect(lastAsk?.before, 'the fitting column asked above').toBe('2');
+    expect(lastAsk?.turns, 'and with the measured page').toBe(5);
+  });
+
+  it('leaves a window that overflows to the scroll', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(900, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    const before = server.asks.length;
+    expect(before, 'precondition: the open asked nothing - its subscribe answered').toBe(0);
+    resized(100);
+    resized(100);
+    await settleFrames();
+    expect(server.asks.length, 'nothing to fill: the column already scrolls').toBe(before);
+  });
+
+  it('asks nothing when the history has no page above', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], null);
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks, 'the first page is all there is, and it asked nothing').toHaveLength(0);
+  });
+
+  it('asks nothing before the list has a layout to read', async () => {
+    const server = stub();
+    draw(server);
+    // An unmeasured list reports no height at all, which reads as fitting. A
+    // fill asked on that takes a page the column does not need.
+    setMeasured(0, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks, 'no layout, no fit to trust, and no ask').toHaveLength(0);
+  });
+
+  it('waits for every held turn to measure before it trusts the fit', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    // No row has reported a height: a list still drawing reads short, and a
+    // fill asked on that would take a page it does not need. The deferred
+    // pass has run by the settle.
+    await settleFrames();
+    expect(server.asks, 'nothing measured, nothing asked').toHaveLength(0);
+
+    // The harness delivers one observer batch per `resized()`; a browser
+    // settles its layout over more than one, so the second is that settle.
+    const before = server.asks.length;
+    resized(100);
+    resized(100);
+    await settleFrames();
+    expect(server.asks.length - before, 'measured and fitting, the page above is asked').toBe(1);
+  });
+
+  it('keeps asking as pages land while the window still fits', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks[asks.length - 1]?.before, 'the first fill went').toBe('2');
+
+    // The page lands and the column still fits; the cursor moved, so the
+    // fill asks again. A fill that stopped after one page would pass the
+    // single-ask test above and fail here.
+    server.page([turn('t0')], '1');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const after = server.asks.filter((ask) => ask.kind === 'more');
+    expect(after[after.length - 1]?.before, 'the fill continued on the landing').toBe('1');
+  });
+
+  it('holds the fill while a landing carries a turn that has not measured', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const before = server.asks.length;
+
+    // The repeated turns are measured and the page has one NEW turn that has
+    // not reported; a guard that only asked "has anything measured" would
+    // ask on that.
+    server.page([turn('t3')], '1');
+    await settleFrames();
+    expect(server.asks.length, 'the unmeasured turn holds the fill').toBe(before);
+
+    // The harness's deliveries: the first measures the row, the second is the
+    // batch after it reported.
+    resized(100);
+    resized(100);
+    await settleFrames();
+    expect(server.asks.length, 'measured, the fill asks again').toBe(before + 1);
+  });
+
+  it('does not ask the same cursor twice', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const before = server.asks.length;
+    expect(before, 'precondition: the fill asked above').toBe(1);
+
+    // A page that repeats the cursor it was asked with is the walk's own
+    // stop, and the fill stops on it too. The deliveries are the harness's
+    // layout settle, so the check sees the new row measured.
+    server.page([turn('t0')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    expect(server.asks.length, 'the same cursor is not asked again').toBe(before);
+  });
+
+  it('does not wait for a held row, which draws nothing and never measures', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+
+    // A prompt queued and pulled into the pile leaves its row held: it draws
+    // nothing and records no height until the drain, which can be minutes
+    // behind a running turn. The fill is not its to wait for.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-held',
+          message: { role: 'user', content: [{ type: 'text', text: 'wait with me' }] },
+        },
+      },
+    });
+    await frame();
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'u-held', source: 'you', text: 'wait with me' },
+    });
+    await frame();
+
+    // The held row reports nothing, as a real zero-height row does: the two
+    // deliveries measure the conversation's own turns and leave it out.
+    const heldRow = (node: Element) => node.getAttribute('data-t')?.includes('u-held') === true;
+    resized(100, heldRow);
+    resized(100, heldRow);
+    await settleFrames();
+    const asks = server.asks.filter((ask) => ask.kind === 'more');
+    expect(asks[asks.length - 1]?.before, 'the measured turns alone fill the room').toBe('2');
+  });
+
+  it('asks nothing more once the conversation is refused', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const before = server.asks.length;
+    expect(before, 'precondition: the fill asked above').toBe(1);
+
+    // A landing with a NEW cursor whose row is a repeat - so nothing new
+    // measures - then the refusal in the same turn, then a size change: the
+    // observer's fill reaches the refusal guard too, not only the frame.
+    server.page([turn('t1')], '1');
+    server.refuse();
+    await settleFrames();
+    resized(100);
+    await settleFrames();
+    expect(server.asks.length, 'a refusal is retried by its own beat, not the fill').toBe(before);
+  });
+
+  it("waits an empty page's beat out and asks the same cursor again", async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw(server);
+      setMeasured(300, 320);
+      server.page([turn('t1'), turn('t2')], '2');
+      flushSync();
+      resized(100);
+      resized(100);
+      flushSync();
+      const before = server.asks.length;
+      expect(before, 'the fill asked above').toBe(1);
+
+      // The empty page keeps the cursor and stamps the beat; a quiet seat
+      // publishes nothing else, so the fill schedules the retry itself.
+      server.page([], null);
+      flushSync();
+      expect(server.asks.length, 'the beat has not passed yet').toBe(before);
+
+      await vi.advanceTimersByTimeAsync(2_100);
+      flushSync();
+      expect(server.asks.length, 'the beat passed, the same cursor is asked again').toBe(
+        before + 1,
+      );
+      const retried = server.asks[server.asks.length - 1];
+      expect(
+        retried?.kind === 'more' ? retried.before : undefined,
+        'the same cursor is the one asked',
+      ).toBe('2');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks the cursor again when its retry heals the refusal', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw(server);
+      setMeasured(300, 320);
+      server.page([turn('t1'), turn('t2')], '2');
+      flushSync();
+      resized(100);
+      resized(100);
+      flushSync();
+      expect(server.asks.length, 'the fill asked above').toBe(1);
+
+      server.refuse();
+      flushSync();
+      // The retry's beat, then the newest page that heals the refusal: the
+      // retry keeps the walk cursor, so the mark must not survive it (#2411).
+      await vi.advanceTimersByTimeAsync(2_100);
+      flushSync();
+      expect(server.asks[server.asks.length - 1], 'the retry asks the newest page').toEqual(
+        expect.objectContaining({ before: null }),
+      );
+
+      server.page([turn('t1'), turn('t2')], '2');
+      flushSync();
+      resized(100);
+      flushSync();
+      expect(server.asks[server.asks.length - 1], 'the healed conversation fills again').toEqual(
+        expect.objectContaining({ before: '2' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts the fill from nothing when the occupant is swapped', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const askedBefore = server.asks.filter(
+      (ask) => ask.kind === 'more' && ask.before === '2',
+    ).length;
+    expect(askedBefore, 'the fill asked the cursor once').toBe(1);
+
+    // Settle the in-flight fill ask on a page that overflows, so the swap
+    // below meets an idle conversation rather than an abandoned ask.
+    setMeasured(900, 320);
+    server.page([turn('t0')], '1');
+    await settleFrames();
+
+    // A `/resume` or a crash recovery on the same seat: the conversation goes
+    // back to nothing and loads again with a first-page cursor that spells
+    // the old mark. The mark belongs to the occupant that is gone.
+    setMeasured(300, 320);
+    server.update({ session_replaced: {} });
+    await settleFrames();
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const askedAfter = server.asks.filter(
+      (ask) => ask.kind === 'more' && ask.before === '2',
+    ).length;
+    expect(askedAfter, 'the new occupant fills on the same cursor').toBe(askedBefore + 1);
+  });
+
+  it('asks again when a landing clears the beat without answering it', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw(server);
+      setMeasured(300, 320);
+      server.page([turn('t1'), turn('t2')], '2');
+      flushSync();
+      resized(100);
+      resized(100);
+      flushSync();
+      const before = server.asks.length;
+      expect(before, 'precondition: the fill asked above').toBe(1);
+
+      // The empty page stamps the beat; then a newest page lands inside it (a
+      // seat return or a reconnect) and clears the beat without answering the
+      // beat's ask. The landing's own frame is the wake, before the beat.
+      server.page([], null);
+      flushSync();
+      expect(server.asks.length, 'the beat has not passed').toBe(before);
+      server.page([turn('t1'), turn('t2')], '2');
+      await vi.advanceTimersByTimeAsync(34);
+      flushSync();
+      const last = server.asks[server.asks.length - 1];
+      expect(server.asks.length, 'the cleared beat lets the fill ask again').toBe(before + 1);
+      expect(last?.kind === 'more' ? last.before : null, 'and it asks the same cursor').toBe('2');
+
+      // The cancelled beat's timer went with the landing: its own moment
+      // passing asks nothing.
+      await vi.advanceTimersByTimeAsync(2_100);
+      flushSync();
+      expect(server.asks.length, 'the cancelled beat asks nothing').toBe(before + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks the next page when the landing's rows settle at the estimate", async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const before = server.asks.length;
+    expect(before, 'precondition: the fill asked above').toBe(1);
+
+    // The page above lands with a row that measures exactly at the estimate:
+    // the list's content height does not change again, so its own watcher
+    // fires no second batch. The row's own report has to be the wake.
+    server.page([turn('t3')], '1');
+    await settleFrames();
+    resized(100);
+    await settleFrames();
+    const asks = asksFor(server, LEAD);
+    expect(asks.length, 'the row report woke the fill').toBe(before + 1);
+    expect(asks[asks.length - 1]?.before, 'and it asked the page above').toBe('1');
+  });
+
+  it('decides the fit on the layout the landing settles into, not at the landing', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const before = server.asks.length;
+    expect(before, 'precondition: the fill asked above').toBe(1);
+
+    // The landing repeats the measured rows under a cursor above them, so
+    // every guard passes at this instant - and the layout then settles into
+    // an overflow before the frame runs. A fill read at the landing would
+    // ask a page the settled layout does not need; the deferred check sees
+    // the overflow and holds.
+    server.page([turn('t1'), turn('t2')], '1');
+    setMeasured(900, 320);
+    await settleFrames();
+    expect(server.asks.length, 'the settled overflow asked nothing').toBe(before);
+  });
+
+  it('asks the cursor a landing moved to, with no row reporting it', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    const before = server.asks.length;
+    expect(before, 'precondition: the fill asked above').toBe(1);
+
+    // A page that repeats both rows under a cursor one above them: nothing
+    // new draws and no row reports a height, so the size observer has no
+    // event to run on. The landing's own deferred check is the trigger.
+    server.page([turn('t1'), turn('t2')], '1');
+    await settleFrames();
+    const asks = asksFor(server, LEAD);
+    expect(asks.length, 'the landing woke the fill').toBe(2);
+    expect(asks[asks.length - 1]?.before, 'for the cursor the landing moved to').toBe('1');
+  });
+
+  it('asks the cursor again after a dropped socket answers with it', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(300, 320);
+    server.page([turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    expect(asksFor(server, LEAD).at(-1)?.before, 'precondition: the fill asked above').toBe('2');
+    const before = server.asks.length;
+
+    // The socket dies with that ask in flight. The reconnect asks the newest
+    // page for itself (#2420), and its answer spells the very cursor the fill
+    // last asked - so the landing count is the only thing that says the fill
+    // may ask it again.
+    server.reach('closed');
+    server.reach('open');
+    expect(server.asks.length, 'the reconnect asks the newest page').toBe(before + 1);
+    expect(asksFor(server, LEAD).at(-1)?.before, 'and it is a newest ask').toBeNull();
+    server.pageFor(LEAD, [turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    const asks = asksFor(server, LEAD);
+    expect(asks.length, 'and the fill asks the same cursor again').toBe(before + 2);
+    expect(asks[asks.length - 1]?.before, 'for the cursor the answer spells').toBe('2');
+    expect(server.asks.length, 'nothing else asked').toBe(before + 2);
+  });
+
+  it('does not ask at the beat once the room has overflowed', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw(server);
+      setMeasured(300, 320);
+      server.page([turn('t1'), turn('t2')], '2');
+      flushSync();
+      resized(100);
+      resized(100);
+      flushSync();
+      const before = server.asks.length;
+      expect(before, 'precondition: the fill asked above').toBe(1);
+
+      // An empty page stamps the beat; before it fires the column grows and
+      // overflows. The beat wakes the fill, and the fit guard inside it - the
+      // one the timer reaches without the observer's wrapper - is what keeps
+      // the ask from going.
+      server.page([], null);
+      flushSync();
+      expect(server.asks.length, 'the beat has not passed').toBe(before);
+      setMeasured(900, 320);
+      await vi.advanceTimersByTimeAsync(2_100);
+      flushSync();
+      expect(server.asks.length, 'an overflowing column asks nothing on the beat').toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks nothing at a beat the landing cancelled, once the room grows back', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw(server);
+      setMeasured(300, 320);
+      server.page([turn('t1'), turn('t2')], '2');
+      flushSync();
+      resized(100);
+      resized(100);
+      flushSync();
+      const before = server.asks.length;
+      expect(before, 'precondition: the fill asked above').toBe(1);
+
+      // The empty page stamps the beat; a newest page lands before it and
+      // clears it. The landing's own check holds - the room has grown to an
+      // overflow - so the fill asks nothing and the mark stays free.
+      server.page([], null);
+      flushSync();
+      setMeasured(900, 320);
+      server.page([turn('t1'), turn('t2')], '2');
+      await vi.advanceTimersByTimeAsync(34);
+      flushSync();
+      expect(server.asks.length, 'the landing held on the overflow').toBe(before);
+
+      // The room comes back with no watcher batch to say so, and the old
+      // beat's moment passes. A timer the landing did not cancel would run
+      // the fill here, free of the mark, and ask.
+      setMeasured(300, 320);
+      await vi.advanceTimersByTimeAsync(2_100);
+      flushSync();
+      expect(server.asks.length, 'the cancelled beat asked nothing').toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fills the seat it switches to, whose cursor spells the one it left', async () => {
+    const server = stub();
+    clear();
+    const other: SessionSlot = { ...LEAD, label: 'w1' };
+    const column = mount(SeatSwitch, {
+      target: document.body,
+      props: { connection: server.connection, first: LEAD, second: other },
+    }) as unknown as { flip: () => void };
+    app = column;
+    setMeasured(300, 320);
+    flushSync();
+
+    // The first seat loads and fills.
+    server.pageFor(LEAD, [turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    expect(
+      asksFor(server, LEAD).map((ask) => ask.before),
+      'the first seat filled, and only the fill asked - the switch itself asked no page',
+    ).toEqual(['2']);
+
+    // The second seat's conversation loads while the first is drawn, so this
+    // column never ran a fill for it: it arrives held, loaded and fitting.
+    column.flip();
+    await settleFrames();
+    column.flip();
+    await settleFrames();
+    server.pageFor(other, [turn('t1'), turn('t2')], '2');
+    await settleFrames();
+
+    // Back to the second seat, whose cursor spells the one the column last
+    // asked on the first. The return asks the newest page, and that answer
+    // lands the fill on the seat now drawn: a kept, fitting seat fills on
+    // its own cursor. (This is the switch's behaviour, not a pin on where
+    // the mark lives - the refusal and socket tests carry that.)
+    column.flip();
+    await settleFrames();
+    server.pageFor(other, [turn('t1'), turn('t2')], '2');
+    await settleFrames();
+    resized(100);
+    resized(100);
+    await settleFrames();
+    expect(
+      asksFor(server, other).map((ask) => ask.before),
+      'the second seat filled on its own cursor - its switch asked no page',
+    ).toEqual([null, '2']);
   });
 });
 

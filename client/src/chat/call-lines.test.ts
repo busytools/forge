@@ -25,7 +25,7 @@ const edited = (): ToolLeaf => ({
       ],
     },
   ],
-  mutation: { hunks: 1, added: 1, removed: 1, all: true, outside: true },
+  mutation: { hunks: 1, added: 1, removed: 1, all: true, outside: true, omitted: null },
   decision: null,
   forge: null,
   skill: null,

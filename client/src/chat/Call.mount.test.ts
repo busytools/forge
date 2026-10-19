@@ -287,4 +287,80 @@ describe('the call row, mounted', () => {
       void unmount(app);
     }
   });
+
+  /**
+   * A capped edit names what the page left out on its marks line, beside the
+   * figures it already draws - not as a body line of its own (#2374).
+   */
+  it('draws an omitted edit on the marks line, not as body prose', () => {
+    const capped: ToolLeaf = {
+      ...backgrounded,
+      id: 'toolu_edit',
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'a.rs',
+      backgrounded: false,
+      body: [{ kind: 'diff', old: 'one', new: 'two' }],
+      mutation: {
+        hunks: 1,
+        added: 1,
+        removed: 1,
+        all: false,
+        outside: true,
+        omitted: 5_200_000,
+      },
+    };
+    const app = mount(Call, {
+      target: document.body,
+      props: { k: 'f6', call: capped, open: true },
+    });
+    try {
+      flushSync();
+      expect(
+        Array.from(document.querySelectorAll('.patchline .patchmark')).map((el) => el.textContent),
+        'the marks line carries both figures',
+      ).toEqual(['changed outside this edit', 'omitted, 5.0 MB']);
+      expect(
+        Array.from(document.querySelectorAll('.term, .prose')).some((el) =>
+          el.textContent.includes('omitted'),
+        ),
+        'and no body text repeats it',
+      ).toBe(false);
+    } finally {
+      void unmount(app);
+    }
+  });
+
+  /**
+   * A capped question's row keeps the question's own glyph and opens on the
+   * size the page left out, drawn in the diff's marks line (#2374).
+   */
+  it('draws a capped question as a question row that opens on the omission', () => {
+    const capped: ToolLeaf = {
+      ...backgrounded,
+      id: 'toolu_q',
+      row: { kind: 'family', family: 'question' },
+      name: 'AskUserQuestion',
+      title: 'Which colour?',
+      backgrounded: false,
+      body: [{ kind: 'omitted', bytes: 100_166 }],
+    };
+    const app = mount(Call, {
+      target: document.body,
+      props: { k: 'f5', call: capped, open: true },
+    });
+    try {
+      flushSync();
+      expect(
+        document.querySelector('summary use')?.getAttribute('href'),
+        'the question glyph, not the tool glyph',
+      ).toBe('#i-question');
+      expect(
+        document.querySelector('.body .patchline .patchmark')?.textContent,
+        'the omission on the marks line',
+      ).toBe('omitted, 98 KB');
+    } finally {
+      void unmount(app);
+    }
+  });
 });

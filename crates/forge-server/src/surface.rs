@@ -70,6 +70,17 @@ pub fn is_success_result(is_error: bool, subtype: &str) -> bool {
     !is_error && subtype == "success"
 }
 
+/// `[server] tool_record_cap_kb` as bytes (#2374): `0` means the records
+/// cross whole, and a value too large for this machine is clamped rather than
+/// truncated to zero.
+fn cap_bytes(kb: u64) -> usize {
+    if kb == 0 {
+        usize::MAX
+    } else {
+        usize::try_from(kb.saturating_mul(1024)).unwrap_or(usize::MAX)
+    }
+}
+
 impl ViewSurface {
     pub fn new(workspace: Arc<Workspace>) -> Self {
         Self {
@@ -77,6 +88,12 @@ impl ViewSurface {
             usage_cache: std::sync::Mutex::new(None),
             pricing_refill: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The byte cap one frame's `tool_use_result` may reach in a served
+    /// page (#2374): `[server] tool_record_cap_kb`, with `0` meaning whole.
+    pub fn tool_record_cap_bytes(&self) -> usize {
+        cap_bytes(self.workspace.server_config().tool_record_cap_kb)
     }
 
     /// Every seat that exists, for a browser-capable connection's profile
@@ -952,5 +969,15 @@ provider = \"anthropic\"
             target: forge_primitives::slack::SlackSubscriptionTarget::DirectMessages,
             created_at: std::time::SystemTime::UNIX_EPOCH,
         }
+    }
+
+    /// **The config's KB crosses as bytes, and `0` as whole** (#2374): the
+    /// primitives test pins the field's parse, and this one pins the mapping
+    /// the served-page cap is read through - dropping the `* 1024` would omit
+    /// every record over 64 bytes with the suite green.
+    #[test]
+    fn the_record_cap_crosses_kilobytes_and_zero_means_whole() {
+        assert_eq!(super::cap_bytes(64), 65_536, "64 KB is 65536 bytes");
+        assert_eq!(super::cap_bytes(0), usize::MAX, "0 serves the record whole");
     }
 }

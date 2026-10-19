@@ -90,9 +90,19 @@ impl Fleet {
     /// registered before it appeared is registered under a key nothing looks
     /// up again. Read `project_key` before creating one.
     pub fn in_dir(config_dir: &Path, orgs: &[(&str, &[&str])]) -> Result<Self, FixtureError> {
+        Self::in_dir_with_server(config_dir, orgs, "")
+    }
+
+    /// [`Self::in_dir`] with a `[server]` block of the caller's own, for a
+    /// test that pins what a key DOES rather than that it parses.
+    pub fn in_dir_with_server(
+        config_dir: &Path,
+        orgs: &[(&str, &[&str])],
+        server: &str,
+    ) -> Result<Self, FixtureError> {
         let forge = config_dir.join("forge");
         std::fs::create_dir_all(&forge)?;
-        std::fs::write(forge.join("forge.toml"), config(config_dir, orgs))?;
+        std::fs::write(forge.join("forge.toml"), config(config_dir, orgs, server))?;
         // `new_for_test` opens the store under `config_dir`'s own
         // app-support base, so a fixture gets a durable layer without
         // opening a second handle on the same file.
@@ -513,6 +523,8 @@ impl Fleet {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: artifact
                 .map(|target| forge_primitives::tasks::TaskLink {
                     kind: forge_primitives::tasks::LinkKind::for_target(target),
@@ -544,6 +556,7 @@ impl Fleet {
             last_fire: None,
             next_fire: std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
             team_role: None,
+            wake: true,
         });
         Ok(())
     }
@@ -608,8 +621,11 @@ impl Fleet {
 
 /// The `forge.toml` a fleet is built from: one `[[orgs]]` per entry, each
 /// project under its own directory so two projects never share a path.
-fn config(config_dir: &Path, orgs: &[(&str, &[&str])]) -> String {
+fn config(config_dir: &Path, orgs: &[(&str, &[&str])], server: &str) -> String {
     let mut sections: Vec<String> = Vec::new();
+    if !server.is_empty() {
+        sections.push(server.to_owned());
+    }
     for (org, projects) in orgs {
         sections.push(format!("[[orgs]]\nname = \"{org}\"\naccounts = [\"Acct\"]\n\n"));
         for project in *projects {

@@ -902,7 +902,7 @@ function createSeat(
         // client holds came from a seat whose occupant has moved on: nothing
         // in this epoch can answer for them, and the whole record is what
         // tells it where the new one stands.
-        if (message.what === 'seat_range' && message.seat !== undefined) {
+        if (message.what === 'seat_range' && message.seat != null) {
           if (subjectKey({ session: message.seat }) !== key) return;
           // The frames held above the hole belong to the epoch the refusal
           // just ended; the whole read that follows answers for the new one.
