@@ -782,7 +782,8 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
              own profile. Only this seat's own profile can be raised; another seat's is refused."
         } else {
             "Name of the browser profile to drive. **Omit it to use the browser's own \
-                profile**, the one every seat shares. A named profile belongs to the SEAT that \
+                profile**, the one every seat shares - on the client's host, never the \
+                person's own browser. A named profile belongs to the SEAT that \
                 first names it - another seat naming it is refused - and a seat's own profile, \
                 named after its project and label, is created on its first reach for the browser \
                 that names \
