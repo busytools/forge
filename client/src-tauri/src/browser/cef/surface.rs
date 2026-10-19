@@ -21,9 +21,10 @@ use objc2_core_graphics::{
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
-use tauri::Manager as _;
+use tauri::{Emitter as _, Manager as _};
 
 use super::input::{self, InputEvent, MouseKind, Sender};
+use super::osr::{MAX_HEIGHT, MAX_WIDTH, Ring};
 use super::spawn::ActiveHost;
 
 /// Where the page says its takeover's page area is, in CSS pixels from the
@@ -55,6 +56,11 @@ struct Overlay {
     view: usize,
     generation: u64,
     cancel: Arc<AtomicBool>,
+    /// **The mapping the layer is reading.** CoreAnimation releases a frame's
+    /// image on its next transaction commit, so the ring stays mapped until
+    /// the view is gone and a commit has had its turn; otherwise the bytes
+    /// are unmapped under a live CGImage.
+    ring: Arc<Ring>,
 }
 
 static OVERLAY: Mutex<Option<Overlay>> = Mutex::new(None);
@@ -324,13 +330,11 @@ pub async fn attach(
     rect: Rect,
 ) -> Result<(), String> {
     let rect = rect.sane();
-    // **A 1.5x raster, scaled to the display by the compositor.** A full
-    // retina frame (2x) is four times the bytes of 1x for every paint and was
-    // measured laggy at 3412x1738; 1x is smooth but soft. The layout stays
-    // the CSS size and only the raster is scaled, so the page reads crisp
-    // without the full-retina cost.
-    const RASTER: f64 = 1.5;
-    host.ring.request(paint_px(rect.width * RASTER), paint_px(rect.height * RASTER), RASTER);
+    host.ring.request(
+        paint_px(rect.width * raster(rect)),
+        paint_px(rect.height * raster(rect)),
+        raster(rect),
+    );
     let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     let cancel = Arc::new(AtomicBool::new(false));
 
@@ -351,6 +355,7 @@ pub async fn attach(
         .ok_or_else(|| "the client window is not there".to_owned())?;
     let (placed_tx, placed_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let cancel_for_closure = Arc::clone(&cancel);
+    let ring_for_view = Arc::clone(&host.ring);
     let scheduled = window.with_webview(move |platform| {
         // SAFETY: this runs on the main thread, and the platform view is the
         // webview's own NSView for the window's lifetime.
@@ -381,9 +386,12 @@ pub async fn attach(
                             view,
                             generation,
                             cancel: Arc::clone(&cancel_for_closure),
+                            ring: Arc::clone(&ring_for_view),
                         });
-                        // Retained by the view hierarchy from here.
-                        std::mem::forget(overlay);
+                        // **The local reference goes; the hierarchy keeps
+                        // one.** `addSubview` retained the view, so letting
+                        // this Retained drop is what keeps a second reference
+                        // from leaking per open.
                         Ok(())
                     }
                     None => Err("the client window's content view is not there".to_owned()),
@@ -422,11 +430,52 @@ pub async fn attach(
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut last = 0_u64;
+        let mut checked = std::time::Instant::now();
+        let mut last_focus = 1_u32;
         loop {
             if cancel.load(Ordering::Acquire) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(4)).await;
+            // **A dead or frozen host must not leave its last frame up with
+            // no words.** The state is the host's own word, the process is
+            // checked for exit, and the DevTools endpoint proves the message
+            // loop still answers - a static page paints nothing, so frames
+            // alone cannot tell a quiet page from a wedged host. The header
+            // is read and dropped before the probe: a raw pointer cannot
+            // cross the await.
+            if checked.elapsed() >= std::time::Duration::from_secs(2) {
+                checked = std::time::Instant::now();
+                let (state, visible, focused) = {
+                    let header = host.ring.header();
+                    // SAFETY: the ring is mapped for the host's lifetime.
+                    unsafe {
+                        (
+                            (*header).state.load(Ordering::Acquire),
+                            (*header).visible.load(Ordering::Relaxed),
+                            (*header).focused.load(Ordering::Relaxed),
+                        )
+                    }
+                };
+                if focused != last_focus {
+                    last_focus = focused;
+                    tauri_plugin_log::log::debug!(
+                        "the browser host reports focus {focused} (event_name cef_surface_focus)"
+                    );
+                }
+                let alive = super::spawn::alive(host.pid);
+                let answers = alive && super::spawn::probe(host.port).await;
+                if state == super::osr::STATE_FAILED || visible == 0 || !answers {
+                    let why = if state == super::osr::STATE_FAILED {
+                        "the browser could not start"
+                    } else {
+                        "the browser stopped answering"
+                    };
+                    let _ = app.emit("browser_surface_failed", why.to_owned());
+                    detach(&app);
+                    break;
+                }
+            }
             let header = host.ring.header();
             // SAFETY: the ring is mapped for the host's lifetime.
             let frame = unsafe { (*header).frame.load(Ordering::Acquire) };
@@ -463,8 +512,11 @@ pub async fn attach(
 pub fn set_rect(app: &tauri::AppHandle, host: &ActiveHost, rect: Rect) {
     let rect = rect.sane();
     // The same raster the attach asks for; the view still moves in points.
-    const RASTER: f64 = 1.5;
-    host.ring.request(paint_px(rect.width * RASTER), paint_px(rect.height * RASTER), RASTER);
+    host.ring.request(
+        paint_px(rect.width * raster(rect)),
+        paint_px(rect.height * raster(rect)),
+        raster(rect),
+    );
     let Some(generation) = OVERLAY.lock().ok().and_then(|slot| slot.as_ref().map(|o| o.generation))
     else {
         return;
@@ -489,27 +541,74 @@ pub fn set_rect(app: &tauri::AppHandle, host: &ActiveHost, rect: Rect) {
 pub fn detach(app: &tauri::AppHandle) {
     let overlay = OVERLAY.lock().ok().and_then(|mut slot| slot.take());
     let Some(overlay) = overlay else { return };
+    tauri_plugin_log::log::debug!(
+        "releasing the surface's ring (event_name cef_surface_released, ring {})",
+        overlay.ring.name,
+    );
     overlay.cancel.store(true, Ordering::Release);
     let view = overlay.view;
+    let later = app.clone();
     let _ = app.run_on_main_thread(move || {
         // The slot is already empty, so no queued draw reaches the view; the
         // hierarchy still retains it until this call takes it out.
         // SAFETY: main thread, and the view is in the hierarchy.
         unsafe {
             let view = &*(view as *const OverlayView);
+            // **The frame goes before the mapping does.** CoreAnimation
+            // releases its image on the transaction commit at the end of this
+            // turn; the ring stays mapped one turn longer, below.
+            if let Some(layer) = view.layer() {
+                layer.setContents(None);
+            }
             view.removeFromSuperview();
         }
+        // The ring's mapping drops after CoreAnimation has committed the
+        // empty contents: the image references the mapped pixels until then.
+        let _ = later.run_on_main_thread(move || drop(overlay));
     });
 }
 
 /// The person's file picker, in the CLIENT's process and window: the app they
-/// are looking at, which is what gives the panel focus.
+/// are looking at, which is what gives the panel focus. The host cancels its
+/// own dialog, so this is the only picker a click can raise.
 async fn pick_file(app: &tauri::AppHandle) -> Option<Vec<String>> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ = app.run_on_main_thread(move || {
-        let _ = tx.send(super::dialog::show_panel());
+        let _ = tx.send(client_panel());
     });
     rx.await.ok().flatten()
+}
+
+fn client_panel() -> Option<Vec<String>> {
+    use objc2::MainThreadMarker;
+    use objc2::runtime::NSObjectProtocol as _;
+    use objc2_app_kit::{NSApp, NSModalResponseOK, NSOpenPanel};
+
+    let mtm = MainThreadMarker::new()?;
+    // `activate` is macOS 14+; the selector is chosen at run time so the
+    // 11.0 target still starts and the panel takes focus on older systems.
+    let app = NSApp(mtm);
+    unsafe {
+        if app.respondsToSelector(objc2::sel!(activate)) {
+            let _: () = objc2::msg_send![&*app, activate];
+        } else {
+            let _: () = objc2::msg_send![&*app, activateIgnoringOtherApps: true];
+        }
+    }
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+    if panel.runModal() != NSModalResponseOK {
+        return None;
+    }
+    let mut paths = Vec::new();
+    for url in panel.URLs().iter() {
+        if let Some(path) = url.path() {
+            paths.push(path.to_string());
+        }
+    }
+    Some(paths)
 }
 
 /// The overlay's frame in its superview's (bottom-left) coordinates.
@@ -525,6 +624,18 @@ fn paint_px(value: f64) -> u32 {
     value.round().clamp(1.0, f64::from(u32::MAX)) as u32
 }
 
+/// The raster the surface asks for: 1.5x, or less when the takeover is
+/// larger than the ring's 4K budget.
+///
+/// **A fixed 1.5 breaks input on a big display**: past 2560x1440 CSS the
+/// paint size clamps, the page is laid out wider than the frame it is drawn
+/// into, and clicks land off. Deriving the scale from the rect keeps the
+/// paint exact at any size; the layout stays the CSS size either way.
+fn raster(rect: Rect) -> f64 {
+    let fit = (f64::from(MAX_WIDTH) / rect.width).min(f64::from(MAX_HEIGHT) / rect.height);
+    fit.clamp(0.25, 1.5)
+}
+
 /// A point in the overlay's own (flipped) coordinates, in CSS pixels for the
 /// page's viewport. **The mapping is 1:1**: the overlay is placed and sized
 /// in points, and a point is the page's CSS pixel at the current zoom; the
@@ -536,6 +647,43 @@ fn css_point(point: NSPoint) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The frame's bytes are the ring's, and the data must not free
+    /// them.** With a NULL deallocator CFData takes ownership of memory it
+    /// never allocated and the release aborts in libmalloc - the invalid
+    /// free this pins. The bytes here are a stack array on purpose: on a
+    /// regression the release aborts inside this test rather than quietly
+    /// freeing a heap buffer that happened to be valid.
+    #[test]
+    fn the_frame_data_does_not_free_the_rings_bytes() {
+        let pixels = [0xAB_u8; 64 * 64 * 4];
+        // SAFETY: the construction matches `draw_frame`: no-copy bytes the
+        // caller keeps alive, and the null allocator as the deallocator.
+        let data = unsafe {
+            CFData::with_bytes_no_copy(
+                None,
+                pixels.as_ptr(),
+                pixels.len() as isize,
+                objc2_core_foundation::kCFAllocatorNull,
+            )
+        }
+        .expect("a no-copy data");
+        drop(data);
+        assert_eq!(pixels[0], 0xAB, "the release left the ring's bytes alone");
+    }
+
+    /// **A takeover bigger than 2560x1440 CSS must not clamp the paint.**
+    /// The scale comes down with the rect, so the ring's 4K budget is never
+    /// hit and the page is never laid out wider than the frame it is drawn
+    /// into - which is what kept clicks on their targets on a 6K display.
+    #[test]
+    fn a_large_takeover_raster_fits_the_ring() {
+        let big = Rect { x: 0.0, y: 0.0, width: 3000.0, height: 1700.0, scale: 2.0 };
+        let scale = raster(big);
+        assert!(big.width * scale <= f64::from(MAX_WIDTH) + 1.0, "width fits the ring");
+        assert!(big.height * scale <= f64::from(MAX_HEIGHT) + 1.0, "height fits the ring");
+        assert!(scale < 1.5, "and comes down from the default to do it");
+    }
 
     #[test]
     fn a_rect_with_no_size_still_has_a_pixel() {
