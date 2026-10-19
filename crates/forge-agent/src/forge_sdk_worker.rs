@@ -238,7 +238,7 @@ real window on the page you were driving, Done lowers it, and it answers \
 like any ask. A \
 named `profile` is a browser of its own with its own logins, owned by the \
 session that first names it; omit it unless the work genuinely needs \
-those logins. Never launch a browser to drive it, and never drive the \
+those logins. Never launch a browser to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the browser \
 this session drives on the client's host. With no client connected a call \
 fails by name, so do not retry in a loop.";
@@ -3232,10 +3232,11 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "Never launch a browser to drive it, and never drive the person's own browser \
+                "Never launch a browser to drive a page, and never drive the person's own browser \
                  or its tabs"
             ),
-            "the prohibition ships to a fresh install with no user-scope file, so it is pinned",
+            "the browser prohibition ships to a fresh install with no user-scope file, so it is \
+             pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
