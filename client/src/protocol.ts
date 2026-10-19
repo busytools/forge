@@ -442,6 +442,13 @@ export type ServerMessage =
        * The conversation the refusal belongs to, or `null` where it belongs
        * to none. **The wire sends `null`, not an absent field**, so a reader
        * tests it as a value rather than for presence (#2420).
+       *
+       * The conversation fold is the one reader that ACTS on null: a
+       * seatless `subscribe` refusal may belong to any seat. The other three
+       * - `session/stream`, `session/live` and `doc/live` - read the field
+       * only on `seat_range` and `document_read` refusals, which the server
+       * always names by seat, so their null test is type-driven rather than a
+       * case the wire produces.
        */
       seat?: SessionSlot | null;
       dispatch_id?: number | null;

@@ -1172,6 +1172,13 @@ export class Chat {
         if (held) this.forgot();
       } else {
         this.clearRetry();
+        // **The reconnect reseeds through a page ask** (#2420): the subscribe's
+        // snapshot cannot be the answer to an older ask that may be in flight
+        // when it lands, so the newest page is asked for as it was before this
+        // PR - reserving the slot and taking its answer's own cursor - and the
+        // wait is one ask at a time. A FIRST open asks nothing: the subscribe
+        // answers it.
+        if (this.missed && this.held.loaded) this.ask(null);
       }
     });
     // A dispatch refused before it left the browser draws its line here: the
@@ -1283,11 +1290,11 @@ export class Chat {
   showing(): void {
     if (this.shown) return;
     this.shown = true;
-    // **A conversation with no page yet waits on its subscribe** (#2420): the
-    // snapshot carries the newest page, so a refresh here would ship it a
-    // second time. A RETURN to a loaded conversation keeps its refresh, which
-    // is the reconcile for a read that failed or a stamp missed while away.
-    if (!this.held.loaded) return;
+    // **The refresh is the guarded one** (#2420): it refuses over a
+    // conversation with no page yet - that load is the subscribe's to answer -
+    // so a return cannot ship a page beside the snapshot. A RETURN to a loaded
+    // conversation keeps the refresh, which is the reconcile for a read that
+    // failed or a stamp missed while away.
     if (!this.refresh()) this.returnWanted = true;
   }
 
@@ -1401,11 +1408,19 @@ export class Chat {
         // answer or refusal draws and retries. The error names the seat it
         // refused, so another seat's refused read is not this conversation's.
         if (message.what === 'subscribe') {
-          if (message.seat != null && subjectKey({ session: message.seat }) !== this.key) return;
-          // A load in flight was the subscribe's, and it just refused: the page
-          // ask is the old path and must go even unloaded, so this is `ask`
-          // rather than the guarded `refresh`.
-          this.ask(null);
+          if (message.seat != null) {
+            if (subjectKey({ session: message.seat }) !== this.key) return;
+            // **This seat's refused subscribe** (#2420): no snapshot follows,
+            // so the page is asked - loaded or not - and its own seated
+            // answer or refusal draws and retries.
+            this.ask(null);
+            return;
+          }
+          // **A seatless refusal names no seat**: an older server's, or a
+          // non-session subject's. Asking on every open conversation would put
+          // another seat's refusal on this one, so only a load (nothing held
+          // yet) or a reconnect (a read it missed) asks.
+          if (!this.held.loaded || this.missed) this.ask(null);
           return;
         }
         if (message.what !== 'more') return;
@@ -1453,7 +1468,10 @@ export class Chat {
           // Seed it instead, and ask `more` only when the answer brought no
           // page. A reconnect's snapshot is the same heal - the frames missed
           // in the gap are what the fresh page carries.
-          const fresh = !this.held.loaded || this.missed;
+          // **Only the first load is seeded from the subscribe's answer**
+          // (#2420). A reconnect asks a page for itself (the status handler),
+          // so its snapshot cannot steal an older ask's in-flight bookkeeping.
+          const fresh = !this.held.loaded;
           this.heard(runningOf(message.data));
           if (fresh) {
             const data = (message.data ?? {}) as { conversation?: unknown };
@@ -1463,13 +1481,20 @@ export class Chat {
             };
             const rows = pageTurns(conversation.turns);
             if (rows.length > 0) {
-              // **The record carries its page's handle** (#2420), so the seed
-              // is the whole of what a switch reads: the turns, and the cursor
-              // a pull above them asks from. A reconnect takes the same path,
-              // and a page sharing no frame with held walks from this handle
-              // down to the held tail as the old reconnect page did.
-              const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
-              this.takePage(rows, cursor, 'newest');
+              if (!Object.hasOwn(conversation, 'cursor')) {
+                // **An older server's record has no `cursor` field at all**
+                // (#2420): the page itself can be seeded, but the history
+                // above it is only named by a real page - which the `more` arm
+                // answers with the window's floor - so ask rather than read
+                // the history as ended.
+                this.ask(null);
+              } else {
+                // **The record carries its page's handle**, so the seed is the
+                // whole of what a switch reads: the turns, and the cursor a
+                // pull above them asks from.
+                const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
+                this.takePage(rows, cursor, 'newest');
+              }
             } else {
               this.ask(null);
             }

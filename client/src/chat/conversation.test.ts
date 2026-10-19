@@ -451,42 +451,45 @@ describe('the conversation the chat draws', () => {
     server.reach('connecting');
     const asked = server.more().length;
     server.reach('open');
-    expect(
-      server.more().length,
-      'the reconnect asks nothing: its subscribe answers with the page',
-    ).toBe(asked);
+    // **The reconnect reseeds through a page ask** (#2420), the shape it had
+    // before the subscribe answered with the page: the answer's own cursor
+    // carries the walk.
+    expect(server.more().length, 'the reconnect asks the newest page').toBe(asked + 1);
 
-    // The record as the transcript has it - the held frames and the ones that
+    // The page as the transcript has it - the held frames and the ones that
     // crossed while the socket was down, one turn.
     server.send(
-      record([
-        {
-          key: 't1',
-          messages: [
-            {
-              type: 'user',
-              uuid: 'u-before',
-              message: { role: 'user', content: [{ type: 'text', text: 'before the drop' }] },
-            },
-            {
-              type: 'assistant',
-              uuid: 'a-held',
-              message: {
-                role: 'assistant',
-                content: [{ type: 'text', text: 'held before the drop' }],
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              {
+                type: 'user',
+                uuid: 'u-before',
+                message: { role: 'user', content: [{ type: 'text', text: 'before the drop' }] },
               },
-            },
-            {
-              type: 'assistant',
-              uuid: 'a-gap',
-              message: {
-                role: 'assistant',
-                content: [{ type: 'text', text: 'crossed while down' }],
+              {
+                type: 'assistant',
+                uuid: 'a-held',
+                message: {
+                  role: 'assistant',
+                  content: [{ type: 'text', text: 'held before the drop' }],
+                },
               },
-            },
-          ],
-        },
-      ]),
+              {
+                type: 'assistant',
+                uuid: 'a-gap',
+                message: {
+                  role: 'assistant',
+                  content: [{ type: 'text', text: 'crossed while down' }],
+                },
+              },
+            ],
+          },
+        ],
+        null,
+      ),
     );
 
     const drawn = words(chat);
@@ -803,12 +806,10 @@ describe('the conversation the chat draws', () => {
     server.reach('closed');
     const asked = server.more().length;
     server.reach('open');
-    server.send(record([turn('t1', 'first')]));
+    expect(server.more().length, 'the reconnect asks the newest page').toBe(asked + 1);
+    server.send(page([turn('t1', 'first')], null));
 
-    expect(
-      server.more().length,
-      'the reconnect answered from its subscribe, and the want asked nothing',
-    ).toBe(asked);
+    expect(server.more().length, 'and the want did not ask again').toBe(asked + 1);
     stop();
   });
 
@@ -1187,24 +1188,30 @@ describe('the conversation the chat draws', () => {
     expect(get(chat.value).turns.map((row) => row.key)).toEqual(['t1', 't2', 't3']);
   });
 
-  it('seeds a record from an older server with no cursor as the history end', () => {
+  it("asks a page for an older server's record with no cursor field", () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
-    // An older server's record carries no `cursor` field at all (#2420): the
-    // page still seeds, and the history above it reads as ended - the safe
-    // answer rather than an error.
+    // **The field is ABSENT, not null** (#2420). The rows can be drawn, but
+    // the history above them is only named by a real page - which the `more`
+    // arm answers with the window's floor - so the load asks rather than
+    // reading the history as ended.
     server.send({
       kind: 'snapshot',
       subject: { session: LEAD },
       data: { header: {}, conversation: { turns: [turn('t1', 'first')], compaction_count: 0 } },
     });
+    expect(server.more(), 'the load asks the page').toEqual([
+      { kind: 'more', conversation: LEAD, before: null, turns: MORE_TURNS },
+    ]);
+
+    server.send(page([turn('t1', 'first'), turn('t2', 'second')], '5'));
     expect(
       get(chat.value).turns.map((row) => row.key),
-      'the page still seeds',
-    ).toEqual(['t1']);
-    expect(chat.older(), 'its history reads as ended').toBe(false);
-    expect(server.more(), 'and no ask went out').toEqual([]);
+      'the page seeds the conversation',
+    ).toEqual(['t1', 't2']);
+    expect(chat.older(), "and the page's handle pages the history").toBe(true);
+    expect(server.more().at(-1)?.before, 'from the handle it carried').toBe('5');
   });
 
   it('asks nothing above a seed whose record carries no handle', () => {
@@ -1314,6 +1321,19 @@ describe('the conversation the chat draws', () => {
     );
   });
 
+  it('asks nothing for a seatless refusal on a loaded conversation', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t1', 'first'), turn('t2', 'second')], '1'));
+
+    // An older server names no seat: on a loaded conversation the refusal may
+    // belong to any seat, so this one asks nothing (#2420).
+    server.refuse('subscribe', 'forge holds no session for TestOrg/proj/w1', null);
+    expect(server.more(), "another seat's refusal asks this conversation nothing").toEqual([]);
+    stop();
+  });
+
   it("leaves another seat's refused subscribe to that seat", () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
@@ -1323,6 +1343,48 @@ describe('the conversation the chat draws', () => {
     server.refuse('subscribe', 'forge holds no session for TestOrg/proj/w1', other);
 
     expect(server.more(), "another seat's refusal asks this conversation nothing").toEqual([]);
+  });
+
+  it('asks no page when a settle arrives before the first page', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // A turn completes while the subscribe's snapshot is still encoding: the
+    // refresh must not ship a page beside the snapshot's own (#2420).
+    server.update({ turn_complete: { key: LEAD } });
+    expect(server.more(), "the load is the subscribe's").toEqual([]);
+    stop();
+  });
+
+  it('an unloaded reconnect waits for its subscribe rather than asking twice', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.reach('closed');
+    server.reach('open');
+    // Nothing is held yet: the re-subscribe's snapshot is the load, so a page
+    // asked here would ship it beside that answer (#2420).
+    expect(server.more(), 'the subscribe answers the load').toEqual([]);
+    server.send(record([turn('t1', 'first')], '1'));
+    expect(get(chat.value).loaded, 'and it seeds the conversation').toBe(true);
+    stop();
+  });
+
+  it('reads once per reconnect, not on every open the socket reports', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t1', 'first'), turn('t2', 'second')], '1'));
+
+    server.reach('closed');
+    server.reach('open');
+    const asked = server.more().length;
+    // The reconnect's snapshot lands and clears `missed`; a later open with no
+    // drop behind it is not another read.
+    server.send(record([turn('t1', 'first'), turn('t2', 'second')], '1'));
+    server.reach('open');
+    expect(server.more().length, 'a second open asks nothing').toBe(asked);
+    stop();
   });
 
   it('asks no page when an unloaded seat shows, and the newest when a loaded one does', () => {
@@ -1351,14 +1413,19 @@ describe('the conversation the chat draws', () => {
     // A two-turn held tail, so the walk has an interior to land in.
     server.send(record([turn('t1', 'old one'), turn('t2', 'old two')], null));
 
-    // A reconnect whose answer shares no frame with what is held: its record
-    // carries the newer page and the handle above it (#2420), and the walk
-    // from that handle has to reach the held tail, never leave the newer page
-    // above it.
+    // The reconnect asks its own newest page (#2420); an answer that shares no
+    // frame with what is held walks from its own cursor down to the held tail,
+    // never leaving the newer page above it.
     server.reach('closed');
     server.reach('open');
-    server.send(record([turn('t4', 'new')], '3'));
-    expect(server.more().at(-1), 'the walk asks from the record handle').toEqual({
+    expect(server.more().at(-1), 'the reconnect asks the newest page').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+      turns: MORE_TURNS,
+    });
+    server.send(page([turn('t4', 'new')], '3'));
+    expect(server.more().at(-1), 'the walk asks from the page handle').toEqual({
       kind: 'more',
       conversation: LEAD,
       before: '3',
@@ -1381,6 +1448,36 @@ describe('the conversation the chat draws', () => {
       't3',
       't4',
     ]);
+    stop();
+  });
+
+  it("a reconnect's own ask keeps a reader's pull from splicing older rows as newest", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t1', 'one'), turn('t2', 'two')], '2'));
+
+    server.reach('closed');
+    server.reach('open');
+    expect(server.more().at(-1), 'the reconnect reserves the newest slot').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+      turns: MORE_TURNS,
+    });
+    // The reader's pull waits: an older ask sent now would have its bookkeeping
+    // taken by the reconnect's answer, and the older page would land as the
+    // newest - older rows below newer ones (#2420).
+    expect(chat.older(), 'the pull waits for the reconnect answer').toBe(false);
+    server.send(page([turn('t1', 'one'), turn('t2', 'two')], '2'));
+
+    expect(chat.older(), 'and goes after it').toBe(true);
+    expect(server.more().at(-1)?.before, 'from the handle the answer carried').toBe('2');
+    server.send(page([turn('t0', 'zero')], null));
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the older page keeps its direction',
+    ).toEqual(['t0', 't1', 't2']);
     stop();
   });
 

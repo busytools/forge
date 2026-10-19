@@ -930,6 +930,19 @@ pub(crate) fn cap_tool_records(turns: &mut [TurnWire], cap: usize, seat: &Sessio
     }
 }
 
+/// Hand the window's floor back as a page's cursor when the page opens on the
+/// window's front (#2420).
+///
+/// **The window's own start is not the history's**: a page cut there carries
+/// no handle of its own while the history above it begins at the floor. Both
+/// a `more` answer and the session record serve that page, and both must hand
+/// the same handle back or a client reads the history above as ended.
+pub(crate) fn floor_cursor(page: &mut Page, dropped: usize) {
+    if page.cursor.is_none() && dropped > 0 {
+        page.cursor = Some(dropped.to_string());
+    }
+}
+
 /// The same bound on a live frame's record, before it goes to a client
 /// (#2374): a reload and a live frame draw the same record or the marker.
 pub(crate) fn cap_message_record(msg: &mut Message, cap: usize, seat: &SessionSlot) {
@@ -1683,15 +1696,7 @@ async fn session(
                         None,
                         SUBSCRIBE_TURNS,
                     );
-                    // **The window's own start is not the history's.** The
-                    // `more` arm hands the floor back when its page opens on
-                    // the window's front, and the record's page has to do the
-                    // same: a byte-capped giant serves its whole window, whose
-                    // page cursor is `None` while the history above begins at
-                    // the floor - seeded as it is, that would read as the end.
-                    if page.cursor.is_none() && held.dropped() > 0 {
-                        page.cursor = Some(held.dropped().to_string());
-                    }
+                    floor_cursor(&mut page, held.dropped());
                     (page, held.compaction_count())
                 });
                 cap_tool_records(&mut page.turns, cap, &capped);

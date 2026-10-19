@@ -3098,9 +3098,10 @@ async fn a_more_above_the_floor_caps_the_record_it_serves() {
 async fn the_records_cursor_carries_the_windows_floor() {
     let (url, fleet, state) = a_server_with_state().await;
     let mut rows: Vec<String> = (0..20).map(a_turns_rows).collect();
-    // One final turn far over the frame cap: the window keeps that turn whole
-    // and drops everything before it, so its page opens on the window's front
-    // while the history above begins at the floor.
+    // One final turn that alone carries more frames than the window's cap:
+    // the cut is turn-aligned and never empty, so the window keeps that turn
+    // whole and drops the rows before it - its page opens on the window's
+    // front while the history above begins at the floor.
     rows.push(
         serde_json::json!({
             "type": "user",

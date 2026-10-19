@@ -99,22 +99,6 @@ function stub() {
       }
       flushSync();
     },
-    /**
-     * The subscribe's own answer for a named seat, carrying `turns` (#2420).
-     *
-     * A reconnect is answered with this rather than a page: the snapshot IS
-     * the newest page, so the client asks no `more` beside it.
-     */
-    recordFor(slot: SessionSlot, turns: unknown[], cursor: string | null = null): void {
-      for (const fn of listeners) {
-        fn({
-          kind: 'snapshot',
-          subject: { session: slot },
-          data: { header: {}, conversation: { turns, cursor, compaction_count: 0 } },
-        });
-      }
-      flushSync();
-    },
     /** The socket going down or coming back, as the connection reports it. */
     reach(status: ConnectionStatus): void {
       open = status === 'open';
@@ -929,19 +913,20 @@ describe('the history above a column that fits', () => {
     expect(asksFor(server, LEAD).at(-1)?.before, 'precondition: the fill asked above').toBe('2');
     const before = server.asks.length;
 
-    // The socket dies with that ask in flight. The reconnect's subscribe
-    // answers with the newest page, which spells the very cursor the fill last
-    // asked - so the landing count is the only thing that says the fill may
-    // ask it again. The reconnect itself asks no `more` (#2420).
+    // The socket dies with that ask in flight. The reconnect asks the newest
+    // page for itself (#2420), and its answer spells the very cursor the fill
+    // last asked - so the landing count is the only thing that says the fill
+    // may ask it again.
     server.reach('closed');
     server.reach('open');
-    expect(server.asks.length, 'the reconnect asks nothing').toBe(before);
-    server.recordFor(LEAD, [turn('t1'), turn('t2')], '2');
+    expect(server.asks.length, 'the reconnect asks the newest page').toBe(before + 1);
+    expect(asksFor(server, LEAD).at(-1)?.before, 'and it is a newest ask').toBeNull();
+    server.pageFor(LEAD, [turn('t1'), turn('t2')], '2');
     await settleFrames();
     const asks = asksFor(server, LEAD);
-    expect(asks.length, 'and the fill asks the same cursor again').toBe(before + 1);
-    expect(asks[asks.length - 1]?.before, 'for the cursor the landing spells').toBe('2');
-    expect(server.asks.length, 'nothing else asked').toBe(before + 1);
+    expect(asks.length, 'and the fill asks the same cursor again').toBe(before + 2);
+    expect(asks[asks.length - 1]?.before, 'for the cursor the answer spells').toBe('2');
+    expect(server.asks.length, 'nothing else asked').toBe(before + 2);
   });
 
   it('does not ask at the beat once the room has overflowed', async () => {

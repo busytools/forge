@@ -1,6 +1,7 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
   import Pinned from '../chat/Pinned.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { subjectKey } from '../protocol';
   import { connectors } from '../chat/connectors.svelte';
@@ -14,6 +15,7 @@
   import type { ServerMessage } from '../protocol';
   import type { GitStrip, McpRow, MonitorStripRow, TaskStripRow } from '../session/view';
   import { backgroundTaskFrom, processesFrom, subagentCardFrom } from '../session/wire';
+  import { watchSession } from '../session/live';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
 
@@ -78,13 +80,42 @@
    * state at all.
    */
   function answerWith(canned: Canned) {
-    let listening: ((message: ServerMessage) => void) | null = null;
+    // **A set, like the socket's own**: the seat's listener and the column's
+    // both read every frame, so one slot would hand the message to whichever
+    // registered last - and the column would never see its snapshot.
+    const listeners = new SvelteSet<(message: ServerMessage) => void>();
+    /** The subscribe's answer, kept for a listener that registers after it. */
+    let latestSnapshot: ServerMessage | null = null;
+    // A macrotask, the way a socket's answer arrives: the column that asked
+    // mounts on the microtask flush, so a microtask here could land before its
+    // listener exists and the page would wait for a snapshot nobody heard.
     const say = (message: ServerMessage): void => {
-      queueMicrotask(() => listening?.(message));
+      setTimeout(() => {
+        for (const fn of listeners) fn(message);
+      }, 0);
     };
 
     const connection = {
-      subscribe: () => ({ state: () => ({ kind: 'ready' as const }) }),
+      // **The subscribe's own answer is the conversation** (#2420): a session
+      // snapshot carries the newest page and its cursor, which is what a
+      // switch reads. Without it the column waits for a page it never asked
+      // for and draws its loading state for good.
+      subscribe: (what: unknown) => {
+        if (what !== null && typeof what === 'object' && 'session' in what) {
+          latestSnapshot = {
+            kind: 'snapshot',
+            subject: { session: canned.slot },
+            data: {
+              header: {},
+              conversation: { turns: canned.turns, cursor: '1', compaction_count: 0 },
+            },
+          };
+          say(latestSnapshot);
+        }
+        // `snapshot()` is what the seat's own read asks the held store for;
+        // the fixture holds no record, so it answers none.
+        return { state: () => ({ kind: 'ready' as const }), snapshot: () => null };
+      },
       unsubscribe: () => undefined,
       refresh: () => undefined,
       dispatch: () => null,
@@ -101,9 +132,18 @@
         return true;
       },
       onMessage: (fn: (message: ServerMessage) => void) => {
-        listening = fn;
+        listeners.add(fn);
+        // **A listener that arrives after the answer still gets it**: the
+        // column mounts a flush behind the page's own subscribe, so its
+        // listener is registered after the snapshot was queued.
+        if (latestSnapshot !== null) {
+          const held = latestSnapshot;
+          setTimeout(() => {
+            if (listeners.has(fn)) fn(held);
+          }, 0);
+        }
         return () => {
-          listening = null;
+          listeners.delete(fn);
         };
       },
       // The browser row reads the role as it draws and subscribes to it -
@@ -272,6 +312,12 @@
       if (page.turns === undefined) return;
       canned.page = page;
       canned.held = answerWith(page);
+      // **The seat's subscription is what carries the page** (#2420): the
+      // fixture mounts the column without a Session page, so nothing else
+      // opens the seat - a conversation's hold keeps a subscription alive, it
+      // does not open one - and the column would wait on a snapshot nobody
+      // asked for.
+      watchSession(canned.held.connection, page.slot, false).subscribe(() => undefined);
       // The record's cards, seeded the way a session's own read seeds them:
       // this fixture mounts Chat without a Session, so nothing else would and
       // the strip's agents row could never be looked at here.
