@@ -1515,9 +1515,6 @@ impl BrowserHost {
         // **A failed probe keeps the carry.** Only an answer - even a blank
         // or non-web one - may rewrite or clear it; a transient /json/list
         // fault must not wipe the page the next launch would open.
-        // **A failed probe keeps the carry.** Only an answer - even a blank
-        // or non-web one - may rewrite or clear it; a transient /json/list
-        // fault must not wipe the page the next launch would open.
         if let Some(url) = cef::spawn::page_url(port).await {
             let _launching = self.launch.lock().await;
             write_carried_page(cache, Some(&url));

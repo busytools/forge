@@ -5,4 +5,4 @@
 # this test reserves every thread and runs alone.
 [[profile.default.overrides]]
 filter = 'test(a_successful_call_rewrites_the_carried_page)'
-threads-required = "num-cpus"
+threads-required = "num-test-threads"

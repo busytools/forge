@@ -262,6 +262,69 @@ async fn a_silent_probe_keeps_the_carried_page() {
     osr::Ring::unlink(ring_name);
 }
 
+/// **A failed page probe during a raise keeps the carry too.** The endpoint
+/// answers `/json/version` (so the raise adopts the host) but its
+/// `/json/list` is unreadable; the page written before the raise must
+/// survive. Reverting the raise to clear on a missing answer turns this red.
+#[tokio::test]
+async fn a_raise_with_a_silent_page_probe_keeps_the_carried_page() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = paths(dir.path());
+    let host = BrowserHost::new(paths.clone());
+    let cache = paths.cef_shared();
+    std::fs::create_dir_all(&cache).expect("the cache root");
+    let stub = dir.path().join("stub-host.sh");
+    std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").expect("the stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("the stub is executable");
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = listener.local_addr().expect("the address").port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else { continue };
+            let mut buffer = [0_u8; 2048];
+            let read = socket.read(&mut buffer).await.unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            let body = if request.starts_with("GET /json/list") {
+                // An answer a page URL cannot be read out of.
+                "not json"
+            } else {
+                "{\"Browser\":\"Chrome/154.0\"}"
+            };
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(answer.as_bytes()).await;
+        }
+    });
+    let ring_name = "/forge-cef-raise-probe-test";
+    let ring = osr::Ring::create(ring_name, 64, 64).expect("a ring");
+    std::mem::forget(ring);
+    let pid = spawn::spawn_with(&stub, &cache, port, ring_name, 800, 600).expect("the stub");
+    spawn::write_record(&cache, &spawn::Record { pid, port, ring: ring_name.to_owned() })
+        .expect("the record");
+    std::fs::write(cache.join("page"), b"https://example.com/before").expect("the prior carry");
+
+    host.show(None, None).await.expect("the raise adopts the host");
+
+    assert_eq!(
+        std::fs::read_to_string(cache.join("page")).expect("the prior carry survives"),
+        "https://example.com/before",
+        "a raise whose page probe fails must not clear the carried page"
+    );
+
+    spawn::end(pid).await;
+    spawn::remove_record(&cache);
+    osr::Ring::unlink(ring_name);
+}
+
 /// **A record whose host still answers is ended, not left running.** The
 /// owning client is gone (the claim is free), so this client's sweep ends the
 /// recorded host - a pid it spawned in this test, so the kill is its own.

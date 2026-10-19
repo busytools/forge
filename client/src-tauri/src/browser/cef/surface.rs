@@ -172,11 +172,20 @@ define_class!(
         unsafe fn key_down(&self, event: &objc2_app_kit::NSEvent) {
             let flags = event.modifierFlags();
             let command = flags.contains(objc2_app_kit::NSEventModifierFlags::Command);
+            let shift = flags.contains(objc2_app_kit::NSEventModifierFlags::Shift);
+            let option = flags.contains(objc2_app_kit::NSEventModifierFlags::Option);
+            let control = flags.contains(objc2_app_kit::NSEventModifierFlags::Control);
             let keycode = event.keyCode();
             // A menu that does not consume an editing chord still leaves it
-            // here; dispatch it the same way the equivalent route does.
+            // here, and it goes to the page only under the same rule the
+            // equivalent route used: exactly Command, with no other
+            // modifier. A chord with one is the app's, and the page hears
+            // none of it.
             if command {
-                if let Some(character) = character_of(event)
+                if !shift
+                    && !option
+                    && !control
+                    && let Some(character) = character_of(event)
                     && editing_key(character).is_some()
                 {
                     self.send_command(character, modifiers(event));
@@ -267,9 +276,12 @@ impl OverlayView {
     /// Whether this view is the window's first responder - the gate that
     /// keeps the bar's DOM feedback field on the webview's own menu editing.
     fn holds_keyboard(&self) -> bool {
-        let Some(window) = self.window() else { return false };
-        let Some(responder) = window.firstResponder() else { return false };
-        std::ptr::eq(&*responder as *const NSResponder, self as *const Self as *const NSResponder)
+        let responder = self
+            .window()
+            .and_then(|window| window.firstResponder())
+            .as_deref()
+            .map(|responder| responder as *const NSResponder as usize);
+        same_responder(responder, self as *const Self as usize)
     }
 
     /// An editing chord to the page: pasteboard text for Cmd+V - the host has
@@ -345,6 +357,12 @@ impl OverlayView {
         };
         unsafe { layer.setContents(Some(contents)) };
     }
+}
+
+/// Whether the window's first responder IS this view. A seam because the
+/// gate is what keeps the bar's DOM feedback field on the menu's own editing.
+fn same_responder(responder: Option<usize>, view: usize) -> bool {
+    responder.is_some_and(|responder| responder == view)
 }
 
 /// What a Command key equivalent does when the surface has the keyboard.
@@ -814,6 +832,15 @@ mod tests {
         assert!(scale < 1.5, "and comes down from the default to do it");
         let one_x = Rect { x: 0.0, y: 0.0, width: 900.0, height: 500.0, scale: 1.0 };
         assert_eq!(raster(one_x), 1.0, "a 1x display is never out-sampled");
+    }
+
+    /// Whether the window's responder IS this view - the gate that keeps the
+    /// bar's DOM field on the menu's own editing.
+    #[test]
+    fn only_the_surface_itself_counts_as_having_the_keyboard() {
+        assert!(same_responder(Some(7), 7));
+        assert!(!same_responder(Some(8), 7), "the webview is not the surface");
+        assert!(!same_responder(None, 7), "no responder, no keyboard");
     }
 
     /// **Cmd+W and the five editing chords are the takeover's, and only
