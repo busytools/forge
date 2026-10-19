@@ -238,8 +238,10 @@ real window on the page you were driving, Done lowers it, and it answers \
 like any ask. A \
 named `profile` is a browser of its own with its own logins, owned by the \
 session that first names it; omit it unless the work genuinely needs \
-those logins. The family drives the machine the client runs on: with no \
-client connected a call fails by name, so do not retry in a loop.";
+those logins. Never launch a browser to drive a page, and never drive the \
+person's own browser or its tabs - the family reaches only the browser \
+this session drives on the client's host. With no client connected a call \
+fails by name, so do not retry in a loop.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on
@@ -3229,8 +3231,21 @@ mod tests {
             "the profile moment is pinned",
         );
         assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "Never launch a browser to drive a page, and never drive the person's own browser \
+                 or its tabs"
+            ),
+            "the browser prohibition ships to a fresh install with no user-scope file, so it is \
+             pinned",
+        );
+        assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("with no client connected a call fails by name"),
+                .contains("reaches only the browser this session drives on the client's host"),
+            "the browser paragraph names the host the tools reach",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("With no client connected a call fails by name"),
             "the no-client failure is pinned",
         );
     }

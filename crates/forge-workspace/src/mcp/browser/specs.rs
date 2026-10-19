@@ -779,10 +779,12 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         }
         let description = if spec.name == "browser_hand_off" {
             "Name of the browser profile to raise for the person. Omit to raise the browser's \
-             own profile. Only this seat's own profile can be raised; another seat's is refused."
+             own profile. Only this seat's own profile can be raised; another seat's is refused. \
+             The raise is on the client's host, never the person's own browser or its tabs."
         } else {
             "Name of the browser profile to drive. **Omit it to use the browser's own \
-                profile**, the one every seat shares. A named profile belongs to the SEAT that \
+                profile**, the one every seat shares; a call reaches the client's host, never \
+                the person's own browser or its tabs. A named profile belongs to the SEAT that \
                 first names it - another seat naming it is refused - and a seat's own profile, \
                 named after its project and label, is created on its first reach for the browser \
                 that names \
@@ -892,6 +894,15 @@ mod tests {
                 spec.schema["properties"]["profile"]["type"],
                 json!("string"),
                 "{} declares no profile name: {}",
+                spec.name,
+                spec.schema,
+            );
+            assert!(
+                spec.schema["properties"]["profile"]["description"]
+                    .as_str()
+                    .is_some_and(|description| description
+                        .contains("the client's host, never the person's own browser or its tabs")),
+                "{} does not say which browser a call reaches: {}",
                 spec.name,
                 spec.schema,
             );
