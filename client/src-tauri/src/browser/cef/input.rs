@@ -174,10 +174,6 @@ pub struct PanelRequest {
     pub reply: tokio::sync::oneshot::Sender<Option<Vec<String>>>,
 }
 
-/// The marker the click probe puts on the input it found, so the set-files
-/// call can address it without an id the page may not have.
-const UPLOAD_MARK: &str = "data-forge-upload";
-
 /// Start the sender: resolve the page target, connect, and replay events
 /// until the surface closes.
 pub async fn start(
@@ -193,56 +189,60 @@ pub async fn start(
         .strip_prefix(&prefix)
         .ok_or_else(|| format!("the page's devtools endpoint is not on the host's port: {ws_url}"))?
         .to_owned();
-    let mut cdp = Cdp::connect(port, &path).await?;
+    let (mut cdp, mut events) = Cdp::connect_watch(port, &path).await?;
+    // **The page's own chooser, not a click probe.** CEF reports every file
+    // chooser the page opens - a direct click on the input, a click on its
+    // label, a scripted `input.click()` - so the client's panel answers all
+    // of them. The probe saw only a pointer landing on the input itself and
+    // missed the label and scripted forms a job site uses.
+    if let Err(why) = cdp.call("Page.enable", json!({}), None).await {
+        tauri_plugin_log::log::info!("the page's file choosers cannot be watched: {why}");
+    } else if let Err(why) =
+        cdp.call("Page.setInterceptFileChooserDialog", json!({ "enabled": true }), None).await
+    {
+        tauri_plugin_log::log::info!("the page's file-chooser interception did not enable: {why}");
+    }
     let (tx, mut rx) = mpsc::unbounded_channel();
     tauri::async_runtime::spawn(async move {
-        while !cancel.load(Ordering::Acquire) {
-            let Some(event) = rx.recv().await else { break };
-            let (method, params) = method_and_params(&event);
-            // **Sent, not awaited**: a round trip per keystroke is lag, and a
-            // drag's moves queue behind one another if each waits its reply.
-            if let Err(why) = cdp.send(method, params).await {
-                tauri_plugin_log::log::info!("an input event did not land: {why}");
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                break;
             }
-            // **A click on a file input is the person asking for their
-            // picker, and the click has already gone.** The probe is a round
-            // trip, so it must not sit in front of every click; it runs after
-            // the click landed, marks the input, and sets the chosen files on
-            // it below.
-            if let InputEvent::Mouse { kind: MouseKind::Press, x, y, .. } = event
-                && let Some(paths) = pick_files(&mut cdp, &panels, x, y).await
-            {
-                set_files(&mut cdp, &paths).await;
+            tokio::select! {
+                event = rx.recv() => {
+                    let Some(event) = event else { break };
+                    let (method, params) = method_and_params(&event);
+                    // **Sent, not awaited**: a round trip per keystroke is
+                    // lag, and a drag's moves queue behind one another if each
+                    // waits its reply.
+                    if let Err(why) = cdp.send(method, params).await {
+                        tauri_plugin_log::log::info!("an input event did not land: {why}");
+                    }
+                }
+                event = events.recv() => {
+                    let Some(event) = event else { break };
+                    if event.get("method").and_then(Value::as_str)
+                        != Some("Page.fileChooserOpened")
+                    {
+                        continue;
+                    }
+                    let Some(node) =
+                        event.pointer("/params/backendNodeId").and_then(Value::as_i64)
+                    else {
+                        continue;
+                    };
+                    if let Some(paths) = pick_files(&panels).await {
+                        set_files(&mut cdp, node, &paths).await;
+                    }
+                }
             }
         }
     });
     Ok(Sender { tx })
 }
 
-/// Whether the click is on a file input; when it is, asks the client for the
-/// person's picker and answers the chosen paths.
-async fn pick_files(
-    cdp: &mut Cdp,
-    panels: &mpsc::UnboundedSender<PanelRequest>,
-    x: f64,
-    y: f64,
-) -> Option<Vec<String>> {
-    let probe = format!(
-        "(() => {{ const el = document.elementFromPoint({x}, {y}); \
-         if (!el || el.tagName !== 'INPUT' || el.type !== 'file') return false; \
-         el.setAttribute('{UPLOAD_MARK}', '1'); return true; }})()"
-    );
-    let answer = cdp
-        .call(
-            "Runtime.evaluate",
-            json!({ "expression": probe, "returnByValue": true, "userGesture": true }),
-            None,
-        )
-        .await
-        .ok()?;
-    if answer.pointer("/result/value").and_then(Value::as_bool) != Some(true) {
-        return None;
-    }
+/// Ask the client for the person's picker and answer the chosen paths.
+async fn pick_files(panels: &mpsc::UnboundedSender<PanelRequest>) -> Option<Vec<String>> {
     let (reply, rx) = tokio::sync::oneshot::channel();
     panels.send(PanelRequest { reply }).ok()?;
     match rx.await {
@@ -251,40 +251,19 @@ async fn pick_files(
     }
 }
 
-/// Set the picked files on the marked input, which fires its own `input` and
-/// `change` events; the mark is removed either way.
-async fn set_files(cdp: &mut Cdp, paths: &[String]) {
-    let document = cdp.call("DOM.getDocument", json!({}), None).await;
-    let root = document.ok().and_then(|doc| doc.pointer("/root/nodeId").and_then(Value::as_i64));
-    if let Some(root) = root {
-        let found = cdp
-            .call(
-                "DOM.querySelector",
-                json!({ "nodeId": root, "selector": format!("input[{UPLOAD_MARK}]") }),
-                None,
-            )
-            .await
-            .ok()
-            .and_then(|answer| answer.get("nodeId").and_then(Value::as_i64));
-        if let Some(node) = found
-            && let Err(why) = cdp
-                .call("DOM.setFileInputFiles", json!({ "files": paths, "nodeId": node }), None)
-                .await
-        {
-            tauri_plugin_log::log::info!("the chosen files did not land: {why}");
-        }
-    }
-    let _ = cdp
+/// Set the picked files on the input the chooser opened, which fires the
+/// page's own `input` and `change` events.
+async fn set_files(cdp: &mut Cdp, backend_node_id: i64, paths: &[String]) {
+    if let Err(why) = cdp
         .call(
-            "Runtime.evaluate",
-            json!({
-                "expression": format!(
-                    "document.querySelector('input[{UPLOAD_MARK}]')?.removeAttribute('{UPLOAD_MARK}')"
-                ),
-            }),
+            "DOM.setFileInputFiles",
+            json!({ "files": paths, "backendNodeId": backend_node_id }),
             None,
         )
-        .await;
+        .await
+    {
+        tauri_plugin_log::log::info!("the chosen files did not land: {why}");
+    }
 }
 
 #[cfg(test)]
