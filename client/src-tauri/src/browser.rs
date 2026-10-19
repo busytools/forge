@@ -800,13 +800,40 @@ impl BrowserHost {
     /// launched it or found it.
     #[cfg(desktop)]
     async fn host_up(&self, cache: &Path) -> bool {
-        if let Some(host) = self.hosts.lock().await.get(cache).cloned() {
+        // **The guard goes before the await.** Held through the body, the
+        // map's lock would wait on the probe it is about to run.
+        let held = self.hosts.lock().await.get(cache).cloned();
+        if let Some(host) = held {
             return cef::spawn::probe(host.port).await;
         }
         if let Some(record) = cef::spawn::read_record(cache) {
             return cef::spawn::probe(record.port).await;
         }
         false
+    }
+
+    /// The host this client holds for `cache`, if it still answers; one that
+    /// no longer does is dropped from the map.
+    ///
+    /// **The map's guard goes before the probe and the re-lock.** An `if let`
+    /// keeps its scrutinee's temporary alive through the body, so the map
+    /// stayed locked across the probe - and the removal then waited on the
+    /// same lock its own future held. That was the wedge a stale host met.
+    #[cfg(desktop)]
+    async fn live_host(&self, cache: &Path) -> Option<Arc<cef::spawn::ActiveHost>> {
+        let held = self.hosts.lock().await.get(cache).cloned();
+        let host = held?;
+        tauri_plugin_log::log::debug!(
+            "browser launch: probing the held host (event_name cef_launch_stage, stage probing, \
+             pid {}, port {})",
+            host.pid,
+            host.port,
+        );
+        if cef::spawn::probe(host.port).await {
+            return Some(host);
+        }
+        self.hosts.lock().await.remove(cache);
+        None
     }
 
     /// Whether the page's takeover is drawing this cache root's frames.
@@ -943,12 +970,23 @@ impl BrowserHost {
     async fn launch_locked(&self, cache: &Path) -> Result<Arc<cef::spawn::ActiveHost>, String> {
         match tokio::time::timeout(LAUNCH_WAIT, async {
             let _launching = self.launch.lock().await;
+            tauri_plugin_log::log::debug!(
+                "browser launch: mutex held (event_name cef_launch_stage, stage mutex, profile \
+                 {})",
+                cache.display(),
+            );
             self.browser_for_locked(cache).await
         })
         .await
         {
             Ok(answer) => answer,
-            Err(_) => Err("the browser did not start in time - try again".to_owned()),
+            Err(_) => {
+                tauri_plugin_log::log::warn!(
+                    "browser launch: timed out (event_name cef_launch_timeout, profile {})",
+                    cache.display(),
+                );
+                Err("the browser did not start in time - try again".to_owned())
+            }
         }
     }
 
@@ -1017,6 +1055,10 @@ impl BrowserHost {
             return Err(cef_unavailable());
         }
         self.claim(cache).await;
+        tauri_plugin_log::log::debug!(
+            "browser launch: claimed (event_name cef_launch_stage, stage claimed, profile {})",
+            cache.display(),
+        );
         // **A Brave-era profile moves once, on its first CEF launch.** Both
         // engines write Chromium's own profile, so the migration is a copy;
         // the client's own Brave launches used the same mock keychain the
@@ -1040,13 +1082,24 @@ impl BrowserHost {
                 cache.display(),
             ),
         }
-        if let Some(host) = self.hosts.lock().await.get(cache).cloned() {
-            if cef::spawn::probe(host.port).await {
-                return Ok(host);
-            }
-            self.hosts.lock().await.remove(cache);
+        tauri_plugin_log::log::debug!(
+            "browser launch: migrated (event_name cef_launch_stage, stage migrated, profile {})",
+            cache.display(),
+        );
+        if let Some(host) = self.live_host(cache).await {
+            return Ok(host);
         }
+        tauri_plugin_log::log::debug!(
+            "browser launch: waiting on the directory lock (event_name cef_launch_stage, stage \
+             locking, profile {})",
+            cache.display(),
+        );
         let _lock = profiles::LaunchLock::acquire(cache).await?;
+        tauri_plugin_log::log::debug!(
+            "browser launch: directory lock held (event_name cef_launch_stage, stage locked, \
+             profile {})",
+            cache.display(),
+        );
         if let Some(record) = cef::spawn::read_record(cache) {
             if cef::spawn::probe(record.port).await {
                 match cef::osr::Ring::open(&record.ring) {
@@ -1101,6 +1154,11 @@ impl BrowserHost {
             let port = cef::spawn::free_port()
                 .ok_or_else(|| "no free port for a browser host's devtools endpoint".to_owned())?;
             let ring_name = cef::spawn::ring_name(port);
+            tauri_plugin_log::log::debug!(
+                "browser launch: spawning (event_name cef_launch_stage, stage spawning, profile \
+                 {}, port {port})",
+                cache.display(),
+            );
             let pid = cef::spawn::spawn(cache, port, &ring_name, width, height)?;
             // **The record is written before the wait.** A host that dies
             // between spawn and this line would otherwise be invisible to the
@@ -1114,6 +1172,10 @@ impl BrowserHost {
             }
             match cef::spawn::wait_ready_for(pid, port, cache).await {
                 Ok(()) => {
+                    tauri_plugin_log::log::debug!(
+                        "browser launch: the endpoint answered (event_name cef_launch_stage, stage \
+                         ready, pid {pid}, port {port})",
+                    );
                     launched = Some((pid, port, ring_name));
                     break;
                 }
@@ -2035,6 +2097,40 @@ mod tests {
             "a refused call never lights the used mark - the refusal is decided before anything \
              is started",
         );
+    }
+
+    /// **A stale held host must not deadlock the map that holds it.** The
+    /// probe runs after the map's guard is released and the removal takes the
+    /// lock afresh; the old order held the map across the probe and then
+    /// waited on its own guard for ever - the live wedge's root.
+    #[tokio::test]
+    async fn a_stale_held_host_is_dropped_without_deadlocking() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let cache = paths.cef_shared();
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
+        let port = listener.local_addr().expect("the address").port();
+        drop(listener);
+        let ring =
+            Arc::new(cef::osr::Ring::create("/forge-cef-deadlock-test", 8, 8).expect("a ring"));
+        host.hosts.lock().await.insert(
+            cache.clone(),
+            Arc::new(cef::spawn::ActiveHost { pid: 999_999, port, ring, profile: cache.clone() }),
+        );
+
+        let dropped =
+            tokio::time::timeout(std::time::Duration::from_secs(5), host.live_host(&cache)).await;
+        assert!(dropped.is_ok(), "the probe and the removal must not wait on the map's own guard");
+        assert!(dropped.expect("bounded").is_none(), "a dead host is no host");
+        assert!(host.hosts.lock().await.get(&cache).is_none(), "and it was dropped");
+        cef::osr::Ring::unlink("/forge-cef-deadlock-test");
     }
 
     /// **The strip reads the surface, not the host.** A profile whose host is
