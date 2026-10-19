@@ -156,6 +156,9 @@ async function stubServer(
           conversation: {
             ...(session as { conversation: object }).conversation,
             turns,
+            // The snapshot is the page a `more` would answer, handle and all
+            // (#2420); a held stack needs a cursor for the reader's ask.
+            cursor: options.holdOlder ? 'c1' : null,
           },
         };
       }

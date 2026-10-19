@@ -224,6 +224,7 @@
         ]
       }
     ],
+    "cursor": null,
     "compaction_count": 0
   },
   "slash_commands": [],

@@ -80,10 +80,10 @@ const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
  * That snapshot IS the newest page a switch needs (#2420), so a test that
  * opens a conversation the way a switch does sends this rather than a page.
  */
-const record = (turns: PageTurn[], header: Record<string, unknown> = {}): ServerMessage => ({
+const record = (turns: PageTurn[], cursor: string | null = null): ServerMessage => ({
   kind: 'snapshot',
   subject: { session: LEAD },
-  data: { header, conversation: { turns, compaction_count: 0 } },
+  data: { header: {}, conversation: { turns, cursor, compaction_count: 0 } },
 });
 
 /** One `system` frame: the thinking-token counter, which draws nothing. */
@@ -280,8 +280,8 @@ function fakeConnection() {
       for (const fn of statuses) fn(status);
     },
     /** A refusal, which is the answer a page is not. */
-    refuse(what: string, why: string): void {
-      this.send({ kind: 'error', what, why });
+    refuse(what: string, why: string, seat?: SessionSlot): void {
+      this.send({ kind: 'error', what, why, ...(seat === undefined ? {} : { seat }) });
     },
   };
 }
@@ -1167,52 +1167,141 @@ describe('the conversation the chat draws', () => {
     expect(read.turns.map((held) => held.key)).toEqual(['t1', 't2']);
   });
 
-  it("learns the seeded page's cursor on the first pull, then asks for the history", () => {
+  it('pages from the cursor the record carries', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
-    server.send(record([turn('t2', 'second')]));
+    // The record's conversation is a page, handle and all (#2420): the seed
+    // is the whole of what the switch reads.
+    server.send(record([turn('t2', 'second'), turn('t3', 'third')], '7'));
     expect(server.more(), 'the seed asked nothing').toEqual([]);
 
     chat.older();
-    expect(server.more().at(-1), 'the first pull probes one turn for the cursor').toEqual({
-      kind: 'more',
-      conversation: LEAD,
-      before: null,
-      turns: 1,
-    });
-
-    // The probe's answer is the newest turn and its own handle; the history
-    // the reader wanted goes out from that handle rather than from the seed.
-    server.send(page([turn('t2', 'second')], '7'));
-    expect(server.more().at(-1), 'then the history the pull wanted').toEqual({
+    expect(server.more().at(-1), 'the pull asks from the record handle').toEqual({
       kind: 'more',
       conversation: LEAD,
       before: '7',
       turns: MORE_TURNS,
     });
     server.send(page([turn('t1', 'first')], null));
-    expect(get(chat.value).turns.map((row) => row.key)).toEqual(['t1', 't2']);
+    expect(get(chat.value).turns.map((row) => row.key)).toEqual(['t1', 't2', 't3']);
+  });
+
+  it('seeds a record from an older server with no cursor as the history end', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // An older server's record carries no `cursor` field at all (#2420): the
+    // page still seeds, and the history above it reads as ended - the safe
+    // answer rather than an error.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: {}, conversation: { turns: [turn('t1', 'first')], compaction_count: 0 } },
+    });
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the page still seeds',
+    ).toEqual(['t1']);
+    expect(chat.older(), 'its history reads as ended').toBe(false);
+    expect(server.more(), 'and no ask went out').toEqual([]);
+  });
+
+  it('asks nothing above a seed whose record carries no handle', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(record([turn('t1', 'first')], null));
+
+    expect(chat.older(), 'the record named the history end').toBe(false);
+    expect(server.more(), 'and no ask went out').toEqual([]);
   });
 
   it('asks the page when the snapshot carries no page', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
+    expect(server.more(), 'the switch asked nothing').toEqual([]);
     server.send(record([]));
 
-    expect(server.more(), 'an empty snapshot asks for the page').toHaveLength(1);
+    expect(server.more(), 'an empty snapshot asks for the page').toEqual([
+      { kind: 'more', conversation: LEAD, before: null, turns: 20 },
+    ]);
   });
 
   it('asks the page when the subscribe itself was refused', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
+    expect(server.more(), 'the switch asked nothing').toEqual([]);
     // The snapshot the load waits on never comes, so the old page ask is what
     // draws the refusal (or finds the seat's history once it exists).
-    server.refuse('subscribe', 'forge holds no session for TestOrg/proj/lead');
+    server.refuse('subscribe', 'forge holds no session for TestOrg/proj/lead', LEAD);
 
-    expect(server.more(), 'the load falls back to the page').toHaveLength(1);
+    expect(server.more(), 'the load falls back to its seat page').toEqual([
+      { kind: 'more', conversation: LEAD, before: null, turns: 20 },
+    ]);
+  });
+
+  it("leaves another seat's refused subscribe to that seat", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(record([turn('t1', 'first')], null));
+    const other = { org: 'TestOrg', project: 'proj', label: 'w1' };
+    server.refuse('subscribe', 'forge holds no session for TestOrg/proj/w1', other);
+
+    expect(server.more(), "another seat's refusal asks this conversation nothing").toEqual([]);
+  });
+
+  it('asks no page when an unloaded seat shows, and the newest when a loaded one does', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    expect(server.more(), 'the switch asked nothing').toEqual([]);
+    // **A conversation with no page yet shows without asking** (#2420): its
+    // subscribe answers with the page, so a refresh here would ship it again.
+    chat.leaving();
+    chat.showing();
+    expect(server.more(), 'an unloaded return asks nothing').toEqual([]);
+
+    server.send(record([turn('t1', 'first'), turn('t2', 'second')], '1'));
+    chat.leaving();
+    chat.showing();
+    expect(server.more(), 'a return refreshes the loaded conversation').toEqual([
+      { kind: 'more', conversation: LEAD, before: null, turns: MORE_TURNS },
+    ]);
+  });
+
+  it('walks a reconnect page that shares nothing down to the held tail', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // The held conversation: one old turn, and the record named its end.
+    server.send(record([turn('t1', 'old')], null));
+
+    // A reconnect whose answer shares no frame with what is held: its record
+    // carries the newer page and the handle above it (#2420), and the walk
+    // from that handle has to reach the held tail, never leave the newer page
+    // above it.
+    server.reach('closed');
+    server.reach('open');
+    server.send(record([turn('t3', 'new')], '2'));
+    expect(server.more().at(-1), 'the walk asks from the record handle').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: '2',
+      turns: MORE_TURNS,
+    });
+
+    server.send(page([turn('t2', 'mid')], '1'));
+    expect(server.more(), 'and on from there').toHaveLength(2);
+    server.send(page([turn('t0', 'older')], null));
+
+    const rows = get(chat.value).turns.map((row) => row.key);
+    expect(rows[0], 'the held tail is the oldest').toBe('t1');
+    expect(rows.at(-1), 'and the record page is the newest, at the foot').toBe('t3');
+    stop();
   });
 
   it('does not move the reader when an update arrives while they are scrolled up', () => {

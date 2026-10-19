@@ -889,12 +889,20 @@ async fn handle_client(
                     {
                         holds.give_back(slot);
                     }
+                    // **The refusal names the seat it refused** (#2420): the
+                    // error has no subject of its own, and a client holding
+                    // several seats has to tell its own refused read from
+                    // another's. A `more` refusal carries the same field.
+                    let seat = match &what {
+                        Subject::Session(slot) => Some(slot.clone()),
+                        _ => None,
+                    };
                     send(
                         socket,
                         ServerMessage::Error {
                             what: "subscribe".to_owned(),
                             why: refusal.to_string(),
-                            seat: None,
+                            seat,
                             dispatch_id: None,
                         },
                     )

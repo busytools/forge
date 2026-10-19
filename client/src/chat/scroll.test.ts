@@ -105,12 +105,12 @@ function stub() {
      * A reconnect is answered with this rather than a page: the snapshot IS
      * the newest page, so the client asks no `more` beside it.
      */
-    recordFor(slot: SessionSlot, turns: unknown[]): void {
+    recordFor(slot: SessionSlot, turns: unknown[], cursor: string | null = null): void {
       for (const fn of listeners) {
         fn({
           kind: 'snapshot',
           subject: { session: slot },
-          data: { header: {}, conversation: { turns, compaction_count: 0 } },
+          data: { header: {}, conversation: { turns, cursor, compaction_count: 0 } },
         });
       }
       flushSync();
@@ -936,7 +936,7 @@ describe('the history above a column that fits', () => {
     server.reach('closed');
     server.reach('open');
     expect(server.asks.length, 'the reconnect asks nothing').toBe(before);
-    server.recordFor(LEAD, [turn('t1'), turn('t2')]);
+    server.recordFor(LEAD, [turn('t1'), turn('t2')], '2');
     await settleFrames();
     const asks = asksFor(server, LEAD);
     expect(asks.length, 'and the fill asks the same cursor again').toBe(before + 1);
