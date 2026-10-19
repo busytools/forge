@@ -518,7 +518,9 @@ impl Tool for List {
          derives - `worked` time against the estimate, how long since any touch, and the marks \
          (ready, in_review, overdue, no_movement, waiting_too_long, stale, to_close) - under a \
          dated line, so no session does date arithmetic. Narrow with `owner` (a session label), \
-         `parent` (a task id), `status`, or `ready` (true = pending with nothing waiting on it). \
+         `parent` (a task id), `status`, or `ready` (true = pending with nothing waiting on \
+         it and not reserved for the user; ownership is NOT part of the mark, so read `owner` \
+         too when the question is an unowned row). \
          An empty array means your project has no tasks in flight, or that your project could \
          not be resolved, or that this run could not read its stored tasks. Any session in the \
          project may call this."

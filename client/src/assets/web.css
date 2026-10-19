@@ -443,17 +443,17 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
    on either surface. It wears the sheet's link colour inside a quiet ring
    rather than the browser's default anchor, and its name is the thing it
    opens. */
-.door {
+.b-door {
   display: inline-flex; align-items: center; gap: 6px;
   background: transparent; color: var(--blue); font: inherit; font-size: 13px;
   font-weight: 560; padding: 7px 13px; border-radius: 10px; cursor: pointer;
   text-decoration: none; box-shadow: inset 0 0 0 1px rgba(97,160,224,.45);
   transition: background .12s ease;
 }
-.door:hover { background: rgba(97,160,224,.10); }
-.door .nm { color: var(--text); }
-@media (prefers-reduced-motion: reduce) { .door { transition: none; } }
-@media (pointer: coarse) { .door { min-height: 44px; } }
+.b-door:hover { background: rgba(97,160,224,.10); }
+.b-door .nm { color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .b-door { transition: none; } }
+@media (pointer: coarse) { .b-door { min-height: 44px; } }
 
 /* ---------- one project's board ---------- */
 
@@ -504,7 +504,13 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-asks { display: flex; gap: 24px; flex-wrap: wrap; }
 .b-ask { flex: 1; min-width: 320px; }
 .b-ask + .b-ask { border-left: 1px solid var(--line); padding-left: 24px; }
-.b-q { font-size: 15px; font-weight: 550; color: var(--text); }
+/* A row's detail accumulates send-back words, so the strip's ask is bounded
+   to four lines; the whole of it stays on the title and in the row page. */
+.b-q {
+  font-size: 15px; font-weight: 550; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .b-why { display: flex; gap: 10px; font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 2px; }
 .b-detail { font-size: var(--fs-label); color: var(--muted); margin-top: 4px; }
 /* A wait card's references: the sheet's link colour with an underline set
@@ -518,6 +524,12 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   border-radius: 4px;
 }
 .b-ref:hover { text-decoration-color: currentColor; text-decoration-thickness: 2px; }
+/* A finger needs the same 44px target a control gets; the negative margin
+   keeps the line rhythm the underline sits in. */
+@media (pointer: coarse) {
+  .b-ref { display: inline-flex; align-items: center; min-height: 44px; padding: 0 2px;
+    margin: -13px 0; }
+}
 .b-do { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 9px; }
 /* Why a verify row cannot be approved yet: the children it still waits on. */
 .b-hold { font-size: var(--fs-label); color: var(--warn); }

@@ -71,7 +71,7 @@ read as one system.
 - **A nudge** - a chase warning, a browser's idle message, a worker's
   kick - is the machinery's own words, so it draws as a work row under
   the board's own mark rather than as the reader's: nobody typed it, and
-  it never wears `.mine`. A long one - the user-wait digest, a browser
+  it never wears `.mine`. A long one - a user-wait nudge, a browser
   sentence - opens on the whole of what it said, the way a thought row
   does. The row is found by the id the machinery minted for the prompt,
   which survives into the transcript, so a reloaded row draws what the

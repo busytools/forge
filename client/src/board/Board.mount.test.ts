@@ -655,7 +655,7 @@ describe("the board's controls", () => {
       'the artifact reference is presented once',
     ).toBe(1);
     expect(
-      card?.querySelector('a.door[href="https://example.invalid/mock"]'),
+      card?.querySelector('a.b-door[href="https://example.invalid/mock"]'),
       'the artifact is a door in the card grammar',
     ).not.toBeNull();
     expect(
@@ -680,9 +680,13 @@ describe("the board's controls", () => {
         ),
       ]),
     );
-    expect(document.querySelector('.b-ask')?.textContent).toContain(
-      'A decision is waiting on you.',
-    );
+    const card = document.querySelector('.b-ask');
+    expect(card?.textContent).toContain('A decision is waiting on you.');
+    expect(
+      card?.textContent,
+      'the subject still names the row when the state sentence is the ask',
+    ).toContain('a bare question');
+    expect(card?.querySelector('a.b-door'), 'a decision has no artifact door').toBeNull();
   });
 
   it('offers the approve when the row has nothing left to close', () => {
@@ -956,7 +960,7 @@ describe("the row's own page", () => {
       'the artifact reference is presented once in the ask block',
     ).toBe(1);
     expect(
-      ask?.querySelector('a.door[href="https://example.invalid/mock"]'),
+      ask?.querySelector('a.b-door[href="https://example.invalid/mock"]'),
       'the artifact is the same door control',
     ).not.toBeNull();
     expect(
@@ -989,6 +993,10 @@ describe("the row's own page", () => {
     if (card === null) throw new Error('no card');
     press(card);
     const drawer = document.querySelector('.dr');
+    expect(
+      drawer?.querySelector('.dr-state')?.textContent?.trim(),
+      'the header names the plain state, not a look',
+    ).toBe('waiting');
     expect(drawer?.textContent, 'the park reads as a plain wait').toContain('Waiting.');
     expect(drawer?.textContent, 'the look sentence is not drawn').not.toContain(
       'waits on your approval',

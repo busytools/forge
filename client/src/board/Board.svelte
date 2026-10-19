@@ -571,10 +571,11 @@
             <!-- The ASK leads: the wait's own detail is what the reader is
                  being asked, so it is the card's title. A seeded or legacy
                  wait with no detail keeps the row's subject. -->
-            <div class="b-q">{row.ask}</div>
-            {#if row.hasAsk}
-              <div class="b-why"><span>{row.subject}</span></div>
-            {/if}
+            <div class="b-q" title={row.ask}>{row.ask}</div>
+            <!-- The row's subject is context under every ask, including the
+                 state-sentence fallback: a card that says only "this row is
+                 finished" names nothing the reader can place. -->
+            <div class="b-why"><span>{row.subject}</span></div>
             <div class="b-why">
               {#if row.owner !== null}<span>{row.owner}</span>{/if}
               <span>{row.age}</span>
@@ -597,7 +598,7 @@
               <div class="b-detail">
                 <!-- The artifact is a DOOR in the card's own control grammar,
                      not a bare anchor in a sentence. -->
-                <a class="door" href={row.artifact.href} target="_blank" rel="noreferrer"
+                <a class="b-door" href={row.artifact.href} target="_blank" rel="noreferrer"
                   >look at <span class="nm">{row.artifact.label}</span></a
                 >
               </div>

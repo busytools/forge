@@ -381,6 +381,18 @@ mod tests {
 
     /// A standing sweep passes `wake: false`, and the tool threads it: the
     /// scheduler then skips a sleeping owner instead of spawning it.
+    /// The output states `wake: false` whether or not the entry carries a
+    /// description: a caller reading a no-wake cron back must see it, and the
+    /// two fields are independent.
+    #[test]
+    fn a_no_wake_entry_states_it_without_a_description() {
+        let mut entry = sample_entry("c1");
+        assert_eq!(entry.description, None, "premise: no description");
+        entry.wake = false;
+        let json = cron_to_json(&entry);
+        assert_eq!(json["wake"], serde_json::Value::Bool(false), "the no-wake flag is stated");
+    }
+
     #[tokio::test]
     async fn create_threads_wake_false_for_a_standing_sweep() {
         let mock = Arc::new(MockCronFacade::new());

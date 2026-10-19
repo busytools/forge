@@ -15,9 +15,11 @@
 //! whatever happened in between.
 //!
 //! Delivery degrades, never wakes: a live owner is asked; with a dead
-//! owner the lead is; with every seat asleep the mark alone stands. A
-//! chase NEVER spawns a session - the board already shows the state, and
-//! waking a project is a cost the chase does not get to spend.
+//! owner the lead is; with every seat asleep the mark alone stands - except
+//! the user-wait nudge, whose one shot per row is kept unspent until a live
+//! lead takes it. A chase NEVER spawns a session - the board already shows
+//! the state, and waking a project is a cost the chase does not get to
+//! spend.
 
 use std::sync::Arc;
 use std::time::SystemTime;

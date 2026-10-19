@@ -3,6 +3,7 @@
   import { hrefForSlot } from '../routes';
   import type { ServiceReport } from '../wire/fleet';
   import type { BoardRow, ByWire, TaskStatus } from '../wire/home';
+  import { followable } from '../home/view';
   import { artifactOf, fmtSecs, waitOnUser, type WaitingView } from './view';
 
   /**
@@ -64,7 +65,19 @@
    * carry the row's whole list - that is the record, not the ask's doors.
    */
   const refs = $derived(
-    task.links.filter((link) => lookArtifact === null || link.target !== lookArtifact.href),
+    task.links
+      .map((link) => ({ label: link.label ?? link.target, href: followable(link.target) }))
+      .filter((link) => lookArtifact === null || link.href !== lookArtifact.href),
+  );
+
+  /** A row can take a reservation while it is still live, not once it ended. */
+  const live = $derived(
+    task.status !== 'completed' && task.status !== 'failed' && task.status !== 'canceled',
+  );
+
+  /** The row's prose is the ask itself when the wait states none. */
+  const detailIsAsk = $derived(
+    task.waiting_on !== null && task.waiting_on.detail === null && task.detail !== null,
   );
 
   /** How many moves the row's own carry withholds, from its whole count. */
@@ -184,38 +197,41 @@
           <span class="b-chip blue b-epic-pill">&#8627; {row.parent_subject}</span>
         {:else}none{/if}
       </dd>
-      <dt>pick</dt>
-      <dd>
-        {#if task.reserved === 'user'}
-          <span>reserved for you</span>
-          <button
-            type="button"
-            class="dr-btn"
-            onclick={() =>
-              onact({
-                task_reserve: { project: task.project_name, id: task.id, reserved: false },
-              })}>release</button
-          >
-        {:else}
-          <button
-            type="button"
-            class="dr-btn"
-            onclick={() =>
-              onact({
-                task_reserve: { project: task.project_name, id: task.id, reserved: true },
-              })}>reserve for you</button
-          >
-        {/if}
-      </dd>
+      {#if live}
+        <dt>pick</dt>
+        <dd>
+          {#if task.reserved === 'user'}
+            <span>reserved for you</span>
+            <button
+              type="button"
+              class="dr-btn"
+              onclick={() =>
+                onact({
+                  task_reserve: { project: task.project_name, id: task.id, reserved: false },
+                })}>release</button
+            >
+          {:else}
+            <button
+              type="button"
+              class="dr-btn"
+              onclick={() =>
+                onact({
+                  task_reserve: { project: task.project_name, id: task.id, reserved: true },
+                })}>reserve for you</button
+            >
+          {/if}
+        </dd>
+      {/if}
       <dt>links</dt>
       <dd>
         {#if task.links.length === 0}<span class="dim">none</span>{:else}
           <!-- Keyed on the position: the entries carry no identity the wire
                guarantees unique. -->
           {#each task.links as link, at (at)}
+            {@const href = followable(link.target)}
             {#if at > 0}<span class="dim"> · </span>{/if}
-            {#if link.target.startsWith('http')}
-              <a href={link.target} target="_blank" rel="noreferrer">{link.label ?? link.target}</a>
+            {#if href !== null}
+              <a {href} target="_blank" rel="noreferrer">{link.label ?? link.target}</a>
             {:else}
               <span>{link.label ?? link.target}</span>
             {/if}
@@ -224,7 +240,9 @@
       </dd>
     </dl>
 
-    {#if task.detail !== null}
+    {#if task.detail !== null && !detailIsAsk}
+      <!-- When the wait states no ask of its own, the row's prose IS the ask
+           in the section below; drawing it here too would say it twice. -->
       <p class="dr-detail">{task.detail}</p>
     {/if}
 
@@ -293,12 +311,10 @@
           <div class="from">
             {#each refs as link, at (at)}
               {#if at > 0}<span class="dim"> &middot; </span>{/if}
-              {#if link.target.startsWith('http')}
-                <a class="b-ref" href={link.target} target="_blank" rel="noreferrer"
-                  >{link.label ?? link.target}</a
-                >
+              {#if link.href !== null}
+                <a class="b-ref" href={link.href} target="_blank" rel="noreferrer">{link.label}</a>
               {:else}
-                <span>{link.label ?? link.target}</span>
+                <span>{link.label}</span>
               {/if}
             {/each}
           </div>
@@ -307,7 +323,7 @@
           <div class="from">
             <!-- The artifact is a DOOR in the same grammar the board's wait
                  card uses, so the two surfaces read one control. -->
-            <a class="door" href={lookArtifact.href} target="_blank" rel="noreferrer"
+            <a class="b-door" href={lookArtifact.href} target="_blank" rel="noreferrer"
               >look at <span class="nm">{lookArtifact.label}</span></a
             >
           </div>

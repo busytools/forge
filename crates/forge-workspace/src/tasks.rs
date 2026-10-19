@@ -2131,7 +2131,10 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-claim-reserved");
         ws.push_task(sample_task_with_parent("epic", None, "proj"));
+        // The reserved row OUTRANKS the free one, so only the reservation
+        // filter can keep the epic pull off it.
         ws.push_task(Task {
+            rank: Some(1),
             reserved: Some(ReservedBy::User),
             ..sample_task_with_parent("kept", Some("epic"), "proj")
         });

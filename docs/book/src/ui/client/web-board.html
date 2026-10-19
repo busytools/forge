@@ -79,12 +79,12 @@
     text-decoration-thickness: 1px; text-underline-offset: 3px;
     text-decoration-color: rgba(97,160,224,.45); }
   .b-ref:hover { text-decoration-color: currentColor; text-decoration-thickness: 2px; }
-  .door { display: inline-flex; align-items: center; gap: 6px; color: var(--blue);
+  .b-door { display: inline-flex; align-items: center; gap: 6px; color: var(--blue);
     font: inherit; font-size: 13px; font-weight: 560; padding: 7px 13px;
     border-radius: 10px; text-decoration: none;
     box-shadow: inset 0 0 0 1px rgba(97,160,224,.45); }
-  .door:hover { background: rgba(97,160,224,.10); }
-  .door .nm { color: var(--text); }
+  .b-door:hover { background: rgba(97,160,224,.10); }
+  .b-door .nm { color: var(--text); }
   .b-do { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 9px; }
   .b-btn { border: 0; cursor: pointer; font: inherit; border-radius: 10px; font-size: 13px; }
   .b-ok { background: var(--ok); color: var(--bg); font-weight: 640; padding: 8px 15px; }
@@ -302,7 +302,8 @@
         <div class="b-q">your look: the lanes read right at both widths</div>
         <div class="b-why"><span>a project's board opens as a takeover</span></div>
         <div class="b-why"><span>fleet</span><span>40m</span></div>
-        <div class="b-detail"><a class="b-ref" href="./web-board.html">the board drawing</a> &middot; <a class="door" href="./web-board.html">look at <span class="nm">the board page</span></a></div>
+        <div class="b-detail"><a class="b-ref" href="./web-board.html">the board drawing</a></div>
+        <div class="b-detail"><a class="b-door" href="./web-board.html">look at <span class="nm">the board page</span></a></div>
         <div class="b-do">
           <button class="b-btn b-ok">approve</button>
           <input class="b-in" placeholder="what to change" aria-label="what to change (sent back with it)">
@@ -852,19 +853,15 @@
       <h3>Waiting on you</h3>
       <div class="dr-ask">
         <div class="q">your look: the lanes read right at both widths</div>
-        <div class="from">A decision is waiting on you.</div>
-        <div class="from">#1886 &middot; <a class="b-ref" href="./web-board.html">the board drawing</a></div>
-        <div class="from"><a class="door" href="./web-board.html">look at <span class="nm">the board page</span></a></div>
+        <div class="from">This row is finished and waits on your approval.</div>
+        <div class="from"><a class="b-ref" href="./web-board.html">#1886</a></div>
+        <div class="from"><a class="b-door" href="./web-board.html">look at <span class="nm">the board page</span></a></div>
         <div class="answer">
-          <input placeholder="your answer"><button class="dr-btn go">answer</button>
+          <button class="dr-btn go">approve</button>
+          <input placeholder="what to change" aria-label="what to change (sent back with it)">
+          <button class="dr-btn no">send back</button>
         </div>
         <a class="dr-ses" href="./web-session.html">or open the session &rarr;</a>
-      </div>
-      <h3>Lead-attested look</h3>
-      <div class="dr-ask">
-        <div class="q">The lead completed this row's look, citing your approval:</div>
-        <div class="from">&ldquo;Looks right - merge&rdquo;</div>
-        <button class="dr-btn no">reopen</button>
       </div>
       <h3>History</h3>
       <p class="dim">showing the last 20 of 43</p>

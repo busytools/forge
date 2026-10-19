@@ -145,8 +145,6 @@ export interface WaitingView {
   detail: string | null;
   /** The card's title: the wait's own detail, else the row's, else the state's sentence. */
   ask: string;
-  /** Whether the ask is a stated ask (a detail) rather than the state's sentence. */
-  hasAsk: boolean;
   /** The row's references, as doors, beside the ask. */
   links: { label: string; href: string | null }[];
   /** The artifact a look points at, when the row carries a followable one. */
@@ -242,7 +240,6 @@ function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardVie
   return chips;
 }
 
-/** The links a row shows: short labels, with a href when the target is a URL. */
 /**
  * The artifact a look points at, where the row carries one: the first
  * followable PR or path link. A look's ask usually names a mock, an
@@ -268,12 +265,16 @@ export function waitSentence(task: Task): string {
 export function artifactOf(task: Task): { label: string; href: string } | null {
   const link = task.links.find(
     (candidate) =>
-      (candidate.kind === 'pr' || candidate.kind === 'path') && candidate.target.startsWith('http'),
+      (candidate.kind === 'pr' || candidate.kind === 'path') &&
+      followable(candidate.target) !== null,
   );
   if (link === undefined) return null;
-  return { label: link.label ?? shortTarget(link.target), href: link.target };
+  const href = followable(link.target);
+  if (href === null) return null;
+  return { label: link.label ?? shortTarget(link.target), href };
 }
 
+/** The links a row shows: short labels, with a href when the target is a URL. */
 function linksOf(task: Task): BoardCardView['links'] {
   return task.links.map((link) => ({
     label: link.label ?? shortTarget(link.target),
@@ -419,10 +420,6 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
         // detail - a look parks with no wait detail, and its ask is the row's
         // own words - else the state's sentence.
         ask: entry.task.waiting_on?.detail ?? entry.task.detail ?? waitSentence(entry.task),
-        hasAsk:
-          entry.task.waiting_on?.detail !== null && entry.task.waiting_on?.detail !== undefined
-            ? true
-            : entry.task.detail !== null,
         // The artifact is a reference the row already carries, presented once:
         // the door is its only showing, so the links line keeps the others.
         links: linksOf(entry.task).filter(
