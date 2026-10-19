@@ -133,25 +133,35 @@ define_class!(
             self.send(event);
         }
 
+        /// **Command chords arrive here first.** AppKit routes key
+        /// equivalents through `performKeyEquivalent:` before `keyDown:`,
+        /// and with no app menu of its own Tauri's default menu carries
+        /// Close Window on Cmd+W. Claiming the lower key here is what keeps
+        /// Cmd+W from closing the client's only window; every other
+        /// equivalent defers to the superclass, which is where the app's own
+        /// menu gets it.
+        #[unsafe(method(performKeyEquivalent:))]
+        unsafe fn perform_key_equivalent(
+            &self,
+            event: &objc2_app_kit::NSEvent,
+        ) -> objc2::runtime::Bool {
+            let flags = event.modifierFlags();
+            if claims_key_equivalent(
+                event.keyCode(),
+                flags.contains(objc2_app_kit::NSEventModifierFlags::Command),
+                flags.contains(objc2_app_kit::NSEventModifierFlags::Shift),
+            ) {
+                self.lower_surface();
+                return true.into();
+            }
+            objc2::msg_send![super(self), performKeyEquivalent: event]
+        }
+
         #[unsafe(method(keyDown:))]
         unsafe fn key_down(&self, event: &objc2_app_kit::NSEvent) {
             let flags = event.modifierFlags();
             let command = flags.contains(objc2_app_kit::NSEventModifierFlags::Command);
             let keycode = event.keyCode();
-            // **One key is the surface's own.** The bar's buttons are in the
-            // webview and the overlay holds first responder, so a keyboard
-            // person needs a way out of the takeover: Cmd+W lowers it, and
-            // the page's bar then has its back-to-chat, Done and Not now.
-            if let Some(SurfaceKey::Lower) = surface_key(
-                keycode,
-                command,
-                flags.contains(objc2_app_kit::NSEventModifierFlags::Shift),
-            ) {
-                if let Some(app) = self.ivars().app.lock().ok().and_then(|slot| slot.clone()) {
-                    let _ = app.emit("browser_surface_lower", ());
-                }
-                return;
-            }
             // Cmd+V is a text paste: the host has no native edit menu, and a
             // widget cannot read the pasteboard itself.
             if command && keycode == 9 {
@@ -251,6 +261,15 @@ impl OverlayView {
         }
     }
 
+    /// **The keyboard's way out of the takeover.** The bar's buttons are in
+    /// the webview and the overlay holds first responder, so Cmd+W lowers the
+    /// surface and the page's bar then carries back-to-chat, Done and Not now.
+    fn lower_surface(&self) {
+        if let Some(app) = self.ivars().app.lock().ok().and_then(|slot| slot.clone()) {
+            let _ = app.emit("browser_surface_lower", ());
+        }
+    }
+
     /// Draw the ring's latest frame. **The bytes are the ring's own**: a
     /// no-copy CFData and CGImage reference the shared mapping, so this side
     /// copies nothing - a frame at this size is tens of megabytes, and a copy
@@ -319,10 +338,16 @@ pub enum SurfaceKey {
 }
 
 /// **The keyboard's way out of the takeover.** The bar's buttons live in the
-/// webview and the overlay holds first responder, so Cmd+W lowers the surface;
-/// Cmd+Shift+W and the bare key stay the page's.
+/// webview and the overlay holds first responder, so Cmd+W lowers the surface.
+/// It is a key EQUIVALENT, not a page key: AppKit offers it here before
+/// keyDown, and every other equivalent defers to the app.
 pub fn surface_key(keycode: u16, command: bool, shift: bool) -> Option<SurfaceKey> {
     (command && !shift && keycode == 13).then_some(SurfaceKey::Lower)
+}
+
+/// Whether this key is the takeover's to claim as a key equivalent.
+pub fn claims_key_equivalent(keycode: u16, command: bool, shift: bool) -> bool {
+    surface_key(keycode, command, shift).is_some()
 }
 
 fn modifiers(event: &objc2_app_kit::NSEvent) -> i32 {
@@ -750,15 +775,18 @@ mod tests {
         assert_eq!(raster(one_x), 1.0, "a 1x display is never out-sampled");
     }
 
-    /// **Cmd+W is the takeover's, and nothing else is.** A keyboard-only
-    /// person who opened a hand-off must be able to leave it without a
-    /// pointer; the page keeps Cmd+Shift+W and a bare W.
+    /// **Cmd+W is claimed as a key EQUIVALENT, and nothing else is.** AppKit
+    /// offers equivalents before keyDown, which is why the close-window menu
+    /// item would otherwise quit the client under a parked hand-off; the
+    /// claim is what a keyboard-only person's way out rides on. Everything
+    /// else defers to the app.
     #[test]
-    fn the_takeover_answers_cmd_w_and_leaves_the_page_its_other_keys() {
+    fn the_takeover_claims_cmd_w_and_defers_the_rest() {
+        assert!(claims_key_equivalent(13, true, false), "Cmd+W is the takeover's");
         assert_eq!(surface_key(13, true, false), Some(SurfaceKey::Lower));
-        assert_eq!(surface_key(13, true, true), None, "Cmd+Shift+W is the page's");
-        assert_eq!(surface_key(13, false, false), None, "a bare W is the page's");
-        assert_eq!(surface_key(0, true, false), None, "Cmd+A is not the surface's");
+        assert!(!claims_key_equivalent(13, true, true), "Cmd+Shift+W is not");
+        assert!(!claims_key_equivalent(13, false, false), "a bare W is text");
+        assert!(!claims_key_equivalent(0, true, false), "Cmd+A is not the surface's");
     }
 
     #[test]
