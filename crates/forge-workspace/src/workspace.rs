@@ -5458,7 +5458,7 @@ impl Workspace {
                             "the row it named is no longer there",
                         ),
                         Err(refused) => {
-                            self.board_edit_refused("a reservation", &refused.to_string())
+                            self.board_edit_refused("a reservation", &refused.to_string());
                         }
                     }
                 }

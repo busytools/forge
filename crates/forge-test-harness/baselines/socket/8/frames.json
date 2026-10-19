@@ -148,6 +148,8 @@
     "TaskCreate": "task_create",
     "TaskMove": "task_move",
     "TaskRank": "task_rank",
+    "TaskReopen": "task_reopen",
+    "TaskReserve": "task_reserve",
     "TaskVerdict": "task_verdict",
     "UpsertReviewThread": "upsert_review_thread"
   },
