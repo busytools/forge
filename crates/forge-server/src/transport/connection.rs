@@ -3248,20 +3248,26 @@ mod tests {
         let conversations = crate::transport::conversation::Conversations::new();
         conversations
             .insert(&seat, crate::transport::conversation::Conversation::new(frames, 0, 0));
-        conversations.apply(&SessionUpdate::CronPromptAppended {
-            key: seat.clone(),
-            text: "the cron fired".to_owned(),
-            uuid: "cap-cron".to_owned(),
-            cron_id: "c1".to_owned(),
-            description: None,
-        });
+        conversations.apply(
+            &SessionUpdate::CronPromptAppended {
+                key: seat.clone(),
+                text: "the cron fired".to_owned(),
+                uuid: "cap-cron".to_owned(),
+                cron_id: "c1".to_owned(),
+                description: None,
+            },
+            None,
+        );
         let following = resulting_row(9_999);
-        conversations.apply(&SessionUpdate::ChatAppended {
-            key: seat.clone(),
-            msg: following.clone(),
-            origin: None,
-            source: None,
-        });
+        conversations.apply(
+            &SessionUpdate::ChatAppended {
+                key: seat.clone(),
+                msg: following.clone(),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
         for at in 0..5_000_usize {
             let window = conversations.get(&seat).expect("the seat is held");
             if row_id(window.lock().messages().first().expect("a front")).as_deref()
@@ -3270,12 +3276,15 @@ mod tests {
                 break;
             }
             drop(window);
-            conversations.apply(&SessionUpdate::ChatAppended {
-                key: seat.clone(),
-                msg: result_frame(at),
-                origin: None,
-                source: None,
-            });
+            conversations.apply(
+                &SessionUpdate::ChatAppended {
+                    key: seat.clone(),
+                    msg: result_frame(at),
+                    origin: None,
+                    source: None,
+                },
+                None,
+            );
         }
         let held = conversations.get(&seat).expect("the seat is held");
         let boundary = {
@@ -3391,30 +3400,39 @@ mod tests {
         let conversations = crate::transport::conversation::Conversations::new();
         conversations
             .insert(&seat, crate::transport::conversation::Conversation::new(frames, 0, 0));
-        conversations.apply(&SessionUpdate::ChatAppended {
-            key: seat.clone(),
-            msg: unnameable_row(),
-            origin: None,
-            source: None,
-        });
-        conversations.apply(&SessionUpdate::ChatAppended {
-            key: seat.clone(),
-            msg: resulting_row(9_999),
-            origin: None,
-            source: None,
-        });
+        conversations.apply(
+            &SessionUpdate::ChatAppended {
+                key: seat.clone(),
+                msg: unnameable_row(),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
+        conversations.apply(
+            &SessionUpdate::ChatAppended {
+                key: seat.clone(),
+                msg: resulting_row(9_999),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
         for at in 0..5_000_usize {
             let window = conversations.get(&seat).expect("the seat is held");
             let front = window.lock().messages().first().cloned().expect("a front");
             if is_unnameable(&front) {
                 break;
             }
-            conversations.apply(&SessionUpdate::ChatAppended {
-                key: seat.clone(),
-                msg: result_frame(at),
-                origin: None,
-                source: None,
-            });
+            conversations.apply(
+                &SessionUpdate::ChatAppended {
+                    key: seat.clone(),
+                    msg: result_frame(at),
+                    origin: None,
+                    source: None,
+                },
+                None,
+            );
         }
         let held = conversations.get(&seat).expect("the seat is held");
         let window = held.lock();

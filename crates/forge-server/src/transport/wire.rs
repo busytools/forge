@@ -1631,7 +1631,7 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
         state.conversations.replace(slot, conversation);
     }
     for frame in &frames {
-        state.conversations.apply(&frame.update);
+        state.conversations.apply(&frame.update, frame.seq);
     }
     state.conversations.consumed(slot, want);
     true
@@ -1678,7 +1678,7 @@ async fn session(
     // The served page's records are bounded here, off the lock like the page
     // itself: a mailbox seat's structured records made one page 70 MB (#2374).
     let cap = surface.tool_record_cap_bytes();
-    let (turns, cursor, compaction_count, page_ms) = match conversation {
+    let (turns, cursor, compaction_count, page_ms, covered) = match conversation {
         Some(held) => {
             let seat = slot.clone();
             let capped = seat.clone();
@@ -1688,7 +1688,7 @@ async fn session(
                 // (#2420): a client seeds its conversation from this answer
                 // instead of asking `more` for the same page, and the handle
                 // is what names the history above it.
-                let (mut page, count) = held.read(|held| {
+                let (mut page, count, covered) = held.read(|held| {
                     let mut page = page(
                         held.messages(),
                         held.rendered(),
@@ -1697,10 +1697,10 @@ async fn session(
                         SUBSCRIBE_TURNS,
                     );
                     floor_cursor(&mut page, held.dropped());
-                    (page, held.compaction_count())
+                    (page, held.compaction_count(), held.watermark())
                 });
                 cap_tool_records(&mut page.turns, cap, &capped);
-                (page.turns, page.cursor, count, at.elapsed().as_secs_f64() * 1000.0)
+                (page.turns, page.cursor, count, at.elapsed().as_secs_f64() * 1000.0, covered)
             })
             .await
             .unwrap_or_else(|error| {
@@ -1710,12 +1710,16 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), None, 0, 0.0)
+                (Vec::new(), None, 0, 0.0, 0)
             })
         }
-        None => (Vec::new(), None, 0, 0.0),
+        None => (Vec::new(), None, 0, 0.0, 0),
     };
     timings.page_ms = page_ms;
+    // **The answer's number is the copy's own**, not catch_up's pass: a seal
+    // can reseed the copy after that check, and a pre-seal number would have
+    // the client skip the new run's first frames as already drawn (#2443).
+    let seq = seq.min(covered.saturating_add(1));
     // The instance list crosses from the fold that ANNOUNCES it rather than
     // from a second walk here: the session task folds a card per frame and
     // pushes `SubagentCardsChanged` off the same walk, so this is what that

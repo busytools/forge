@@ -211,7 +211,7 @@ async fn fold_the_stream(state: Arc<TransportState>) {
             continue;
         }
         crate::live::Live::lock(&state.live).apply(&update);
-        state.conversations.apply(&update);
+        state.conversations.apply(&update, seq);
         // **The watermark an answer is measured against.** Marked after the
         // apply, and only where there is a copy to take it: a seat nothing has
         // connected on yet holds no frames, so a number marked there would say
