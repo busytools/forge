@@ -533,6 +533,10 @@ impl BrowserHost {
                             if let Err(why) = auto {
                                 self.note_auto_failure(seat, why, &mut parts).await;
                             }
+                            // **A call that changed the page rewrites the
+                            // carry**, so a restart opens where the session
+                            // left it and not where the last raise did.
+                            self.refresh_carry(&paths.cef_shared()).await;
                             Ok(parts)
                         }
                         Err(why) => Err(why),
@@ -570,7 +574,10 @@ impl BrowserHost {
                     )
                     .await;
                     match outcome {
-                        Ok(parts) => Ok(parts),
+                        Ok(parts) => {
+                            self.refresh_carry(&cache).await;
+                            Ok(parts)
+                        }
                         Err(why) => Err(why),
                     }
                 }
@@ -1442,23 +1449,44 @@ impl BrowserHost {
                 Some(OpenSurface { profile: name, dir: cache.clone(), host: Arc::clone(&host) });
             // **A placement that never landed fails the Open**, so the page
             // draws the sentence instead of a live takeover with no picture.
-            self.reconcile_surface().await
+            self.reconcile_surface().await?;
+            // **The page this raise shows is the page a restart reopens**,
+            // written under the same lock the calls' refreshes and every
+            // close take.
+            let url = cef::spawn::page_url(host.port).await;
+            write_carried_page(&cache, url.as_deref());
+            Ok::<(), String>(())
         })
         .await;
         match claimed {
             Ok(answer) => answer?,
             Err(_) => return Err("the browser did not start in time - try Open again".to_owned()),
         }
-        // **The page this raise shows is the page a restart reopens.** The
-        // host reads it back from the profile on launch; only the page the
-        // person was actually shown is written, and only when it is a web
-        // address.
-        if let Some(url) = cef::spawn::page_url(host.port).await
-            && (url.starts_with("http://") || url.starts_with("https://"))
-        {
-            let _ = std::fs::write(cache.join("page"), url);
-        }
         Ok(host)
+    }
+
+    /// Refresh the carried page from the host's own target.
+    ///
+    /// **Under the launch lock**, the section a raise and a lower take: a
+    /// call finishing while the page is being raised cannot write the marker
+    /// back over the raise's own, and a close cannot race a reopen. One page
+    /// target is the whole truth here - the CEF host serves one page, unlike
+    /// the Brave-era tab set the old carry led with a navigation's URL.
+    #[cfg(desktop)]
+    pub async fn refresh_carry(&self, cache: &Path) {
+        let _launching = self.launch.lock().await;
+        let port = {
+            let held = self.hosts.lock().await.get(cache).map(|host| host.port);
+            match held {
+                Some(port) => port,
+                None => match cef::spawn::read_record(cache) {
+                    Some(record) => record.port,
+                    None => return,
+                },
+            }
+        };
+        let url = cef::spawn::page_url(port).await;
+        write_carried_page(cache, url.as_deref());
     }
 
     /// The page said where its takeover's page area is: place the overlay
@@ -1861,6 +1889,34 @@ impl BrowserHost {
 /// collision refusal stays the backstop for a hand-made name that takes an
 /// auto name first.
 #[cfg(desktop)]
+/// Write the page a restart should reopen beside the profile.
+///
+/// **A temp file and a rename**: a crash mid-write leaves the previous page
+/// rather than a truncated one. A blank or non-web page clears the marker -
+/// the file always means "the page the person was actually shown", never a
+/// leftover - and only a web address is ever carried.
+#[cfg(desktop)]
+fn write_carried_page(cache: &Path, url: Option<&str>) {
+    let path = cache.join("page");
+    let Some(url) = url.filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+    else {
+        let _ = std::fs::remove_file(&path);
+        return;
+    };
+    let temp = cache.join("page.tmp");
+    if let Err(why) = std::fs::write(&temp, url).and_then(|()| std::fs::rename(&temp, &path)) {
+        // **Forge's own storage problem, not the session's**: the carry is
+        // this client's bookkeeping, and a write that fails is worth a
+        // warning that names where and why.
+        tauri_plugin_log::log::warn!(
+            "the carried page could not be written (event_name cef_page_carry_failed, profile \
+             {}, {why})",
+            cache.display(),
+        );
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
 /// The sentence a client without its engine answers, named rather than a
 /// timeout: a shipped bundle missing its framework is a reinstall.
 #[cfg(target_os = "macos")]

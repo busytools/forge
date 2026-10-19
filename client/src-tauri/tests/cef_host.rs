@@ -163,12 +163,23 @@ async fn a_live_record_is_adopted() {
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
     let port = listener.local_addr().expect("the address").port();
+    // What the page target reports now; a test moves it to prove the carry
+    // follows a call as well as a raise.
+    let shown =
+        std::sync::Arc::new(std::sync::Mutex::new("https://example.com/prepared".to_owned()));
+    let served = std::sync::Arc::clone(&shown);
     tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else { continue };
-            let mut buffer = [0_u8; 1024];
-            let _ = socket.read(&mut buffer).await;
-            let body = "{\"Browser\":\"Chrome/154.0\"}";
+            let mut buffer = [0_u8; 2048];
+            let read = socket.read(&mut buffer).await.unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            let body = if request.starts_with("GET /json/list") {
+                let url = served.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+                format!(r#"[{{"type":"page","url":"{url}"}}]"#)
+            } else {
+                "{\"Browser\":\"Chrome/154.0\"}".to_owned()
+            };
             let answer = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
                  Connection: close\r\n\r\n{body}",
@@ -187,6 +198,32 @@ async fn a_live_record_is_adopted() {
     let adopted = host.start().await.expect("the live record is adopted");
     assert_eq!(adopted.pid, pid, "the recorded pid is the host");
     assert_eq!(adopted.port, port, "on the recorded port");
+
+    // **The raise writes the page it shows.** Delete the write and this goes
+    // red: nothing else in the suite reads the marker.
+    host.show(None, None).await.expect("the raise places the page");
+    assert_eq!(
+        std::fs::read_to_string(cache.join("page")).expect("the raise wrote the page"),
+        "https://example.com/prepared",
+        "the page a raise showed is what a restart reopens"
+    );
+
+    // **And a later browsing call refreshes it**, so a session that navigates
+    // after the raise does not come back to the older page.
+    *shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        "https://example.com/after-call".to_owned();
+    host.refresh_carry(&cache).await;
+    assert_eq!(
+        std::fs::read_to_string(cache.join("page")).expect("the call rewrote the page"),
+        "https://example.com/after-call",
+        "a call that changed the page rewrites the carry"
+    );
+
+    // **A blank page clears it**: the marker always means what was shown.
+    *shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = "about:blank".to_owned();
+    host.refresh_carry(&cache).await;
+    assert!(!cache.join("page").exists(), "a blank page carries nothing");
+
     spawn::end(pid).await;
     spawn::remove_record(&cache);
     osr::Ring::unlink(ring_name);
