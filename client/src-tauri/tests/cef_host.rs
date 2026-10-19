@@ -90,6 +90,33 @@ async fn the_endpoint_wait_answers_or_names_the_port() {
     );
 }
 
+/// The page a carry writes is read back from the endpoint's own target list.
+#[tokio::test]
+async fn the_page_url_reads_the_page_target() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = listener.local_addr().expect("the address").port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else { continue };
+            let mut buffer = [0_u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+            let body = r#"[{"type":"page","url":"https://example.com/job"}]"#;
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(answer.as_bytes()).await;
+        }
+    });
+    assert_eq!(
+        spawn::page_url(port).await.as_deref(),
+        Some("https://example.com/job"),
+        "the page target's url is what a carry writes"
+    );
+}
+
 /// A host the client spawned is a process it can end: the kill is escalated,
 /// and the pid reads dead afterwards.
 #[tokio::test]

@@ -71,12 +71,22 @@ specials (Enter, Tab, the arrows, Escape) are key events, and Cmd+V reads the
 pasteboard as text. Widgets that gate on trusted input commit, which is the
 whole reason the events are replayed rather than synthesised in the page.
 
-**The native edges have their own doors.** A click on a file input opens the
-client's own NSOpenPanel - the app the person is looking at, so the panel
-takes focus - and the chosen paths are set on the input over CDP, so the page
-runs its own `change` handler. Cmd+A, X, C and Z send the page's editing
-commands, and Cmd+V is a text paste. IME, a rich clipboard, context menus and
-the old open-in-your-browser door are not part of this cut.
+**The native edges have their own doors.** A file chooser the page opens - a
+click on the input, a click on its label, a scripted `input.click()` - is
+answered with the client's own NSOpenPanel, the app the person is looking at,
+so the panel takes focus; the chosen paths are set on the input over CDP and
+the page runs its own `change` handler. Cmd+A, X, C and Z send the page's
+editing commands, and Cmd+V is a text paste. IME, a rich clipboard and
+context menus are not part of this cut.
+
+**There is no external-browser door.** Every page lives in the app's own
+engine and nowhere else; the client never hands one to another browser.
+
+**A restart reopens the page the raise showed.** The page a hand-off's Open
+or the strip's show puts in front of the person is written beside the
+profile, and the host a later launch brings up opens it - the session finds
+the page it prepared instead of a blank one. A close without a raise carries
+what the last raise wrote, and only a web address is ever reopened.
 
 **The catalogued engine's limits are named, not hidden.** The prebuilt CEF
 has no H.264 decoder (the job sites the probe exercised do not need it), it

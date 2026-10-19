@@ -1439,7 +1439,7 @@ impl BrowserHost {
             // One surface at a time: opening this profile's takes the window,
             // and a previous profile's host keeps running under it.
             *self.surface.lock().await =
-                Some(OpenSurface { profile: name, dir: cache, host: Arc::clone(&host) });
+                Some(OpenSurface { profile: name, dir: cache.clone(), host: Arc::clone(&host) });
             // **A placement that never landed fails the Open**, so the page
             // draws the sentence instead of a live takeover with no picture.
             self.reconcile_surface().await
@@ -1448,6 +1448,15 @@ impl BrowserHost {
         match claimed {
             Ok(answer) => answer?,
             Err(_) => return Err("the browser did not start in time - try Open again".to_owned()),
+        }
+        // **The page this raise shows is the page a restart reopens.** The
+        // host reads it back from the profile on launch; only the page the
+        // person was actually shown is written, and only when it is a web
+        // address.
+        if let Some(url) = cef::spawn::page_url(host.port).await
+            && (url.starts_with("http://") || url.starts_with("https://"))
+        {
+            let _ = std::fs::write(cache.join("page"), url);
         }
         Ok(host)
     }

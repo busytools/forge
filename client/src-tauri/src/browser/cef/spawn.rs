@@ -247,6 +247,22 @@ pub async fn wait_ready_within(port: u16, bound: Duration) -> Result<(), String>
     }
 }
 
+/// The page target's own URL on a host's endpoint, from `/json/list`. A host
+/// with no page is `None` - there is nothing to carry.
+pub async fn page_url(port: u16) -> Option<String> {
+    let url = format!("{}/json/list", super::endpoint(port));
+    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
+    let body = answer.split_once("\r\n\r\n")?.1;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    parsed
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("page"))
+        .and_then(|entry| entry.get("url"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
 /// The page target's own websocket URL on a host's endpoint, from
 /// `/json/list`. A host with no page is `None` - there is nothing to drive.
 pub async fn page_websocket(port: u16) -> Option<String> {

@@ -116,10 +116,15 @@ pub fn run(args: Args) -> ! {
     // transparent, and the takeover's dark ground shows through it as a
     // blank surface; the app's own background is what the browser fills.
     let browser_settings = BrowserSettings { background_color: 0xFF04_050A, ..Default::default() };
+    // **The page a hand-off or strip show prepared comes back with the
+    // host.** The client writes it beside the profile on every raise; a
+    // launch after a client restart opens it rather than a blank page. Only
+    // a web address is honoured - anything else opens blank.
+    let carried = carried_page(&args.profile);
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
         Some(&mut client),
-        Some(&CefString::from("about:blank")),
+        Some(&CefString::from(carried.as_str())),
         Some(&browser_settings),
         None,
         None,
@@ -284,6 +289,24 @@ cef::wrap_life_span_handler! {
     }
 }
 
+/// The page the profile carries, when it names a web address.
+///
+/// **Beside the profile, like the client's own record**: the client writes
+/// `page` on every raise, and a host launched after a restart opens it. A
+/// missing, blank or non-web value opens `about:blank` - a carried
+/// `chrome://` or `javascript:` value is not a page to resurrect.
+pub fn carried_page(profile: &std::path::Path) -> String {
+    let Ok(text) = std::fs::read_to_string(profile.join("page")) else {
+        return "about:blank".to_owned();
+    };
+    let url = text.trim();
+    if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_owned()
+    } else {
+        "about:blank".to_owned()
+    }
+}
+
 /// The address a popup asked for, when the same browser should load it.
 ///
 /// **Anything but a web page is blocked outright**: `about:blank` and a
@@ -332,5 +355,22 @@ mod tests {
         assert_eq!(popup_redirect("about:blank"), None);
         assert_eq!(popup_redirect("javascript:window.close()"), None);
         assert_eq!(popup_redirect(""), None);
+    }
+
+    /// **A restart reopens the page the raise showed, and only that.** The
+    /// marker is a web address or nothing; a missing, blank or scheme-less
+    /// value opens blank rather than resurrecting something a page wrote.
+    #[test]
+    fn a_carried_page_is_a_web_address_or_blank() {
+        use super::carried_page;
+        let dir = tempfile::tempdir().expect("a temp dir");
+        assert_eq!(carried_page(dir.path()), "about:blank", "no marker, no page");
+        std::fs::write(dir.path().join("page"), b" https://example.com/job \n")
+            .expect("the marker");
+        assert_eq!(carried_page(dir.path()), "https://example.com/job");
+        std::fs::write(dir.path().join("page"), b"javascript:alert(1)").expect("the marker");
+        assert_eq!(carried_page(dir.path()), "about:blank", "not a page to resurrect");
+        std::fs::write(dir.path().join("page"), b"").expect("the marker");
+        assert_eq!(carried_page(dir.path()), "about:blank", "blank carries nothing");
     }
 }
