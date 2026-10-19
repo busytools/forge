@@ -3740,15 +3740,18 @@ async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
     // that same number, so a wait on it cannot tell the stale mark from the
     // one the reseed leaves behind - and a read landing between the reseed's
     // two applies sees the history without the live row. One more frame, past
-    // the live row and carrying no row of its own, can only be marked after
-    // the fold has taken BOTH the seal and the live row, so waking on its
-    // number is waking on the settled copy however loaded the runner is.
+    // the live row and carrying no row of its own, can only be marked by the
+    // fold after it has taken both: the test issues no subscribe while it
+    // waits, so an encode's catch-up cannot mark the number from the ring
+    // alone and leave the unringed seal's reseed still pending.
     fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
     let settled = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
     state.conversations.hold_the_fold(false);
     assert!(
         state.conversations.await_consumed(&seat, settled, SEED_WAIT).await,
-        "waited for the fold to take the seal and the live row, and it never marked them",
+        "waited for the fold to take the seal and the live row, and it never marked them: the \
+         watermark is {}",
+        state.conversations.consumed_for(&seat),
     );
 
     // One answer, with the fold past both frames: the seal must have applied
