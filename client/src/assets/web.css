@@ -7,9 +7,12 @@
    **A page root is named for its page**: the class on a page's top-level
    element is `<page>-page` (`files-page`, `board-page`, ...), never a bare
    noun. The sheet is shared by every surface, so a bare root is a name
-   another surface can wear by accident. `client/src/page-roots.test.ts`
-   enforces the name; a rename carries its descendant selectors and the
-   page's component-scoped styles with it, or the page loses its layout. */
+   another surface can wear by accident. The routes with no page-scoped
+   root of their own - home, connect, notFound and the dev fixture - draw
+   the shared `.wrap` root instead, and `client/src/page-roots.test.ts`
+   carries those four as its shared-root set. A rename carries its
+   descendant selectors and the page's component-scoped styles with it, or
+   the page loses its layout. */
 
 /* The two upstream stylesheets the app themes over: highlight.js's syntax
    colours (restated in forge's tokens for the review canvas) and the diff
@@ -4231,7 +4234,7 @@ details[open] > summary .arw { opacity: 1; }
 }
 
 /* ---------- the document viewer ---------- */
-.doc-page{ max-width: none; margin: 0; }
+.doc-page { max-width: none; margin: 0; }
 /* **The sheet** (Ved, the look, chosen over the full-bleed page): the
    document rests on the app like a page on a desk - one panel at a
    comfortable measure, and the space around it is the desk rather than

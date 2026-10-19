@@ -66,18 +66,20 @@ configuration needs `just client-tauri-check` (which runs the tests too)
 or `just client-tauri-bundle` (plus the bundles), and the first is the one
 to run before handing over a change there.
 
-A client page root is named for its page - `files-page`, `board-page` -
-never a bare noun: the sheet is shared by every surface, and
-`client/src/page-roots.test.ts` fails a root that is not `<page>-page`. A
-rename carries its descendant selectors and the page's component-scoped
-styles with it, or the page loses its layout.
-
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later
 steps>` clause when the step that failed was not the last one. The run
 stops at the first failing step. Read that line rather than a pipeline's
 exit status: piping `just check` through `tail` reports tail's status,
 not the recipe's.
+
+A client page root is named for its page - `files-page`, `board-page` -
+never a bare noun: the sheet is shared by every surface, and
+`client/src/page-roots.test.ts` fails a root that is not `<page>-page`.
+The routes with no page-scoped root of their own - home, connect, notFound
+and the dev fixture - draw the shared `.wrap` root instead. A rename
+carries its descendant selectors and the page's component-scoped styles
+with it, or the page loses its layout.
 
 The toolchain comes from `rust-toolchain.toml`; rustup applies it
 automatically. Tests run through `cargo nextest`, not `cargo test`.

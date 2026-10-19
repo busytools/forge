@@ -51,7 +51,7 @@ afterEach(async () => {
 /** The turn, mounted where the page mounts it: inside the review page's root. */
 function draw(held: Turn, rounds: ReviewSetRecord[] = [], index = 0): HTMLElement {
   const page = document.createElement('div');
-  page.className = 'review';
+  page.className = 'review-page';
   document.body.append(page);
   app = mount(ThreadTurn, {
     target: page,
