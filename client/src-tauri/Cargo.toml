@@ -20,7 +20,7 @@ default-run = "forge-client"
 # gives `tauri android build` no library target to build.
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# CEF's subprocesses are these, laid out by `scripts/bundle-cef.sh` as the
+# CEF's subprocesses are these, laid out by `scripts/stage-cef.sh` as the
 # `forge-client Helper*.app` bundles CEF looks for.
 [[bin]]
 name = "forge_client_helper"
@@ -64,8 +64,8 @@ tauri-plugin-updater = "2"
 
 # **The app's own Chromium, macOS first.** Only the host process initializes
 # CEF; the client's UI process never does (see `browser::cef`). The framework
-# and the five helper apps are laid into the built bundle by
-# `scripts/bundle-cef.sh`.
+# and the five helper apps are staged for the bundler by
+# `scripts/stage-cef.sh`.
 [target.'cfg(target_os = "macos")'.dependencies]
 cef = { version = "=154.5.0", features = ["build-util"] }
 libc = "0.2"

@@ -2,7 +2,7 @@
 # scripts/vendor_browser_stack.sh - fetch, verify and unpack the driver
 # stack the client bundles inside the app: node and @playwright/mcp for the
 # desktop, libnode for Android. This is the driver, not the engine: the
-# desktop's Chromium is laid in by `just bundle-cef`, and the phone keeps its
+# desktop's Chromium is staged by `just stage-cef`, and the phone keeps its
 # system WebView, so nothing here fetches a browser.
 #
 # Idempotent at the pins below: anything already there at its pinned version
@@ -115,7 +115,7 @@ prune_generated_stack() {
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-browser-stack.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-# The engine is CEF in the app bundle now, laid in by `just bundle-cef`, and a
+# The engine is CEF in the app bundle now, staged by `just stage-cef`, and a
 # `browser/` tree from when a whole Chromium was vendored is removed here:
 # `bundle.resources` globs the whole stack, so a leftover would keep packing a
 # second browser nothing can launch into every release.

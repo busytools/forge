@@ -124,9 +124,10 @@ to run before handing over a change there.
 A client that BUNDLES takes two steps of its own first. `just
 vendor-browser-stack` fetches and verifies the driver the client hosts -
 node and `@playwright/mcp`, about 140 MB into the client's gitignored
-`browser-stack/` directory - and `just bundle-cef` lays the app's own
-Chromium, the CEF framework and its five helper apps, into the built
-`forge.app`. `client-tauri-bundle` and `client-release` run both
+`browser-stack/` directory - and `just stage-cef` stages the app's own
+Chromium, the CEF framework and its five helper apps, before `tauri build`,
+which copies the staged tree into `Contents/Frameworks` as it builds the
+app. `client-tauri-bundle` and `client-release` run both
 themselves, so a release cannot ship without them. The vendoring needs
 network access the first time and nothing after that, and prints the pins
 it verified on every run. **No browser needs installing**: the engine is

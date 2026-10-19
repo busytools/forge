@@ -78,8 +78,9 @@ socket routes to it. `just vendor-browser-stack` fetches and verifies the
 driver into the gitignored `src-tauri/browser-stack/` directory - node
 and `@playwright/mcp` - and `bundle.resources` carries that tree into the
 bundle, so nothing downloads at first use. **The engine is the app's own
-Chromium**: `just bundle-cef` lays the CEF framework and its five helper
-apps into the built `forge.app`, and each profile's browser is a windowless
+Chromium**: `just stage-cef` stages the CEF framework and its five helper
+apps before `tauri build`, which copies them into `Contents/Frameworks`; each
+profile's browser is a windowless
 host process launched from that bundle - a hand-off's Open, or the strip's
 show, draws its frames as the full-window takeover. No installed browser is
 needed, and a bundle built without the framework refuses the browser doors

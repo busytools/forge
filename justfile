@@ -392,7 +392,7 @@ client-tauri-bundle: vendor-browser-stack
 # Fetch, verify and unpack the driver stack the client bundles: node and
 # @playwright/mcp, into the client's gitignored `browser-stack/` directory.
 # **The driver, not the browser**: the engine is the app's own Chromium,
-# laid into the bundle by `bundle-cef`; this stack only speaks CDP to it.
+# staged for the bundler by `stage-cef`; this stack only speaks CDP to it.
 # Idempotent at its pins, and it prints both pins so a release log names the
 # stack it shipped.
 #
