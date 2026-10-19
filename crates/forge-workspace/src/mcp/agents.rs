@@ -33,7 +33,7 @@ pub(crate) fn add_shared_tools(
     slot: SessionSlot,
 ) -> forge_sdk::mcp::server::McpServerBuilder {
     let whoami = Whoami { dispatcher: dispatcher.clone(), slot: slot.clone() };
-    let list = List { dispatcher: dispatcher.clone(), slot: slot.clone() };
+    let list = List { dispatcher: dispatcher.clone() };
     let send = SendMessage { dispatcher, slot };
     builder.tool(whoami).tool(list).tool(send)
 }
@@ -181,7 +181,6 @@ impl Tool for Whoami {
 /// one project. No target args.
 pub(crate) struct List {
     pub(crate) dispatcher: Arc<AgentDispatcher>,
-    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -266,7 +265,7 @@ impl Tool for List {
                 Err(err) => return tool_error(err),
             }
         }
-        for worker in self.dispatcher.workers().list_workers(&self.slot) {
+        for worker in self.dispatcher.workers().list_all_workers() {
             if filter.is_some_and(|name| name != worker.slot.project()) {
                 continue;
             }
@@ -1183,7 +1182,7 @@ mod tests {
     }
 
     async fn call_list(host: &Host, project_filter: Option<&str>) -> Vec<serde_json::Value> {
-        let tool = List { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let tool = List { dispatcher: Arc::clone(&host.dispatcher) };
         let mut args = serde_json::json!({});
         if let Some(name) = project_filter {
             args["project"] = serde_json::json!(name);
@@ -1354,8 +1353,8 @@ mod tests {
         let host = host();
         assert_eq!(
             call_list(&host, Some("proj")).await.len(),
-            1,
-            "the filter narrows to that project"
+            2,
+            "the filter narrows to that project's lead and worker"
         );
         assert!(call_list(&host, None).await.len() > 1, "without it, the list is flat");
     }
@@ -1391,15 +1390,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_carries_the_callers_own_workers_under_their_labels() {
+    async fn list_carries_the_callers_own_team() {
         let host = host();
         let rows = call_list(&host, None).await;
         let row = rows
             .iter()
-            .find(|row| row["slot"]["label"] == "w1")
+            .find(|row| row["slot"]["label"] == "w1" && row["slot"]["project"] == "core")
             .unwrap_or_else(|| panic!("the caller's own worker is a row: {rows:?}"));
-        assert_eq!(row["slot"]["project"], "core");
         assert_eq!(row["charter"], "w1's charter", "a worker row carries its snapshot");
+    }
+
+    /// The row the issue measured as missing: another project's live worker
+    /// is listed under its own slot, not left to a side channel.
+    #[tokio::test]
+    async fn list_carries_every_projects_live_workers_under_their_slots() {
+        let host = host();
+        let rows = call_list(&host, None).await;
+        let row = rows
+            .iter()
+            .find(|row| {
+                row["slot"]
+                    == serde_json::json!({
+                        "org": "other",
+                        "project": "proj",
+                        "label": "w1",
+                    })
+            })
+            .unwrap_or_else(|| panic!("another project's worker is a row: {rows:?}"));
+        assert_eq!(row["charter"], "w1's charter", "a worker row carries its snapshot");
+    }
+
+    #[tokio::test]
+    async fn a_project_without_live_workers_adds_no_worker_row() {
+        let host = host();
+        host.workers.workers.lock().remove("proj");
+        let rows = call_list(&host, None).await;
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] != LEAD_LABEL),
+            "a project with no live workers contributes no worker row: {rows:?}",
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] == LEAD_LABEL),
+            "its own agent stays reachable while it sleeps: {rows:?}",
+        );
     }
 
     /// A worker's own call, one per shared verb. The role-set tests pin that
@@ -1418,16 +1454,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_worker_lists_its_own_projects_pool() {
+    async fn a_worker_sees_every_projects_pool() {
         let host = host();
-        let tool = List { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
+        let tool = List { dispatcher: Arc::clone(&host.dispatcher) };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error, "list must answer a worker caller: {:?}", output.blocks);
         let rows: Vec<serde_json::Value> =
             serde_json::from_str(text_of(&output)).expect("JSON array");
         assert!(
-            rows.iter().any(|row| row["slot"]["label"] == "w1"),
-            "a worker sees its project's pool: {rows:?}",
+            rows.iter().any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] == "w1"),
+            "a worker sees every project's pool: {rows:?}",
         );
     }
 
