@@ -411,12 +411,14 @@ impl Workspace {
     /// the user is the withdraw door - it records the reason the caller
     /// states in `detail`, and a cancel without one is refused (#2340);
     /// a move off `waiting` drops the wait the row was holding, so a
-    /// completion of any other waiting row applies and clears - a
-    /// verify=user one is taken by the gate and lands on the look
-    /// instead, its own wait gone; and completing a
-    /// ROOT row closes it - the whole tree moves to the archive, refused
-    /// while any child is still open or while any row in the tree is
-    /// parked on the user (#2251).
+    /// completion of any other waiting row applies and clears - except on
+    /// a verify=user row, where a seat's completion is refused by name
+    /// while the row waits: the gate would trade its wait for a look park
+    /// and answer with the status unchanged (#2414). The user's own move
+    /// off waiting to completed keeps that path and parks on the look;
+    /// and completing a ROOT row closes it - the whole tree moves to the
+    /// archive, refused while any child is still open or while any row in
+    /// the tree is parked on the user (#2251).
     pub(crate) fn update_task(
         &self,
         project_name: &str,
@@ -2151,27 +2153,33 @@ mod tests {
         assert_eq!(stored[0].status, TaskStatus::Waiting, "and the row keeps waiting for the look");
     }
 
-    /// A seat completing a row that is already waiting on something else,
-    /// where the row's own completion waits on the user, is refused by
-    /// name (#2414): the gate would trade the wait it holds for a look
-    /// park and answer with the status unchanged, which reads as a no-op.
+    /// The reported sequence, not just the seeded state (#2414): a worker
+    /// parks its row on a dependency wait through `tasks__wait`, then
+    /// another seat completes it. On a verify=user row the completion is
+    /// refused by name, naming the wait, and the dependency wait survives
+    /// untouched.
     #[test]
     fn completing_a_waiting_user_bound_row_is_refused_by_name() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-complete-waiting");
         ws.push_task(sample_task("blocker", "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task {
             verify: Some(Verify::User),
-            status: TaskStatus::Waiting,
-            waiting_on: Some(Waiting {
-                kind: Some(WaitingKind::Dependency),
-                detail: Some("the board read has to land first".to_owned()),
-                on: Some(TaskId::from("blocker")),
-                verification: false,
-            }),
+            owner: Some(worker.clone()),
             ..sample_task("t-1", "proj")
         });
+        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            WaitingKind::Dependency,
+            Some("the board read has to land first".to_owned()),
+            Some(&TaskId::from("blocker")),
+        )
+        .expect("the owner may wait its own row");
 
         let refused = ws
             .update_task(
@@ -2196,9 +2204,119 @@ mod tests {
         let row = stored.iter().find(|task| task.id == TaskId::from("t-1")).expect("the row");
         assert_eq!(row.status, TaskStatus::Waiting, "the row keeps the status it held");
         assert_eq!(
-            row.waiting_on.as_ref().and_then(|wait| wait.kind),
-            Some(WaitingKind::Dependency),
+            row.waiting_on,
+            Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: Some("the board read has to land first".to_owned()),
+                on: Some(TaskId::from("blocker")),
+                verification: false,
+            }),
             "and the wait it held, not a look park the caller never asked for",
+        );
+    }
+
+    /// The recovery the refusal advertises (#2414): moving the row off
+    /// waiting drops the dependency wait, and the next completion parks it
+    /// on the look the way any user-bound completion does.
+    #[test]
+    fn moving_a_dependency_wait_off_waiting_then_completing_parks_on_the_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-move-then-complete");
+        ws.push_task(sample_task("blocker", "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task {
+            verify: Some(Verify::User),
+            owner: Some(worker.clone()),
+            ..sample_task("t-1", "proj")
+        });
+        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            WaitingKind::Dependency,
+            None,
+            Some(&TaskId::from("blocker")),
+        )
+        .expect("the owner may wait its own row");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        let moved = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(lead.clone()), |task| {
+                task.status = TaskStatus::InProgress;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(moved.status, TaskStatus::InProgress, "the move off waiting lands");
+        assert_eq!(moved.waiting_on, None, "and drops the dependency wait");
+
+        let landed = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(lead), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(landed.status, TaskStatus::Waiting, "the gate parks the completion");
+        assert!(
+            landed.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "on the user's look: {landed:?}",
+        );
+    }
+
+    /// The refusal is a seat's, not a state's (#2414): the user's own move
+    /// of a waiting verify=user row to completed still parks it on the
+    /// look, which is the path the refusal tells a seat to take.
+    #[test]
+    fn a_user_move_still_parks_a_waiting_user_bound_row() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-user-move-waiting");
+        ws.push_task(Task {
+            verify: Some(Verify::User),
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: None,
+                on: None,
+                verification: false,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let landed = ws
+            .user_move_task("proj", &TaskId::from("t-1"), TaskStatus::Completed)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(landed.status, TaskStatus::Waiting, "the drag lands as a look park");
+        assert!(
+            landed.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "with the look the user's own completion is owed: {landed:?}",
+        );
+    }
+
+    /// The refusal names every wait shape a row can hold (#2414), so the
+    /// caller learns what it is sitting on and not merely that it waits.
+    #[test]
+    fn the_wait_refusal_words_name_each_wait() {
+        let wait = |kind: Option<WaitingKind>, on: Option<TaskId>| Waiting {
+            kind,
+            detail: None,
+            on,
+            verification: false,
+        };
+        assert_eq!(wait_words(None), "a wait", "no stored wait");
+        assert_eq!(wait_words(Some(&wait(None, None))), "a wait", "a legacy unstated wait");
+        assert_eq!(
+            wait_words(Some(&wait(Some(WaitingKind::Decision), None))),
+            "a decision",
+            "the question wait a row can be parked on",
+        );
+        assert_eq!(wait_words(Some(&wait(Some(WaitingKind::Resource), None))), "a resource");
+        assert_eq!(
+            wait_words(Some(&wait(Some(WaitingKind::Dependency), Some(TaskId::from("blocker"))))),
+            "a dependency on blocker",
+            "a dependency names its blocker",
         );
     }
 
