@@ -241,12 +241,15 @@
         {#if waitOnUser(task)}Waiting on you{:else}What it waits on{/if}
       </h3>
       <div class="dr-ask">
-        <!-- The ASK leads: the wait's own detail is what the reader is being
-             asked, so it is the first thing the card says. A seeded or
-             legacy wait with no detail keeps the state's own sentence. -->
+        <!-- The ASK leads: the wait's own detail where it states one, else
+             the row's detail - a look parks with no wait detail, and its ask
+             is the row's own words - else the state's own sentence. A seeded
+             or legacy wait with no detail keeps that sentence. -->
         <div class="q">
           {#if task.waiting_on.detail !== null}
             {task.waiting_on.detail}
+          {:else if task.detail !== null}
+            {task.detail}
           {:else if waitOnUser(task) && task.waiting_on.verification}
             This row is finished and waits on your approval.
           {:else if waitOnUser(task) && task.waiting_on.kind === 'decision'}
@@ -259,7 +262,7 @@
             Waiting.
           {/if}
         </div>
-        {#if task.waiting_on.detail !== null}
+        {#if task.waiting_on.detail !== null || task.detail !== null}
           <!-- What the ask is, in the state's own words, under the ask itself. -->
           <div class="from">
             {#if waitOnUser(task) && task.waiting_on.verification}

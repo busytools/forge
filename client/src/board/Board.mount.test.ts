@@ -620,10 +620,12 @@ describe("the board's controls", () => {
       wireWith([
         row(
           task('w1', 'the row subject', 'waiting', {
+            // A look parks with no wait detail: its ask is the row's own.
+            detail: 'Which mock should ship?',
             verify: 'user',
             waiting_on: {
               kind: 'decision',
-              detail: 'Which mock should ship?',
+              detail: null,
               on: null,
               verification: true,
             },
@@ -895,10 +897,12 @@ describe("the row's own page", () => {
       wireWith([
         row(
           task('w1', 'the row subject', 'waiting', {
+            // A look parks with no wait detail: its ask is the row's own.
+            detail: 'Which mock should ship?',
             verify: 'user',
             waiting_on: {
               kind: 'decision',
-              detail: 'Which mock should ship?',
+              detail: null,
               on: null,
               verification: true,
             },

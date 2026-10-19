@@ -118,14 +118,15 @@ on the user again. The page's `pick` line is the other side of the sweep:
 takes it: the pick is the user's alone.
 
 **A wait leads with its ask.** The waiting card and the row page both open
-on the wait's own `detail` - what is being decided or looked at - and only a
-seeded or legacy wait with no detail falls back to the state's sentence ("A
+on the wait's own `detail` where it states one, else the row's `detail` - a
+look parks with no wait detail, and its ask is the row's own words - and only
+a seeded or legacy wait with neither falls back to the state's sentence ("A
 decision is waiting on you", "This row is finished and waits on your
 approval"). The row's links follow the ask as doors, and a look names the
 artifact it points at (`look at <link>`) where the row carries a followable
-PR or path. A good wait detail says what the question is, why it needs the
-user, and links the thing to look at; a bare "waiting on you" is a card with
-no question on it.
+PR or path. A good ask says what the question is, why it needs the user, and
+links the thing to look at; a bare "waiting on you" is a card with no
+question on it.
 
 The links come off the row's own list: a URL follows in a new tab under its
 label, and a path or a branch draws as text rather than a dead anchor.

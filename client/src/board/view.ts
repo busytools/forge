@@ -143,8 +143,10 @@ export interface WaitingView {
   /** The verify gate, or a question the worker raised. */
   verification: boolean;
   detail: string | null;
-  /** The card's title: the wait's own detail, else the state's sentence. */
+  /** The card's title: the wait's own detail, else the row's, else the state's sentence. */
   ask: string;
+  /** Whether the ask is a stated ask (a detail) rather than the state's sentence. */
+  hasAsk: boolean;
   /** The row's references, as doors, beside the ask. */
   links: { label: string; href: string | null }[];
   /** The artifact a look points at, when the row carries a followable one. */
@@ -408,7 +410,14 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
       owner: entry.task.owner === null ? null : entry.task.owner.label,
       verification: entry.task.waiting_on?.verification === true,
       detail: entry.task.waiting_on?.detail ?? null,
-      ask: entry.task.waiting_on?.detail ?? waitSentence(entry.task),
+      // The ask is the wait's own detail where it states one, else the row's
+      // detail - a look parks with no wait detail, and its ask is the row's
+      // own words - else the state's sentence.
+      ask: entry.task.waiting_on?.detail ?? entry.task.detail ?? waitSentence(entry.task),
+      hasAsk:
+        entry.task.waiting_on?.detail !== null && entry.task.waiting_on?.detail !== undefined
+          ? true
+          : entry.task.detail !== null,
       links: linksOf(entry.task),
       artifact:
         entry.task.waiting_on?.verification === true && waitOnUser(entry.task)

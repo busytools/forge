@@ -572,7 +572,7 @@
                  being asked, so it is the card's title. A seeded or legacy
                  wait with no detail keeps the row's subject. -->
             <div class="b-q">{row.ask}</div>
-            {#if row.detail !== null}
+            {#if row.hasAsk}
               <div class="b-why"><span>{row.subject}</span></div>
             {/if}
             <div class="b-why">
