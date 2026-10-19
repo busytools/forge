@@ -82,11 +82,12 @@ context menus are not part of this cut.
 **There is no external-browser door.** Every page lives in the app's own
 engine and nowhere else; the client never hands one to another browser.
 
-**A restart reopens the page the raise showed.** The page a hand-off's Open
-or the strip's show puts in front of the person is written beside the
-profile, and the host a later launch brings up opens it - the session finds
-the page it prepared instead of a blank one. A close without a raise carries
-what the last raise wrote, and only a web address is ever reopened.
+**A restart reopens the page the person last saw.** The page a hand-off's
+Open or the strip's show puts in front of the person is written beside the
+profile, and every browsing call that changes the page rewrites it, so a
+later launch - after a restart or an idle close - opens where the session
+left off instead of on a blank page. A blank page clears the marker, and
+only a web address is ever reopened.
 
 **The catalogued engine's limits are named, not hidden.** The prebuilt CEF
 has no H.264 decoder (the job sites the probe exercised do not need it), it
