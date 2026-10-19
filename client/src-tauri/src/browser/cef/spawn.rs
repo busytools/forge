@@ -284,7 +284,23 @@ pub async fn probe(port: u16) -> bool {
 /// it since. The signal goes only when the endpoint still answers as a
 /// browser host, or when the pid is one of this client's own children.
 pub async fn end_verified(pid: u32, port: u16) {
-    if !is_ours(pid) && !probe(port).await {
+    if is_ours(pid) {
+        end(pid).await;
+        return;
+    }
+    // **A recorded pid is a number until its owner is identified.** The
+    // endpoint answering proves a host is on the port; it does not prove
+    // this pid is it. A recycled number is only signalled when the process
+    // itself is this client's binary, and that is checked again after the
+    // probe's await - the window the first check cannot cover - immediately
+    // before `end`, which signals with no await in between.
+    if !is_our_binary(pid) {
+        return;
+    }
+    if !probe(port).await {
+        return;
+    }
+    if !is_our_binary(pid) {
         return;
     }
     end(pid).await;

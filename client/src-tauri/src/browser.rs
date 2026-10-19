@@ -66,12 +66,12 @@ use tokio::sync::Mutex;
 /// owns.
 #[derive(Clone, Debug)]
 pub struct StackPaths {
-    /// The vendored tree: node and the driver. The browser itself is the
-    /// machine's own, never vendored.
+    /// The vendored tree: node and the driver. The engine is the app's own
+    /// Chromium, laid into the bundle rather than vendored here.
     pub stack: PathBuf,
-    /// The browser's own data directory - the `--user-data-dir` a launch is
-    /// given: logins, cookies, the HTTP cache, and the `DevToolsActivePort`
-    /// file a launch writes.
+    /// The pre-CEF browser's data directory, kept only as the migration's
+    /// source: the profile's own `Default` is copied out of it once. New
+    /// profiles live under `cef_shared`/`cef_named`.
     pub user_data: PathBuf,
     /// Where upstream's own file-writing tools land when a call names no
     /// filename.
@@ -1179,9 +1179,11 @@ impl BrowserHost {
                 );
                 cef::osr::Ring::unlink(&record.ring);
                 cef::spawn::remove_record(cache);
-                // The dead host's singleton files go too, so the replacement
-                // starts onto a clean profile.
-                cef::spawn::clear_singleton(cache);
+                // **A silent record proves the port, not the process.** A
+                // frozen host can hold the profile while its record looks
+                // stale; the singleton lock names it, and reaping by identity
+                // ends it rather than double-spawning onto its profile.
+                self.reap_singleton(cache).await;
             }
         }
         // **The page reports the surface's own box shortly after it opens**;
