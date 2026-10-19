@@ -1466,8 +1466,7 @@ export class Chat {
           // subscribe is answered with the page a `more` would fetch, so a
           // switch that asked for both would ship the conversation twice.
           // Seed it instead, and ask `more` only when the answer brought no
-          // page. A reconnect's snapshot is the same heal - the frames missed
-          // in the gap are what the fresh page carries.
+          // page.
           // **Only the first load is seeded from the subscribe's answer**
           // (#2420). A reconnect asks a page for itself (the status handler),
           // so its snapshot cannot steal an older ask's in-flight bookkeeping.

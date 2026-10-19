@@ -891,7 +891,10 @@ mod tests {
             &bridge,
             snapshot(json!({
                 "header": { "context": { "percent": 0.1 } },
-                "conversation": { "turns": [{ "key": "t1", "messages": [] }] },
+                "conversation": {
+                    "turns": [{ "key": "t1", "messages": [] }],
+                    "cursor": "7",
+                },
             })),
         );
         event(&mut rx, is_inbound()).await;
@@ -915,11 +918,7 @@ mod tests {
         let ClientEvent::Inbound(page) = event(&mut rx, is_inbound_kind("page")).await else {
             unreachable!("filtered to inbound");
         };
-        assert_eq!(
-            page["cursor"],
-            json!(null),
-            "the newest window, as `more` with no before answers"
-        );
+        assert_eq!(page["cursor"], json!("7"), "the record's own handle rides the catch-up");
         assert_eq!(page["reconciled"], json!(true), "and it says which kind of page it is");
         assert_eq!(page["turns"][0]["key"], json!("t1"));
         assert_eq!(page["conversation"], seat()["session"]);

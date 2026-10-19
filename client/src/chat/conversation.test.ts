@@ -1271,8 +1271,8 @@ describe('the conversation the chat draws', () => {
     server.update({ chat_appended: { key: LEAD, msg: said('a live line') } });
     const asked = server.more().length;
 
-    // **Only the first load and a reconnect may seed the conversation from a
-    // snapshot** (#2420). A later snapshot can be a picture the server built
+    // **Only the first load seeds the conversation from a snapshot**
+    // (#2420). A later snapshot can be a picture the server built
     // before the live frames this chat already holds; reading it as a page
     // would start a walk over a stale reach.
     server.send(record([turn('t0', 'stale')], null));
@@ -1399,11 +1399,20 @@ describe('the conversation the chat draws', () => {
     expect(server.more(), 'an unloaded return asks nothing').toEqual([]);
 
     server.send(record([turn('t1', 'first'), turn('t2', 'second')], '1'));
-    chat.leaving();
-    chat.showing();
-    expect(server.more(), 'a return refreshes the loaded conversation').toEqual([
+    expect(server.more(), 'the swallowed return asks once the seed lands').toEqual([
       { kind: 'more', conversation: LEAD, before: null, turns: MORE_TURNS },
     ]);
+    server.send(page([turn('t1', 'first'), turn('t2', 'second')], '1'));
+
+    chat.leaving();
+    chat.showing();
+    expect(server.more(), 'a return refreshes the loaded conversation').toHaveLength(2);
+    expect(server.more().at(-1), 'and its ask is the newest page').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+      turns: MORE_TURNS,
+    });
   });
 
   it('walks a reconnect page that shares nothing down to the held tail', () => {

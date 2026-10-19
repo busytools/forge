@@ -523,9 +523,9 @@ describe('one row per running turn', () => {
   });
 
   it('holds one row when the newest page repeats the running turn', () => {
-    // What a reconnect does: its subscribe answers with the newest page, and
-    // that page is built from the live conversation, so it repeats the turn
-    // the client already holds under the same key.
+    // What a reconnect does: its own page ask is answered with the newest
+    // page, built from the live conversation, so it repeats the turn the
+    // client already holds under the same key.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
