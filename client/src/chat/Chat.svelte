@@ -1155,13 +1155,26 @@
   }
 
   /**
-   * The events the fill runs on: the first load, a landing, an empty page's
-   * beat, or a refusal. **Not every published frame**: a seat emits on every
-   * frame it folds, and the fill has nothing to say about most of them.
+   * The events the fill runs on: the first load, a landing, a cursor that
+   * moved, an empty page's beat, or a refusal - on the seat that holds them.
+   * **Not every published frame**: a seat emits on every frame it folds, and
+   * the fill has nothing to say about most of them. The seat is in the key
+   * because a same-triple switch keeps every other field.
    */
   const fills = $derived(
-    held.loaded ? `${held.prepends}:${held.reaskAt ?? 0}:${held.refused ?? ''}` : '',
+    held.loaded
+      ? `${seat}|${held.cursor ?? ''}:${held.prepends}:${held.reaskAt ?? 0}:${held.refused ?? ''}`
+      : '',
   );
+
+  /**
+   * The beat the fill last scheduled against.
+   *
+   * A landing that clears the beat without being the beat's own answer - a
+   * seat return or a reconnect inside it - leaves the mark the beat's ask set
+   * pointing at a cursor nothing is coming for, so the landing clears it.
+   */
+  let beatSeen: number | null = null;
 
   /**
    * The frame-deferred check, run on the edges above.
@@ -1179,10 +1192,25 @@
   $effect(() => {
     const edge = fills;
     const element = viewport;
-    if (edge === '' || element === null) return;
+    if (edge === '') {
+      // A conversation that is not loaded has no mark to keep: a resumed
+      // occupant or a swapped seat starts the fill from nothing.
+      filledFor = null;
+      beatSeen = null;
+      return;
+    }
+    if (element === null) return;
     return untrack(() => {
-      if (held.refused !== null) return;
+      if (held.refused !== null) {
+        // **The refusal clears the mark.** The retry that heals it asks the
+        // newest page, whose answer keeps the walk cursor the refusal was
+        // for - so a mark left standing would block the fill on a cursor it
+        // has already asked and the history would never load (#2411).
+        filledFor = null;
+        return;
+      }
       if (held.reaskAt !== null) {
+        beatSeen = held.reaskAt;
         const timer = setTimeout(
           () => {
             filledFor = null;
@@ -1191,6 +1219,12 @@
           Math.max(0, held.reaskAt - Date.now()),
         );
         return () => clearTimeout(timer);
+      }
+      // **A beat cleared by a landing that is not its own answer** leaves the
+      // same dead mark: the cursor did not move, so the fill would stop.
+      if (beatSeen !== null) {
+        beatSeen = null;
+        filledFor = null;
       }
       const frame = requestAnimationFrame(() => fillFittingRoom());
       return () => cancelAnimationFrame(frame);
