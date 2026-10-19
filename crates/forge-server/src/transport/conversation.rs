@@ -847,11 +847,15 @@ impl Conversations {
             // the update arrives, rather than in each connection that sends
             // it.
             _ => {
+                // Forged outside the seat's lock, where the parse and its own
+                // failure log have always run; the lock below covers only the
+                // append and the mark.
+                let forged = crate::delivery::delivery_turn(update, slot).map(|(msg, _)| msg);
                 let Some(held) = self.get(slot) else {
                     return;
                 };
                 let mut conversation = held.lock();
-                if let Some((msg, _)) = crate::delivery::delivery_turn(update, slot) {
+                if let Some(msg) = forged {
                     // Forged for display, and in no transcript: the seat has
                     // to know, so a walk below the floor never names one to
                     // the file as the row it stopped at.
