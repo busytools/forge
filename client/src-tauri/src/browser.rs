@@ -174,9 +174,9 @@ impl StackPaths {
 pub struct BrowserHost {
     paths: Result<StackPaths, String>,
     /// Every host ensure runs under this, whichever profile asks for one: a
-    /// burst of first calls launches ONE host rather than two onto one profile
-    /// - and a hand-off's `show` racing a first call cannot leave two hosts on
-    /// one profile either.
+    /// burst of first calls launches ONE host rather than two onto one
+    /// profile, and a hand-off's `show` racing a first call cannot leave two
+    /// hosts on one profile either.
     #[cfg(desktop)]
     launch: Mutex<()>,
     /// The shared profile: the browser's own profile, one driver for every
@@ -1948,7 +1948,7 @@ mod tests {
         );
         // A host record alone - no surface - still reads as not drawn: the
         // record is what the boot sweep uses, never what the button reads.
-        std::fs::create_dir_all(&paths.cef_named("hunt")).expect("the cache root");
+        std::fs::create_dir_all(paths.cef_named("hunt")).expect("the cache root");
         std::fs::write(
             cef::spawn::record_path(&paths.cef_named("hunt")),
             br#"{"pid":999999,"port":9999,"ring":"/forge-cef-9999"}"#,

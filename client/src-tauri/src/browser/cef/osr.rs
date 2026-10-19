@@ -220,19 +220,30 @@ impl Ring {
     }
 
     /// The whole view's pixels, one byte per channel.
-    pub fn pixels(&self) -> *const u8 {
+    ///
+    /// # Safety
+    ///
+    /// The caller only reads within `width * height * 4` bytes of the live
+    /// view.
+    pub unsafe fn pixels(&self) -> *const u8 {
         // SAFETY: the pixels follow the header inside the same mapping.
         unsafe { self.ptr.add(HEADER_LEN) }
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
     }
 
     /// Copy one paint into the ring. `width`/`height` are the live view size
     /// the buffer was painted at; a buffer of another size is dropped rather
     /// than written into the wrong rectangle.
-    pub fn write_frame(&self, rects: Option<&[Rect]>, buffer: *const u8, width: u32, height: u32) {
+    ///
+    /// # Safety
+    ///
+    /// `buffer` is a BGRA frame of `width * height` pixels.
+    pub unsafe fn write_frame(
+        &self,
+        rects: Option<&[Rect]>,
+        buffer: *const u8,
+        width: u32,
+        height: u32,
+    ) {
         let header = self.header();
         // SAFETY: the header is mapped and owned by this process for writing.
         let frame = unsafe { &*header };
@@ -347,12 +358,15 @@ cef::wrap_render_handler! {
             if type_ != PaintElementType::VIEW {
                 return;
             }
-            self.ring.write_frame(
-                dirty_rects,
-                buffer,
-                width.max(0) as u32,
-                height.max(0) as u32,
-            );
+            // SAFETY: CEF hands a BGRA frame of exactly this size.
+            unsafe {
+                self.ring.write_frame(
+                    dirty_rects,
+                    buffer,
+                    width.max(0) as u32,
+                    height.max(0) as u32,
+                );
+            }
         }
     }
 }
