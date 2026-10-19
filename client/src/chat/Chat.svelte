@@ -376,6 +376,12 @@
   function measureTurn(node: HTMLElement, key: string): () => void {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) rowSizes.remember(key, entry.contentRect.height);
+      // **The row's own report wakes the fill.** A landing's rows measure
+      // AFTER the size watcher's batch has already read them as unmeasured,
+      // and a row that measures at the list's estimate leaves the content
+      // height where it was - so no second watcher batch comes, and without
+      // this nothing asks the page above (#2411).
+      fillFittingRoom();
     });
     observer.observe(node);
     return () => observer.disconnect();

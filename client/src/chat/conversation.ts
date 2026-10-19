@@ -855,7 +855,6 @@ export class Chat {
   private forgot(): void {
     // The cursor it went out for is answered by nothing, so the fill may ask
     // it again: the reconnect's own newest page can spell it unchanged.
-    this.askedBefore = null;
     this.fold((held) => ({ ...held, dropped: held.dropped + 1, askedFor: null }));
   }
   /** What `start` has to undo, and `null` while the chat is stopped. */
@@ -1380,10 +1379,6 @@ export class Chat {
         // spent on pages that are never coming.
         this.inFlight = null;
         this.abandoned = 0;
-        // The cursor that ask went out for is answered by nothing, so the
-        // retry's own page - which can spell the same cursor - must not read
-        // as a repeat of it.
-        this.askedBefore = null;
         // A refusal is a settled ask like any other, and what a return wanted
         // is what the retry below asks for - the want goes with it rather
         // than riding a second ask at the same refused core.
