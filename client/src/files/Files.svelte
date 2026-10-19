@@ -26,11 +26,11 @@
    * Its states are drawn here: nothing yet (reading), a seat the server
    * refused, and a tree with no files.
    */
-  import { SvelteSet } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { mount, unmount } from 'svelte';
 
   import FileTree from '../components/FileTree.svelte';
-  import { toggleClosed, type TreeRow } from '../components/tree';
+  import type { TreeRow } from '../components/tree';
   import { boxKey } from '../composer/box.svelte';
   import {
     bindPushToTalk,
@@ -73,7 +73,7 @@
   import Reader from './Reader.svelte';
   import { contextForComment, railRows, threadsOnPath, treeScope, type RailRow } from './comments';
   import type { ReaderBlock, ReaderHandle } from './reader';
-  import { indexTreeRows, matchedEntries } from './tree';
+  import { closedFolders, indexTreeRows, foldedByDefault, matchedEntries, NO_FOLDS } from './tree';
 
   let {
     connection,
@@ -100,7 +100,9 @@
   const entries = $derived(record === null ? [] : filesOnly(filesFrom(record.file_index)));
 
   let query = $state('');
-  const closed = new SvelteSet<string>();
+  /** The folds the reader set themselves: true shut, false open. A folder
+   *  absent here follows the page's defaults. */
+  const folded = new SvelteMap<string, boolean>();
   /** The file the reader shows, which the tree marks as current. */
   let open = $state<string | null>(null);
   /** The live reader, so the rail's jump-backs can reach its lines. */
@@ -567,7 +569,7 @@
             (event.key === 'ArrowRight' && isClosed) ||
             (event.key === 'ArrowLeft' && !isClosed)
           ) {
-            toggleClosed(closed, row.path);
+            fold(row.path);
           }
           break;
         }
@@ -575,7 +577,7 @@
           const row = tree.find((held) => held.path === keyRow);
           if (row === undefined) return;
           event.preventDefault();
-          if (row.kind === 'dir') toggleClosed(closed, row.path);
+          if (row.kind === 'dir') fold(row.path);
           else open = row.path;
           break;
         }
@@ -768,10 +770,32 @@
     tab = 'files';
     open = row.thread.anchor.path;
     pendingLine = row.line ?? row.thread.anchor.line;
+    reveal(row.thread.anchor.path);
   }
 
   const shown = $derived(matchedEntries(entries, query));
+  /** A filter's job is to show what matched, so the defaults stand down
+   *  while one is on; a fold the reader set still holds. */
+  const filtering = $derived(query.trim() !== '');
+  const startFolded = $derived(filtering ? NO_FOLDS : foldedByDefault(shown));
+  const closed = $derived(closedFolders(startFolded, folded));
   const tree = $derived(indexTreeRows(shown, closed));
+
+  /** Fold or open a folder, whichever the press or key asks for. */
+  function fold(path: string): void {
+    folded.set(path, !closed.has(path));
+  }
+
+  /** Open every folder above `path`, so a jump lands on a visible row. */
+  function reveal(path: string): void {
+    const parts = path.split('/');
+    parts.pop();
+    let prefix = '';
+    for (const part of parts) {
+      prefix = prefix === '' ? part : `${prefix}/${part}`;
+      folded.set(prefix, false);
+    }
+  }
 
   /** Comments dropped on one file, from the seat-tree half - the row's pill. */
   function droppedCount(path: string): number {
@@ -992,7 +1016,7 @@
               {closed}
               here={open}
               active={keyRow}
-              ondir={(path) => toggleClosed(closed, path)}
+              ondir={fold}
               onfile={(path) => (open = path)}
             >
               {#snippet trailing(row: TreeRow<unknown>)}

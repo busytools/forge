@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { filesOnly, type FileEntry } from '../composer/wire';
-import { indexTreeRows, matchedEntries } from './tree';
+import { closedFolders, indexTreeRows, foldedByDefault, matchedEntries } from './tree';
 
 function entry(relPath: string): FileEntry {
   return {
@@ -20,6 +20,39 @@ describe('the seat index as a tree', () => {
     entry('crates/z.rs'),
     entry('src/sub/deep.rs'),
   ];
+
+  /**
+   * Ved, 2026-10-19: the page opens folded. A folder holding a file is
+   * folded; a folder holding only folders opens, so the skeleton reads.
+   */
+  it('folds the folders that hold a file and opens the folder-only ones', () => {
+    const onlyDirs = [entry('apps/web/index.html'), entry('apps/api/main.rs')];
+    expect([...foldedByDefault(files)].sort()).toEqual(['crates', 'src', 'src/sub']);
+    expect([...foldedByDefault(onlyDirs)].sort()).toEqual(['apps/api', 'apps/web']);
+
+    const rows = indexTreeRows(onlyDirs, foldedByDefault(onlyDirs));
+    expect(rows.map((row) => `${row.kind} d${row.depth} ${row.path}`)).toEqual([
+      'dir d0 apps',
+      'dir d1 apps/api',
+      'dir d1 apps/web',
+    ]);
+  });
+
+  it('a fold the reader set wins over the default, either way', () => {
+    const defaults = new Set(['src']);
+    expect([...closedFolders(defaults, new Map())]).toEqual(['src']);
+    expect([...closedFolders(defaults, new Map([['src', false]]))]).toEqual([]);
+    expect([...closedFolders(defaults, new Map([['docs', true]]))].sort()).toEqual(['docs', 'src']);
+  });
+
+  it('a folder with files stays folded, so its subfolders start hidden too', () => {
+    const rows = indexTreeRows(files, foldedByDefault(files));
+    expect(rows.map((row) => `${row.kind} ${row.path}`)).toEqual([
+      'dir crates',
+      'dir src',
+      'file Cargo.toml',
+    ]);
+  });
 
   it('draws folders before files at every level, alphabetical, indented by depth', () => {
     const rows = indexTreeRows(files, new Set());
