@@ -275,7 +275,10 @@ impl Tool for Update {
          it, and a cancel of a row waiting on the user is the withdraw door once the ask has \
          gone moot: it needs `detail`, the reason the ask is withdrawn, which lands on the row, \
          and a cancel stating none - or only what the row already says - is refused. Any \
-         other move off `waiting` drops the wait the row held. `verify: \"user\"` \
+         other move off `waiting` drops the wait the row held - except a completion on a row \
+         whose completion waits on the user: while it is waiting on something else the gate \
+         would trade that wait for a look park, so the completion is refused by name; move it \
+         off waiting first, then complete it. `verify: \"user\"` \
          may be set here, but not taken away: a user-bound row keeps that gate until the user's \
          approve, so clearing it - or moving the row out of its epic - is refused rather than \
          taken as a way around the look. A task is \
@@ -1349,6 +1352,27 @@ mod tests {
                 status.contains(clause),
                 "the status property owes the rule where the caller picks it ({clause}): \
                  {status}",
+            );
+        }
+    }
+
+    /// The waiting-completion refusal is shipped text (#2414): a caller
+    /// reaching for `status: completed` learns from the description that
+    /// a user-bound row already waiting on something else refuses the
+    /// move by name, so the refusal is never the first word about it.
+    #[test]
+    fn the_update_description_states_the_waiting_completion_refusal() {
+        let update = Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        let description = update.description();
+        for clause in [
+            "except a completion on a row whose completion waits on the user",
+            "the gate would trade that wait for a look park, so the completion is refused by \
+             name",
+            "move it off waiting first, then complete it",
+        ] {
+            assert!(
+                description.contains(clause),
+                "tasks__update does not state the refusal ({clause}): {description}",
             );
         }
     }

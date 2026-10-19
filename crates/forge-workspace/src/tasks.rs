@@ -54,6 +54,12 @@ pub(crate) enum MoveError {
     /// A completion landed on a row waiting on the user's own look: the
     /// look is what completes it.
     WaitingOnLook,
+    /// A completion landed on a row already waiting on something else
+    /// while the row's own completion waits on the user: the gate would
+    /// trade the wait it holds for a look park and leave the status
+    /// reading `waiting`, so the move is refused by name instead. The
+    /// wait's own words ride it.
+    CompletingWhileWaiting(String),
     /// A patch would clear the look gate a row is bound by: the user's
     /// own approve is what clears it.
     ClearingLookGate,
@@ -93,6 +99,22 @@ fn parked_on_user(task: &Task) -> bool {
     task.waiting_on
         .as_ref()
         .is_some_and(|wait| wait.verification || wait.kind == Some(WaitingKind::Decision))
+}
+
+/// The words a refusal names a wait by: its kind, and the row it waits on
+/// when the wait names one.
+fn wait_words(wait: Option<&Waiting>) -> String {
+    let Some(wait) = wait else { return "a wait".to_owned() };
+    let what = match wait.kind {
+        Some(WaitingKind::Decision) => "a decision",
+        Some(WaitingKind::Dependency) => "a dependency",
+        Some(WaitingKind::Resource) => "a resource",
+        None => "a wait",
+    };
+    match &wait.on {
+        Some(id) => format!("{what} on {}", id.as_str()),
+        None => what.to_owned(),
+    }
 }
 
 /// Append the user's words to a row's detail, keeping what was there.
@@ -145,6 +167,12 @@ impl std::fmt::Display for MoveError {
             Self::WaitingOnLook => write!(
                 f,
                 "this row is waiting on the user's look; the board's approve completes it"
+            ),
+            Self::CompletingWhileWaiting(waited) => write!(
+                f,
+                "this row is waiting on {waited}; completing it here would park it on the \
+                 user's look instead of completing it - move it off waiting first (a move to \
+                 in_progress drops the wait), then complete it"
             ),
             Self::ClearingLookGate => write!(
                 f,
@@ -459,6 +487,16 @@ impl Workspace {
                 && next.status == TaskStatus::Completed
                 && effective_verify(tasks, index) == Verify::User
             {
+                // A row already holding another wait would have that wait
+                // traded for a look park, leaving the status reading
+                // `waiting`: the caller sees success and no change.
+                // Refused by name instead (#2414); the user's own moves
+                // keep their path.
+                if matches!(by, By::Seat(_)) && prior == TaskStatus::Waiting {
+                    return Err(MoveError::CompletingWhileWaiting(wait_words(
+                        tasks[index].waiting_on.as_ref(),
+                    )));
+                }
                 next.waiting_on = Some(Waiting {
                     kind: Some(WaitingKind::Decision),
                     detail: None,
@@ -2104,6 +2142,57 @@ mod tests {
 
         let stored = ws.tasks_for_project("proj");
         assert_eq!(stored[0].status, TaskStatus::Waiting, "and the row keeps waiting for the look");
+    }
+
+    /// A seat completing a row that is already waiting on something else,
+    /// where the row's own completion waits on the user, is refused by
+    /// name (#2414): the gate would trade the wait it holds for a look
+    /// park and answer with the status unchanged, which reads as a no-op.
+    #[test]
+    fn completing_a_waiting_user_bound_row_is_refused_by_name() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-complete-waiting");
+        ws.push_task(sample_task("blocker", "proj"));
+        ws.push_task(Task {
+            verify: Some(Verify::User),
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: Some("the board read has to land first".to_owned()),
+                on: Some(TaskId::from("blocker")),
+                verification: false,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("the gate would trade the dependency wait for a look park");
+        assert_eq!(
+            refused,
+            MoveError::CompletingWhileWaiting("a dependency on blocker".to_owned()),
+            "the refusal names the wait the row sits on",
+        );
+        assert!(
+            refused.to_string().contains("a dependency on blocker"),
+            "and the words a caller reads name it too: {refused}",
+        );
+        let stored = ws.tasks_for_project("proj");
+        let row = stored.iter().find(|task| task.id == TaskId::from("t-1")).expect("the row");
+        assert_eq!(row.status, TaskStatus::Waiting, "the row keeps the status it held");
+        assert_eq!(
+            row.waiting_on.as_ref().and_then(|wait| wait.kind),
+            Some(WaitingKind::Dependency),
+            "and the wait it held, not a look park the caller never asked for",
+        );
     }
 
     /// The withdraw door (#2340): a seat cancels a row parked on the
