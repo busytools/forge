@@ -83,8 +83,7 @@ pub(crate) struct TaskDraft {
     /// Queue order; lower reads first.
     #[serde(default)]
     pub rank: Option<i64>,
-    /// Whether completion waits on the user; the epic's default applies
-    /// when unset.
+    /// The gate the row is minted with; an epic's is never inherited.
     #[serde(default)]
     pub verify: Option<forge_primitives::tasks::Verify>,
     #[serde(default)]

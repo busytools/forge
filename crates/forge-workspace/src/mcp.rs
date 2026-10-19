@@ -384,7 +384,9 @@ in `on`) or resource (an account, a CI run, a machine); then move to your \
 next held row instead of sitting still. File what you find mid-flight at \
 once with tasks__create, under your epic, owned or unowned; nothing is \
 deferred. A row with verify=user cannot complete until the user approves \
-it; completing the ROOT row of an epic closes it and archives the tree. \
+it, and that gate is minted on the row - never inherited from an epic, \
+whose own gate governs only its own completion; completing the ROOT row \
+of an epic closes it and archives the tree. \
 The chase asks an over-estimate owner once and escalates to the lead once \
 - answer with an update, not silence.";
 
@@ -495,6 +497,21 @@ mod tests {
             TASK_BOARD_INSTRUCTIONS
                 .contains("completing the ROOT row of an epic closes it and archives the tree"),
             "the instructions state the archive that closes an epic: {TASK_BOARD_INSTRUCTIONS}",
+        );
+    }
+
+    /// The user gate is minted on the row and never inherited from its
+    /// epic (#2423): the always-on block states it, so no session reads
+    /// an epic's gate as its children's and parks a completed child on a
+    /// look nobody owes.
+    #[test]
+    fn the_task_instructions_state_the_minted_gate() {
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.contains(
+                "that gate is minted on the row - never inherited from an epic, whose own \
+                 gate governs only its own completion"
+            ),
+            "the instructions state where the gate lives: {TASK_BOARD_INSTRUCTIONS}",
         );
     }
 

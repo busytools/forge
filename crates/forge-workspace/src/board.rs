@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, TaskTransition, WaitingKind};
+use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, TaskTransition};
 
 use crate::workspace::Workspace;
 
@@ -253,11 +253,7 @@ impl Workspace {
                     .count();
                 let waiting_on_user = tasks
                     .iter()
-                    .filter(|t| {
-                        t.status == TaskStatus::Waiting
-                            && t.waiting_on.as_ref().and_then(|w| w.kind)
-                                == Some(WaitingKind::Decision)
-                    })
+                    .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
                     .count();
                 let mut misses = Vec::new();
                 if queue > 0 && live_workers < slots {
@@ -647,6 +643,36 @@ mod tests {
         assert_eq!(withdrawn.status, TaskStatus::Canceled, "the row shows canceled");
         assert_eq!(on_you(&ws), 0, "and it leaves the waiting-on-you presentation");
         assert_eq!(withdrawn.detail.as_deref(), Some("moot"), "its reason travels on the record");
+    }
+
+    /// The fleet's count is the same set the chase digests (#2423): a
+    /// verification park belongs to the row's own gate, so the shape an
+    /// inherited gate left behind is not counted as waiting on the user.
+    #[test]
+    fn a_verification_park_without_an_own_gate_is_not_counted() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let parked = |id: &str, verify: Option<Verify>| {
+            let mut row = task(id, TaskStatus::Waiting);
+            row.verify = verify;
+            row.waiting_on = Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: None,
+                on: None,
+                verification: true,
+            });
+            row
+        };
+        ws.seed_test_task(parked("t-own", Some(Verify::User)));
+        ws.seed_test_task(parked("t-inherited", None));
+
+        let on_you = ws
+            .fleet_rows()
+            .into_iter()
+            .find(|r| r.project == PROJECT)
+            .expect("the project's row")
+            .waiting_on_user;
+        assert_eq!(on_you, 1, "the own-gate park counts; the inherited shape does not");
     }
 
     #[test]

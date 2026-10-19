@@ -160,7 +160,8 @@ pub struct Task {
     /// Queue order; lower reads first, ties break by creation.
     #[serde(default)]
     pub rank: Option<i64>,
-    /// Whether completion waits on the user; a task inherits its epic's.
+    /// The user-look gate the row was minted with. An epic's gate governs
+    /// the epic's own completion; a child never inherits it.
     #[serde(default)]
     pub verify: Option<Verify>,
     #[serde(default)]

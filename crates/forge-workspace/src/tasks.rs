@@ -82,30 +82,39 @@ pub(crate) enum MoveError {
 /// the gate lands a user-bound completion on. The completion guard reads
 /// it: only the user's approve completes such a row. A row merely BOUND
 /// by the gate, never parked on it, is work the caller may abandon.
+///
+/// The park belongs to the row's OWN gate (#2423): a verification wait a
+/// row left behind while its gate was inherited from the epic stops
+/// counting, so a seat can complete it rather than being refused by a
+/// look nobody owes.
 fn parked_on_look(task: &Task) -> bool {
-    task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+    task.verify == Some(Verify::User)
+        && task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
 }
 
 /// Whether a row presents as waiting on the user: a decision wait or a
 /// verification park. The removal guards and the withdraw door read this
 /// set - an ask on the user leaves by the user's own answer or approve,
-/// or by a reasoned withdraw. The fleet count and the board's waiting
-/// strip derive the same set from the stored fields.
+/// or by a reasoned withdraw. The fleet count and the chase's digest
+/// derive the same set from the stored fields.
 ///
-/// `verification` is checked alongside the kind: today's only setter tags
-/// `decision` too, and the arm keeps a verification park on-user however
-/// it was built.
+/// A verification park is the user's only when the row carries its own
+/// gate (#2423): the gate is minted on the row, never inherited from its
+/// epic, so a park an inherited gate left behind is not an ask on the
+/// user and a seat may move the row.
 ///
 /// A dependency or resource wait is not this set's, however the rows
-/// around it are gated: the wait is on the task, not the user, and an
-/// epic's `verify: user` gates a row's own completion rather than its
-/// wait. A target that parks on the look has not ended, so the chain
-/// keeps waiting, but the waiting row stays the caller's to move or
-/// remove (#2415).
-fn parked_on_user(task: &Task) -> bool {
-    task.waiting_on
-        .as_ref()
-        .is_some_and(|wait| wait.verification || wait.kind == Some(WaitingKind::Decision))
+/// around it are gated: the wait is on the task, not the user, and
+/// `verify: user` gates a row's own completion rather than its wait. A
+/// target that parks on the look has not ended, so the chain keeps
+/// waiting, but the waiting row stays the caller's to move or remove
+/// (#2415).
+pub(crate) fn parked_on_user(task: &Task) -> bool {
+    let Some(wait) = task.waiting_on.as_ref() else { return false };
+    if wait.verification {
+        return task.verify == Some(Verify::User);
+    }
+    wait.kind == Some(WaitingKind::Decision)
 }
 
 /// The words a refusal names a wait by: its kind, and the row it waits on
@@ -296,21 +305,17 @@ fn is_terminal(status: TaskStatus) -> bool {
     matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled)
 }
 
-/// The verify a row is bound by: its own, else its epic's, else none.
-fn bound_verify(row: &Task, tasks: &[Task]) -> Verify {
-    if let Some(verify) = row.verify {
-        return verify;
-    }
-    row.parent
-        .as_ref()
-        .and_then(|parent| tasks.iter().find(|t| t.id == *parent))
-        .and_then(|parent| parent.verify)
-        .unwrap_or(Verify::None)
+/// The verify a row is bound by: the gate it was MINTED with, or none.
+/// An epic's `verify: user` governs the epic's own completion, never its
+/// children's (#2423) - a child that owes no look is not parked on one
+/// because its epic carries the gate.
+fn bound_verify(row: &Task) -> Verify {
+    row.verify.unwrap_or(Verify::None)
 }
 
 /// The verify the row at `index` is bound by.
 fn effective_verify(tasks: &[Task], index: usize) -> Verify {
-    bound_verify(&tasks[index], tasks)
+    bound_verify(&tasks[index])
 }
 
 impl Workspace {
@@ -403,10 +408,10 @@ impl Workspace {
     /// when no such task is there). Open to every session in the project.
     ///
     /// Rules ride on top of `f`, so no caller can forget them: a
-    /// transition into `completed` on a verify=user row lands in
-    /// `waiting` (the verify gate); a patch cannot take a user-bound
-    /// row's look gate away - clearing its verify or moving it out of its
-    /// epic is refused by name; a completion of a row already waiting on
+    /// transition into `completed` on a row minted verify=user lands in
+    /// `waiting` (the verify gate, never inherited from the epic); a
+    /// patch cannot take a user-bound row's look gate away - clearing its
+    /// verify is refused by name; a completion of a row already waiting on
     /// the user's look is refused by name; a cancel of a row waiting on
     /// the user is the withdraw door - it records the reason the caller
     /// states in `detail`, and a cancel without one is refused (#2340);
@@ -458,11 +463,10 @@ impl Workspace {
             f(&mut next)?;
 
             // The look gate is the user's to clear: an update that would
-            // leave a user-bound row unbound - by clearing its verify or
-            // by moving it out of its epic - is refused by name.
+            // clear a row's own gate is refused by name.
             if gate
                 && effective_verify(tasks, index) == Verify::User
-                && bound_verify(&next, tasks) != Verify::User
+                && bound_verify(&next) != Verify::User
             {
                 return Err(MoveError::ClearingLookGate);
             }
@@ -2493,11 +2497,95 @@ mod tests {
         assert_eq!(moved.waiting_on, None, "and the wait goes with it");
     }
 
+    /// A child row completes on its own terms under a verify=user epic
+    /// (#2423): `verify: user` is a property a row is MINTED with, and an
+    /// epic's gate governs the epic's own completion rather than its
+    /// children's.
+    #[test]
+    fn a_child_of_a_verify_user_epic_completes_without_a_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-child-gate");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w1");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
+        ws.push_task(sample_task_with_parent("t-1", Some("epic"), "proj"));
+
+        let completed = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(worker), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(completed.status, TaskStatus::Completed, "the child owes no look");
+        assert_eq!(completed.waiting_on, None, "and nothing parks it");
+    }
+
+    /// The boundary the rule keeps (#2423): the epic's OWN gate still
+    /// governs the epic's completion - the root parks on the look, and the
+    /// board's approve is what completes it.
+    #[test]
+    fn an_epic_root_still_parks_on_its_own_gate() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-epic-gate");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
+
+        let parked = ws
+            .update_task("proj", &TaskId::from("epic"), By::Seat(lead), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(parked.status, TaskStatus::Waiting, "the root's own gate parks it");
+        assert!(
+            parked.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "the wait is the look's: {:?}",
+            parked.waiting_on,
+        );
+
+        let approved = ws
+            .approve_task("proj", &TaskId::from("epic"))
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(approved.status, TaskStatus::Completed, "the approve completes the epic");
+    }
+
+    /// A park an inherited gate left behind stops reading as a user wait
+    /// (#2423): the row's own `verify` is unchanged, and a seat's
+    /// completion lands instead of being refused by the look.
+    #[test]
+    fn a_park_minted_by_an_inherited_gate_stops_reading_as_a_user_wait() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-stale-park");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w1");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
+        ws.push_task(Task {
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: None,
+                on: None,
+                verification: true,
+            }),
+            ..sample_task_with_parent("t-1", Some("epic"), "proj")
+        });
+
+        let completed = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(worker), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("an inherited park is not the look's to refuse")
+            .expect("the row is there");
+        assert_eq!(completed.status, TaskStatus::Completed, "the child completes");
+        assert_eq!(completed.waiting_on, None, "and the stale wait drops with the move");
+    }
+
     /// The look gate is not an update's to clear. A `verify: none` patch on
-    /// a user-bound row is refused by name whether the binding is the
-    /// row's own or inherited from its epic, so the two-call path (clear,
+    /// a user-bound row is refused by name, so the two-call path (clear,
     /// then complete) has no first step - and the stored row keeps the
-    /// gate it was bound by.
+    /// gate it was minted with.
     #[test]
     fn an_update_cannot_clear_a_user_verify() {
         let dir = tempdir().expect("tempdir");
@@ -2505,32 +2593,22 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-verify-clear");
         let lead = SessionSlot::lead("TestOrg", "proj");
         ws.push_task(Task { verify: Some(Verify::User), ..sample_task("t-1", "proj") });
-        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
-        ws.push_task(Task { parent: Some(TaskId::from("epic")), ..sample_task("t-2", "proj") });
+        ws.push_task(sample_task("t-2", "proj"));
 
-        for id in ["t-1", "t-2"] {
-            let refused = ws
-                .update_task("proj", &TaskId::from(id), By::Seat(lead.clone()), |task| {
-                    task.verify = Some(Verify::None);
-                })
-                .expect_err("an update cannot clear the user's look gate");
-            assert_eq!(
-                refused,
-                MoveError::ClearingLookGate,
-                "{id}: the clear's own refusal, not another move error",
-            );
-        }
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(lead.clone()), |task| {
+                task.verify = Some(Verify::None);
+            })
+            .expect_err("an update cannot clear the user's look gate");
+        assert_eq!(
+            refused,
+            MoveError::ClearingLookGate,
+            "the clear's own refusal, not another move error",
+        );
 
         let stored = ws.tasks_for_project("proj");
         let own = stored.iter().find(|t| t.id == TaskId::from("t-1")).expect("t-1");
         assert_eq!(own.verify, Some(Verify::User), "t-1 keeps its own gate");
-        let inherited = stored.iter().find(|t| t.id == TaskId::from("t-2")).expect("t-2");
-        assert_eq!(inherited.verify, None, "t-2 never grew a gate of its own");
-        assert_eq!(
-            effective_verify(&stored, stored.iter().position(|t| t.id == inherited.id).expect("i")),
-            Verify::User,
-            "and it is still bound by its epic's",
-        );
 
         // Setting the gate is still the lead's: a row may be armed.
         ws.update_task("proj", &TaskId::from("t-2"), By::Seat(lead), |task| {
@@ -2540,42 +2618,39 @@ mod tests {
         .expect("the row is there");
     }
 
-    /// The other way an update can drop a gate it does not state: the
-    /// binding follows the epic, so moving a row out of a user-bound epic
-    /// un-gates it. Refused like the clear is - while a move between two
-    /// gated epics, or a row carrying its own gate, changes nothing and
-    /// stays allowed.
+    /// Reparenting never touches a gate (#2423): a child of a verify=user
+    /// epic carries no gate of its own, so moving it out is not the look's
+    /// to refuse - and a row carrying its own gate keeps it wherever it
+    /// moves, since the gate is minted on the row rather than inherited.
     #[test]
-    fn an_update_cannot_move_a_gated_row_out_of_its_epic() {
+    fn reparenting_does_not_touch_a_row_s_own_gate() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-verify-reparent");
         let lead = SessionSlot::lead("TestOrg", "proj");
         ws.push_task(Task { verify: Some(Verify::User), ..sample_task("gated", "proj") });
-        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("gated-too", "proj") });
         ws.push_task(Task { ..sample_task("free", "proj") });
         ws.push_task(Task { parent: Some(TaskId::from("gated")), ..sample_task("t-2", "proj") });
-
-        let refused = ws
-            .update_task("proj", &TaskId::from("t-2"), By::Seat(lead.clone()), |task| {
-                task.parent = Some(TaskId::from("free"));
-            })
-            .expect_err("moving a gated row out of its epic takes the look away");
-        assert_eq!(refused, MoveError::ClearingLookGate);
-        let stored = ws.tasks_for_project("proj");
-        let row = stored.iter().find(|t| t.id == TaskId::from("t-2")).expect("t-2");
-        assert_eq!(row.parent, Some(TaskId::from("gated")), "and it stays where it was");
+        ws.push_task(Task {
+            parent: Some(TaskId::from("gated")),
+            verify: Some(Verify::User),
+            ..sample_task("t-3", "proj")
+        });
 
         ws.update_task("proj", &TaskId::from("t-2"), By::Seat(lead.clone()), |task| {
-            task.parent = Some(TaskId::from("gated-too"));
-        })
-        .expect("no refusal")
-        .expect("the row is there");
-        ws.update_task("proj", &TaskId::from("gated"), By::Seat(lead), |task| {
             task.parent = Some(TaskId::from("free"));
         })
         .expect("no refusal")
-        .expect("a row carrying its own gate may move anywhere");
+        .expect("a child never inherited the epic's gate");
+
+        let moved = ws
+            .update_task("proj", &TaskId::from("t-3"), By::Seat(lead), |task| {
+                task.parent = Some(TaskId::from("free"));
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(moved.verify, Some(Verify::User), "its own gate travels with it");
+        assert_eq!(moved.parent, Some(TaskId::from("free")), "and the reparent landed");
     }
 
     /// The third door around the look gate (#2251): the update path refuses
@@ -2730,10 +2805,10 @@ mod tests {
         assert_eq!(removed.len(), 1, "the row went");
     }
 
-    /// A dependency wait is on the task it names, not on the user: an
-    /// epic's `verify: user` gates the row's own completion, so it does
-    /// not make the waiting child a user ask the delete must refuse
-    /// (#2415).
+    /// A dependency wait is on the task it names, not on the user: a row's
+    /// `verify: user` gates that row's own completion, so neither it nor
+    /// its epic's gate makes the waiting child a user ask the delete must
+    /// refuse (#2415, #2423).
     #[test]
     fn a_dependency_wait_under_a_verify_user_epic_is_deletable() {
         let dir = tempdir().expect("tempdir");
@@ -2756,8 +2831,8 @@ mod tests {
         let index = rows.iter().position(|task| task.id == TaskId::from("t-1")).expect("the row");
         assert_eq!(
             effective_verify(&rows, index),
-            Verify::User,
-            "premise: the epic's gate binds the waiting row",
+            Verify::None,
+            "premise: the epic's gate does not bind the waiting child",
         );
 
         let removed = ws

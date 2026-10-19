@@ -153,8 +153,11 @@ impl Tool for Create {
          `links` the references it carries (issues, PRs, specs, paths), `detail` free prose. \
          `status` defaults to pending. A row whose deliverable IS the user's own read or \
          decision - a report the user asked to read, a verdict the user asked to give - is \
-         minted `verify: \"user\"` explicitly, never left to the epic default: it ends parked \
-         on the user, and the board's approve is what completes it. Returns the stored task \
+         minted `verify: \"user\"` explicitly: it ends parked on the user, and the board's \
+         approve is what completes it. The gate is minted on the row that owes the look; an \
+         epic's `verify: \"user\"` governs the epic's own completion, and a child never \
+         inherits it - a child that owes no look completes on its own terms. Returns the \
+         stored task \
          with its id (use it with tasks__update / tasks__delete). Any session in the project \
          may call this."
     }
@@ -201,10 +204,11 @@ impl Tool for Create {
                 "verify": {
                     "type": "string",
                     "enum": ["user", "none"],
-                    "description": "Whether completion waits on the user's look. The epic's \
-                                    default applies when unset, but a row whose deliverable \
-                                    IS the user's own read or decision states `user` \
-                                    explicitly instead.",
+                    "description": "Whether the row's own completion waits on the user's look. \
+                                    The gate is minted on the row; a child never inherits \
+                                    its epic's. A row whose deliverable IS the user's own \
+                                    read or decision states `user`; anything else owes no \
+                                    look, even under a `user` epic.",
                 },
                 "links": {
                     "type": "array",
@@ -284,9 +288,10 @@ impl Tool for Update {
          whose completion waits on the user: while it is waiting on something else the gate \
          would trade that wait for a look park, so the completion is refused by name; move it \
          off waiting first, then complete it. `verify: \"user\"` \
-         may be set here, but not taken away: a user-bound row keeps that gate until the user's \
-         approve, so clearing it - or moving the row out of its epic - is refused rather than \
-         taken as a way around the look. A task is \
+         may be set here, but not taken away: a row carrying `user` keeps that gate until the \
+         user's approve, so clearing it is refused rather than taken as a way around the look. \
+         The gate is minted on the row, never inherited from its epic, so reparenting changes \
+         no gate. A task is \
          named by its full id or any unique prefix of one; an exact id wins over any longer id \
          that starts with it, and a prefix matching more than one row is refused with the \
          matching rows named. An unknown id is an error, not a no-op. Returns the task as the \
@@ -330,9 +335,10 @@ impl Tool for Update {
                 "verify": {
                     "type": "string",
                     "enum": ["user", "none"],
-                    "description": "Whether completion waits on the user's look. Can be set \
-                                    here, but a `user` gate is the user's to clear: an update \
-                                    cannot clear it, or move the row out from under it.",
+                    "description": "Whether the row's own completion waits on the user's look. \
+                                    Can be set here, but a `user` gate is the user's to \
+                                    clear: an update cannot clear it. The gate is minted on \
+                                    the row, so moving the row changes nothing.",
                 },
                 "links_add": {
                     "type": "array",
@@ -690,7 +696,7 @@ impl Tool for Wait {
          (an account, a CI run, a machine). A dependency wait is on the task it names, not on \
          the user. A blocker parked on the user's look has not ended, so the chain keeps \
          waiting until the user approves it. The waiting row is not itself waiting on the \
-         user: an epic's `verify: user` gates a row's own completion, not its dependency \
+         user: a row's `verify: user` gates its own completion, not its dependency \
          wait, so the row stays movable and deletable. Route a decision to the user only when the user \
          explicitly asked for a hold, or something is still genuinely ambiguous after the \
          decision model, peer opinions and the team's own review. `detail` is the words. \
@@ -1260,9 +1266,9 @@ mod tests {
     }
 
     /// The dependency chain is shipped text (#2415): a dependency wait is
-    /// on the task it names, not on the user, so an epic's `verify: user`
-    /// leaves the waiting row movable and deletable and the chain is
-    /// released by the blocker's end.
+    /// on the task it names, not on the user, so `verify: user` on the row
+    /// or its epic leaves the waiting row movable and deletable and the
+    /// chain is released by the blocker's end.
     #[test]
     fn the_wait_and_delete_descriptions_state_the_dependency_chain() {
         let facade = MockTasksFacade::new().into_arc();
@@ -1273,7 +1279,7 @@ mod tests {
             "A dependency wait is on the task it names, not on the user",
             "A blocker parked on the user's look has not ended, so the chain keeps waiting \
              until the user approves it",
-            "an epic's `verify: user` gates a row's own completion, not its dependency wait",
+            "a row's `verify: user` gates its own completion, not its dependency wait",
             "the row stays movable and deletable",
         ] {
             assert!(
@@ -1419,34 +1425,42 @@ mod tests {
         }
     }
 
-    /// The user-read mint is shipped text (#2377): a row whose deliverable
-    /// IS the user's own read or decision is minted `verify: "user"`
-    /// explicitly, never left to the epic default, so the board parks it
-    /// on the user. The verify property is where the caller sets it.
+    /// The user-read mint is shipped text (#2377), and the gate belongs to
+    /// the row it is minted on (#2423): a row whose deliverable IS the
+    /// user's own read or decision states `verify: "user"`, while an
+    /// epic's gate governs the epic's own completion and a child never
+    /// inherits it. The verify property is where the caller sets it.
     #[test]
-    fn the_create_description_states_the_user_read_mint() {
+    fn the_create_description_states_the_user_read_mint_never_inherited() {
         let create = Create { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         let description = create.description();
-        assert!(
-            description.contains(
-                "A row whose deliverable IS the user's own read or decision - a report the user \
-                 asked to read, a verdict the user asked to give - is minted `verify: \"user\"` \
-                 explicitly, never left to the epic default: it ends parked on the user, and \
-                 the board's approve is what completes it"
-            ),
-            "tasks__create does not state the mint: {description}",
-        );
+        for clause in [
+            "A row whose deliverable IS the user's own read or decision - a report the user \
+             asked to read, a verdict the user asked to give - is minted `verify: \"user\"` \
+             explicitly: it ends parked on the user, and the board's approve is what completes \
+             it",
+            "an epic's `verify: \"user\"` governs the epic's own completion, and a child never \
+             inherits it",
+            "a child that owes no look completes on its own terms",
+        ] {
+            assert!(
+                description.contains(clause),
+                "tasks__create does not state the mint ({clause}): {description}",
+            );
+        }
         let verify = create.input_schema()["properties"]["verify"]["description"]
             .as_str()
             .expect("the verify property carries a description")
             .to_owned();
-        assert!(
-            verify.contains(
-                "a row whose deliverable IS the user's own read or decision states `user` \
-                 explicitly instead"
-            ),
-            "the verify property owes the mint where the caller sets it: {verify}",
-        );
+        for clause in [
+            "The gate is minted on the row; a child never inherits its epic's",
+            "anything else owes no look, even under a `user` epic",
+        ] {
+            assert!(
+                verify.contains(clause),
+                "the verify property owes the mint where the caller sets it ({clause}): {verify}",
+            );
+        }
     }
 
     /// The assign-at-spawn path is shipped text (#2416): a lead creating

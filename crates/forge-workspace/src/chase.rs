@@ -29,6 +29,7 @@ use tracing::Instrument;
 
 use crate::SessionSlot;
 use crate::board::BoardRow;
+use crate::tasks::parked_on_user;
 use crate::workspace::Workspace;
 
 /// How long between sweeps. The same number bounds how stale a
@@ -344,13 +345,14 @@ pub(crate) fn crossings(
     // wait sat forever with only a board count. ONE digest per project
     // asks the lead to filter them - a touch or a move takes a row back
     // out of it - and a dead lead leaves the mark alone, as every rung.
+    // The set is the board's own derivation (`parked_on_user`), so a
+    // verification park a row left behind under an inherited gate is not
+    // chased as a user wait (#2423).
     let parked: Vec<&BoardRow> = rows
         .iter()
         .filter(|row| {
             row.task.status == TaskStatus::Waiting
-                && row.task.waiting_on.as_ref().is_some_and(|wait| {
-                    wait.verification || wait.kind == Some(WaitingKind::Decision)
-                })
+                && parked_on_user(&row.task)
                 && row.updated_secs_ago > CADENCE_STUCK_SECS
         })
         .collect();
@@ -622,7 +624,7 @@ mod tests {
     use crate::protocol::SessionUpdate;
     use forge_primitives::Message;
     use forge_primitives::tasks::{
-        By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, TaskTransition, Waiting,
+        By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, TaskTransition, Verify, Waiting,
     };
     use tempfile::tempdir;
 
@@ -961,9 +963,13 @@ mod tests {
     }
 
     /// A row parked on the user - a decision wait, or the look's own
-    /// verification park - untouched since `updated`.
+    /// verification park - untouched since `updated`. A verification park
+    /// belongs to a row carrying its own gate (#2423).
     fn waiting_on_user(ws: &Workspace, id: &str, updated: u64, verification: bool) {
         let mut row = task(id, TaskStatus::Waiting);
+        if verification {
+            row.verify = Some(Verify::User);
+        }
         row.waiting_on = Some(Waiting {
             kind: Some(WaitingKind::Decision),
             detail: None,
@@ -1031,6 +1037,36 @@ mod tests {
         assert!(text.contains("1 row is waiting on the user"), "{text}");
         assert!(text.contains("\"subject t-2\""), "the park still stands: {text}");
         assert!(!text.contains("t-1"), "the touched row left: {text}");
+    }
+
+    /// A verification park whose row owns no gate - the shape an inherited
+    /// gate left behind - is not a user wait (#2423): the digest does not
+    /// name it, and no one is asked to confirm it.
+    #[test]
+    fn a_verification_park_without_an_own_gate_stays_out_of_the_digest() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        waiting_on_user(&ws, "t-1", 0, true);
+        // The same wait on a row whose gate was never its own: the epic
+        // carried it, so the park is not an ask on the user.
+        let mut inherited = task("t-2", TaskStatus::Waiting);
+        inherited.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: true,
+        });
+        inherited.updated_at = epoch(0);
+        ws.seed_test_task(inherited);
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 1, "only the genuine park is digested");
+        let seen = deliver.seen.lock();
+        let text = &seen[0].1;
+        assert!(text.contains("1 row is waiting on the user"), "{text}");
+        assert!(text.contains("\"subject t-1\""), "the own-gate park joins: {text}");
+        assert!(!text.contains("\"subject t-2\""), "the inherited park stays out: {text}");
     }
 
     /// With no live lead the digest is mark-only: nothing is delivered
