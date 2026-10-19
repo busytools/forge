@@ -1160,6 +1160,7 @@ async fn handle_client(
             }
             let opening = before.clone();
             let floor = held.lock().dropped();
+            let capped = seat.clone();
             let folded = tokio::task::spawn_blocking(move || {
                 let mut page = held.read(|held| {
                     page(
@@ -1173,7 +1174,7 @@ async fn handle_client(
                 // The bound runs in the same blocking task as the fold: a page
                 // is what a client is served, and the cap is part of building
                 // it rather than a pass over the socket's thread (#2374).
-                cap_tool_records(&mut page.turns, cap);
+                cap_tool_records(&mut page.turns, cap, &capped);
                 page
             })
             .await;
@@ -1470,7 +1471,7 @@ async fn transcript_frames(
         .enumerate()
         .map(|(at, msg)| {
             let mut msg = msg.clone();
-            cap_message_record(&mut msg, cap);
+            cap_message_record(&mut msg, cap, slot);
             SeatFrameWire {
                 seq: first.saturating_add(u64::try_from(at).unwrap_or(u64::MAX)),
                 update: SessionUpdate::ChatAppended {
@@ -1560,7 +1561,7 @@ fn for_a_client(mut update: SessionUpdate, cap: usize) -> SessionUpdate {
         // **A live frame draws what a reload draws** (#2374): a record is
         // bounded on its way to a client wherever it comes from, or an
         // over-cap edit draws its hunks live and the marker after a switch.
-        SessionUpdate::ChatAppended { msg, .. } => cap_message_record(msg, cap),
+        SessionUpdate::ChatAppended { msg, key, .. } => cap_message_record(msg, cap, key),
         _ => {}
     }
     update
@@ -1963,9 +1964,10 @@ async fn rows_below_floor(
     // travels with the read.
     let live = state.conversations.live_of(seat);
     let cap = state.surface.tool_record_cap_bytes();
+    let capped = seat.clone();
     let folded = tokio::task::spawn_blocking(move || {
         let mut page = page_of_span(&span, turns, live);
-        cap_tool_records(&mut page.turns, cap);
+        cap_tool_records(&mut page.turns, cap, &capped);
         page
     })
     .await;

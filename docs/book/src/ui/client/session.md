@@ -77,13 +77,15 @@ read as one system.
 - **An edit** draws its diff: the hunks with both line numbers, and the
   marks that say how each line moved.
   **An edit or a question whose structured record the page could not
-  carry** says so in its body: an `omitted` line with its size, scaled to
-  the unit the size belongs to (`omitted, 5.0 MB`). A record over the cap
+  carry** says so on its marks line: an `omitted` figure with its size,
+  scaled to the unit the size belongs to (`omitted, 5.0 MB`), drawn beside
+  the hunk count rather than as a body of its own. A record over the cap
   first keeps the patch and the outside-edit mark the row draws and drops
   only what nothing reads, so a large edit keeps its patch and a Write
   draws the file it created from the call's own input; when even that is
-  over the cap, the row names the omission, and a question whose answers
-  were dropped draws as its row rather than vanishing.
+  over the cap, the row names the omission. A question whose answers were
+  dropped keeps its card, its own glyph and the question it asked, with
+  the omission named under them rather than the row vanishing.
 - **A backgrounded call** is held open by its task fact, its result
   saying the command started, and the ending landing later as a frame of
   its own. **Its output box follows a call that is still out**: while the

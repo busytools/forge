@@ -796,6 +796,15 @@ fn turn_wire(
 /// beside them.
 const DRAWN_RECORD_KEYS: [&str; 4] = ["structuredPatch", "userModified", "answers", "annotations"];
 
+/// What the cap did to one served record, for the log line beside it.
+#[derive(Clone, Copy)]
+pub(crate) struct RecordCap {
+    /// The record's size before the cap saw it.
+    pub bytes: usize,
+    /// Whether the drawn keys fit and were kept, or the bare marker replaced it.
+    pub reduced: bool,
+}
+
 /// Bound one served `tool_use_result` to `cap` bytes (#2374).
 ///
 /// **The record is REDUCED before it is dropped.** A Write update carries the
@@ -803,15 +812,18 @@ const DRAWN_RECORD_KEYS: [&str; 4] = ["structuredPatch", "userModified", "answer
 /// the drawn keys leaves the hunks intact and the page bounded. The bare
 /// marker is the fallback for a record whose drawn keys alone are over the
 /// cap; `userModified` rides it because the row's outside-edit mark reads it.
-pub(crate) fn cap_tool_record(record: &mut Value, cap: usize) {
+///
+/// `Some` says the record was over the cap, and how it was bounded, so the
+/// caller can log what the served page left out.
+pub(crate) fn cap_tool_record(record: &mut Value, cap: usize) -> Option<RecordCap> {
     if cap == usize::MAX {
-        return;
+        return None;
     }
     let Ok(text) = serde_json::to_string(&*record) else {
-        return;
+        return None;
     };
     if text.len() <= cap {
-        return;
+        return None;
     }
     let bytes = text.len();
     let reduced = record.as_object().and_then(|held| {
@@ -827,13 +839,32 @@ pub(crate) fn cap_tool_record(record: &mut Value, cap: usize) {
     });
     if let Some(reduced) = reduced {
         *record = reduced;
-        return;
+        return Some(RecordCap { bytes, reduced: true });
     }
     let mut marker = serde_json::json!({ "omitted": true, "bytes": bytes });
     if record.get("userModified").and_then(Value::as_bool) == Some(true) {
         marker["userModified"] = Value::Bool(true);
     }
     *record = marker;
+    Some(RecordCap { bytes, reduced: false })
+}
+
+/// Say what the cap did to an executed call's record (#2374).
+///
+/// Debug, because a bounded page is forge working as intended rather than a
+/// problem of its own - and named by seat and call, so "where did this payload
+/// go" is answered by one line rather than by a reproduction.
+fn log_record_cap(seat: &SessionSlot, id: Option<&str>, cap: usize, report: RecordCap) {
+    tracing::debug!(
+        event_name = "tool_record_capped",
+        slot = %seat.display(),
+        tool_use_id = id.unwrap_or(""),
+        bytes = report.bytes,
+        cap,
+        disposition = if report.reduced { "reduced" } else { "omitted" },
+        "a served page bounded an executed tool call's record; the call ran and the transcript \
+         keeps the whole record, and [server] tool_record_cap_kb = 0 serves it whole",
+    );
 }
 
 /// Bound every frame's `tool_use_result` in a page about to be SERVED (#2374).
@@ -845,14 +876,28 @@ pub(crate) fn cap_tool_record(record: &mut Value, cap: usize) {
 /// page caps the record by `[server] tool_record_cap_kb` and leaves a marker
 /// the client draws where it would have read the record. `usize::MAX` (the
 /// `0` key) serves records whole.
-pub(crate) fn cap_tool_records(turns: &mut [TurnWire], cap: usize) {
+pub(crate) fn cap_tool_records(turns: &mut [TurnWire], cap: usize, seat: &SessionSlot) {
     if cap == usize::MAX {
         return;
     }
     for turn in turns {
         for frame in &mut turn.messages {
-            if let Some(result) = frame.get_mut("tool_use_result") {
-                cap_tool_record(result, cap);
+            // The call's own id, read off the result block that answers it,
+            // so the line names the exact call a reader can find in the
+            // transcript.
+            let id = frame
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_array)
+                .and_then(|blocks| {
+                    blocks.iter().find_map(|block| {
+                        block.get("tool_use_id").and_then(Value::as_str).map(str::to_owned)
+                    })
+                });
+            if let Some(result) = frame.get_mut("tool_use_result")
+                && let Some(report) = cap_tool_record(result, cap)
+            {
+                log_record_cap(seat, id.as_deref(), cap, report);
             }
         }
     }
@@ -860,9 +905,16 @@ pub(crate) fn cap_tool_records(turns: &mut [TurnWire], cap: usize) {
 
 /// The same bound on a live frame's record, before it goes to a client
 /// (#2374): a reload and a live frame draw the same record or the marker.
-pub(crate) fn cap_message_record(msg: &mut Message, cap: usize) {
-    if let Message::User { tool_use_result: Some(record), .. } = msg {
-        cap_tool_record(record, cap);
+pub(crate) fn cap_message_record(msg: &mut Message, cap: usize, seat: &SessionSlot) {
+    if let Message::User { tool_use_result: Some(record), message, .. } = msg {
+        let id = message.content.iter().find_map(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. }
+            | ContentBlock::ServerToolResult { tool_use_id, .. } => Some(tool_use_id.to_owned()),
+            _ => None,
+        });
+        if let Some(report) = cap_tool_record(record, cap) {
+            log_record_cap(seat, id.as_deref(), cap, report);
+        }
     }
 }
 
@@ -1589,6 +1641,7 @@ async fn session(
     let (turns, compaction_count, page_ms) = match conversation {
         Some(held) => {
             let seat = slot.clone();
+            let capped = seat.clone();
             tokio::task::spawn_blocking(move || {
                 let at = std::time::Instant::now();
                 let (mut turns, count) = held.read(|held| {
@@ -1604,7 +1657,7 @@ async fn session(
                         held.compaction_count(),
                     )
                 });
-                cap_tool_records(&mut turns, cap);
+                cap_tool_records(&mut turns, cap, &capped);
                 (turns, count, at.elapsed().as_secs_f64() * 1000.0)
             })
             .await
@@ -3286,7 +3339,8 @@ mod tests {
             "structuredPatch": patch,
             "userModified": true,
         });
-        cap_tool_record(&mut record, 64 * 1024);
+        let report = cap_tool_record(&mut record, 64 * 1024).expect("the record is over the cap");
+        assert!(report.reduced, "the drawn keys fit, so the record was reduced");
         assert_eq!(record["structuredPatch"], patch, "the drawn patch survives the cap: {record}");
         assert_eq!(record["userModified"], true, "and the outside-edit mark with it: {record}");
         assert!(record.get("content").is_none(), "the unread whole file is dropped: {record}");
@@ -3322,10 +3376,15 @@ mod tests {
         let record = serde_json::json!({"payload": "x".repeat(100_000)});
         let exact = serde_json::to_string(&record).expect("serialises").len();
         let mut at = record.clone();
-        cap_tool_record(&mut at, exact);
+        assert!(
+            cap_tool_record(&mut at, exact).is_none(),
+            "a record at the cap is served as it is, and nothing is logged",
+        );
         assert_eq!(at, record, "a record at the cap is served as it is");
         let mut over = record.clone();
-        cap_tool_record(&mut over, exact - 1);
+        let report = cap_tool_record(&mut over, exact - 1).expect("one byte over is capped");
+        assert!(!report.reduced, "the drawn keys alone are over, so the marker replaced it");
+        assert_eq!(report.bytes, exact, "the log line carries the record's own size");
         assert_eq!(over["omitted"], true, "one byte over and it is marked: {over}");
     }
 

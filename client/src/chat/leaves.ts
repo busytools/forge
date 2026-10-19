@@ -54,6 +54,8 @@ export interface MutationMarks {
   all: boolean;
   /** Whether the file changed outside this edit, which the CLI reports on the result. */
   outside: boolean;
+  /** The bytes the served page left out of this call's record, or `null` (#2374). */
+  omitted: number | null;
 }
 
 /**
@@ -476,37 +478,26 @@ export function omittedRecord(record: unknown): number | null {
 }
 
 /** `omitted, N bytes`, in the units a reader thinks in. */
-function omittedText(bytes: number): string {
+export function omittedText(bytes: number): string {
   if (bytes >= 1_048_576) return `omitted, ${(bytes / 1_048_576).toFixed(1)} MB`;
   if (bytes >= 1_024) return `omitted, ${Math.round(bytes / 1_024)} KB`;
   return `omitted, ${bytes} bytes`;
 }
 
 /**
- * Whether the call's own body reads the frame's structured record: an edit's
- * patch, a question's answers. Every other call draws its visible result, so
- * an omitted record changes nothing it draws.
- */
-function readsRecord(name: string): boolean {
-  return isEdit(name) || name.toLowerCase() === 'askuserquestion';
-}
-
-/**
  * What a mutation's body draws: the CLI's hunks where the result carries them,
  * and the call's own two sides where it does not.
  *
- * **An omitted record draws its marker where the body would have read it** -
- * the edit's patch, a question's answers - so the reader sees that something
- * was there and is not read as a change with no patch or a question nobody
- * answered (#2374).
+ * **An omitted record leaves the body to the call's input and names its size
+ * on the marks line** (#2374): the row draws what it can still read - the
+ * edit's own two sides - and `MutationMarks.omitted` carries the bytes the
+ * served page left out, so the marker reads as one more figure beside
+ * `1 hunk · +1 -1` rather than as a body of its own.
  */
 function mutationBody(name: string, input: unknown, record: unknown): CallBody[] {
-  if (!readsRecord(name)) return [];
-  const omitted = omittedRecord(record);
-  const marker: CallBody[] = omitted === null ? [] : [{ kind: 'text', text: omittedText(omitted) }];
-  if (!isEdit(name)) return marker;
+  if (!isEdit(name)) return [];
   const hunks = hunksOf(record);
-  return [...(hunks.length > 0 ? hunks : diffsOf(name, input)), ...marker];
+  return hunks.length > 0 ? hunks : diffsOf(name, input);
 }
 
 /**
@@ -542,7 +533,7 @@ function marksOf(
   }
   const all = (input as { replace_all?: unknown } | null)?.replace_all === true;
   const outside = (record as { userModified?: unknown } | null)?.userModified === true;
-  return { hunks, added, removed, all, outside };
+  return { hunks, added, removed, all, outside, omitted: omittedRecord(record) };
 }
 
 /**
@@ -610,10 +601,10 @@ function titleOf(name: string, input: unknown, record: unknown): string {
   // same fallback every other family's row has.
   const word = decisionWord(name);
   if (word !== null) return decisionTitle(input) ?? word;
-  // **An asked question's row is titled the same way, and only a CAPPED one
-  // is this branch's**: a question whose answers were served draws as a card,
-  // and an ordinary question leaf (a subagent dispatch timeline) keeps the
-  // title it had (#2374).
+  // **A CAPPED question that reaches a leaf is titled by the question it
+  // asked** (#2374): the fold draws a capped question as its card, and this is
+  // the fallback for a leaf built without one (a dispatch timeline's row), so
+  // the row still says the question rather than the tool's name.
   if (name.toLowerCase() === 'askuserquestion' && omittedRecord(record) !== null) {
     const asked = questionTitle(input);
     if (asked !== null) return asked;

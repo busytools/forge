@@ -1921,9 +1921,9 @@ Every call, message and thought draws on its own row, in the order it arrived.</
           </details>
 
           <!-- An edit whose structured record the served page could not carry:
-               the call's own two sides still draw, and the line under them
-               names what the page did not, rather than the row reading as a
-               change with no patch (#2374). -->
+               the call's own two sides still draw, and the marks line under
+               them carries the size the page left out beside the figures,
+               rather than the row reading as a change with no patch (#2374). -->
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
@@ -1931,20 +1931,17 @@ Every call, message and thought draws on its own row, in the order it arrived.</
                 <div class="ln d"><span class="n">&#8722;</span><span class="l">  --fs-prose: 13.5px;</span></div>
                 <div class="ln a"><span class="n">+</span><span class="l">  --fs-prose: 14px;</span></div>
               </div>
-              <div class="term">omitted, 5.0 MB</div>
-              <div class="patchline"><span class="patchsize">1 hunk &#183; +1 &#8722;1</span><span class="patchmark">changed outside this edit</span></div>
+              <div class="patchline"><span class="patchsize">1 hunk &#183; +1 &#8722;1</span><span class="patchmark">changed outside this edit</span><span class="patchmark">omitted, 5.0 MB</span></div>
             </div>
           </details>
 
-          <!-- A question whose answers the page could not carry draws as its
-               leaf, titled by the question it asked, with the omission named
-               in its body (#2374). -->
-          <details class="leaf" open>
-            <summary><svg class="ic gl ok"><use href="#i-question"/></svg><span class="tn">Which colour do you prefer?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body">
-              <div class="term">omitted, 5.0 MB</div>
-            </div>
-          </details>
+          <!-- A question whose answers the page could not carry keeps its
+               card: the question and its own glyph, then the omission in the
+               diff's marks line (#2374). -->
+          <div class="card">
+            <div class="q"><svg class="ic qm"><use href="#i-question"/></svg>Which colour do you prefer?</div>
+          </div>
+          <div class="patchline"><span class="patchmark">omitted, 5.0 MB</span></div>
 
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-square-terminal"/></svg><span class="tn">run the full workspace gate, then the feature-config build</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>

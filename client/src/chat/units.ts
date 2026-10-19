@@ -331,7 +331,13 @@ export type Unit =
    * live one drew.
    */
   | { kind: 'leaves'; key: string; rows: WorkRow[] }
-  | { kind: 'question'; key: string; asked: AnsweredQuestion[] }
+  | {
+      kind: 'question';
+      key: string;
+      asked: AnsweredQuestion[];
+      /** The bytes the served page left out of this call's record, or `null` (#2374). */
+      omitted: number | null;
+    }
   | { kind: 'notice'; key: string; notice: Notice }
   /**
    * A skill the CLI loaded into the conversation.
@@ -1291,10 +1297,17 @@ function questionCard(input: unknown, answer: unknown, key: string): Unit | null
   // while it waits, and the card that carried both the question and its answer
   // read as a second copy of the prompt rather than as the record of one. It
   // appears the moment an answer lands.
-  if (!asked.some((entry) => entry.picked_labels.length > 0 || entry.typed_note !== null)) {
-    return null;
-  }
-  return { kind: 'question', key, asked };
+  // **A capped record is not a question nobody answered** (#2374): the page
+  // left out the answers, so the card draws the question it asked and the
+  // size of what is missing, glyph and all, rather than falling back to a
+  // plain tool row. A record served whole with no answer is still the dock's.
+  const omitted = omittedRecord(answer);
+  const answered = asked.some(
+    (entry) => entry.picked_labels.length > 0 || entry.typed_note !== null,
+  );
+  if (asked.length === 0) return null;
+  if (!answered && omitted === null) return null;
+  return { kind: 'question', key, asked, omitted };
 }
 
 /** One settled turn's report, from the frame that recorded it. */
@@ -2363,9 +2376,8 @@ export function fold(
             push(card);
             continue;
           }
-          // An omitted record is not a question nobody answered: the card has
-          // no answers to read, so the call falls through to its leaf, which
-          // names the omission rather than the row vanishing (#2374).
+          // A question with neither an answer nor a capped record is the
+          // dock's row while it waits; nothing is drawn here.
           if (omittedRecord(record) === null) continue;
         }
         const leaf = leafOf(
