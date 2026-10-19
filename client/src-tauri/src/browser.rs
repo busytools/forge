@@ -51,7 +51,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::{Emitter as _, Manager as _};
+#[cfg(desktop)]
+use tauri::Emitter as _;
+use tauri::Manager as _;
 
 use driver::ReplyPart;
 #[cfg(desktop)]
@@ -177,6 +179,7 @@ impl StackPaths {
 /// the directory's lock), so a slow-but-working start is not cut short; the
 /// point is that a wedged one becomes words rather than a takeover with a
 /// bar that cannot be answered.
+#[cfg(desktop)]
 const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(75);
 
 /// The host: the browser's own profile, the named ones, and where everything
@@ -1814,6 +1817,7 @@ fn cef_unavailable() -> String {
         .to_owned()
 }
 
+#[cfg(desktop)]
 fn auto_name(seat: &Seat) -> String {
     let mut folded = String::with_capacity(seat.project.len() + seat.label.len() + 1);
     for ch in seat.project.chars().chain(std::iter::once('-')).chain(seat.label.chars()) {
