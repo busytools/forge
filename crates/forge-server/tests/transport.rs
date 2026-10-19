@@ -3735,40 +3735,43 @@ async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
     .await;
     let _ = snapshot_answering(&mut socket).await;
 
-    // The fold now takes both frames. The seal must apply despite the
-    // watermark, or the history it carries never reaches the copy - so the
-    // read is repeated until it does, bounded: an answer that never carries
-    // it exhausts the loop and fails below.
+    // **The fold's own mark, not a clock, says the copy is ready.** The first
+    // answer's catch-up marked the live frame's number, and the seal re-mints
+    // that same number, so a wait on it cannot tell the stale mark from the
+    // one the reseed leaves behind - and a read landing between the reseed's
+    // two applies sees the history without the live row. One more frame, past
+    // the live row and carrying no row of its own, can only be marked after
+    // the fold has taken BOTH the seal and the live row, so waking on its
+    // number is waking on the settled copy however loaded the runner is.
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    let settled = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
     state.conversations.hold_the_fold(false);
-    let mut conversation = String::new();
-    let mut data = serde_json::Value::Null;
-    for _ in 0..40 {
-        let mut socket = connect(&url).await;
-        send(
-            &mut socket,
-            ClientMessage::Subscribe {
-                what: Subject::Session(seat.clone()),
-                answering: true,
-                browser: false,
-                declare: false,
-            },
-        )
-        .await;
-        let read = snapshot_answering(&mut socket).await;
-        conversation = serde_json::to_string(&read.1["conversation"]).unwrap_or_default();
-        data = read.1;
-        if says_times(&data, "the history row") >= 1 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    assert!(
+        state.conversations.await_consumed(&seat, settled, SEED_WAIT).await,
+        "waited for the fold to take the seal and the live row, and it never marked them",
+    );
+
+    // One answer, with the fold past both frames: the seal must have applied
+    // despite the watermark, or the history it carries never reaches the copy.
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
 
     assert_eq!(
         says_times(&data, "the history row"),
         1,
         "the seal's history must cross exactly once: absent means the skip-guard took the seal \
-         and the new run's rows are gone from the record for good; the answer carried \
-         {conversation}",
+         and the new run's rows are gone from the record for good; the answer carried {}",
+        serde_json::to_string(&data["conversation"]).unwrap_or_default(),
     );
     assert_eq!(says_times(&data, "the live row"), 1, "and the live row exactly once");
 }
@@ -7041,13 +7044,14 @@ async fn an_image_one_byte_past_the_cap_is_refused_and_the_connection_survives()
 const FRAME_WAIT: std::time::Duration =
     forge_server::transport::batch::FLUSH_CEILING.saturating_add(std::time::Duration::from_secs(5));
 
-/// The ceiling on the giant test's wait for the fold's own mark. The wait
+/// The ceiling on a transport test's wait for the fold's own mark. The wait
 /// wakes on the mark, so it returns as soon as the fold is done however
-/// loaded the machine is; the 60 s is a wedge ceiling, set above the fold's
-/// measured weigh (seconds unloaded, tens under a starved process) so a fold
-/// that is merely slow does not false-red on it. Sized well under nextest's
-/// outer supervision (30 s slow-timeout, terminate after 4), so a wedged fold
-/// reds by the assertion's own name rather than the harness's kill.
+/// loaded the machine is; the 60 s is a wedge ceiling, set above the giant
+/// handover's measured weigh (seconds unloaded, tens under a starved process)
+/// so a fold that is merely slow does not false-red on it. Sized well under
+/// nextest's outer supervision (30 s slow-timeout, terminate after 4), so a
+/// wedged fold reds by the assertion's own name rather than the harness's
+/// kill.
 const SEED_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The frame carrying the next update satisfying `wants`, with the frames that
