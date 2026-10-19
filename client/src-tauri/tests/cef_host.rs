@@ -113,6 +113,32 @@ async fn a_spawned_host_is_ended_by_its_pid() {
     assert!(!spawn::running(pid), "the end takes the process down");
 }
 
+/// **Another live client's browser is not this sweep's.** A cache root whose
+/// claim is held - by a client still running, here this test - keeps its host
+/// and its record: the exit reap and the boot sweep both read the claim, and
+/// killing through it would take a browser out from under someone driving it.
+#[tokio::test]
+async fn the_boot_sweep_leaves_a_claimed_host_alone() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = paths(dir.path());
+    let host = BrowserHost::new(paths.clone());
+    let cache = paths.cef_shared();
+    std::fs::create_dir_all(&cache).expect("the cache root");
+    let claim = forge_client::browser::profiles::claim(&cache)
+        .expect("the claim reads")
+        .expect("the cache root is free");
+    spawn::write_record(
+        &cache,
+        &spawn::Record { pid: 999_999, port: 9411, ring: "/forge-cef-claimed-test".to_owned() },
+    )
+    .expect("the record");
+
+    let reaped = host.reap_orphans().await;
+    assert!(reaped.is_empty(), "a claimed root is not reaped: {reaped:?}");
+    assert!(spawn::read_record(&cache).is_some(), "and its record stays");
+    drop(claim);
+}
+
 /// **The boot sweep cleans what a dead client left.** A record naming a pid
 /// that is gone, and the ring that outlives its host on macOS, are both
 /// removed without launching anything.
