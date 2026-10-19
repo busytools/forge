@@ -730,7 +730,7 @@ impl BrowserHost {
             // **The ring goes only with a host this client may end.** A port
             // that answers while the pid is not this app's `--cef-host` is
             // another process's; its ring is left alone.
-            if cef::spawn::end_verified(record.pid, record.port).await {
+            if cef::spawn::end_verified(record.pid, record.port, cache).await {
                 cef::osr::Ring::unlink(&record.ring);
                 cef::spawn::remove_record(cache);
             } else {
@@ -757,7 +757,7 @@ impl BrowserHost {
     async fn reap_singleton(&self, cache: &Path) {
         if let Some(pid) = cef::spawn::singleton_pid(cache)
             && cef::spawn::running(pid)
-            && cef::spawn::is_our_host(pid)
+            && cef::spawn::is_our_host(pid, cache, None)
         {
             tauri_plugin_log::log::info!(
                 "reaping a browser host its record no longer names (event_name \
@@ -1180,7 +1180,7 @@ impl BrowserHost {
                              cef_ring_missing, profile {}, {why})",
                             cache.display(),
                         );
-                        if !cef::spawn::end_verified(record.pid, record.port).await {
+                        if !cef::spawn::end_verified(record.pid, record.port, cache).await {
                             return Err(format!(
                                 "the browser on {} answers but is not this app's host; left alone",
                                 cache.display()
@@ -1466,17 +1466,20 @@ impl BrowserHost {
             // **A placement that never landed fails the Open**, so the page
             // draws the sentence instead of a live takeover with no picture.
             self.reconcile_surface().await?;
-            // **The page this raise shows is the page a restart reopens**,
-            // written under the same lock the calls' refreshes and every
-            // close take.
-            let url = cef::spawn::page_url(host.port).await;
-            write_carried_page(&cache, url.as_deref());
             Ok::<(), String>(())
         })
         .await;
         match claimed {
             Ok(answer) => answer?,
             Err(_) => return Err("the browser did not start in time - try Open again".to_owned()),
+        }
+        // **The page this raise shows is the page a restart reopens.** The
+        // probe is outside the lock (its 2 s bound must not hold every
+        // launch), and the write takes the short lock a call's refresh does.
+        let url = cef::spawn::page_url(host.port).await;
+        {
+            let _launching = self.launch.lock().await;
+            write_carried_page(&cache, url.as_deref());
         }
         Ok(host)
     }
@@ -1490,8 +1493,13 @@ impl BrowserHost {
     /// the Brave-era tab set the old carry led with a navigation's URL.
     #[cfg(desktop)]
     pub async fn refresh_carry(&self, cache: &Path) {
-        let _launching = self.launch.lock().await;
+        // **The probe is outside the lock; only the write is inside.** The
+        // endpoint read has a 2 s bound, and holding the launch mutex across
+        // it would make a silent host hold every launch, close and delete for
+        // that long. The temp-file rename keeps the write itself safe, and
+        // the short lock keeps raises and calls from interleaving it.
         let port = {
+            let _launching = self.launch.lock().await;
             let held = self.hosts.lock().await.get(cache).map(|host| host.port);
             match held {
                 Some(port) => port,
@@ -1502,6 +1510,7 @@ impl BrowserHost {
             }
         };
         let url = cef::spawn::page_url(port).await;
+        let _launching = self.launch.lock().await;
         write_carried_page(cache, url.as_deref());
     }
 
@@ -1771,7 +1780,7 @@ impl BrowserHost {
                 // release when the host dies.
                 Ok(Some(lock)) => {
                     if let Some(record) = cef::spawn::read_record(&cache) {
-                        if cef::spawn::end_verified(record.pid, record.port).await {
+                        if cef::spawn::end_verified(record.pid, record.port, &cache).await {
                             cef::osr::Ring::unlink(&record.ring);
                             cef::spawn::remove_record(&cache);
                             if let Some(name) = cache.file_name().and_then(std::ffi::OsStr::to_str)
@@ -1914,35 +1923,6 @@ impl BrowserHost {
 /// and the once-per-seat note, the last resort rather than the path. The
 /// collision refusal stays the backstop for a hand-made name that takes an
 /// auto name first.
-#[cfg(desktop)]
-/// Write the page a restart should reopen beside the profile.
-///
-/// **A temp file and a rename**: a crash mid-write leaves the previous page
-/// rather than a truncated one. A blank or non-web page clears the marker -
-/// the file always means "the page the person was actually shown", never a
-/// leftover - and only a web address is ever carried.
-#[cfg(desktop)]
-fn write_carried_page(cache: &Path, url: Option<&str>) {
-    let path = cache.join("page");
-    let Some(url) = url.filter(|url| url.starts_with("http://") || url.starts_with("https://"))
-    else {
-        let _ = std::fs::remove_file(&path);
-        return;
-    };
-    let temp = cache.join("page.tmp");
-    if let Err(why) = std::fs::write(&temp, url).and_then(|()| std::fs::rename(&temp, &path)) {
-        // **Forge's own storage problem, not the session's**: the carry is
-        // this client's bookkeeping, and a write that fails is worth a
-        // warning that names where and why.
-        tauri_plugin_log::log::warn!(
-            "the carried page could not be written (event_name cef_page_carry_failed, profile \
-             {}, {why})",
-            cache.display(),
-        );
-        let _ = std::fs::remove_file(&temp);
-    }
-}
-
 /// The sentence a client without its engine answers, named rather than a
 /// timeout: a shipped bundle missing its framework is a reinstall.
 #[cfg(target_os = "macos")]
@@ -1973,6 +1953,34 @@ fn auto_name(seat: &Seat) -> String {
     // tail is dropped rather than the whole derivation.
     folded.truncate(64);
     folded
+}
+
+/// Write the page a restart should reopen beside the profile.
+///
+/// **A temp file and a rename**: a crash mid-write leaves the previous page
+/// rather than a truncated one. A blank or non-web page clears the marker -
+/// the file always means "the page the person was actually shown", never a
+/// leftover - and only a web address is ever carried.
+#[cfg(desktop)]
+fn write_carried_page(cache: &Path, url: Option<&str>) {
+    let path = cache.join("page");
+    let Some(url) = url.filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+    else {
+        let _ = std::fs::remove_file(&path);
+        return;
+    };
+    let temp = cache.join("page.tmp");
+    if let Err(why) = std::fs::write(&temp, url).and_then(|()| std::fs::rename(&temp, &path)) {
+        // **Forge's own storage problem, not the session's**: the carry is
+        // this client's bookkeeping, and a write that fails is worth a
+        // warning that names where and why.
+        tauri_plugin_log::log::warn!(
+            "the carried page could not be written (event_name cef_page_carry_failed, profile \
+             {}, {why})",
+            cache.display(),
+        );
+        let _ = std::fs::remove_file(&temp);
+    }
 }
 
 /// Why a named profile cannot be used on the phone yet. One sentence, and

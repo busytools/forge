@@ -139,11 +139,11 @@ pub mod spawn {
         Err(REFUSAL.to_owned())
     }
 
-    pub async fn end_verified(_pid: u32, _port: u16) -> bool {
+    pub async fn end_verified(_pid: u32, _port: u16, _profile: &Path) -> bool {
         true
     }
 
-    pub fn is_our_host(_pid: u32) -> bool {
+    pub fn is_our_host(_pid: u32, _profile: &Path, _port: Option<u16>) -> bool {
         false
     }
 

@@ -299,19 +299,18 @@ pub async fn probe(port: u16) -> bool {
 /// **A recorded pid is only a number**: another process may have been given
 /// it since. The signal goes only when the endpoint still answers as a
 /// browser host, or when the pid is one of this client's own children.
-pub async fn end_verified(pid: u32, port: u16) -> bool {
+pub async fn end_verified(pid: u32, port: u16, profile: &Path) -> bool {
     if is_ours(pid) {
         end(pid).await;
         return true;
     }
     // **A recorded pid is a number until its owner is identified.** The
     // endpoint answering proves a host is on the port; it does not prove this
-    // pid is it, and the same executable alone proves only another process of
-    // this app. A recycled number is signalled only when the process is a
-    // `--cef-host` of this binary, checked again after the probe's await -
+    // pid is it. Only a process that is this binary's `--cef-host` for THIS
+    // profile and port is signalled, checked again after the probe's await -
     // the window the first check cannot cover - immediately before `end`,
     // which signals with no await in between.
-    if !is_our_host(pid) {
+    if !is_our_host(pid, profile, Some(port)) {
         // Nothing answers: the record is stale and its ring is ours to clean.
         // Something answers: it is not this pid's host, so neither the pid nor
         // the ring is this sweep's to touch.
@@ -320,7 +319,7 @@ pub async fn end_verified(pid: u32, port: u16) -> bool {
     if !probe(port).await {
         return true;
     }
-    if !is_our_host(pid) {
+    if !is_our_host(pid, profile, Some(port)) {
         return !probe(port).await;
     }
     end(pid).await;
@@ -364,15 +363,52 @@ pub fn singleton_pid(profile: &Path) -> Option<u32> {
     pid.parse().ok()
 }
 
-/// Whether `pid` is one of this app's browser HOSTS: the same executable AND
-/// launched in `--cef-host` mode.
+/// The value one `--flag value` pair carries in an argument list.
+fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    let at = args.iter().position(|arg| arg == flag)?;
+    args.get(at + 1).map(String::as_str)
+}
+
+/// Whether `pid` is the host of THIS profile: the same executable, in
+/// `--cef-host` mode, naming `profile` - and, when a port is given, that
+/// port.
 ///
-/// **The binary alone is not the identity.** Another profile's host, or the
-/// client's own UI process, runs the very same executable; only the mode
-/// switch says the process is a host a reaper may end.
-pub fn is_our_host(pid: u32) -> bool {
-    is_our_binary(pid)
-        && process_argv(pid).is_some_and(|args| args.iter().any(|arg| arg == "--cef-host"))
+/// **The binary and the mode are not the identity either.** Another
+/// profile's host, another client's host, or the client's own UI process all
+/// run the very same executable; only the `--profile` it names says which
+/// browser it is. A reaper that skipped this would end whichever host
+/// happened to hold the pid.
+pub fn is_our_host(pid: u32, profile: &Path, port: Option<u16>) -> bool {
+    if !is_our_binary(pid) {
+        return false;
+    }
+    let Some(args) = process_argv(pid) else {
+        return false;
+    };
+    host_matches(&args, profile, port)
+}
+
+/// Whether one host's argument list names THIS profile (and port).
+fn host_matches(args: &[String], profile: &Path, port: Option<u16>) -> bool {
+    if !args.iter().any(|arg| arg == "--cef-host") {
+        return false;
+    }
+    let Some(named) = arg_value(args, "--profile") else {
+        return false;
+    };
+    let named = Path::new(named);
+    let same_profile = named == profile
+        || std::fs::canonicalize(named)
+            .ok()
+            .zip(std::fs::canonicalize(profile).ok())
+            .is_some_and(|(named, mine)| named == mine);
+    if !same_profile {
+        return false;
+    }
+    match port {
+        Some(port) => arg_value(args, "--port").and_then(|value| value.parse().ok()) == Some(port),
+        None => true,
+    }
 }
 
 /// One process's arguments, from the kernel's own `KERN_PROCARGS2`.
@@ -531,6 +567,42 @@ mod tests {
     /// **The singleton lock names the host the record lost.** A profile
     /// whose record is gone is still reaped from Chromium's own symlink, and
     /// only when the pid is this executable.
+    /// **Another profile's host is not ours**, even on the same binary and
+    /// in `--cef-host` mode: the `--profile` it names is the identity, and
+    /// the port narrows it further.
+    #[test]
+    fn a_host_is_matched_by_its_profile_and_port() {
+        let args: Vec<String> = [
+            "pattern",
+            "--cef-host",
+            "--profile",
+            "/profiles/hunt/cef",
+            "--port",
+            "9412",
+            "--ring",
+            "/forge-cef-9412",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert!(host_matches(&args, Path::new("/profiles/hunt/cef"), Some(9412)));
+        assert!(
+            !host_matches(&args, Path::new("/profiles/other/cef"), Some(9412)),
+            "another profile's host is not ours"
+        );
+        assert!(
+            !host_matches(&args, Path::new("/profiles/hunt/cef"), Some(9411)),
+            "another port is not ours"
+        );
+        assert!(
+            !host_matches(
+                &["pattern", "--profile", "/p"].map(str::to_owned),
+                Path::new("/p"),
+                None
+            ),
+            "no host mode, no host"
+        );
+    }
+
     #[test]
     fn a_singleton_lock_names_its_pid_and_only_our_binary_is_ours() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -541,7 +613,7 @@ mod tests {
         assert_eq!(singleton_pid(profile), Some(4242));
         assert!(is_our_binary(std::process::id()), "this test binary is ours");
         assert!(
-            !is_our_host(std::process::id()),
+            !is_our_host(std::process::id(), Path::new("/tmp/forge-no-such-profile"), None),
             "the same binary is not a host without --cef-host in its argv"
         );
         assert!(!is_our_binary(1), "launchd is not");
@@ -559,7 +631,7 @@ mod tests {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a free port");
         let port = listener.local_addr().expect("the bound address").port();
         drop(listener);
-        end_verified(std::process::id(), port).await;
+        end_verified(std::process::id(), port, Path::new("/tmp/forge-no-such-profile")).await;
         assert!(alive(std::process::id()), "the unrelated process is still running");
     }
 }

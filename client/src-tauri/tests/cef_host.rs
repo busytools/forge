@@ -279,6 +279,59 @@ async fn the_boot_sweep_ends_a_recorded_host_that_still_answers() {
     assert_eq!(spawn::read_record(&cache), None, "and its record goes");
 }
 
+/// **A port that answers does not make the recorded pid its host.** The
+/// record names a pid that is not this app's host for the profile - here an
+/// unrelated `sleep` - while something else answers on the port. The end is
+/// refused, and the ring and record stay: unlinking the ring of a live host
+/// would break it, and signalling a foreign pid is worse.
+#[tokio::test]
+async fn a_foreign_pid_on_an_answering_port_keeps_its_ring_and_record() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = paths(dir.path());
+    let host = BrowserHost::new(paths.clone());
+    let cache = paths.cef_shared();
+    std::fs::create_dir_all(&cache).expect("the cache root");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = listener.local_addr().expect("the address").port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else { continue };
+            let mut buffer = [0_u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+            let body = "{\"Browser\":\"Chrome/154.0\"}";
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(answer.as_bytes()).await;
+        }
+    });
+    // **Not this app's process, and not a registered child**: the record's
+    // pid is foreign while the port answers.
+    let mut foreign =
+        std::process::Command::new("sleep").arg("30").spawn().expect("a foreign process");
+    let ring_name = "/forge-cef-foreign-test";
+    let ring = osr::Ring::create(ring_name, 64, 64).expect("a ring");
+    std::mem::forget(ring);
+    spawn::write_record(
+        &cache,
+        &spawn::Record { pid: foreign.id(), port, ring: ring_name.to_owned() },
+    )
+    .expect("the record");
+
+    let reaped = host.reap_orphans().await;
+    assert!(reaped.is_empty(), "a foreign pid is not this sweep's to end: {reaped:?}");
+    assert!(spawn::read_record(&cache).is_some(), "the record stays");
+    assert!(osr::Ring::open(ring_name).is_ok(), "and so does the ring it names");
+
+    let _ = foreign.kill();
+    let _ = foreign.wait();
+    spawn::remove_record(&cache);
+    osr::Ring::unlink(ring_name);
+}
+
 /// **Another live client's browser is not this sweep's.** A cache root whose
 /// claim is held - by a client still running, here this test - keeps its host
 /// and its record: the exit reap and the boot sweep both read the claim, and
