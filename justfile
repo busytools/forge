@@ -355,6 +355,25 @@ client-tauri-check:
 # out, so it opens a Finder window and takes focus for a few seconds.
 #
 # **A window on every run is why this is not the routine gate.**
+# Lay the app's own Chromium into a built forge.app: the framework and the
+# five helper apps CEF re-enters for its subprocesses. **A bundle without
+# this is a client with no browser**: the app loads the framework by
+# position, so the layering is the whole install step, and both recipes that
+# produce a runnable app run it. The host binary is built here too: `tauri
+# build` builds the default binary alone.
+bundle-cef identifier="dev.vedhavyas.forge":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    app=client/src-tauri/target/release/bundle/macos/forge.app
+    cef=$(find client/src-tauri/target/release/build/cef-dll-sys -type d -path '*/out/cef_macos_aarch64' | head -1)
+    if [ -z "$cef" ] || [ ! -d "$cef/Chromium Embedded Framework.framework" ]; then
+        echo "[ERROR] the CEF distribution is not in target/release/build - build the client first" >&2
+        exit 1
+    fi
+    cargo build --release --locked --manifest-path client/src-tauri/Cargo.toml --bin forge_client_helper
+    ./client/src-tauri/scripts/bundle-cef.sh "$app" "$cef" \
+        client/src-tauri/target/release/forge_client_helper "{{identifier}}"
+
 client-tauri-bundle: vendor-browser-stack
     #!/usr/bin/env bash
     set -euo pipefail
@@ -373,12 +392,14 @@ client-tauri-bundle: vendor-browser-stack
     fi
 
     npm --prefix client run tauri -- build --ci -- --locked
+    "{{just_executable()}}" --justfile "{{justfile()}}" bundle-cef
 
 # Fetch, verify and unpack the driver stack the client bundles: node and
 # @playwright/mcp, into the client's gitignored `browser-stack/` directory.
-# (The browser itself is the machine's own - the host drives the installed
-# Brave or Chrome - so nothing here fetches one.) Idempotent at its pins,
-# and it prints both pins so a release log names the stack it shipped.
+# **The driver, not the browser**: the engine is the app's own Chromium,
+# laid into the bundle by `bundle-cef`; this stack only speaks CDP to it.
+# Idempotent at its pins, and it prints both pins so a release log names the
+# stack it shipped.
 #
 # The bundling recipes run it themselves - a release must not ship without
 # it - and `client-tauri-check` does not, because it passes `--no-bundle`
@@ -546,6 +567,7 @@ client-release version: vendor-browser-stack client-release-deps
     fi
 
     npm --prefix client run tauri -- build --bundles app --ci -- --locked
+    "{{just_executable()}}" --justfile "{{justfile()}}" bundle-cef
 
     if [ ! -e "$built" ]; then
         echo "[ERROR] the build produced no app bundle at $built" >&2
