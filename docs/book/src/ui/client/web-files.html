@@ -111,7 +111,9 @@
   .rv-fcount { text-align: right; }
   .rv-ccnum { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
     border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; }
-  .rv-h { margin: 0.83em 0; font-size: 1.5em; font-weight: 700; }
+  /* The page's own `.rv-h` carries no rule: the sheet's reset zeroes the
+     heading's margins, so the drawing draws it flush too. */
+  .rv-h { font-size: 1.5em; font-weight: 700; }
   .rv-icon { flex: none; width: 16px; height: 16px; align-self: center; }
   .rv-fname { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .rv-root { display: flex; align-items: center; gap: 6px; min-width: 0;

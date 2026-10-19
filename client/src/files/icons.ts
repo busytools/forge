@@ -102,7 +102,9 @@ function src(name: string | undefined, fallback: string): string | null {
       })
       .then((blob) => fetched.set(file, URL.createObjectURL(blob)))
       .catch(() => {
-        // The asset URL keeps the glyph on screen; nothing else to do.
+        // The asset URL keeps the glyph on screen, and a later mount may
+        // retry a fetch that failed for a transient reason.
+        asked.delete(file);
       });
   }
   return asset;
@@ -141,7 +143,9 @@ export function fileIcon(path: string): string | null {
   const parts = basename(path).split('.');
   for (let at = 1; at < parts.length; at += 1) {
     const suffix = parts.slice(at).join('.');
-    const extension = fileExtensions.get(suffix);
+    // A manifest key can carry a leading dot (`.ncurc.json`); VS Code
+    // matches it against the same dotless suffix.
+    const extension = fileExtensions.get(suffix) ?? fileExtensions.get(`.${suffix}`);
     if (extension !== undefined) return src(extension, manifest.file);
   }
   return src(manifest.file, manifest.file);

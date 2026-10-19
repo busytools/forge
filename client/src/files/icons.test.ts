@@ -2,11 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { fileIcon, folderIcon, folderIconName, rootIcon } from './icons';
 
-/**
- * Whether `url` resolves to `file`. The dev transform keeps its `no-inline`
- * query on the URL, a build emits a hashed asset path and a cached glyph is
- * an object URL, so only the file name is common to all of them.
- */
+/** Whether `url` names `file`; the dev transform appends a `no-inline` query. */
 const is = (url: string | null, file: string): boolean =>
   (url?.split('?')[0] ?? '').endsWith(`/${file}.svg`);
 
@@ -44,6 +40,11 @@ describe("the files tree's icons", () => {
     expect(is(fileIcon('Makefile.zzz'), 'file'), 'a dotted unknown takes it too').toBe(true);
   });
 
+  it('matches a leading-dot extension key against the dotless suffix', () => {
+    expect(is(fileIcon('.ncurc.json'), 'dependencies-update'), 'the file itself').toBe(true);
+    expect(is(fileIcon('a.ncurc.yml'), 'dependencies-update'), 'and a dotted suffix').toBe(true);
+  });
+
   it('draws a folder in its open or shut variant, by name and parent, any case', () => {
     expect(is(folderIcon('src', false), 'folder-src'), 'src shut').toBe(true);
     expect(is(folderIcon('src', true), 'folder-src-open'), 'src open').toBe(true);
@@ -76,7 +77,9 @@ describe("the files tree's icons", () => {
     ).toBe('folder-open');
   });
 
-  it('draws the project row with the theme root folder, keyed by its path', () => {
+  it('draws the project row with the theme root folder fallback', () => {
+    // 5.39.0's rootFolderNamesExpanded is empty, so this pins the fallback
+    // the resolver takes; a named root would be looked up first.
     expect(
       is(rootIcon('/Users/me/proj/.claude/worktrees/files-fold'), 'folder-root-open'),
       'the root folder, open',
@@ -111,6 +114,25 @@ describe("the files tree's icons", () => {
       fresh.fileIcon('src/other.rs');
       expect(fetchMock, 'a second row of the same type fetches nothing new').toHaveBeenCalledTimes(
         1,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('retries a glyph whose fetch failed on a later mount', async () => {
+    vi.resetModules();
+    const fetchMock = vi.fn(() => Promise.reject(new Error('offline')));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const fresh = await import('./icons');
+      fresh.fileIcon('src/main.rs');
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      // Let the rejection's catch run, so the glyph is no longer marked asked.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      fresh.fileIcon('src/main.rs');
+      await vi.waitFor(() =>
+        expect(fetchMock, 'a failure is not remembered for the session').toHaveBeenCalledTimes(2),
       );
     } finally {
       vi.unstubAllGlobals();

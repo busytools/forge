@@ -18,7 +18,7 @@ import type { ComposerProps, ComposerRecord } from './composer/view';
 import type { FileEntry } from './composer/wire';
 import FileTree from './components/FileTree.svelte';
 import type { TreeRow } from './components/tree';
-import { fileIcon, folderIcon } from './files/icons';
+import { fileIcon, folderIcon, rootIcon } from './files/icons';
 import { foldsFor, indexTreeRows } from './files/tree';
 import {
   permissionAsk,
@@ -561,6 +561,7 @@ describe('axe over the rendered pages', () => {
           foldable,
           icon: (row: TreeRow<unknown>) =>
             row.kind === 'file' ? fileIcon(row.path) : folderIcon(row.path, true),
+          root: { name: 'proj', path: '/proj/forge', icon: rootIcon('/proj/forge') },
           ondir: () => {},
           onfile: () => {},
         },
@@ -584,6 +585,18 @@ describe('axe over the rendered pages', () => {
       row('client')?.querySelector('img.rv-icon')?.getAttribute('alt'),
       'glyphs are decorative',
     ).toBe('');
+    const root = doc.querySelector('.rv-root');
+    expect(root?.querySelector('.rv-rootname')?.textContent, 'the root row draws the project').toBe(
+      'proj',
+    );
+    expect(
+      root?.querySelector('img.rv-icon')?.getAttribute('alt'),
+      'the root glyph is decorative too',
+    ).toBe('');
+    expect(
+      (root?.querySelector('img.rv-icon')?.getAttribute('src') ?? '').split('?')[0],
+      'the root glyph is the theme root folder',
+    ).toMatch(/\/folder-root-open\.svg$/);
     expect(await idsOf(html)).toEqual([]);
 
     // Under a filter the folder rows are a match list's, not controls.
