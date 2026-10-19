@@ -2901,12 +2901,20 @@ async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
     )
     .await;
 
-    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+    let ServerMessage::Error { what, why, seat, .. } = next_server(&mut socket).await else {
         panic!("expected an error")
     };
     assert_eq!(what, "subscribe", "the refusal comes from the subscribe arm: {why}");
     assert!(why.contains("Nowhere/nothing/lead"), "the seat is named in its own words: {why}");
     assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+    // **The error names the seat it refused** (#2420): a client holding
+    // several seats cannot tell its own refused read from another's without
+    // the field, and the `more` refusal has always carried it.
+    assert_eq!(
+        seat,
+        Some(SessionSlot::for_label("Nowhere", "nothing", Some("lead"))),
+        "the refusal names the seat it belongs to",
+    );
 
     let ServerMessage::BrowserRole { hosting } = next_server(&mut socket).await else {
         panic!("the refusal still owes the role its grant");
@@ -3079,6 +3087,75 @@ async fn a_more_above_the_floor_caps_the_record_it_serves() {
         frame["tool_use_result"]["bytes"].as_u64().is_some_and(|bytes| bytes > 100_000),
         "and says how much it weighed: {frame}",
     );
+}
+
+/// **The record's cursor carries the window's floor** (#2420). A byte-capped
+/// giant serves its whole window, whose page names no handle of its own -
+/// the history above it begins at the floor - so the `more` arm hands the
+/// floor back. The record must hand the same handle: seeded without it, a
+/// client reads the history above as ended and scrolling back is dead.
+#[tokio::test]
+async fn the_records_cursor_carries_the_windows_floor() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let mut rows: Vec<String> = (0..20).map(a_turns_rows).collect();
+    // One final turn that alone carries more frames than the window's cap:
+    // the cut is turn-aligned and never empty, so the window keeps that turn
+    // whole and drops the rows before it - its page opens on the window's
+    // front while the history above begins at the floor.
+    rows.push(
+        serde_json::json!({
+            "type": "user",
+            "uuid": "u-giant",
+            "session_id": "s",
+            "message": {"role": "user", "content": "the giant turn"},
+        })
+        .to_string(),
+    );
+    for at in 0..5_100 {
+        rows.push(
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": format!("a-giant-{at}"),
+                "session_id": "s",
+                "message": {
+                    "id": format!("m-giant-{at}"),
+                    "role": "assistant",
+                    "model": "claude-opus-5",
+                    "content": [{"type": "text", "text": "tick"}],
+                },
+            })
+            .to_string(),
+        );
+    }
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: false,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
+        panic!("a snapshot is the answer to a subscribe")
+    };
+    let record = data["conversation"]["cursor"].as_str().map(str::to_owned);
+    assert!(record.is_some(), "the record names the floor rather than the history's end: {data}");
+
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 20 })
+        .await;
+    let ServerMessage::Page { cursor, .. } = next_server(&mut socket).await else {
+        panic!("a page is the answer to a request for more")
+    };
+    assert_eq!(record, cursor, "the record's handle is the one `more` hands back");
 }
 
 /// **The configured cap reaches the page it serves** (#2374): the key is

@@ -42,6 +42,14 @@ describe('the canned page', () => {
       expect(document.querySelector('.devbar'), 'the canned page never landed').not.toBeNull();
     });
 
+    // **The canned conversation loads from its subscribe** (#2420): the
+    // snapshot carries the page, so a fixture that only answered `more` would
+    // never leave its loading state. (The rows themselves are the list's to
+    // measure, and jsdom lays nothing out; the state is the seed's pin.)
+    expect(document.body.textContent, 'the canned page never left loading').not.toContain(
+      'Reading the conversation',
+    );
+
     // One appended turn is what puts the pinned strip on screen: the strip
     // is drawn for a running turn.
     const append = [...document.querySelectorAll('button')].find(

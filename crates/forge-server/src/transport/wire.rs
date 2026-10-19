@@ -547,6 +547,13 @@ impl From<&PendingAsk> for PendingAskWire {
 #[serde(rename_all = "snake_case")]
 pub struct ConversationWire {
     pub turns: Vec<TurnWire>,
+    /// The handle above the newest page, the same one a `more` answers with.
+    ///
+    /// A snapshot carries the page a `more` would fetch, cursor included, so
+    /// a client seeds its conversation from this answer and pages above it
+    /// from here rather than asking for the same page twice (#2420). `None`
+    /// is the conversation's first page: there is nothing above it.
+    pub cursor: Option<String>,
     pub compaction_count: u32,
 }
 
@@ -920,6 +927,19 @@ pub(crate) fn cap_tool_records(turns: &mut [TurnWire], cap: usize, seat: &Sessio
                 log_record_cap(seat, id.as_deref(), cap, &report);
             }
         }
+    }
+}
+
+/// Hand the window's floor back as a page's cursor when the page opens on the
+/// window's front (#2420).
+///
+/// **The window's own start is not the history's**: a page cut there carries
+/// no handle of its own while the history above it begins at the floor. Both
+/// a `more` answer and the session record serve that page, and both must hand
+/// the same handle back or a client reads the history above as ended.
+pub(crate) fn floor_cursor(page: &mut Page, dropped: usize) {
+    if page.cursor.is_none() && dropped > 0 {
+        page.cursor = Some(dropped.to_string());
     }
 }
 
@@ -1658,27 +1678,29 @@ async fn session(
     // The served page's records are bounded here, off the lock like the page
     // itself: a mailbox seat's structured records made one page 70 MB (#2374).
     let cap = surface.tool_record_cap_bytes();
-    let (turns, compaction_count, page_ms) = match conversation {
+    let (turns, cursor, compaction_count, page_ms) = match conversation {
         Some(held) => {
             let seat = slot.clone();
             let capped = seat.clone();
             tokio::task::spawn_blocking(move || {
                 let at = std::time::Instant::now();
-                let (mut turns, count) = held.read(|held| {
-                    (
-                        page(
-                            held.messages(),
-                            held.rendered(),
-                            held.dropped(),
-                            None,
-                            SUBSCRIBE_TURNS,
-                        )
-                        .turns,
-                        held.compaction_count(),
-                    )
+                // **The record's conversation IS a page, cursor and all**
+                // (#2420): a client seeds its conversation from this answer
+                // instead of asking `more` for the same page, and the handle
+                // is what names the history above it.
+                let (mut page, count) = held.read(|held| {
+                    let mut page = page(
+                        held.messages(),
+                        held.rendered(),
+                        held.dropped(),
+                        None,
+                        SUBSCRIBE_TURNS,
+                    );
+                    floor_cursor(&mut page, held.dropped());
+                    (page, held.compaction_count())
                 });
-                cap_tool_records(&mut turns, cap, &capped);
-                (turns, count, at.elapsed().as_secs_f64() * 1000.0)
+                cap_tool_records(&mut page.turns, cap, &capped);
+                (page.turns, page.cursor, count, at.elapsed().as_secs_f64() * 1000.0)
             })
             .await
             .unwrap_or_else(|error| {
@@ -1688,10 +1710,10 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), 0, 0.0)
+                (Vec::new(), None, 0, 0.0)
             })
         }
-        None => (Vec::new(), 0, 0.0),
+        None => (Vec::new(), None, 0, 0.0),
     };
     timings.page_ms = page_ms;
     // The instance list crosses from the fold that ANNOUNCES it rather than
@@ -1778,7 +1800,7 @@ async fn session(
         monitors: surface.monitors(slot),
         pending_ask: asks.first().map(PendingAskWire::from),
         pending_asks: asks.iter().map(PendingAskWire::from).collect(),
-        conversation: ConversationWire { turns, compaction_count },
+        conversation: ConversationWire { turns, cursor, compaction_count },
         header: SessionHeaderWire {
             session_id: header.session_id.clone(),
             seq,

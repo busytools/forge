@@ -126,7 +126,7 @@ export function watchDocument(
         return;
       }
       if (message.kind === 'error' && message.what === 'document_read') {
-        const named = message.seat === undefined ? seat : subjectKey({ session: message.seat });
+        const named = message.seat == null ? seat : subjectKey({ session: message.seat });
         if (named !== seat) return;
         landed = true;
         view.set({ ...READING, state: 'refused', refused: message.why });

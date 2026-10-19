@@ -240,14 +240,14 @@ describe('the chat column as it draws', () => {
   // "the strip lane stands on a seat with no conversation state to speak of" -
   // lives in `Composer.test.ts`.
 
-  it('asks for the newest page before it draws anything', () => {
+  it('asks for no page of its own before it draws: the subscribe answers', () => {
     const server = stub();
     draw({}, server);
 
-    // No cursor on the first ask: a cursor asks for what is above a row the
-    // reader already has, and asking with one before anything is held is how
-    // the page opens at the top of a conversation instead of the end.
-    expect(server.asks).toEqual([{ kind: 'more', conversation: LEAD, before: null, turns: 20 }]);
+    // The subscribe's snapshot carries the newest page, so the switch asks no
+    // `more` beside it (#2420) - the ask fetched the same page a second time,
+    // 0.66-9.02 MB on the live seats.
+    expect(server.asks).toEqual([]);
   });
 
   /**

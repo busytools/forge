@@ -24,7 +24,7 @@ use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
 use super::wire::{
     FileContentWire, OpenTimings, cap_message_record, cap_tool_records, conversation_for,
-    encode_subject, encode_subject_timed, page,
+    encode_subject, encode_subject_timed, floor_cursor, page,
 };
 use crate::live::Live;
 use crate::surface::{DictateOutcome, ViewSurface};
@@ -889,12 +889,20 @@ async fn handle_client(
                     {
                         holds.give_back(slot);
                     }
+                    // **The refusal names the seat it refused** (#2420): the
+                    // error has no subject of its own, and a client holding
+                    // several seats has to tell its own refused read from
+                    // another's. A `more` refusal carries the same field.
+                    let seat = match &what {
+                        Subject::Session(slot) => Some(slot.clone()),
+                        _ => None,
+                    };
                     send(
                         socket,
                         ServerMessage::Error {
                             what: "subscribe".to_owned(),
                             why: refusal.to_string(),
-                            seat: None,
+                            seat,
                             dispatch_id: None,
                         },
                     )
@@ -1186,13 +1194,12 @@ async fn handle_client(
             let page = match folded {
                 // **The window's own start is not the history's.** A page cut
                 // there with a floor above it hands the floor back as the
-                // cursor, so an uninterrupted walk crosses into the
-                // transcript instead of stopping; with no floor above it, the
-                // `None` is the honest end of the history.
+                // cursor - the rule the session record shares (`floor_cursor`)
+                // - so an uninterrupted walk crosses into the transcript
+                // instead of stopping; with no floor above it, the `None` is
+                // the honest end of the history.
                 Ok(mut page) => {
-                    if page.cursor.is_none() && floor > 0 {
-                        page.cursor = Some(floor.to_string());
-                    }
+                    floor_cursor(&mut page, floor);
                     page
                 }
                 Err(err) => {

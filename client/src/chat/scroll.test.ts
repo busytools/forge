@@ -247,7 +247,7 @@ describe('the compensation the list is handed', () => {
     // arrived would be arming after the change it exists for.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
-    expect(server.asks, 'the ask went').toHaveLength(2);
+    expect(server.asks, 'the ask went').toHaveLength(1);
 
     expect(last(), 'armed as the ask goes out').toEqual({ length: 2, shift: true });
 
@@ -294,7 +294,7 @@ describe('the compensation the list is handed', () => {
     // case, not a contrived one.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
-    expect(server.asks, 'two asks are out').toHaveLength(3);
+    expect(server.asks, 'two asks are out').toHaveLength(2);
     expect(last()?.shift, 'still armed for the second').toBe(true);
 
     await tick();
@@ -501,7 +501,7 @@ describe('the history above a column that fits', () => {
     server.page([turn('t1'), turn('t2')], '2');
     await settleFrames();
     const before = server.asks.length;
-    expect(before, 'precondition: only the open asked').toBe(1);
+    expect(before, 'precondition: the open asked nothing - its subscribe answered').toBe(0);
     resized(100);
     resized(100);
     await settleFrames();
@@ -518,7 +518,7 @@ describe('the history above a column that fits', () => {
     resized(100);
     await settleFrames();
     const asks = server.asks.filter((ask) => ask.kind === 'more');
-    expect(asks, 'the first page is all there is').toHaveLength(1);
+    expect(asks, 'the first page is all there is, and it asked nothing').toHaveLength(0);
   });
 
   it('asks nothing before the list has a layout to read', async () => {
@@ -533,7 +533,7 @@ describe('the history above a column that fits', () => {
     resized(100);
     await settleFrames();
     const asks = server.asks.filter((ask) => ask.kind === 'more');
-    expect(asks, 'no layout, no fit to trust').toHaveLength(1);
+    expect(asks, 'no layout, no fit to trust, and no ask').toHaveLength(0);
   });
 
   it('waits for every held turn to measure before it trusts the fit', async () => {
@@ -545,7 +545,7 @@ describe('the history above a column that fits', () => {
     // fill asked on that would take a page it does not need. The deferred
     // pass has run by the settle.
     await settleFrames();
-    expect(server.asks, 'nothing measured, nothing asked').toHaveLength(1);
+    expect(server.asks, 'nothing measured, nothing asked').toHaveLength(0);
 
     // The harness delivers one observer batch per `resized()`; a browser
     // settles its layout over more than one, so the second is that settle.
@@ -616,7 +616,7 @@ describe('the history above a column that fits', () => {
     resized(100);
     await settleFrames();
     const before = server.asks.length;
-    expect(before, 'precondition: the fill asked above').toBe(2);
+    expect(before, 'precondition: the fill asked above').toBe(1);
 
     // A page that repeats the cursor it was asked with is the walk's own
     // stop, and the fill stops on it too. The deliveries are the harness's
@@ -675,7 +675,7 @@ describe('the history above a column that fits', () => {
     resized(100);
     await settleFrames();
     const before = server.asks.length;
-    expect(before, 'precondition: the fill asked above').toBe(2);
+    expect(before, 'precondition: the fill asked above').toBe(1);
 
     // A landing with a NEW cursor whose row is a repeat - so nothing new
     // measures - then the refusal in the same turn, then a size change: the
@@ -700,7 +700,7 @@ describe('the history above a column that fits', () => {
       resized(100);
       flushSync();
       const before = server.asks.length;
-      expect(before, 'the fill asked above').toBe(2);
+      expect(before, 'the fill asked above').toBe(1);
 
       // The empty page keeps the cursor and stamps the beat; a quiet seat
       // publishes nothing else, so the fill schedules the retry itself.
@@ -734,7 +734,7 @@ describe('the history above a column that fits', () => {
       resized(100);
       resized(100);
       flushSync();
-      expect(server.asks.length, 'the fill asked above').toBe(2);
+      expect(server.asks.length, 'the fill asked above').toBe(1);
 
       server.refuse();
       flushSync();
@@ -807,7 +807,7 @@ describe('the history above a column that fits', () => {
       resized(100);
       flushSync();
       const before = server.asks.length;
-      expect(before, 'precondition: the fill asked above').toBe(2);
+      expect(before, 'precondition: the fill asked above').toBe(1);
 
       // The empty page stamps the beat; then a newest page lands inside it (a
       // seat return or a reconnect) and clears the beat without answering the
@@ -842,7 +842,7 @@ describe('the history above a column that fits', () => {
     resized(100);
     await settleFrames();
     const before = server.asks.length;
-    expect(before, 'precondition: the fill asked above').toBe(2);
+    expect(before, 'precondition: the fill asked above').toBe(1);
 
     // The page above lands with a row that measures exactly at the estimate:
     // the list's content height does not change again, so its own watcher
@@ -866,7 +866,7 @@ describe('the history above a column that fits', () => {
     resized(100);
     await settleFrames();
     const before = server.asks.length;
-    expect(before, 'precondition: the fill asked above').toBe(2);
+    expect(before, 'precondition: the fill asked above').toBe(1);
 
     // The landing repeats the measured rows under a cursor above them, so
     // every guard passes at this instant - and the layout then settles into
@@ -889,7 +889,7 @@ describe('the history above a column that fits', () => {
     resized(100);
     await settleFrames();
     const before = server.asks.length;
-    expect(before, 'precondition: the fill asked above').toBe(2);
+    expect(before, 'precondition: the fill asked above').toBe(1);
 
     // A page that repeats both rows under a cursor one above them: nothing
     // new draws and no row reports a height, so the size observer has no
@@ -897,7 +897,7 @@ describe('the history above a column that fits', () => {
     server.page([turn('t1'), turn('t2')], '1');
     await settleFrames();
     const asks = asksFor(server, LEAD);
-    expect(asks.length, 'the landing woke the fill').toBe(3);
+    expect(asks.length, 'the landing woke the fill').toBe(2);
     expect(asks[asks.length - 1]?.before, 'for the cursor the landing moved to').toBe('1');
   });
 
@@ -913,17 +913,19 @@ describe('the history above a column that fits', () => {
     expect(asksFor(server, LEAD).at(-1)?.before, 'precondition: the fill asked above').toBe('2');
     const before = server.asks.length;
 
-    // The socket dies with that ask in flight. The reconnect answers with the
-    // newest page, which spells the very cursor the fill last asked - so the
-    // landing count is the only thing that says the fill may ask it again.
+    // The socket dies with that ask in flight. The reconnect asks the newest
+    // page for itself (#2420), and its answer spells the very cursor the fill
+    // last asked - so the landing count is the only thing that says the fill
+    // may ask it again.
     server.reach('closed');
     server.reach('open');
+    expect(server.asks.length, 'the reconnect asks the newest page').toBe(before + 1);
+    expect(asksFor(server, LEAD).at(-1)?.before, 'and it is a newest ask').toBeNull();
     server.pageFor(LEAD, [turn('t1'), turn('t2')], '2');
     await settleFrames();
     const asks = asksFor(server, LEAD);
-    expect(asks.length, 'the reconnect and the fill both asked').toBe(4);
-    expect(asks[asks.length - 2]?.before, 'the reconnect asks the newest page').toBeNull();
-    expect(asks[asks.length - 1]?.before, 'and the fill asks the same cursor again').toBe('2');
+    expect(asks.length, 'and the fill asks the same cursor again').toBe(before + 2);
+    expect(asks[asks.length - 1]?.before, 'for the cursor the answer spells').toBe('2');
     expect(server.asks.length, 'nothing else asked').toBe(before + 2);
   });
 
@@ -939,7 +941,7 @@ describe('the history above a column that fits', () => {
       resized(100);
       flushSync();
       const before = server.asks.length;
-      expect(before, 'precondition: the fill asked above').toBe(2);
+      expect(before, 'precondition: the fill asked above').toBe(1);
 
       // An empty page stamps the beat; before it fires the column grows and
       // overflows. The beat wakes the fill, and the fit guard inside it - the
@@ -969,7 +971,7 @@ describe('the history above a column that fits', () => {
       resized(100);
       flushSync();
       const before = server.asks.length;
-      expect(before, 'precondition: the fill asked above').toBe(2);
+      expect(before, 'precondition: the fill asked above').toBe(1);
 
       // The empty page stamps the beat; a newest page lands before it and
       // clears it. The landing's own check holds - the room has grown to an
@@ -1014,8 +1016,8 @@ describe('the history above a column that fits', () => {
     await settleFrames();
     expect(
       asksFor(server, LEAD).map((ask) => ask.before),
-      'the first seat filled',
-    ).toEqual([null, '2']);
+      'the first seat filled, and only the fill asked - the switch itself asked no page',
+    ).toEqual(['2']);
 
     // The second seat's conversation loads while the first is drawn, so this
     // column never ran a fill for it: it arrives held, loaded and fitting.
@@ -1040,8 +1042,8 @@ describe('the history above a column that fits', () => {
     await settleFrames();
     expect(
       asksFor(server, other).map((ask) => ask.before),
-      'the second seat filled on its own cursor',
-    ).toEqual([null, null, '2']);
+      'the second seat filled on its own cursor - its switch asked no page',
+    ).toEqual([null, '2']);
   });
 });
 
