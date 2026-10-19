@@ -1858,8 +1858,8 @@ describe('one turn folded into the units a view draws', () => {
       'The lead charter.md, does it get included as part of the Rust binary itself?',
     );
 
-    // A prompt that carried more than words draws its words, and every other
-    // block as the placeholder the server's own fold gives it.
+    // A prompt that carried an image beside its words draws its words, and
+    // the image as the attachment row a typed turn's image draws.
     const multi = fold([
       heard([
         {
@@ -1872,9 +1872,10 @@ describe('one turn folded into the units a view draws', () => {
         },
       ]),
     ]);
-    expect(multi[0]?.kind === 'user' ? multi[0].text : '').toBe(
-      'What is wrong with this layout?\n[image]',
-    );
+    expect(multi[0]?.kind === 'user' ? multi[0].text : '').toBe('What is wrong with this layout?');
+    expect(multi[0]?.kind === 'user' ? multi[0].files : []).toEqual([
+      { kind: 'image', mime: 'image/png', bytes: null },
+    ]);
   });
 
   it('draws a queued peer envelope as the peer card it is', () => {
