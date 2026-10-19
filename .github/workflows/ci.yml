@@ -212,3 +212,26 @@ jobs:
       - uses: taiki-e/install-action@just
       - run: just client-tauri-clippy
       - run: just client-tauri-test
+
+  # **The only job that compiles the engine.** The CEF module is macOS-only;
+  # the Linux job above proves the rest of the shell compiles and that the
+  # stub refuses by name, but no Ubuntu runner can compile the bridge, its
+  # render handler or its tests. This one does - the same two steps, on the
+  # platform the framework ships on.
+  client-tauri-macos:
+    name: client shell (macOS, CEF)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/rust
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: client-tauri
+          workspaces: client/src-tauri -> target
+      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@just
+      - run: just client-tauri-clippy
+      - run: just client-tauri-test

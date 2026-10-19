@@ -22,6 +22,7 @@ import base64
 import json
 import re
 import sys
+import tarfile
 from pathlib import Path
 
 
@@ -95,7 +96,40 @@ def main() -> None:
     if signed_version != version:
         fail(f"the signature is for version {signed_version or 'unknown'}, expected {version}")
 
-    print(f"[OK] the update tarball is signed by the pinned key, for version {signed_version}")
+    # **The tarball must carry the engine, not just the app's own files.**
+    # It is built by the bundler from the app the CEF files were copied into;
+    # assembling it before that copy produced a signed, installable client
+    # with no browser, which only the next auto-update would reveal.
+    required = [
+        "forge.app/Contents/Frameworks/Chromium Embedded Framework.framework/"
+        "Chromium Embedded Framework",
+        "forge.app/Contents/Frameworks/forge-client Helper.app/Contents/MacOS/"
+        "forge-client Helper",
+        "forge.app/Contents/Frameworks/forge-client Helper (GPU).app/Contents/MacOS/"
+        "forge-client Helper (GPU)",
+        "forge.app/Contents/Frameworks/forge-client Helper (Renderer).app/Contents/MacOS/"
+        "forge-client Helper (Renderer)",
+        "forge.app/Contents/Frameworks/forge-client Helper (Plugin).app/Contents/MacOS/"
+        "forge-client Helper (Plugin)",
+        "forge.app/Contents/Frameworks/forge-client Helper (Alerts).app/Contents/MacOS/"
+        "forge-client Helper (Alerts)",
+    ]
+    try:
+        with tarfile.open(tarball, "r:gz") as archive:
+            names = set(archive.getnames())
+    except (OSError, tarfile.TarError) as err:
+        fail(f"the updater tarball could not be read: {err}")
+    missing = [name for name in required if name not in names]
+    if missing:
+        fail(
+            "the update tarball carries no browser - every installed client would "
+            f"update to one that cannot open a page; missing: {', '.join(missing)}"
+        )
+
+    print(
+        f"[OK] the update tarball is signed by the pinned key, for version "
+        f"{signed_version}, and carries the engine"
+    )
 
 
 if __name__ == "__main__":

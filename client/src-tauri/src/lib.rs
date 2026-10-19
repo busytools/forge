@@ -350,6 +350,18 @@ mod commands {
 /// the desktop binary in `main.rs` runs the same builder.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // **The same executable is also CEF's host and its subprocesses.** Both
+    // exits happen before any Tauri work: the client's UI process never
+    // initializes CEF, and a helper's whole life is `execute_process`.
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(args) = browser::cef::host_args(std::env::args().skip(1)) {
+            browser::cef::host_main(args);
+        }
+        if browser::cef::is_subprocess() {
+            browser::cef::run_subprocess();
+        }
+    }
     let context = tauri::generate_context!();
     let log_file = log_file(&context.config().identifier);
 
@@ -375,6 +387,8 @@ pub fn run() {
             browser::browser_windowed,
             browser::browser_show,
             browser::browser_hide,
+            browser::browser_surface_rect,
+            browser::browser_takeover,
             browser::browser_used,
             check_update,
             install_update,
@@ -471,8 +485,10 @@ pub fn run() {
                 // boot brings no browser up, and `boot_browser` is what the
                 // pin drives, so a launch moved back in here is the closure's
                 // own diff rather than a silent regression.
-                let host =
-                    browser::BrowserHost::boot_browser(browser::StackPaths::resolve(app.handle()));
+                let host = browser::BrowserHost::boot_browser(
+                    browser::StackPaths::resolve(app.handle()),
+                    Some(app.handle().clone()),
+                );
                 app.manage(host);
             }
             // The bridge, over whatever host this target has: the desktop's

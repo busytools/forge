@@ -1300,6 +1300,35 @@ details[open] > summary .arw { transform: rotate(90deg); }
    content and the composer is pushed past the viewport, where
    overflow:hidden eats it. */
 main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+
+/* The browser takeover: the page fills the screen under the bar. The native
+   layer is drawn over the page area at exactly its rect; the states before a
+   frame lands are drawn there too. */
+.takeover { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  background: var(--bg, #04050a); }
+/* **The takeover's bar, over the page.** Fixed so it stays above the native
+   layer, which is placed at the page area's rect below it. It is drawn by the
+   composer outside `.surf`, whose container-type would otherwise contain it. */
+.takeover-bar { position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+  display: flex; flex-direction: column; background: var(--s1);
+  border-bottom: 1px solid var(--line); }
+.tb-row { display: flex; align-items: center; gap: 10px; padding: 6px 12px;
+  min-height: 37px; }
+.tb-title { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.tb-btn { border: 1px solid var(--line); border-radius: 8px; padding: 4px 11px;
+  background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
+.tb-btn.d { color: var(--muted); background: transparent; }
+.tb-feedback { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+  border-top: 1px solid var(--line); background: var(--s2); }
+.tb-field { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--s1); color: var(--text); }
+.takeover-page { position: absolute; inset: 0; display: flex;
+  flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+.surface-tx { color: var(--muted); font-size: var(--fs-data); max-width: 44ch;
+  text-align: center; }
+.surface-tx.bad { color: var(--bad); }
 /* One row, never two. The seat and its facts are a single line, and what does
    not fit FOLDS by priority rather than wrapping - the terminal's own answer:
    at its narrow tier both panes fold and the bar keeps the handles and the
@@ -1753,6 +1782,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-list .bz-role { display: flex; align-items: center; gap: 9px; padding: 8px 13px;
   border-bottom: 1px solid var(--line); }
 .bz-list .bz-role .tx { color: var(--muted); font-size: var(--fs-data); min-width: 0; }
+.bz-list .bz-role .bz-engine { margin-left: auto; opacity: .8; }
 .bz-list .bz-take { margin-left: auto; flex: none; background: none; cursor: pointer;
   border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px; font: inherit;
   font-size: var(--fs-label); color: var(--muted); }
@@ -2869,6 +2899,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    is what shows where the keyboard is - so the page's accent focus ring, which
    drew an orange rectangle around every option at once, is not drawn here. */
 .dock .opts:focus, .dock .opts:focus-visible { outline: none; }
+/* **The dock takes the keyboard, the surface shows it.** The card's root is
+   focused when a prompt arrives with no row to take the caret, and the
+   global `:focus-visible` ring then drew an orange box around the card on
+   that first focus (Ved, 2026-10-19); the composer's own focus-within ring is
+   the one place the focus is said. */
+.dock:focus, .dock:focus-visible { outline: none; }
 /* Aligned to the option's own LINE rather than to the row's full height: an
    option whose description wraps under it would otherwise centre its mark
    between the two, so the mark sat against the description instead of the

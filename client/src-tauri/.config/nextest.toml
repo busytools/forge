@@ -1,0 +1,8 @@
+# The call-carry test runs a real MCP child (a stub driver on stdio) and the
+# driver's own handshake budget is 15 s. Under the machine's full test
+# parallelism the child can take most of that budget before it answers
+# (measured: ~0.7 s alone, 8-10 s at 4-8 threads, over budget at full), so
+# this test reserves every thread and runs alone.
+[[profile.default.overrides]]
+filter = 'test(a_successful_call_rewrites_the_carried_page)'
+threads-required = "num-test-threads"

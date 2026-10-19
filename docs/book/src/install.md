@@ -58,7 +58,8 @@ feature. The published rustdoc is the one exception: it needs
 ## Development is macOS-first
 
 forge is developed and run on macOS. Other platforms compile, and CI
-builds and tests on Linux, but one thing behaves differently:
+builds and tests on Linux - with one job on macOS that compiles the shell's
+CEF bridge, which no Linux runner sees - but one thing behaves differently:
 
 - **App-level chords use Cmd on macOS, Ctrl elsewhere.** The pane
   toggles (`Cmd+Left`/`Cmd+Right` vs `Ctrl+Left`/`Ctrl+Right`) and
@@ -120,15 +121,18 @@ configuration needs `just client-tauri-check` (which runs the tests too)
 or `just client-tauri-bundle` (plus the bundles), and the first is the one
 to run before handing over a change there.
 
-A client that BUNDLES takes one step of its own first: `just
+A client that BUNDLES takes two steps of its own first. `just
 vendor-browser-stack` fetches and verifies the driver the client hosts -
 node and `@playwright/mcp`, about 140 MB into the client's gitignored
-`browser-stack/` directory - and `client-tauri-bundle` and `client-release`
-run it themselves, so a release cannot ship without it. It needs network
-access the first time and nothing after that; the pins it verified are
-printed on every run. The browser itself is not vendored: the client drives
-the browser already on the machine - Brave, else Google Chrome - so install
-one of those for the browser tools to answer.
+`browser-stack/` directory - and `just stage-cef` stages the app's own
+Chromium, the CEF framework and its five helper apps, before `tauri build`,
+which copies the staged tree into `Contents/Frameworks` as it builds the
+app. `client-tauri-bundle` and `client-release` run both
+themselves, so a release cannot ship without them. The vendoring needs
+network access the first time and nothing after that, and prints the pins
+it verified on every run. **No browser needs installing**: the engine is
+in the bundle, and a client built without it answers the browser doors with
+a sentence naming the missing framework rather than a timeout.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
 or `[ERROR] check: <step> failed`, and stops at the first failing step,

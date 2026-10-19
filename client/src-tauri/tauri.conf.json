@@ -31,7 +31,17 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["browser-stack/**/*"]
+    "resources": ["browser-stack/**/*"],
+    "macOS": {
+      "files": {
+        "Frameworks/Chromium Embedded Framework.framework": "cef-bundle/Chromium Embedded Framework.framework",
+        "Frameworks/forge-client Helper.app": "cef-bundle/forge-client Helper.app",
+        "Frameworks/forge-client Helper (Alerts).app": "cef-bundle/forge-client Helper (Alerts).app",
+        "Frameworks/forge-client Helper (GPU).app": "cef-bundle/forge-client Helper (GPU).app",
+        "Frameworks/forge-client Helper (Plugin).app": "cef-bundle/forge-client Helper (Plugin).app",
+        "Frameworks/forge-client Helper (Renderer).app": "cef-bundle/forge-client Helper (Renderer).app"
+      }
+    }
   },
   "plugins": {
     "updater": {

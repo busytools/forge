@@ -13,3 +13,5 @@ src-tauri/target/
 src-tauri/gen/
 # The vendored driver stack: nothing in it is this project's code.
 src-tauri/browser-stack/
+# The staged engine `just stage-cef` builds for the macOS bundler.
+src-tauri/cef-bundle/

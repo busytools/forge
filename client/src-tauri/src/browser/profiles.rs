@@ -347,6 +347,210 @@ pub(super) fn raise_refusal(name: &str, dir: &Path, seat: &Seat) -> Result<(), S
     }
 }
 
+/// **One host launch per profile ACROSS PROCESSES.** The client's own mutex
+/// serializes its ensures; a second client - the app opened twice - would
+/// otherwise spawn a second host onto a profile CEF already holds. An flock
+/// beside the cache root makes the critical section machine-wide, and the
+/// loser re-checks for the live host under the guard.
+#[cfg(desktop)]
+pub(super) struct LaunchLock {
+    _file: std::fs::File,
+}
+
+#[cfg(desktop)]
+enum Locked {
+    Held(LaunchLock),
+    Contended,
+    Unavailable(String),
+}
+
+#[cfg(desktop)]
+fn try_lock(profile: &Path) -> Locked {
+    let path = profile.join("launch.lock");
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(why) => {
+            return Locked::Unavailable(format!(
+                "the launch lock at {} cannot be opened: {why}",
+                path.display()
+            ));
+        }
+    };
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Locked::Held(LaunchLock { _file: file }),
+        Err(why) if why == rustix::io::Errno::WOULDBLOCK || why == rustix::io::Errno::AGAIN => {
+            Locked::Contended
+        }
+        Err(why) => Locked::Unavailable(format!(
+            "the launch lock at {} cannot be taken: {why}",
+            path.display()
+        )),
+    }
+}
+
+#[cfg(desktop)]
+impl LaunchLock {
+    /// The lock for `profile`, waiting out whoever holds it up to the host's
+    /// own launch deadline plus slack. A delete takes the same lock, so a
+    /// launch and a removal can never interleave.
+    pub(super) async fn acquire(profile: &Path) -> Result<Self, String> {
+        let deadline = tokio::time::Instant::now()
+            + crate::browser::cef::spawn::LAUNCH_TIMEOUT
+            + Duration::from_secs(2);
+        loop {
+            match try_lock(profile) {
+                Locked::Held(lock) => return Ok(lock),
+                Locked::Unavailable(why) => return Err(why),
+                Locked::Contended => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "the browser on {} is being launched by another process and did not \
+                             answer in time",
+                            profile.display(),
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+}
+
+/// The client's own claim on a profile's host: an exclusive flock on
+/// `<profile>/client.lock`, held for the claiming client's process lifetime.
+///
+/// **The lock IS the liveness truth.** A recorded pid cannot be: a recycled
+/// pid reads as a live owner, and one that died between two reads says
+/// nothing a reader can trust. A process death of any kind releases the
+/// flock, so a sweep's non-blocking take answering "free" is the one
+/// trustworthy reading of "the client that owned this host is gone".
+#[cfg(desktop)]
+pub struct ClientLock {
+    _file: std::fs::File,
+}
+
+/// The client's claim on `profile`, or `None` when another live client holds
+/// it. Makes the directory the lock lives in, so a claim can be the first
+/// thing to touch a fresh cache root.
+#[cfg(desktop)]
+pub fn claim(profile: &Path) -> Result<Option<ClientLock>, String> {
+    std::fs::create_dir_all(profile)
+        .map_err(|why| format!("the browser profile directory cannot be made: {why}"))?;
+    let path = client_lock_path(profile);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|why| format!("the client lock at {} cannot be opened: {why}", path.display()))?;
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => {
+            // The pid is written for a reader, never for a decision: the
+            // flock above is what the sweep trusts.
+            use std::io::Write as _;
+            let _ = file.set_len(0);
+            let _ = (&file).write_all(std::process::id().to_string().as_bytes());
+            Ok(Some(ClientLock { _file: file }))
+        }
+        Err(why) if why == rustix::io::Errno::WOULDBLOCK || why == rustix::io::Errno::AGAIN => {
+            Ok(None)
+        }
+        Err(why) => Err(format!("the client lock at {} cannot be taken: {why}", path.display())),
+    }
+}
+
+/// The file the client's claim lives on, beside the launch lock.
+#[cfg(desktop)]
+fn client_lock_path(profile: &Path) -> std::path::PathBuf {
+    profile.join("client.lock")
+}
+
+/// A named profile's cache root, derived from its ownership directory.
+#[cfg(desktop)]
+pub(super) fn cef_cache(dir: &Path) -> std::path::PathBuf {
+    dir.join("cef")
+}
+
+/// Move a Brave-era profile into a CEF cache root, once.
+///
+/// **Both engines write Chromium's own profile**, so the migration is a copy
+/// of `Default` and `Local State` into the cache root - no conversion. The
+/// client's own Brave launches used `use-mock-keychain` and
+/// `password-store=basic`, the same flags the host sets, so the cookies a
+/// client-created profile carries decrypt under the host; a profile the
+/// person's own Brave created with the real keychain would not, and is not
+/// converted here.
+///
+/// Answers whether anything was copied. An empty answer is the normal case:
+/// a cache root already opened, or no legacy profile to move.
+#[cfg(desktop)]
+pub(super) fn migrate_brave(legacy: &Path, cache: &Path) -> Result<bool, String> {
+    if cache.join("Default").is_dir() || !legacy.join("Default").is_dir() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(cache)
+        .map_err(|why| format!("the profile's cache root cannot be made: {why}"))?;
+    copy_tree(&legacy.join("Default"), &cache.join("Default"))?;
+    let local_state = legacy.join("Local State");
+    if local_state.is_file() {
+        std::fs::copy(&local_state, cache.join("Local State"))
+            .map_err(|why| format!("the profile's local state cannot be copied: {why}"))?;
+    }
+    Ok(true)
+}
+
+#[cfg(desktop)]
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|why| format!("{} cannot be made: {why}", to.display()))?;
+    let entries = std::fs::read_dir(from)
+        .map_err(|why| format!("{} cannot be read: {why}", from.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        // Another engine's live locks and ports mean nothing in this cache.
+        if matches!(
+            name.to_str(),
+            Some(
+                "SingletonLock"
+                    | "SingletonSocket"
+                    | "SingletonCookie"
+                    | "DevToolsActivePort"
+                    | "launch.lock"
+                    | "client.lock"
+                    | "host.json"
+                    | "owner.json"
+                    | "cef"
+                    // **Caches, not profile.** They are the other engine's
+                    // HTTP and code caches: huge, rebuilt on first use, and
+                    // meaningless to the engine reading the copy.
+                    | "Cache"
+                    | "Code Cache"
+                    | "GPUCache"
+                    | "DawnCache"
+            )
+        ) {
+            continue;
+        }
+        let target = to.join(&name);
+        let kind =
+            entry.file_type().map_err(|why| format!("{} cannot be read: {why}", path.display()))?;
+        if kind.is_dir() {
+            copy_tree(&path, &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(&path, &target)
+                .map_err(|why| format!("{} cannot be copied: {why}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +623,48 @@ mod tests {
             owner_of(&named.dir),
             Ok(Some(seat("job-hunt"))),
             "the seat that opened the name is what the directory records",
+        );
+    }
+
+    /// **A Brave-era profile moves once.** Both engines write Chromium's own
+    /// profile, so the migration is a copy of `Default` and `Local State`;
+    /// the second call answers nothing, and a cache root that already has a
+    /// profile is never overwritten.
+    #[test]
+    fn a_brave_profile_migrates_once_into_the_cache_root() {
+        let root = tempfile::tempdir().expect("a temp dir");
+        let legacy = root.path().join("profiles").join("hunt");
+        std::fs::create_dir_all(legacy.join("Default")).expect("the legacy default");
+        std::fs::write(legacy.join("Default").join("Cookies"), b"the logins")
+            .expect("legacy cookies");
+        std::fs::write(legacy.join("Local State"), b"{}").expect("the legacy state");
+        std::fs::write(legacy.join("SingletonLock"), b"").expect("a Brave lock");
+        let cache = cef_cache(&legacy);
+
+        assert_eq!(migrate_brave(&legacy, &cache), Ok(true), "the first launch moves it");
+        assert_eq!(
+            std::fs::read(cache.join("Default").join("Cookies")).expect("the cookies"),
+            b"the logins",
+            "the logins travel",
+        );
+        assert!(cache.join("Local State").is_file(), "and the local state");
+        assert!(
+            !cache.join("Default").join("SingletonLock").exists(),
+            "another engine's live lock is not carried",
+        );
+        assert_eq!(migrate_brave(&legacy, &cache), Ok(false), "a second launch copies nothing");
+
+        // A cache root already opened is never overwritten by the copy.
+        let other = root.path().join("profiles").join("scout");
+        std::fs::create_dir_all(other.join("Default")).expect("the legacy default");
+        std::fs::write(other.join("Default").join("Cookies"), b"old").expect("old cookies");
+        let opened = cef_cache(&other);
+        std::fs::create_dir_all(opened.join("Default")).expect("an opened cache");
+        std::fs::write(opened.join("Default").join("Cookies"), b"new").expect("new cookies");
+        assert_eq!(migrate_brave(&other, &opened), Ok(false), "the cache wins");
+        assert_eq!(
+            std::fs::read(opened.join("Default").join("Cookies")).expect("the cookies"),
+            b"new",
         );
     }
 

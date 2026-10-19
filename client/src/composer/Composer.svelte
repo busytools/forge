@@ -5,7 +5,8 @@
   import Pinned from '../chat/Pinned.svelte';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
-  import { hideBrowser } from '../browser/host';
+  import { drawsSurface } from '../browser/host';
+  import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -19,6 +20,7 @@
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
+  import TakeoverBar from './TakeoverBar.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
   import { focusOf, type Where } from './editors';
@@ -444,6 +446,27 @@
     });
   });
 
+  /** Whether the takeover was closed at the last run; the blur is on OPEN. */
+  let surfaceWasClosed = true;
+
+  /**
+   * **Opening the takeover gives the keyboard to the page, not the hidden
+   * composer.** The native overlay takes first responder on attach; this
+   * clears any DOM focus the composer still holds, so a keystroke cannot
+   * land in a draft nobody can see. A later phase change (a failure, a
+   * retry) leaves the bar's own field alone.
+   */
+  $effect(() => {
+    const open = surface.phase !== 'closed';
+    if (open && surfaceWasClosed) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.closest('.comp') !== null) {
+        active.blur();
+      }
+    }
+    surfaceWasClosed = !open;
+  });
+
   /**
    * A held hand-off leaving the core, the draft's own twin: the dock vanishes
    * with the update that drops it, and the ENDING is what tells this reader
@@ -463,11 +486,12 @@
       // The reader's own answer: the ending would only repeat the click.
       if (held.answered === id) return;
       held.ended = handOffEndingLine(payload['ending']);
-      // **A window another view's answer leaves raised comes down here.** The
-      // local Done lowers its own window; an answer from another view never
-      // touches this shell, and the next agent call would attach to a browser
-      // left headed. Hide is idempotent when nothing is raised.
-      void hideBrowser(held.shownHandOffProfile);
+      // **A takeover another view's answer leaves raised comes down here.**
+      // The local Done lowers its own; an answer from another view never
+      // touches this shell. Through the store, so the page's phase follows
+      // the shell's answer instead of staying live over a closed surface.
+      if (surface.hand_off?.id === id) clearHandOff(id);
+      void closeSurface(held.shownHandOffProfile);
     });
   });
 
@@ -531,6 +555,10 @@
    * the notes option, and a held post never.
    */
   function toDock(): boolean {
+    // **The takeover's feedback line is this dock's words box.** While the
+    // surface is open, the only text box on screen is the bar's, so a take
+    // started from its mic belongs there - the same `notes` the dock binds.
+    if (surface.phase === 'live' && surface.hand_off !== null) return true;
     const asking = dockAsk;
     if (asking === null || blocker !== null) return false;
     if (asking.kind === 'question') return true;
@@ -1025,6 +1053,82 @@
   }
 
   /**
+   * The hand-off the takeover's bar is answering, while the surface is up.
+   *
+   * **The bar lives here rather than in the dock** because `.surf` is a
+   * `container-type`, so a fixed child of it hangs off the composer instead
+   * of the window - and this bar must sit at the window's top.
+   */
+  const takeoverAsk = $derived(
+    surface.phase !== 'closed' && dockAsk?.kind === 'browser_hand_off' ? dockAsk : null,
+  );
+  /**
+   * **The bar stays while the surface is up, even when the ask leaves**: a
+   * hand-off the core resolved elsewhere takes the dock's card with it, and a
+   * bare picture with no way back to the chat is a trap. With no ask the bar
+   * carries only back-to-chat.
+   */
+  const takeoverTitle = $derived(
+    takeoverAsk === null
+      ? 'the browser'
+      : takeoverAsk.request.profile != null
+        ? `browser hand-off · ${takeoverAsk.request.profile}`
+        : 'browser hand-off',
+  );
+
+  /** Done or Not now: the hand-off's answer, and the takeover comes down. */
+  function takeoverAnswer(done: boolean): void {
+    if (takeoverAsk === null) return;
+    const id = takeoverAsk.request.id;
+    const profile = takeoverAsk.request.profile;
+    remember(id);
+    try {
+      void connection.dispatch({ respond_browser_hand_off: { key: slot, id, done } }, slot);
+    } catch (error) {
+      report('the answer was not sent', error);
+    }
+    void closeSurface(profile);
+    clearHandOff(id);
+  }
+
+  /**
+   * The feedback line's send: the words go as a prompt, then the hand-off is
+   * declined - its answer shape carries only done/not-done, so the prompt is
+   * how the session reads what did not work.
+   */
+  function takeoverFeedback(text: string): void {
+    if (takeoverAsk === null) return;
+    const uuid = mintPromptId();
+    try {
+      void connection.dispatch(
+        { prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' } },
+        slot,
+      );
+    } catch (error) {
+      report('the feedback was not sent', error);
+    }
+    takeoverAnswer(false);
+  }
+
+  /** Back to chat answers nothing: the hand-off stays parked for the next Open. */
+  function takeoverBack(): void {
+    void closeSurface();
+  }
+
+  /**
+   * The failure state's own door: ask the shell for the surface again.
+   *
+   * A stale host record, a dead process or a placement that lost the race is
+   * retried here rather than sending the person back to the card; the store
+   * decides the phase from the answer, so a second failure draws its own
+   * sentence.
+   */
+  function takeoverRetry(): void {
+    const profile = takeoverAsk?.request.profile ?? surface.profile;
+    void openSurface(profile, slot);
+  }
+
+  /**
    * What a prompt's own-words box belongs to: one prompt, not one tool call.
    *
    * A batch of questions rides one tool call - the core reuses its id and
@@ -1069,6 +1173,23 @@
 </script>
 
 <div class="comp">
+  {#if surface.phase !== 'closed' && drawsSurface()}
+    <TakeoverBar
+      title={takeoverTitle}
+      bind:notes={dockDraft}
+      take={composer.take}
+      {wire}
+      silent={silentLine}
+      onabandon={abandon}
+      onmic={() => dictate.toggle()}
+      {dictation}
+      ondone={takeoverAsk === null ? null : () => takeoverAnswer(true)}
+      onnotnow={takeoverAsk === null ? null : () => takeoverAnswer(false)}
+      onback={takeoverBack}
+      onfeedback={takeoverAsk === null ? null : takeoverFeedback}
+      onretry={surface.phase === 'failed' ? takeoverRetry : null}
+    />
+  {/if}
   <div
     class="surf"
     class:rec={ring === 'rec'}

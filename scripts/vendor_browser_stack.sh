@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # scripts/vendor_browser_stack.sh - fetch, verify and unpack the driver
 # stack the client bundles inside the app: node and @playwright/mcp for the
-# desktop, libnode for Android. The browser itself is the machine's own on
-# the desktop (Brave or Google Chrome) and the system WebView on Android, so
-# nothing here fetches one.
+# desktop, libnode for Android. This is the driver, not the engine: the
+# desktop's Chromium is staged by `just stage-cef`, and the phone keeps its
+# system WebView, so nothing here fetches a browser.
 #
 # Idempotent at the pins below: anything already there at its pinned version
 # is left alone. `just client-tauri-bundle` and `just client-release` run
@@ -115,10 +115,10 @@ prune_generated_stack() {
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-browser-stack.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-# The browser is the machine's own now, and a `browser/` tree from when one
-# was vendored is removed here: `bundle.resources` globs the whole stack, so
-# a leftover would keep packing a Chromium nothing can launch into every
-# release.
+# The engine is CEF in the app bundle now, staged by `just stage-cef`, and a
+# `browser/` tree from when a whole Chromium was vendored is removed here:
+# `bundle.resources` globs the whole stack, so a leftover would keep packing a
+# second browser nothing can launch into every release.
 if [ -d "$STACK/browser" ]; then
     echo "[..] removing the stale vendored browser tree"
     find "$STACK/browser" -depth -delete

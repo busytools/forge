@@ -49,6 +49,16 @@ export function canHost(): boolean {
 }
 
 /**
+ * Whether this page draws the takeover itself. **The phone does not**: its
+ * bar and full-screen presentation are Kotlin's, and the page's components
+ * are the desktop's - mounting them on Android draws a second takeover over
+ * the native one.
+ */
+export function drawsSurface(): boolean {
+  return canHost() && !/Android/i.test(navigator.userAgent);
+}
+
+/**
  * The phone's takeover bar speaks into this page: the Kotlin bar calls
  * `window.__forgeTakeover('done' | 'lowered' | 'raised')` on the client's
  * own webview, and the hook re-emits it as a window event - the dock answers
@@ -145,19 +155,17 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
 }
 
 /**
- * Bring the browser's window forward, which is what a hand-off's Open asks
- * for: the person's own browser over the profile the agents drive, its
- * window born hidden and moved out of every screen until this raises it.
- * **`profile` names which one**: `null` is the shared profile, a name is
- * that profile's own window over its own browser - the CAPTCHA in the right
- * session, not a lookalike in the wrong one. The page a session prepared is
- * the page that comes up: the raise moves a window and relaunches nothing.
+ * Put the browser surface up, which is what a hand-off's Open asks for: the
+ * client's own CEF host over the profile the agents drive, drawn into the
+ * takeover. **`profile` names which one**: `null` is the shared profile, a
+ * name is that profile's own host - the CAPTCHA in the right session, not a
+ * lookalike in the wrong one. The page a session prepared is the page that
+ * comes up: this attaches the surface and relaunches nothing.
  *
- * **Answers why it could not be raised, or `null` when it was.** The shell
- * carries the actionable sentence - a machine with no browser to drive is
- * told which one to install - and a caller that drew a reason of its own
- * would throw that away. Outside the shell the reason is the page's own.
- * A dock that claimed a window was up over a raise that never happened
+ * **Answers why it could not open, or `null` when it did.** The shell
+ * carries the actionable sentence and a caller that drew a reason of its
+ * own would throw that away. Outside the shell the reason is the page's own.
+ * A dock that claimed the browser was up over an open that never happened
  * would have the person press Done and tell the session they acted.
  */
 export async function showBrowser(
@@ -175,25 +183,48 @@ export async function showBrowser(
 }
 
 /**
- * Take the hand-off's window back out of sight: the browser keeps running,
- * with its tabs and its page, and the next agent call drives that same
- * browser. **The hand-off itself is answered separately** - Done or Not now
- * - and answering it lowers the window, so the cycle opens and closes as
- * one act.
+ * Take the takeover down: the browser keeps running, with its tabs and its
+ * page, and the next agent call drives that same browser. **The hand-off
+ * itself is answered separately** - Done or Not now - and answering it also
+ * takes the takeover down, so the cycle opens and closes as one act.
  *
  * **Answers why it could not come down, or `null` when it did** - the same
- * shape a raise answers with, so a strip button that said hide and then
- * drew nothing on a refusal cannot happen.
+ * shape an open answers with, so a button that said back and then drew
+ * nothing on a refusal cannot happen.
  */
-export async function hideBrowser(profile: string | null = null): Promise<string | null> {
+export async function hideBrowser(profile: string | null = null): Promise<HideAnswer> {
   if (!canHost()) return 'this page is not the client';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_hide', { profile });
-    return null;
+    return { lowered: await invoke<boolean>('browser_hide', { profile }) };
   } catch (why) {
     return whyText(why);
   }
+}
+
+/**
+ * What a lower answered: whether it took the page the person sees down.
+ *
+ * **`false` is a real answer**: the shell lowers only the profile it is
+ * drawing, so a Done for another profile leaves that profile's surface up,
+ * and the page's store keeps its bar over it instead of going closed over a
+ * picture still on screen.
+ */
+export type HideAnswer = { lowered: boolean } | string;
+
+/**
+ * Where the takeover's page area is, for the shell to place the native layer:
+ * CSS pixels from the viewport's top-left and the device pixel ratio. The
+ * page is the measurer, so the bar's own height is in the rect rather than a
+ * number the shell would have to guess.
+ */
+export async function reportSurfaceRect(
+  rect: { x: number; y: number; width: number; height: number },
+  scale: number,
+): Promise<void> {
+  if (!canHost()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('browser_surface_rect', { ...rect, scale });
 }
 
 /** Whether a session has driven this client's browser since it came up. */
@@ -233,8 +264,8 @@ export async function deleteProfile(name: string): Promise<void> {
 }
 
 /**
- * Whether a profile's browser is up as a window - the shared one for `null` -
- * which is what the strip's show/hide button toggles on.
+ * Whether a profile's browser is up as the takeover - the shared one for
+ * `null` - which is what the strip's show/hide button toggles on.
  */
 export async function profileWindowed(name: string | null = null): Promise<boolean> {
   if (!canHost()) return false;
@@ -253,8 +284,8 @@ export interface ProfileRow {
    *  never been opened, which the row's second line says rather than
    *  implying a driver that was there and left. */
   opened: boolean;
-  /** Whether its browser is up as a WINDOW right now: the row's button says
-   *  hide where it is, and show where it is not. */
+  /** Whether its browser is up as the takeover right now: the row's button
+   *  says hide where it is, and show where it is not. */
   windowed: boolean;
   /** Whether the shell holds no live entry for it: its browser is down while
    *  its files - the logins - are here. The strip's delete-all takes exactly

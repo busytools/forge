@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; the browser surface</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
+    --line:#222a3c; --ctl:#516590;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --fs-prose: 15.5px; --fs-data: 14px; --fs-label: 12.5px; --r: 12px;
+  }
+  body { background:
+      radial-gradient(1200px 560px at 6% -14%, rgba(244,118,0,.09), transparent 58%),
+      radial-gradient(900px 480px at 98% 108%, rgba(91,156,248,.06), transparent 60%),
+      var(--bg);
+    background-attachment: fixed; color: var(--text); font-family: var(--ui);
+    font-size: var(--fs-prose); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .page { max-width: 1420px; margin: 0 auto; padding: 30px 22px 90px; }
+  h1 { font-size: 18px; font-weight: 500; margin-bottom: 6px; }
+  .sub { color: var(--dim); max-width: 98ch; margin-bottom: 8px; }
+  h2 { font-size: var(--fs-prose); font-weight: 500; margin: 44px 0 10px; }
+  .mono { font-family: var(--mono); } .dim { color: var(--dim); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); margin-top: 8px; }
+  .tile { border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(13,17,26,.65), rgba(4,5,10,.4));
+    padding: 12px 14px 14px; margin-top: 18px; }
+  .tcap { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); margin-bottom: 10px; }
+  .tcap b { color: var(--text); font-weight: 400; }
+  .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 9px; }
+
+  /* The takeover: the whole window, the bar on top, the page under it. */
+  .takeover { border: 1.5px solid var(--ctl); border-radius: 14px; overflow: hidden;
+    display: flex; flex-direction: column; min-height: 430px; background: var(--bg); }
+  .bar { display: flex; align-items: center; gap: 10px; padding: 6px 12px;
+    border-bottom: 1px solid var(--line); background: var(--s1); }
+  .bt { border: 1px solid var(--line); border-radius: 8px; padding: 4px 11px;
+    background: var(--s3); color: var(--text); font-size: var(--fs-data); }
+  .bt.d { color: var(--muted); background: transparent; }
+  .btitle { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
+  .bacts { margin-left: auto; display: flex; gap: 8px; }
+  .feedback { display: flex; gap: 8px; padding: 7px 12px;
+    border-bottom: 1px solid var(--line); background: var(--s2); }
+  .fld { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--s1); color: var(--text); }
+
+  /* The page area: the page itself, no browser chrome. */
+  .stage { position: relative; flex: 1; min-height: 340px; background: #fdfbf7;
+    color: #1d2330; overflow: hidden; }
+  .pagetop { padding: 26px 30px 0; }
+  .pagetop .kicker { font-family: var(--mono); font-size: var(--fs-label);
+    letter-spacing: .04em; color: #7a8496; text-transform: uppercase; }
+  .pagetop h3 { font-size: 26px; font-weight: 500; margin-top: 8px; }
+  .pagetop p { color: #4b5568; margin-top: 8px; max-width: 52ch; }
+  .rows { padding: 20px 30px; display: flex; flex-direction: column; gap: 10px; }
+  .row { border: 1px solid #e2ddd2; border-radius: 10px; padding: 10px 12px;
+    display: flex; align-items: baseline; gap: 10px; background: #fffdf8; }
+  .row b { font-weight: 500; } .row .m { margin-left: auto; font-family: var(--mono);
+    font-size: var(--fs-label); color: #6b7484; }
+  .cursor { position: absolute; left: 208px; top: 128px; width: 12px; height: 18px;
+    border-left: 1.5px solid #1d2330; }
+
+  /* The dock card before Open. */
+  .dock { padding: 12px 15px; border: 1px solid var(--line); border-radius: 12px;
+    display: flex; flex-direction: column; gap: 9px; background: var(--s2); margin-top: 12px; }
+  .dock .q { display: flex; align-items: baseline; gap: 9px; }
+  .dock .qm { color: var(--accent); font-family: var(--mono); font-size: var(--fs-data); }
+  .dock .op { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+  .dock .fo { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .btn { border: 1px solid var(--line); border-radius: 9px; padding: 5px 12px;
+    background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
+  .btn.p { background: var(--accent); border-color: var(--accent); color: #140b03; }
+  .btn.d { color: var(--muted); }
+
+  /* The strip row. */
+  .strip { display: flex; align-items: center; gap: 9px; padding: 8px 13px;
+    border: 1px solid var(--line); border-radius: 12px;
+    font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); background: var(--s2); }
+  .strip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  .strip .n { color: var(--text); }
+  .strip .engine { margin-left: auto; color: var(--muted); }
+  @media (pointer: coarse) { button, input, select, textarea { min-height: 44px; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>The browser surface</h1>
+  <p class="sub">The client's own Chromium as a full-window takeover: the page fills the window
+  under a slim client bar, and the bar carries the hand-off's actions. No window, no tab strip and
+  no browser chrome - the page is the surface. A hand-off's <b>Open</b> and the strip's browser row
+  both open it; the sessions drive the same page while it is closed.</p>
+  <div class="legend">
+    <span>engine: the app's own Chromium</span>
+    <span>one host per profile</span>
+    <span>the picture is the host's own buffer</span>
+    <span>Android keeps its system WebView</span>
+  </div>
+
+  <h2>The takeover</h2>
+  <div class="tile">
+    <div class="tcap"><b>live</b> - the page under the bar, the whole window</div>
+    <div class="takeover">
+      <div class="bar">
+        <span class="bt d">back to chat</span>
+        <span class="btitle">browser hand-off</span>
+        <span class="bacts">
+          <span class="bt">Done</span>
+          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">Not now</span>
+        </span>
+      </div>
+      <div class="stage">
+        <div class="pagetop">
+          <div class="kicker">hiring cafe</div>
+          <h3>Senior Rust engineer</h3>
+          <p>Remote, India. Apply with your CV and a short note on the systems you have shipped.</p>
+        </div>
+        <div class="rows">
+          <div class="row"><b>Apply now</b><span class="m">form</span></div>
+          <div class="row"><b>Upload CV</b><span class="m">pdf, docx</span></div>
+          <div class="row"><b>Save for later</b><span class="m">saved</span></div>
+        </div>
+        <div class="cursor" aria-hidden="true"></div>
+      </div>
+    </div>
+    <div class="tnote">clicks, keys and the wheel land on the page as trusted input; the person's
+    own cursor is drawn by the page, not by the client.</div>
+  </div>
+
+  <h2>The bar's other two doors</h2>
+  <div class="tile">
+    <div class="tcap"><b>feedback</b> - what did not work goes to the agent</div>
+    <div class="takeover" style="min-height: 0;">
+      <div class="bar">
+        <span class="bt d">back to chat</span>
+        <span class="btitle">browser hand-off &middot; job-hunt</span>
+        <span class="bacts">
+          <span class="bt">Done</span>
+          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">Not now</span>
+        </span>
+      </div>
+      <div class="feedback">
+        <input class="fld" value="the upload form rejected the file" aria-label="feedback">
+        <span class="bt">send</span>
+      </div>
+    </div>
+    <div class="tnote">send files the words as a prompt and answers Not now, so the session hears
+    what went wrong and carries on; back to chat closes the takeover and leaves the hand-off
+    parked, the session still waiting.</div>
+  </div>
+
+  <h2>Before Open, and the strip</h2>
+  <div class="tile">
+    <div class="tcap"><b>the hand-off's card</b></div>
+    <div class="dock">
+      <div class="q"><span class="qm">&#9656;</span> browser hand-off</div>
+      <div class="op">
+        <span class="btn p">Open browser</span>
+        <span class="btn">Done</span>
+        <span class="btn d">Not now</span>
+        <span class="fo">the session waits until Done or Not now</span>
+      </div>
+    </div>
+    <div class="tnote">once the takeover is up the card leaves the actions to the bar.</div>
+    <div class="strip" style="margin-top:12px">
+      <span class="dot" aria-hidden="true"></span>
+      <span>browser</span><span class="n">2</span>
+      <span class="engine">the app's own Chromium</span>
+    </div>
+    <div class="tnote">the strip's row opens the same takeover outside a hand-off; hide returns to
+    the chat and the sessions keep driving the page.</div>
+  </div>
+
+  <h2>The states before a frame</h2>
+  <div class="tile">
+    <div class="tcap"><b>opening</b> - drawn in the page area</div>
+    <div class="takeover" style="min-height: 0;">
+      <div class="bar">
+        <span class="bt d">back to chat</span>
+        <span class="btitle">browser hand-off</span>
+        <span class="bacts">
+          <span class="bt">Done</span>
+          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">Not now</span>
+        </span>
+      </div>
+      <div class="stage" style="display:flex;align-items:center;justify-content:center;background:var(--s1)">
+        <span class="mono" style="color:var(--muted)">opening the browser&hellip;</span>
+      </div>
+    </div>
+  </div>
+  <div class="tile">
+    <div class="tcap"><b>failed</b> - the shell's sentence, the hand-off still parked</div>
+    <div class="takeover" style="min-height: 0;">
+      <div class="bar">
+        <span class="bt d">back to chat</span>
+        <span class="btitle">browser hand-off</span>
+        <span class="bacts">
+          <span class="bt">try again</span>
+          <span class="bt">Done</span>
+          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">Not now</span>
+        </span>
+      </div>
+      <div class="stage" style="display:flex;align-items:center;justify-content:center;background:var(--s1)">
+        <span class="mono" style="color:var(--bad)">the browser did not start in time - try again</span>
+      </div>
+    </div>
+    <div class="tnote">a failure draws the shell's own sentence - the port, the profile or the
+    framework - and the hand-off stays parked until Done or Not now; <b>try again</b> asks the
+    shell for the surface once more.</div>
+  </div>
+</div>
+</body>
+</html>

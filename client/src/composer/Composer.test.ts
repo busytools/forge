@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { hideBrowser, showBrowser } from '../browser/host';
+import { surface } from '../browser/surface.svelte';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -14,11 +15,16 @@ vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();
   return {
     ...actual,
+    // jsdom is not the shell: the surface gates would answer "not the
+    // client" and the takeover's tests would never see their bar. The store
+    // and the shell's own doors are mocked below on that basis.
+    canHost: vi.fn(() => true),
+    drawsSurface: vi.fn(() => true),
     // No window in tests: the shell's raise answers the reason it could not
     // land, or null when it did. The default takes it as landing; a case
     // that wants the failure resolves the reason instead.
     showBrowser: vi.fn(() => Promise.resolve(null)),
-    hideBrowser: vi.fn(() => Promise.resolve()),
+    hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
   };
 });
 
@@ -410,6 +416,15 @@ function action(label: string): HTMLElement {
   return found;
 }
 
+/** A button on the takeover's bar, which the composer draws outside the dock. */
+function barAction(label: string): HTMLElement {
+  const found = [...document.querySelectorAll('.takeover-bar .tb-btn')].find((button) =>
+    button.textContent?.trim().startsWith(label),
+  );
+  if (!(found instanceof HTMLElement)) throw new Error(`the takeover bar drew no ${label}`);
+  return found;
+}
+
 /**
  * The one behaviour here whose failure destroys something a person typed.
  *
@@ -418,6 +433,14 @@ function action(label: string): HTMLElement {
  * the input-loss defect the project already has an incident for, which is why
  * it is a test rather than an intention.
  */
+beforeEach(() => {
+  // The surface store is the page's own state; each case starts with nothing
+  // open, exactly as a fresh page does.
+  surface.phase = 'closed';
+  surface.profile = null;
+  surface.reason = null;
+});
+
 describe("the reader's draft", () => {
   it('is held while a prompt has the box, and comes back unchanged when the prompt is answered', () => {
     const harness = open();
@@ -5355,7 +5378,9 @@ describe('the dock', () => {
   it('says why an answer did not land when the hand-off left under the click', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
-    action('Done').click();
+    action('Open browser').click();
+    flushSync();
+    barAction('Done').click();
     flushSync();
     expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
 
@@ -5375,7 +5400,9 @@ describe('the dock', () => {
   it('answers the hand-off as the verb says: Done settles it', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
-    action('Done').click();
+    action('Open browser').click();
+    flushSync();
+    barAction('Done').click();
     flushSync();
 
     expect(commands(harness)).toEqual([
@@ -5468,7 +5495,10 @@ describe('the dock', () => {
   it('declines the hand-off with Not now, which is the same release', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
-    action('Not now').click();
+    // Not now is the takeover bar's; Open puts the surface up.
+    action('Open browser').click();
+    flushSync();
+    barAction('Not now').click();
     flushSync();
 
     expect(commands(harness)).toEqual([
@@ -5480,6 +5510,60 @@ describe('the dock', () => {
         },
       },
     ]);
+  });
+
+  it('offers a retry when the surface failed, without leaving the hand-off', async () => {
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser did not start in time - try again');
+
+    action('Open browser').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(surface.phase, 'the surface failed').toBe('failed');
+    expect(surface.reason).toContain('did not start in time');
+    expect(drawn(), 'and the bar offers the door back').toContain('try again');
+
+    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+    barAction('try again').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(showBrowser).toHaveBeenCalledTimes(2);
+    expect(surface.phase, 'the second ask landed').toBe('live');
+  });
+
+  it("sends the bar's feedback to the agent, then declines the hand-off", () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    const send = document.querySelector('.takeover-bar .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
+    send.click();
+    flushSync();
+
+    const [prompt, answer] = commands(harness);
+    expect((prompt?.['prompt_under'] as Record<string, unknown>)['text']).toBe(
+      'the submit button did nothing',
+    );
+    expect(answer).toEqual({
+      respond_browser_hand_off: {
+        key: { org: 'Busytools', project: 'forge', label: 'lead' },
+        id: '0192e1c0-0000-7000-8000-0000000000aa',
+        done: false,
+      },
+    });
   });
 
   it('declines the hand-off on Escape, which the dock row promises', () => {
@@ -5529,7 +5613,9 @@ describe('the dock', () => {
   it("does not narrate the reader's own answer to a hand-off", () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
-    action('Done').click();
+    action('Open browser').click();
+    flushSync();
+    barAction('Done').click();
     flushSync();
     expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
 
@@ -5573,11 +5659,11 @@ describe('the dock', () => {
   it("says the raise failed in the shell's own words", async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
     vi.mocked(showBrowser).mockResolvedValueOnce(
-      'no browser to drive: this client drives the browser already on the machine - install Brave or Google Chrome',
+      'the client is missing its Chromium framework - reinstall forge',
     );
 
     action('Open browser').click();
-    await vi.waitFor(() => expect(drawn()).toContain('install Brave or Google Chrome'));
+    await vi.waitFor(() => expect(drawn()).toContain('reinstall forge'));
 
     expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
   });

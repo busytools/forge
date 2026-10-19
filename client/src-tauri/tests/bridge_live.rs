@@ -80,7 +80,7 @@ async fn a_seats_browser_ask_is_answered_while_the_page_is_away() {
     let host = Arc::new(BrowserHost::new(paths.clone()));
     let launched = host.start().await.unwrap_or_else(|why| panic!("the browser comes up: {why}"));
 
-    let browser = Launched::new(launched.pid, launched.port, paths.user_data.clone());
+    let browser = Launched::new(Some(launched.pid), launched.port, paths.cef_shared());
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let bridge = Bridge::new(Some(Arc::clone(&host)), tx);

@@ -77,27 +77,27 @@ the browser process, its profile and the driver, and answers the asks the
 socket routes to it. `just vendor-browser-stack` fetches and verifies the
 driver into the gitignored `src-tauri/browser-stack/` directory - node
 and `@playwright/mcp` - and `bundle.resources` carries that tree into the
-bundle, so nothing downloads at first use. **The browser itself is the
-machine's own**: the host drives the installed Brave, else Google Chrome,
-started with no window at all and its window born hidden - a hand-off's
-Open, or the strip's show, is what brings it forward - install one of those
-for the browser tools to answer, as there is no vendored fallback. The
-bundling recipes run the vendoring themselves; `just client-tauri-check`
-does not, because it copies no resources.
+bundle, so nothing downloads at first use. **The engine is the app's own
+Chromium**: `just stage-cef` stages the CEF framework and its five helper
+apps before `tauri build`, which copies them into `Contents/Frameworks`; each
+profile's browser is a windowless
+host process launched from that bundle - a hand-off's Open, or the strip's
+show, draws its frames as the full-window takeover. No installed browser is
+needed, and a bundle built without the framework refuses the browser doors
+by name. The bundling recipes run both steps themselves;
+`just client-tauri-check` does not, because it copies no resources.
 
 `src-tauri/src/browser/` is the host, and four things in it are worth
 knowing before changing them:
 
-- **The browser is launched detached, and it dies with the client that
+- **The browser host is launched detached, and it dies with the client that
   launched it**: the client claims each profile it launches or adopts, reaps
-  its browsers on exit, and sweeps at boot for the ones a dead client left.
-  The profile under the app's data directory is what survives a restart, and
-  a launch is found again by the `DevToolsActivePort` file Chromium writes
-  into that profile. Measured on
-  Chrome for Testing 155 and true of the Brave and Chrome builds this runs
-  against: the file appears only when the launch asks for
-  `--remote-debugging-port=0` - handed a number the browser writes none - so
-  the port is the browser's own choice, read back, rather than a constant.
+  its hosts on exit, and sweeps at boot for the ones a dead client left. The
+  profile under the app's data directory is what survives a restart: the CEF
+  cache path is the profile itself, and the host's DevTools port and ring
+  name are recorded beside it. The client picks the port and writes the
+  record before it waits, so a host that dies mid-launch is swept rather
+  than left holding the profile's singleton lock.
 - **The driver is upstream's own** `@playwright/mcp`, spawned as a child
   process and spoken to as an MCP client through `rmcp`, pointed at the
   browser's CDP endpoint with `--no-webmcp` (without which the tool surface
@@ -115,13 +115,14 @@ knowing before changing them:
   naming it raises THAT profile's window on THAT profile's page - a CAPTCHA
   solved in the right session, not a lookalike in the wrong one.
 
-`client/src-tauri/tests/browser_live.rs` drives the whole chain - launch,
-driver, `browser_navigate` and `browser_snapshot` - against the vendored
-driver, and `tests/profiles_live.rs` proves the profiles layer: two names are
-two browsers with separate cookies, show raises the named profile's own
-window on its own page, a second session is refused by name, and a profile
-reopened after a close keeps its logins. They are `#[ignore]`d because the
-stack is absent from a fresh checkout; run them where it is vendored:
+`client/src-tauri/tests/cef_host.rs` pins the host's own decisions with a
+stand-in binary - the record, the ring's name, the endpoint wait, the kill
+by pid, the sweep that respects another client's claim and the one that
+cleans a stale record. It is macOS-gated because the engine is.
+`client/src-tauri/tests/bridge_live.rs` drives the whole chain - a real
+session's `browser_navigate` answered by the vendored driver while no page
+is drawing - and is `#[ignore]`d because it needs a scratch forge and the
+vendored stack; run it where both are present:
 
 ```sh
 cargo nextest run --manifest-path client/src-tauri/Cargo.toml --run-ignored ignored-only

@@ -355,6 +355,20 @@ client-tauri-check:
 # out, so it opens a Finder window and takes focus for a few seconds.
 #
 # **A window on every run is why this is not the routine gate.**
+# Stage the app's own Chromium where the macOS bundler copies it: the
+# framework and the five helper apps CEF re-enters for its subprocesses.
+# **Before `tauri build`, not after it**: `bundle.macOS.files` carries the
+# staged tree into Contents/Frameworks while the bundler builds the app, so
+# the signature, the update tarball and the dmg all carry the engine. Laying
+# it in after the build left the tarball browser-less - the install worked
+# and the next auto-update installed a client with no browser. The host
+# binary is built here too: `tauri build` builds the default binary alone.
+stage-cef identifier="dev.vedhavyas.forge":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release --locked --manifest-path client/src-tauri/Cargo.toml --bin forge_client_helper
+    ./client/src-tauri/scripts/stage-cef.sh "{{identifier}}"
+
 client-tauri-bundle: vendor-browser-stack
     #!/usr/bin/env bash
     set -euo pipefail
@@ -372,13 +386,15 @@ client-tauri-bundle: vendor-browser-stack
         exit 1
     fi
 
+    "{{just_executable()}}" --justfile "{{justfile()}}" stage-cef
     npm --prefix client run tauri -- build --ci -- --locked
 
 # Fetch, verify and unpack the driver stack the client bundles: node and
 # @playwright/mcp, into the client's gitignored `browser-stack/` directory.
-# (The browser itself is the machine's own - the host drives the installed
-# Brave or Chrome - so nothing here fetches one.) Idempotent at its pins,
-# and it prints both pins so a release log names the stack it shipped.
+# **The driver, not the browser**: the engine is the app's own Chromium,
+# staged for the bundler by `stage-cef`; this stack only speaks CDP to it.
+# Idempotent at its pins, and it prints both pins so a release log names the
+# stack it shipped.
 #
 # The bundling recipes run it themselves - a release must not ship without
 # it - and `client-tauri-check` does not, because it passes `--no-bundle`
@@ -545,6 +561,7 @@ client-release version: vendor-browser-stack client-release-deps
         exit 1
     fi
 
+    "{{just_executable()}}" --justfile "{{justfile()}}" stage-cef
     npm --prefix client run tauri -- build --bundles app --ci -- --locked
 
     if [ ! -e "$built" ]; then

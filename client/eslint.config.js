@@ -18,6 +18,7 @@ export default tseslint.config(
       'src-tauri/target/',
       'src-tauri/gen/',
       'src-tauri/browser-stack/',
+      'src-tauri/cef-bundle/',
       '.stryker-tmp/',
       'reports/',
     ],

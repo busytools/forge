@@ -15,9 +15,10 @@
 //!
 //! **The two numbers are `[client]` keys** (`browser_idle_minutes`,
 //! `browser_grace_minutes`), read off the greeting this client was sent;
-//! absent means the built-in pair below. Nothing prepared survives a close:
-//! the next call brings the browser back blank, and raising it brings the
-//! pages back - the trade the warning's own words name.
+//! absent means the built-in pair below. A close ends the host, not the page:
+//! the next call brings the browser back on the page last shown, so a session
+//! finds what it prepared where it left it - the trade the warning's own
+//! words name.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -301,7 +302,7 @@ async fn close_guarded(
     if step(fresh.at, fresh.warned, Instant::now(), idle, grace) != Step::Close {
         return;
     }
-    if crate::browser::chromium::windowed(&candidate.dir).await {
+    if host.surface_is(&candidate.dir).await {
         return;
     }
     host.close_idle(candidate.name.as_deref()).await;
@@ -310,6 +311,7 @@ async fn close_guarded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::StackPaths;
 
     const IDLE: Duration = Duration::from_secs(30 * 60);
     const GRACE: Duration = Duration::from_secs(10 * 60);
@@ -447,5 +449,46 @@ mod tests {
         // never as a made-up one.
         let sent = warning(&shared, None, 30, 10, true);
         assert!(sent["browser_idle_warning"]["key"].is_null(), "{sent}");
+    }
+
+    /// **The idle close must not wait on the launch guard it holds.** The
+    /// sweep takes `launch` around its verdict, and the close under it used
+    /// to take the same lock again: the first idle close wedged the sweep
+    /// and every unnamed call behind it. The timeout is the test.
+    #[tokio::test]
+    async fn the_idle_close_does_not_deadlock_on_its_own_guard() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = std::sync::Arc::new(crate::browser::BrowserHost::new(paths.clone()));
+        let cache = paths.cef_shared();
+        host.touch(&cache).await;
+        {
+            let mut touches = host.touches.lock().await;
+            let touch = touches.get_mut(&cache).expect("the touched entry");
+            touch.at = Instant::now() - Duration::from_secs(3600);
+            touch.warned = Some(Instant::now() - Duration::from_secs(60));
+        }
+        let candidate = Candidate {
+            name: None,
+            dir: cache.clone(),
+            touch: Touch {
+                at: Instant::now() - Duration::from_secs(3600),
+                warned: Some(Instant::now() - Duration::from_secs(60)),
+                caller: None,
+            },
+        };
+
+        let done = tokio::time::timeout(
+            Duration::from_secs(3),
+            close_guarded(&host, &candidate, Duration::from_secs(60), Duration::from_secs(1)),
+        )
+        .await;
+        assert!(done.is_ok(), "the idle close must not wait on the launch guard it holds");
+        assert!(host.touches.lock().await.get(&cache).is_none(), "and the clock goes with it");
     }
 }
