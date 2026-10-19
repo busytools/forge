@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; the browser surface</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
+    --line:#222a3c; --ctl:#516590;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --fs-prose: 15.5px; --fs-data: 14px; --fs-label: 12.5px; --r: 12px;
+  }
+  body { background:
+      radial-gradient(1200px 560px at 6% -14%, rgba(244,118,0,.09), transparent 58%),
+      radial-gradient(900px 480px at 98% 108%, rgba(91,156,248,.06), transparent 60%),
+      var(--bg);
+    background-attachment: fixed; color: var(--text); font-family: var(--ui);
+    font-size: var(--fs-prose); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .page { max-width: 1420px; margin: 0 auto; padding: 30px 22px 90px; }
+  h1 { font-size: 18px; font-weight: 500; margin-bottom: 6px; }
+  .sub { color: var(--dim); max-width: 98ch; margin-bottom: 8px; }
+  h2 { font-size: var(--fs-prose); font-weight: 500; margin: 44px 0 10px; }
+  .mono { font-family: var(--mono); } .dim { color: var(--dim); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 18px; }
+  .tile { border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(13,17,26,.65), rgba(4,5,10,.4)); padding: 12px 14px 14px; }
+  .tcap { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); margin-bottom: 10px; }
+  .tcap b { color: var(--text); font-weight: 400; }
+  .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 9px; }
+
+  /* The session frame: the column, the strip and the dock, as the page draws
+     them; the surface replaces the conversation inside the column. */
+  .frame { border: 1.5px solid var(--ctl); border-radius: 16px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
+    display: grid; grid-template-rows: minmax(0,1fr) auto auto; min-height: 430px; }
+  /* The column: the page alone, no browser chrome. The URL is the client's
+     own line, drawn under the surface the way the dock card's line is. */
+  .col { position: relative; padding: 0; display: flex; flex-direction: column; }
+  .stage { position: relative; flex: 1; min-height: 300px;
+    background: #fdfbf7; color: #1d2330; overflow: hidden; }
+  /* A stand-in page: real content, because the surface IS the page. */
+  .pagetop { padding: 26px 30px 0; }
+  .pagetop .kicker { font-family: var(--mono); font-size: var(--fs-label);
+    letter-spacing: .04em; color: #7a8496; text-transform: uppercase; }
+  .pagetop h3 { font-size: 26px; font-weight: 500; margin-top: 8px; }
+  .pagetop p { color: #4b5568; margin-top: 8px; max-width: 52ch; }
+  .rows { padding: 20px 30px; display: flex; flex-direction: column; gap: 10px; }
+  .row { border: 1px solid #e2ddd2; border-radius: 10px; padding: 10px 12px;
+    display: flex; align-items: baseline; gap: 10px; background: #fffdf8; }
+  .row b { font-weight: 500; } .row .m { margin-left: auto; font-family: var(--mono);
+    font-size: var(--fs-label); color: #6b7484; }
+  .cursor { position: absolute; left: 208px; top: 128px; width: 12px; height: 18px;
+    border-left: 1.5px solid #1d2330; }
+  .urlbar { display: flex; align-items: center; gap: 9px; padding: 7px 13px;
+    border-top: 1px solid var(--line); font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); background: var(--s1); }
+  .urlbar .u { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .urlbar .door { margin-left: auto; color: var(--accent); }
+
+  /* The strip lane above the composer, as the client's own row. */
+  .strip { display: flex; align-items: center; gap: 9px; padding: 8px 13px;
+    border-top: 1px solid var(--line); font-family: var(--mono);
+    font-size: var(--fs-data); color: var(--dim); background: var(--s2); }
+  .strip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  .strip .ring { width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--accent);
+    border-right-color: transparent; }
+  .strip .n { color: var(--text); }
+  .strip .engine { margin-left: auto; color: var(--muted); }
+
+  /* The dock's card: the hand-off's own lane. */
+  .dock { padding: 12px 15px; border-top: 1px solid var(--line);
+    display: flex; flex-direction: column; gap: 9px; background: var(--s2); }
+  .dock .q { display: flex; align-items: baseline; gap: 9px; }
+  .dock .qm { color: var(--accent); font-family: var(--mono); font-size: var(--fs-data); }
+  .dock .op { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+  .dock .fo { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .btn { border: 1px solid var(--line); border-radius: 9px; padding: 5px 12px;
+    background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
+  .btn.p { background: var(--accent); border-color: var(--accent); color: #140b03; }
+  .btn.d { color: var(--muted); }
+  .btn.door { border-style: dashed; color: var(--accent); background: transparent; }
+
+  /* The state lines the surface draws before a frame lands. */
+  .state { display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 12px; height: 100%; background: var(--s1); }
+  .state .tx { color: var(--muted); font-size: var(--fs-data); max-width: 46ch; text-align: center; }
+  .state .tx.bad { color: var(--bad); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); margin-top: 8px; }
+  @media (pointer: coarse) { button, input, select, textarea { min-height: 44px; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>The browser surface</h1>
+  <p class="sub">The client's own Chromium, drawn in the conversation column: no window, no tab
+  strip and no browser chrome - the page is the whole surface, and the URL, where it is shown, is
+  the client's own line. A browser hand-off's <b>Open</b> and the strip's browser row both open
+  it; the sessions drive the same page while it is closed.</p>
+  <div class="legend">
+    <span>engine: the app's own Chromium</span>
+    <span>one host per profile</span>
+    <span>the picture is the host's own buffer, drawn in the column</span>
+    <span>Android keeps its system WebView</span>
+  </div>
+
+  <h2>Live, from a hand-off's Open</h2>
+  <div class="grid">
+    <div class="tile">
+      <div class="tcap"><b>live</b> - the page fills the column; the rail, the strip and the dock stay</div>
+      <div class="frame">
+        <div class="col">
+          <div class="stage">
+            <div class="pagetop">
+              <div class="kicker">hiring cafe</div>
+              <h3>Senior Rust engineer</h3>
+              <p>Remote, India. Apply with your CV and a short note on the systems you have
+              shipped.</p>
+            </div>
+            <div class="rows">
+              <div class="row"><b>Apply now</b><span class="m">form</span></div>
+              <div class="row"><b>Upload CV</b><span class="m">pdf, docx</span></div>
+              <div class="row"><b>Save for later</b><span class="m">saved</span></div>
+            </div>
+            <div class="cursor" aria-hidden="true"></div>
+          </div>
+          <div class="urlbar">
+            <span class="mono">url</span>
+            <span class="u">hiring.cafe/jobs/senior-rust-engineer</span>
+            <span class="door">open in your browser</span>
+          </div>
+        </div>
+        <div class="strip">
+          <span class="ring" aria-hidden="true"></span>
+          <span>browser</span><span class="n">1</span>
+          <span class="engine">the app's own Chromium</span>
+        </div>
+        <div class="dock">
+          <div class="q"><span class="qm">&#9656;</span> browser hand-off</div>
+          <div class="op">
+            <span class="btn">Hide</span>
+            <span class="btn door">open in your browser</span>
+            <span class="btn">Done</span>
+            <span class="btn d">Not now</span>
+            <span class="fo">the session waits until Done or Not now</span>
+          </div>
+        </div>
+      </div>
+      <div class="tnote">clicks, keys and the wheel land on the page as trusted input; the person's
+      own cursor is drawn by the page, not by the client.</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap"><b>live, a named profile</b> - the surface draws that profile's own page</div>
+      <div class="frame">
+        <div class="col">
+          <div class="stage">
+            <div class="pagetop">
+              <div class="kicker">workday</div>
+              <h3>Sign in</h3>
+              <p>The profile keeps its own logins: the same site, the session's cookie jar, no
+              shared state with any other profile.</p>
+            </div>
+            <div class="rows">
+              <div class="row"><b>Email</b><span class="m">work@example.com</span></div>
+              <div class="row"><b>Password</b><span class="m">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span></div>
+              <div class="row"><b>Sign in</b><span class="m">submit</span></div>
+            </div>
+          </div>
+          <div class="urlbar">
+            <span class="mono">profile</span>
+            <span class="u">job-hunt &#183; workday.com/login</span>
+            <span class="door">open in your browser</span>
+          </div>
+        </div>
+        <div class="strip">
+          <span class="dot" aria-hidden="true"></span>
+          <span>browser</span><span class="n">2</span>
+          <span class="engine">the app's own Chromium</span>
+        </div>
+        <div class="dock">
+          <div class="q"><span class="qm">&#9656;</span> browser hand-off &#183; job-hunt</div>
+          <div class="op">
+            <span class="btn">Hide</span>
+            <span class="btn">Done</span>
+            <span class="btn d">Not now</span>
+          </div>
+        </div>
+      </div>
+      <div class="tnote">the hand-off names its profile, so the CAPTCHA comes up over the seat
+      that asked - another seat's profile is refused, and the shared one is the unnamed call.</div>
+    </div>
+  </div>
+
+  <h2>The states before a frame</h2>
+  <div class="grid">
+    <div class="tile">
+      <div class="tcap"><b>opening</b></div>
+      <div class="frame" style="grid-template-rows: 1fr;">
+        <div class="col"><div class="state"><span class="tx">opening the browser&#8230;</span></div></div>
+      </div>
+      <div class="tnote">the host is starting; the column says so rather than drawing an empty page.</div>
+    </div>
+    <div class="tile">
+      <div class="tcap"><b>failed</b></div>
+      <div class="frame" style="grid-template-rows: 1fr;">
+        <div class="col"><div class="state">
+          <span class="tx bad">the browser host on port 9411 did not answer within 15 s</span>
+          <span class="btn">close</span>
+        </div></div>
+      </div>
+      <div class="tnote">the shell's own sentence - the port, the profile or the framework - and
+      the hand-off stays parked until Done or Not now.</div>
+    </div>
+  </div>
+
+  <h2>The strip's row, and the profiles</h2>
+  <div class="grid">
+    <div class="tile">
+      <div class="tcap"><b>the strip</b> - show and hide the same surface outside a hand-off</div>
+      <div class="strip" style="border:1px solid var(--line); border-radius: 12px;">
+        <span class="dot" aria-hidden="true"></span>
+        <span>browser</span><span class="n">3</span>
+        <span class="engine">the app's own Chromium</span>
+      </div>
+      <div class="tnote">the row is the person's own door: show opens the surface on the shared
+      profile, hide lowers it without answering anything. A named profile's row shows and hides
+      its own page; close ends its host and keeps the logins, delete takes them.</div>
+    </div>
+    <div class="tile">
+      <div class="tcap"><b>the edge door</b> - what the windowless surface cannot give</div>
+      <div class="dock" style="border:1px solid var(--line); border-radius: 12px;">
+        <div class="op">
+          <span class="btn door">open in your browser</span>
+          <span class="fo">IME, a rich clipboard, context menus</span>
+        </div>
+      </div>
+      <div class="tnote">one page, the person's own browser, their own session: state does not
+      come back, and the session's browser keeps what it holds. File uploads and Cmd+V are
+      covered in the surface itself.</div>
+    </div>
+  </div>
+
+  <h2>The widths the column takes</h2>
+  <div class="legend">
+    <span>wide: the surface is the column's whole box, the strip and dock sit under it</span>
+    <span>narrow: the same box, the surface never narrower than 320px</span>
+  </div>
+</div>
+</body>
+</html>

@@ -24,6 +24,7 @@ place.
 | Dictation models | [dictate-models.md](./dictate-models.md) | `web-dictate-models.html` |
 | Extensions | [extensions.md](./extensions.md) | `web-extensions.html` |
 | A document | [document.md](./document.md) | `web-document.html` |
+| The browser surface | [browser.md](./browser.md) | `web-browser.html` |
 
 `web-session.html` declares six sections and the client's plan owned four
 of them; their pages are [session.md](./session.md) and

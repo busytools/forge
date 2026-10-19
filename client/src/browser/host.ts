@@ -196,6 +196,36 @@ export async function hideBrowser(profile: string | null = null): Promise<string
   }
 }
 
+/**
+ * Where the conversation column is, for the shell to place the browser
+ * surface: CSS pixels from the viewport's top-left and the device pixel
+ * ratio. The surface is the page's own box, so the page is the measurer.
+ */
+export async function reportSurfaceRect(
+  rect: { x: number; y: number; width: number; height: number },
+  scale: number,
+): Promise<void> {
+  if (!canHost()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('browser_surface_rect', { ...rect, scale });
+}
+
+/**
+ * Open the page the browser holds in the person's own default browser - the
+ * edge door for what the windowless surface cannot give (IME, a rich
+ * clipboard, context menus). A one-off page: its state does not come back.
+ */
+export async function openInBrowser(profile: string | null = null): Promise<string | null> {
+  if (!canHost()) return 'this page is not the client';
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('browser_open_external', { profile });
+    return null;
+  } catch (why) {
+    return whyText(why);
+  }
+}
+
 /** Whether a session has driven this client's browser since it came up. */
 export async function browserUsed(): Promise<boolean> {
   if (!canHost()) return false;

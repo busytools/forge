@@ -26,6 +26,7 @@ each with the drawing it is held against beside it.
 - [Dictation models](./ui/client/dictate-models.md)
 - [Extensions](./ui/client/extensions.md)
 - [A document](./ui/client/document.md)
+- [The browser surface](./ui/client/browser.md)
 
 # Contributor
 

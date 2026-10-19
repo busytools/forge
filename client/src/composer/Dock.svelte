@@ -1,7 +1,8 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
-  import { hideBrowser, showBrowser } from '../browser/host';
+  import { openInBrowser } from '../browser/host';
+  import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
@@ -595,7 +596,7 @@
     // lands in the session the person needs to act in. **The asking seat
     // rides the raise**: the shell refuses a profile another seat owns, so a
     // hand-off cannot surface a browser holding someone else's logins.
-    void showBrowser(ask.request.profile, slot).then((why) => {
+    void openSurface(ask.request.profile, slot).then((why) => {
       if (why !== null) {
         raiseFailedFor = id;
         raiseWhy = why;
@@ -617,7 +618,7 @@
     const profile = ask.request.profile;
     onanswer(id);
     answer({ respond_browser_hand_off: { key: slot, id, done } });
-    void hideBrowser(profile);
+    void closeSurface(profile);
   }
 
   /**
@@ -1138,8 +1139,23 @@
         <!-- Open is the client's own act, not the core's: it replaces this
            screen with the browser the sessions drive and answers nothing.
            Done is the answer, and Not now declines - the session waits with
-           no timeout, so one of the two must be reachable from here. -->
-        <button class="btn p" onclick={open}>Open browser</button>
+           no timeout, so one of the two must be reachable from here.
+           While the surface is up, Hide lowers it without answering (the
+           session keeps waiting), and the door hands the page to the
+           person's own browser for the edges the windowless surface cannot
+           give. -->
+        {#if surface.phase === 'live' && surface.profile === ask.request.profile}
+          <button class="btn" onclick={() => void closeSurface()}>Hide</button>
+          <button
+            class="btn d door"
+            title="open this page in your own browser"
+            onclick={() => void openInBrowser(ask.request.profile)}
+          >
+            open in your browser
+          </button>
+        {:else}
+          <button class="btn p" onclick={open}>Open browser</button>
+        {/if}
         <button class="btn" onclick={() => handOff(true)}>Done</button>
         <button class="btn d" onclick={() => handOff(false)}>Not now</button>
       </div>

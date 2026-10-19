@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { hideBrowser, showBrowser } from '../browser/host';
+import { surface } from '../browser/surface.svelte';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -418,6 +419,14 @@ function action(label: string): HTMLElement {
  * the input-loss defect the project already has an incident for, which is why
  * it is a test rather than an intention.
  */
+beforeEach(() => {
+  // The surface store is the page's own state; each case starts with nothing
+  // open, exactly as a fresh page does.
+  surface.phase = 'closed';
+  surface.profile = null;
+  surface.reason = null;
+});
+
 describe("the reader's draft", () => {
   it('is held while a prompt has the box, and comes back unchanged when the prompt is answered', () => {
     const harness = open();

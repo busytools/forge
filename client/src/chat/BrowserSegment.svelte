@@ -7,14 +7,13 @@
     canHost,
     closeProfile,
     deleteProfile,
-    hideBrowser,
     listProfiles,
     profileWindowed,
-    showBrowser,
     whyText,
     type ProfileRow,
   } from '../browser/host';
   import { browserInflight } from '../browser/inflight.svelte';
+  import { closeSurface, openSurface } from '../browser/surface.svelte';
   import type { Connection } from '../socket';
   import { panelStyle, portal } from './strip-panel';
   import type { SessionSlot } from '../wire/types';
@@ -131,6 +130,11 @@
   // initial read is the truth the subscription then maintains.
   // svelte-ignore state_referenced_locally
   let hosting = $state(connection.browserRole());
+  /** The engine this client draws with: the desktop's own Chromium, the
+   *  phone's system WebView. Both are the app's; the line says which. */
+  const engineLine = /Android/i.test(navigator.userAgent)
+    ? "the app's own WebView"
+    : "the app's own Chromium";
   let segEl = $state<HTMLElement | null>(null);
   /** The panel, portaled to the body, so the leave guards can see it. */
   let panelEl = $state<HTMLElement | null>(null);
@@ -422,7 +426,7 @@
    * door Ved asked for (2026-10-07), and closing the window disturbs nothing.
    */
   function show(profile: string | null = null): void {
-    void showBrowser(profile).then((reason) => {
+    void openSurface(profile).then((reason) => {
       if (reason !== null) {
         // A read in flight was issued before this failure and must not
         // erase it when it lands.
@@ -431,15 +435,15 @@
         why = reason;
         return;
       }
-      // The window is up now: the row's button says hide from here.
+      // The surface is up now: the row's button says hide from here.
       void readProfiles();
     });
   }
 
-  /** The person's own lower: the window goes, the browser keeps serving, and
+  /** The person's own lower: the surface goes, the browser keeps serving, and
    *  the row's button says show again. A refusal is drawn, not swallowed. */
   function lower(profile: string | null = null): void {
-    void hideBrowser(profile).then((reason) => {
+    void closeSurface(profile).then((reason) => {
       if (reason !== null) {
         read = 'failed';
         why = reason;
@@ -666,6 +670,13 @@
         <span class="tx">
           {hosting ? 'browser connected' : 'browser not connected'}
         </span>
+        <!-- **The engine line** (Ved's cut, 2026-10-18): the desktop draws
+             the app's own Chromium in the conversation column; the phone
+             keeps its system WebView. Which one is not something the person
+             should have to infer. -->
+        <span class="tx bz-engine">
+          {hosting ? engineLine : 'no engine to run a page'}
+        </span>
         {#if capable && !hosting}
           <button
             type="button"
@@ -700,8 +711,8 @@
           <button
             type="button"
             class="bz-take bz-show"
-            aria-label={sharedUp ? 'hide the browser window' : 'show the browser'}
-            onclick={() => (sharedUp ? lower(null) : show(null))}
+            aria-label={sharedUp ? 'hide the browser surface' : 'show the browser'}
+            onclick={() => (sharedUp ? lower() : show(null))}
             onkeydown={esc}
           >
             {sharedUp ? 'hide' : 'show'}
