@@ -145,8 +145,9 @@ impl Tool for Create {
          holding it - a worker's label, or \"lead\" - and omitting it leaves the task unclaimed. \
          A lead creating a row for a worker assigns it at creation: the worker's label in \
          `owner`, and the kick says not to claim it. A row left in the lead's own hands \
-         refuses the worker's `tasks__claim` while the lead is live, and is chased as having \
-         no live owner once the lead goes. \
+         refuses the worker's `tasks__claim` while the lead is live, and a row left in \
+         progress under a seat that goes is chased as having no live owner once the board \
+         marks it stale. \
          `parent` names another task in the same project this one belongs under, `estimate` a \
          duration, `rank` the queue order, `verify` whether completion waits on the user, \
          `links` the references it carries (issues, PRs, specs, paths), `detail` free prose. \
@@ -1462,7 +1463,7 @@ mod tests {
             "A lead creating a row for a worker assigns it at creation",
             "the kick says not to claim it",
             "refuses the worker's `tasks__claim` while the lead is live",
-            "chased as having no live owner once the lead goes",
+            "chased as having no live owner once the board marks it stale",
         ] {
             assert!(
                 create.description().contains(clause),
