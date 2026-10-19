@@ -568,13 +568,40 @@
       <div class="b-asks">
         {#each view.waiting as row (row.id)}
           <div class="b-ask">
-            <div class="b-q">{row.subject}</div>
+            <!-- The ASK leads: the wait's own detail (else the row's) is what
+                 the reader is being asked, so it is the card's title; a wait
+                 with neither falls back to the state's sentence. The subject
+                 is the line under it, never the title. -->
+            <div class="b-q" title={row.ask}>{row.ask}</div>
+            <div class="b-why"><span>{row.subject}</span></div>
             <div class="b-why">
               {#if row.owner !== null}<span>{row.owner}</span>{/if}
               <span>{row.age}</span>
             </div>
+            {#if row.links.length > 0}
+              <div class="b-detail">
+                {#each row.links as link, at (at)}
+                  {#if at > 0}<span> &middot; </span>{/if}
+                  {#if link.href !== null}
+                    <a class="b-ref" href={link.href} target="_blank" rel="noreferrer"
+                      >{link.label}</a
+                    >
+                  {:else}
+                    <span>{link.label}</span>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
+            {#if row.artifact !== null}
+              <div class="b-detail">
+                <!-- The artifact is a DOOR in the card's own control grammar,
+                     not a bare anchor in a sentence. -->
+                <a class="b-door" href={row.artifact.href} target="_blank" rel="noreferrer"
+                  >look at <span class="nm">{row.artifact.label}</span></a
+                >
+              </div>
+            {/if}
             {#if row.verification}
-              {#if row.detail !== null}<div class="b-detail">{row.detail}</div>{/if}
               <div class="b-do">
                 {#if row.root && row.open > 0}
                   <!-- A root cannot complete while a child is non-terminal,
@@ -598,7 +625,8 @@
                   class="b-in"
                   data-editor="board"
                   type="text"
-                  placeholder="what to change (sent back with it)"
+                  placeholder="what to change"
+                  aria-label="what to change (sent back with it)"
                   bind:value={sendBackWords[row.id]}
                 />
                 <button
@@ -616,7 +644,6 @@
                 >
               </div>
             {:else}
-              {#if row.detail !== null}<div class="b-detail">{row.detail}</div>{/if}
               <div class="b-do">
                 <input
                   class="b-in"

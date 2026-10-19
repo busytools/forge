@@ -545,10 +545,13 @@ always. What it asks, and on what clock, is a constant in the code:
 - **A worker holding no row is named when it drifts, again every 5
   minutes while it stays drifted**, and at once after it accounts and
   drifts again.
-- **Rows waiting on the user, untouched for 30 minutes, get one digest
-  per project every 30 minutes** - one message, however many rows - which
-  asks the lead to filter them; a touch or a move takes that row back
-  out.
+- **Each row waiting on the user, untouched for 30 minutes, gets one
+  nudge of its own per wait episode** - one message per row, naming the
+  row's ask, and never a repeat while that wait holds. A row the lead
+  acts on (attested, withdrawn or parked by design) leaves the set, and a
+  row that leaves waiting and comes back is a new episode with a new
+  nudge. A tick that finds every seat asleep spends nothing: the nudge
+  waits for a live lead.
 
 ## `[server]`
 

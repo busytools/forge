@@ -313,7 +313,8 @@ census!(Command,
         PluginCheckUpdates struct, MarketplaceAdd struct, MarketplaceRepair struct,
         SpawnProject struct,
         TaskVerdict struct, TaskAnswer struct, TaskRank struct, TaskAssign struct,
-        TaskCreate struct, TaskMove struct, DeliverPeerPrompt struct,
+        TaskCreate struct, TaskMove struct, TaskReopen struct, TaskReserve struct,
+        DeliverPeerPrompt struct,
         SpawnWorker struct, CloseWorker struct, DespawnWorker struct,
         DeliverWorkerPrompt struct, DeliverWorkerPromptToLead struct,
         DeliverGotifyMessage struct, DictateStream struct,
@@ -1407,6 +1408,21 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
     sampled.insert(
         "MarketplaceAdd".to_owned(),
         sample(Command::MarketplaceAdd { source: "owner/repo".to_owned(), dispatch_id: Some(1) }),
+    );
+    // The board's own two hand-written presses (#2423): the page writes
+    // `project`, `id` and `reserved` by hand, so a rename here would leave
+    // its literal writing a key nothing reads with every suite green.
+    sampled.insert(
+        "TaskReopen".to_owned(),
+        sample(Command::TaskReopen { project: "proj".to_owned(), id: "t-1".to_owned() }),
+    );
+    sampled.insert(
+        "TaskReserve".to_owned(),
+        sample(Command::TaskReserve {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            reserved: true,
+        }),
     );
     sampled
 }

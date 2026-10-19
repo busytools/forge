@@ -155,7 +155,24 @@ describe('axe over the rendered pages', () => {
                 estimate: null,
                 rank: null,
                 verify: 'user' as const,
-                links: [],
+                // A look with a reference and an artifact, so the card's new
+                // link and door markup is under axe rather than absent.
+                links: [
+                  {
+                    kind: 'pr' as const,
+                    label: 'PR #2425',
+                    target: 'https://example.invalid/pull/2425',
+                    state: null,
+                    added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+                  },
+                  {
+                    kind: 'path' as const,
+                    label: 'the board page',
+                    target: 'https://example.invalid/board',
+                    state: null,
+                    added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+                  },
+                ],
                 attempt: 1,
                 archived_at: null,
                 created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },

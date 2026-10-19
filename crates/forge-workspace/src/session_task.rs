@@ -1794,6 +1794,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::TaskAssign { .. }
         | Command::TaskCreate { .. }
         | Command::TaskMove { .. }
+        | Command::TaskReopen { .. }
+        | Command::TaskReserve { .. }
         | Command::PluginInstall { .. }
         | Command::PluginUpdate { .. }
         | Command::PluginUpdateAll
@@ -5948,6 +5950,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         }
     }
 

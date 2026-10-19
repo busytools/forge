@@ -295,11 +295,14 @@ describe('the tasks card', () => {
     const labels = [
       ...arm.slice(0, arm.indexOf('if (marks.')).matchAll(/label: (?:'([^']*)'|`([^`]*)`)/g),
     ].map((found) => found[1] ?? found[2] ?? '');
-    expect(labels.length, 'the board arm was found and read').toBe(4);
-    // Labels in reading order: the verify gate, a decision, the dependency
-    // template, a resource. The verify gate is the board's own case - this tool
-    // never sends a verification wait - so the chat is held to the decision arm.
-    const template = labels[2] ?? '';
+    // Located by shape, not position: the arm also spells the inherited-park
+    // case ("waiting"), which this tool never sends.
+    const onYou = labels.find((label) => label === 'waiting on you') ?? '';
+    const template = labels.find((label) => label.includes('${')) ?? '';
+    const resource = labels.find((label) => label.includes('resource')) ?? '';
+    expect(onYou, 'the board arm was found and read').toBe('waiting on you');
+    expect(template, 'the dependency template was found').not.toBe('');
+    expect(resource, 'the resource word was found').toBe('waiting on a resource');
     const withBlocker = template.replace(/\$\{[^}]*\}/g, 't-9');
     const withoutBlocker = template.replace(/\$\{[^}]*\?\?\s*'([^']*)'\}/g, '$1');
     expect(withoutBlocker, "the board's own fallback phrase, read rather than assumed").not.toBe(
@@ -313,7 +316,7 @@ describe('the tasks card', () => {
       );
       return card?.chips?.[0]?.text ?? '';
     };
-    expect(chatWord({ id: 't-1', kind: 'decision' }), "the board's decision word").toBe(labels[1]);
+    expect(chatWord({ id: 't-1', kind: 'decision' }), "the board's decision word").toBe(onYou);
     expect(
       chatWord({ id: 't-1', kind: 'dependency', on: 't-9' }),
       "the board's dependency word, with a blocker",
@@ -322,7 +325,7 @@ describe('the tasks card', () => {
       chatWord({ id: 't-1', kind: 'dependency' }),
       "the board's dependency word, with its own fallback",
     ).toBe(withoutBlocker);
-    expect(chatWord({ id: 't-1', kind: 'resource' }), "the board's resource word").toBe(labels[3]);
+    expect(chatWord({ id: 't-1', kind: 'resource' }), "the board's resource word").toBe(resource);
   });
 
   it('names a delete by the removed subject and counts the subtasks that went', () => {

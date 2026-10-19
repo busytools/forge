@@ -5422,6 +5422,47 @@ impl Workspace {
                         }
                     }
                 }
+                Command::TaskReopen { project, id } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.reopen_task(&project, &id) {
+                        Ok(Some(task)) => {
+                            self.tell_row_owner(
+                                &task,
+                                format!(
+                                    "task board: the user reopened \"{}\" - the look is owed \
+                                     again; when it completes it parks on the user for the \
+                                     new look.",
+                                    task.subject,
+                                ),
+                            );
+                        }
+                        Ok(None) => self
+                            .board_edit_refused("a reopen", "the row it named is no longer there"),
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace::tasks",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a reopen was refused",
+                            );
+                            self.board_edit_refused("a reopen", &refused.to_string());
+                        }
+                    }
+                }
+                Command::TaskReserve { project, id, reserved } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.reserve_task(&project, &id, reserved) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => self.board_edit_refused(
+                            "a reservation",
+                            "the row it named is no longer there",
+                        ),
+                        Err(refused) => {
+                            self.board_edit_refused("a reservation", &refused.to_string());
+                        }
+                    }
+                }
                 Command::TaskAssign { project, id, owner } => {
                     // A project this forge does not carry has no seat to name
                     // and no row to hold: an assignment to it is refused
@@ -5495,6 +5536,8 @@ impl Workspace {
                         estimate: None,
                         rank: None,
                         verify: None,
+                        attested: None,
+                        reserved: None,
                         links: Vec::new(),
                         attempt: 0,
                         archived_at: None,
@@ -9209,6 +9252,141 @@ mod tests {
         assert!(first.register(1, to_host, notices), "no connection has taken the role at boot");
     }
 
+    /// The board's reserve toggle reaches the store through the command bus
+    /// (#2423/C): the pick is the user's, and releasing it clears it.
+    #[tokio::test]
+    async fn a_board_reservation_dispatches_and_lands() {
+        use forge_primitives::tasks::{ReservedBy, Task, TaskId, TaskStatus};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-reserve");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.push_task(Task {
+            id: TaskId::from("t-1"),
+            project_name: "proj".to_owned(),
+            subject: "subject t-1".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: None,
+            attested: None,
+            reserved: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+
+        ws.dispatch(Command::TaskReserve {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            reserved: true,
+        })
+        .expect("app-level commands are accepted");
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].reserved,
+            Some(ReservedBy::User),
+            "the pick is reserved through the board's own command",
+        );
+
+        ws.dispatch(Command::TaskReserve {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            reserved: false,
+        })
+        .expect("accepted");
+        assert_eq!(ws.tasks_for_project("proj")[0].reserved, None, "and released");
+    }
+
+    /// The board's reopen reaches the store through the command bus
+    /// (#2423/B): an attestation is struck, the gate re-minted and the row
+    /// parked on the user again.
+    #[tokio::test]
+    async fn a_board_reopen_dispatches_and_parks_the_row() {
+        use forge_primitives::tasks::{By, Task, TaskId, TaskStatus, Verify};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-reopen");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.push_task(Task {
+            id: TaskId::from("epic"),
+            project_name: "proj".to_owned(),
+            subject: "the epic".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: None,
+            attested: None,
+            reserved: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.push_task(Task {
+            id: TaskId::from("t-1"),
+            project_name: "proj".to_owned(),
+            subject: "the looked-at child".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            parent: Some(TaskId::from("epic")),
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: Some(Verify::User),
+            attested: None,
+            reserved: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.update_task("proj", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        ws.attest_task("proj", &TaskId::from("t-1"), &lead, "looks good")
+            .expect("no refusal")
+            .expect("the row is there");
+
+        ws.dispatch(Command::TaskReopen { project: "proj".to_owned(), id: "t-1".to_owned() })
+            .expect("app-level commands are accepted");
+        let reopened = ws
+            .tasks_for_project("proj")
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-1"))
+            .expect("t-1");
+        assert_eq!(reopened.status, TaskStatus::Waiting, "the row is back on the look");
+        assert_eq!(reopened.attested, None, "the attestation is struck");
+        assert_eq!(reopened.verify, Some(Verify::User), "and the gate re-minted");
+        assert!(
+            reopened.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "parked on the user: {:?}",
+            reopened.waiting_on,
+        );
+    }
+
     /// The board's edits reach the store through the command bus, and a
     /// refusal says so on the service line - a press that did nothing and
     /// a press the core refused must not read the same.
@@ -9236,6 +9414,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: Some(forge_primitives::tasks::Verify::User),
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9367,6 +9547,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9462,6 +9644,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9473,6 +9657,7 @@ mod tests {
             detail: None,
             on: None,
             verification: false,
+            parked: false,
         };
 
         // The wait, answered: the words ride the notice, and it goes to the
@@ -9588,6 +9773,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9633,6 +9820,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9676,6 +9865,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -9768,6 +9959,8 @@ path = "{}"
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -10114,6 +10307,7 @@ path = "{}"
                 last_fire: None,
                 next_fire: t0,
                 team_role: Some("steward".to_owned()),
+                wake: true,
             });
         }
 
@@ -10531,6 +10725,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: team_role.map(str::to_owned),
+            wake: true,
         }
     }
 
@@ -13450,6 +13645,7 @@ provider = "anthropic"
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
+            wake: true,
         }
     }
 

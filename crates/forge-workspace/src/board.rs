@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, TaskTransition, WaitingKind};
+use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, TaskTransition};
 
 use crate::workspace::Workspace;
 
@@ -40,7 +40,7 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Marks {
-    /// Pending with nothing waiting on it.
+    /// Pending with nothing waiting on it and not reserved for the user.
     pub ready: bool,
     /// Has a pull-request link not known to be merged.
     pub in_review: bool,
@@ -195,7 +195,9 @@ impl Workspace {
                 let children_terminal =
                     !children.is_empty() && children.iter().all(|c| is_terminal(c.status));
                 let marks = Marks {
-                    ready: task.status == TaskStatus::Pending && task.waiting_on.is_none(),
+                    ready: task.status == TaskStatus::Pending
+                        && task.waiting_on.is_none()
+                        && task.reserved.is_none(),
                     in_review: task
                         .links
                         .iter()
@@ -249,15 +251,12 @@ impl Workspace {
                         t.status == TaskStatus::Pending
                             && t.owner.is_none()
                             && t.waiting_on.is_none()
+                            && t.reserved.is_none()
                     })
                     .count();
                 let waiting_on_user = tasks
                     .iter()
-                    .filter(|t| {
-                        t.status == TaskStatus::Waiting
-                            && t.waiting_on.as_ref().and_then(|w| w.kind)
-                                == Some(WaitingKind::Decision)
-                    })
+                    .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
                     .count();
                 let mut misses = Vec::new();
                 if queue > 0 && live_workers < slots {
@@ -346,6 +345,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -575,6 +576,7 @@ mod tests {
             detail: None,
             on: None,
             verification: false,
+            parked: false,
         });
         ws.seed_test_task(held);
         ws.seed_test_task(task("t-plain", TaskStatus::Pending));
@@ -589,6 +591,26 @@ mod tests {
         assert!(row(&rows, "t-plain").marks.ready, "the plain row is the one a seeker can take");
     }
 
+    /// A pick reserved for the user is not ready and not in the queue the
+    /// fleet counts (#2423/C): no seat can take it, so it is no work the
+    /// project is failing to dispatch.
+    #[test]
+    fn a_reserved_pick_is_not_ready_and_not_in_the_queue() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_task(Task {
+            reserved: Some(forge_primitives::tasks::ReservedBy::User),
+            ..task("t-kept", TaskStatus::Pending)
+        });
+        ws.seed_test_task(task("t-plain", TaskStatus::Pending));
+
+        let rows = ws.board_rows(PROJECT, epoch(10), WINDOW);
+        assert!(!row(&rows, "t-kept").marks.ready, "a reserved pick never reads ready");
+        assert!(row(&rows, "t-plain").marks.ready, "the plain row is the control");
+        let fleet = ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the row");
+        assert_eq!(fleet.queue, 1, "only the plain row is dispatchable, so no stall is owed");
+    }
+
     #[test]
     fn a_waiting_row_past_the_window_carries_waiting_too_long() {
         let dir = tempdir().expect("tempdir");
@@ -599,6 +621,7 @@ mod tests {
             detail: Some("which shape".to_owned()),
             on: None,
             verification: false,
+            parked: false,
         });
         waiting.updated_at = epoch(0);
         ws.seed_test_task(waiting);
@@ -647,6 +670,37 @@ mod tests {
         assert_eq!(withdrawn.status, TaskStatus::Canceled, "the row shows canceled");
         assert_eq!(on_you(&ws), 0, "and it leaves the waiting-on-you presentation");
         assert_eq!(withdrawn.detail.as_deref(), Some("moot"), "its reason travels on the record");
+    }
+
+    /// The fleet's count is the same set the chase digests (#2423): a
+    /// verification park belongs to the row's own gate, so the shape an
+    /// inherited gate left behind is not counted as waiting on the user.
+    #[test]
+    fn a_verification_park_without_an_own_gate_is_not_counted() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let parked = |id: &str, verify: Option<Verify>| {
+            let mut row = task(id, TaskStatus::Waiting);
+            row.verify = verify;
+            row.waiting_on = Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: None,
+                on: None,
+                verification: true,
+                parked: false,
+            });
+            row
+        };
+        ws.seed_test_task(parked("t-own", Some(Verify::User)));
+        ws.seed_test_task(parked("t-inherited", None));
+
+        let on_you = ws
+            .fleet_rows()
+            .into_iter()
+            .find(|r| r.project == PROJECT)
+            .expect("the project's row")
+            .waiting_on_user;
+        assert_eq!(on_you, 1, "the own-gate park counts; the inherited shape does not");
     }
 
     #[test]

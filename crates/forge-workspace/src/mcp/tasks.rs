@@ -10,7 +10,8 @@
 //! `tasks__delete` / `tasks__claim` / `tasks__wait`) are ANY-CALLER,
 //! scoped to the caller's own project - a worker creating its own
 //! subtasks is the normal case, and any session may move any task in its
-//! project. Task-list mutations are direct `Workspace` methods (state
+//! project; `tasks__approve` is the lead's own door and is not offered to
+//! a worker. Task-list mutations are direct `Workspace` methods (state
 //! writes), not Command-bus dispatches.
 //!
 //! - [`facade`] - the `TasksFacade` seam (prod over `Weak<Workspace>` +
@@ -36,14 +37,18 @@ pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn TasksFacade>,
     slot: SessionSlot,
+    lead: bool,
 ) -> McpServerBuilder {
     let create = Create { facade: facade.clone(), slot: slot.clone() };
     let update = Update { facade: facade.clone(), slot: slot.clone() };
     let list = List { facade: facade.clone(), slot: slot.clone() };
     let delete = Delete { facade: facade.clone(), slot: slot.clone() };
     let claim = Claim { facade: facade.clone(), slot: slot.clone() };
-    let wait = Wait { facade, slot };
-    builder.tool(create).tool(update).tool(list).tool(delete).tool(claim).tool(wait)
+    let wait = Wait { facade: facade.clone(), slot: slot.clone() };
+    let builder = builder.tool(create).tool(update).tool(list).tool(delete).tool(claim).tool(wait);
+    // `tasks__approve` is the lead's door: only the lead stands behind the
+    // user's recorded approval, so a worker is not offered the verb at all.
+    if lead { builder.tool(Approve { facade, slot }) } else { builder }
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -101,9 +106,33 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             map.insert(key.to_owned(), serde_json::json!(value));
         }
     }
+    for (key, value) in
+        [("verify", task.verify.map(verify_str)), ("reserved", task.reserved.map(|_| "user"))]
+    {
+        if let Some(value) = value {
+            map.insert(key.to_owned(), serde_json::json!(value));
+        }
+    }
+    if let Some(attested) = &task.attested {
+        map.insert(
+            "attested".to_owned(),
+            serde_json::json!({
+                "evidence": attested.evidence,
+                "at": fmt_rfc3339(attested.at),
+            }),
+        );
+    }
     map.insert("created_at".to_owned(), serde_json::json!(fmt_rfc3339(task.created_at)));
     map.insert("updated_at".to_owned(), serde_json::json!(fmt_rfc3339(task.updated_at)));
     serde_json::Value::Object(map)
+}
+
+/// The gate as the tool schema spells it.
+fn verify_str(verify: forge_primitives::tasks::Verify) -> &'static str {
+    match verify {
+        forge_primitives::tasks::Verify::User => "user",
+        forge_primitives::tasks::Verify::None => "none",
+    }
 }
 
 fn format_tasks_error(err: &TasksError) -> String {
@@ -153,8 +182,12 @@ impl Tool for Create {
          `links` the references it carries (issues, PRs, specs, paths), `detail` free prose. \
          `status` defaults to pending. A row whose deliverable IS the user's own read or \
          decision - a report the user asked to read, a verdict the user asked to give - is \
-         minted `verify: \"user\"` explicitly, never left to the epic default: it ends parked \
-         on the user, and the board's approve is what completes it. Returns the stored task \
+         minted `verify: \"user\"` explicitly: it ends parked on the user, and the board's \
+         approve is what completes it. The gate is minted on the row that owes the look; an \
+         epic's `verify: \"user\"` governs the epic's own completion, and a child never \
+         inherits it - a child that owes no look completes on its own terms. `reserved: \
+         \"user\"` reserves the pick for the user: the board sweep leaves it, it never reads \
+         ready, and no seat's claim takes it. Returns the stored task \
          with its id (use it with tasks__update / tasks__delete). Any session in the project \
          may call this."
     }
@@ -201,10 +234,18 @@ impl Tool for Create {
                 "verify": {
                     "type": "string",
                     "enum": ["user", "none"],
-                    "description": "Whether completion waits on the user's look. The epic's \
-                                    default applies when unset, but a row whose deliverable \
-                                    IS the user's own read or decision states `user` \
-                                    explicitly instead.",
+                    "description": "Whether the row's own completion waits on the user's look. \
+                                    The gate is minted on the row; a child never inherits \
+                                    its epic's. A row whose deliverable IS the user's own \
+                                    read or decision states `user`; anything else owes no \
+                                    look, even under a `user` epic.",
+                },
+                "reserved": {
+                    "type": "string",
+                    "enum": ["user"],
+                    "description": "Set `user` to reserve this pick for the user: the board \
+                                    sweep leaves a reserved row for them instead of \
+                                    dispatching it.",
                 },
                 "links": {
                     "type": "array",
@@ -284,9 +325,10 @@ impl Tool for Update {
          whose completion waits on the user: while it is waiting on something else the gate \
          would trade that wait for a look park, so the completion is refused by name; move it \
          off waiting first, then complete it. `verify: \"user\"` \
-         may be set here, but not taken away: a user-bound row keeps that gate until the user's \
-         approve, so clearing it - or moving the row out of its epic - is refused rather than \
-         taken as a way around the look. A task is \
+         may be set here, but not taken away: a row carrying `user` keeps that gate until the \
+         user's approve, so clearing it is refused rather than taken as a way around the look. \
+         The gate is minted on the row, never inherited from its epic, so reparenting changes \
+         no gate. A task is \
          named by its full id or any unique prefix of one; an exact id wins over any longer id \
          that starts with it, and a prefix matching more than one row is refused with the \
          matching rows named. An unknown id is an error, not a no-op. Returns the task as the \
@@ -330,9 +372,16 @@ impl Tool for Update {
                 "verify": {
                     "type": "string",
                     "enum": ["user", "none"],
-                    "description": "Whether completion waits on the user's look. Can be set \
-                                    here, but a `user` gate is the user's to clear: an update \
-                                    cannot clear it, or move the row out from under it.",
+                    "description": "Whether the row's own completion waits on the user's look. \
+                                    Can be set here, but a `user` gate is the user's to \
+                                    clear: an update cannot clear it. The gate is minted on \
+                                    the row, so moving the row changes nothing.",
+                },
+                "parked": {
+                    "type": "boolean",
+                    "description": "Mark a waiting row's wait as parked by design - the user's \
+                                    own deferral - so the chase leaves it alone. Only a \
+                                    waiting row takes it.",
                 },
                 "links_add": {
                     "type": "array",
@@ -445,6 +494,7 @@ fn board_row_to_json(row: &crate::board::BoardRow) -> serde_json::Value {
                 "detail": wait.detail,
                 "on": wait.on.as_ref().map(TaskId::as_str),
                 "verification": wait.verification,
+                "parked": wait.parked,
             }),
         );
     }
@@ -468,7 +518,9 @@ impl Tool for List {
          derives - `worked` time against the estimate, how long since any touch, and the marks \
          (ready, in_review, overdue, no_movement, waiting_too_long, stale, to_close) - under a \
          dated line, so no session does date arithmetic. Narrow with `owner` (a session label), \
-         `parent` (a task id), `status`, or `ready` (true = pending with nothing waiting on it). \
+         `parent` (a task id), `status`, or `ready` (true = pending with nothing waiting on \
+         it and not reserved for the user; ownership is NOT part of the mark, so read `owner` \
+         too when the question is an unowned row). \
          An empty array means your project has no tasks in flight, or that your project could \
          not be resolved, or that this run could not read its stored tasks. Any session in the \
          project may call this."
@@ -494,8 +546,10 @@ impl Tool for List {
                 },
                 "ready": {
                     "type": "boolean",
-                    "description": "True lists only rows something can start: pending with \
-                                    nothing waiting on it.",
+                    "description": "True lists only rows something can start: pending, \
+                                    with nothing waiting on it, and not reserved for the \
+                                    user. Ownership is not part of the mark: read `owner` \
+                                    for an unowned row.",
                 },
             },
             "additionalProperties": false,
@@ -620,10 +674,11 @@ impl Tool for Claim {
          ready row of that epic by rank - exactly one of the two. `id` and `epic` each take a \
          full task id or any unique prefix of one; an exact id wins over any longer id that \
          starts with it, and a prefix matching more than one row is refused with the matching \
-         rows named. Refused when a live seat holds the row (named), when it is not pending, or \
-         when you already have a row in progress: one in progress per worker. Claiming is for \
-         unassigned rows: a row a lead created for you already names you as `owner`, so work \
-         it without claiming. Returns the claimed record."
+         rows named. Refused when a live seat holds the row (named), when it is not pending, \
+         when it is reserved for the user (`reserved: \"user\"` - the sweep's pick and nobody \
+         else's), or when you already have a row in progress: one in progress per worker. \
+         Claiming is for unassigned rows: a row a lead created for you already names you as \
+         `owner`, so work it without claiming. Returns the claimed record."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -690,7 +745,7 @@ impl Tool for Wait {
          (an account, a CI run, a machine). A dependency wait is on the task it names, not on \
          the user. A blocker parked on the user's look has not ended, so the chain keeps \
          waiting until the user approves it. The waiting row is not itself waiting on the \
-         user: an epic's `verify: user` gates a row's own completion, not its dependency \
+         user: a row's `verify: user` gates its own completion, not its dependency \
          wait, so the row stays movable and deletable. Route a decision to the user only when the user \
          explicitly asked for a hold, or something is still genuinely ambiguous after the \
          decision model, peer opinions and the team's own review. `detail` is the words. \
@@ -762,6 +817,78 @@ impl Tool for Wait {
     }
 }
 
+struct Approve {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct ApproveArgs {
+    id: String,
+    /// The approval as the user gave it, quoted.
+    approval: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Approve {
+    fn name(&self) -> &'static str {
+        "tasks__approve"
+    }
+
+    fn description(&self) -> &'static str {
+        "Lead-only. Complete a row waiting on the user's LOOK by recording the approval the \
+         user already gave, quoted from the chat or the look record. `approval` is that quote \
+         and must not be empty: it lands in the row's detail and is the evidence the board \
+         draws as lead-attested. This door is for a look only - never a decision or a \
+         question, which are the user's to answer - and only the project lead may call it. \
+         The user's own approve, send-back and cancel doors stay; the user's reopen strikes \
+         the attestation, re-mints the look gate and parks the row on them again. A task is \
+         named by its full id or any unique prefix of one. Refused when the row is not \
+         waiting on a look, when the quote is empty, or when the caller is not the lead."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The row waiting on the look, or any unique prefix of its id.",
+                },
+                "approval": {
+                    "type": "string",
+                    "description": "The user's approval, quoted as they gave it (e.g. \
+                                    \"Looks right - merge\"). Required and non-empty.",
+                },
+            },
+            "required": ["id", "approval"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: ApproveArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let approval = args.approval.trim();
+        if approval.is_empty() {
+            return tool_error(
+                "an attestation needs the user's approval quoted in `approval`; it must not be \
+                 empty"
+                    .to_owned(),
+            );
+        }
+        match self.facade.attest_task(&self.slot, &TaskId::from(args.id.as_str()), approval) {
+            Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("response serialization failed: {err}")),
+            },
+            Err(err) => tool_error(format_tasks_error(&err)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,6 +930,7 @@ mod tests {
                 "parent": "epic",
                 "rank": 10,
                 "verify": "user",
+                "reserved": "user",
                 "links": [
                     { "kind": "issue", "label": "PR #1173", "target": "https://example.invalid/pull/1173" },
                     { "target": "docs/plan.md" }
@@ -820,6 +948,11 @@ mod tests {
         assert_eq!(draft.parent.as_deref(), Some("epic"));
         assert_eq!(draft.rank, Some(10));
         assert_eq!(draft.verify, Some(forge_primitives::tasks::Verify::User));
+        assert_eq!(
+            draft.reserved,
+            Some(forge_primitives::tasks::ReservedBy::User),
+            "the reserved pick reaches the facade",
+        );
         assert_eq!(draft.links.len(), 2);
         assert_eq!(draft.links[0].kind, Some(LinkKind::Issue));
         assert_eq!(
@@ -838,6 +971,54 @@ mod tests {
             .await;
         assert!(out.is_error, "subject is required");
         assert!(facade.created.lock().is_empty(), "invalid input never reaches the facade");
+    }
+
+    #[tokio::test]
+    async fn approve_threads_the_quote_and_the_caller_to_the_facade() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Approve { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1", "approval": " looks good " })))
+            .await;
+        assert!(!out.is_error, "approve succeeds: {out:?}");
+        let calls = facade.attested.lock();
+        assert_eq!(calls.len(), 1, "one attestation reached the facade");
+        assert_eq!(calls[0].1, TaskId::from("t-1"), "the row the caller named");
+        assert_eq!(calls[0].2, "looks good", "the quote is trimmed, not dropped");
+    }
+
+    #[tokio::test]
+    async fn approve_refuses_an_empty_quote_without_touching_the_facade() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Approve { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1", "approval": "   " })))
+            .await;
+        assert!(out.is_error, "an empty approval is nothing to stand behind");
+        assert!(facade.attested.lock().is_empty(), "invalid input never reaches the facade");
+    }
+
+    /// The lead door is shipped text (#2423/B): a caller learns it is
+    /// lead-only and look-only, that the quote is required, and that the
+    /// user's reopen is the way back.
+    #[test]
+    fn the_approve_description_states_the_lead_door() {
+        let approve = Approve { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        for clause in [
+            "Lead-only",
+            "never a decision or a question",
+            "must not be empty",
+            "the user's reopen strikes the attestation",
+        ] {
+            assert!(
+                approve.description().contains(clause),
+                "tasks__approve does not state the door ({clause}): {}",
+                approve.description(),
+            );
+        }
+        assert_eq!(
+            approve.input_schema()["required"],
+            serde_json::json!(["id", "approval"]),
+            "the quote is required at the schema",
+        );
     }
 
     #[tokio::test]
@@ -986,6 +1167,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
@@ -1260,9 +1443,9 @@ mod tests {
     }
 
     /// The dependency chain is shipped text (#2415): a dependency wait is
-    /// on the task it names, not on the user, so an epic's `verify: user`
-    /// leaves the waiting row movable and deletable and the chain is
-    /// released by the blocker's end.
+    /// on the task it names, not on the user, so `verify: user` on the row
+    /// or its epic leaves the waiting row movable and deletable and the
+    /// chain is released by the blocker's end.
     #[test]
     fn the_wait_and_delete_descriptions_state_the_dependency_chain() {
         let facade = MockTasksFacade::new().into_arc();
@@ -1273,7 +1456,7 @@ mod tests {
             "A dependency wait is on the task it names, not on the user",
             "A blocker parked on the user's look has not ended, so the chain keeps waiting \
              until the user approves it",
-            "an epic's `verify: user` gates a row's own completion, not its dependency wait",
+            "a row's `verify: user` gates its own completion, not its dependency wait",
             "the row stays movable and deletable",
         ] {
             assert!(
@@ -1419,34 +1602,42 @@ mod tests {
         }
     }
 
-    /// The user-read mint is shipped text (#2377): a row whose deliverable
-    /// IS the user's own read or decision is minted `verify: "user"`
-    /// explicitly, never left to the epic default, so the board parks it
-    /// on the user. The verify property is where the caller sets it.
+    /// The user-read mint is shipped text (#2377), and the gate belongs to
+    /// the row it is minted on (#2423): a row whose deliverable IS the
+    /// user's own read or decision states `verify: "user"`, while an
+    /// epic's gate governs the epic's own completion and a child never
+    /// inherits it. The verify property is where the caller sets it.
     #[test]
-    fn the_create_description_states_the_user_read_mint() {
+    fn the_create_description_states_the_user_read_mint_never_inherited() {
         let create = Create { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         let description = create.description();
-        assert!(
-            description.contains(
-                "A row whose deliverable IS the user's own read or decision - a report the user \
-                 asked to read, a verdict the user asked to give - is minted `verify: \"user\"` \
-                 explicitly, never left to the epic default: it ends parked on the user, and \
-                 the board's approve is what completes it"
-            ),
-            "tasks__create does not state the mint: {description}",
-        );
+        for clause in [
+            "A row whose deliverable IS the user's own read or decision - a report the user \
+             asked to read, a verdict the user asked to give - is minted `verify: \"user\"` \
+             explicitly: it ends parked on the user, and the board's approve is what completes \
+             it",
+            "an epic's `verify: \"user\"` governs the epic's own completion, and a child never \
+             inherits it",
+            "a child that owes no look completes on its own terms",
+        ] {
+            assert!(
+                description.contains(clause),
+                "tasks__create does not state the mint ({clause}): {description}",
+            );
+        }
         let verify = create.input_schema()["properties"]["verify"]["description"]
             .as_str()
             .expect("the verify property carries a description")
             .to_owned();
-        assert!(
-            verify.contains(
-                "a row whose deliverable IS the user's own read or decision states `user` \
-                 explicitly instead"
-            ),
-            "the verify property owes the mint where the caller sets it: {verify}",
-        );
+        for clause in [
+            "The gate is minted on the row; a child never inherits its epic's",
+            "anything else owes no look, even under a `user` epic",
+        ] {
+            assert!(
+                verify.contains(clause),
+                "the verify property owes the mint where the caller sets it ({clause}): {verify}",
+            );
+        }
     }
 
     /// The assign-at-spawn path is shipped text (#2416): a lead creating

@@ -51,6 +51,8 @@ mod tests {
             estimate: None,
             rank: None,
             verify: None,
+            attested: None,
+            reserved: None,
             links: Vec::new(),
             attempt: 0,
             archived_at: None,
