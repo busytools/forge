@@ -143,6 +143,12 @@ export interface WaitingView {
   /** The verify gate, or a question the worker raised. */
   verification: boolean;
   detail: string | null;
+  /** The card's title: the wait's own detail, else the state's sentence. */
+  ask: string;
+  /** The row's references, as doors, beside the ask. */
+  links: { label: string; href: string | null }[];
+  /** The artifact a look points at, when the row carries a followable one. */
+  artifact: { label: string; href: string } | null;
   /** How long it has waited. */
   age: string;
   /**
@@ -235,6 +241,37 @@ function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardVie
 }
 
 /** The links a row shows: short labels, with a href when the target is a URL. */
+/**
+ * The artifact a look points at, where the row carries one: the first
+ * followable PR or path link. A look's ask usually names a mock, an
+ * approach or a view, and the reader should reach it in one press.
+ */
+/**
+ * The sentence a wait's card says when it states no ask of its own: the
+ * state, in the reader's terms. A seeded or legacy wait keeps this, and a
+ * wait with a detail leads with the detail instead (#2423 look).
+ */
+export function waitSentence(task: Task): string {
+  const wait = task.waiting_on;
+  if (wait === null) return 'Waiting.';
+  if (waitOnUser(task) && wait.verification) {
+    return 'This row is finished and waits on your approval.';
+  }
+  if (waitOnUser(task) && wait.kind === 'decision') return 'A decision is waiting on you.';
+  if (wait.kind === 'dependency') return `Waiting on ${wait.on ?? 'another row'}.`;
+  if (wait.kind === 'resource') return 'Waiting on a resource.';
+  return 'Waiting.';
+}
+
+export function artifactOf(task: Task): { label: string; href: string } | null {
+  const link = task.links.find(
+    (candidate) =>
+      (candidate.kind === 'pr' || candidate.kind === 'path') && candidate.target.startsWith('http'),
+  );
+  if (link === undefined) return null;
+  return { label: link.label ?? shortTarget(link.target), href: link.target };
+}
+
 function linksOf(task: Task): BoardCardView['links'] {
   return task.links.map((link) => ({
     label: link.label ?? shortTarget(link.target),
@@ -371,6 +408,12 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
       owner: entry.task.owner === null ? null : entry.task.owner.label,
       verification: entry.task.waiting_on?.verification === true,
       detail: entry.task.waiting_on?.detail ?? null,
+      ask: entry.task.waiting_on?.detail ?? waitSentence(entry.task),
+      links: linksOf(entry.task),
+      artifact:
+        entry.task.waiting_on?.verification === true && waitOnUser(entry.task)
+          ? artifactOf(entry.task)
+          : null,
       age: fmtSecs(entry.updated_secs_ago),
       root: entry.task.parent === null,
       // Counted from the rows themselves, NOT from the rollup: the rollup's

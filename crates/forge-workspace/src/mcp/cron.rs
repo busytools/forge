@@ -80,9 +80,11 @@ fn cron_to_json(entry: &CronEntry) -> serde_json::Value {
     });
     if let (Some(desc), Some(map)) = (&entry.description, obj.as_object_mut()) {
         map.insert("description".to_owned(), serde_json::Value::String(desc.clone()));
-        if !entry.wake {
-            map.insert("wake".to_owned(), serde_json::Value::Bool(false));
-        }
+    }
+    if !entry.wake
+        && let Some(map) = obj.as_object_mut()
+    {
+        map.insert("wake".to_owned(), serde_json::Value::Bool(false));
     }
     obj
 }

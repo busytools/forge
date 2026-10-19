@@ -186,8 +186,8 @@ impl Tool for Create {
          approve is what completes it. The gate is minted on the row that owes the look; an \
          epic's `verify: \"user\"` governs the epic's own completion, and a child never \
          inherits it - a child that owes no look completes on its own terms. `reserved: \
-         \"user\"` reserves the pick for the user, and the board sweep leaves it for them. \
-         Returns the stored task \
+         \"user\"` reserves the pick for the user: the board sweep leaves it, it never reads \
+         ready, and no seat's claim takes it. Returns the stored task \
          with its id (use it with tasks__update / tasks__delete). Any session in the project \
          may call this."
     }
@@ -544,8 +544,9 @@ impl Tool for List {
                 },
                 "ready": {
                     "type": "boolean",
-                    "description": "True lists only rows something can start: pending with \
-                                    nothing waiting on it.",
+                    "description": "True lists only rows something can start: pending, \
+                                    unowned, with nothing waiting on it, and not reserved \
+                                    for the user.",
                 },
             },
             "additionalProperties": false,
@@ -670,10 +671,11 @@ impl Tool for Claim {
          ready row of that epic by rank - exactly one of the two. `id` and `epic` each take a \
          full task id or any unique prefix of one; an exact id wins over any longer id that \
          starts with it, and a prefix matching more than one row is refused with the matching \
-         rows named. Refused when a live seat holds the row (named), when it is not pending, or \
-         when you already have a row in progress: one in progress per worker. Claiming is for \
-         unassigned rows: a row a lead created for you already names you as `owner`, so work \
-         it without claiming. Returns the claimed record."
+         rows named. Refused when a live seat holds the row (named), when it is not pending, \
+         when it is reserved for the user (`reserved: \"user\"` - the sweep's pick and nobody \
+         else's), or when you already have a row in progress: one in progress per worker. \
+         Claiming is for unassigned rows: a row a lead created for you already names you as \
+         `owner`, so work it without claiming. Returns the claimed record."
     }
 
     fn input_schema(&self) -> serde_json::Value {

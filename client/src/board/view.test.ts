@@ -227,6 +227,10 @@ describe("one project's board", () => {
       chips('inherited').map((chip) => chip.label),
       'an inherited park claimed the reader',
     ).not.toContain('waiting on you');
+    expect(
+      chips('inherited').map((chip) => chip.label),
+      'and it reads as the plain wait it is, not as no wait at all',
+    ).toEqual(['waiting']);
   });
 
   /**

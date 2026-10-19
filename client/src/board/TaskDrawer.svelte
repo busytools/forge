@@ -3,7 +3,7 @@
   import { hrefForSlot } from '../routes';
   import type { ServiceReport } from '../wire/fleet';
   import type { BoardRow, ByWire, TaskStatus } from '../wire/home';
-  import { fmtSecs, waitOnUser, type WaitingView } from './view';
+  import { artifactOf, fmtSecs, waitOnUser, type WaitingView } from './view';
 
   /**
    * One row's own page, over the board: what the row IS (its fields and
@@ -46,6 +46,17 @@
 
   const task = $derived(row.task);
   const seatHref = $derived(task.owner === null ? null : hrefForSlot(task.owner));
+
+  /**
+   * The artifact a look is asking the reader to see: the first followable
+   * PR or path link on a look wait. The reader should not have to hunt the
+   * row's field list to find what to look at (#2423 look).
+   */
+  const lookArtifact = $derived(
+    task.waiting_on !== null && task.waiting_on.verification && waitOnUser(task)
+      ? artifactOf(task)
+      : null,
+  );
 
   /** How many moves the row's own carry withholds, from its whole count. */
   const withheld = $derived(Math.max(0, row.history_total - row.history.length));
@@ -230,19 +241,60 @@
         {#if waitOnUser(task)}Waiting on you{:else}What it waits on{/if}
       </h3>
       <div class="dr-ask">
+        <!-- The ASK leads: the wait's own detail is what the reader is being
+             asked, so it is the first thing the card says. A seeded or
+             legacy wait with no detail keeps the state's own sentence. -->
         <div class="q">
-          {#if task.waiting_on.verification}
+          {#if task.waiting_on.detail !== null}
+            {task.waiting_on.detail}
+          {:else if waitOnUser(task) && task.waiting_on.verification}
             This row is finished and waits on your approval.
-          {:else if task.waiting_on.kind === 'decision'}
+          {:else if waitOnUser(task) && task.waiting_on.kind === 'decision'}
             A decision is waiting on you.
           {:else if task.waiting_on.kind === 'dependency'}
             Waiting on {task.waiting_on.on ?? 'another row'}.
-          {:else}
+          {:else if task.waiting_on.kind === 'resource'}
             Waiting on a resource.
+          {:else}
+            Waiting.
           {/if}
         </div>
         {#if task.waiting_on.detail !== null}
-          <div class="from">{task.waiting_on.detail}</div>
+          <!-- What the ask is, in the state's own words, under the ask itself. -->
+          <div class="from">
+            {#if waitOnUser(task) && task.waiting_on.verification}
+              A look: this row is finished and waits on your approval.
+            {:else if waitOnUser(task) && task.waiting_on.kind === 'decision'}
+              A decision is waiting on you.
+            {:else if task.waiting_on.kind === 'dependency'}
+              Waiting on {task.waiting_on.on ?? 'another row'}.
+            {:else if task.waiting_on.kind === 'resource'}
+              Waiting on a resource.
+            {:else}
+              Waiting.
+            {/if}
+          </div>
+        {/if}
+        {#if task.links.length > 0}
+          <!-- The row's references are doors here: the ask usually needs one. -->
+          <div class="from">
+            {#each task.links as link, at (at)}
+              {#if at > 0}<span class="dim"> &middot; </span>{/if}
+              {#if link.target.startsWith('http')}
+                <a href={link.target} target="_blank" rel="noreferrer"
+                  >{link.label ?? link.target}</a
+                >
+              {:else}
+                <span>{link.label ?? link.target}</span>
+              {/if}
+            {/each}
+          </div>
+        {/if}
+        {#if lookArtifact !== null}
+          <div class="from">
+            look at
+            <a href={lookArtifact.href} target="_blank" rel="noreferrer">{lookArtifact.label}</a>
+          </div>
         {/if}
         {#if waitOnUser(task)}
           {#if task.waiting_on.verification}

@@ -243,8 +243,9 @@ pub enum ChaseRung {
     Death,
     Retro,
     EpicClose,
-    /// Rows parked on the user, untouched: ONE digest per project asks
-    /// the lead to filter them - the chase never spawns a session for it.
+    /// One row parked on the user, untouched: one nudge per row per wait
+    /// episode asks the lead to act on it - the chase never spawns a
+    /// session for it.
     UserWaitDigest,
 }
 

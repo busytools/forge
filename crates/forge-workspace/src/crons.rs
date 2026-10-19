@@ -262,7 +262,9 @@ impl Workspace {
     }
 
     /// Fire every cron due at `now`: deliver each prompt into its project
-    /// session (spawning it if asleep) and advance/remove the entry.
+    /// session (spawning it if asleep, unless the entry carries
+    /// `wake: false` - a standing sweep - in which case a sleeping owner
+    /// leaves the fire due and unadvanced) and advance/remove the entry.
     /// Delivery routes through the Command bus (a session action); the
     /// advance is a direct state write - kept separate per the cron
     /// state-vs-delivery split. `now` is injected so tests are
@@ -1401,6 +1403,62 @@ mod tests {
                 .and_then(|cron| cron.last_fire),
             Some(now),
             "and its fire advances the schedule",
+        );
+    }
+
+    /// A no-wake cron is skipped only while the owner SLEEPS: with a live
+    /// lead the fire lands and the schedule advances, which is the
+    /// standing cadence (#2423/C).
+    #[test]
+    fn a_no_wake_cron_fires_normally_while_the_owner_is_awake() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/wc-nowake-awake");
+        let cwd = project_expanded_path(&ws, "proj");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-session".to_owned(),
+            },
+        );
+        ws.mark_session_connected_for_test(&lead, "lead-uuid");
+
+        let now = std::time::SystemTime::now();
+        let mut sweep = schedule("sweep", "proj", "sweep", None);
+        sweep.next_fire = std::time::SystemTime::UNIX_EPOCH;
+        sweep.wake = false;
+        ws.push_cron(sweep);
+        ws.enable_test_dispatch_intercept();
+
+        ws.fire_due_crons(now);
+        let texts: Vec<String> = ws
+            .drain_test_dispatch_buffer()
+            .iter()
+            .filter_map(|command| match command {
+                Command::Prompt { text, .. } | Command::PromptUnder { text, .. } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| text.contains("sweep")),
+            "the awake owner is given its sweep: {texts:?}",
+        );
+        assert_eq!(
+            ws.crons_for_project("proj")
+                .iter()
+                .find(|cron| cron.id == forge_primitives::cron::CronId::from("sweep"))
+                .and_then(|cron| cron.last_fire),
+            Some(now),
+            "and the fire advances the schedule",
         );
     }
 

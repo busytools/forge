@@ -5430,7 +5430,8 @@ impl Workspace {
                                 &task,
                                 format!(
                                     "task board: the user reopened \"{}\" - the look is owed \
-                                     again, so complete it and hand it back.",
+                                     again; when it completes it parks on the user for the \
+                                     new look.",
                                     task.subject,
                                 ),
                             );
@@ -9249,6 +9250,141 @@ mod tests {
         let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
         let (notices, _notice_rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(first.register(1, to_host, notices), "no connection has taken the role at boot");
+    }
+
+    /// The board's reserve toggle reaches the store through the command bus
+    /// (#2423/C): the pick is the user's, and releasing it clears it.
+    #[tokio::test]
+    async fn a_board_reservation_dispatches_and_lands() {
+        use forge_primitives::tasks::{ReservedBy, Task, TaskId, TaskStatus};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-reserve");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.push_task(Task {
+            id: TaskId::from("t-1"),
+            project_name: "proj".to_owned(),
+            subject: "subject t-1".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: None,
+            attested: None,
+            reserved: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+
+        ws.dispatch(Command::TaskReserve {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            reserved: true,
+        })
+        .expect("app-level commands are accepted");
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].reserved,
+            Some(ReservedBy::User),
+            "the pick is reserved through the board's own command",
+        );
+
+        ws.dispatch(Command::TaskReserve {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            reserved: false,
+        })
+        .expect("accepted");
+        assert_eq!(ws.tasks_for_project("proj")[0].reserved, None, "and released");
+    }
+
+    /// The board's reopen reaches the store through the command bus
+    /// (#2423/B): an attestation is struck, the gate re-minted and the row
+    /// parked on the user again.
+    #[tokio::test]
+    async fn a_board_reopen_dispatches_and_parks_the_row() {
+        use forge_primitives::tasks::{By, Task, TaskId, TaskStatus, Verify};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-reopen");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.push_task(Task {
+            id: TaskId::from("epic"),
+            project_name: "proj".to_owned(),
+            subject: "the epic".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: None,
+            attested: None,
+            reserved: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.push_task(Task {
+            id: TaskId::from("t-1"),
+            project_name: "proj".to_owned(),
+            subject: "the looked-at child".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            parent: Some(TaskId::from("epic")),
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: Some(Verify::User),
+            attested: None,
+            reserved: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.update_task("proj", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        ws.attest_task("proj", &TaskId::from("t-1"), &lead, "looks good")
+            .expect("no refusal")
+            .expect("the row is there");
+
+        ws.dispatch(Command::TaskReopen { project: "proj".to_owned(), id: "t-1".to_owned() })
+            .expect("app-level commands are accepted");
+        let reopened = ws
+            .tasks_for_project("proj")
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-1"))
+            .expect("t-1");
+        assert_eq!(reopened.status, TaskStatus::Waiting, "the row is back on the look");
+        assert_eq!(reopened.attested, None, "the attestation is struck");
+        assert_eq!(reopened.verify, Some(Verify::User), "and the gate re-minted");
+        assert!(
+            reopened.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "parked on the user: {:?}",
+            reopened.waiting_on,
+        );
     }
 
     /// The board's edits reach the store through the command bus, and a

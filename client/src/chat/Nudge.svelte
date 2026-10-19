@@ -14,7 +14,7 @@
    * **A nudge is a row of the work, not the reader's words.** Nobody typed it,
    * so it leads with the board's own mark and never wears the reader's rule -
    * the same drawing for every automated nudge, board and browser alike. A
-   * long one - the user-wait digest, a browser sentence - opens on the whole
+   * long one - a user-wait nudge, a browser sentence - opens on the whole
    * of what it said, the way a thought row does.
    */
   let { text, open = false }: { text: string; open?: boolean } = $props();

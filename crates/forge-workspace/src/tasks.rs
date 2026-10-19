@@ -106,7 +106,7 @@ fn parked_on_look(task: &Task) -> bool {
 /// Whether a row presents as waiting on the user: a decision wait or a
 /// verification park. The removal guards and the withdraw door read this
 /// set - an ask on the user leaves by the user's own answer or approve,
-/// or by a reasoned withdraw. The fleet count and the chase's digest
+/// or by a reasoned withdraw. The fleet count and the chase's user nudge
 /// derive the same set from the stored fields.
 ///
 /// A verification park is the user's only when the row carries its own
@@ -898,6 +898,7 @@ impl Workspace {
                                 && t.status == TaskStatus::Pending
                                 && t.waiting_on.is_none()
                                 && t.owner.is_none()
+                                && t.reserved.is_none()
                         })
                         .map(|(i, _)| i)
                         .collect();
@@ -910,7 +911,8 @@ impl Workspace {
             };
             let status = tasks[index].status;
             let waiting = tasks[index].waiting_on.is_some();
-            if status != TaskStatus::Pending || waiting {
+            let reserved = tasks[index].reserved.is_some();
+            if status != TaskStatus::Pending || waiting || reserved {
                 return Err(ClaimError::NotReady);
             }
             let holder = tasks[index].owner.clone();
@@ -2119,6 +2121,62 @@ mod tests {
             .claim_task("proj", &worker, None, Some(&TaskId::from("epic")))
             .expect("a ready row is there");
         assert_eq!(claimed.id, TaskId::from("early"), "the top ready row by rank");
+    }
+
+    /// A pick reserved for the user is nobody's to claim: neither by id nor
+    /// through its epic's ready row (#2423/C).
+    #[test]
+    fn a_reserved_pick_is_not_claimable() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-claim-reserved");
+        ws.push_task(sample_task_with_parent("epic", None, "proj"));
+        ws.push_task(Task {
+            reserved: Some(ReservedBy::User),
+            ..sample_task_with_parent("kept", Some("epic"), "proj")
+        });
+        ws.push_task(Task {
+            rank: Some(10),
+            ..sample_task_with_parent("free", Some("epic"), "proj")
+        });
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        assert_eq!(
+            ws.claim_task("proj", &worker, Some(&TaskId::from("kept")), None),
+            Err(ClaimError::NotReady),
+            "a named reserved row is refused as not ready",
+        );
+        let claimed = ws
+            .claim_task("proj", &worker, None, Some(&TaskId::from("epic")))
+            .expect("the free row is still there");
+        assert_eq!(claimed.id, TaskId::from("free"), "the epic pull skips the reserved row");
+    }
+
+    /// The reservation is the user's to set and release, and the write
+    /// returns the row as it stands after it.
+    #[test]
+    fn a_pick_is_reserved_and_released() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-reserve");
+        ws.push_task(sample_task("t-1", "proj"));
+
+        let reserved = ws
+            .reserve_task("proj", &TaskId::from("t-1"), true)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(reserved.reserved, Some(ReservedBy::User), "the pick is the user's");
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].reserved,
+            Some(ReservedBy::User),
+            "and the write persists",
+        );
+
+        let released = ws
+            .reserve_task("proj", &TaskId::from("t-1"), false)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(released.reserved, None, "releasing clears it");
     }
 
     /// A worker is handed a row by the short id a person writes, so an

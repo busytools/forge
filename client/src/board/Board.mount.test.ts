@@ -603,6 +603,65 @@ describe("the board's controls", () => {
     expect(document.querySelector('.b-hold'), 'a child row drew a hold').toBeNull();
   });
 
+  /**
+   * **The wait card leads with the ASK** (#2423 look): what is being decided
+   * or looked at, then the row's links as doors, then a look's artifact.
+   * The row's subject is context under the ask, not the title.
+   */
+  it('leads a wait card with its ask, its links and a look artifact', () => {
+    const link = {
+      kind: 'pr' as const,
+      label: 'the mock',
+      target: 'https://example.invalid/mock',
+      state: null,
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    summon(
+      wireWith([
+        row(
+          task('w1', 'the row subject', 'waiting', {
+            verify: 'user',
+            waiting_on: {
+              kind: 'decision',
+              detail: 'Which mock should ship?',
+              on: null,
+              verification: true,
+            },
+            links: [link],
+          }),
+        ),
+      ]),
+    );
+
+    const card = document.querySelector('.b-ask');
+    const words = card?.textContent ?? '';
+    expect(words, 'the ask is on the card').toContain('Which mock should ship?');
+    expect(words.indexOf('Which mock should ship?'), 'the subject leads over the ask').toBeLessThan(
+      words.indexOf('the row subject'),
+    );
+    expect(
+      card?.querySelector('a[href="https://example.invalid/mock"]'),
+      'the row link is a door beside the ask',
+    ).not.toBeNull();
+    expect(words, 'the look names its artifact').toContain('look at');
+  });
+
+  /** A seeded or legacy wait with no ask keeps the state's own sentence. */
+  it('keeps the state sentence for a wait with no detail', () => {
+    summon(
+      wireWith([
+        row(
+          task('q1', 'a bare question', 'waiting', {
+            waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+          }),
+        ),
+      ]),
+    );
+    expect(document.querySelector('.b-ask')?.textContent).toContain(
+      'A decision is waiting on you.',
+    );
+  });
+
   it('offers the approve when the row has nothing left to close', () => {
     summon(
       wireWith([
@@ -817,6 +876,80 @@ describe("the row's own page", () => {
 
     press(card, { x: 80, y: 80 });
     expect(document.querySelector('.dr'), 'a drag is not a click').toBeNull();
+  });
+
+  /**
+   * **The row page leads with the ASK** (#2423 look): the wait's detail,
+   * then the row's links as doors, then a look's artifact. The subject is
+   * context under the ask, not the thing the page says first.
+   */
+  it("leads the row page with the wait's ask, links and artifact", () => {
+    const link = {
+      kind: 'pr' as const,
+      label: 'the mock',
+      target: 'https://example.invalid/mock',
+      state: null,
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    summon(
+      wireWith([
+        row(
+          task('w1', 'the row subject', 'waiting', {
+            verify: 'user',
+            waiting_on: {
+              kind: 'decision',
+              detail: 'Which mock should ship?',
+              on: null,
+              verification: true,
+            },
+            links: [link],
+          }),
+        ),
+      ]),
+    );
+    const card = document.querySelector('.b-card[data-id="w1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    const drawer = document.querySelector('.dr');
+    const ask = drawer?.querySelector('.dr-ask');
+    expect(ask?.textContent, 'the ask leads the waiting section').toContain(
+      'Which mock should ship?',
+    );
+    expect(
+      ask?.textContent?.trim().startsWith('Which mock should ship?'),
+      'the ask is the first thing the section says, not the state sentence',
+    ).toBe(true);
+    expect(
+      drawer?.querySelector('a[href="https://example.invalid/mock"]'),
+      'the row link is an openable door',
+    ).not.toBeNull();
+    expect(drawer?.textContent, 'the look names its artifact').toContain('look at');
+  });
+
+  /**
+   * An inherited park is not the reader's (#2423/A): its page says a plain
+   * "Waiting." and offers no approve, never the look's sentence with no
+   * control behind it.
+   */
+  it('draws an inherited park as a plain wait with no look control', () => {
+    summon(
+      wireWith([
+        row(
+          task('i1', 'an inherited park', 'waiting', {
+            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          }),
+        ),
+      ]),
+    );
+    const card = document.querySelector('.b-card[data-id="i1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    const drawer = document.querySelector('.dr');
+    expect(drawer?.textContent, 'the park reads as a plain wait').toContain('Waiting.');
+    expect(drawer?.textContent, 'the look sentence is not drawn').not.toContain(
+      'waits on your approval',
+    );
+    expect(byText('approve'), 'and no approve is offered').toBeNull();
   });
 
   /**

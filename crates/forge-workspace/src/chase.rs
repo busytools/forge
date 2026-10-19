@@ -540,10 +540,18 @@ impl Workspace {
             let crossings = crossings(&lead, &rows, &history, &unaccounted, &fired, now);
             for crossing in crossings {
                 let target = ladder(&crossing, &lead, |seat| self.seat_is_live(seat));
+                let mut landed = false;
                 if let Some(target) = &target
                     && deliver.to_seat(target, &crossing.text) == Delivery::Delivered
                 {
                     delivered += 1;
+                    landed = true;
+                }
+                // A user nudge is one shot per row: a tick that found every
+                // seat asleep must not consume it, or the row's only nudge is
+                // lost. Every other rung keeps its mark-alone behaviour.
+                if crossing.rung == ChaseRung::UserWaitDigest && !landed {
+                    continue;
                 }
                 self.record_chase(&TaskChase {
                     task_id: crossing.task_id.clone(),
@@ -988,10 +996,10 @@ mod tests {
         ws.seed_test_task(row);
     }
 
-    /// The rows parked on the user get ONE digest per project per window,
-    /// whatever their count.
+    /// Every row parked on the user gets ONE nudge of its own, and none
+    /// repeats on the cadence.
     #[test]
-    fn the_user_wait_digest_is_one_message_for_the_whole_set() {
+    fn every_user_wait_takes_one_nudge_and_none_repeats() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         let _lead_rx = live_lead(&ws);
@@ -1105,10 +1113,12 @@ mod tests {
         assert!(!text.contains("\"subject t-2\""), "the inherited park stays out: {text}");
     }
 
-    /// With no live lead the digest is mark-only: nothing is delivered
-    /// and nothing is spawned.
+    /// The user nudge never wakes a sleeping lead, and a tick that found it
+    /// asleep does not consume the row's one nudge (#2423/D): nothing is
+    /// delivered and nothing is marked, so the first tick with a live lead
+    /// delivers it. Every other rung keeps its mark-alone behaviour.
     #[test]
-    fn the_digest_with_no_live_lead_leaves_only_the_mark() {
+    fn a_user_wait_nudge_waits_for_a_live_lead() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         waiting_on_user(&ws, "t-1", 0, false);
@@ -1117,11 +1127,21 @@ mod tests {
         assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 0, "nothing delivered");
         assert!(deliver.seen.lock().is_empty(), "no seat was reached");
         assert!(
+            !ws.chases_for_project(PROJECT)
+                .iter()
+                .any(|chase| chase.rung == ChaseRung::UserWaitDigest),
+            "a tick that found the lead asleep must not spend the row's one nudge",
+        );
+
+        let _lead_rx = live_lead(&ws);
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 2), 1, "the first awake tick delivers it");
+        assert!(
             ws.chases_for_project(PROJECT)
                 .iter()
                 .any(|chase| chase.rung == ChaseRung::UserWaitDigest),
-            "the mark alone stands on the log",
+            "and the landed nudge is on the log",
         );
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1800), 0, "then it is spent");
     }
 
     /// The estimate crossing asks the owner once, ever - a later sweep
@@ -1203,22 +1223,84 @@ mod tests {
         );
     }
 
-    /// The user nudge does not wake a sleeping lead either: with no live
-    /// session the mark stands and nothing is delivered (#2423/D).
+    /// One nudge per wait EPISODE: the row's own newest transition into
+    /// waiting is the episode key, so a row that left waiting and came back
+    /// takes a fresh nudge rather than inheriting the spent one (#2423/D).
     #[test]
-    fn a_user_wait_nudge_never_wakes_a_sleeping_lead() {
+    fn a_wait_re_entering_after_a_move_is_a_new_nudge() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
-        waiting_on_user(&ws, "t-1", 0, false);
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Waiting);
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+        });
+        row.updated_at = epoch(100);
+        ws.seed_test_task(row);
+        let append = |from: Option<TaskStatus>, to: TaskStatus, at: u64| {
+            let guard = ws.db.lock();
+            crate::store::task_history::append(
+                guard.as_ref().expect("db"),
+                &[TaskTransition {
+                    task_id: TaskId::from("t-1"),
+                    project_name: PROJECT.to_owned(),
+                    from,
+                    to,
+                    at: epoch(at),
+                    by: By::System,
+                }],
+            )
+            .expect("history");
+        };
+        append(Some(TaskStatus::Pending), TaskStatus::Waiting, 100);
         let deliver = Recording::default();
 
-        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 0, "nothing delivered");
-        assert!(deliver.seen.lock().is_empty(), "no seat was reached");
+        assert_eq!(sweep(&ws, &deliver, 3000), 1, "the episode's first nudge");
+        // Off waiting and back: a new episode at 4100.
+        append(Some(TaskStatus::Waiting), TaskStatus::InProgress, 4000);
+        append(Some(TaskStatus::InProgress), TaskStatus::Waiting, 4100);
+        assert_eq!(sweep(&ws, &deliver, 6000), 1, "the new episode is nudged");
+        assert_eq!(sweep(&ws, &deliver, 9000), 0, "and that nudge is spent in turn");
+    }
+
+    /// A dependency or a resource wait is not the user's: neither is nudged
+    /// as a user wait however the rows around it are gated (#2415).
+    #[test]
+    fn resource_and_dependency_waits_are_not_the_users() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        for (id, kind) in [("t-1", WaitingKind::Dependency), ("t-2", WaitingKind::Resource)] {
+            let mut row = task(id, TaskStatus::Waiting);
+            row.waiting_on = Some(Waiting {
+                kind: Some(kind),
+                detail: None,
+                on: None,
+                verification: false,
+                parked: false,
+            });
+            row.updated_at = epoch(0);
+            ws.seed_test_task(row);
+        }
+        let deliver = Recording::default();
+
+        sweep(&ws, &deliver, WINDOW + 1);
+        // The stuck-wait rung may name them to the LEAD ("unblock it"), which
+        // is the task's business; what neither may be is the user's.
+        assert!(
+            deliver.seen.lock().iter().all(|(_, text)| !text.contains("waiting on the user")),
+            "a dependency or resource wait was listed as the user's: {:?}",
+            deliver.seen.lock(),
+        );
         assert!(
             ws.chases_for_project(PROJECT)
                 .iter()
-                .any(|chase| chase.rung == ChaseRung::UserWaitDigest),
-            "the mark alone stands, so the nudge is not repeated when the lead wakes",
+                .all(|chase| chase.rung != ChaseRung::UserWaitDigest),
+            "and neither leaves a user-wait mark",
         );
     }
 

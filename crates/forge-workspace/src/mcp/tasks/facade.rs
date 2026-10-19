@@ -973,6 +973,47 @@ mod prod_facade_tests {
     /// **The seeded row carries an epoch `updated_at`**, so a record
     /// echoed without the write's own stamp reads as a pass on a fresh
     /// task and fails here.
+    /// The update patch's `parked` door (#2423/C): it marks a waiting
+    /// row's wait as the user's own deferral, and a row that is not waiting
+    /// has no wait to mark, so the patch leaves it alone rather than
+    /// inventing one.
+    #[test]
+    fn an_update_parks_a_wait_and_only_a_wait() {
+        let (ws, facade, lead, _worker) = fixture();
+        let mut waiting = seeded_task("waiting", "a deferral");
+        waiting.status = TaskStatus::Waiting;
+        waiting.waiting_on = Some(forge_primitives::tasks::Waiting {
+            kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+        });
+        ws.seed_test_task(waiting);
+        ws.seed_test_task(seeded_task("plain", "a row with no wait"));
+
+        let parked = facade
+            .update_task(
+                &lead,
+                &TaskId::from("waiting"),
+                TaskPatch { parked: Some(true), ..TaskPatch::default() },
+            )
+            .expect("the waiting row is there");
+        assert!(
+            parked.waiting_on.as_ref().is_some_and(|wait| wait.parked),
+            "the wait is the user's by design: {parked:?}",
+        );
+
+        let untouched = facade
+            .update_task(
+                &lead,
+                &TaskId::from("plain"),
+                TaskPatch { parked: Some(true), ..TaskPatch::default() },
+            )
+            .expect("the plain row is there");
+        assert_eq!(untouched.waiting_on, None, "a row with no wait invents none");
+    }
+
     #[test]
     fn update_returns_the_record_it_wrote() {
         let (ws, facade, lead, _worker) = fixture();

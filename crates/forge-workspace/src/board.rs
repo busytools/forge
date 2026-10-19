@@ -40,7 +40,7 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Marks {
-    /// Pending with nothing waiting on it.
+    /// Pending with nothing waiting on it and not reserved for the user.
     pub ready: bool,
     /// Has a pull-request link not known to be merged.
     pub in_review: bool,
@@ -195,7 +195,9 @@ impl Workspace {
                 let children_terminal =
                     !children.is_empty() && children.iter().all(|c| is_terminal(c.status));
                 let marks = Marks {
-                    ready: task.status == TaskStatus::Pending && task.waiting_on.is_none(),
+                    ready: task.status == TaskStatus::Pending
+                        && task.waiting_on.is_none()
+                        && task.reserved.is_none(),
                     in_review: task
                         .links
                         .iter()
@@ -249,6 +251,7 @@ impl Workspace {
                         t.status == TaskStatus::Pending
                             && t.owner.is_none()
                             && t.waiting_on.is_none()
+                            && t.reserved.is_none()
                     })
                     .count();
                 let waiting_on_user = tasks
@@ -586,6 +589,26 @@ mod tests {
         // The control: the mark can say ready, so the assertion above is
         // reading the conjunct rather than a mark that never fires.
         assert!(row(&rows, "t-plain").marks.ready, "the plain row is the one a seeker can take");
+    }
+
+    /// A pick reserved for the user is not ready and not in the queue the
+    /// fleet counts (#2423/C): no seat can take it, so it is no work the
+    /// project is failing to dispatch.
+    #[test]
+    fn a_reserved_pick_is_not_ready_and_not_in_the_queue() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_task(Task {
+            reserved: Some(forge_primitives::tasks::ReservedBy::User),
+            ..task("t-kept", TaskStatus::Pending)
+        });
+        ws.seed_test_task(task("t-plain", TaskStatus::Pending));
+
+        let rows = ws.board_rows(PROJECT, epoch(10), WINDOW);
+        assert!(!row(&rows, "t-kept").marks.ready, "a reserved pick never reads ready");
+        assert!(row(&rows, "t-plain").marks.ready, "the plain row is the control");
+        let fleet = ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the row");
+        assert_eq!(fleet.queue, 1, "only the plain row is dispatchable, so no stall is owed");
     }
 
     #[test]

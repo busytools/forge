@@ -1060,6 +1060,25 @@
         "dispatch_id",
         "source"
       ]
+    },
+    "TaskReopen": {
+      "": [
+        "task_reopen"
+      ],
+      "/task_reopen": [
+        "id",
+        "project"
+      ]
+    },
+    "TaskReserve": {
+      "": [
+        "task_reserve"
+      ],
+      "/task_reserve": [
+        "id",
+        "project",
+        "reserved"
+      ]
     }
   },
   "binary_frames": {
