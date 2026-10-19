@@ -169,6 +169,13 @@ history is the record.
      key. A fresh identifier also holds no microphone grant, so a
      capture feature's first take raises its own TCC prompt; say so before
      the look rather than letting him read it as a bug.
+     **Launch the bundle with `open -n <app>`, never by executing
+     `Contents/MacOS/<binary>` from the shell.** A directly executed process
+     creates a window whose green full-screen button does nothing - AppKit
+     answers the toggle and then leaves the window at its frame (measured
+     2026-10-19: `set_fullscreen`, `toggleFullScreen:` at level 0 with the app
+     activated, and simple full screen all failed from a direct exec, and all
+     worked from `open -n`).
    - The stack takes browser WebSockets as they come - a raw handshake with an
      Origin header answers 101 plus the greeting; no CORS step exists.
 6. **Drive headlessly when useful**: `forge-protocol-client --url
