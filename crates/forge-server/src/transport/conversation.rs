@@ -846,6 +846,13 @@ impl Conversations {
             // stayed, which is a reply to nothing. Forged once here, where
             // the update arrives, rather than in each connection that sends
             // it.
+            //
+            // **Every slotted update also moves the copy's watermark**, not
+            // only the ones that forge a row: a frame that draws nothing still
+            // covers its number, and an answer that left it out would
+            // under-claim. That is why this arm takes the seat's lock for
+            // every update on a live seat, and why `Held::lock` waits out a
+            // running fold.
             _ => {
                 // Forged outside the seat's lock, where the parse and its own
                 // failure log have always run; the lock below covers only the
