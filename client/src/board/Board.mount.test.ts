@@ -611,10 +611,17 @@ describe("the board's controls", () => {
    * The row's subject is context under the ask, not the title.
    */
   it('leads a wait card with its ask, its links and a look artifact', () => {
-    const link = {
+    const mock = {
       kind: 'pr' as const,
       label: 'the mock',
       target: 'https://example.invalid/mock',
+      state: null,
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    const note = {
+      kind: 'path' as const,
+      label: 'the design note',
+      target: 'https://example.invalid/note',
       state: null,
       added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     };
@@ -631,7 +638,7 @@ describe("the board's controls", () => {
               on: null,
               verification: true,
             },
-            links: [link],
+            links: [mock, note],
           }),
         ),
       ]),
@@ -644,12 +651,20 @@ describe("the board's controls", () => {
       words.indexOf('the row subject'),
     );
     expect(
-      card?.querySelector('a.b-ref[href="https://example.invalid/mock"]'),
-      'the row link wears the sheet link grammar, not a bare anchor',
-    ).not.toBeNull();
+      card?.querySelectorAll('a[href="https://example.invalid/mock"]').length,
+      'the artifact reference is presented once',
+    ).toBe(1);
     expect(
       card?.querySelector('a.door[href="https://example.invalid/mock"]'),
       'the artifact is a door in the card grammar',
+    ).not.toBeNull();
+    expect(
+      card?.querySelector('a.b-ref[href="https://example.invalid/mock"]'),
+      'the artifact is not also a reference-line link',
+    ).toBeNull();
+    expect(
+      card?.querySelector('a.b-ref[href="https://example.invalid/note"]'),
+      'the other reference keeps its link',
     ).not.toBeNull();
     expect(words, 'the look names its artifact').toContain('look at');
   });
@@ -892,10 +907,17 @@ describe("the row's own page", () => {
    * context under the ask, not the thing the page says first.
    */
   it("leads the row page with the wait's ask, links and artifact", () => {
-    const link = {
+    const mock = {
       kind: 'pr' as const,
       label: 'the mock',
       target: 'https://example.invalid/mock',
+      state: null,
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    const note = {
+      kind: 'path' as const,
+      label: 'the design note',
+      target: 'https://example.invalid/note',
       state: null,
       added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     };
@@ -912,7 +934,7 @@ describe("the row's own page", () => {
               on: null,
               verification: true,
             },
-            links: [link],
+            links: [mock, note],
           }),
         ),
       ]),
@@ -930,12 +952,20 @@ describe("the row's own page", () => {
       'the ask is the first thing the section says, not the state sentence',
     ).toBe(true);
     expect(
-      drawer?.querySelector('a.b-ref[href="https://example.invalid/mock"]'),
-      'the row link wears the sheet link grammar',
+      ask?.querySelectorAll('a[href="https://example.invalid/mock"]').length,
+      'the artifact reference is presented once in the ask block',
+    ).toBe(1);
+    expect(
+      ask?.querySelector('a.door[href="https://example.invalid/mock"]'),
+      'the artifact is the same door control',
     ).not.toBeNull();
     expect(
-      drawer?.querySelector('a.door[href="https://example.invalid/mock"]'),
-      'the artifact is the same door control',
+      ask?.querySelector('a.b-ref[href="https://example.invalid/mock"]'),
+      'the artifact is not also a reference-line link',
+    ).toBeNull();
+    expect(
+      ask?.querySelector('a.b-ref[href="https://example.invalid/note"]'),
+      'the other reference keeps its link',
     ).not.toBeNull();
     expect(drawer?.textContent, 'the look names its artifact').toContain('look at');
   });

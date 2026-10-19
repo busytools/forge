@@ -58,6 +58,15 @@
       : null,
   );
 
+  /**
+   * The ask block's references. The artifact the door presents is dropped
+   * from this line: one reference, one showing. The fields above still
+   * carry the row's whole list - that is the record, not the ask's doors.
+   */
+  const refs = $derived(
+    task.links.filter((link) => lookArtifact === null || link.target !== lookArtifact.href),
+  );
+
   /** How many moves the row's own carry withholds, from its whole count. */
   const withheld = $derived(Math.max(0, row.history_total - row.history.length));
 
@@ -278,10 +287,11 @@
             {/if}
           </div>
         {/if}
-        {#if task.links.length > 0}
-          <!-- The row's references are doors here: the ask usually needs one. -->
+        {#if refs.length > 0}
+          <!-- The row's references are doors here: the ask usually needs one.
+               The artifact the door below presents is left out of this line. -->
           <div class="from">
-            {#each task.links as link, at (at)}
+            {#each refs as link, at (at)}
               {#if at > 0}<span class="dim"> &middot; </span>{/if}
               {#if link.target.startsWith('http')}
                 <a class="b-ref" href={link.target} target="_blank" rel="noreferrer"

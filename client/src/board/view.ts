@@ -404,35 +404,42 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
   for (const lane of lanes) lane.count = lane.cards.length;
   const waiting = ordered
     .filter((entry) => entry.task.status === 'waiting' && waitOnUser(entry.task))
-    .map((entry) => ({
-      id: entry.task.id,
-      subject: entry.task.subject,
-      owner: entry.task.owner === null ? null : entry.task.owner.label,
-      verification: entry.task.waiting_on?.verification === true,
-      detail: entry.task.waiting_on?.detail ?? null,
-      // The ask is the wait's own detail where it states one, else the row's
-      // detail - a look parks with no wait detail, and its ask is the row's
-      // own words - else the state's sentence.
-      ask: entry.task.waiting_on?.detail ?? entry.task.detail ?? waitSentence(entry.task),
-      hasAsk:
-        entry.task.waiting_on?.detail !== null && entry.task.waiting_on?.detail !== undefined
-          ? true
-          : entry.task.detail !== null,
-      links: linksOf(entry.task),
-      artifact:
+    .map((entry) => {
+      const artifact =
         entry.task.waiting_on?.verification === true && waitOnUser(entry.task)
           ? artifactOf(entry.task)
-          : null,
-      age: fmtSecs(entry.updated_secs_ago),
-      root: entry.task.parent === null,
-      // Counted from the rows themselves, NOT from the rollup: the rollup's
-      // first number counts completed children, and a failed or canceled
-      // child is one the close no longer waits for.
-      open: ordered.filter(
-        (child) => child.task.parent === entry.task.id && !terminal(child.task.status),
-      ).length,
-      rollup: entry.rollup === null ? null : `${entry.rollup[0]}/${entry.rollup[1]}`,
-    }));
+          : null;
+      return {
+        id: entry.task.id,
+        subject: entry.task.subject,
+        owner: entry.task.owner === null ? null : entry.task.owner.label,
+        verification: entry.task.waiting_on?.verification === true,
+        detail: entry.task.waiting_on?.detail ?? null,
+        // The ask is the wait's own detail where it states one, else the row's
+        // detail - a look parks with no wait detail, and its ask is the row's
+        // own words - else the state's sentence.
+        ask: entry.task.waiting_on?.detail ?? entry.task.detail ?? waitSentence(entry.task),
+        hasAsk:
+          entry.task.waiting_on?.detail !== null && entry.task.waiting_on?.detail !== undefined
+            ? true
+            : entry.task.detail !== null,
+        // The artifact is a reference the row already carries, presented once:
+        // the door is its only showing, so the links line keeps the others.
+        links: linksOf(entry.task).filter(
+          (link) => artifact === null || link.href !== artifact.href,
+        ),
+        artifact,
+        age: fmtSecs(entry.updated_secs_ago),
+        root: entry.task.parent === null,
+        // Counted from the rows themselves, NOT from the rollup: the rollup's
+        // first number counts completed children, and a failed or canceled
+        // child is one the close no longer waits for.
+        open: ordered.filter(
+          (child) => child.task.parent === entry.task.id && !terminal(child.task.status),
+        ).length,
+        rollup: entry.rollup === null ? null : `${entry.rollup[0]}/${entry.rollup[1]}`,
+      };
+    });
   return {
     name: project,
     org,

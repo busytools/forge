@@ -127,7 +127,9 @@ link grammar - the app's link colour with an underline set off the text, and
 a fuller rule under the pointer; no bare anchor reaches the strip, so none
 draws the browser's purple. In a look the artifact is its own door,
 `look at <name>`, wearing the same pill grammar as `approve` and `send back`
-rather than sitting in the sentence as another link. A good ask says what
+rather than sitting in the sentence as another link; when the artifact is
+already one of the row's references, the door is its only showing and the
+links line keeps the others, so one reference appears once. A good ask says what
 the question is, why it needs the user, and links the thing to look at; a
 bare "waiting on you" is a card with no question on it.
 
