@@ -1724,6 +1724,7 @@ pub async fn browser_hide(
 /// windowed, measured 2026-10-19, even activated at level 0); the runtime's
 /// simple full screen hides the title bar, dock and menu bar and sets the
 /// window to the screen's frame, which is the takeover the person sees.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn browser_takeover(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     let Some(window) = app.get_webview_window("main") else {
