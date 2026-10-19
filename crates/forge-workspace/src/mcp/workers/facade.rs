@@ -343,6 +343,10 @@ pub trait WorkerFacade: Send + Sync {
     /// empty Vec when the caller resolves to no project.
     fn list_workers(&self, caller: &SessionSlot) -> Vec<WorkerStatus>;
 
+    /// Snapshot of every project's workers: the real workspace walks
+    /// `list_projects` in config order, the mock sorts its project keys.
+    fn list_all_workers(&self) -> Vec<WorkerStatus>;
+
     /// The caller's project worker capacity: the cap the spawn path
     /// enforces (`max_workers` in the project's `[[orgs.projects]]`
     /// entry, else `DEFAULT_MAX_WORKERS_PER_PROJECT`) paired with the
@@ -831,6 +835,19 @@ impl WorkerFacade for ProdWorkerFacade {
             .collect()
     }
 
+    fn list_all_workers(&self) -> Vec<WorkerStatus> {
+        let Some(ws) = self.workspace.upgrade() else {
+            return Vec::new();
+        };
+        let mut all = Vec::new();
+        for project in ws.list_projects() {
+            for entry in ws.list_live_workers(&project.key) {
+                all.push(ws.worker_status_snapshot(&entry));
+            }
+        }
+        all
+    }
+
     fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity> {
         let cp = self.caller_project(caller)?;
         let ws = self.workspace.upgrade()?;
@@ -1156,6 +1173,13 @@ impl WorkerFacade for MockWorkerFacade {
         self.workers.lock().get(cp.project_key.as_str()).cloned().unwrap_or_default()
     }
 
+    fn list_all_workers(&self) -> Vec<WorkerStatus> {
+        let workers = self.workers.lock();
+        let mut projects: Vec<(&String, &Vec<WorkerStatus>)> = workers.iter().collect();
+        projects.sort_by(|left, right| left.0.cmp(right.0));
+        projects.into_iter().flat_map(|(_, list)| list).cloned().collect()
+    }
+
     fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity> {
         let cp = self.caller_project(caller)?;
         Some(self.capacity_reply.lock().clone().unwrap_or(WorkerCapacity {
@@ -1439,6 +1463,31 @@ mod mock_tests {
         assert!(matches!(res, Err(WorkerDeliverError::UnknownLabel { .. })));
     }
 
+    fn status(label: &str) -> WorkerStatus {
+        WorkerStatus {
+            label: label.into(),
+            charter: format!("{label}'s charter"),
+            status: forge_primitives::WorkerLiveness::Running,
+            session_id: format!("{label}-uuid"),
+            slot: SessionSlot::from_str_for_test(label),
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::from_str_for_test("lead"),
+            diagnostic: None,
+            activity: None,
+        }
+    }
+
+    #[test]
+    fn mock_list_all_workers_flattens_every_project() {
+        let mock = MockWorkerFacade::new();
+        mock.workers.lock().insert("zeta".into(), vec![status("z1")]);
+        mock.workers.lock().insert("alpha".into(), vec![status("a1"), status("a2")]);
+        let mut labels: Vec<String> =
+            mock.list_all_workers().into_iter().map(|worker| worker.label).collect();
+        labels.sort();
+        assert_eq!(labels, ["a1", "a2", "z1"], "every project's pool is flattened");
+    }
+
     #[test]
     fn mock_capacity_fallback_derives_live_from_workers_map() {
         let mock = MockWorkerFacade::new();
@@ -1538,6 +1587,82 @@ mod prod_list_workers_tests {
             facade.list_workers(&caller)[0].activity,
             Some(SessionLifecycleState::Running),
             "and it must be re-derived per call, not cached at spawn",
+        );
+    }
+
+    /// The real walk pairs `list_projects` with the `live_workers` map, so
+    /// this pins that both projects' entries reach the listing. A split
+    /// project-key derivation would otherwise show an empty listing while
+    /// every mock-backed handler test stays green.
+    #[test]
+    fn list_all_workers_walks_every_project() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/forge");
+        ws.seed_test_project("other", "/tmp/other");
+        let projects = ws.list_projects();
+        let key_for = |name: &str| {
+            projects
+                .iter()
+                .find(|view| view.name == name)
+                .expect("seeded project present")
+                .key
+                .clone()
+        };
+        let entry = |project_name: &str, label: &str, status: WorkerLiveness| {
+            crate::mcp::workers::types::WorkerEntry {
+                label: label.into(),
+                charter: "test charter".into(),
+                slot: SessionSlot::worker("TestOrg", project_name, label),
+                session_id: None,
+                status,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", project_name),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            }
+        };
+        ws.insert_live_worker(
+            &key_for("forge"),
+            entry("forge", "implementer", WorkerLiveness::Running),
+        );
+        ws.insert_live_worker(
+            &key_for("other"),
+            entry("other", "reviewer", WorkerLiveness::Running),
+        );
+        // A failed worker keeps its row; the real listing must keep it too.
+        ws.insert_live_worker(&key_for("forge"), entry("forge", "crashed", WorkerLiveness::Failed));
+
+        let implementer = SessionSlot::worker("TestOrg", "forge", "implementer");
+        let domain = ws.register_domain_session(implementer, None);
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let listed = facade.list_all_workers();
+        let pairs: Vec<(String, String)> = listed
+            .iter()
+            .map(|worker| (worker.slot.project().to_owned(), worker.label.clone()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("forge".to_owned(), "implementer".to_owned()),
+                ("forge".to_owned(), "crashed".to_owned()),
+                ("other".to_owned(), "reviewer".to_owned()),
+            ],
+            "every project's workers, in config order",
+        );
+        assert_eq!(
+            listed[0].activity,
+            Some(SessionLifecycleState::Idle),
+            "the listing carries the derived activity, not the bare status",
+        );
+        domain.lock().turn_pending = true;
+        assert_eq!(
+            facade.list_all_workers()[0].activity,
+            Some(SessionLifecycleState::Running),
+            "and it is re-derived per call, not cached at spawn",
         );
     }
 }

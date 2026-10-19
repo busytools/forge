@@ -33,7 +33,7 @@ pub(crate) fn add_shared_tools(
     slot: SessionSlot,
 ) -> forge_sdk::mcp::server::McpServerBuilder {
     let whoami = Whoami { dispatcher: dispatcher.clone(), slot: slot.clone() };
-    let list = List { dispatcher: dispatcher.clone(), slot: slot.clone() };
+    let list = List { dispatcher: dispatcher.clone() };
     let send = SendMessage { dispatcher, slot };
     builder.tool(whoami).tool(list).tool(send)
 }
@@ -181,7 +181,6 @@ impl Tool for Whoami {
 /// one project. No target args.
 pub(crate) struct List {
     pub(crate) dispatcher: Arc<AgentDispatcher>,
-    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -199,8 +198,8 @@ impl Tool for List {
     fn description(&self) -> &'static str {
         "List the agents you can reach, one row per seat, each addressed \
          by its slot (org, project, label). Two kinds of row: every \
-         project's own agent, which has label 'lead', and the live \
-         workers of YOUR project, each under its own label. Pass \
+         project's own agent, which has label 'lead', and every \
+         project's workers, each under its own label. Pass \
          `project` to narrow the list to one project. \
          \
          A project's own agent is reachable whether or not it is \
@@ -213,10 +212,6 @@ impl Tool for List {
          path and liveness, a worker reports its charter, current \
          activity and session id. Every row carries the slot to pass \
          back to agents__send_message. \
-         \
-         Only your own project's workers are listed. Another project's \
-         workers are addressed by their labels, and those labels come \
-         from that project's own agent rather than from here. \
          \
          CROSS-PROJECT RULE (mutations only): whenever the user asks you \
          to CHANGE state in a project other than your own - edit files, \
@@ -266,7 +261,7 @@ impl Tool for List {
                 Err(err) => return tool_error(err),
             }
         }
-        for worker in self.dispatcher.workers().list_workers(&self.slot) {
+        for worker in self.dispatcher.workers().list_all_workers() {
             if filter.is_some_and(|name| name != worker.slot.project()) {
                 continue;
             }
@@ -307,9 +302,8 @@ impl Tool for SendMessage {
          `org` and `project` name it, and `label` names the seat inside \
          that project. Omit `label` to reach the project's own agent; \
          set it to a worker's label to reach that worker. Run \
-         agents__list for a label in your own project; a worker in \
-         another project is addressed by whatever label that project's \
-         own agent gives you. \
+         agents__list for a label in any project; a worker is addressed \
+         by its slot. \
          \
          Every message is the same kind of thing, including a reply: to \
          answer an agent that sent you one, address it by its own slot \
@@ -495,7 +489,7 @@ fn format_despawn_error(err: &WorkerDespawnError) -> String {
             "could not resolve caller to a known project (forge bug)".to_owned()
         }
         WorkerDespawnError::UnknownLabel { label, project_key } => format!(
-            "no live worker with label '{label}' in project '{project_key}'. Call agents__list for your own project's pool; a worker in another project is addressed by whatever label that project's own agent gives you."
+            "no live worker with label '{label}' in project '{project_key}'. Call agents__list for the project's live workers."
         ),
         WorkerDespawnError::DispatchFailed { message } => {
             format!("worker despawn failed: {message}")
@@ -1183,7 +1177,7 @@ mod tests {
     }
 
     async fn call_list(host: &Host, project_filter: Option<&str>) -> Vec<serde_json::Value> {
-        let tool = List { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let tool = List { dispatcher: Arc::clone(&host.dispatcher) };
         let mut args = serde_json::json!({});
         if let Some(name) = project_filter {
             args["project"] = serde_json::json!(name);
@@ -1352,12 +1346,41 @@ mod tests {
     #[tokio::test]
     async fn list_filters_by_project() {
         let host = host();
+        let rows = call_list(&host, Some("proj")).await;
+        let slots: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row["slot"]["label"].as_str().expect("a label"),
+                    row["slot"]["project"].as_str().expect("a project"),
+                )
+            })
+            .collect();
         assert_eq!(
-            call_list(&host, Some("proj")).await.len(),
-            1,
-            "the filter narrows to that project"
+            slots,
+            [("lead", "proj"), ("w1", "proj")],
+            "the filter keeps that project's own agent and its worker"
         );
         assert!(call_list(&host, None).await.len() > 1, "without it, the list is flat");
+    }
+
+    /// The listing scope is shipped text a session reads when it decides
+    /// whether a label is knowable, so the caller-only paragraph it
+    /// replaced must not come back silently.
+    #[test]
+    fn list_description_names_every_projects_workers() {
+        let host = host();
+        let tool = List { dispatcher: Arc::clone(&host.dispatcher) };
+        assert!(
+            tool.description().contains("every project's workers, each under its own label"),
+            "the listing scope stays stated: {}",
+            tool.description()
+        );
+        assert!(
+            !tool.description().contains("Only your own project's workers are listed"),
+            "the caller-only paragraph stays gone: {}",
+            tool.description()
+        );
     }
 
     #[tokio::test]
@@ -1391,15 +1414,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_carries_the_callers_own_workers_under_their_labels() {
+    async fn list_carries_the_callers_own_team() {
         let host = host();
         let rows = call_list(&host, None).await;
         let row = rows
             .iter()
-            .find(|row| row["slot"]["label"] == "w1")
+            .find(|row| row["slot"]["label"] == "w1" && row["slot"]["project"] == "core")
             .unwrap_or_else(|| panic!("the caller's own worker is a row: {rows:?}"));
-        assert_eq!(row["slot"]["project"], "core");
         assert_eq!(row["charter"], "w1's charter", "a worker row carries its snapshot");
+    }
+
+    /// The row the issue measured as missing: another project's live worker
+    /// is listed under its own slot, not left to a side channel.
+    #[tokio::test]
+    async fn list_carries_every_projects_live_workers_under_their_slots() {
+        let host = host();
+        let rows = call_list(&host, None).await;
+        let row = rows
+            .iter()
+            .find(|row| {
+                row["slot"]
+                    == serde_json::json!({
+                        "org": "other",
+                        "project": "proj",
+                        "label": "w1",
+                    })
+            })
+            .unwrap_or_else(|| panic!("another project's worker is a row: {rows:?}"));
+        assert_eq!(row["charter"], "w1's charter", "a worker row carries its snapshot");
+    }
+
+    /// A Failed row is the only trace that a label exists, so the listing
+    /// keeps it; a future `.filter(|w| w.is_live())` would drop it silently.
+    #[tokio::test]
+    async fn list_keeps_a_failed_worker_row() {
+        let host = host();
+        let mut failed = worker("other", "proj", "crashed");
+        failed.status = WorkerLiveness::Failed;
+        host.workers.workers.lock().entry("proj".to_owned()).or_default().push(failed);
+        let rows = call_list(&host, None).await;
+        assert!(
+            rows.iter()
+                .any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] == "crashed"),
+            "a Failed row stays listed: {rows:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_project_without_live_workers_keeps_its_lead_row() {
+        let host = host();
+        host.workers.workers.lock().remove("proj");
+        let rows = call_list(&host, None).await;
+        assert!(
+            rows.iter()
+                .any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] == LEAD_LABEL),
+            "its own agent stays reachable while it sleeps: {rows:?}",
+        );
     }
 
     /// A worker's own call, one per shared verb. The role-set tests pin that
@@ -1415,20 +1485,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["slot"]["label"], "w2");
         assert_eq!(parsed["slot"]["project"], "core");
-    }
-
-    #[tokio::test]
-    async fn a_worker_lists_its_own_projects_pool() {
-        let host = host();
-        let tool = List { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
-        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
-        assert!(!output.is_error, "list must answer a worker caller: {:?}", output.blocks);
-        let rows: Vec<serde_json::Value> =
-            serde_json::from_str(text_of(&output)).expect("JSON array");
-        assert!(
-            rows.iter().any(|row| row["slot"]["label"] == "w1"),
-            "a worker sees its project's pool: {rows:?}",
-        );
     }
 
     #[tokio::test]
