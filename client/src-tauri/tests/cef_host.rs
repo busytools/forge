@@ -229,6 +229,39 @@ async fn a_live_record_is_adopted() {
     osr::Ring::unlink(ring_name);
 }
 
+/// **A failed probe keeps the carry.** A transient `/json/list` fault after a
+/// successful call must not wipe the page the next launch would open; only an
+/// answer may rewrite or clear the marker. Making a failed probe clear turns
+/// this red.
+#[tokio::test]
+async fn a_silent_probe_keeps_the_carried_page() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = paths(dir.path());
+    let host = BrowserHost::new(paths.clone());
+    let cache = paths.cef_shared();
+    std::fs::create_dir_all(&cache).expect("the cache root");
+    let free = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
+    let port = free.local_addr().expect("the address").port();
+    drop(free);
+    let ring_name = "/forge-cef-silent-carry-test";
+    let ring = osr::Ring::create(ring_name, 64, 64).expect("a ring");
+    std::mem::forget(ring);
+    spawn::write_record(&cache, &spawn::Record { pid: 999_999, port, ring: ring_name.to_owned() })
+        .expect("the record");
+    std::fs::write(cache.join("page"), b"https://example.com/before").expect("the prior carry");
+
+    host.refresh_carry(&cache).await;
+
+    assert_eq!(
+        std::fs::read_to_string(cache.join("page")).expect("the prior carry survives"),
+        "https://example.com/before",
+        "a probe that answers nothing must not clear the carried page"
+    );
+
+    spawn::remove_record(&cache);
+    osr::Ring::unlink(ring_name);
+}
+
 /// **A record whose host still answers is ended, not left running.** The
 /// owning client is gone (the claim is free), so this client's sweep ends the
 /// recorded host - a pid it spawned in this test, so the kill is its own.

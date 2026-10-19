@@ -1487,11 +1487,13 @@ impl BrowserHost {
 
     /// Refresh the carried page from the host's own target.
     ///
-    /// **Under the launch lock**, the section a raise and a lower take: a
-    /// call finishing while the page is being raised cannot write the marker
-    /// back over the raise's own, and a close cannot race a reopen. One page
-    /// target is the whole truth here - the CEF host serves one page, unlike
-    /// the Brave-era tab set the old carry led with a navigation's URL.
+    /// **The port is resolved and the marker written under the launch lock;
+    /// the endpoint probe between them runs unlocked.** The probe has a 2 s
+    /// bound and must not hold every launch, close and delete for that long.
+    /// The cost is that a probe taken before a raise can land after the
+    /// raise's own write - last writer wins, and both are pages the person
+    /// was shown. One page target is the whole truth here: the CEF host
+    /// serves one page, unlike the Brave-era tab set.
     #[cfg(desktop)]
     pub async fn refresh_carry(&self, cache: &Path) {
         // **The probe is outside the lock; only the write is inside.** The
@@ -1510,6 +1512,9 @@ impl BrowserHost {
                 },
             }
         };
+        // **A failed probe keeps the carry.** Only an answer - even a blank
+        // or non-web one - may rewrite or clear it; a transient /json/list
+        // fault must not wipe the page the next launch would open.
         // **A failed probe keeps the carry.** Only an answer - even a blank
         // or non-web one - may rewrite or clear it; a transient /json/list
         // fault must not wipe the page the next launch would open.
