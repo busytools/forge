@@ -1,11 +1,11 @@
-//! The column's picture and its input.
+//! The takeover's picture and its input.
 //!
 //! The browser is windowless; its frames arrive in the shared ring. This
-//! module lays a native view over the page's own conversation column, draws
-//! the ring's latest frame into its layer, and turns the view's mouse, wheel
-//! and key events into CDP input for the host's page. The page under it
-//! reports where the column is ([`Rect`]) and keeps drawing its state lines
-//! until the first frame lands.
+//! module lays a native view over the takeover's page area - the whole window
+//! under the bar - draws the ring's latest frame into its layer, and turns
+//! the view's mouse, wheel and key events into CDP input for the host's page.
+//! The page under it reports that area ([`Rect`]) and keeps drawing its state
+//! lines until the first frame lands.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -235,10 +235,16 @@ impl OverlayView {
     /// the layer's use of them (the host's ring lives for its process).
     unsafe fn draw_frame(&self, pixels: *const u8, width: usize, height: usize) {
         let Some(layer) = self.layer() else { return };
-        // SAFETY: the ring's pixels outlive this image; the null deallocator
-        // says the bytes are not ours to free.
+        // SAFETY: the ring's pixels outlive this image, and
+        // `kCFAllocatorNull` is CF's "do not free these bytes" allocator - a
+        // NULL deallocator asserts and aborts.
         let Some(data) = (unsafe {
-            CFData::with_bytes_no_copy(None, pixels, (width * height * 4) as isize, None)
+            CFData::with_bytes_no_copy(
+                None,
+                pixels,
+                (width * height * 4) as isize,
+                objc2_core_foundation::kCFAllocatorNull,
+            )
         }) else {
             return;
         };
@@ -318,15 +324,28 @@ pub async fn attach(
     rect: Rect,
 ) -> Result<(), String> {
     let rect = rect.sane();
-    host.ring.request(
-        paint_px(rect.width * rect.scale),
-        paint_px(rect.height * rect.scale),
-        rect.scale,
-    );
+    // **A 1.5x raster, scaled to the display by the compositor.** A full
+    // retina frame (2x) is four times the bytes of 1x for every paint and was
+    // measured laggy at 3412x1738; 1x is smooth but soft. The layout stays
+    // the CSS size and only the raster is scaled, so the page reads crisp
+    // without the full-retina cost.
+    const RASTER: f64 = 1.5;
+    host.ring.request(paint_px(rect.width * RASTER), paint_px(rect.height * RASTER), RASTER);
     let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     let cancel = Arc::new(AtomicBool::new(false));
 
-    let sender = input::start(host.port, Arc::clone(&cancel)).await?;
+    // The person's file picker is the client's own panel, asked for by the
+    // input task when a click lands on a file input.
+    let (panels, mut panel_requests) =
+        tokio::sync::mpsc::unbounded_channel::<input::PanelRequest>();
+    let panel_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(request) = panel_requests.recv().await {
+            let picked = pick_file(&panel_app).await;
+            let _ = request.reply.send(picked);
+        }
+    });
+    let sender = input::start(host.port, Arc::clone(&cancel), panels).await?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "the client window is not there".to_owned())?;
@@ -378,6 +397,14 @@ pub async fn attach(
         cancel.store(true, Ordering::Release);
         return Err(format!("the window's webview cannot be reached: {why}"));
     }
+    tauri_plugin_log::log::info!(
+        "surface placed (event_name cef_surface_placed, rect {:.0}x{:.0} at {:.0},{:.0}, scale {})",
+        rect.width,
+        rect.height,
+        rect.x,
+        rect.y,
+        rect.scale,
+    );
     // The placement runs on the main thread; a placement that never lands
     // must not hold the person's Open forever.
     match tokio::time::timeout(std::time::Duration::from_secs(3), placed_rx).await {
@@ -399,7 +426,7 @@ pub async fn attach(
             if cancel.load(Ordering::Acquire) {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(4)).await;
             let header = host.ring.header();
             // SAFETY: the ring is mapped for the host's lifetime.
             let frame = unsafe { (*header).frame.load(Ordering::Acquire) };
@@ -435,11 +462,9 @@ pub async fn attach(
 /// Move and resize the surface; the host's view size follows.
 pub fn set_rect(app: &tauri::AppHandle, host: &ActiveHost, rect: Rect) {
     let rect = rect.sane();
-    host.ring.request(
-        paint_px(rect.width * rect.scale),
-        paint_px(rect.height * rect.scale),
-        rect.scale,
-    );
+    // The same raster the attach asks for; the view still moves in points.
+    const RASTER: f64 = 1.5;
+    host.ring.request(paint_px(rect.width * RASTER), paint_px(rect.height * RASTER), RASTER);
     let Some(generation) = OVERLAY.lock().ok().and_then(|slot| slot.as_ref().map(|o| o.generation))
     else {
         return;
@@ -475,6 +500,16 @@ pub fn detach(app: &tauri::AppHandle) {
             view.removeFromSuperview();
         }
     });
+}
+
+/// The person's file picker, in the CLIENT's process and window: the app they
+/// are looking at, which is what gives the panel focus.
+async fn pick_file(app: &tauri::AppHandle) -> Option<Vec<String>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = app.run_on_main_thread(move || {
+        let _ = tx.send(super::dialog::show_panel());
+    });
+    rx.await.ok().flatten()
 }
 
 /// The overlay's frame in its superview's (bottom-left) coordinates.

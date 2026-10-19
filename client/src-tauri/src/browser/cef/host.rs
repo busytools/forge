@@ -142,8 +142,12 @@ pub fn run(args: Args) -> ! {
                 host.was_resized();
             }
         }
+        // **8 ms, not 16.** A BeginFrame every screen refresh is the paint
+        // rate, but a click landing just after one waited out the whole
+        // interval; asking more often lets the next frame start sooner and
+        // the compositor still paints at its own rate.
         let now = elapsed_ms();
-        if now.saturating_sub(last_begin) >= 16 {
+        if now.saturating_sub(last_begin) >= 8 {
             last_begin = now;
             if let Some(host) = browser.host() {
                 host.send_external_begin_frame();

@@ -27,12 +27,9 @@ pub mod spawn;
 pub mod surface;
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use cef::*;
 
-/// CEF called: work is due after `delay_ms` (<= 0 means now).
-static DUE_MILLIS: AtomicU64 = AtomicU64::new(0);
 static CLOCK: OnceLock<std::time::Instant> = OnceLock::new();
 
 /// Milliseconds since the host's clock started.
@@ -40,23 +37,16 @@ pub fn elapsed_ms() -> u64 {
     CLOCK.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
 }
 
-/// The schedule signal, kept where [`pump`] reads it.
-fn note_schedule(delay_ms: i64) {
-    let due = elapsed_ms().saturating_add(delay_ms.max(0) as u64);
-    DUE_MILLIS.store(due, Ordering::Release);
-}
-
-/// Whether CEF's last schedule has come due.
-fn due() -> bool {
-    elapsed_ms() >= DUE_MILLIS.load(Ordering::Acquire)
-}
-
 cef::wrap_browser_process_handler! {
     struct PumpHandler {}
 
     impl BrowserProcessHandler {
-        fn on_schedule_message_pump_work(&self, delay_ms: i64) {
-            note_schedule(delay_ms);
+        fn on_schedule_message_pump_work(&self, _delay_ms: i64) {
+            // **Pumped unconditionally instead.** Gating the pump on this
+            // signal delayed CDP input: a click arriving while CEF's next
+            // scheduled work sat far ahead waited for it, which the person
+            // felt as a click that takes a moment. A 1 ms loop processes
+            // work a thousand times a second at a few percent of a core.
         }
     }
 }
@@ -157,11 +147,10 @@ pub fn initialize(profile: &std::path::Path, port: u16, app: &mut App, args: &ar
     true
 }
 
-/// Run CEF's work when its schedule asks for it.
+/// One turn of CEF's work. **Called every iteration**, not on CEF's own
+/// schedule: see [`PumpHandler`].
 pub fn pump() {
-    if due() {
-        do_message_loop_work();
-    }
+    do_message_loop_work();
 }
 
 // The app rules every browser this host runs obeys, decided before CEF

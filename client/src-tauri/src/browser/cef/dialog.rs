@@ -1,9 +1,11 @@
-//! The file picker: CEF has no native window, so the host answers a page's
-//! file dialog with a real NSOpenPanel on the main thread.
+//! The file picker: a page's file dialog is answered with a real NSOpenPanel
+//! on the main thread, in whichever process is asking.
 //!
-//! The page's job sites upload files; without this the input would open
-//! nothing. The selected paths go back through CEF's own callback, so the
-//! page's `change` handler runs with files a browser would give it.
+//! CEF's own callback answers a dialog the host raises, and the surface's
+//! click path asks in the client's process - the app the person is looking
+//! at, which is what gives the panel focus. The selected paths go back the
+//! way the asker expects, so the page's `change` handler runs with files a
+//! browser would give it.
 
 use cef::rc::Rc as _;
 use cef::{
@@ -47,17 +49,35 @@ pub fn handler() -> DialogHandler {
     FileDialogHandler::new()
 }
 
-#[cfg(target_os = "macos")]
-fn show_panel() -> Option<Vec<String>> {
+/// The person's file picker, on the main thread. Shared with the surface's
+/// click path, which asks in the client's own process.
+pub fn show_panel() -> Option<Vec<String>> {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+    use objc2::runtime::NSObjectProtocol as _;
+    use objc2_app_kit::{NSApp, NSModalResponseOK, NSOpenPanel};
 
     let mtm = MainThreadMarker::new()?;
+    // **The host has no window of its own.** A panel opened without
+    // activating the app lands behind whatever is frontmost, and the person
+    // sees only a bouncing dock icon; the host is brought forward for the
+    // picker, and they click back to the client afterwards.
+    // **`activate` is macOS 14+; the client still ships to 11.0.** The
+    // selector is chosen at run time rather than built against, so neither
+    // the deprecated binding nor a crash on an older system.
+    let app = NSApp(mtm);
+    unsafe {
+        if app.respondsToSelector(objc2::sel!(activate)) {
+            let _: () = objc2::msg_send![&*app, activate];
+        } else {
+            let _: () = objc2::msg_send![&*app, activateIgnoringOtherApps: true];
+        }
+    }
     let panel = NSOpenPanel::openPanel(mtm);
     panel.setCanChooseFiles(true);
     panel.setCanChooseDirectories(false);
     panel.setAllowsMultipleSelection(false);
-    if panel.runModal() != NSModalResponseOK {
+    let response = panel.runModal();
+    if response != NSModalResponseOK {
         return None;
     }
     let mut paths = Vec::new();

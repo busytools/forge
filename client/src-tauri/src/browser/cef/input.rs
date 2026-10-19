@@ -146,9 +146,28 @@ impl Sender {
     }
 }
 
+/// One request for the person's file picker, answered with the chosen paths.
+///
+/// **The picker is the CLIENT's.** A page's file input clicked in the surface
+/// is answered here rather than by CEF's own dialog: the client is the app
+/// the person is looking at (its panel takes focus), and the chosen paths
+/// are set on the input over CDP. CEF's windowless host has no window to
+/// hang a panel on.
+pub struct PanelRequest {
+    pub reply: tokio::sync::oneshot::Sender<Option<Vec<String>>>,
+}
+
+/// The marker the click probe puts on the input it found, so the set-files
+/// call can address it without an id the page may not have.
+const UPLOAD_MARK: &str = "data-forge-upload";
+
 /// Start the sender: resolve the page target, connect, and replay events
 /// until the surface closes.
-pub async fn start(port: u16, cancel: Arc<AtomicBool>) -> Result<Sender, String> {
+pub async fn start(
+    port: u16,
+    cancel: Arc<AtomicBool>,
+    panels: mpsc::UnboundedSender<PanelRequest>,
+) -> Result<Sender, String> {
     let ws_url = spawn::page_websocket(port)
         .await
         .ok_or_else(|| "the browser host holds no page to send input to".to_owned())?;
@@ -160,10 +179,7 @@ pub async fn start(port: u16, cancel: Arc<AtomicBool>) -> Result<Sender, String>
     let mut cdp = Cdp::connect(port, &path).await?;
     let (tx, mut rx) = mpsc::unbounded_channel();
     tauri::async_runtime::spawn(async move {
-        loop {
-            if cancel.load(Ordering::Acquire) {
-                break;
-            }
+        while !cancel.load(Ordering::Acquire) {
             let Some(event) = rx.recv().await else { break };
             let (method, params) = method_and_params(&event);
             // **Sent, not awaited**: a round trip per keystroke is lag, and a
@@ -171,9 +187,87 @@ pub async fn start(port: u16, cancel: Arc<AtomicBool>) -> Result<Sender, String>
             if let Err(why) = cdp.send(method, params).await {
                 tauri_plugin_log::log::info!("an input event did not land: {why}");
             }
+            // **A click on a file input is the person asking for their
+            // picker, and the click has already gone.** The probe is a round
+            // trip, so it must not sit in front of every click; it runs after
+            // the click landed, marks the input, and sets the chosen files on
+            // it below.
+            if let InputEvent::Mouse { kind: MouseKind::Press, x, y, .. } = event
+                && let Some(paths) = pick_files(&mut cdp, &panels, x, y).await
+            {
+                set_files(&mut cdp, &paths).await;
+            }
         }
     });
     Ok(Sender { tx })
+}
+
+/// Whether the click is on a file input; when it is, asks the client for the
+/// person's picker and answers the chosen paths.
+async fn pick_files(
+    cdp: &mut Cdp,
+    panels: &mpsc::UnboundedSender<PanelRequest>,
+    x: f64,
+    y: f64,
+) -> Option<Vec<String>> {
+    let probe = format!(
+        "(() => {{ const el = document.elementFromPoint({x}, {y}); \
+         if (!el || el.tagName !== 'INPUT' || el.type !== 'file') return false; \
+         el.setAttribute('{UPLOAD_MARK}', '1'); return true; }})()"
+    );
+    let answer = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({ "expression": probe, "returnByValue": true, "userGesture": true }),
+            None,
+        )
+        .await
+        .ok()?;
+    if answer.pointer("/result/value").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    panels.send(PanelRequest { reply }).ok()?;
+    match rx.await {
+        Ok(Some(paths)) if !paths.is_empty() => Some(paths),
+        _ => None,
+    }
+}
+
+/// Set the picked files on the marked input, which fires its own `input` and
+/// `change` events; the mark is removed either way.
+async fn set_files(cdp: &mut Cdp, paths: &[String]) {
+    let document = cdp.call("DOM.getDocument", json!({}), None).await;
+    let root = document.ok().and_then(|doc| doc.pointer("/root/nodeId").and_then(Value::as_i64));
+    if let Some(root) = root {
+        let found = cdp
+            .call(
+                "DOM.querySelector",
+                json!({ "nodeId": root, "selector": format!("input[{UPLOAD_MARK}]") }),
+                None,
+            )
+            .await
+            .ok()
+            .and_then(|answer| answer.get("nodeId").and_then(Value::as_i64));
+        if let Some(node) = found
+            && let Err(why) = cdp
+                .call("DOM.setFileInputFiles", json!({ "files": paths, "nodeId": node }), None)
+                .await
+        {
+            tauri_plugin_log::log::info!("the chosen files did not land: {why}");
+        }
+    }
+    let _ = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({
+                "expression": format!(
+                    "document.querySelector('input[{UPLOAD_MARK}]')?.removeAttribute('{UPLOAD_MARK}')"
+                ),
+            }),
+            None,
+        )
+        .await;
 }
 
 #[cfg(test)]
