@@ -33,7 +33,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (shown !== null) unmount(shown);
+  if (shown !== null) void unmount(shown);
   shown = null;
   document.body.innerHTML = '';
 });

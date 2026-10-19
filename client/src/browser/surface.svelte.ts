@@ -17,12 +17,18 @@ import { hideBrowser, reportSurfaceRect, showBrowser } from './host';
 
 export type SurfacePhase = 'closed' | 'opening' | 'live' | 'failed';
 
-export const surface = $state({
-  phase: 'closed' as SurfacePhase,
+interface Surface {
+  phase: SurfacePhase;
   /** The name the person opened, `null` for the shared browser. */
-  profile: null as string | null,
+  profile: string | null;
   /** The shell's sentence when the surface could not open. */
-  reason: null as string | null,
+  reason: string | null;
+}
+
+export const surface: Surface = $state({
+  phase: 'closed',
+  profile: null,
+  reason: null,
 });
 
 /** The request that is current; a result from an older one is dropped. */
