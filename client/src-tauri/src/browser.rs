@@ -2144,10 +2144,10 @@ mod tests {
             host.idle_candidates().await.is_empty(),
             "nothing is a candidate before anything launches",
         );
-        // A launch re-added as a spawn (the launcher's API is async) answers
-        // a beat later, so the absence is believed over a bounded wait: the
-        // port file shows within a second or so of Brave starting, and three
-        // is generous - a real launch fails somewhere in here.
+        // A launch re-added as a spawn (the spawner's API is async) answers a
+        // beat later, so the absence is believed over a bounded wait: a host
+        // record shows within a second or so of a real start, and three is
+        // generous - a real launch fails somewhere in here.
         let until = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
         while tokio::time::Instant::now() < until {
             assert!(
