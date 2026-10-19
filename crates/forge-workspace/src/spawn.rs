@@ -2198,9 +2198,11 @@ fn warn_teardown_wait_expired(project_key: &ProjectKey, label: &str, wait: std::
 
 /// The despawn's dirty verdict, taken off the runtime's worker: `git status`
 /// walks the tracked tree, and the verdict gates the teardown, so the caller
-/// cannot await a `spawn_blocking` handle (#1923). `block_in_place` hands the
-/// worker's tasks to another thread for the call; a current-thread runtime has
-/// no other thread, and stays inline.
+/// cannot await a `spawn_blocking` handle. `block_in_place` hands the worker's
+/// tasks to another thread for the call; a current-thread runtime has no other
+/// thread, and stays inline. A `LocalSet` is not detected - tokio still reports
+/// `MultiThread` there, where `block_in_place` panics - and the workspace runs
+/// none.
 fn worktree_dirty_verdict(path: &std::path::Path) -> Option<String> {
     let on_runtime_worker = tokio::runtime::Handle::try_current()
         .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
@@ -2214,10 +2216,10 @@ fn worktree_dirty_verdict(path: &std::path::Path) -> Option<String> {
 
 /// The despawn's filesystem half, handed to the blocking pool.
 ///
-/// Split out of [`handle_despawn_worker`] so the fast part - the peek, the
-/// dirty verdict and the teardown - keeps its ordering on the calling task
-/// while the cleanup's own `git` calls, the `git worktree remove` above
-/// all, run off the runtime.
+/// Split out of [`handle_despawn_worker`] so the peek, the dirty verdict's
+/// ordering and the teardown stay on the calling task, while the probe and the
+/// cleanup's own `git` calls - the `git worktree remove` above all - run off
+/// the runtime.
 struct DespawnCleanup {
     workspace: Arc<Workspace>,
     project_key: ProjectKey,
@@ -6911,7 +6913,7 @@ provider = "anthropic"
 
     /// The despawn's dirty probe runs off the runtime's worker. `git status`
     /// walks the tracked tree, so on a big repository it can hold a worker -
-    /// and the frames it serves - for a beat (#1923).
+    /// and the frames it serves - for a beat.
     ///
     /// The probe is slowed deterministically through git's own fsmonitor hook,
     /// which waits for a RUNTIME task to release it and records whether that
