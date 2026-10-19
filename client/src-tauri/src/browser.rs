@@ -34,6 +34,9 @@
 pub mod android;
 #[cfg(target_os = "macos")]
 pub mod cef;
+#[cfg(all(desktop, not(target_os = "macos")))]
+#[path = "browser/cef_stub.rs"]
+pub mod cef;
 pub mod custom;
 pub mod driver;
 #[cfg(desktop)]

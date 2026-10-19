@@ -1,3 +1,4 @@
+#![cfg(target_os = "macos")]
 //! The CEF host's spawn and lifecycle, with a stand-in binary in place of the
 //! real engine.
 //!
