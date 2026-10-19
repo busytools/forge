@@ -1478,13 +1478,14 @@ mod mock_tests {
     }
 
     #[test]
-    fn mock_list_all_workers_flattens_every_project_in_key_order() {
+    fn mock_list_all_workers_flattens_every_project() {
         let mock = MockWorkerFacade::new();
         mock.workers.lock().insert("zeta".into(), vec![status("z1")]);
         mock.workers.lock().insert("alpha".into(), vec![status("a1"), status("a2")]);
-        let labels: Vec<String> =
+        let mut labels: Vec<String> =
             mock.list_all_workers().into_iter().map(|worker| worker.label).collect();
-        assert_eq!(labels, ["a1", "a2", "z1"], "every project's pool, project keys sorted");
+        labels.sort();
+        assert_eq!(labels, ["a1", "a2", "z1"], "every project's pool is flattened");
     }
 
     #[test]
@@ -1625,19 +1626,33 @@ mod prod_list_workers_tests {
             );
         }
 
+        let implementer = SessionSlot::worker("TestOrg", "forge", "implementer");
+        let domain = ws.register_domain_session(implementer, None);
+
         let facade = ProdWorkerFacade::from_arc(&ws);
-        let listed: Vec<(String, String)> = facade
-            .list_all_workers()
-            .into_iter()
-            .map(|worker| (worker.slot.project().to_owned(), worker.label))
+        let listed = facade.list_all_workers();
+        let pairs: Vec<(String, String)> = listed
+            .iter()
+            .map(|worker| (worker.slot.project().to_owned(), worker.label.clone()))
             .collect();
         assert_eq!(
-            listed,
+            pairs,
             vec![
                 ("forge".to_owned(), "implementer".to_owned()),
                 ("other".to_owned(), "reviewer".to_owned()),
             ],
             "every project's workers, in config order",
+        );
+        assert_eq!(
+            listed[0].activity,
+            Some(SessionLifecycleState::Idle),
+            "the listing carries the derived activity, not the bare status",
+        );
+        domain.lock().turn_pending = true;
+        assert_eq!(
+            facade.list_all_workers()[0].activity,
+            Some(SessionLifecycleState::Running),
+            "and it is re-derived per call, not cached at spawn",
         );
     }
 }

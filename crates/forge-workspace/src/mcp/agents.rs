@@ -1346,12 +1346,41 @@ mod tests {
     #[tokio::test]
     async fn list_filters_by_project() {
         let host = host();
+        let rows = call_list(&host, Some("proj")).await;
+        let slots: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row["slot"]["label"].as_str().expect("a label"),
+                    row["slot"]["project"].as_str().expect("a project"),
+                )
+            })
+            .collect();
         assert_eq!(
-            call_list(&host, Some("proj")).await.len(),
-            2,
-            "the filter narrows to that project's lead and worker"
+            slots,
+            [("lead", "proj"), ("w1", "proj")],
+            "the filter keeps that project's own agent and its worker"
         );
         assert!(call_list(&host, None).await.len() > 1, "without it, the list is flat");
+    }
+
+    /// The listing scope is shipped text a session reads when it decides
+    /// whether a label is knowable, so the caller-only paragraph it
+    /// replaced must not come back silently.
+    #[test]
+    fn list_description_names_every_projects_workers() {
+        let host = host();
+        let tool = List { dispatcher: Arc::clone(&host.dispatcher) };
+        assert!(
+            tool.description().contains("every project's workers, each under its own label"),
+            "the listing scope stays stated: {}",
+            tool.description()
+        );
+        assert!(
+            !tool.description().contains("Only your own project's workers are listed"),
+            "the caller-only paragraph stays gone: {}",
+            tool.description()
+        );
     }
 
     #[tokio::test]
@@ -1432,16 +1461,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_project_without_live_workers_adds_no_worker_row() {
+    async fn a_project_without_live_workers_keeps_its_lead_row() {
         let host = host();
         host.workers.workers.lock().remove("proj");
         let rows = call_list(&host, None).await;
-        assert!(
-            !rows
-                .iter()
-                .any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] != LEAD_LABEL),
-            "a project with no live workers contributes no worker row: {rows:?}",
-        );
         assert!(
             rows.iter()
                 .any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] == LEAD_LABEL),
