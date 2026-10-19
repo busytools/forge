@@ -1836,11 +1836,18 @@ impl BrowserHost {
 #[cfg(desktop)]
 /// The sentence a client without its engine answers, named rather than a
 /// timeout: a shipped bundle missing its framework is a reinstall.
-#[cfg(desktop)]
+#[cfg(target_os = "macos")]
 fn cef_unavailable() -> String {
     "the client is missing its Chromium framework (the app bundle was built without it) - \
      reinstall forge"
         .to_owned()
+}
+
+/// On a desktop that never packages the engine, the sentence says that
+/// instead of asking for a reinstall that would change nothing.
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn cef_unavailable() -> String {
+    cef::REFUSAL.to_owned()
 }
 
 #[cfg(desktop)]
