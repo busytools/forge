@@ -3911,6 +3911,11 @@ async fn an_answer_through_a_reseed_carries_the_copys_own_number() {
     // sees the old epoch's number against a copy that is already the new one.
     // The number is the one the fanout would mint the seal under.
     let minted = fleet.workspace().seat_next_seq(&seat);
+    assert!(
+        minted > 1,
+        "the window needs a pre-seal number above the new epoch's first, or the test cannot \
+         tell the clamped answer from an unclamped one: {minted}",
+    );
     state.conversations.apply(
         &SessionUpdate::Connected {
             key: seat.clone(),
