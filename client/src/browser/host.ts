@@ -49,6 +49,16 @@ export function canHost(): boolean {
 }
 
 /**
+ * Whether this page draws the takeover itself. **The phone does not**: its
+ * bar and full-screen presentation are Kotlin's, and the page's components
+ * are the desktop's - mounting them on Android draws a second takeover over
+ * the native one.
+ */
+export function drawsSurface(): boolean {
+  return canHost() && !/Android/i.test(navigator.userAgent);
+}
+
+/**
  * The phone's takeover bar speaks into this page: the Kotlin bar calls
  * `window.__forgeTakeover('done' | 'lowered' | 'raised')` on the client's
  * own webview, and the hook re-emits it as a window event - the dock answers
@@ -182,16 +192,25 @@ export async function showBrowser(
  * shape an open answers with, so a button that said back and then drew
  * nothing on a refusal cannot happen.
  */
-export async function hideBrowser(profile: string | null = null): Promise<string | null> {
+export async function hideBrowser(profile: string | null = null): Promise<HideAnswer> {
   if (!canHost()) return 'this page is not the client';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_hide', { profile });
-    return null;
+    return { lowered: await invoke<boolean>('browser_hide', { profile }) };
   } catch (why) {
     return whyText(why);
   }
 }
+
+/**
+ * What a lower answered: whether it took the page the person sees down.
+ *
+ * **`false` is a real answer**: the shell lowers only the profile it is
+ * drawing, so a Done for another profile leaves that profile's surface up,
+ * and the page's store keeps its bar over it instead of going closed over a
+ * picture still on screen.
+ */
+export type HideAnswer = { lowered: boolean } | string;
 
 /**
  * Where the takeover's page area is, for the shell to place the native layer:

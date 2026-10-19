@@ -5,6 +5,7 @@
   import Brand from '../components/Brand.svelte';
   import Icon from '../components/Icon.svelte';
   import BrowserSurface from '../browser/BrowserSurface.svelte';
+  import { drawsSurface } from '../browser/host';
   import { surface } from '../browser/surface.svelte';
   import { subjectKey } from '../protocol';
   import { report, type Connection } from '../socket';
@@ -571,10 +572,11 @@
   />
 
   <main class="chat">
-    {#if surface.phase !== 'closed'}
-      <!-- The browser's own surface, over the whole column: the page under
+    {#if surface.phase !== 'closed' && drawsSurface()}
+      <!-- The browser's own surface, over the whole window: the page under
            it measures the box and draws the states; the shell draws the
-           frames at exactly this rect. -->
+           frames at exactly this rect. The phone draws its own native
+           takeover, so nothing here mounts there. -->
       <BrowserSurface />
     {/if}
     <div class="sess">

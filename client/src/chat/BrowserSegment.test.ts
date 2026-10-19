@@ -44,7 +44,8 @@ vi.mock('../browser/host', async (importOriginal) => {
     deleteProfile: vi.fn(() => Promise.resolve(undefined)),
     browserUsed: vi.fn(() => Promise.resolve(false)),
     showBrowser: vi.fn(() => Promise.resolve(null)),
-    hideBrowser: vi.fn(() => Promise.resolve(null)),
+    hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
+    drawsSurface: vi.fn(() => true),
     profileWindowed: vi.fn(() => Promise.resolve(false)),
   };
 });

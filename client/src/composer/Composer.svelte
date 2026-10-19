@@ -5,7 +5,7 @@
   import Pinned from '../chat/Pinned.svelte';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
-  import { hideBrowser } from '../browser/host';
+  import { drawsSurface } from '../browser/host';
   import { clearHandOff, closeSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
@@ -465,11 +465,12 @@
       // The reader's own answer: the ending would only repeat the click.
       if (held.answered === id) return;
       held.ended = handOffEndingLine(payload['ending']);
-      // **A window another view's answer leaves raised comes down here.** The
-      // local Done lowers its own window; an answer from another view never
-      // touches this shell, and the next agent call would attach to a browser
-      // left headed. Hide is idempotent when nothing is raised.
-      void hideBrowser(held.shownHandOffProfile);
+      // **A takeover another view's answer leaves raised comes down here.**
+      // The local Done lowers its own; an answer from another view never
+      // touches this shell. Through the store, so the page's phase follows
+      // the shell's answer instead of staying live over a closed surface.
+      if (surface.hand_off?.id === id) clearHandOff(id);
+      void closeSurface(held.shownHandOffProfile);
     });
   });
 
@@ -1136,7 +1137,7 @@
 </script>
 
 <div class="comp">
-  {#if surface.phase !== 'closed'}
+  {#if surface.phase !== 'closed' && drawsSurface()}
     <TakeoverBar
       title={takeoverTitle}
       bind:notes={dockDraft}

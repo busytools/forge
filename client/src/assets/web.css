@@ -1259,7 +1259,8 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   border-bottom: 1px solid var(--line); }
 .tb-row { display: flex; align-items: center; gap: 10px; padding: 6px 12px;
   min-height: 37px; }
-.tb-title { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
+.tb-title { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .tb-btn { border: 1px solid var(--line); border-radius: 8px; padding: 4px 11px;
   background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }

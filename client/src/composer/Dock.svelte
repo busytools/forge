@@ -663,7 +663,18 @@
    */
   $effect(() => {
     const onTakeover = (event: Event): void => {
-      if ((event as CustomEvent<string>).detail !== 'done') return;
+      const what = (event as CustomEvent<string>).detail;
+      // **The phone's back, the hardware Back and its bar's lower** all end
+      // with the native takeover gone; the page's store follows, or a later
+      // Open would draw over nothing.
+      if (what === 'lowered') {
+        surface.phase = 'closed';
+        surface.profile = null;
+        surface.reason = null;
+        if (surface.hand_off !== null) clearHandOff(surface.hand_off.id);
+        return;
+      }
+      if (what !== 'done') return;
       handOff(true);
     };
     window.addEventListener('forge-takeover', onTakeover);

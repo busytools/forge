@@ -15,11 +15,16 @@ vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();
   return {
     ...actual,
+    // jsdom is not the shell: the surface gates would answer "not the
+    // client" and the takeover's tests would never see their bar. The store
+    // and the shell's own doors are mocked below on that basis.
+    canHost: vi.fn(() => true),
+    drawsSurface: vi.fn(() => true),
     // No window in tests: the shell's raise answers the reason it could not
     // land, or null when it did. The default takes it as landing; a case
     // that wants the failure resolves the reason instead.
     showBrowser: vi.fn(() => Promise.resolve(null)),
-    hideBrowser: vi.fn(() => Promise.resolve()),
+    hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
   };
 });
 
