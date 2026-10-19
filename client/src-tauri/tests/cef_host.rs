@@ -318,11 +318,14 @@ async fn the_boot_sweep_cleans_a_stale_record_and_its_ring() {
     let ring_name = "/forge-cef-stale-test";
     let ring = osr::Ring::create(ring_name, 64, 64).expect("a ring");
     std::mem::forget(ring);
-    spawn::write_record(
-        &cache,
-        &spawn::Record { pid: 999_999, port: 9411, ring: ring_name.to_owned() },
-    )
-    .expect("the record");
+    // **A port nothing holds**: a fixed one collides with whatever the
+    // machine is running (a look stack's host answers on 9411), and the sweep
+    // must see this record as stale for the test's own premise to hold.
+    let free = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
+    let port = free.local_addr().expect("the address").port();
+    drop(free);
+    spawn::write_record(&cache, &spawn::Record { pid: 999_999, port, ring: ring_name.to_owned() })
+        .expect("the record");
 
     let reaped = host.reap_orphans().await;
     assert!(reaped.iter().any(|name| name == "cef-profile"), "the stale root is named: {reaped:?}");

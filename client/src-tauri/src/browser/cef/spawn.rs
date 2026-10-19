@@ -299,27 +299,32 @@ pub async fn probe(port: u16) -> bool {
 /// **A recorded pid is only a number**: another process may have been given
 /// it since. The signal goes only when the endpoint still answers as a
 /// browser host, or when the pid is one of this client's own children.
-pub async fn end_verified(pid: u32, port: u16) {
+pub async fn end_verified(pid: u32, port: u16) -> bool {
     if is_ours(pid) {
         end(pid).await;
-        return;
+        return true;
     }
     // **A recorded pid is a number until its owner is identified.** The
-    // endpoint answering proves a host is on the port; it does not prove
-    // this pid is it. A recycled number is only signalled when the process
-    // itself is this client's binary, and that is checked again after the
-    // probe's await - the window the first check cannot cover - immediately
-    // before `end`, which signals with no await in between.
-    if !is_our_binary(pid) {
-        return;
+    // endpoint answering proves a host is on the port; it does not prove this
+    // pid is it, and the same executable alone proves only another process of
+    // this app. A recycled number is signalled only when the process is a
+    // `--cef-host` of this binary, checked again after the probe's await -
+    // the window the first check cannot cover - immediately before `end`,
+    // which signals with no await in between.
+    if !is_our_host(pid) {
+        // Nothing answers: the record is stale and its ring is ours to clean.
+        // Something answers: it is not this pid's host, so neither the pid nor
+        // the ring is this sweep's to touch.
+        return !probe(port).await;
     }
     if !probe(port).await {
-        return;
+        return true;
     }
-    if !is_our_binary(pid) {
-        return;
+    if !is_our_host(pid) {
+        return !probe(port).await;
     }
     end(pid).await;
+    true
 }
 
 /// End a host: ask it to go, then insist.
@@ -357,6 +362,72 @@ pub fn singleton_pid(profile: &Path) -> Option<u32> {
     let text = target.to_string_lossy().into_owned();
     let (_, pid) = text.rsplit_once('-')?;
     pid.parse().ok()
+}
+
+/// Whether `pid` is one of this app's browser HOSTS: the same executable AND
+/// launched in `--cef-host` mode.
+///
+/// **The binary alone is not the identity.** Another profile's host, or the
+/// client's own UI process, runs the very same executable; only the mode
+/// switch says the process is a host a reaper may end.
+pub fn is_our_host(pid: u32) -> bool {
+    is_our_binary(pid)
+        && process_argv(pid).is_some_and(|args| args.iter().any(|arg| arg == "--cef-host"))
+}
+
+/// One process's arguments, from the kernel's own `KERN_PROCARGS2`.
+fn process_argv(pid: u32) -> Option<Vec<String>> {
+    if pid == 0 {
+        return None;
+    }
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size = 0_usize;
+    // SAFETY: a size probe against the kernel's own mib.
+    let probed = unsafe {
+        libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0)
+    };
+    if probed != 0 || size <= 4 {
+        return None;
+    }
+    let mut buffer = vec![0_u8; size];
+    let mut read = buffer.len();
+    // SAFETY: `buffer` is writable for `read` bytes.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buffer.as_mut_ptr().cast(),
+            &mut read,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || read < 4 {
+        return None;
+    }
+    buffer.truncate(read);
+    let argc = i32::from_ne_bytes(buffer[0..4].try_into().ok()?) as usize;
+    let mut at = 4;
+    // The executable's path follows argc; padding NULs separate it from argv.
+    while at < buffer.len() && buffer[at] != 0 {
+        at += 1;
+    }
+    while at < buffer.len() && buffer[at] == 0 {
+        at += 1;
+    }
+    let mut args = Vec::new();
+    for _ in 0..argc.min(1024) {
+        if at >= buffer.len() {
+            break;
+        }
+        let start = at;
+        while at < buffer.len() && buffer[at] != 0 {
+            at += 1;
+        }
+        args.push(String::from_utf8_lossy(&buffer[start..at]).into_owned());
+        at += 1;
+    }
+    Some(args)
 }
 
 /// Whether `pid` is the very executable this client runs as, so a reaper
@@ -469,6 +540,10 @@ mod tests {
             .expect("the lock");
         assert_eq!(singleton_pid(profile), Some(4242));
         assert!(is_our_binary(std::process::id()), "this test binary is ours");
+        assert!(
+            !is_our_host(std::process::id()),
+            "the same binary is not a host without --cef-host in its argv"
+        );
         assert!(!is_our_binary(1), "launchd is not");
         clear_singleton(profile);
         assert_eq!(singleton_pid(profile), None, "and the lock is gone");

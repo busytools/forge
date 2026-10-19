@@ -727,9 +727,20 @@ impl BrowserHost {
             })
             .or_else(|| cef::spawn::read_record(cache));
         if let Some(record) = record {
-            cef::spawn::end_verified(record.pid, record.port).await;
-            cef::osr::Ring::unlink(&record.ring);
-            cef::spawn::remove_record(cache);
+            // **The ring goes only with a host this client may end.** A port
+            // that answers while the pid is not this app's `--cef-host` is
+            // another process's; its ring is left alone.
+            if cef::spawn::end_verified(record.pid, record.port).await {
+                cef::osr::Ring::unlink(&record.ring);
+                cef::spawn::remove_record(cache);
+            } else {
+                tauri_plugin_log::log::warn!(
+                    "a browser record was left alone: its port answers but its pid is not this \
+                     app's host (event_name cef_end_refused, profile {}, pid {})",
+                    cache.display(),
+                    record.pid,
+                );
+            }
         }
         self.reap_singleton(cache).await;
         // A lock the host's own directory held is released with it; the
@@ -746,7 +757,7 @@ impl BrowserHost {
     async fn reap_singleton(&self, cache: &Path) {
         if let Some(pid) = cef::spawn::singleton_pid(cache)
             && cef::spawn::running(pid)
-            && cef::spawn::is_our_binary(pid)
+            && cef::spawn::is_our_host(pid)
         {
             tauri_plugin_log::log::info!(
                 "reaping a browser host its record no longer names (event_name \
@@ -1169,7 +1180,12 @@ impl BrowserHost {
                              cef_ring_missing, profile {}, {why})",
                             cache.display(),
                         );
-                        cef::spawn::end_verified(record.pid, record.port).await;
+                        if !cef::spawn::end_verified(record.pid, record.port).await {
+                            return Err(format!(
+                                "the browser on {} answers but is not this app's host; left alone",
+                                cache.display()
+                            ));
+                        }
                         cef::spawn::remove_record(cache);
                     }
                 }
@@ -1755,11 +1771,21 @@ impl BrowserHost {
                 // release when the host dies.
                 Ok(Some(lock)) => {
                     if let Some(record) = cef::spawn::read_record(&cache) {
-                        cef::spawn::end_verified(record.pid, record.port).await;
-                        cef::osr::Ring::unlink(&record.ring);
-                        cef::spawn::remove_record(&cache);
-                        if let Some(name) = cache.file_name().and_then(std::ffi::OsStr::to_str) {
-                            reaped.push(name.to_owned());
+                        if cef::spawn::end_verified(record.pid, record.port).await {
+                            cef::osr::Ring::unlink(&record.ring);
+                            cef::spawn::remove_record(&cache);
+                            if let Some(name) = cache.file_name().and_then(std::ffi::OsStr::to_str)
+                            {
+                                reaped.push(name.to_owned());
+                            }
+                        } else {
+                            tauri_plugin_log::log::warn!(
+                                "a browser record was left alone by the sweep: its port answers \
+                                 but its pid is not this app's host (event_name \
+                                 cef_end_refused, profile {}, pid {})",
+                                cache.display(),
+                                record.pid,
+                            );
                         }
                     }
                     self.reap_singleton(&cache).await;
