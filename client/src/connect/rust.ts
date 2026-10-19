@@ -60,14 +60,18 @@ import type { ClientSettings, SessionSlot } from '../wire/types';
 const HEARTBEAT_MS = 5_000;
 
 /**
- * The commands that answer through a reply, mirroring the server's own set.
- * The web build's `socket.ts` keeps the same list; which of the two a command
- * is stays this side's decision, and the Rust half is told.
+ * The commands a PAGE dispatches that answer through a reply.
+ *
+ * The server's own set is `answers_through_a_reply`; it also carries
+ * `browser_idle_warning`, which only the Rust half's idle sweep sends. These
+ * are the page commands with nothing behind them on the wire: a client that
+ * omits `reply_to` for one of them has no second way to learn what happened.
  */
 const ANSWERS_THROUGH_A_REPLY = new Set([
   'spawn_worker',
   'despawn_worker',
   'upsert_review_thread',
+  'delete_review_thread',
   'submit_review',
 ]);
 
