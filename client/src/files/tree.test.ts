@@ -8,6 +8,8 @@ import {
   indexTreeRows,
   foldedByDefault,
   matchedEntries,
+  openedForJump,
+  withFold,
 } from './tree';
 
 function entry(relPath: string): FileEntry {
@@ -47,9 +49,26 @@ describe('the seat index as a tree', () => {
 
   it('a fold the reader set wins over the default, either way', () => {
     const defaults = new Set(['src']);
-    expect([...closedFolders(defaults, new Map())]).toEqual(['src']);
-    expect([...closedFolders(defaults, new Map([['src', false]]))]).toEqual([]);
-    expect([...closedFolders(defaults, new Map([['docs', true]]))].sort()).toEqual(['docs', 'src']);
+    expect([...closedFolders(defaults, new Map())], 'the default alone').toEqual(['src']);
+    expect(
+      [...closedFolders(defaults, new Map([['src', false]]))],
+      'a default-shut folder the reader opened',
+    ).toEqual([]);
+    expect(
+      [...closedFolders(defaults, new Map([['src', true]]))],
+      'a default-shut folder the reader shut again',
+    ).toEqual(['src']);
+    expect(
+      [...closedFolders(defaults, new Map([['docs', true]]))].sort(),
+      'a default-open folder the reader shut',
+    ).toEqual(['docs', 'src']);
+  });
+
+  it('a reader fold is a value: the map it was given is left alone', () => {
+    const before = new Map<string, boolean>();
+    const after = withFold(before, 'client', true);
+    expect(before.size, 'the old map is untouched').toBe(0);
+    expect(after.get('client'), 'the fold is written').toBe(true);
   });
 
   /**
@@ -64,34 +83,54 @@ describe('the seat index as a tree', () => {
       ['client/src', true],
     ]);
     const filtering = foldsFor(entries, 'Files.svelte', folded);
-    expect([...filtering]).toEqual([]);
-    expect(indexTreeRows(entries, filtering).map((row) => row.path)).toContain(
-      'client/src/files/Files.svelte',
-    );
+    expect([...filtering], 'every fold stands down under a query').toEqual([]);
+    expect(
+      indexTreeRows(entries, filtering).map((row) => row.path),
+      'the match inside the shut folder draws',
+    ).toContain('client/src/files/Files.svelte');
 
     const cleared = foldsFor(entries, '', folded);
-    expect([...cleared].sort()).toEqual(['client', 'client/src', 'client/src/files']);
+    expect([...cleared].sort(), "clearing restores the reader's folds over the defaults").toEqual([
+      'client',
+      'client/src',
+      'client/src/files',
+    ]);
   });
 
   /**
-   * A rail jump clears the filter and opens the folders above the file, so
-   * its row is drawn and marked rather than the reader opening on nothing.
+   * A rail jump opens the folders above the file even where the reader had
+   * shut them, so its row is drawn and marked rather than the reader
+   * opening on nothing; the query is cleared first, so the same holds under
+   * a filter.
    */
-  it('a rail jump opens the folders above its file', () => {
+  it("a rail jump opens the folders above its file past the reader's folds", () => {
     const entries = [entry('crates/forge-server/src/surface.rs'), entry('README.md')];
-    expect(ancestorsOf('crates/forge-server/src/surface.rs')).toEqual([
+    expect(ancestorsOf('crates/forge-server/src/surface.rs'), 'every folder above').toEqual([
       'crates',
       'crates/forge-server',
       'crates/forge-server/src',
     ]);
     expect(ancestorsOf('README.md'), 'a root file has no folders above it').toEqual([]);
 
-    const folded = new Map<string, boolean>();
-    for (const ancestor of ancestorsOf('crates/forge-server/src/surface.rs')) {
-      folded.set(ancestor, false);
-    }
-    const rows = indexTreeRows(entries, foldsFor(entries, '', folded));
-    expect(rows.map((row) => row.path)).toContain('crates/forge-server/src/surface.rs');
+    const folded = new Map<string, boolean>([
+      ['crates', true],
+      ['crates/forge-server', true],
+    ]);
+    const opened = openedForJump(folded, 'crates/forge-server/src/surface.rs');
+    expect(opened.get('crates'), 'a manually shut ancestor opens anyway').toBe(false);
+    expect(opened.get('crates/forge-server'), 'and so does the next one').toBe(false);
+    expect(opened.get('crates/forge-server/src'), "and the file's own folder").toBe(false);
+    expect(folded.get('crates'), 'the map handed in is left alone').toBe(true);
+
+    const rows = indexTreeRows(entries, foldsFor(entries, '', opened));
+    expect(
+      rows.map((row) => row.path),
+      'the jumped row draws in the cleared tree',
+    ).toContain('crates/forge-server/src/surface.rs');
+    expect(
+      [...foldsFor(entries, 'surface', folded)],
+      'and a filter stands every fold down as it always does',
+    ).toEqual([]);
   });
 
   it('a folder with files stays folded, so its subfolders start hidden too', () => {

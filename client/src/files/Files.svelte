@@ -26,7 +26,7 @@
    * Its states are drawn here: nothing yet (reading), a seat the server
    * refused, and a tree with no files.
    */
-  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+  import { SvelteSet } from 'svelte/reactivity';
   import { mount, unmount } from 'svelte';
 
   import FileTree from '../components/FileTree.svelte';
@@ -73,7 +73,14 @@
   import Reader from './Reader.svelte';
   import { contextForComment, railRows, threadsOnPath, treeScope, type RailRow } from './comments';
   import type { ReaderBlock, ReaderHandle } from './reader';
-  import { ancestorsOf, foldsFor, indexTreeRows, matchedEntries } from './tree';
+  import {
+    foldsFor,
+    indexTreeRows,
+    matchedEntries,
+    NO_MANUAL_FOLDS,
+    openedForJump,
+    withFold,
+  } from './tree';
 
   let {
     connection,
@@ -102,7 +109,7 @@
   let query = $state('');
   /** The folds the reader set themselves: true shut, false open. A folder
    *  absent here follows the page's defaults. */
-  const folded = new SvelteMap<string, boolean>();
+  let folded = $state<ReadonlyMap<string, boolean>>(NO_MANUAL_FOLDS);
   /** The file the reader shows, which the tree marks as current. */
   let open = $state<string | null>(null);
   /** The live reader, so the rail's jump-backs can reach its lines. */
@@ -562,7 +569,9 @@
         case 'ArrowLeft':
         case 'ArrowRight': {
           const row = tree.find((held) => held.path === keyRow);
-          if (row?.kind !== 'dir') return;
+          // A filter's folder rows draw no disclosure, so a fold key has
+          // nothing to act on and takes nothing from the browser.
+          if (row?.kind !== 'dir' || query.trim() !== '') return;
           event.preventDefault();
           const isClosed = closed.has(row.path);
           if (
@@ -576,6 +585,7 @@
         case 'Enter': {
           const row = tree.find((held) => held.path === keyRow);
           if (row === undefined) return;
+          if (row.kind === 'dir' && query.trim() !== '') return;
           event.preventDefault();
           if (row.kind === 'dir') fold(row.path);
           else open = row.path;
@@ -784,12 +794,12 @@
    *  tree is a match list, so its folds are not the reader's to set. */
   function fold(path: string): void {
     if (query.trim() !== '') return;
-    folded.set(path, !closed.has(path));
+    folded = withFold(folded, path, !closed.has(path));
   }
 
   /** Open every folder above `path`, so a jump lands on a visible row. */
   function reveal(path: string): void {
-    for (const ancestor of ancestorsOf(path)) folded.set(ancestor, false);
+    folded = openedForJump(folded, path);
   }
 
   /** Comments dropped on one file, from the seat-tree half - the row's pill. */
@@ -1011,6 +1021,7 @@
               {closed}
               here={open}
               active={keyRow}
+              foldable={query.trim() === ''}
               ondir={fold}
               onfile={(path) => (open = path)}
             >

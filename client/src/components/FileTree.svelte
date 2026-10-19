@@ -28,6 +28,13 @@
     active?: string | null;
     /** A path whose file was renamed onto it, marked by the caller's own rule. */
     renamed?: (path: string) => boolean;
+    /**
+     * Whether a folder row is a control. False under a filter, where the
+     * tree is a match list and a fold would hide what was searched for - a
+     * row that announces a disclosure it cannot perform is worse than a
+     * plain row.
+     */
+    foldable?: boolean;
     ondir: (path: string) => void;
     onfile: (path: string) => void;
     trailing?: Snippet<[TreeRow<unknown>]>;
@@ -42,6 +49,7 @@
     here,
     active = null,
     renamed,
+    foldable = true,
     ondir,
     onfile,
     trailing,
@@ -51,7 +59,7 @@
 <nav class="rv-files" aria-label={label}>
   <h2 class="rv-h">{heading} <span class="rv-n">{count}</span></h2>
   {#each rows as row (row.kind + ':' + row.path)}
-    {#if row.kind === 'dir'}
+    {#if row.kind === 'dir' && foldable}
       <button
         type="button"
         class="rv-dir"
@@ -65,6 +73,17 @@
         <span class="rv-dirname">{row.name}/</span>
         <span class="rv-dircount">{row.count}</span>
       </button>
+    {:else if row.kind === 'dir'}
+      <div
+        class="rv-dir plain"
+        class:key={active === row.path}
+        style="--d:{row.depth}"
+        data-path={row.path}
+      >
+        <span class="rv-arw" aria-hidden="true"></span>
+        <span class="rv-dirname">{row.name}/</span>
+        <span class="rv-dircount">{row.count}</span>
+      </div>
     {:else}
       <button
         type="button"

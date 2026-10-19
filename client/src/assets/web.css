@@ -3513,6 +3513,9 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .rv-dir { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
   background: none; border: 0; padding: 5px 6px 2px calc(4px + var(--d, 0) * 12px);
   cursor: pointer; font: inherit; }
+/* A folder row drawn without its disclosure (under a filter): it opens
+   nothing, so it offers no pointer. */
+.rv-dir.plain { cursor: default; }
 .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
   transition: transform .12s ease; }
 .rv-arw.open { transform: rotate(90deg); }

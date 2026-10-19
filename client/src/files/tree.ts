@@ -80,6 +80,34 @@ export function ancestorsOf(path: string): string[] {
   return out;
 }
 
+/** No fold the reader set: the state a page starts on. */
+export const NO_MANUAL_FOLDS: ReadonlyMap<string, boolean> = new Map();
+
+/** A reader's fold as a new value, so the page's state changes by identity
+ *  rather than by mutating the map the derivation read. */
+export function withFold(
+  folded: ReadonlyMap<string, boolean>,
+  path: string,
+  shut: boolean,
+): ReadonlyMap<string, boolean> {
+  const out = new Map(folded);
+  out.set(path, shut);
+  return out;
+}
+
+/**
+ * `folded` with every folder above `path` opened, even one the reader had
+ * shut by hand: a jump's file must be visible, so its own path wins.
+ */
+export function openedForJump(
+  folded: ReadonlyMap<string, boolean>,
+  path: string,
+): ReadonlyMap<string, boolean> {
+  const out = new Map(folded);
+  for (const ancestor of ancestorsOf(path)) out.set(ancestor, false);
+  return out;
+}
+
 /**
  * The entries `query` keeps - by the `@` list's own tiers, so a query that
  * would find a file there finds it here. An empty query keeps everything;

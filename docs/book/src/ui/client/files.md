@@ -91,7 +91,7 @@ worker; `resolve` marks it read; `reopen` returns it and nudges the seat.
 Every write re-reads the record, because a review change is not pushed -
 the reviews ride the record, and a record re-read is what carries them.
 The Conversation tab answers over the same calls a diff review does - reply,
-resolve, reopen - and a rail row jumps back to its line from either tab.
+resolve, reopen - and a rail row opens its file at its line in the reader.
 
 **A comment is editable and retractable wherever its card is drawn** (Ved,
 2026-10-17): `edit` on a turn the reader wrote opens the page's own box over
