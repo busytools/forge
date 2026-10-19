@@ -114,13 +114,14 @@ knowing before changing them:
   naming it raises THAT profile's window on THAT profile's page - a CAPTCHA
   solved in the right session, not a lookalike in the wrong one.
 
-`client/src-tauri/tests/browser_live.rs` drives the whole chain - launch,
-driver, `browser_navigate` and `browser_snapshot` - against the vendored
-driver, and `tests/profiles_live.rs` proves the profiles layer: two names are
-two browsers with separate cookies, show raises the named profile's own
-window on its own page, a second session is refused by name, and a profile
-reopened after a close keeps its logins. They are `#[ignore]`d because the
-stack is absent from a fresh checkout; run them where it is vendored:
+`client/src-tauri/tests/cef_host.rs` pins the host's own decisions with a
+stand-in binary - the record, the ring's name, the endpoint wait, the kill
+by pid, the sweep that respects another client's claim and the one that
+cleans a stale record. It is macOS-gated because the engine is.
+`client/src-tauri/tests/bridge_live.rs` drives the whole chain - a real
+session's `browser_navigate` answered by the vendored driver while no page
+is drawing - and is `#[ignore]`d because it needs a scratch forge and the
+vendored stack; run it where both are present:
 
 ```sh
 cargo nextest run --manifest-path client/src-tauri/Cargo.toml --run-ignored ignored-only

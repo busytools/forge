@@ -8,12 +8,13 @@ pins both artifacts, verifies their hashes and unpacks them:
 | Path | What it is |
 |---|---|
 | `node/bin/node` | Node LTS, `bin/node` alone - the rest of the node tree is npm, which nothing here needs |
-| `playwright-mcp/node_modules/@playwright/mcp/` | `@playwright/mcp`, the driver the host speaks MCP to, with `playwright-core` beside it and no browsers downloaded (the host points it at the installed browser's CDP endpoint) |
+| `playwright-mcp/node_modules/@playwright/mcp/` | `@playwright/mcp`, the driver the host speaks MCP to, with `playwright-core` beside it and no browsers downloaded (the host points it at the app's own Chromium CDP endpoint) |
 
-**The browser itself is not vendored.** The host drives the browser already
-on the machine - Brave, else Google Chrome - headless until a hand-off's
-Open raises the window, so the app ships the driver and the machine ships
-the browser.
+**The browser itself is the app's own Chromium.** The CEF framework and its
+helper apps are laid into `Contents/Frameworks` by the macOS bundler from
+the staged copy `just stage-cef` builds, and each profile's host runs from
+the bundle - a hand-off's Open draws its page as the full-window takeover.
+The app ships both the driver and the engine.
 
 `bundle.resources` in `tauri.conf.json` carries `browser-stack/**/*`, so the
 whole tree lands under `Contents/Resources/browser-stack/` in the bundle and
