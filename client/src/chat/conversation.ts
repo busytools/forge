@@ -534,12 +534,15 @@ export class Frames {
  * Whether a frame opens a turn of its own rather than joining the live one:
  * what a person said.
  *
- * Its answer decides only while a turn is live: a non-`system` frame that
- * draws something and arrives above a settled turn opens one whatever this
- * says. **And a frame the fold draws nothing out of is not a row at all**,
- * whichever branch it takes - a call's own result arrives in a user frame and
- * draws nothing on its own, which is what holds a call and the frames that
- * update it in one turn.
+ * **This is the only kind that opens one**, matching the transcript fold
+ * (`TurnScan::opens` answers false for every Assistant frame): an assistant
+ * frame above a settled turn joins it, and a user frame above a running one
+ * joins it too. `last === undefined` is the one arm beside it - a seat with no
+ * turn at all opens one at the first frame that draws, pre-existing and
+ * pinned by its own test. **And a frame the fold draws nothing out of is not
+ * a row at all**, whichever branch it takes - a call's own result arrives in
+ * a user frame and draws nothing on its own, which is what holds a call and
+ * the frames that update it in one turn.
  */
 function opensATurn(message: unknown): boolean {
   const type = (message as { type?: unknown } | null)?.type;

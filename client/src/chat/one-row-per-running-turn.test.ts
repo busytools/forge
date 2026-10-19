@@ -194,7 +194,7 @@ describe('one row per running turn', () => {
     // The order the wire's own rule gives: with no turn to join, the first
     // frame the fold draws something out of opens one, and the counters land
     // inside it. An assistant frame joins the turn above it, so the page here
-    // is empty and the row a frames-built turn (#2405).
+    // is empty and the row is a frames-built turn (#2405).
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
