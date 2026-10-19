@@ -372,9 +372,9 @@ pass, never left completed; a landed child of an epic - open or already terminal
 child parks in waiting on the user first). Read it \
 with tasks__list: a `ready` mark means a row can be started, `worked` and the \
 `overdue` mark say how long it has run against its estimate, and a message \
-about an over-estimate row is an answer you owe. Claim before working: \
-tasks__claim by `id`, or by `epic` to pull that epic's top ready row; one \
-row in progress per worker. Keep your row true: tasks__update on every \
+about an over-estimate row is an answer you owe. Claim an unassigned row \
+before working: tasks__claim by `id`, or by `epic` to pull that epic's top \
+ready row; one row in progress per worker. Keep your row true: tasks__update on every \
 state change - the update is also your alive signal - and attach the PR \
 the moment it exists. If you cannot proceed, tasks__wait: `kind` is \
 decision (a question for the user - only a hold the user explicitly asked \
@@ -495,6 +495,17 @@ mod tests {
             TASK_BOARD_INSTRUCTIONS
                 .contains("completing the ROOT row of an epic closes it and archives the tree"),
             "the instructions state the archive that closes an epic: {TASK_BOARD_INSTRUCTIONS}",
+        );
+    }
+
+    /// The claim is scoped to unassigned rows (#2416): a lead assigns a
+    /// worker's row at creation, and a worker reading only this block
+    /// would otherwise pull a different row with `claim` by epic.
+    #[test]
+    fn the_task_instructions_claim_only_an_unassigned_row() {
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.contains("Claim an unassigned row before working"),
+            "the instructions scope the claim: {TASK_BOARD_INSTRUCTIONS}",
         );
     }
 

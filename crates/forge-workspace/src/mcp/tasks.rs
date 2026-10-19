@@ -143,6 +143,11 @@ impl Tool for Create {
          and the only required field; `active_form` is the in-progress wording (\"Adding tests\" \
          for \"Add tests\"), shown while the task is running. `owner` is the label of the session \
          holding it - a worker's label, or \"lead\" - and omitting it leaves the task unclaimed. \
+         A lead creating a row for a worker assigns it at creation: the worker's label in \
+         `owner`, and the kick says not to claim it. A row left in the lead's own hands \
+         refuses the worker's `tasks__claim` while the lead is live, and a row left in \
+         progress under a seat that goes is chased as having no live owner once the board \
+         marks it stale. \
          `parent` names another task in the same project this one belongs under, `estimate` a \
          duration, `rank` the queue order, `verify` whether completion waits on the user, \
          `links` the references it carries (issues, PRs, specs, paths), `detail` free prose. \
@@ -275,7 +280,10 @@ impl Tool for Update {
          it, and a cancel of a row waiting on the user is the withdraw door once the ask has \
          gone moot: it needs `detail`, the reason the ask is withdrawn, which lands on the row, \
          and a cancel stating none - or only what the row already says - is refused. Any \
-         other move off `waiting` drops the wait the row held. `verify: \"user\"` \
+         other move off `waiting` drops the wait the row held - except a completion on a row \
+         whose completion waits on the user: while it is waiting on something else the gate \
+         would trade that wait for a look park, so the completion is refused by name; move it \
+         off waiting first, then complete it. `verify: \"user\"` \
          may be set here, but not taken away: a user-bound row keeps that gate until the user's \
          approve, so clearing it - or moving the row out of its epic - is refused rather than \
          taken as a way around the look. A task is \
@@ -541,7 +549,9 @@ impl Tool for Delete {
          (a verify=user row parks in waiting on the user first). Nothing \
          is archived. A row waiting on the user is not a delete's to \
          take - the board's answer or approve settles it, and deleting it (or a tree holding \
-         it) is refused rather than taken as a way around the ask. \
+         it) is refused rather than taken as a way around the ask. A dependency wait is not \
+         such an ask: the row waits on the task it names, not on the user, even when the epic \
+         is `verify: user`. \
          An ask that has gone moot is withdrawn, not removed: `tasks__update` cancels it with \
          the reason it goes away, and the row records why. The task is named by its \
          full id or any unique \
@@ -611,8 +621,9 @@ impl Tool for Claim {
          full task id or any unique prefix of one; an exact id wins over any longer id that \
          starts with it, and a prefix matching more than one row is refused with the matching \
          rows named. Refused when a live seat holds the row (named), when it is not pending, or \
-         when you already have a row in progress: one in progress per worker. Returns the \
-         claimed record."
+         when you already have a row in progress: one in progress per worker. Claiming is for \
+         unassigned rows: a row a lead created for you already names you as `owner`, so work \
+         it without claiming. Returns the claimed record."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -676,7 +687,11 @@ impl Tool for Wait {
     fn description(&self) -> &'static str {
         "Put one of YOUR rows into waiting and state what it waits on. `kind` is decision \
          (which routes to the user), dependency (another task: put its id in `on`), or resource \
-         (an account, a CI run, a machine). Route a decision to the user only when the user \
+         (an account, a CI run, a machine). A dependency wait is on the task it names, not on \
+         the user. A blocker parked on the user's look has not ended, so the chain keeps \
+         waiting until the user approves it. The waiting row is not itself waiting on the \
+         user: an epic's `verify: user` gates a row's own completion, not its dependency \
+         wait, so the row stays movable and deletable. Route a decision to the user only when the user \
          explicitly asked for a hold, or something is still genuinely ambiguous after the \
          decision model, peer opinions and the team's own review. `detail` is the words. \
          A wait on the user that has gone moot is withdrawn, not stranded: a lead cancels the \
@@ -1244,6 +1259,36 @@ mod tests {
         }
     }
 
+    /// The dependency chain is shipped text (#2415): a dependency wait is
+    /// on the task it names, not on the user, so an epic's `verify: user`
+    /// leaves the waiting row movable and deletable and the chain is
+    /// released by the blocker's end.
+    #[test]
+    fn the_wait_and_delete_descriptions_state_the_dependency_chain() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let wait = Wait { facade: facade.clone(), slot: slot.clone() };
+        let delete = Delete { facade, slot };
+        for clause in [
+            "A dependency wait is on the task it names, not on the user",
+            "A blocker parked on the user's look has not ended, so the chain keeps waiting \
+             until the user approves it",
+            "an epic's `verify: user` gates a row's own completion, not its dependency wait",
+            "the row stays movable and deletable",
+        ] {
+            assert!(
+                wait.description().contains(clause),
+                "tasks__wait does not state the chain ({clause}): {}",
+                wait.description(),
+            );
+        }
+        assert!(
+            delete.description().contains("A dependency wait is not such an ask"),
+            "tasks__delete does not separate a dependency wait from the user's asks: {}",
+            delete.description(),
+        );
+    }
+
     /// The withdraw door is shipped text (#2340): each verb that reaches a
     /// row waiting on the user states the door - the cancel carrying the
     /// reason, which lands on the row - so a lead reads the way out from
@@ -1353,6 +1398,27 @@ mod tests {
         }
     }
 
+    /// The waiting-completion refusal is shipped text (#2414): a caller
+    /// reaching for `status: completed` learns from the description that
+    /// a user-bound row already waiting on something else refuses the
+    /// move by name, so the refusal is never the first word about it.
+    #[test]
+    fn the_update_description_states_the_waiting_completion_refusal() {
+        let update = Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        let description = update.description();
+        for clause in [
+            "except a completion on a row whose completion waits on the user",
+            "the gate would trade that wait for a look park, so the completion is refused by \
+             name",
+            "move it off waiting first, then complete it",
+        ] {
+            assert!(
+                description.contains(clause),
+                "tasks__update does not state the refusal ({clause}): {description}",
+            );
+        }
+    }
+
     /// The user-read mint is shipped text (#2377): a row whose deliverable
     /// IS the user's own read or decision is minted `verify: "user"`
     /// explicitly, never left to the epic default, so the board parks it
@@ -1381,6 +1447,41 @@ mod tests {
             ),
             "the verify property owes the mint where the caller sets it: {verify}",
         );
+    }
+
+    /// The assign-at-spawn path is shipped text (#2416): a lead creating
+    /// a row for a worker assigns it at creation and says in the kick not
+    /// to claim; claiming is for unassigned rows. Nothing else said so -
+    /// a worker met the refusal before it met the rule.
+    #[test]
+    fn the_create_and_claim_descriptions_state_the_assign_at_spawn_pattern() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let create = Create { facade: facade.clone(), slot: slot.clone() };
+        let claim = Claim { facade, slot };
+        for clause in [
+            "A lead creating a row for a worker assigns it at creation",
+            "the kick says not to claim it",
+            "refuses the worker's `tasks__claim` while the lead is live",
+            "chased as having no live owner once the board marks it stale",
+        ] {
+            assert!(
+                create.description().contains(clause),
+                "tasks__create does not state the pattern ({clause}): {}",
+                create.description(),
+            );
+        }
+        for clause in [
+            "Claiming is for unassigned rows",
+            "a row a lead created for you already names you as `owner`",
+            "work it without claiming",
+        ] {
+            assert!(
+                claim.description().contains(clause),
+                "tasks__claim does not state the pattern ({clause}): {}",
+                claim.description(),
+            );
+        }
     }
 
     #[tokio::test]

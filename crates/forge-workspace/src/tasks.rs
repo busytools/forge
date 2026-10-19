@@ -54,6 +54,12 @@ pub(crate) enum MoveError {
     /// A completion landed on a row waiting on the user's own look: the
     /// look is what completes it.
     WaitingOnLook,
+    /// A completion landed on a row already waiting on something else
+    /// while the row's own completion waits on the user: the gate would
+    /// trade the wait it holds for a look park and leave the status
+    /// reading `waiting`, so the move is refused by name instead. The
+    /// wait's own words ride it.
+    CompletingWhileWaiting(String),
     /// A patch would clear the look gate a row is bound by: the user's
     /// own approve is what clears it.
     ClearingLookGate,
@@ -89,10 +95,33 @@ fn parked_on_look(task: &Task) -> bool {
 /// `verification` is checked alongside the kind: today's only setter tags
 /// `decision` too, and the arm keeps a verification park on-user however
 /// it was built.
+///
+/// A dependency or resource wait is not this set's, however the rows
+/// around it are gated: the wait is on the task, not the user, and an
+/// epic's `verify: user` gates a row's own completion rather than its
+/// wait. A target that parks on the look has not ended, so the chain
+/// keeps waiting, but the waiting row stays the caller's to move or
+/// remove (#2415).
 fn parked_on_user(task: &Task) -> bool {
     task.waiting_on
         .as_ref()
         .is_some_and(|wait| wait.verification || wait.kind == Some(WaitingKind::Decision))
+}
+
+/// The words a refusal names a wait by: its kind, and the row it waits on
+/// when the wait names one.
+fn wait_words(wait: Option<&Waiting>) -> String {
+    let Some(wait) = wait else { return "a wait".to_owned() };
+    let what = match wait.kind {
+        Some(WaitingKind::Decision) => "a decision",
+        Some(WaitingKind::Dependency) => "a dependency",
+        Some(WaitingKind::Resource) => "a resource",
+        None => "a wait",
+    };
+    match &wait.on {
+        Some(id) => format!("{what} on {}", id.as_str()),
+        None => what.to_owned(),
+    }
 }
 
 /// Append the user's words to a row's detail, keeping what was there.
@@ -145,6 +174,12 @@ impl std::fmt::Display for MoveError {
             Self::WaitingOnLook => write!(
                 f,
                 "this row is waiting on the user's look; the board's approve completes it"
+            ),
+            Self::CompletingWhileWaiting(waited) => write!(
+                f,
+                "this row is waiting on {waited}; completing it here would park it on the \
+                 user's look instead of completing it - move it off waiting first (a move to \
+                 in_progress drops the wait), then complete it"
             ),
             Self::ClearingLookGate => write!(
                 f,
@@ -376,12 +411,14 @@ impl Workspace {
     /// the user is the withdraw door - it records the reason the caller
     /// states in `detail`, and a cancel without one is refused (#2340);
     /// a move off `waiting` drops the wait the row was holding, so a
-    /// completion of any other waiting row applies and clears - a
-    /// verify=user one is taken by the gate and lands on the look
-    /// instead, its own wait gone; and completing a
-    /// ROOT row closes it - the whole tree moves to the archive, refused
-    /// while any child is still open or while any row in the tree is
-    /// parked on the user (#2251).
+    /// completion of any other waiting row applies and clears - except on
+    /// a verify=user row, where a seat's completion is refused by name
+    /// while the row waits: the gate would trade its wait for a look park
+    /// and answer with the status unchanged (#2414). The user's own move
+    /// off waiting to completed keeps that path and parks on the look;
+    /// and completing a ROOT row closes it - the whole tree moves to the
+    /// archive, refused while any child is still open or while any row in
+    /// the tree is parked on the user (#2251).
     pub(crate) fn update_task(
         &self,
         project_name: &str,
@@ -459,6 +496,16 @@ impl Workspace {
                 && next.status == TaskStatus::Completed
                 && effective_verify(tasks, index) == Verify::User
             {
+                // A row already holding another wait would have that wait
+                // traded for a look park, leaving the status reading
+                // `waiting`: the caller sees success and no change.
+                // Refused by name instead (#2414); the user's own moves
+                // keep their path.
+                if matches!(by, By::Seat(_)) && prior == TaskStatus::Waiting {
+                    return Err(MoveError::CompletingWhileWaiting(wait_words(
+                        tasks[index].waiting_on.as_ref(),
+                    )));
+                }
                 next.waiting_on = Some(Waiting {
                     kind: Some(WaitingKind::Decision),
                     detail: None,
@@ -2106,6 +2153,173 @@ mod tests {
         assert_eq!(stored[0].status, TaskStatus::Waiting, "and the row keeps waiting for the look");
     }
 
+    /// The reported sequence, not just the seeded state (#2414): a worker
+    /// parks its row on a dependency wait through `tasks__wait`, then
+    /// another seat completes it. On a verify=user row the completion is
+    /// refused by name, naming the wait, and the dependency wait survives
+    /// untouched.
+    #[test]
+    fn completing_a_waiting_user_bound_row_is_refused_by_name() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-complete-waiting");
+        ws.push_task(sample_task("blocker", "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task {
+            verify: Some(Verify::User),
+            owner: Some(worker.clone()),
+            ..sample_task("t-1", "proj")
+        });
+        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            WaitingKind::Dependency,
+            Some("the board read has to land first".to_owned()),
+            Some(&TaskId::from("blocker")),
+        )
+        .expect("the owner may wait its own row");
+
+        let refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("the gate would trade the dependency wait for a look park");
+        assert_eq!(
+            refused,
+            MoveError::CompletingWhileWaiting("a dependency on blocker".to_owned()),
+            "the refusal names the wait the row sits on",
+        );
+        assert!(
+            refused.to_string().contains("a dependency on blocker"),
+            "and the words a caller reads name it too: {refused}",
+        );
+        let stored = ws.tasks_for_project("proj");
+        let row = stored.iter().find(|task| task.id == TaskId::from("t-1")).expect("the row");
+        assert_eq!(row.status, TaskStatus::Waiting, "the row keeps the status it held");
+        assert_eq!(
+            row.waiting_on,
+            Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: Some("the board read has to land first".to_owned()),
+                on: Some(TaskId::from("blocker")),
+                verification: false,
+            }),
+            "and the wait it held, not a look park the caller never asked for",
+        );
+    }
+
+    /// The recovery the refusal advertises (#2414): moving the row off
+    /// waiting drops the dependency wait, and the next completion parks it
+    /// on the look the way any user-bound completion does.
+    #[test]
+    fn moving_a_dependency_wait_off_waiting_then_completing_parks_on_the_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-move-then-complete");
+        ws.push_task(sample_task("blocker", "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task {
+            verify: Some(Verify::User),
+            owner: Some(worker.clone()),
+            ..sample_task("t-1", "proj")
+        });
+        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            WaitingKind::Dependency,
+            None,
+            Some(&TaskId::from("blocker")),
+        )
+        .expect("the owner may wait its own row");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        let moved = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(lead.clone()), |task| {
+                task.status = TaskStatus::InProgress;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(moved.status, TaskStatus::InProgress, "the move off waiting lands");
+        assert_eq!(moved.waiting_on, None, "and drops the dependency wait");
+
+        let landed = ws
+            .update_task("proj", &TaskId::from("t-1"), By::Seat(lead), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(landed.status, TaskStatus::Waiting, "the gate parks the completion");
+        assert!(
+            landed.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "on the user's look: {landed:?}",
+        );
+    }
+
+    /// The refusal is a seat's, not a state's (#2414): the user's own move
+    /// of a waiting verify=user row to completed still parks it on the
+    /// look, which is the path the refusal tells a seat to take.
+    #[test]
+    fn a_user_move_still_parks_a_waiting_user_bound_row() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-user-move-waiting");
+        ws.push_task(Task {
+            verify: Some(Verify::User),
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: None,
+                on: None,
+                verification: false,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let landed = ws
+            .user_move_task("proj", &TaskId::from("t-1"), TaskStatus::Completed)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(landed.status, TaskStatus::Waiting, "the drag lands as a look park");
+        assert!(
+            landed.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "with the look the user's own completion is owed: {landed:?}",
+        );
+    }
+
+    /// The refusal names every wait shape a row can hold (#2414), so the
+    /// caller learns what it is sitting on and not merely that it waits.
+    #[test]
+    fn the_wait_refusal_words_name_each_wait() {
+        let wait = |kind: Option<WaitingKind>, on: Option<TaskId>| Waiting {
+            kind,
+            detail: None,
+            on,
+            verification: false,
+        };
+        assert_eq!(wait_words(None), "a wait", "no stored wait");
+        assert_eq!(wait_words(Some(&wait(None, None))), "a wait", "a legacy unstated wait");
+        assert_eq!(
+            wait_words(Some(&wait(Some(WaitingKind::Decision), None))),
+            "a decision",
+            "the question wait a row can be parked on",
+        );
+        assert_eq!(wait_words(Some(&wait(Some(WaitingKind::Resource), None))), "a resource");
+        assert_eq!(
+            wait_words(Some(&wait(Some(WaitingKind::Dependency), Some(TaskId::from("blocker"))))),
+            "a dependency on blocker",
+            "a dependency names its blocker",
+        );
+    }
+
     /// The withdraw door (#2340): a seat cancels a row parked on the
     /// user's look with the reason it states, which lands appended to
     /// what the row already said - the ask that goes away keeps its
@@ -2514,6 +2728,42 @@ mod tests {
             .remove_task_tree("proj", &TaskId::from("t-1"))
             .expect("no look is pending on an unstarted row");
         assert_eq!(removed.len(), 1, "the row went");
+    }
+
+    /// A dependency wait is on the task it names, not on the user: an
+    /// epic's `verify: user` gates the row's own completion, so it does
+    /// not make the waiting child a user ask the delete must refuse
+    /// (#2415).
+    #[test]
+    fn a_dependency_wait_under_a_verify_user_epic_is_deletable() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-dep-under-epic");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
+        ws.push_task(sample_task_with_parent("blocker", Some("epic"), "proj"));
+        ws.push_task(Task {
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: Some("the blocker lands first".to_owned()),
+                on: Some(TaskId::from("blocker")),
+                verification: false,
+            }),
+            ..sample_task_with_parent("t-1", Some("epic"), "proj")
+        });
+
+        let rows = ws.tasks_for_project("proj");
+        let index = rows.iter().position(|task| task.id == TaskId::from("t-1")).expect("the row");
+        assert_eq!(
+            effective_verify(&rows, index),
+            Verify::User,
+            "premise: the epic's gate binds the waiting row",
+        );
+
+        let removed = ws
+            .remove_task_tree("proj", &TaskId::from("t-1"))
+            .expect("a dependency wait is not an ask on the user");
+        assert_eq!(subjects(&removed), ["subject t-1".to_owned()], "the waiting row went alone");
     }
 
     /// A parked row in ANOTHER project sharing the named id is not this
