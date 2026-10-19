@@ -112,8 +112,8 @@ export async function closeSurface(
   return null;
 }
 
-/** The page's column, as the shell places the native layer: CSS pixels from
- *  the viewport's top-left, and the device pixel ratio drawn at. */
+/** The takeover's page area, as the shell places the native layer: CSS pixels
+ *  from the viewport's top-left, and the device pixel ratio drawn at. */
 export function setRegion(
   rect: { x: number; y: number; width: number; height: number },
   scale: number,

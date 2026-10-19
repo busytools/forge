@@ -4,7 +4,7 @@
 //!
 //! The window moves this module used to carry retired with the machine's own
 //! browser: a windowless host has no window to place, and the surface is
-//! drawn by the client at the column's rect.
+//! drawn by the client at the takeover page's rect.
 
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};

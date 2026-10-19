@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 describe('the browser surface', () => {
-  it("reports the column's box to the shell on mount", () => {
+  it("reports the page area's box to the shell on mount", () => {
     open('live');
     expect(reportSurfaceRect).toHaveBeenCalledTimes(1);
     const [rect, scale] = vi.mocked(reportSurfaceRect).mock.calls[0] ?? [];

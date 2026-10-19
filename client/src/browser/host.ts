@@ -245,8 +245,8 @@ export async function deleteProfile(name: string): Promise<void> {
 }
 
 /**
- * Whether a profile's browser is up as a window - the shared one for `null` -
- * which is what the strip's show/hide button toggles on.
+ * Whether a profile's browser is up as the takeover - the shared one for
+ * `null` - which is what the strip's show/hide button toggles on.
  */
 export async function profileWindowed(name: string | null = null): Promise<boolean> {
   if (!canHost()) return false;
@@ -265,8 +265,8 @@ export interface ProfileRow {
    *  never been opened, which the row's second line says rather than
    *  implying a driver that was there and left. */
   opened: boolean;
-  /** Whether its browser is up as a WINDOW right now: the row's button says
-   *  hide where it is, and show where it is not. */
+  /** Whether its browser is up as the takeover right now: the row's button
+   *  says hide where it is, and show where it is not. */
   windowed: boolean;
   /** Whether the shell holds no live entry for it: its browser is down while
    *  its files - the logins - are here. The strip's delete-all takes exactly

@@ -195,11 +195,11 @@ pub struct BrowserHost {
     /// profile**, the same count the machine's Brave had.
     #[cfg(desktop)]
     hosts: Mutex<HashMap<PathBuf, Arc<cef::spawn::ActiveHost>>>,
-    /// The open surface: the profile whose frames the page's column draws,
+    /// The open surface: the profile whose frames the page's takeover draws,
     /// `None` while nothing is drawn. The host keeps running under it.
     #[cfg(desktop)]
     surface: Mutex<Option<OpenSurface>>,
-    /// Where the page last said its conversation column is, and the scale it
+    /// Where the page last said its takeover's page area is, and the scale it
     /// is drawn at.
     #[cfg(desktop)]
     surface_rect: Mutex<Option<cef::surface::Rect>>,
@@ -786,7 +786,7 @@ impl BrowserHost {
         false
     }
 
-    /// Whether the page's column is drawing this cache root's frames.
+    /// Whether the page's takeover is drawing this cache root's frames.
     #[cfg(desktop)]
     pub(crate) async fn surface_is(&self, cache: &Path) -> bool {
         self.surface.lock().await.as_ref().is_some_and(|open| open.dir == cache)
@@ -1098,7 +1098,7 @@ impl BrowserHost {
         drop(named);
         for (row, cache) in rows.iter_mut().zip(&caches) {
             // The surface is the client's own state, not a probe: the strip's
-            // button says hide exactly while the column draws this profile.
+            // button says hide exactly while the takeover draws this profile.
             row.windowed = self.surface_is(cache).await;
         }
         // **A closed profile is still a profile.** Its entry goes on close
@@ -1234,7 +1234,7 @@ impl BrowserHost {
         // A raise is use: the person is being shown this browser, so the
         // idle release's clock restarts and any standing warning is spent.
         self.touch(&cache).await;
-        // One surface at a time: opening this profile's takes the column,
+        // One surface at a time: opening this profile's takes the window,
         // and a previous profile's host keeps running under it.
         *self.surface.lock().await =
             Some(OpenSurface { profile: name, dir: cache, host: Arc::clone(&host) });
@@ -1242,7 +1242,7 @@ impl BrowserHost {
         Ok(host)
     }
 
-    /// The page said where its conversation column is: place the overlay
+    /// The page said where its takeover's page area is: place the overlay
     /// there, and resize the host's view to match.
     #[cfg(desktop)]
     pub async fn set_surface_rect(&self, rect: cef::surface::Rect) {
@@ -1717,7 +1717,7 @@ pub async fn browser_hide(
 ///
 /// **The shell owns the window, so the page asks it rather than reaching for
 /// the window API**: the takeover is the app's own shape, and the window's
-/// full-screen state is what makes it a takeover rather than a bigger column.
+/// full-screen state is what makes it a takeover rather than a bigger page.
 ///
 /// **The simple full screen, not the native Space toggle.** The green
 /// button's `toggleFullScreen:` was refused on this window (the app stays
@@ -1739,10 +1739,9 @@ pub async fn browser_takeover(app: tauri::AppHandle, on: bool) -> Result<(), Str
     outcome.map_err(|why| format!("the window could not change full screen: {why}"))
 }
 
-/// Where the page's conversation column is, in CSS pixels from the
-/// viewport's top-left, and the device pixel ratio it is drawn at. The
-/// surface is placed and sized from this; it is reported on mount and on
-/// every resize.
+/// Where the takeover's page area is, in CSS pixels from the viewport's
+/// top-left, and the device pixel ratio it is drawn at. The surface is placed
+/// and sized from this; it is reported on mount and on every resize.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn browser_surface_rect(
@@ -1771,7 +1770,7 @@ fn cef_opened(cache: &Path) -> bool {
     cache.join("Default").is_dir()
 }
 
-/// The surface the page's column is drawing: one profile's frames, from the
+/// The surface the page's takeover is drawing: one profile's frames, from the
 /// host behind it. The host keeps running when the surface closes.
 #[cfg(desktop)]
 #[derive(Clone)]
@@ -1906,8 +1905,8 @@ mod tests {
     }
 
     /// **The strip reads the surface, not the host.** A profile whose host is
-    /// up but whose frames are not in the column reads as no surface, and one
-    /// whose column is drawing reads as up - the two states the button's
+    /// up but whose frames are not in the takeover reads as no surface, and
+    /// one whose takeover is drawing reads as up - the two states the button's
     /// show/hide turns on.
     #[tokio::test]
     async fn the_strip_reads_the_surface_not_the_host() {
@@ -2525,8 +2524,8 @@ mod tests {
         assert!(row.touch.warned.is_none(), "a touch clears the warning");
         assert_eq!(row.touch.caller, Some(who.clone()), "and keeps the seat it had");
 
-        // The surface over the live host: the column is drawing it, so it is
-        // in use and never a candidate - it is the person's.
+        // The surface over the live host: the takeover is drawing it, so it
+        // is in use and never a candidate - it is the person's.
         let ring = Arc::new(
             cef::osr::Ring::create("/forge-cef-idle-surface", 64, 64).expect("a test ring"),
         );

@@ -26,7 +26,7 @@ use tauri::Manager as _;
 use super::input::{self, InputEvent, MouseKind, Sender};
 use super::spawn::ActiveHost;
 
-/// Where the page says its conversation column is, in CSS pixels from the
+/// Where the page says its takeover's page area is, in CSS pixels from the
 /// viewport's top-left, and the device pixel ratio it is drawn at.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -316,8 +316,8 @@ fn pasteboard_text() -> Option<String> {
     if text.is_empty() { None } else { Some(text) }
 }
 
-/// Open the surface over the column: size the host's view, place the overlay
-/// exactly at the page's rect, and start drawing the ring.
+/// Open the surface over the takeover's page area: size the host's view,
+/// place the overlay exactly at the page's rect, and start drawing the ring.
 pub async fn attach(
     app: &tauri::AppHandle,
     host: Arc<ActiveHost>,

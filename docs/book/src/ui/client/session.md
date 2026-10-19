@@ -132,8 +132,8 @@ condition for it, because these rows are the home of what the inspector
 used to hold.
 
 **The browser segment opens the surface, not a window** (see
-[browser.md](./browser.md)): show draws the app's own Chromium in the
-conversation column, hide lowers it, and the sessions keep driving the same
+[browser.md](./browser.md)): show raises the app's own Chromium as the
+full-window takeover, hide lowers it, and the sessions keep driving the same
 page underneath while it is closed.
 
 **The files slip is the one mandatory segment** (Ved, 2026-10-17): every

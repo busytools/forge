@@ -18,8 +18,8 @@ use cef::{
 };
 
 /// The largest surface a host allocates room for: a 4K display's worth of
-/// device pixels. A bigger region is clamped rather than refused - a column
-/// never fills a 4K screen.
+/// device pixels. A bigger region is clamped rather than refused - the
+/// takeover never fills more than a 4K screen.
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
 

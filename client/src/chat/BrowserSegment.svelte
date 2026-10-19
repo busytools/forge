@@ -111,10 +111,10 @@
    * a refusal's words must not live there.
    */
   let bulkFailed = new SvelteMap<string, string>();
-  /** Whether the SHARED browser is up as a window: its row's button says hide
-   *  where it is, and the collapsed row marks it without opening. */
+  /** Whether the SHARED browser is up as the takeover: its row's button says
+   *  hide where it is, and the collapsed row marks it without opening. */
   let sharedUp = $state(false);
-  /** Whether any of the lines this slot reads is up as a window. */
+  /** Whether any of the lines this slot reads is up as the takeover. */
   const anyUp = $derived(sharedUp || profiles.some((row) => row.windowed));
   /** Whether the browser has been driven this session up - Ved's activity mark. */
   let used = $state(false);
@@ -214,7 +214,7 @@
    * The phone's takeover bar moving - its back, its Done, the hardware Back,
    * a raise: nothing in THIS page acted, and the bar's UI body runs on the
    * UI thread, so a read made by a caller can land before it (measured: the
-   * row kept saying "hide" over a window already down). Every bar word
+   * row kept saying "hide" over a surface already down). Every bar word
    * re-reads - see `installTakeoverHook`.
    */
   $effect(() => {
@@ -671,9 +671,9 @@
           {hosting ? 'browser connected' : 'browser not connected'}
         </span>
         <!-- **The engine line** (Ved's cut, 2026-10-18): the desktop draws
-             the app's own Chromium in the conversation column; the phone
-             keeps its system WebView. Which one is not something the person
-             should have to infer. -->
+             the app's own Chromium as a full-window takeover; the phone keeps
+             its system WebView. Which one is not something the person should
+             have to infer. -->
         <span class="tx bz-engine">
           {hosting ? engineLine : 'no engine to run a page'}
         </span>
@@ -825,13 +825,12 @@
               <span class="tx">{stateText(row)}</span>
             {/if}
             <!-- **The row's own door to its own browser**, the shared row's
-                 show one level down: this profile's window over this
-                 profile's browser, on this profile's page. -->
+                 show one level down: this profile's page in the takeover. -->
             <button
               type="button"
               class="bz-take bz-show"
               aria-label={row.windowed
-                ? `hide the ${row.name} profile's window`
+                ? `hide the ${row.name} profile's browser`
                 : `show the ${row.name} profile's browser`}
               onclick={() => (row.windowed ? lower(row.name) : show(row.name))}
               onkeydown={esc}
