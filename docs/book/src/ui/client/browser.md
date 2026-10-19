@@ -24,7 +24,7 @@ process is the desktop's.
 | Region | Shows | Read from |
 |---|---|---|
 | The hand-off's card | `browser hand-off` (and the profile, when one is named); **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar | the `browser_hand_off` ask, and the page's own surface state |
-| The takeover's bar | **back to chat**, the hand-off's title, **Done**, **something's wrong…** and **Not now** | the page's surface state and the parked hand-off |
+| The takeover's bar | **back to chat**, the hand-off's title, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state and the parked hand-off |
 | The feedback line | a text field and **send**: the person's words go to the agent as a prompt and the hand-off is declined | the page's own state; the prompt rides the socket |
 | The surface | the profile's page, filling the window under the bar: no window, no tab strip, no browser chrome | the host's ring, drawn by the shell over the page area |
 | The strip's row | `browser` with its profile count, the work ring while a call runs, a disc when a window is up and a flat disc once it has been driven; **show** / **hide** | the host's own rows, and the surface state |

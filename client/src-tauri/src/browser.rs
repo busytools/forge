@@ -172,6 +172,13 @@ impl StackPaths {
     }
 }
 
+/// How long a launch is given before its caller is told it did not answer.
+/// Longer than the host's own bounds put together (the launch deadline plus
+/// the directory's lock), so a slow-but-working start is not cut short; the
+/// point is that a wedged one becomes words rather than a takeover with a
+/// bar that cannot be answered.
+const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(75);
+
 /// The host: the browser's own profile, the named ones, and where everything
 /// lives.
 pub struct BrowserHost {
@@ -536,9 +543,10 @@ impl BrowserHost {
                     // sweep's verdict-and-kill takes (see the shared arm), and
                     // held through the launch so a close cannot land between.
                     let active = {
+                        let launched = self.launch_locked(&cache).await?;
                         let _launching = self.launch.lock().await;
                         self.touch(&cache).await;
-                        self.browser_for_locked(&cache).await?
+                        launched
                     };
                     self.used.store(true, std::sync::atomic::Ordering::Release);
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
@@ -925,8 +933,23 @@ impl BrowserHost {
     #[cfg(desktop)]
     pub async fn start(&self) -> Result<Arc<cef::spawn::ActiveHost>, String> {
         let paths = self.paths.clone()?;
-        let _launching = self.launch.lock().await;
-        self.browser_for_locked(&paths.cef_shared()).await
+        self.launch_locked(&paths.cef_shared()).await
+    }
+
+    /// One profile's live host under the launch mutex, bounded: the shared
+    /// critical section every launch, close and reap takes, with a deadline
+    /// so a wedged launch cannot hold the person's doors shut.
+    #[cfg(desktop)]
+    async fn launch_locked(&self, cache: &Path) -> Result<Arc<cef::spawn::ActiveHost>, String> {
+        match tokio::time::timeout(LAUNCH_WAIT, async {
+            let _launching = self.launch.lock().await;
+            self.browser_for_locked(cache).await
+        })
+        .await
+        {
+            Ok(answer) => answer,
+            Err(_) => Err("the browser did not start in time - try again".to_owned()),
+        }
     }
 
     /// The phone's own start: the Kotlin engine comes up (WebView, relay,
@@ -1054,6 +1077,12 @@ impl BrowserHost {
                 // exit. The host no longer answers, so its pid is only a
                 // number now - the ring and the record go, the pid is never
                 // signalled.
+                tauri_plugin_log::log::info!(
+                    "a recorded browser host is gone; replacing it (event_name \
+                     cef_record_stale, profile {}, pid {})",
+                    cache.display(),
+                    record.pid,
+                );
                 cef::osr::Ring::unlink(&record.ring);
                 cef::spawn::remove_record(cache);
             }
@@ -1280,20 +1309,38 @@ impl BrowserHost {
             None => (None, paths.cef_shared()),
         };
         let cache = if profile.is_some() { profiles::cef_cache(&dir) } else { dir };
+        tauri_plugin_log::log::info!(
+            "the browser surface is asked to open (event_name browser_show_entered, profile \
+             {profile:?}, cache {})",
+            cache.display(),
+        );
         // **The launch and the surface claim are one act under the lock**, so
         // a close racing Open cannot leave a live surface over a dead host.
-        let _launching = self.launch.lock().await;
-        let host = self.browser_for_locked(&cache).await?;
+        // **Bounded**, because a launch that never answers must become the
+        // page's failure sentence rather than a takeover whose bar cannot be
+        // answered: a locked launch is exactly what left Open and back to
+        // chat waiting for ever.
+        let host = self.launch_locked(&cache).await?;
         // A raise is use: the person is being shown this browser, so the
         // idle release's clock restarts and any standing warning is spent.
-        self.touch(&cache).await;
-        // One surface at a time: opening this profile's takes the window,
-        // and a previous profile's host keeps running under it.
-        *self.surface.lock().await =
-            Some(OpenSurface { profile: name, dir: cache, host: Arc::clone(&host) });
-        // **A placement that never landed fails the Open**, so the page draws
-        // the sentence instead of a live takeover with no picture.
-        self.reconcile_surface().await?;
+        // **The claim goes under the same lock a close takes**, so Open and
+        // back to chat can never interleave into a surface with no bar.
+        let claimed = tokio::time::timeout(LAUNCH_WAIT, async {
+            let _launching = self.launch.lock().await;
+            self.touch(&cache).await;
+            // One surface at a time: opening this profile's takes the window,
+            // and a previous profile's host keeps running under it.
+            *self.surface.lock().await =
+                Some(OpenSurface { profile: name, dir: cache, host: Arc::clone(&host) });
+            // **A placement that never landed fails the Open**, so the page
+            // draws the sentence instead of a live takeover with no picture.
+            self.reconcile_surface().await
+        })
+        .await;
+        match claimed {
+            Ok(answer) => answer?,
+            Err(_) => return Err("the browser did not start in time - try Open again".to_owned()),
+        }
         Ok(host)
     }
 
@@ -1388,10 +1435,16 @@ impl BrowserHost {
             }
             None => paths.cef_shared(),
         };
-        // **The same launch lock show takes.** A show holds it until the host
-        // answers; a hide racing it would no-op against a host not yet up -
-        // Open then Done would leave the surface up after the answer crossed.
-        let _launching = self.launch.lock().await;
+        // **The same launch lock show takes, waited on with a bound.** A show
+        // holds it until the host answers; a hide racing it would no-op
+        // against a host not yet up - Open then Done would leave the surface
+        // up after the answer crossed - and an unbounded wait here is what
+        // made back to chat do nothing at all.
+        let Ok(_launching) =
+            tokio::time::timeout(std::time::Duration::from_secs(20), self.launch.lock()).await
+        else {
+            return Err("the browser is still starting - try back to chat again".to_owned());
+        };
         // A lower is the same use a raise is: the browser was just in front
         // of someone, and the clock restarts with it.
         self.touch(&cache).await;

@@ -6,7 +6,7 @@
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
   import { drawsSurface } from '../browser/host';
-  import { clearHandOff, closeSurface, surface } from '../browser/surface.svelte';
+  import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -1093,6 +1093,19 @@
   }
 
   /**
+   * The failure state's own door: ask the shell for the surface again.
+   *
+   * A stale host record, a dead process or a placement that lost the race is
+   * retried here rather than sending the person back to the card; the store
+   * decides the phase from the answer, so a second failure draws its own
+   * sentence.
+   */
+  function takeoverRetry(): void {
+    const profile = takeoverAsk?.request.profile ?? surface.profile;
+    void openSurface(profile, slot);
+  }
+
+  /**
    * What a prompt's own-words box belongs to: one prompt, not one tool call.
    *
    * A batch of questions rides one tool call - the core reuses its id and
@@ -1151,6 +1164,7 @@
       onnotnow={takeoverAsk === null ? null : () => takeoverAnswer(false)}
       onback={takeoverBack}
       onfeedback={takeoverAsk === null ? null : takeoverFeedback}
+      onretry={surface.phase === 'failed' ? takeoverRetry : null}
     />
   {/if}
   <div

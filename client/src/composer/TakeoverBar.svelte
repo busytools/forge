@@ -28,6 +28,7 @@
     onnotnow = null,
     onback,
     onfeedback = null,
+    onretry = null,
   }: {
     title: string;
     notes?: string;
@@ -48,6 +49,8 @@
     onnotnow?: (() => void) | null;
     onback: () => void;
     onfeedback?: ((text: string) => void) | null;
+    /** Present while the surface failed: the door back to a live page. */
+    onretry?: (() => void) | null;
   } = $props();
 
   let feedbackOpen = $state(false);
@@ -81,6 +84,11 @@
   <div class="tb-row">
     <button class="tb-btn d" type="button" onclick={onback}>back to chat</button>
     <span class="tb-title">{title}</span>
+    {#if onretry !== null}
+      <span class="tb-acts">
+        <button class="tb-btn" type="button" onclick={onretry}>try again</button>
+      </span>
+    {/if}
     {#if ondone !== null && onnotnow !== null}
       <span class="tb-acts">
         <button class="tb-btn" type="button" onclick={ondone}>Done</button>

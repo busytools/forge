@@ -5512,6 +5512,28 @@ describe('the dock', () => {
     ]);
   });
 
+  it('offers a retry when the surface failed, without leaving the hand-off', async () => {
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser did not start in time - try again');
+
+    action('Open browser').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(surface.phase, 'the surface failed').toBe('failed');
+    expect(surface.reason).toContain('did not start in time');
+    expect(drawn(), 'and the bar offers the door back').toContain('try again');
+
+    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+    barAction('try again').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(showBrowser).toHaveBeenCalledTimes(2);
+    expect(surface.phase, 'the second ask landed').toBe('live');
+  });
+
   it("sends the bar's feedback to the agent, then declines the hand-off", () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
