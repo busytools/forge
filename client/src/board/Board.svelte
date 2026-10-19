@@ -568,13 +568,11 @@
       <div class="b-asks">
         {#each view.waiting as row (row.id)}
           <div class="b-ask">
-            <!-- The ASK leads: the wait's own detail is what the reader is
-                 being asked, so it is the card's title. A seeded or legacy
-                 wait with no detail keeps the row's subject. -->
+            <!-- The ASK leads: the wait's own detail (else the row's) is what
+                 the reader is being asked, so it is the card's title; a wait
+                 with neither falls back to the state's sentence. The subject
+                 is the line under it, never the title. -->
             <div class="b-q" title={row.ask}>{row.ask}</div>
-            <!-- The row's subject is context under every ask, including the
-                 state-sentence fallback: a card that says only "this row is
-                 finished" names nothing the reader can place. -->
             <div class="b-why"><span>{row.subject}</span></div>
             <div class="b-why">
               {#if row.owner !== null}<span>{row.owner}</span>{/if}

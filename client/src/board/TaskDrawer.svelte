@@ -75,10 +75,13 @@
     task.status !== 'completed' && task.status !== 'failed' && task.status !== 'canceled',
   );
 
+  /** A blank detail is no detail, on either side of the wait. */
+  const waitAsk = $derived(task.waiting_on?.detail?.trim() ?? '');
+  const rowAsk = $derived(task.detail?.trim() ?? '');
+  const ask = $derived(waitAsk !== '' ? waitAsk : rowAsk);
+
   /** The row's prose is the ask itself when the wait states none. */
-  const detailIsAsk = $derived(
-    task.waiting_on !== null && task.waiting_on.detail === null && task.detail !== null,
-  );
+  const detailIsAsk = $derived(task.waiting_on !== null && waitAsk === '' && rowAsk !== '');
 
   /** How many moves the row's own carry withholds, from its whole count. */
   const withheld = $derived(Math.max(0, row.history_total - row.history.length));
@@ -273,10 +276,8 @@
              is the row's own words - else the state's own sentence. A seeded
              or legacy wait with no detail keeps that sentence. -->
         <div class="q">
-          {#if task.waiting_on.detail !== null}
-            {task.waiting_on.detail}
-          {:else if task.detail !== null}
-            {task.detail}
+          {#if ask !== ''}
+            {ask}
           {:else if waitOnUser(task) && task.waiting_on.verification}
             This row is finished and waits on your approval.
           {:else if waitOnUser(task) && task.waiting_on.kind === 'decision'}
@@ -289,7 +290,7 @@
             Waiting.
           {/if}
         </div>
-        {#if task.waiting_on.detail !== null || task.detail !== null}
+        {#if ask !== ''}
           <!-- What the ask is, in the state's own words, under the ask itself. -->
           <div class="from">
             {#if waitOnUser(task) && task.waiting_on.verification}
@@ -424,7 +425,7 @@
       <h3>Lead-attested look</h3>
       <div class="dr-ask">
         <div class="q">The lead completed this row's look, citing your approval:</div>
-        <div class="from">&ldquo;{task.attested.evidence}&rdquo;</div>
+        <div class="from">"{task.attested.evidence}"</div>
         <button
           type="button"
           class="dr-btn no"

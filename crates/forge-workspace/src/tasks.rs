@@ -144,11 +144,17 @@ fn wait_words(wait: Option<&Waiting>) -> String {
     }
 }
 
-/// Append the user's words to a row's detail, keeping what was there.
+/// Append the user's words to a row's detail, keeping what was there. A
+/// blank append writes nothing - an empty detail is no detail, and a
+/// `Some("")` left by a wordless send-back would read as an empty ask.
 fn append_words(task: &mut Task, words: &str) {
+    let words = words.trim();
+    if words.is_empty() {
+        return;
+    }
     let prior = task.detail.take().unwrap_or_default();
     task.detail =
-        Some(if prior.is_empty() { words.to_owned() } else { format!("{prior}\n{words}") });
+        Some(if prior.trim().is_empty() { words.to_owned() } else { format!("{prior}\n{words}") });
 }
 
 impl std::fmt::Display for ClaimError {
@@ -1903,6 +1909,22 @@ mod tests {
             Some("the rail elides wrong"),
             "and the words are in the detail",
         );
+    }
+
+    /// A wordless send-back appends nothing: an empty detail is no detail,
+    /// and a `Some("")` there would read as an empty ask on the card.
+    #[test]
+    fn a_wordless_send_back_leaves_the_detail_untouched() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-sendback-blank");
+        row_awaiting_look(&ws, "t-1");
+
+        let sent = ws
+            .send_back_task("proj", &TaskId::from("t-1"), "   ")
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(sent.detail, None, "a blank send-back writes no detail");
     }
 
     #[test]

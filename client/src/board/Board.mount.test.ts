@@ -675,6 +675,17 @@ describe("the board's controls", () => {
       wireWith([
         row(
           task('q1', 'a bare question', 'waiting', {
+            // A followable reference, so the no-door assertion below can only
+            // pass on the verification guard rather than on an empty link list.
+            links: [
+              {
+                kind: 'pr',
+                label: 'PR #2425',
+                target: 'https://example.invalid/pull/2425',
+                state: null,
+                added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+              },
+            ],
             waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
           }),
         ),
@@ -984,6 +995,17 @@ describe("the row's own page", () => {
       wireWith([
         row(
           task('i1', 'an inherited park', 'waiting', {
+            // A followable reference, so the drawer's no-door assertion can
+            // only pass on its own verification-and-own-gate guard.
+            links: [
+              {
+                kind: 'pr',
+                label: 'PR #2425',
+                target: 'https://example.invalid/pull/2425',
+                state: null,
+                added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+              },
+            ],
             waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
           }),
         ),
@@ -1002,6 +1024,7 @@ describe("the row's own page", () => {
       'waits on your approval',
     );
     expect(byText('approve'), 'and no approve is offered').toBeNull();
+    expect(drawer?.querySelector('a.b-door'), 'and no artifact door is drawn').toBeNull();
   });
 
   /**

@@ -524,11 +524,12 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   border-radius: 4px;
 }
 .b-ref:hover { text-decoration-color: currentColor; text-decoration-thickness: 2px; }
-/* A finger needs the same 44px target a control gets; the negative margin
-   keeps the line rhythm the underline sits in. */
+/* A finger needs the same target a control gets: the line grows to a 44px
+   row and each link holds a 44px width, with no negative margin borrowing
+   space from its neighbours. */
 @media (pointer: coarse) {
-  .b-ref { display: inline-flex; align-items: center; min-height: 44px; padding: 0 2px;
-    margin: -13px 0; }
+  .b-ref { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px;
+    padding: 0 4px; }
 }
 .b-do { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 9px; }
 /* Why a verify row cannot be approved yet: the children it still waits on. */

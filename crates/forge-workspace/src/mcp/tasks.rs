@@ -547,8 +547,9 @@ impl Tool for List {
                 "ready": {
                     "type": "boolean",
                     "description": "True lists only rows something can start: pending, \
-                                    unowned, with nothing waiting on it, and not reserved \
-                                    for the user.",
+                                    with nothing waiting on it, and not reserved for the \
+                                    user. Ownership is not part of the mark: read `owner` \
+                                    for an unowned row.",
                 },
             },
             "additionalProperties": false,

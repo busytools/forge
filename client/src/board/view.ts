@@ -142,7 +142,6 @@ export interface WaitingView {
   owner: string | null;
   /** The verify gate, or a question the worker raised. */
   verification: boolean;
-  detail: string | null;
   /** The card's title: the wait's own detail, else the row's, else the state's sentence. */
   ask: string;
   /** The row's references, as doors, beside the ask. */
@@ -241,11 +240,6 @@ function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardVie
 }
 
 /**
- * The artifact a look points at, where the row carries one: the first
- * followable PR or path link. A look's ask usually names a mock, an
- * approach or a view, and the reader should reach it in one press.
- */
-/**
  * The sentence a wait's card says when it states no ask of its own: the
  * state, in the reader's terms. A seeded or legacy wait keeps this, and a
  * wait with a detail leads with the detail instead (#2423 look).
@@ -262,6 +256,11 @@ export function waitSentence(task: Task): string {
   return 'Waiting.';
 }
 
+/**
+ * The artifact a look points at, where the row carries one: the first
+ * followable PR or path link. A look's ask usually names a mock, an
+ * approach or a view, and the reader should reach it in one press.
+ */
 export function artifactOf(task: Task): { label: string; href: string } | null {
   const link = task.links.find(
     (candidate) =>
@@ -410,16 +409,19 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
         entry.task.waiting_on?.verification === true && waitOnUser(entry.task)
           ? artifactOf(entry.task)
           : null;
+      // A blank detail is no detail: a send-back that once appended nothing
+      // must not turn into an empty ask.
+      const waitAsk = entry.task.waiting_on?.detail?.trim() ?? '';
+      const rowAsk = entry.task.detail?.trim() ?? '';
       return {
         id: entry.task.id,
         subject: entry.task.subject,
         owner: entry.task.owner === null ? null : entry.task.owner.label,
         verification: entry.task.waiting_on?.verification === true,
-        detail: entry.task.waiting_on?.detail ?? null,
         // The ask is the wait's own detail where it states one, else the row's
         // detail - a look parks with no wait detail, and its ask is the row's
         // own words - else the state's sentence.
-        ask: entry.task.waiting_on?.detail ?? entry.task.detail ?? waitSentence(entry.task),
+        ask: waitAsk !== '' ? waitAsk : rowAsk !== '' ? rowAsk : waitSentence(entry.task),
         // The artifact is a reference the row already carries, presented once:
         // the door is its only showing, so the links line keeps the others.
         links: linksOf(entry.task).filter(

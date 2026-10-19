@@ -115,14 +115,16 @@ reopening strikes the attestation, re-mints the look gate and parks the row
 on the user again. The page's `pick` line is the other side of the sweep:
 `reserve for you` marks the row so the sweep never dispatches it, and
 `release` takes that back. A reserved row is not ready and no seat's claim
-takes it: the pick is the user's alone.
+takes it: the pick is the user's alone. The line draws only while the row is
+live - a completed, failed or canceled row has no pick left to reserve.
 
 **A wait leads with its ask.** The waiting card and the row page both open
 on the wait's own `detail` where it states one, else the row's `detail` - a
-look parks with no wait detail, and its ask is the row's own words - and only
-a seeded or legacy wait with neither falls back to the state's sentence ("A
-decision is waiting on you", "This row is finished and waits on your
-approval"). The row's links follow the ask as references in the sheet's own
+look parks with no wait detail, and its ask is the row's own words - and a
+wait with neither falls back to the state's sentence ("A decision is waiting
+on you", "A look: this row is finished and waits on your approval"). That
+fallback is a seeded or legacy wait, or a look minted with no ask, and a
+blank detail counts as none. The row's links follow the ask as references in the sheet's own
 link grammar - the app's link colour with an underline set off the text, and
 a fuller rule under the pointer; no bare anchor reaches the strip, so none
 draws the browser's purple. In a look the artifact is its own door,
