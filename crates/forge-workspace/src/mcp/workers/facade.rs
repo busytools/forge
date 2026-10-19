@@ -1600,31 +1600,40 @@ mod prod_list_workers_tests {
         ws.seed_test_project("forge", "/tmp/forge");
         ws.seed_test_project("other", "/tmp/other");
         let projects = ws.list_projects();
-        for (project_name, label) in [("forge", "implementer"), ("other", "reviewer")] {
-            let project = projects
+        let key_for = |name: &str| {
+            projects
                 .iter()
-                .find(|view| view.name == project_name)
+                .find(|view| view.name == name)
                 .expect("seeded project present")
                 .key
-                .clone();
-            ws.insert_live_worker(
-                &project,
-                crate::mcp::workers::types::WorkerEntry {
-                    label: label.into(),
-                    charter: "test charter".into(),
-                    slot: SessionSlot::worker("TestOrg", project_name, label),
-                    session_id: None,
-                    status: WorkerLiveness::Running,
-                    spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                    spawned_by: SessionSlot::lead("TestOrg", project_name),
-                    needs_tag: false,
-                    is_git_repo_at_spawn: false,
-                    cwd: None,
-                    diagnostic: None,
-                    kick: None,
-                },
-            );
-        }
+                .clone()
+        };
+        let entry = |project_name: &str, label: &str, status: WorkerLiveness| {
+            crate::mcp::workers::types::WorkerEntry {
+                label: label.into(),
+                charter: "test charter".into(),
+                slot: SessionSlot::worker("TestOrg", project_name, label),
+                session_id: None,
+                status,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", project_name),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            }
+        };
+        ws.insert_live_worker(
+            &key_for("forge"),
+            entry("forge", "implementer", WorkerLiveness::Running),
+        );
+        ws.insert_live_worker(
+            &key_for("other"),
+            entry("other", "reviewer", WorkerLiveness::Running),
+        );
+        // A failed worker keeps its row; the real listing must keep it too.
+        ws.insert_live_worker(&key_for("forge"), entry("forge", "crashed", WorkerLiveness::Failed));
 
         let implementer = SessionSlot::worker("TestOrg", "forge", "implementer");
         let domain = ws.register_domain_session(implementer, None);
@@ -1639,6 +1648,7 @@ mod prod_list_workers_tests {
             pairs,
             vec![
                 ("forge".to_owned(), "implementer".to_owned()),
+                ("forge".to_owned(), "crashed".to_owned()),
                 ("other".to_owned(), "reviewer".to_owned()),
             ],
             "every project's workers, in config order",

@@ -40,8 +40,7 @@ agents__send_message. Every forge session is addressed by its \
 slot - org, project and label - so these tools reach another project's \
 own agent, a worker on your team, or a worker in another project the \
 user is running side-by-side with this one. agents__list names every \
-project's own agent and every project's live worker, each under its \
-slot.";
+project's own agent and every project's worker, each under its slot.";
 
 /// Append-text the spawned session's system prompt receives when the
 /// `forge` in-process MCP server is attached. Tells the recipient
