@@ -17,6 +17,8 @@ import Composer from './composer/Composer.svelte';
 import type { ComposerProps, ComposerRecord } from './composer/view';
 import type { FileEntry } from './composer/wire';
 import FileTree from './components/FileTree.svelte';
+import type { TreeRow } from './components/tree';
+import { fileIcon, folderIcon } from './files/icons';
 import { foldsFor, indexTreeRows } from './files/tree';
 import {
   permissionAsk,
@@ -557,6 +559,8 @@ describe('axe over the rendered pages', () => {
           here: null,
           active: 'client',
           foldable,
+          icon: (row: TreeRow<unknown>) =>
+            row.kind === 'file' ? fileIcon(row.path) : folderIcon(row.name, true),
           ondir: () => {},
           onfile: () => {},
         },
@@ -576,6 +580,10 @@ describe('axe over the rendered pages', () => {
       row('client')?.classList.contains('key'),
       'the keyboard mark is on the active row, not any row',
     ).toBe(true);
+    expect(
+      row('client')?.querySelector('img.rv-icon')?.getAttribute('alt'),
+      'glyphs are decorative',
+    ).toBe('');
     expect(await idsOf(html)).toEqual([]);
 
     // Under a filter the folder rows are a match list's, not controls.
