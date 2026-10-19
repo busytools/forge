@@ -1077,7 +1077,12 @@ export class Chat {
     const last = held.turns.length - 1;
     let changed = false;
     const turns = held.turns.map((turn, at) => {
-      const wanted = at === last && this.turnRunning && !carriesResult(turn);
+      // **A result the continuation joined is not the turn's end** (#2405):
+      // the append marked that row running when a drawn frame joined it, so
+      // the mark is kept while the core still says a turn is in flight -
+      // cleared when the core answers false, or when a newer row takes over.
+      const wanted =
+        at === last && this.turnRunning && (!carriesResult(turn) || turn.running === true);
       if ((turn.running === true) === wanted) return turn;
       changed = true;
       return { ...turn, running: wanted };
@@ -2604,11 +2609,18 @@ export class Chat {
         this.unturned.push(message);
         return held;
       }
-      // A frame that draws opens a row of its own only where no turn is being
-      // written. A row the core says is running is one of those too, whichever
-      // way the client learned it: a seat reached mid-turn has its row from a
-      // page, and a frame that opened a second row beside it would be one turn
-      // in two.
+      // A frame opens a row of its own only where no turn is being written,
+      // and only where it is a frame a turn opens at. **The transcript fold
+      // opens a turn at a user row and at nothing else** (`TurnScan::opens`
+      // in forge-workspace answers false for every Assistant frame), so above
+      // a settled row an assistant frame is the continuation of that turn,
+      // not the head of the next - the delivery the CLI pressed in after a
+      // result, whose page the client has already settled (#2405). A user row
+      // still opens the next turn's row wherever the row above it stands. A
+      // row the core says is running is being written without opening a
+      // second one, whichever way the client learned it: a seat reached
+      // mid-turn has its row from a page, and a frame that opened a row
+      // beside it would be one turn in two.
       //
       // **Being written is asked of the fold's own rule rather than of `live`**
       // - a turn the frames built stays live for good (#1486), so a row that
@@ -2616,9 +2628,7 @@ export class Chat {
       // prompt arriving after it must still open the next turn's row.
       const writing = last !== undefined && beingWritten(last) && !carriesResult(last);
       const opens =
-        draws &&
-        !isSystem(message) &&
-        (last === undefined || (!writing && (opensATurn(message) || !beingWritten(last))));
+        draws && !isSystem(message) && (last === undefined || (!writing && opensATurn(message)));
       // **The core's own line is the one `system` frame that opens a row**, and
       // only where there is no turn to join. Its only copy is this frame - the
       // CLI wrote none - so on a seat with no turn yet, which is every fresh
@@ -2647,9 +2657,22 @@ export class Chat {
         // The newest turn draws again with what joined it, so a hold taken by
         // the pile is released; an older turn is not the pile's, and its own
         // flag stands.
+        // **A drawn frame joining the newest row is that row being written
+        // again** (#2405): the continuation arrives after the page settled the
+        // turn, so the row carries a result `answered`'s own rule would read
+        // as the end. The core's running answer is what says otherwise - it
+        // marks the row here, and its next answer clears the mark when the
+        // turn really ends.
+        const continues =
+          draws && !isSystem(message) && at === held.turns.length - 1 && this.turnRunning;
         const grown: Turn =
           at === held.turns.length - 1
-            ? { ...target, messages: [...target.messages, message], held: false }
+            ? {
+                ...target,
+                messages: [...target.messages, message],
+                held: false,
+                ...(continues ? { running: true } : {}),
+              }
             : { ...target, messages: [...target.messages, message] };
         return this.answered({
           ...held,
