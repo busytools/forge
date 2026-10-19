@@ -9,7 +9,7 @@
   import Forge from './Forge.svelte';
   import Call from './Call.svelte';
   import { iconOf, isBrowserTool, mcpParts } from './families';
-  import { languageFor, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
+  import { languageFor, omittedText, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
   import { duration, tokens } from './numbers';
   import { outputs } from './outputs.svelte';
   import Prose from './Prose.svelte';
@@ -139,6 +139,7 @@
   function textOf(piece: RunPiece): string {
     if (piece.kind === 'text') return piece.text;
     if (piece.kind === 'error') return piece.message;
+    if (piece.kind === 'omitted') return omittedText(piece.bytes);
     // Truthy rather than non-null, matching the image arm's own drawing: a
     // mime the wire sent as an empty string draws no separator after it.
     return piece.mime ? `image \u{b7} ${piece.mime}` : 'image';
@@ -216,6 +217,19 @@
       ? null
       : `${call.mutation.hunks} ${call.mutation.hunks === 1 ? 'hunk' : 'hunks'} \u{b7} +${call.mutation.added} \u{2212}${call.mutation.removed}`,
   );
+
+  /**
+   * The marks that follow the change's size, each its own element: an edit
+   * that replaced every match, one whose file moved, and the size the served
+   * page left out when it capped this call's record (#2374).
+   */
+  const marks = $derived([
+    ...(call.mutation?.all === true ? ['every match'] : []),
+    ...(call.mutation?.outside === true ? ['changed outside this edit'] : []),
+    ...(call.mutation !== null && call.mutation.omitted !== null
+      ? [omittedText(call.mutation.omitted)]
+      : []),
+  ]);
 
   /**
    * The tone the kind's glyph takes once the call settles - green came back,
@@ -703,14 +717,14 @@
         {#if tail === -1 && call.note !== null}
           <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
         {/if}
-        {#if size !== null}
+        {#if size !== null || marks.length > 0}
           <!-- The size always, then only the marks that are true: a reader acts
-               on "every match" and on a file that moved, and the default of
-               each is nothing to say.
+               on "every match", on a file that moved, and on an omitted record
+               whose size is the only thing left to say.
                On ONE line, because the box is `white-space: pre-wrap`: a
                newline in this template is a newline on screen. -->
           <!-- prettier-ignore -->
-          <div class="patchline"><span class="patchsize">{size}</span>{#if call.mutation?.all}<span class="patchmark">every match</span>{/if}{#if call.mutation?.outside}<span class="patchmark">changed outside this edit</span>{/if}</div>
+          <div class="patchline">{#if size !== null}<span class="patchsize">{size}</span>{/if}{#each marks as mark (mark)}<span class="patchmark">{mark}</span>{/each}</div>
         {/if}
       {/if}
     </div>
@@ -737,6 +751,11 @@
         <div class="m">{piece.message}</div>
         {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
+    {:else if piece.kind === 'omitted'}
+      <!-- The size a served page left out, drawn in the marks line's own
+           style: the same font and size as the figures under a diff, not a
+           second kind of drawing (#2374). -->
+      <div class="patchline"><span class="patchmark">{omittedText(piece.bytes)}</span></div>
     {:else if asProse}
       <Prose text={stripEscapes(textOf(piece))} preserveLines />
     {:else if mcpParts(call.name) !== null || isBrowserTool(call.name)}

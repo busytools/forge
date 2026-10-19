@@ -313,6 +313,36 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(units)[1], 'and that call is the unit in the middle').toBe('question');
   });
 
+  it('draws a capped question as its own row, opening on the omission', () => {
+    // The served page caps a frame's structured record, and a question's
+    // answers live in it: the card has no answers to read, so the row draws as
+    // a leaf - titled by the question it asked, wearing the question glyph,
+    // and opening on the size the page left out (#2374).
+    const question = [
+      said([
+        use('toolu_q', 'AskUserQuestion', {
+          questions: [{ question: 'Which one?', options: [{ label: 'a' }] }],
+        }),
+      ]),
+      heard([result('toolu_q', 'answered')], {
+        tool_use_result: { omitted: true, bytes: 5_200_000 },
+      }),
+    ];
+
+    const units = fold(question);
+    expect(kinds(units), 'the row still draws').toEqual(['leaves']);
+    const [row] = callsOf(units[0]);
+    expect(row?.leaf.title, 'titled by the question it asked').toBe('Which one?');
+    expect(row?.leaf.row, 'and wearing the question glyph').toEqual({
+      kind: 'family',
+      family: 'question',
+    });
+    expect(row?.leaf.body, 'opening on the size the page left out').toContainEqual({
+      kind: 'omitted',
+      bytes: 5_200_000,
+    });
+  });
+
   it('keeps a peer message from closing the calls around it, as rows of one list', () => {
     // A message is a row, not a separator: the call below it joins the list
     // the call above it opened, and every row keeps its arrival place.

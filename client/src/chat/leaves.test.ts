@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { leafOf, opensByDefault, type CallBody } from './leaves';
+import { leafOf, omittedText, opensByDefault, type CallBody } from './leaves';
 
 /** A result block as the wire shapes one, which is where a tool's answer arrives. */
 const answered = (content: string): { type: string; content: string } => ({
@@ -140,6 +140,7 @@ describe('what a call body draws', () => {
       removed: 1,
       all: true,
       outside: true,
+      omitted: null,
     });
   });
 
@@ -615,5 +616,112 @@ describe('what one hunk line costs to read', () => {
     expect(hunk.lines[0]?.text, 'and a change loses its mark, which the row draws itself').toBe(
       long,
     );
+  });
+
+  /**
+   * **An omitted record is named on the call's marks line** (#2374): the
+   * served page caps a frame's structured record and leaves
+   * `{omitted, bytes}` in its place, so the edit carries the size beside its
+   * hunk count rather than reading as a change with no patch, and no body
+   * piece is spent on the marker.
+   */
+  it('names an over-cap record on the marks line, not as a body', () => {
+    const omitted = { omitted: true, bytes: 5_200_000 };
+    const edit = leafOf(
+      't1',
+      'Edit',
+      { file_path: 'a.rs', old_string: 'one', new_string: 'two' },
+      answered('The file a.rs has been updated.'),
+      omitted,
+    );
+    expect(edit.mutation?.omitted, 'the bytes reach the marks line').toBe(5_200_000);
+    expect(
+      edit.body.some((part) => part.kind === 'diff' || part.kind === 'hunk'),
+      'the call input still draws its own two sides',
+    ).toBe(true);
+    expect(
+      edit.body.some((part) => part.kind === 'text'),
+      'and the marker is not a body piece of its own',
+    ).toBe(false);
+
+    // **A capped question has no patch to draw**, so its body is the omission
+    // alone and the row opens on it.
+    const question = leafOf(
+      't2',
+      'AskUserQuestion',
+      { questions: [{ question: 'Which?', options: [{ label: 'A' }] }] },
+      answered('User has answered your questions: Which?="A"'),
+      omitted,
+    );
+    expect(question.body, 'the body carries the size').toContainEqual({
+      kind: 'omitted',
+      bytes: 5_200_000,
+    });
+    expect(question.title, 'and the row says the question it asked').toBe('Which?');
+    expect(
+      opensByDefault(question.name, question.body, question.decision),
+      'opening on the omission',
+    ).toBe(true);
+
+    // **A call that never reads the record draws no marker**: its visible
+    // result is the whole of what it shows, so an omitted record changes
+    // nothing on the row (#2374).
+    const bash = leafOf('t3', 'Bash', { command: 'ls' }, answered('ok'), omitted);
+    expect(bash.mutation, 'a call that draws no diff carries no marks').toBeNull();
+    expect(
+      bash.body.some((part) => part.kind === 'omitted'),
+      'a call that never reads the record says nothing about it',
+    ).toBe(false);
+  });
+
+  /** The marker's figure reads in the unit the size belongs to. */
+  it('scales the omitted size to the unit it belongs to', () => {
+    expect(omittedText(500), 'under a kilobyte').toBe('omitted, 500 bytes');
+    expect(omittedText(80_000), 'kilobytes').toBe('omitted, 78 KB');
+    expect(omittedText(5_200_000), 'megabytes').toBe('omitted, 5.0 MB');
+  });
+
+  /** The question title branch belongs to the capped row alone (#2374). */
+  it('titles only a capped question row by the question it asked', () => {
+    const asked = { questions: [{ question: 'Which one?\nA second line' }] };
+    const capped = leafOf('q1', 'AskUserQuestion', asked, undefined, {
+      omitted: true,
+      bytes: 10,
+    });
+    expect(capped.title, 'a capped question takes the first line of its question').toBe(
+      'Which one?',
+    );
+    const whole = leafOf('q2', 'AskUserQuestion', asked, undefined, {
+      answers: { 'Which one?': 'A' },
+    });
+    expect(whole.title, 'an ordinary question leaf keeps the title it had').toBe('AskUserQuestion');
+    const unnamed = leafOf('q3', 'AskUserQuestion', { questions: [] }, undefined, {
+      omitted: true,
+      bytes: 10,
+    });
+    expect(unnamed.title, 'a capped question that named none keeps the tool name').toBe(
+      'AskUserQuestion',
+    );
+  });
+
+  /** Under the cap the record is untouched: the hunks still draw, no marker. */
+  it('draws a record under the cap exactly as before', () => {
+    const record = {
+      structuredPatch: [
+        { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-one', '+two'] },
+      ],
+    };
+    const leaf = leafOf(
+      't4',
+      'Edit',
+      { file_path: 'a.rs', old_string: 'one', new_string: 'two' },
+      answered('The file a.rs has been updated.'),
+      record,
+    );
+    expect(
+      leaf.body.some((part) => part.kind === 'hunk'),
+      'the patch draws',
+    ).toBe(true);
+    expect(leaf.mutation?.omitted, 'and nothing says omitted').toBeNull();
   });
 });

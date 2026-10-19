@@ -22,6 +22,8 @@ export type Family =
   | 'config'
   | 'worktree'
   | 'tool'
+  /** A question's own row, which the fold normally draws as its card. */
+  | 'question'
   /** Every mutation, which the fold gives one row whatever tool it was. */
   | 'edit';
 
@@ -158,6 +160,7 @@ export function familyOf(name: string): Family {
     Move: 'worktree',
     EnterWorktree: 'worktree',
     ExitWorktree: 'worktree',
+    AskUserQuestion: 'question',
   };
   return named[name] ?? 'tool';
 }
@@ -207,6 +210,7 @@ const FAMILY_GLYPH: Record<Family, string> = {
   config: 'settings',
   worktree: 'git',
   tool: 'tool',
+  question: 'question',
   edit: 'edit',
 };
 

@@ -41,7 +41,15 @@
 
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
-import { blocksOf, bodyOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
+import {
+  blocksOf,
+  bodyOf,
+  leafOf,
+  omittedRecord,
+  type Block,
+  type TaskFact,
+  type ToolLeaf,
+} from './leaves';
 import { formatRateLimitSummary, rateLimitNoticeKey } from './rate-limit';
 import { firstLine, isSlackId, stripEscapes } from './text';
 
@@ -2350,13 +2358,20 @@ export function fold(
           continue;
         }
         if (isQuestion(name)) {
+          const record = records.get(id);
           const card = questionCard(
             block.input,
-            records.get(id),
+            record,
             id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
           );
-          if (card !== null) push(card);
-          continue;
+          if (card !== null) {
+            push(card);
+            continue;
+          }
+          // An omitted record is not a question nobody answered: the card has
+          // no answers to read, so the call falls through to its leaf, which
+          // opens on the omission rather than the row vanishing (#2374).
+          if (omittedRecord(record) === null) continue;
         }
         const leaf = leafOf(
           id,

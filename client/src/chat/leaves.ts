@@ -22,7 +22,7 @@ import {
   rowOf,
 } from './families';
 import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
-import { headline, stripEscapes, toolName } from './text';
+import { firstLine, headline, stripEscapes, toolName } from './text';
 
 /** What a call's row opens on. */
 export type CallBody =
@@ -31,7 +31,9 @@ export type CallBody =
   | { kind: 'error'; message: string; detail: string }
   | { kind: 'diff'; old: string; new: string }
   | { kind: 'hunk'; header: string; lines: HunkLine[] }
-  | { kind: 'image'; mime: string | null; uri: string | null };
+  | { kind: 'image'; mime: string | null; uri: string | null }
+  /** The bytes a served page left out of a record the row would have read (#2374). */
+  | { kind: 'omitted'; bytes: number };
 
 /** One line of a hunk: context, removed, or added, with the number it holds on each side. */
 export interface HunkLine {
@@ -54,6 +56,8 @@ export interface MutationMarks {
   all: boolean;
   /** Whether the file changed outside this edit, which the CLI reports on the result. */
   outside: boolean;
+  /** The bytes the served page left out of this call's record, or `null` (#2374). */
+  omitted: number | null;
 }
 
 /**
@@ -185,7 +189,13 @@ export function opensByDefault(name: string, body: CallBody[], decision: Decisio
   // point of the call, and a closed row would say only that something was
   // asked. The distribution's own bound keeps it safe - a choice tops out at
   // 255 options, far under the diff bound above.
-  return decision !== null || (isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES);
+  // A capped record opens for the same reason: the omission is the body, and
+  // a closed row would hide the one fact the row exists to say (#2374).
+  return (
+    decision !== null ||
+    body.some((piece) => piece.kind === 'omitted') ||
+    (isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES)
+  );
 }
 
 /** The most diff rows a mutation's row draws without being asked. */
@@ -465,11 +475,41 @@ function headerOf(hunk: {
 }
 
 /**
+ * How many bytes a frame's structured record carried, when the served page
+ * omitted it (#2374): the server caps `tool_use_result` and leaves
+ * `{ omitted, bytes }` in its place, so a call that read the record says so
+ * rather than drawing blank.
+ */
+export function omittedRecord(record: unknown): number | null {
+  const held = record as { omitted?: unknown; bytes?: unknown } | null;
+  return held?.omitted === true && typeof held.bytes === 'number' ? held.bytes : null;
+}
+
+/** `omitted, N bytes`, in the units a reader thinks in. */
+export function omittedText(bytes: number): string {
+  if (bytes >= 1_048_576) return `omitted, ${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1_024) return `omitted, ${Math.round(bytes / 1_024)} KB`;
+  return `omitted, ${bytes} bytes`;
+}
+
+/**
  * What a mutation's body draws: the CLI's hunks where the result carries them,
  * and the call's own two sides where it does not.
+ *
+ * **An omitted record leaves an edit's body to the call's input and names its
+ * size on the marks line** (#2374): the row draws what it can still read - the
+ * edit's own two sides - and `MutationMarks.omitted` carries the bytes the
+ * served page left out, so the marker reads as one more figure beside
+ * `1 hunk · +1 -1` rather than as a body of its own. A capped question has no
+ * patch to draw, so its body carries the omission alone and the row opens on
+ * it.
  */
 function mutationBody(name: string, input: unknown, record: unknown): CallBody[] {
-  if (!isEdit(name)) return [];
+  if (!isEdit(name)) {
+    const omitted = omittedRecord(record);
+    if (omitted === null || name.toLowerCase() !== 'askuserquestion') return [];
+    return [{ kind: 'omitted', bytes: omitted }];
+  }
   const hunks = hunksOf(record);
   return hunks.length > 0 ? hunks : diffsOf(name, input);
 }
@@ -507,7 +547,7 @@ function marksOf(
   }
   const all = (input as { replace_all?: unknown } | null)?.replace_all === true;
   const outside = (record as { userModified?: unknown } | null)?.userModified === true;
-  return { hunks, added, removed, all, outside };
+  return { hunks, added, removed, all, outside, omitted: omittedRecord(record) };
 }
 
 /**
@@ -547,6 +587,18 @@ function hunk(old: string, added: string): CallBody[] {
   return [{ kind: 'diff', old, new: added }];
 }
 
+/** The line an asked question titles its row by, or null when it asked none. */
+function questionTitle(input: unknown): string | null {
+  const questions = (input as { questions?: unknown } | null)?.questions;
+  const first = Array.isArray(questions)
+    ? (questions[0] as { question?: unknown } | undefined)
+    : undefined;
+  const asked = first?.question;
+  if (typeof asked !== 'string') return null;
+  const line = firstLine(asked);
+  return line === '' ? null : line;
+}
+
 /**
  * What names a call on its row: its input where that says something, its tool otherwise.
  *
@@ -556,13 +608,21 @@ function hunk(old: string, added: string): CallBody[] {
  * about which file it is. The view this client replaced put the whole of it on
  * the row (`Edit /Users/.../home.css`), which is the reference this follows.
  */
-function titleOf(name: string, input: unknown): string {
+function titleOf(name: string, input: unknown, record: unknown): string {
   // A decision's row IS the question it asked: the tool word reads as plumbing
   // a reader scans past, and the question is the one thing they scan for
   // (Ved, 2026-10-12). A call that named nothing keeps the word, which is the
   // same fallback every other family's row has.
   const word = decisionWord(name);
   if (word !== null) return decisionTitle(input) ?? word;
+  // **A CAPPED question that reaches a leaf is titled by the question it
+  // asked** (#2374): the fold draws a capped question as its card, and this is
+  // the fallback for a leaf built without one (a dispatch timeline's row), so
+  // the row still says the question rather than the tool's name.
+  if (name.toLowerCase() === 'askuserquestion' && omittedRecord(record) !== null) {
+    const asked = questionTitle(input);
+    if (asked !== null) return asked;
+  }
   const said = headline(name, input);
   const named = said === name ? toolName(name) : said;
   // **A browser call says `browser`, not the driver's server name.** These
@@ -646,7 +706,7 @@ export function leafOf(
         input,
         settled === 'failed' || settled === 'killed' ? 'failed' : 'running',
       ) ??
-      titleOf(name, input),
+      titleOf(name, input, record),
     command: field(input, 'command')?.trim() || null,
     status: settled,
     backgrounded: task?.backgrounded === true,

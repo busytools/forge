@@ -23,7 +23,8 @@ use super::TransportState;
 use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
 use super::wire::{
-    FileContentWire, OpenTimings, conversation_for, encode_subject, encode_subject_timed, page,
+    FileContentWire, OpenTimings, cap_message_record, cap_tool_records, conversation_for,
+    encode_subject, encode_subject_timed, page,
 };
 use crate::live::Live;
 use crate::surface::{DictateOutcome, ViewSurface};
@@ -393,6 +394,9 @@ async fn run_connection(
     me: u64,
 ) -> anyhow::Result<()> {
     let mut held = Batch::default();
+    // The served-record bound every frame to a client takes (#2374), read once
+    // rather than per frame.
+    let cap = state.surface.tool_record_cap_bytes();
     loop {
         let due = held.due();
         tokio::select! {
@@ -452,7 +456,7 @@ async fn run_connection(
                     let fatal = matches!(update, SessionUpdate::FatalError { .. });
                     held.push(
                         Instant::now(),
-                        SeatUpdate { seq: frame.seq, update: for_a_client(update) },
+                        SeatUpdate { seq: frame.seq, update: for_a_client(update, cap) },
                     );
                     if fatal {
                         batch::flush(socket, held.take()).await?;
@@ -658,6 +662,9 @@ async fn handle_client(
     me: u64,
     msg: Message,
 ) -> anyhow::Result<()> {
+    // The served-record bound every frame to a client takes (#2374), read once
+    // rather than per frame.
+    let cap = state.surface.tool_record_cap_bytes();
     let text = match msg {
         Message::Text(text) => text,
         // A binary message is a frame of one of the two kinds. Neither is
@@ -742,12 +749,7 @@ async fn handle_client(
             }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
-            let mut queued = Vec::new();
-            for frame in open_stream(state, updates, answering) {
-                if forwards(&frame.update, watched, me) {
-                    queued.push(SeatUpdate { seq: frame.seq, update: for_a_client(frame.update) });
-                }
-            }
+            let queued = forward_queued(state, open_stream(state, updates, answering), watched, me);
             // **A seat is held BEFORE its snapshot is encoded.** The hold is
             // what has its working tree read, and the encode answers that
             // store - so a read taken first would hand a page the tree as it
@@ -1158,8 +1160,9 @@ async fn handle_client(
             }
             let opening = before.clone();
             let floor = held.lock().dropped();
+            let capped = seat.clone();
             let folded = tokio::task::spawn_blocking(move || {
-                held.read(|held| {
+                let mut page = held.read(|held| {
                     page(
                         held.messages(),
                         held.rendered(),
@@ -1167,7 +1170,12 @@ async fn handle_client(
                         opening.as_deref(),
                         turns,
                     )
-                })
+                });
+                // The bound runs in the same blocking task as the fold: a page
+                // is what a client is served, and the cap is part of building
+                // it rather than a pass over the socket's thread (#2374).
+                cap_tool_records(&mut page.turns, cap, &capped);
+                page
             })
             .await;
             // **A fold that did not finish is refused for the reason the arm
@@ -1264,7 +1272,10 @@ async fn handle_client(
                         // on the socket's size bound. The transcript branch
                         // builds only `ChatAppended`, so this is the branch
                         // that can hold one.
-                        Some(SeatFrameWire { seq: frame.seq?, update: for_a_client(frame.update) })
+                        Some(SeatFrameWire {
+                            seq: frame.seq?,
+                            update: for_a_client(frame.update, cap),
+                        })
                     })
                     .collect(),
                 // The window has shed it, so the transcript answers.
@@ -1452,17 +1463,24 @@ async fn transcript_frames(
     let rows = &read.messages;
     let kept = u64::try_from(rows.len()).unwrap_or(u64::MAX).min(want);
     let first = to.saturating_add(1).saturating_sub(kept);
+    // A repaired frame is served like every other one (#2374): the transcript
+    // keeps the record whole, and the client gets the same bound a page gets.
+    let cap = state.surface.tool_record_cap_bytes();
     rows.iter()
         .skip(rows.len().saturating_sub(usize::try_from(kept).unwrap_or(usize::MAX)))
         .enumerate()
-        .map(|(at, msg)| SeatFrameWire {
-            seq: first.saturating_add(u64::try_from(at).unwrap_or(u64::MAX)),
-            update: SessionUpdate::ChatAppended {
-                key: slot.clone(),
-                origin: None,
-                source: None,
-                msg: msg.clone(),
-            },
+        .map(|(at, msg)| {
+            let mut msg = msg.clone();
+            cap_message_record(&mut msg, cap, slot);
+            SeatFrameWire {
+                seq: first.saturating_add(u64::try_from(at).unwrap_or(u64::MAX)),
+                update: SessionUpdate::ChatAppended {
+                    key: slot.clone(),
+                    origin: None,
+                    source: None,
+                    msg,
+                },
+            }
         })
         .collect()
 }
@@ -1535,14 +1553,34 @@ fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
 /// that frame cap rather than sitting orders under it. A frame whose size
 /// does not depend on the conversation's size is the only one that holds
 /// whatever the seat weighs.
-fn for_a_client(mut update: SessionUpdate) -> SessionUpdate {
+fn for_a_client(mut update: SessionUpdate, cap: usize) -> SessionUpdate {
     match &mut update {
         SessionUpdate::Connected { history, .. }
         | SessionUpdate::SessionReplaced { history, .. }
         | SessionUpdate::HistoryReplayed { history, .. } => *history = Vec::new(),
+        // **A live frame draws what a reload draws** (#2374): a record is
+        // bounded on its way to a client wherever it comes from, or an
+        // over-cap edit draws its hunks live and the marker after a switch.
+        SessionUpdate::ChatAppended { msg, key, .. } => cap_message_record(msg, cap, key),
         _ => {}
     }
     update
+}
+
+/// The frames a subscribe read out of the stream it replaced: filtered for
+/// this connection, and bounded like every other path to a client (#2374).
+fn forward_queued(
+    state: &TransportState,
+    frames: Vec<SeatUpdate>,
+    watched: &[Subject],
+    me: u64,
+) -> Vec<SeatUpdate> {
+    let cap = state.surface.tool_record_cap_bytes();
+    frames
+        .into_iter()
+        .filter(|frame| forwards(&frame.update, watched, me))
+        .map(|frame| SeatUpdate { seq: frame.seq, update: for_a_client(frame.update, cap) })
+        .collect()
 }
 
 /// Where one binary message went, decided without touching a take.
@@ -1925,7 +1963,14 @@ async fn rows_below_floor(
     // same way the held window folds it (#2379), so the seat's own state
     // travels with the read.
     let live = state.conversations.live_of(seat);
-    let folded = tokio::task::spawn_blocking(move || page_of_span(&span, turns, live)).await;
+    let cap = state.surface.tool_record_cap_bytes();
+    let capped = seat.clone();
+    let folded = tokio::task::spawn_blocking(move || {
+        let mut page = page_of_span(&span, turns, live);
+        cap_tool_records(&mut page.turns, cap, &capped);
+        page
+    })
+    .await;
     if let Ok(page) = folded {
         BelowFloor::Page(page)
     } else {
@@ -2339,6 +2384,55 @@ mod tests {
             matches!(updates, Some((_, true))),
             "and the connection is on an answering stream now",
         );
+    }
+
+    /// **A frame queued across a stream replacement is bounded like every
+    /// other one** (#2374): the subscribe-queue path is a fourth place a
+    /// record crosses to a client, and without its cap the queued frame
+    /// carries the record whole while the snapshot carries the marker.
+    #[tokio::test]
+    async fn a_queued_frame_reaches_the_client_capped() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+        let seat = forge_primitives::SessionSlot::lead("TestOrg", "proj");
+        let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "uuid": "tool-result-1",
+            "session_id": "s",
+            "message": {"role": "user", "content": "the call"},
+            "tool_use_result": {"payload": "x".repeat(100_000)},
+        }))
+        .expect("a user frame");
+        let frame = SeatUpdate {
+            seq: Some(9),
+            update: SessionUpdate::ChatAppended {
+                key: seat.clone(),
+                origin: None,
+                source: None,
+                msg,
+            },
+        };
+
+        let queued = forward_queued(&state, vec![frame], &[Subject::Session(seat)], 1);
+
+        assert_eq!(queued.len(), 1, "the frame is forwarded to the seat's watcher");
+        let SessionUpdate::ChatAppended {
+            msg: forge_primitives::Message::User { tool_use_result, .. },
+            ..
+        } = &queued[0].update
+        else {
+            panic!("the queued frame is the chat frame it was queued as")
+        };
+        let record = tool_use_result.as_ref().expect("the frame carries its record");
+        assert_eq!(record["omitted"], true, "the queued record is bounded: {record}");
     }
 
     /// The role only goes up while a connection lives: a later observing

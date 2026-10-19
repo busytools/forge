@@ -368,6 +368,33 @@ describe('one turn, as the page draws it', () => {
     expect(body, 'and the other its own').toContain('b.rs');
   });
 
+  it('draws a capped question as its own row, opening on the omission', () => {
+    // A capped answers record leaves no card to read (#2374): the row draws as
+    // the question it asked, with the question glyph, and opens on the size
+    // the page left out. The visible result prose the CLI sent still draws -
+    // nothing the wire carried is dropped.
+    const body = draw(
+      said([
+        use('q1', 'AskUserQuestion', {
+          questions: [{ question: 'Which one?', options: [{ label: 'a' }] }],
+        }),
+      ]),
+      result('q1', 'User has answered your questions: Which one?="a"', {
+        omitted: true,
+        bytes: 5_200_000,
+      }),
+    );
+    expect(body, 'a row rather than a card').not.toContain('<div class="card">');
+    expect(body, 'wearing the question glyph').toContain('#i-question');
+    expect(body, 'titled by the question it asked').toContain('Which one?');
+    expect(body, 'opening on the size the page left out').toContain(
+      '<span class="patchmark">omitted, 5.0 MB</span>',
+    );
+    expect(body, 'and the prose the CLI sent still draws').toContain(
+      'User has answered your questions: Which one?="a"',
+    );
+  });
+
   it('names what a turn attached, and draws none of its pixels', () => {
     const attached = {
       type: 'user',

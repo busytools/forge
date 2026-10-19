@@ -78,6 +78,20 @@ read as one system.
   live one did.
 - **An edit** draws its diff: the hunks with both line numbers, and the
   marks that say how each line moved.
+  **An edit or a question whose structured record the page could not
+  carry** says so on its marks line: an `omitted` figure with its size,
+  scaled to the unit the size belongs to (`omitted, 5.0 MB`). On an edit it
+  is one more mark beside the hunk count; on a question, which has no hunk
+  count, it is alone on that line. A record over the cap
+  first keeps the keys the row draws and drops only what nothing reads, so
+  a large edit keeps its patch and a Write draws the file it created from
+  the call's own input, and a question whose huge typed notes pushed it
+  over keeps its `answers`. **A question answered live and the same
+  question read from the transcript draw identically** - the cap bounds
+  both paths the same way - so the answer card is the card either way.
+  Only a record with nothing drawable left falls back to the omission: an
+  edit names it on the marks line, and a question draws as its own row,
+  its question glyph and the question it asked, opening on the omission.
 - **A backgrounded call** is held open by its task fact, its result
   saying the command started, and the ending landing later as a frame of
   its own. **Its output box follows a call that is still out**: while the
