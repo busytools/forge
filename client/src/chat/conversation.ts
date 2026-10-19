@@ -222,6 +222,40 @@ export interface Conversation {
   loaded: boolean;
   /** The handle the page carried for the turns above it, or `null` at the top. */
   cursor: string | null;
+  /**
+   * When the walk may ask again, after a page that came back empty.
+   *
+   * **An empty page keeps the cursor, so nothing else about the record moves.**
+   * A below-floor read that cannot resolve its anchor answers zero rows and a
+   * null cursor; the walk stays where it was and the next ask is paced
+   * against a beat that doubles per consecutive empty. A column filling a
+   * fitting room has no scroll to retry on, so it reads this stamp and waits
+   * the beat out (#2411).
+   */
+  reaskAt: number | null;
+  /**
+   * The walk cursor an older ask went out for, and no landing has moved past.
+   *
+   * **The fill's one stop** (#2411): a conversation that fits its column has
+   * no scroll to retry on, so the fill asks the page above and then has to
+   * know when asking the same cursor again would fetch the same page. It
+   * lives here with the ask bookkeeping rather than in the column, because
+   * every way an ask dies - a refusal, a dropped socket, a swap - is known
+   * here first: kept in the column, the mark missed the dropped socket and
+   * the fill stayed dead after the reconnect that answered it.
+   */
+  askedFor: string | null;
+  /**
+   * How many pages have landed, whichever direction.
+   *
+   * **The fill's wake.** A landing is when a column learns whether the room
+   * still fits, and a reconnect's newest page can answer with the very cursor
+   * and turns the record already held - so a trigger keyed on those fields
+   * woke for neither the drop nor the page that made the history answerable
+   * again. `prepends` counts the older half only, for the list's
+   * compensation, and cannot stand in for this.
+   */
+  pages: number;
   /** The server's own words when it turned the conversation down. */
   refused: string | null;
   /**
@@ -260,6 +294,9 @@ export const NOTHING: Conversation = {
   turns: [],
   loaded: false,
   cursor: null,
+  reaskAt: null,
+  askedFor: null,
+  pages: 0,
   refused: null,
   following: true,
   prepends: 0,
@@ -816,7 +853,9 @@ export class Chat {
   private ridden = new Set<unknown>();
   /** Record that an ask which was in flight is now answered by nothing. */
   private forgot(): void {
-    this.fold((held) => ({ ...held, dropped: held.dropped + 1 }));
+    // The cursor it went out for is answered by nothing, so the fill may ask
+    // it again: the reconnect's own newest page can spell it unchanged.
+    this.fold((held) => ({ ...held, dropped: held.dropped + 1, askedFor: null }));
   }
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
@@ -1259,7 +1298,12 @@ export class Chat {
     // on a page that was never asked for - and the caller has to know, because
     // what it does with the answer is hold a reader's place while it arrives.
     const page = Math.max(1, Math.min(MORE_TURNS, Math.round(turns)));
-    if (this.connection.more(this.slot, before, page)) return true;
+    if (this.connection.more(this.slot, before, page)) {
+      // The cursor an older ask went out for is the fill's stop until a
+      // landing says what came back; a newest ask has none to record.
+      if (before !== null) this.fold((held) => ({ ...held, askedFor: before }));
+      return true;
+    }
     this.inFlight = null;
     this.askedBefore = null;
     return false;
@@ -1344,6 +1388,7 @@ export class Chat {
           refused: message.why,
           loaded: true,
           dropped: held.dropped + 1,
+          askedFor: null,
         }));
         this.retryAsk();
         return;
@@ -1459,6 +1504,9 @@ export class Chat {
     if (emptied) this.emptyBeats += 1;
     else this.emptyBeats = 0;
     this.emptyAt = emptied ? Date.now() : 0;
+    const reask = emptied
+      ? Date.now() + Math.min(RETRY_MS * 2 ** (this.emptyBeats - 1), EMPTY_RETRY_MAX_MS)
+      : null;
     // The page's frames, indexed once for everything below that asks what the
     // page carries: the heal, the ride, and the walk's own check.
     const fromPage = new Frames(pageRows.flatMap((row) => messagesOf(row)));
@@ -1798,6 +1846,14 @@ export class Chat {
         // refusal is about THAT ask rather than about the conversation, and
         // one that outlived its ask leaves every later page undrawable.
         refused: null,
+        // The empty-page beat, on the record so a column that cannot scroll
+        // can wait it out and ask again (#2411); a page with rows clears it.
+        reaskAt: reask,
+        // A page that answers with the cursor it was asked with is the
+        // walk's stop, and the fill's with it; any other landing frees the
+        // next read - moved, or empty and keeping the walk's cursor.
+        askedFor: cursor !== null && cursor === askedBefore ? cursor : null,
+        pages: held.pages + 1,
         // The newest page's own handle names a place just above itself, which
         // is no use to a reader who has walked further back: taking it would
         // send the walk to the top of the conversation and fetch every page
@@ -1909,7 +1965,8 @@ export class Chat {
     this.returnWanted = false;
     outputs.clear(this.key);
     // A swap is not a frame's draw: the reset lands now, whatever any paint
-    // was waiting for.
+    // was waiting for. The fill's mark and landing count go with it - they
+    // name the occupant that is gone.
     this.held = NOTHING;
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above

@@ -58,9 +58,12 @@ export function clearObservers(): void {
  * document gets a synthetic `contentRect` of that height: a tree an earlier
  * test unmounted must not take a measurement it can no longer hold.
  */
-export function resized(height?: number): void {
+export function resized(height?: number, skip?: (node: Element) => boolean): void {
   for (const { callback, node } of watching) {
     if (height !== undefined && (node === null || !node.isConnected)) continue;
+    // A node the test holds back reports nothing, which is how a row a browser
+    // never measured - a held one that draws nothing - gets its zero.
+    if (node !== null && skip?.(node) === true) continue;
     const entries =
       height === undefined
         ? []
