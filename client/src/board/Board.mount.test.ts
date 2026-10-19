@@ -836,9 +836,7 @@ describe("the row's own page", () => {
     if (card === null) throw new Error('no card');
     press(card);
     const drawer = document.querySelector('.dr');
-    expect(drawer?.textContent, 'the quote the lead recorded').toContain(
-      'Looks right - merge',
-    );
+    expect(drawer?.textContent, 'the quote the lead recorded').toContain('Looks right - merge');
     byText('reopen')?.click();
     flushSync();
     expect(acts[0]).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
