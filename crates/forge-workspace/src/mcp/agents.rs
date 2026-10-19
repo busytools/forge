@@ -199,7 +199,7 @@ impl Tool for List {
         "List the agents you can reach, one row per seat, each addressed \
          by its slot (org, project, label). Two kinds of row: every \
          project's own agent, which has label 'lead', and every \
-         project's live workers, each under its own label. Pass \
+         project's workers, each under its own label. Pass \
          `project` to narrow the list to one project. \
          \
          A project's own agent is reachable whether or not it is \
@@ -1415,6 +1415,22 @@ mod tests {
         assert_eq!(row["charter"], "w1's charter", "a worker row carries its snapshot");
     }
 
+    /// A Failed row is the only trace that a label exists, so the listing
+    /// keeps it; a future `.filter(|w| w.is_live())` would drop it silently.
+    #[tokio::test]
+    async fn list_keeps_a_failed_worker_row() {
+        let host = host();
+        let mut failed = worker("other", "proj", "crashed");
+        failed.status = WorkerLiveness::Failed;
+        host.workers.workers.lock().entry("proj".to_owned()).or_default().push(failed);
+        let rows = call_list(&host, None).await;
+        assert!(
+            rows.iter()
+                .any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] == "crashed"),
+            "a Failed row stays listed: {rows:?}",
+        );
+    }
+
     #[tokio::test]
     async fn a_project_without_live_workers_adds_no_worker_row() {
         let host = host();
@@ -1446,20 +1462,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["slot"]["label"], "w2");
         assert_eq!(parsed["slot"]["project"], "core");
-    }
-
-    #[tokio::test]
-    async fn a_worker_sees_every_projects_pool() {
-        let host = host();
-        let tool = List { dispatcher: Arc::clone(&host.dispatcher) };
-        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
-        assert!(!output.is_error, "list must answer a worker caller: {:?}", output.blocks);
-        let rows: Vec<serde_json::Value> =
-            serde_json::from_str(text_of(&output)).expect("JSON array");
-        assert!(
-            rows.iter().any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] == "w1"),
-            "a worker sees every project's pool: {rows:?}",
-        );
     }
 
     #[tokio::test]

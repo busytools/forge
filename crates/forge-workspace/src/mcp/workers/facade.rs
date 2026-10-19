@@ -1175,9 +1175,9 @@ impl WorkerFacade for MockWorkerFacade {
 
     fn list_all_workers(&self) -> Vec<WorkerStatus> {
         let workers = self.workers.lock();
-        let mut projects: Vec<&String> = workers.keys().collect();
-        projects.sort();
-        projects.into_iter().filter_map(|project| workers.get(project)).flatten().cloned().collect()
+        let mut projects: Vec<(&String, &Vec<WorkerStatus>)> = workers.iter().collect();
+        projects.sort_by(|left, right| left.0.cmp(right.0));
+        projects.into_iter().flat_map(|(_, list)| list).cloned().collect()
     }
 
     fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity> {
@@ -1586,6 +1586,58 @@ mod prod_list_workers_tests {
             facade.list_workers(&caller)[0].activity,
             Some(SessionLifecycleState::Running),
             "and it must be re-derived per call, not cached at spawn",
+        );
+    }
+
+    /// The real walk pairs `list_projects` with the `live_workers` map, so
+    /// this pins that both projects' entries reach the listing. A split
+    /// project-key derivation would otherwise show an empty listing while
+    /// every mock-backed handler test stays green.
+    #[test]
+    fn list_all_workers_walks_every_project() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/forge");
+        ws.seed_test_project("other", "/tmp/other");
+        let projects = ws.list_projects();
+        for (project_name, label) in [("forge", "implementer"), ("other", "reviewer")] {
+            let project = projects
+                .iter()
+                .find(|view| view.name == project_name)
+                .expect("seeded project present")
+                .key
+                .clone();
+            ws.insert_live_worker(
+                &project,
+                crate::mcp::workers::types::WorkerEntry {
+                    label: label.into(),
+                    charter: "test charter".into(),
+                    slot: SessionSlot::worker("TestOrg", project_name, label),
+                    session_id: None,
+                    status: WorkerLiveness::Running,
+                    spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                    spawned_by: SessionSlot::lead("TestOrg", project_name),
+                    needs_tag: false,
+                    is_git_repo_at_spawn: false,
+                    cwd: None,
+                    diagnostic: None,
+                    kick: None,
+                },
+            );
+        }
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let listed: Vec<(String, String)> = facade
+            .list_all_workers()
+            .into_iter()
+            .map(|worker| (worker.slot.project().to_owned(), worker.label))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("forge".to_owned(), "implementer".to_owned()),
+                ("other".to_owned(), "reviewer".to_owned()),
+            ],
+            "every project's workers, in config order",
         );
     }
 }
