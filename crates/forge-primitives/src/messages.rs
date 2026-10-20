@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::content::ContentBlock;
-use crate::image::{ImageAttachment, validate_image};
 use crate::runtime::TerminalReason;
 
 /// Wire fields forge does not model, kept verbatim so a decode is lossless:
@@ -712,29 +711,19 @@ impl Message {
     /// which carries the same id, the CLI writing the client's uuid into the
     /// transcript it delivers. Nothing routes on the empty `session_id`.
     pub fn display_only_user(text: String, uuid: String) -> Self {
-        Self::display_only_user_with_images(text, &[], uuid)
+        Self::display_only_user_with_blocks(text, Vec::new(), uuid)
     }
 
-    /// [`Self::display_only_user`] for a prompt sent with image attachments:
-    /// the images first and the words last, each image in the shape both paths
-    /// draw - mime and measured size, no payload - so a live row draws the
-    /// attachments its transcript copy carries.
-    ///
-    /// An attachment the sender would drop - unsupported mime or invalid
-    /// base64 - is left out here too: the model never receives it, so the row
-    /// must not draw one that disappears on reload.
-    pub fn display_only_user_with_images(
+    /// [`Self::display_only_user`] with the image blocks a prompt's
+    /// attachments draw as, placed before the words: the caller builds them
+    /// from the attachments it holds, so a dispatch never clones a payload it
+    /// will not draw.
+    pub fn display_only_user_with_blocks(
         text: String,
-        images: &[ImageAttachment],
+        images: Vec<ContentBlock>,
         uuid: String,
     ) -> Self {
-        let mut content = Vec::with_capacity(images.len() + 1);
-        for image in images {
-            if validate_image(&image.data, &image.mime_type).is_err() {
-                continue;
-            }
-            content.push(image.display_block());
-        }
+        let mut content = images;
         content.push(ContentBlock::Text { text, extras: Extras::new() });
         Message::User {
             message: UserEnvelope { role: "user".to_owned(), content, extras: Extras::new() },

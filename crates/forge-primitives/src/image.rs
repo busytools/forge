@@ -48,6 +48,17 @@ impl ImageAttachment {
     }
 }
 
+/// The image blocks a prompt's attachments draw as: the ones the sender would
+/// keep, in the order they were sent, each carrying the mime and the measured
+/// size rather than its payload.
+pub fn display_blocks(images: &[ImageAttachment]) -> Vec<ContentBlock> {
+    images
+        .iter()
+        .filter(|image| validate_image(&image.data, &image.mime_type).is_ok())
+        .map(ImageAttachment::display_block)
+        .collect()
+}
+
 /// The bytes a base64 payload stands for: four characters carry three, and
 /// padding is not a byte.
 pub fn payload_bytes(data: &str) -> u64 {
@@ -91,4 +102,30 @@ pub fn validate_image(data: &str, mime_type: &str) -> Result<(), String> {
         return Err("image data is not valid base64".to_owned());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The sender's block carries the payload.** A block without `data`
+    /// still names an image, so the model reads a picture it was sent no bytes
+    /// for - and nothing else in the suite reads this shape.
+    #[test]
+    fn the_wire_block_carries_the_base64_payload() {
+        let image =
+            ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
+        assert_eq!(
+            image.wire_block(),
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "iVBORw0KGgo=",
+                },
+            }),
+            "the block the CLI receives keeps the payload it was sent",
+        );
+    }
 }

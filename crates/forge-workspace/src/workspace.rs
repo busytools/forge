@@ -4296,10 +4296,16 @@ impl Workspace {
         // same one forge's machinery forges prose on and a view arms its
         // follow off what it says (#2198): taking it from the command keeps
         // the frame and the queued row's label one fact.
+        // The attachments' blocks are built before the command moves, carrying
+        // the mime and the size rather than the payloads.
         let prompt = match &cmd {
-            Command::PromptUnder { key, text, attachments, uuid, source } => {
-                Some((key.clone(), text.clone(), attachments.clone(), uuid.clone(), *source))
-            }
+            Command::PromptUnder { key, text, attachments, uuid, source } => Some((
+                key.clone(),
+                text.clone(),
+                forge_primitives::display_blocks(attachments),
+                uuid.clone(),
+                *source,
+            )),
             _ => None,
         };
         // A composer's text that names a forge command is FORGE'S, not the
@@ -4313,29 +4319,34 @@ impl Workspace {
         // being emitted where it is decided: it has to land after the echo
         // below, because a client draws this stream in arrival order and one
         // sent first drew the answer above the prompt it answers.
-        let (outcome, answer) = match &cmd {
+        let (outcome, answer, prompt_routed) = match &cmd {
             Command::PromptUnder { key, text, .. } => match crate::prompt::forge_invocation(text) {
                 Some(crate::prompt::Invocation::Command(prompt)) => {
-                    self.run_forge_prompt(key, &prompt)
+                    let (outcome, answer) = self.run_forge_prompt(key, &prompt);
+                    (outcome, answer, false)
                 }
                 Some(crate::prompt::Invocation::Misuse(usage)) => {
-                    (Ok(()), Some(forge_misuse(usage)))
+                    (Ok(()), Some(forge_misuse(usage)), false)
                 }
                 None => match self.unrunnable_slash_name(key, text) {
-                    Some(refusal) => (Ok(()), Some(forge_misuse(&refusal))),
-                    None => (self.route(cmd), None),
+                    Some(refusal) => (Ok(()), Some(forge_misuse(&refusal)), false),
+                    None => (self.route(cmd), None, true),
                 },
             },
-            _ => (self.route(cmd), None),
+            _ => (self.route(cmd), None, false),
         };
         if outcome.is_ok()
-            && let Some((key, text, attachments, uuid, source)) = prompt
+            && let Some((key, text, images, uuid, source)) = prompt
         {
+            // A forge command and a refusal answer without routing the prompt
+            // the reader typed, so an attachment beside one never reached a
+            // model and the echo draws the words alone.
+            let images = if prompt_routed { images } else { Vec::new() };
             // Stamped at the forge, like the machinery's own: the CLI never
             // echoes a prompt, so this row is the one that opens every turn a
             // person starts, and a page attaching mid-turn reads its clock
             // from the first row that carries a stamp.
-            let mut framed = Message::display_only_user_with_images(text, &attachments, uuid);
+            let mut framed = Message::display_only_user_with_blocks(text, images, uuid);
             framed.stamp_if_absent(&crate::install::rfc3339_now());
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
@@ -20309,14 +20320,31 @@ mod prompt_frame_origin_tests {
         ws.dispatch_from_view(Command::Prompt {
             key: seat.clone(),
             text: "/mode sideways".to_owned(),
-            attachments: Vec::new(),
+            // An attachment beside a forge command never reaches a model: the
+            // command answers instead of routing the prompt, so the echo must
+            // draw the words alone.
+            attachments: vec![forge_primitives::ImageAttachment {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            }],
         })
         .expect("the core takes it");
 
         let first = rx.try_recv().expect("the echo is the first update on the stream");
+        let SessionUpdate::ChatAppended { key, msg, .. } = &first.update else {
+            panic!("the reader's own words are echoed before the answer: {first:?}")
+        };
+        assert_eq!(key, &seat, "the echo is for the seat that asked");
+        let Message::User { message, .. } = msg else {
+            panic!("the echo draws as the user turn it was: {msg:?}")
+        };
         assert!(
-            matches!(&first.update, SessionUpdate::ChatAppended { key, .. } if key == &seat),
-            "the reader's own words are echoed before the answer: {first:?}",
+            !message
+                .content
+                .iter()
+                .any(|block| { matches!(block, forge_primitives::ContentBlock::Image { .. }) }),
+            "an attachment beside a forge command never reached a model, so the echo draws \
+             the words alone: {message:?}",
         );
         let second = rx.try_recv().expect("the answer follows the echo");
         assert!(

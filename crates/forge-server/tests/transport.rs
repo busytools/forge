@@ -5865,17 +5865,20 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     // live path's only carrier.
     let image =
         ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
-    // A malformed attachment is sent too: the sender drops it before the model
-    // sees it, so the live row must not draw one that disappears on reload.
-    let malformed =
+    // Malformed attachments are sent too, one per arm `validate_image`
+    // refuses: the sender drops them before the model sees them, so the live
+    // row must not draw one that disappears on reload.
+    let wrong_mime =
         ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "text/plain".to_owned() };
+    let bad_base64 =
+        ImageAttachment { data: "not base64!".to_owned(), mime_type: "image/png".to_owned() };
     send(
         &mut sender,
         ClientMessage::Command {
             command: Box::new(Command::Prompt {
                 key: lead_seat(),
                 text: "hello there".to_owned(),
-                attachments: vec![image.clone(), malformed],
+                attachments: vec![image.clone(), wrong_mime, bad_base64],
             }),
             reply_to: None,
         },
@@ -5919,10 +5922,12 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     // a row prints - the mime and the measured size - exactly as the read
     // path's stripped copy does.
     assert_eq!(source.get("data"), None, "the live frame carries no base64 payload: {source}");
+    // The literal, not the helper the implementation calls: "iVBORw0KGgo=" is
+    // twelve base64 characters, eight bytes once the padding is out.
     assert_eq!(
         extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
-        Some(forge_primitives::payload_bytes(&image.data)),
-        "the row prints the size the payload weighed, the figure the read path sends",
+        Some(8),
+        "the row prints the eight bytes the payload weighed",
     );
     assert_eq!(
         message.content.len(),

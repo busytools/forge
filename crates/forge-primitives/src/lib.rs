@@ -102,8 +102,8 @@ pub use hooks::{
 };
 pub use ids::{SessionId, ToolUseId};
 pub use image::{
-    ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
-    payload_bytes, validate_image,
+    ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, display_blocks, is_supported_image_type,
+    is_valid_base64, payload_bytes, validate_image,
 };
 pub use mcp_ui_sync::McpOperationError;
 pub use messages::StopHookInfo;
