@@ -3788,10 +3788,10 @@ async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
         &seat,
         ViewFacts { session_id: Some(session.clone()), ..Default::default() },
     );
-    // **A copy the replay route materialised carries no occupant**, so the
-    // occupant check takes it as the seat's and the first answer fills it from
-    // the window. A copy materialised from the ring would be refused instead
-    // (#2446); the skip-guard this pins is the fold's own.
+    // **This empty copy stands in for the occupant-less one a replay leaves**:
+    // the occupant check takes it as the seat's, so the first answer fills it
+    // from the window. A copy materialised from the ring would be refused
+    // instead (#2446); the skip-guard this pins is the fold's own.
     state.conversations.insert(&seat, Conversation::empty());
 
     state.conversations.hold_the_fold(true);
@@ -3872,37 +3872,22 @@ async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
     assert_eq!(says_times(&data, "the live row"), 1, "and the live row exactly once");
 }
 
-/// **A fill that cannot reach the seal's history is refused, not synthesised**
-/// (#2446).
-///
-/// The measured window: a `Connected` carrying one history row plus one
-/// `ChatAppended`, the fold held, and a subscribe. A seal is not in the ring,
-/// so catch_up's fallback built a copy from the ring's frames alone and the
-/// answer paired the new epoch's number with the live row and no history. The
-/// occupant check cannot catch it: the fill stamps the synthetic copy with the
-/// header's occupant, so it reads as the seat's own.
-///
-/// The property is that no answer carries a copy missing the rows its epoch
-/// opened on. The refusal is the honest answer while the seal is unapplied,
-/// and the same read answers once the fold has taken it.
-#[tokio::test]
-async fn a_fill_through_a_pending_seal_is_refused_rather_than_synthesised() {
-    let (url, fleet, state) = a_server_with_state().await;
-    let seat = lead_seat();
-    wait_for_the_fold(&fleet).await;
+/// The window #2446 measured: a `Connected` carrying one history row, one
+/// `ChatAppended`, the header already naming the new occupant, and the fold
+/// held short of both.
+fn a_seat_sealed_under_a_held_fold(fleet: &Fleet, state: &Arc<TransportState>, seat: &SessionSlot) {
     let session = SessionId::from("3b4c5d6e-7f80-4a91-b0c1-d2e3f4a5b6c7");
-
     // The header names the new occupant before the seal reaches the fold,
     // which is what makes a synthetic copy read as the seat's own.
     fleet.seed_view_facts(
-        &seat,
+        seat,
         ViewFacts { session_id: Some(session.clone()), ..Default::default() },
     );
 
     state.conversations.hold_the_fold(true);
     fleet.emit(SessionUpdate::Connected {
         key: seat.clone(),
-        session_id: session,
+        session_id: session.clone(),
         cwd: "/tmp".to_owned(),
         current_model: a_current_model(),
         available_models: Vec::new(),
@@ -3917,6 +3902,37 @@ async fn a_fill_through_a_pending_seal_is_refused_rather_than_synthesised() {
         source: None,
         msg: a_said_frame("the live row"),
     });
+}
+
+/// The next answer to a subscribe, passing over the updates queued ahead of it
+/// the way [`snapshot_answering`] does.
+async fn an_answer(socket: &mut Client) -> ServerMessage {
+    loop {
+        match next_server(socket).await {
+            ServerMessage::Update { .. } => {}
+            other => return other,
+        }
+    }
+}
+
+/// **A fill that cannot reach the seal's history is refused, not synthesised**
+/// (#2446).
+///
+/// A seal is not in the ring, so catch_up's fallback built a copy from the
+/// ring's frames alone and the answer paired the new epoch's number with the
+/// live row and no history. The occupant check cannot catch it: the fill
+/// stamps the synthetic copy with the header's occupant, so it reads as the
+/// seat's own.
+///
+/// **A fold that never applies the seal has no answer to give**, which is what
+/// this pins: the read waits out the seal's own bound and refuses by name. The
+/// transient window is `a_read_during_a_lagging_seal_answers_once_the_fold_catches_up`.
+#[tokio::test]
+async fn a_fill_through_a_pending_seal_is_refused_rather_than_synthesised() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    a_seat_sealed_under_a_held_fold(&fleet, &state, &seat);
 
     let mut socket = connect(&url).await;
     send(
@@ -3929,12 +3945,7 @@ async fn a_fill_through_a_pending_seal_is_refused_rather_than_synthesised() {
         },
     )
     .await;
-    let answer = loop {
-        match next_server(&mut socket).await {
-            ServerMessage::Update { .. } => {}
-            other => break other,
-        }
-    };
+    let answer = an_answer(&mut socket).await;
     state.conversations.hold_the_fold(false);
 
     let ServerMessage::Error { what, why, .. } = answer else {
@@ -3945,8 +3956,11 @@ async fn a_fill_through_a_pending_seal_is_refused_rather_than_synthesised() {
     };
     assert_eq!(what, "subscribe", "the refusal names what was asked for");
     assert!(
-        why.contains(&seat.display()) && why.contains("has not settled"),
-        "and names the seat and the reason, so the silent row loss has an artefact: {why}",
+        why.contains(&seat.display())
+            && why.contains("has not settled")
+            && why.contains("epoch's seal"),
+        "and names the seat and this reason rather than the copy-behind one, so the silent row \
+         loss has an artefact: {why}",
     );
 
     // **The same read after the fold has taken the seal answers its history**,
@@ -3975,6 +3989,117 @@ async fn a_fill_through_a_pending_seal_is_refused_rather_than_synthesised() {
         "the seal's history must be in the answer once the fold has applied it: {data}",
     );
     assert_eq!(says_times(&data, "the live row"), 1, "and the live row exactly once: {data}");
+}
+
+/// **An empty-history seal still fills from the ring** (#2446).
+///
+/// A fresh session's first connect carries no rows, so the ring holds
+/// everything its epoch has said and the fill below is a complete copy. Only a
+/// seal that carried rows is worth refusing for; recording every seal would
+/// turn an ordinary first connect into a wait and, on a wedged fold, refuse an
+/// answer the ring could give.
+#[tokio::test]
+async fn an_empty_history_seal_still_fills_from_the_ring() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let session = SessionId::from("4c5d6e7f-8091-4ba2-c1d2-e3f4a5b6c7d8");
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts { session_id: Some(session.clone()), ..Default::default() },
+    );
+
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: session,
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the live row"),
+    });
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let answer = an_answer(&mut socket).await;
+    state.conversations.hold_the_fold(false);
+
+    let ServerMessage::Snapshot { data, .. } = answer else {
+        panic!(
+            "an empty-history seal leaves nothing for the ring to miss, so the read must answer: \
+             {answer:?}"
+        );
+    };
+    let said = says_times(&data, "the live row");
+    assert_eq!(said, 1, "the ring's frame is the whole epoch: {data}");
+}
+
+/// **A read inside a LAGGING seal's window answers once the fold catches up,
+/// without the client leaving the seat** (#2446).
+///
+/// The same window as the refusal above, with the fold released before the
+/// seal's bound runs out. A refused subscribe cannot be re-asked by either
+/// client, so the transient must resolve inside the read: the wait is on the
+/// fold's own mark, and this pins that the answer carries the history the
+/// refused one could not have had.
+///
+/// The release lands between the encode's 250 ms catch-up wait and the end of
+/// its 1 s seal wait, so a read that refused instead of waiting has already
+/// answered with an error by then.
+#[tokio::test]
+async fn a_read_during_a_lagging_seal_answers_once_the_fold_catches_up() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    a_seat_sealed_under_a_held_fold(&fleet, &state, &seat);
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    state.conversations.hold_the_fold(false);
+
+    let answer = an_answer(&mut socket).await;
+    let ServerMessage::Snapshot { data, .. } = answer else {
+        panic!(
+            "a read through a lagging seal must answer once the fold catches up, not fail the \
+             seat's only read: {answer:?}"
+        );
+    };
+    assert_eq!(
+        says_times(&data, "the seal's history row"),
+        1,
+        "the answer carries the seal's history: {data}",
+    );
+    assert_eq!(says_times(&data, "the live row"), 1, "and the live row exactly once: {data}");
+    let seq = data["header"]["seq"].as_u64();
+    assert_eq!(seq, Some(2), "under the new epoch's own number: {data}");
 }
 
 /// **An answer inside the seal's window is the new epoch's, not the previous

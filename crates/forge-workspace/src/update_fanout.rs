@@ -83,13 +83,15 @@ struct Shared {
     /// the numbers a seal's epoch carried are re-minted by the run after it -
     /// and the record of them goes with the ring.
     unringed: HashMap<SessionSlot, Vec<u64>>,
-    /// The seats whose current epoch was opened by a seal.
+    /// The seats that have opened an epoch with a seal that carried rows.
     ///
     /// **A seal's history is not in the ring**, so a reader filling a copy
-    /// from the window cannot rebuild what the epoch opened on (#2446). This
-    /// is recorded at the mint, which is the only point that knows, rather
-    /// than inferred later from a header or a ring that a seat with no seal
-    /// leaves in the same shape.
+    /// from the window cannot rebuild what the epoch opened on (#2446). An
+    /// empty-history seal opens the epoch with nothing to miss, and a fresh
+    /// session's first connect is exactly that. This is recorded at the mint,
+    /// the only point that knows, and it is never cleared: the header moves
+    /// to a new occupant before the seal is minted, so the mark left by the
+    /// previous seal is what notices that gap for every seal after it.
     sealed: HashSet<SessionSlot>,
     /// How many frames a ring keeps. [`SEAT_RING`] in production; a test
     /// drives it down so the transcript fallback is reachable without
@@ -153,7 +155,14 @@ impl Shared {
             // again, and a stale one would cover a gap the new run opened.
             self.rings.remove(&slot);
             self.unringed.remove(&slot);
-            self.sealed.insert(slot.clone());
+            // **Only a seal that carried rows leaves a gap the ring cannot
+            // fill**, so only that one is worth refusing a fill for.
+            if let SessionUpdate::Connected { history, .. }
+            | SessionUpdate::SessionReplaced { history, .. } = &update
+                && !history.is_empty()
+            {
+                self.sealed.insert(slot.clone());
+            }
         } else if matches!(update, SessionUpdate::Releasing { .. }) {
             // The seat is being taken down, and its frames are on the far side
             // of a release: nothing asks for the numbers of a seat that is
