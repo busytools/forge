@@ -1853,6 +1853,68 @@ mod tests {
         );
     }
 
+    /// A git that cannot name the checkout root is reported once per root
+    /// with an event a log grep can find - a bare repo answers every other
+    /// probe but has no top level - and the answer is not memoised.
+    #[test]
+    fn worktree_base_reports_a_git_it_cannot_resolve_once() {
+        #[derive(Clone)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("capture lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+            type Writer = Capture;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let dir = tempdir().expect("bare holder");
+        let bare = dir.path().join("bare.git");
+        run_git(dir.path(), &["init", "-q", "--bare", bare.to_str().expect("utf8")]);
+        let bare = fs::canonicalize(&bare).expect("canonical bare");
+        let capture = |calls: usize| {
+            let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .with_writer(Capture(std::sync::Arc::clone(&buffer)))
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                for _ in 0..calls {
+                    assert_eq!(
+                        worktree_base(&bare),
+                        bare,
+                        "a repo git cannot resolve is its own base",
+                    );
+                }
+            });
+            String::from_utf8(buffer.lock().expect("capture lock").clone()).expect("utf8 log")
+        };
+
+        let first = capture(2);
+        assert!(
+            first.contains("worktree_base_unresolved"),
+            "the unresolved root is reported: {first}",
+        );
+        assert_eq!(
+            first.matches("worktree_base_unresolved").count(),
+            1,
+            "once per root, not once per call: {first}",
+        );
+        let second = capture(1);
+        assert!(
+            !second.contains("worktree_base_unresolved"),
+            "and not again after the first report: {second}",
+        );
+    }
+
     /// A directory that is not there is a refusal, not a silent pass: the
     /// spawn would otherwise fail later with claude's own cwd error, far
     /// from the caller that mistyped the path.

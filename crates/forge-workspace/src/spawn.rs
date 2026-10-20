@@ -122,8 +122,10 @@ pub(crate) fn apply_blocked_tools(
 /// Build the list of `(flag, value)` extra CLI args specific to a
 /// worker spawn. When the project is a git repo, append
 /// `("worktree", Some(label))` so the spawned `claude` subprocess
-/// creates a worktree at `<repo>/.claude/worktrees/<label>/` and
-/// runs the session inside it. In all cases, append the worker's
+/// creates a worktree at `<base>/.claude/worktrees/<label>/` - `base`
+/// the repo's canonical root, the main checkout for a project that is
+/// itself a linked worktree - and runs the session inside it. In all
+/// cases, append the worker's
 /// [`blocked_tools_for`] set as its `--disallowedTools` entry: workers are
 /// pinned to their spawn-time location (whether a worktree or the
 /// project cwd) and must not be able to call claude's built-in
@@ -455,15 +457,6 @@ pub(crate) enum CronFireOutcome {
 /// an on-time fire.
 pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
     if missed { format!("[missed cron] {prompt}") } else { prompt.to_owned() }
-}
-
-/// Where a spawned worker runs, as the spawn reply states it: a git
-/// project's worker gets its worktree, and a non-git one runs in the
-/// project root and has no worktree to name.
-fn spawn_worktree(project_root: &std::path::Path, label: &str, is_git: bool) -> Option<String> {
-    is_git.then(|| {
-        crate::mcp::workers::types::worker_tag_dir(project_root, label, true).display().to_string()
-    })
 }
 
 /// Deliver a due cron's prompt into its OWNER's session as a plain user
@@ -1343,16 +1336,31 @@ pub(crate) fn handle_spawn_worker(
             .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&root))
     };
 
+    // The tree this worker runs in. A resume of a worker that ran before
+    // #2460 adopts that worker's own tree when this label's tagged
+    // transcript is there; anything else composes the CLI's location. A
+    // fresh spawn never adopts: its label may reuse a despawned worker's
+    // name, but its tree is the CLI's to create.
+    let composed = is_git.then(|| crate::mcp::workers::types::worker_tag_dir(&root, label, true));
+    let adopted = if resume_existing.is_some() {
+        composed.as_ref().and_then(|composed| {
+            workspace
+                .legacy_resume_session(&view.org, &view.name, &root, label, composed)
+                .filter(|(_, session)| Some(session.as_str()) == resume_existing)
+                .map(|(dir, _)| dir)
+        })
+    } else {
+        None
+    };
+    let run_dir = adopted.clone().or(composed);
+
     // The composed worktree is repository-global, so a label can name a
     // tree that already belongs to another project - its own checkout, or
     // a live worker's worktree. Reusing it would put two sessions in one
     // tree and hand the later despawn the power to delete it; refuse
     // before anything is minted.
-    if is_git
-        && let Some(collision) = workspace.worktree_collision(
-            &crate::mcp::workers::types::worker_tag_dir(&root, label, true),
-            &project_key,
-        )
+    if let Some(collision) =
+        run_dir.as_ref().and_then(|dir| workspace.worktree_collision(dir, &project_key))
     {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -1410,7 +1418,9 @@ pub(crate) fn handle_spawn_worker(
         spawned_by,
         needs_tag: !is_resume,
         is_git_repo_at_spawn: is_git,
-        cwd: cwd.as_deref().map(std::path::PathBuf::from),
+        // The adopted tree on a resume onto a pre-#2460 worktree, else the
+        // stated tree; the row keeps meaning the project's own path.
+        cwd: adopted.clone().or_else(|| cwd.as_deref().map(std::path::PathBuf::from)),
         diagnostic: None,
         kick,
     };
@@ -1601,7 +1611,8 @@ pub(crate) fn handle_spawn_worker(
     // (forge_sdk_worker::build_options_with_callback) appends it to
     // the system prompt via --append-system-prompt. `extra_args`
     // carries `("worktree", Some(label))` for git-repo projects so
-    // claude forks a worktree at `<repo>/.claude/worktrees/<label>/`.
+    // claude forks a worktree at `<base>/.claude/worktrees/<label>/`,
+    // `base` being the repo's canonical root (#2460).
     //
     // Resume path: `SessionTarget::Session` reads the original cwd
     // from the catalog (Workspace::session_cwd_for) so claude lands
@@ -1695,10 +1706,11 @@ pub(crate) fn handle_spawn_worker(
                 // instead.
                 durability_warning,
                 // Where the worker runs, which this handler decided above:
-                // a git project's worker gets `<root>/.claude/worktrees/
-                // <label>`, and everything else runs in the project root
+                // a git project's worker gets the CLI's
+                // `<base>/.claude/worktrees/<label>` (or the tree a resume
+                // adopted), and everything else runs in the project root
                 // and has no worktree to name.
-                worktree: spawn_worktree(&root, label, is_git),
+                worktree: run_dir.as_ref().map(|dir| dir.display().to_string()),
                 // What the arguments say, which is all this handler
                 // knows: a `resume_session` spawn whose lookup found
                 // nothing arrives here as a fresh spawn like any other,
@@ -1987,14 +1999,12 @@ pub(crate) fn handle_despawn_worker_within(
         None
     };
     // Every worktree operation below runs against the checkout whose
-    // `.claude/worktrees` holds the tree: the composed path is
-    // `<owner>/.claude/worktrees/<label>`, so the owner is three ancestors
-    // up - the main checkout for the CLI's location, the project path
-    // itself for a worker still running where it was spawned before #2460.
+    // `.claude/worktrees` holds the tree: the main checkout for the CLI's
+    // location, the project path itself for a worker still running where
+    // it was spawned before #2460.
     let worktree_root = worktree_path
         .as_ref()
-        .and_then(|path| path.ancestors().nth(3))
-        .map(std::path::Path::to_path_buf)
+        .and_then(|path| crate::mcp::workers::types::worktree_owner(path, label))
         .or(spawn_root);
 
     // The path is repository-global: it may be another project's checkout
@@ -2972,22 +2982,6 @@ mod tests {
     /// path, so tests write where forge reads (not the legacy fallback).
     fn forge_toml_path(config_dir: &std::path::Path) -> std::path::PathBuf {
         crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir").join("forge.toml")
-    }
-
-    /// The spawn reply's worktree names a git worker's own directory and
-    /// says nothing for a worker that runs in the project root: a path
-    /// pointing at the project root would name a worktree that is not one.
-    #[test]
-    fn a_git_spawn_names_its_worktree_and_a_plain_project_names_none() {
-        assert_eq!(
-            spawn_worktree(std::path::Path::new("/repo"), "reviewer", true).as_deref(),
-            Some("/repo/.claude/worktrees/reviewer"),
-        );
-        assert_eq!(
-            spawn_worktree(std::path::Path::new("/repo"), "reviewer", false),
-            None,
-            "a non-git project's worker runs in the project root, not a worktree",
-        );
     }
 
     /// A fatal error is an App-level event with no state behind it, so a
@@ -4218,6 +4212,21 @@ provider = "anthropic"
             "the refused spawn mints nothing",
         );
 
+        // A crashed worker of another project holds nothing: its entry
+        // keeps the label only until it is closed, and must not block the
+        // path for a live spawn.
+        let mut failed = fake_git_worker_entry("ghost", "worker-2");
+        failed.status = forge_primitives::WorkerLiveness::Failed;
+        ws.insert_live_worker(&key_of("proj-b"), failed);
+        let err = spawn_reply(&ws, &key_of("proj-a"), "ghost", false)
+            .await
+            .expect("reply channel")
+            .expect_err("the fixture has no model, so the spawn stops at the account walk");
+        assert!(
+            err.contains("declares no model") && !err.contains("live worker 'ghost'"),
+            "a Failed entry does not claim the shared tree: {err}",
+        );
+
         // A project declared at the path a worker label would compose is
         // its own checkout, not a worktree anyone may reuse or remove.
         let checkout = main.join(".claude").join("worktrees").join("dev");
@@ -4232,6 +4241,33 @@ provider = "anthropic"
             .expect("reply channel")
             .expect_err("a project's own checkout is refused");
         assert!(err.contains("checkout of project 'proj-dev'"), "the refusal names it: {err}");
+    }
+
+    /// The collision check compares real paths: the shared tree reached
+    /// through a symlinked spelling is the same tree a live worker holds.
+    #[test]
+    fn the_collision_check_reads_a_symlinked_spelling_as_the_same_tree() {
+        let (ws, main, _keep) = linked_projects_fixture(&["proj-a", "proj-b"]);
+        let key_of = |name: &str| {
+            ws.list_projects().into_iter().find(|v| v.name == name).expect("declared project").key
+        };
+        let shared = main.join(".claude").join("worktrees").join("shared");
+        fs::create_dir_all(shared.parent().expect("worktrees root")).expect("mkdir worktrees");
+        run_git(
+            &main,
+            &["worktree", "add", "-q", "-b", "worktree-shared", shared.to_str().expect("utf8")],
+        );
+        ws.insert_live_worker(&key_of("proj-a"), fake_git_worker_entry("shared", "worker-1"));
+        let holder = tempdir().expect("alias holder");
+        let alias = holder.path().join("shared-alias");
+        std::os::unix::fs::symlink(&shared, &alias).expect("symlink");
+
+        let collision = ws.worktree_collision(&alias, &key_of("proj-b"));
+
+        assert!(
+            collision.as_deref().is_some_and(|reason| reason.contains("live worker 'shared'")),
+            "the canonical comparison finds the holder through the alias: {collision:?}",
+        );
     }
 
     /// The despawn end of the same collision: removing the shared tree
@@ -4309,10 +4345,9 @@ provider = "anthropic"
         assert!(!leftover.exists(), "the leftover directory is gone");
     }
 
-    /// A worker spawned before #2460 on a linked project still runs in the
-    /// project path's own `.claude/worktrees`; its despawn must find that
-    /// tree (the conversation lives there), not compose a new location
-    /// under the main checkout.
+    /// A worker resumed onto its pre-#2460 tree records that tree on its
+    /// entry, and the despawn must find it there (the conversation lives
+    /// there), not compose a new location under the main checkout.
     #[tokio::test]
     async fn a_legacy_linked_worktree_worker_is_despawned_where_it_runs() {
         let (ws, main, _keep) = linked_projects_fixture(&["proj-a"]);
@@ -4324,7 +4359,10 @@ provider = "anthropic"
             &main,
             &["worktree", "add", "-q", "-b", "worktree-old", legacy.to_str().expect("utf8")],
         );
-        ws.insert_live_worker(&key, fake_git_worker_entry("old", "worker-1"));
+        // What the adoption writes on the live entry.
+        let mut entry = fake_git_worker_entry("old", "worker-1");
+        entry.cwd = Some(legacy.clone());
+        ws.insert_live_worker(&key, entry);
 
         // Dirty there: the probe must read the legacy tree, not the
         // composed one under the main checkout.

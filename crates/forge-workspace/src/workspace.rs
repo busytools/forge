@@ -5827,6 +5827,43 @@ impl Workspace {
         })
     }
 
+    /// The pre-#2460 tree a resume may adopt, with the session that ran in
+    /// it: the CLI's composed path is not there, and a worker-tagged
+    /// transcript for `label` IS under the project path's own
+    /// `.claude/worktrees/<label>`. That transcript is the identity which
+    /// says this worker is the one that ran there, so a fresh spawn never
+    /// asks and another project's tree cannot match. `None` when the row
+    /// names a different session: this worker's conversation is not there.
+    pub(crate) fn legacy_resume_session(
+        &self,
+        org: &str,
+        project: &str,
+        root: &std::path::Path,
+        label: &str,
+        composed: &std::path::Path,
+    ) -> Option<(std::path::PathBuf, String)> {
+        let legacy = crate::mcp::workers::types::legacy_worktree_dir(root, label, composed)?;
+        let cache = {
+            let db = self.db.lock();
+            load_session_tag_cache(db.as_ref())
+        };
+        let found = forge_agent::userdata::transcripts::newest_worker_session(
+            &self.config_dir,
+            &legacy,
+            label,
+            Some(&cache),
+        );
+        {
+            let db = self.db.lock();
+            persist_session_tag_cache(db.as_ref(), &cache);
+        }
+        let session = found.ok().flatten()?;
+        match self.stored_session_id(org, project, label) {
+            Ok(Some(stored)) if stored != session => None,
+            _ => Some((legacy, session)),
+        }
+    }
+
     /// Release the per-project respawn in-flight guard. Paired with
     /// `try_claim_respawn`; called once the dispatches have gone out, on
     /// each path that can issue them.
@@ -7353,7 +7390,9 @@ impl Workspace {
                 .iter()
                 .filter(|(key, _)| *key != own)
                 .flat_map(|(key, entries)| {
-                    entries.iter().map(|entry| {
+                    // Only live seats hold a tree: a Failed entry's worktree
+                    // is a leftover to recover, not a claim on the path.
+                    entries.iter().filter(|entry| entry.is_live()).map(|entry| {
                         (
                             key.clone(),
                             entry.label.clone(),
@@ -17078,14 +17117,318 @@ provider = "anthropic"
         let _ = spawner.await.expect("facade task joins");
 
         assert!(
-            worktree.exists(),
-            "the ensure cleared the leftover under the main checkout and recreated the worktree",
+            worktree.join(".git").is_file(),
+            "the ensure cleared the leftover under the main checkout and rebuilt a worktree there",
         );
         assert!(
             !linked.join(".claude").join("worktrees").join("steward").exists(),
             "nothing is composed under the project path",
         );
         assert_eq!(resume_existing.as_deref(), Some(session_id.as_str()));
+    }
+
+    /// A main checkout with one linked worktree per name, each declared as
+    /// a project under `TestOrg`, plus an account. Every project composes
+    /// its workers' worktrees under the main checkout (#2460), so they
+    /// share one namespace. Returns the workspace, the canonical main
+    /// checkout, and the tempdirs to hold for the test's span.
+    fn linked_project_ws(
+        names: &[&str],
+    ) -> (Arc<Workspace>, std::path::PathBuf, Vec<tempfile::TempDir>) {
+        let holder = tempfile::tempdir().expect("holder");
+        let main = holder.path().join("main");
+        std::fs::create_dir_all(&main).expect("main dir");
+        run_git_in(&main, &["init", "-q"]);
+        run_git_in(&main, &["config", "user.email", "t@example.com"]);
+        run_git_in(&main, &["config", "user.name", "Test"]);
+        run_git_in(&main, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.join("README.md"), "seed").expect("write seed");
+        run_git_in(&main, &["add", "."]);
+        run_git_in(&main, &["commit", "-q", "-m", "init"]);
+        let main = std::fs::canonicalize(&main).expect("canonical main");
+
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        let mut projects = String::new();
+        for name in names {
+            let linked = holder.path().join(name);
+            run_git_in(
+                &main,
+                &["worktree", "add", "-q", "-b", name, linked.to_str().expect("utf8")],
+            );
+            let _ = std::fmt::write(
+                &mut projects,
+                format_args!(
+                    "[[orgs.projects]]\nname = \"{name}\"\npath = \"{}\"\n",
+                    linked.display()
+                ),
+            );
+        }
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n{projects}\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        (ws, main, vec![holder, cfg])
+    }
+
+    /// A live git worker entry for `project`, which the collision guard
+    /// reads by project key.
+    fn live_git_worker(project: &str, label: &str) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: "test".to_owned(),
+            slot: SessionSlot::worker("TestOrg", project, label),
+            session_id: Some(forge_primitives::SessionId::new(
+                "550e8400-e29b-41d4-a716-446655440088".to_owned(),
+            )),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::lead("TestOrg", project),
+            needs_tag: false,
+            is_git_repo_at_spawn: true,
+            cwd: None,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    fn project_key_of(ws: &Arc<Workspace>, name: &str) -> ProjectKey {
+        ws.list_projects().into_iter().find(|v| v.name == name).expect("declared project").key
+    }
+
+    fn install_store(ws: &Arc<Workspace>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        dir
+    }
+
+    fn seed_session_id(
+        ws: &Arc<Workspace>,
+        project: &str,
+        label: &str,
+        id: &str,
+    ) -> tempfile::TempDir {
+        let dir = install_store(ws);
+        ws.record_session_id("TestOrg", project, label, id);
+        dir
+    }
+
+    /// The facade's resume guard, before the ensure: a label another
+    /// project's live worker holds must be refused without touching that
+    /// worker's tree, or the ensure would reuse or repair another
+    /// project's live registration (#2460).
+    #[tokio::test]
+    async fn mcp_resume_refuses_a_worktree_another_project_holds() {
+        let (ws, main, _keep) = linked_project_ws(&["proj-a", "proj-b"]);
+        let shared = main.join(".claude").join("worktrees").join("shared");
+        std::fs::create_dir_all(shared.parent().expect("worktrees root")).expect("mkdir");
+        run_git_in(
+            &main,
+            &["worktree", "add", "-q", "-b", "worktree-shared", shared.to_str().expect("utf8")],
+        );
+        ws.insert_live_worker(&project_key_of(&ws, "proj-a"), live_git_worker("proj-a", "shared"));
+        let session_id = "550e8400-e29b-41d4-a716-446655440087";
+        let _store = seed_session_id(&ws, "proj-b", "shared", session_id);
+        ws.record_worker_row(
+            &project_key_of(&ws, "proj-b"),
+            "shared",
+            session_id,
+            "charter",
+            None,
+            None,
+            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
+            None,
+        )
+        .expect("record the row the resume reads");
+
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+        let err = facade
+            .spawn_worker(
+                &SessionSlot::lead("TestOrg", "proj-b"),
+                "shared".to_owned(),
+                "charter".to_owned(),
+                None,
+                None,
+                false,
+                true,
+                None,
+                None,
+            )
+            .await
+            .expect_err("a shared worktree refuses the resume");
+        let crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { reason } = err
+        else {
+            panic!("the refusal is the worktree guard: {err:?}");
+        };
+        assert!(reason.contains("live worker 'shared'"), "it names the holder: {reason}");
+        assert!(reason.contains("proj-a"), "and its project: {reason}");
+        assert!(shared.exists(), "the other worker's tree is untouched");
+        assert!(
+            !main.join(".git").join("forge-worktrees").exists(),
+            "the refused resume never reached the ensure: the other worker's registration is \
+             neither recorded nor repaired",
+        );
+        assert_eq!(
+            ws.list_live_workers(&project_key_of(&ws, "proj-a")).len(),
+            1,
+            "and its worker stays live",
+        );
+        assert!(
+            ws.list_live_workers(&project_key_of(&ws, "proj-b")).is_empty(),
+            "nothing was minted for the refused resume",
+        );
+    }
+
+    /// A refused resume discards the worktree its own ensure created, on a
+    /// linked project where that tree lives under the main checkout.
+    #[tokio::test]
+    async fn mcp_resume_rolls_back_a_worktree_it_created_on_a_linked_project() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (ws, main, _keep) = linked_project_ws(&["proj-a"]);
+        // No row: the lookup falls through to the tag scan.
+        let _store = install_store(&ws);
+        // Make that scan fail: a transcript directory it must list is
+        // unreadable, so the resume lookup is an error rather than an
+        // absence and the rollback runs.
+        let worktree = main.join(".claude").join("worktrees").join("steward");
+        let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &worktree.to_string_lossy(),
+        ));
+        let transcript_dir = forge_sdk::projects_dir_for(&ws.config_dir).join(key);
+        std::fs::create_dir_all(&transcript_dir).expect("transcript dir");
+        std::fs::set_permissions(&transcript_dir, std::fs::Permissions::from_mode(0o000))
+            .expect("lock the transcript dir");
+
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+        let err = facade
+            .spawn_worker(
+                &SessionSlot::lead("TestOrg", "proj-a"),
+                "steward".to_owned(),
+                "charter".to_owned(),
+                None,
+                None,
+                false,
+                true,
+                None,
+                None,
+            )
+            .await
+            .expect_err("an unreadable transcript dir fails the lookup");
+        assert!(
+            matches!(err, crate::mcp::workers::facade::WorkerSpawnError::ResumeLookupFailed { .. }),
+            "the refusal is the lookup, not something else: {err:?}",
+        );
+        std::fs::set_permissions(&transcript_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("restore the transcript dir");
+
+        assert!(!worktree.exists(), "the worktree the refused resume created is discarded");
+        let branches = std::process::Command::new("git")
+            .args(["branch", "--list", "worktree-steward"])
+            .current_dir(&main)
+            .output()
+            .expect("git branch");
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "and the branch it minted is reaped: {:?}",
+            String::from_utf8_lossy(&branches.stdout),
+        );
+    }
+
+    /// A resume onto a worker's pre-#2460 tree: the leftover a failed
+    /// despawn removal leaves under the PROJECT path is cleared through
+    /// that checkout, and the worker comes back in its own tree (#1767).
+    #[tokio::test]
+    async fn mcp_resume_clears_a_legacy_leftover_under_the_project_path() {
+        let (ws, main, _keep) = linked_project_ws(&["proj-a"]);
+        let linked = ws.project_root_for_key(&project_key_of(&ws, "proj-a")).expect("project root");
+        let session_id = "550e8400-e29b-41d4-a716-446655440086";
+        let legacy = linked.join(".claude").join("worktrees").join("steward");
+        std::fs::create_dir_all(legacy.parent().expect("worktrees root")).expect("mkdir");
+        run_git_in(
+            &main,
+            &["worktree", "add", "-q", "-b", "worktree-steward", legacy.to_str().expect("utf8")],
+        );
+        let legacy_str = legacy.to_string_lossy().replace('\\', "/");
+        let key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&legacy_str));
+        let jsonl_dir = forge_sdk::projects_dir_for(&ws.config_dir).join(key);
+        std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
+        std::fs::write(
+            jsonl_dir.join(format!("{session_id}.jsonl")),
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{legacy_str}\",\"message\":{{\"content\":\"hi\"}}}}\n\
+                 {{\"type\":\"tag\",\"tag\":\"forge:worker:steward\"}}\n"
+            ),
+        )
+        .expect("write tagged jsonl");
+        let _store = seed_session_id(&ws, "proj-a", "steward", session_id);
+        ws.record_worker_row(
+            &project_key_of(&ws, "proj-a"),
+            "steward",
+            session_id,
+            "charter",
+            None,
+            None,
+            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
+            None,
+        )
+        .expect("record the row");
+        // The state a despawn whose removal failed part-way leaves: the
+        // registration is gone, the directory (with its link) is not.
+        std::fs::remove_dir_all(main.join(".git").join("worktrees").join("steward"))
+            .expect("deregister the worktree");
+        std::fs::write(legacy.join("in-flight.txt"), "work in the tree").expect("write a file");
+        let _ =
+            forge_agent::env::worktree::remove_owned_worktree(&linked, "steward", &legacy, true);
+
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &SessionSlot::lead("TestOrg", "proj-a"),
+                    "steward".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                    None,
+                    None,
+                )
+                .await
+        });
+        let resume_existing = poll_spawn_worker_field(&ws, |cmd| match cmd {
+            Command::SpawnWorker { label, resume_existing, .. } if label == "steward" => {
+                Some(resume_existing.clone())
+            }
+            _ => None,
+        })
+        .await
+        .expect("the resume spawn dispatched");
+        let _ = spawner.await.expect("facade task joins");
+
+        assert!(
+            legacy.join(".git").is_file(),
+            "the leftover was cleared and the worker's own tree rebuilt in place",
+        );
+        assert!(
+            !main.join(".claude").join("worktrees").join("steward").exists(),
+            "nothing was composed under the main checkout",
+        );
+        assert_eq!(resume_existing.as_deref(), Some(session_id));
     }
 
     /// The mirror of the recreation case: the row says the worker runs in

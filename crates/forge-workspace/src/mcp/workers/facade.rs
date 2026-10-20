@@ -463,14 +463,35 @@ pub(super) fn validate_worker_spawn(
 /// Undo the worktree a refused spawn's `ensure_worker_worktree` step
 /// created, so a refusal strands neither worktree nor branch. `ensured`
 /// is `None` when this spawn never touched a worktree.
+///
+/// Two things are re-checked here because the refusal can race a spawn
+/// that won the registry: a label another spawn now holds keeps its tree,
+/// and the removal runs on the checkout the tree belongs to rather than
+/// on `base`, which is only the fallback.
 fn discard_refused_worktree(
-    repo: &std::path::Path,
+    ws: &Workspace,
+    project_key: &crate::target::ProjectKey,
+    base: &std::path::Path,
     label: &str,
     ensured: Option<(std::path::PathBuf, forge_agent::env::worktree::WorktreeEnsure)>,
 ) {
     let Some((worktree, outcome)) = ensured else { return };
+    // Skip only when a live seat now holds THIS tree: that is the spawn
+    // that won the registry, and the tree is its to run in. A live label
+    // in another tree is not a claim on this one.
+    if let Some(entry) = ws.list_live_workers(project_key).into_iter().find(|e| e.label == label)
+        && ws.cwd_for_session(&entry.slot).is_some_and(|dir| {
+            let dir = std::path::Path::new(&dir);
+            std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
+                == std::fs::canonicalize(&worktree).unwrap_or_else(|_| worktree.clone())
+        })
+    {
+        return;
+    }
+    let repo = crate::mcp::workers::types::worktree_owner(&worktree, label)
+        .unwrap_or_else(|| base.to_path_buf());
     if let Some(warning) =
-        forge_agent::env::worktree::discard_worker_worktree(repo, label, &worktree, outcome)
+        forge_agent::env::worktree::discard_worker_worktree(&repo, label, &worktree, outcome)
     {
         tracing::warn!(
             target: "forge_workspace::mcp::workers",
@@ -655,8 +676,23 @@ impl WorkerFacade for ProdWorkerFacade {
             // ensure, the tag write and the lookup below all take it from
             // `worker_tag_dir`, so they cannot disagree about where a
             // worker lives.
-            let run_dir =
+            let composed =
                 crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git_repo_at_spawn);
+            // A worker that ran before #2460 keeps its own tree for a
+            // resume: adopted only when this label's tagged transcript is
+            // there, which is the identity that says it is this worker's.
+            let adopted = is_git_repo_at_spawn
+                .then(|| ws.legacy_resume_session(&view.org, &view.name, &root, &label, &composed))
+                .flatten();
+            let run_dir = adopted.as_ref().map_or_else(|| composed.clone(), |(dir, _)| dir.clone());
+            // The checkout the tree belongs to: the CLI's base for its
+            // location, the project path itself for an adopted legacy tree.
+            let run_repo = crate::mcp::workers::types::worktree_owner(&run_dir, &label)
+                .unwrap_or_else(|| base.clone());
+            let resume = match adopted {
+                Some((_, session_id)) => Ok(ResumeTarget::Found(session_id)),
+                None => ws.resolve_worker_resume_session(&view.org, &view.name, &run_dir, &label),
+            };
             if is_git_repo_at_spawn {
                 // Refuse before the ensure can reuse or repair a tree that
                 // belongs to another project (#2460): the base is
@@ -667,7 +703,9 @@ impl WorkerFacade for ProdWorkerFacade {
                         reason: format!("this worker's worktree cannot be shared: {collision}"),
                     });
                 }
-                match forge_agent::env::worktree::ensure_worker_worktree(&base, &label, &run_dir) {
+                match forge_agent::env::worktree::ensure_worker_worktree(
+                    &run_repo, &label, &run_dir,
+                ) {
                     Ok(outcome) => ensured = Some((run_dir.clone(), outcome)),
                     Err(err) => {
                         return Err(WorkerSpawnError::WorktreeCreationFailed {
@@ -676,7 +714,7 @@ impl WorkerFacade for ProdWorkerFacade {
                     }
                 }
             }
-            match ws.resolve_worker_resume_session(&view.org, &view.name, &run_dir, &label) {
+            match resume {
                 Ok(ResumeTarget::Found(session_id)) => (Some(session_id), SessionChoice::Resumed),
                 // Best effort: a label with nothing to resume starts a
                 // new session and the reply says so. The worktree the
@@ -687,7 +725,13 @@ impl WorkerFacade for ProdWorkerFacade {
                 // answered, leaving the caller holding context it does
                 // not have.
                 Err(error) => {
-                    discard_refused_worktree(&base, &label, ensured.take());
+                    discard_refused_worktree(
+                        &ws,
+                        &cp.project_key,
+                        &run_repo,
+                        &label,
+                        ensured.take(),
+                    );
                     return Err(WorkerSpawnError::ResumeLookupFailed {
                         label,
                         message: error.to_string(),
@@ -723,7 +767,7 @@ impl WorkerFacade for ProdWorkerFacade {
             return_to: Some(tx),
         };
         if let Err(err) = ws.dispatch(cmd) {
-            discard_refused_worktree(&base, &spawn_label, ensured.take());
+            discard_refused_worktree(&ws, &cp.project_key, &base, &spawn_label, ensured.take());
             return Err(WorkerSpawnError::DispatchFailed {
                 message: format!("dispatch failed: {err:?}"),
             });
@@ -744,7 +788,7 @@ impl WorkerFacade for ProdWorkerFacade {
                 Ok(reply)
             }
             Ok(Err(message)) => {
-                discard_refused_worktree(&base, &spawn_label, ensured.take());
+                discard_refused_worktree(&ws, &cp.project_key, &base, &spawn_label, ensured.take());
                 // The sync path's reply is a string the spawn handler
                 // built, not an SDK error, so there is no variant to
                 // name and the heuristics answer.
