@@ -35,6 +35,13 @@
      * plain row.
      */
     foldable?: boolean;
+    /**
+     * A row's own glyph, drawn at 16px before its name. A caller that draws
+     * no icons (the review page) passes none, and its rows stay as they were.
+     */
+    icon?: (row: TreeRow<unknown>) => string | null;
+    /** The tree's own root: the project's name with its path beside it. */
+    root?: { name: string; path: string; icon: string | null } | null;
     ondir: (path: string) => void;
     onfile: (path: string) => void;
     trailing?: Snippet<[TreeRow<unknown>]>;
@@ -50,6 +57,8 @@
     active = null,
     renamed,
     foldable = true,
+    icon,
+    root = null,
     ondir,
     onfile,
     trailing,
@@ -58,7 +67,17 @@
 
 <nav class="rv-files" aria-label={label}>
   <h2 class="rv-h">{heading} <span class="rv-n">{count}</span></h2>
+  {#if root !== null}
+    <div class="rv-root">
+      {#if root.icon !== null}
+        <img class="rv-icon" src={root.icon} alt="" width="16" height="16" />
+      {/if}
+      <span class="rv-rootname">{root.name}</span>
+      <span class="rv-rootpath" title={root.path}>{root.path}</span>
+    </div>
+  {/if}
   {#each rows as row (row.kind + ':' + row.path)}
+    {@const glyph = icon?.(row) ?? null}
     {#if row.kind === 'dir' && foldable}
       <button
         type="button"
@@ -70,6 +89,9 @@
         onclick={() => ondir(row.path)}
       >
         <span class="rv-arw" class:open={!closed.has(row.path)}>&#9656;</span>
+        {#if glyph !== null}
+          <img class="rv-icon" src={glyph} alt="" width="16" height="16" />
+        {/if}
         <span class="rv-dirname">{row.name}/</span>
         <span class="rv-dircount">{row.count}</span>
       </button>
@@ -81,6 +103,9 @@
         data-path={row.path}
       >
         <span class="rv-arw" aria-hidden="true"></span>
+        {#if glyph !== null}
+          <img class="rv-icon" src={glyph} alt="" width="16" height="16" />
+        {/if}
         <span class="rv-dirname">{row.name}/</span>
         <span class="rv-dircount">{row.count}</span>
       </div>
@@ -97,7 +122,12 @@
         title={row.path}
         onclick={() => onfile(row.path)}
       >
-        <span class="rv-fpath">{row.name}</span>
+        <span class="rv-fname">
+          {#if glyph !== null}
+            <img class="rv-icon" src={glyph} alt="" width="16" height="16" />
+          {/if}
+          <span class="rv-fpath">{row.name}</span>
+        </span>
         {#if trailing}
           {@render trailing(row)}
         {/if}
