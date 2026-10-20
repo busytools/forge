@@ -3855,6 +3855,157 @@ async fn an_answer_inside_the_seal_window_is_not_the_previous_runs_conversation(
     );
 }
 
+/// **An answer whose copy is reseeded under it carries the copy's own number,
+/// not the pre-seal one** (#2443).
+///
+/// catch_up can pass on the watermark the previous epoch left, and the fold
+/// can reseed the copy before the answer reads it. The answer then pairs a
+/// pre-seal number with the new epoch's rows, and a client adopting that
+/// number skips the new epoch's first frames as already drawn - rows lost
+/// rather than re-asked.
+///
+/// The reseed below is placed with the fold's own `apply`, carrying the
+/// pre-seal watermark still standing: that is the window between the reseed
+/// and the mark the fold leaves after it, held still rather than raced.
+#[tokio::test]
+async fn an_answer_through_a_reseed_carries_the_copys_own_number() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let old = SessionId::from("1f2e3d4c-5b6a-4978-8801-1234567890ab");
+    let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
+
+    // The old epoch, applied: a watermark above zero is what catch_up can pass
+    // on after the seal has moved the copy to the next one.
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(old.clone()), ..Default::default() });
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: old,
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the old run's history row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the old run's frame"),
+    });
+    let settled = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
+    assert!(
+        state.conversations.await_consumed(&seat, settled, SEED_WAIT).await,
+        "the old epoch's frame never reached the copy: the watermark is {}",
+        state.conversations.consumed_for(&seat),
+    );
+
+    // **The header moves before the fanout mints the seal.** Production has
+    // the same gap - the domain records the occupant, the emit follows - and
+    // it is what makes the answer read the number of the epoch before.
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new.clone()), ..Default::default() });
+    // **And the fold's reseed lands before the answer's copy read**, with the
+    // watermark reset the fold leaves after it still pending: catch_up's check
+    // sees the old epoch's number against a copy that is already the new one.
+    // The number is the one the fanout would mint the seal under.
+    let minted = fleet.workspace().seat_next_seq(&seat);
+    assert!(
+        minted > 1,
+        "the window needs a pre-seal number above the new epoch's first, or the test cannot \
+         tell the clamped answer from an unclamped one: {minted}",
+    );
+    state.conversations.apply(
+        &SessionUpdate::Connected {
+            key: seat.clone(),
+            session_id: new,
+            cwd: "/tmp".to_owned(),
+            current_model: a_current_model(),
+            available_models: Vec::new(),
+            mode: None,
+            history: vec![a_said_frame("the new run's history row")],
+            dropped: 0,
+            compaction_count: 0,
+        },
+        Some(minted),
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+
+    assert_eq!(
+        data["header"]["seq"].as_u64(),
+        Some(1),
+        "the answer's number is the one its copy is current through - the new epoch's first \
+         frame - and not the pre-seal number a client adopts to skip that frame: {data}",
+    );
+    assert_eq!(
+        says_times(&data, "the new run's history row"),
+        1,
+        "and the reseeded copy is what it carries: {data}",
+    );
+}
+
+/// **A replay's answer carries the number its window reaches** (#2443).
+///
+/// The replay route reseeds with the seat's own frames, so the copy is current
+/// through the replay's number. An answer that did not take it would carry the
+/// new window's first number instead, and the client would draw frames the copy
+/// already holds. A seal's reset covers the Fresh route; this pins the other.
+#[tokio::test]
+async fn a_replay_answers_with_the_number_its_window_reaches() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+
+    fleet.emit(SessionUpdate::HistoryReplayed {
+        key: seat.clone(),
+        history: vec![a_said_frame("the replayed row")],
+        compaction_count: 0,
+    });
+    let settled = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
+    assert!(
+        state.conversations.await_consumed(&seat, settled, SEED_WAIT).await,
+        "the replay never reached the copy: the watermark is {}",
+        state.conversations.consumed_for(&seat),
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+
+    assert_eq!(
+        data["header"]["seq"].as_u64(),
+        Some(2),
+        "the answer's number follows the replay's own, which its window covers: {data}",
+    );
+    assert_eq!(
+        says_times(&data, "the replayed row"),
+        1,
+        "and the replay's rows are what it carries: {data}",
+    );
+}
+
 /// **A seal the fold has not applied must not be answered with the previous
 /// run's transcript copy** (#2256).
 ///

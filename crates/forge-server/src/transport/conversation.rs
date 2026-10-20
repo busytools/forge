@@ -104,6 +104,12 @@ pub struct Conversation {
     /// answered with the floor rather than with whatever now sits at its old
     /// place in the list.
     dropped: usize,
+    /// The newest frame number this copy reflects, which a reseed resets.
+    ///
+    /// **An answer's number is taken from it**, because a reseed lands before
+    /// the fold's reset mark and a pre-seal number would have the client skip
+    /// the new run's first frames (#2443).
+    watermark: u64,
     /// The messages moved since the fold last ran.
     ///
     /// **Memoized rather than made incremental**, because making it
@@ -186,6 +192,7 @@ impl Conversation {
             rendered: Rendered { turns: Vec::new(), endings: HashMap::new() },
             compaction_count,
             dropped,
+            watermark: 0,
             dirty: true,
             folding: false,
             forged: std::collections::HashSet::new(),
@@ -207,6 +214,17 @@ impl Conversation {
     /// Say which occupant this copy is for.
     pub fn set_occupant(&mut self, occupant: Option<forge_primitives::SessionId>) {
         self.occupant = occupant;
+    }
+
+    /// The newest frame number this copy reflects.
+    pub fn watermark(&self) -> u64 {
+        self.watermark
+    }
+
+    /// Say how far this copy is current, which a reseed resets and an applied
+    /// frame advances.
+    pub fn set_watermark(&mut self, seq: u64) {
+        self.watermark = seq;
     }
 
     /// Replace the whole conversation, which is what a connect, a resume or a
@@ -275,6 +293,7 @@ impl Conversation {
         // that answers "did forge forge this" holds only what the seat keeps.
         self.forged.retain(|id| self.window.messages().iter().any(|m| frame_id(m) == Some(id)));
         self.compaction_count = compaction_count;
+        self.watermark = 0;
         self.dirty = true;
     }
 
@@ -757,7 +776,10 @@ impl Conversations {
     }
 
     /// Fold one update into the seat it names.
-    pub fn apply(&self, update: &SessionUpdate) {
+    ///
+    /// `seq` is the number the frame was minted under; the copy records it as
+    /// the newest it reflects.
+    pub fn apply(&self, update: &SessionUpdate, seq: Option<u64>) {
         let Some(slot) = update.slot() else {
             return;
         };
@@ -786,12 +808,21 @@ impl Conversations {
                     Reseed::Fresh,
                     *dropped,
                     Some(session_id),
+                    0,
                 );
             }
             SessionUpdate::HistoryReplayed { history, compaction_count, .. } => {
                 // No carried floor: a replay hands over the task's own window,
                 // which is where the seat's numbering is already measured from.
-                self.reseed(slot, history, *compaction_count, Reseed::Replay, 0, None);
+                self.reseed(
+                    slot,
+                    history,
+                    *compaction_count,
+                    Reseed::Replay,
+                    0,
+                    None,
+                    seq.unwrap_or(0),
+                );
             }
             SessionUpdate::ChatAppended { msg, .. } => {
                 // **A compaction boundary is a frame like any other.** It
@@ -802,7 +833,11 @@ impl Conversations {
                 // lost. The boundary is appended, the task counts it, and a
                 // reader keeps the history a compaction did not take away.
                 if let Some(held) = self.get(slot) {
-                    held.lock().append(msg.clone());
+                    let mut conversation = held.lock();
+                    conversation.append(msg.clone());
+                    if let Some(seq) = seq {
+                        conversation.set_watermark(seq);
+                    }
                 }
             }
             // A delivery is a row a CONNECTION forges per client at send
@@ -811,14 +846,29 @@ impl Conversations {
             // stayed, which is a reply to nothing. Forged once here, where
             // the update arrives, rather than in each connection that sends
             // it.
+            //
+            // **Every slotted update also moves the copy's watermark**, not
+            // only the ones that forge a row: a frame that draws nothing still
+            // covers its number, and an answer that left it out would
+            // under-claim. That is why this arm takes the seat's lock for
+            // every update on a live seat, and why `Held::lock` waits out a
+            // running fold.
             _ => {
-                if let Some((msg, _)) = crate::delivery::delivery_turn(update, slot)
-                    && let Some(held) = self.get(slot)
-                {
+                let Some(held) = self.get(slot) else {
+                    return;
+                };
+                // The parse and its failure log run before the seat's lock is
+                // taken; the lock below covers only the append and the mark.
+                let forged = crate::delivery::delivery_turn(update, slot).map(|(msg, _)| msg);
+                let mut conversation = held.lock();
+                if let Some(msg) = forged {
                     // Forged for display, and in no transcript: the seat has
                     // to know, so a walk below the floor never names one to
                     // the file as the row it stopped at.
-                    held.lock().append_forged(msg);
+                    conversation.append_forged(msg);
+                }
+                if let Some(seq) = seq {
+                    conversation.set_watermark(seq);
                 }
             }
         }
@@ -830,6 +880,10 @@ impl Conversations {
     /// **Held means reseed and NOT insert**: `insert` keeps what is there, so
     /// a connect on a seat already carrying a conversation would leave that
     /// conversation in place and the new history discarded.
+    ///
+    /// `watermark` is how far the history reaches: nothing for a seal, whose
+    /// run opens its frame count at 1, and the replay's own number for a
+    /// replay, whose window is the seat's stream up to that frame.
     fn reseed(
         &self,
         slot: &SessionSlot,
@@ -838,10 +892,12 @@ impl Conversations {
         route: Reseed,
         carried: usize,
         occupant: Option<&forge_primitives::SessionId>,
+        watermark: u64,
     ) {
         if let Some(held) = self.get(slot) {
             let mut conversation = held.lock();
             conversation.seed(history.to_vec(), compaction_count, route, carried);
+            conversation.set_watermark(watermark);
             // A replay restates no occupant, so it leaves whatever the copy
             // already says; a seal names its own.
             if let Some(occupant) = occupant {
@@ -849,6 +905,7 @@ impl Conversations {
             }
         } else {
             let mut conversation = Conversation::new(history.to_vec(), compaction_count, carried);
+            conversation.set_watermark(watermark);
             if let Some(occupant) = occupant {
                 conversation.set_occupant(Some(occupant.clone()));
             }
@@ -1046,11 +1103,11 @@ mod tests {
 
         let by_connect = Conversations::new();
         by_connect.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0, 0));
-        by_connect.apply(&a_connect(history.clone(), 0));
+        by_connect.apply(&a_connect(history.clone(), 0), None);
 
         let by_replay = Conversations::new();
         by_replay.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0, 0));
-        by_replay.apply(&a_replay(history.clone(), 0));
+        by_replay.apply(&a_replay(history.clone(), 0), None);
 
         let read = |held: &Conversations| {
             let held = held.get(&a_seat()).expect("the seat is held");
@@ -1176,23 +1233,29 @@ mod tests {
         held.insert(&a_seat(), Conversation::empty());
         assert!(!held.live_of(&a_seat()), "nothing is open on an empty seat");
 
-        held.apply(&SessionUpdate::ChatAppended {
-            key: a_seat(),
-            msg: a_working_frame(),
-            origin: None,
-            source: None,
-        });
+        held.apply(
+            &SessionUpdate::ChatAppended {
+                key: a_seat(),
+                msg: a_working_frame(),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
         assert!(held.live_of(&a_seat()), "the model's own frame opens a turn");
 
-        held.apply(&SessionUpdate::ChatAppended {
-            key: a_seat(),
-            msg: a_result_frame(),
-            origin: None,
-            source: None,
-        });
+        held.apply(
+            &SessionUpdate::ChatAppended {
+                key: a_seat(),
+                msg: a_result_frame(),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
         assert!(!held.live_of(&a_seat()), "and the turn's report closes it");
 
-        held.apply(&a_replay(vec![a_frame("mid-turn"), a_working_frame()], 0));
+        held.apply(&a_replay(vec![a_frame("mid-turn"), a_working_frame()], 0), None);
         assert!(held.live_of(&a_seat()), "a seed materialised mid-turn reads live");
     }
 
@@ -1202,14 +1265,17 @@ mod tests {
     fn a_frame_after_a_seed_joins_the_conversation() {
         let held = Conversations::new();
         held.insert(&a_seat(), Conversation::empty());
-        held.apply(&a_replay(vec![a_frame("from the replay")], 0));
+        held.apply(&a_replay(vec![a_frame("from the replay")], 0), None);
 
-        held.apply(&SessionUpdate::ChatAppended {
-            key: a_seat(),
-            msg: a_frame("after"),
-            origin: None,
-            source: None,
-        });
+        held.apply(
+            &SessionUpdate::ChatAppended {
+                key: a_seat(),
+                msg: a_frame("after"),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let conversation = conversation.lock();
@@ -1227,22 +1293,25 @@ mod tests {
     fn a_compact_boundary_frame_moves_the_seats_count() {
         let held = Conversations::new();
         held.insert(&a_seat(), Conversation::empty());
-        held.apply(&a_replay(vec![a_frame("before the compaction")], 0));
+        held.apply(&a_replay(vec![a_frame("before the compaction")], 0), None);
 
-        held.apply(&SessionUpdate::ChatAppended {
-            key: a_seat(),
-            msg: Message::CompactBoundary {
-                trigger: "auto".to_owned(),
-                pre_tokens: 100_000,
-                post_tokens: 21_000,
-                uuid: "b1c2d3e4-0000-4000-8000-000000000001".to_owned(),
-                session_id: "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45".to_owned(),
-                metadata_extras: serde_json::Map::new(),
-                extras: serde_json::Map::new(),
+        held.apply(
+            &SessionUpdate::ChatAppended {
+                key: a_seat(),
+                msg: Message::CompactBoundary {
+                    trigger: "auto".to_owned(),
+                    pre_tokens: 100_000,
+                    post_tokens: 21_000,
+                    uuid: "b1c2d3e4-0000-4000-8000-000000000001".to_owned(),
+                    session_id: "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45".to_owned(),
+                    metadata_extras: serde_json::Map::new(),
+                    extras: serde_json::Map::new(),
+                },
+                origin: None,
+                source: None,
             },
-            origin: None,
-            source: None,
-        });
+            None,
+        );
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let conversation = conversation.lock();
@@ -1261,13 +1330,13 @@ mod tests {
     #[test]
     fn a_seed_carries_the_count_it_brings() {
         let fresh = Conversations::new();
-        fresh.apply(&a_connect(vec![a_frame("resumed")], 3));
+        fresh.apply(&a_connect(vec![a_frame("resumed")], 3), None);
         let conversation = fresh.get(&a_seat()).expect("the seat is held");
         assert_eq!(conversation.lock().compaction_count(), 3, "a connect's count is kept");
 
         let reseeded = Conversations::new();
         reseeded.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0, 0));
-        reseeded.apply(&a_replay(vec![a_frame("replayed")], 2));
+        reseeded.apply(&a_replay(vec![a_frame("replayed")], 2), None);
         let conversation = reseeded.get(&a_seat()).expect("the seat is held");
         assert_eq!(
             conversation.lock().compaction_count(),
@@ -1284,7 +1353,7 @@ mod tests {
     fn a_connect_holds_the_seat_without_anyone_watching() {
         let held = Conversations::new();
 
-        held.apply(&a_connect(vec![a_frame("running, unwatched")], 0));
+        held.apply(&a_connect(vec![a_frame("running, unwatched")], 0), None);
 
         assert_eq!(held.len(), 1, "the seat is held from its connect");
         let conversation = held.get(&a_seat()).expect("the seat is held");
@@ -1313,7 +1382,7 @@ mod tests {
         conversation.fold();
         assert_eq!(conversation.lock().rendered().turns.len(), 2, "precondition: two turns folded");
 
-        held.apply(&a_replay(Vec::new(), 0));
+        held.apply(&a_replay(Vec::new(), 0), None);
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let held = conversation.lock();
@@ -1374,13 +1443,16 @@ mod tests {
         let held = Conversations::new();
         held.insert(&a_seat(), Conversation::new(vec![a_frame("asked")], 0, 0));
 
-        held.apply(&SessionUpdate::CronPromptAppended {
-            key: a_seat(),
-            text: "the cron fired".to_owned(),
-            uuid: "cap-cron".to_owned(),
-            cron_id: "c1".to_owned(),
-            description: Some("Morning summary".to_owned()),
-        });
+        held.apply(
+            &SessionUpdate::CronPromptAppended {
+                key: a_seat(),
+                text: "the cron fired".to_owned(),
+                uuid: "cap-cron".to_owned(),
+                cron_id: "c1".to_owned(),
+                description: Some("Morning summary".to_owned()),
+            },
+            None,
+        );
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let conversation = conversation.lock();
@@ -1409,7 +1481,7 @@ mod tests {
         // A reseed with no fold after it: the boundaries are cleared, so what
         // a reader gets is the whole list as one turn rather than a slice past
         // the end of it.
-        held.apply(&a_replay(vec![a_frame("replaced")], 0));
+        held.apply(&a_replay(vec![a_frame("replaced")], 0), None);
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let page = conversation.read(|held| {
@@ -1467,12 +1539,15 @@ mod tests {
     fn a_frame_before_a_seat_is_seeded_holds_nothing() {
         let held = Conversations::new();
 
-        held.apply(&SessionUpdate::ChatAppended {
-            key: a_seat(),
-            msg: a_frame("before the seed"),
-            origin: None,
-            source: None,
-        });
+        held.apply(
+            &SessionUpdate::ChatAppended {
+                key: a_seat(),
+                msg: a_frame("before the seed"),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
 
         assert_eq!(held.len(), 0, "a frame alone does not materialise a seat");
     }
@@ -1696,20 +1771,20 @@ mod tests {
     #[test]
     fn the_update_decides_whether_the_numbering_survives_the_reseed() {
         let held = Conversations::new();
-        held.apply(&a_connect(a_long_history(CONVERSATION_CAP + CONVERSATION_SLACK), 0));
+        held.apply(&a_connect(a_long_history(CONVERSATION_CAP + CONVERSATION_SLACK), 0), None);
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let dropped = conversation.lock().dropped();
         assert!(dropped > 0, "precondition: the connect was over the cap");
 
         let window = conversation.lock().messages().to_vec();
-        held.apply(&a_replay(window.clone(), 0));
+        held.apply(&a_replay(window.clone(), 0), None);
         assert_eq!(
             conversation.lock().dropped(),
             dropped,
             "a replay of the seat's own frames carries the numbering",
         );
 
-        held.apply(&a_connect(window, 0));
+        held.apply(&a_connect(window, 0), None);
         assert_eq!(
             conversation.lock().dropped(),
             0,
