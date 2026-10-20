@@ -294,11 +294,12 @@ client-test: client-deps
 # **The default lint set, not the workspace's**: this crate carries no
 # `[lints]` table of its own, so nothing pedantic applies here and the denied
 # `unwrap`/`expect`/`panic`/`exit` do not either (#2321). One invocation
-# rather than the workspace's pair, since it declares no features.
+# rather than the workspace's pair: `--all-features` covers the crate's one
+# feature, so there is no second configuration to compile.
 #
 # Lint the shell crate.
 client-tauri-clippy:
-    RUSTFLAGS="-D warnings" cargo clippy --manifest-path client/src-tauri/Cargo.toml --all-targets -- -D warnings
+    RUSTFLAGS="-D warnings" cargo clippy --manifest-path client/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 
 # The shell crate's own tests: the crate is its own workspace root, so the
 # workspace's `test-all` never reaches them, and this is the step that puts
@@ -312,7 +313,9 @@ client-tauri-clippy:
 #
 # Run the shell crate's tests.
 client-tauri-test:
-    RUSTFLAGS="-D warnings" cargo nextest run --manifest-path client/src-tauri/Cargo.toml
+    # `testing` carries the overlay check's entry point to its harness-free
+    # target, which must run on the main thread.
+    RUSTFLAGS="-D warnings" cargo nextest run --manifest-path client/src-tauri/Cargo.toml --features testing
 
 # Compile the desktop shell in the configuration that ships. This is the routine
 # gate for anything under client/src-tauri/, and it is quiet.
