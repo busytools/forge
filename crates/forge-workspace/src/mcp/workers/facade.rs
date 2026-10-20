@@ -652,7 +652,12 @@ impl WorkerFacade for ProdWorkerFacade {
             let run_dir =
                 crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git_repo_at_spawn);
             if is_git_repo_at_spawn {
-                match forge_agent::env::worktree::ensure_worker_worktree(&root, &label, &run_dir) {
+                // The base, not `root`: the worktree (and the leftover
+                // clear under it) belongs to the checkout the CLI composed
+                // the path from, which is the main checkout when the
+                // project is itself a linked worktree (#2460).
+                let base = forge_agent::env::worktree::worktree_base(&root);
+                match forge_agent::env::worktree::ensure_worker_worktree(&base, &label, &run_dir) {
                     Ok(outcome) => ensured = Some((run_dir.clone(), outcome)),
                     Err(err) => {
                         return Err(WorkerSpawnError::WorktreeCreationFailed {

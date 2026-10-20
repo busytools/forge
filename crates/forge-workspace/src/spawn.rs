@@ -1946,10 +1946,18 @@ pub(crate) fn handle_despawn_worker_within(
     };
 
     // Resolve the worktree path for git-repo workers (claude's
-    // `<root>/.claude/worktrees/<label>/`, `root` being the tree the
-    // worker was spawned in). Non-git workers have no worktree to clean.
+    // `<base>/.claude/worktrees/<label>/`, `base` being the canonical root
+    // of the tree the worker was spawned in, so a project that is itself a
+    // linked worktree resolves to the main checkout - which is where the
+    // CLI created the worktree, and where every operation below must aim).
+    // Non-git workers have no worktree to clean.
     let project_view = workspace.list_projects().into_iter().find(|v| v.key == *project_key);
     let worktree_root = recorded_cwd.or_else(|| project_view.as_ref().map(|v| v.path.clone()));
+    let worktree_root = if is_git_repo {
+        worktree_root.map(|root| forge_agent::env::worktree::worktree_base(&root))
+    } else {
+        worktree_root
+    };
     let worktree_path = if is_git_repo {
         worktree_root
             .as_ref()
@@ -3535,13 +3543,18 @@ provider = "anthropic"
         // The fixture project is a git repo, so this worker runs in its own
         // worktree and the reply names it: the path a lead uses to find the
         // worker's work has to be the directory the worker actually runs in.
-        let expected_worktree = ws
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == "forge")
-            .expect("fixture project")
-            .path
-            .join(".claude/worktrees/tester");
+        // Canonical like the CLI's own root: a fixture under `/var` (a
+        // symlink to `/private/var` on macOS) would otherwise compare a
+        // spelling claude never uses.
+        let expected_worktree = std::fs::canonicalize(
+            ws.list_projects()
+                .into_iter()
+                .find(|v| v.name == "forge")
+                .expect("fixture project")
+                .path,
+        )
+        .expect("canonical fixture project")
+        .join(".claude/worktrees/tester");
         assert_eq!(
             reply.worktree.as_deref(),
             Some(expected_worktree.to_string_lossy().into_owned().as_str()),
@@ -3946,6 +3959,134 @@ provider = "anthropic"
             "as is the worktree the project forked for its own worker of that name: the \
              despawn acted on the worker's tree, not the project's",
         );
+    }
+
+    /// A project that is itself a linked worktree: `--worktree <label>`
+    /// creates the worktree under the MAIN checkout's `.claude/worktrees`,
+    /// because the CLI composes it from the repository's canonical root
+    /// (measured on 2.1.280), not from the project path. Recording it
+    /// under the project path leaves the despawn's dirty probe reading a
+    /// directory nothing created, so the probe answers "could not
+    /// determine" and blocks, and a forced despawn leaves the real
+    /// worktree and branch behind (#2460).
+    #[tokio::test]
+    async fn a_linked_worktree_project_records_its_worker_where_the_cli_creates_it() {
+        let _binary = MOCK_BINARY.lock().await;
+        let main = tempdir().expect("main repo tempdir");
+        run_git(main.path(), &["init", "-q"]);
+        run_git(main.path(), &["config", "user.email", "t@example.com"]);
+        run_git(main.path(), &["config", "user.name", "Test"]);
+        run_git(main.path(), &["config", "commit.gpgsign", "false"]);
+        fs::write(main.path().join("README.md"), "seed").expect("write seed");
+        run_git(main.path(), &["add", "."]);
+        run_git(main.path(), &["commit", "-q", "-m", "init"]);
+        let main_root = std::fs::canonicalize(main.path()).expect("canonical main");
+
+        // The project path is a linked worktree of that repo, the shape the
+        // dev stack builds.
+        let holder = tempdir().expect("linked holder");
+        let linked = holder.path().join("linked");
+        run_git(
+            &main_root,
+            &["worktree", "add", "-q", "-b", "linked-project", linked.to_str().expect("utf8")],
+        );
+
+        let dir = tempdir().expect("config tempdir");
+        write_forge_toml(dir.path(), &linked.to_string_lossy());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+
+        // Where the CLI creates it: the fixture forks it there itself, so
+        // the assertion below compares forge's composition against the
+        // CLI's own root rather than against the code under test.
+        let created = main_root.join(".claude").join("worktrees").join("labourer");
+        fs::create_dir_all(created.parent().expect("wt parent")).expect("mkdir worktrees");
+        run_git(
+            &main_root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-labourer",
+                created.to_str().expect("utf8 path"),
+            ],
+        );
+
+        forge_agent::set_test_sdk_binary(Some(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh")
+                .to_owned(),
+        ));
+        let mut updates = ws.subscribe_observer();
+        let reply = spawn_reply(&ws, &key, "labourer", false)
+            .await
+            .expect("reply channel")
+            .expect("the spawn is admitted");
+        assert_eq!(
+            reply.worktree.as_deref(),
+            Some(created.to_string_lossy().as_ref()),
+            "the recorded worktree must be the directory the CLI creates",
+        );
+        let slot = SessionSlot::worker("Default", "forge", "labourer");
+        assert_eq!(
+            ws.cwd_for_session(&slot),
+            Some(created.to_string_lossy().into_owned()),
+            "and every read-back composes the same directory",
+        );
+        // The despawn waits for the worker's child to die, so the session
+        // has to be up before it is asked.
+        tokio::time::timeout(spawn_wait(), async {
+            while let Some(seat) = updates.recv().await {
+                if matches!(&seat.update, SessionUpdate::Connected { key, .. } if *key == slot) {
+                    return;
+                }
+            }
+            panic!("the update stream closed before the worker's session connected");
+        })
+        .await
+        .expect("the worker's session reaches Connected");
+
+        // Dirty in the worktree the CLI created: the probe must find it and
+        // block for the worktree's own reason, not "could not determine".
+        fs::write(created.join("dirty.txt"), "uncommitted").expect("write dirty file");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&ws, &key, "labourer", false, tx);
+        let blocked = rx.await.expect("despawn result");
+        let crate::protocol::DespawnResult::Blocked { reason } = blocked else {
+            panic!("the dirty probe must find the worktree the CLI created: {blocked:?}");
+        };
+        assert!(
+            reason.contains("uncommitted or untracked changes"),
+            "the verdict is the created worktree's own: {reason}",
+        );
+
+        fs::remove_file(created.join("dirty.txt")).expect("clean the worktree");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&ws, &key, "labourer", false, tx);
+        let result = rx.await.expect("despawn result");
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
+            "a clean despawn lands: {result:?}",
+        );
+        assert!(!created.exists(), "the worktree the CLI created is the one removed");
+        let branches = std::process::Command::new("git")
+            .args(["branch", "--list", "worktree-labourer"])
+            .current_dir(&main_root)
+            .output()
+            .expect("git branch");
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "and the branch behind it is reaped: {:?}",
+            String::from_utf8_lossy(&branches.stdout),
+        );
+        forge_agent::set_test_sdk_binary(None);
     }
 
     /// The one handle on the process-wide mock-binary slot below: the case

@@ -4088,6 +4088,10 @@ mode = \"toggle\"
         let worktree = root.join(".claude/worktrees/w1");
         repo_at(&root, "main", 1);
         repo_at(&worktree, "worktree-em-dash-sweep", 2);
+        // The composed directory is canonical, as the CLI's own worktree
+        // root is; a `/var` tempdir would otherwise compare a spelling
+        // claude never uses.
+        let worktree = std::fs::canonicalize(&worktree).expect("canonical worktree");
 
         let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
             .expect("the fleet builds");

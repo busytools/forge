@@ -12,7 +12,7 @@ use crate::SessionSlot;
 
 /// Cwd a worker's tag-write should land at. For git-repo workers,
 /// claude's `--worktree <label>` flag forks the subprocess into
-/// `<root>/.claude/worktrees/<label>/` and writes the session JSONL under
+/// `<base>/.claude/worktrees/<label>/` and writes the session JSONL under
 /// THAT sanitised path, not the tree's root. The tag-write must follow.
 ///
 /// `root` is the tree the worker's spawn resolved: its own when the spawn
@@ -21,9 +21,14 @@ use crate::SessionSlot;
 /// `label` is the worker's charter label; `is_git_repo_at_spawn` is the
 /// cached flag on `WorkerEntry`. Non-git workers run in that root
 /// unmodified.
+///
+/// The base is the CLI's canonical root, not `root` itself:
+/// [`forge_agent::env::worktree::worktree_base`] resolves a project that
+/// is a linked worktree to the main checkout, which is where the CLI
+/// creates the worker's worktree (#2460).
 pub fn worker_tag_dir(root: &Path, label: &str, is_git_repo_at_spawn: bool) -> PathBuf {
     if is_git_repo_at_spawn {
-        root.join(".claude/worktrees").join(label)
+        forge_agent::env::worktree::worktree_base(root).join(".claude/worktrees").join(label)
     } else {
         root.to_path_buf()
     }
@@ -53,7 +58,8 @@ pub fn worker_tag_dir(root: &Path, label: &str, is_git_repo_at_spawn: bool) -> P
 /// `is_git_repo` is `None` on a row written before the field existed. That
 /// answers "yes, it can start": the spawn probes and records the flag, and
 /// a row whose directory forge cannot compose is never hidden on a guess.
-/// The launchpad calls this per row per frame, so it must not probe.
+/// The launchpad calls this per row per frame, so it only stats the path;
+/// the canonical root under it is memoised rather than probed per call.
 pub fn worker_row_can_start(
     project_root: &Path,
     label: &str,

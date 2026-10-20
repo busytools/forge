@@ -7470,14 +7470,14 @@ impl Workspace {
     /// Resolve the cwd a git-diff scan should run against for the
     /// session at `session_key`. Workers spawned in a git tree run
     /// inside claude's `--worktree <label>` fork at
-    /// `<root>/.claude/worktrees/<label>/` (`root` being the tree the
-    /// worker's spawn resolved - its own when it has one, the project's
-    /// `forge.toml` path otherwise), and the worker's `cwd_raw` carries
-    /// different values depending on lifecycle:
+    /// `<base>/.claude/worktrees/<label>/` (`base` the canonical root of
+    /// the tree the worker's spawn resolved - its own when it has one, the
+    /// project's `forge.toml` path otherwise), and the worker's `cwd_raw`
+    /// carries different values depending on lifecycle:
     /// - fresh spawn -> `cwd_raw = <root>` (the value claude
     ///   sends in `AgentEvent::Connected.cwd` before it chdirs into
     ///   the worktree),
-    /// - resumed session -> `cwd_raw = <root>/.claude/worktrees/<label>`
+    /// - resumed session -> `cwd_raw = <base>/.claude/worktrees/<label>`
     ///   (claude chdirs before writing the first catalog row, so the
     ///   resume path reads the worktree path back as `cwd`).
     ///
@@ -7527,7 +7527,7 @@ impl Workspace {
             );
             return cwd_raw.to_path_buf();
         };
-        root.join(".claude/worktrees").join(&label)
+        crate::mcp::workers::types::worker_tag_dir(&root, &label, true)
     }
 
     /// Handle an async worker-spawn failure. Two paths, branching
