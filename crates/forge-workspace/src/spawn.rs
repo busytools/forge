@@ -1336,31 +1336,18 @@ pub(crate) fn handle_spawn_worker(
             .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&root))
     };
 
-    // The tree this worker runs in. A resume of a worker that ran before
-    // #2460 adopts that worker's own tree when this label's tagged
-    // transcript is there; anything else composes the CLI's location. A
-    // fresh spawn never adopts: its label may reuse a despawned worker's
-    // name, but its tree is the CLI's to create.
-    let composed = is_git.then(|| crate::mcp::workers::types::worker_tag_dir(&root, label, true));
-    let adopted = if resume_existing.is_some() {
-        composed.as_ref().and_then(|composed| {
-            workspace
-                .legacy_resume_session(&view.org, &view.name, &root, label, composed)
-                .filter(|(_, session)| Some(session.as_str()) == resume_existing)
-                .map(|(dir, _)| dir)
-        })
-    } else {
-        None
-    };
-    let run_dir = adopted.clone().or(composed);
+    // The tree this worker runs in: the CLI's location under the base
+    // checkout.
+    let worktree_path =
+        is_git.then(|| crate::mcp::workers::types::worker_tag_dir(&root, label, true));
 
     // The composed worktree is repository-global, so a label can name a
     // tree that already belongs to another project - its own checkout, or
-    // a live worker's worktree. Reusing it would put two sessions in one
-    // tree and hand the later despawn the power to delete it; refuse
-    // before anything is minted.
+    // another project's worker's worktree. Reusing it would put two
+    // sessions in one tree and hand the later despawn the power to delete
+    // it; refuse before anything is minted.
     if let Some(collision) =
-        run_dir.as_ref().and_then(|dir| workspace.worktree_collision(dir, &project_key))
+        worktree_path.as_ref().and_then(|dir| workspace.worktree_collision(dir, &project_key))
     {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -1418,9 +1405,7 @@ pub(crate) fn handle_spawn_worker(
         spawned_by,
         needs_tag: !is_resume,
         is_git_repo_at_spawn: is_git,
-        // The adopted tree on a resume onto a pre-#2460 worktree, else the
-        // stated tree; the row keeps meaning the project's own path.
-        cwd: adopted.clone().or_else(|| cwd.as_deref().map(std::path::PathBuf::from)),
+        cwd: cwd.as_deref().map(std::path::PathBuf::from),
         diagnostic: None,
         kick,
     };
@@ -1707,10 +1692,9 @@ pub(crate) fn handle_spawn_worker(
                 durability_warning,
                 // Where the worker runs, which this handler decided above:
                 // a git project's worker gets the CLI's
-                // `<base>/.claude/worktrees/<label>` (or the tree a resume
-                // adopted), and everything else runs in the project root
-                // and has no worktree to name.
-                worktree: run_dir.as_ref().map(|dir| dir.display().to_string()),
+                // `<base>/.claude/worktrees/<label>`, and everything else
+                // runs in the project root and has no worktree to name.
+                worktree: worktree_path.as_ref().map(|dir| dir.display().to_string()),
                 // What the arguments say, which is all this handler
                 // knows: a `resume_session` spawn whose lookup found
                 // nothing arrives here as a fresh spawn like any other,
@@ -1999,17 +1983,17 @@ pub(crate) fn handle_despawn_worker_within(
         None
     };
     // Every worktree operation below runs against the checkout whose
-    // `.claude/worktrees` holds the tree: the main checkout for the CLI's
-    // location, the project path itself for a worker still running where
-    // it was spawned before #2460.
-    let worktree_root = worktree_path
-        .as_ref()
-        .and_then(|path| crate::mcp::workers::types::worktree_owner(path, label))
-        .or(spawn_root);
+    // `.claude/worktrees` holds the tree - the CLI's base, which is the
+    // main checkout for a linked-worktree project.
+    let worktree_root = if is_git_repo {
+        spawn_root.map(|root| forge_agent::env::worktree::worktree_base(&root))
+    } else {
+        spawn_root
+    };
 
     // The path is repository-global: it may be another project's checkout
-    // or a live worker's tree. Removing it would delete that, so refuse
-    // before the probe; a force cannot override this.
+    // or another project's worker's tree. Removing it would delete that,
+    // so refuse before the probe; a force cannot override this.
     if let Some(path) = worktree_path.as_ref()
         && let Some(collision) = workspace.worktree_collision(path, project_key)
     {
@@ -4205,26 +4189,25 @@ provider = "anthropic"
             .await
             .expect("reply channel")
             .expect_err("the shared worktree is refused");
-        assert!(err.contains("live worker 'shared'"), "the refusal names the holder: {err}");
+        assert!(err.contains("worker 'shared'"), "the refusal names the holder: {err}");
         assert!(err.contains("proj-a"), "and the project it belongs to: {err}");
         assert!(
             ws.list_live_workers(&key_of("proj-b")).is_empty(),
             "the refused spawn mints nothing",
         );
 
-        // A crashed worker of another project holds nothing: its entry
-        // keeps the label only until it is closed, and must not block the
-        // path for a live spawn.
+        // A crashed worker's row still claims its path until the row is
+        // closed: refusing is the safe direction.
         let mut failed = fake_git_worker_entry("ghost", "worker-2");
         failed.status = forge_primitives::WorkerLiveness::Failed;
         ws.insert_live_worker(&key_of("proj-b"), failed);
         let err = spawn_reply(&ws, &key_of("proj-a"), "ghost", false)
             .await
             .expect("reply channel")
-            .expect_err("the fixture has no model, so the spawn stops at the account walk");
+            .expect_err("the crashed worker's row still claims its tree");
         assert!(
-            err.contains("declares no model") && !err.contains("live worker 'ghost'"),
-            "a Failed entry does not claim the shared tree: {err}",
+            err.contains("worker 'ghost'") && err.contains("proj-b"),
+            "the refusal names the crashed worker and its project: {err}",
         );
 
         // A project declared at the path a worker label would compose is
@@ -4265,7 +4248,7 @@ provider = "anthropic"
         let collision = ws.worktree_collision(&alias, &key_of("proj-b"));
 
         assert!(
-            collision.as_deref().is_some_and(|reason| reason.contains("live worker 'shared'")),
+            collision.as_deref().is_some_and(|reason| reason.contains("worker 'shared'")),
             "the canonical comparison finds the holder through the alias: {collision:?}",
         );
     }
@@ -4294,7 +4277,7 @@ provider = "anthropic"
         let crate::protocol::DespawnResult::Failed { reason } = result else {
             panic!("a shared worktree must refuse the despawn even when forced: {result:?}");
         };
-        assert!(reason.contains("live worker 'shared'"), "the reason names the holder: {reason}");
+        assert!(reason.contains("worker 'shared'"), "the reason names the holder: {reason}");
         assert!(reason.contains("proj-b"), "and its project: {reason}");
         assert!(shared.exists(), "the shared tree was not removed");
         assert_eq!(ws.list_live_workers(&key_of("proj-a")).len(), 1, "and the worker stays live");
@@ -4343,57 +4326,6 @@ provider = "anthropic"
             "the leftover is removed under the main checkout: {result:?}"
         );
         assert!(!leftover.exists(), "the leftover directory is gone");
-    }
-
-    /// A worker resumed onto its pre-#2460 tree records that tree on its
-    /// entry, and the despawn must find it there (the conversation lives
-    /// there), not compose a new location under the main checkout.
-    #[tokio::test]
-    async fn a_legacy_linked_worktree_worker_is_despawned_where_it_runs() {
-        let (ws, main, _keep) = linked_projects_fixture(&["proj-a"]);
-        let key = ws.list_projects().into_iter().next().expect("declared project").key;
-        let linked = ws.project_root_for_key(&key).expect("project root");
-        let legacy = linked.join(".claude").join("worktrees").join("old");
-        fs::create_dir_all(legacy.parent().expect("worktrees root")).expect("mkdir worktrees");
-        run_git(
-            &main,
-            &["worktree", "add", "-q", "-b", "worktree-old", legacy.to_str().expect("utf8")],
-        );
-        // What the adoption writes on the live entry.
-        let mut entry = fake_git_worker_entry("old", "worker-1");
-        entry.cwd = Some(legacy.clone());
-        ws.insert_live_worker(&key, entry);
-
-        // Dirty there: the probe must read the legacy tree, not the
-        // composed one under the main checkout.
-        fs::write(legacy.join("dirty.txt"), "uncommitted").expect("write dirty file");
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        handle_despawn_worker(&ws, &key, "old", false, tx);
-        let blocked = rx.await.expect("despawn result");
-        let crate::protocol::DespawnResult::Blocked { reason } = blocked else {
-            panic!("the probe must read the tree the worker runs in: {blocked:?}");
-        };
-        assert!(reason.contains("uncommitted or untracked changes"), "its own verdict: {reason}");
-
-        fs::remove_file(legacy.join("dirty.txt")).expect("clean the worktree");
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        handle_despawn_worker(&ws, &key, "old", false, tx);
-        let result = rx.await.expect("despawn result");
-        assert!(
-            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
-            "the legacy tree despawns: {result:?}"
-        );
-        assert!(!legacy.exists(), "the tree the worker ran in is the one removed");
-        let branches = std::process::Command::new("git")
-            .args(["branch", "--list", "worktree-old"])
-            .current_dir(&main)
-            .output()
-            .expect("git branch");
-        assert!(
-            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
-            "and its branch is reaped: {:?}",
-            String::from_utf8_lossy(&branches.stdout),
-        );
     }
 
     /// The one handle on the process-wide mock-binary slot below: the case

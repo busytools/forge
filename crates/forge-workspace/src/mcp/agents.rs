@@ -608,10 +608,11 @@ impl Tool for Spawn {
          message it with agents__send_message instead of spawning \
          again. A git worker's worktree is shared across every project of \
          one repository, not scoped to your project: one label maps to one \
-         `worktree-<label>` branch and one directory, so a live worker of \
-         another project under the same repository holding that label, or \
-         a directory that is a declared project's own checkout, refuses \
-         this spawn. The label 'lead' is reserved (it addresses a project's \
+         `worktree-<label>` branch and one directory, so another project's \
+         worker under the same repository holding that label (even one that \
+         has crashed - its row is closed before its tree is reused), or a \
+         directory that is a declared project's own checkout, refuses this \
+         spawn. The label 'lead' is reserved (it addresses a project's \
          own agent) and rejected here. Use agents__list to see your \
          project's current worker pool. `mcp_families` selects which \
          MCP families this worker gets: any of review, cron, tasks, \
@@ -793,8 +794,8 @@ impl Tool for Despawn {
          override a worktree shared with another project: because a \
          repository's workers share one `<main>/.claude/worktrees/<label>` \
          and one branch, a directory that is another project's checkout or \
-         another project's live worker's tree refuses the despawn outright. \
-         Nothing is \
+         another project's worker's tree refuses the despawn outright, \
+         whatever that worker's state. Nothing is \
          ever silently discarded. The worktree-<label> branch claude \
          created for the worker is deleted alongside the worktree, but \
          only when every commit on it is reachable from some other ref - \

@@ -26,48 +26,11 @@ use crate::SessionSlot;
 /// [`forge_agent::env::worktree::worktree_base`] resolves a project that
 /// is a linked worktree to the main checkout, which is where the CLI
 /// creates the worker's worktree (#2460).
-///
-/// A `root` that is already the label's own worktree (`<...>/.claude/
-/// worktrees/<label>` with a `.git` link) IS the directory a resumed
-/// worker runs in - a worker resumed onto a tree it created before #2460 -
-/// so it is returned rather than composed again. That is the only way a
-/// path outside the CLI's base is ever named: a spawn that states a tree
-/// names that tree, never a guessed legacy one.
 pub fn worker_tag_dir(root: &Path, label: &str, is_git_repo_at_spawn: bool) -> PathBuf {
     if !is_git_repo_at_spawn {
         return root.to_path_buf();
     }
-    if root.file_name().and_then(std::ffi::OsStr::to_str) == Some(label)
-        && root.join(".git").is_file()
-    {
-        return root.to_path_buf();
-    }
     forge_agent::env::worktree::worktree_base(root).join(".claude/worktrees").join(label)
-}
-
-/// The checkout whose `.claude/worktrees` holds the worktree at `path`:
-/// `<owner>/.claude/worktrees/<label>` strips back to `owner`, whatever
-/// the label contains. `None` when `path` is not shaped that way.
-pub fn worktree_owner(path: &Path, label: &str) -> Option<PathBuf> {
-    let mut owner = path;
-    for part in Path::new(".claude/worktrees").join(label).components().rev() {
-        let std::path::Component::Normal(name) = part else {
-            return None;
-        };
-        if owner.file_name()? != name {
-            return None;
-        }
-        owner = owner.parent()?;
-    }
-    Some(owner.to_path_buf())
-}
-
-/// The pre-#2460 tree under a project path, when it stands as a worktree
-/// of its own and is not the composed location. Used to offer, and to
-/// adopt on resume, a worker that ran there before the CLI's base moved.
-pub fn legacy_worktree_dir(root: &Path, label: &str, composed: &Path) -> Option<PathBuf> {
-    let legacy = root.join(".claude/worktrees").join(label);
-    (legacy.as_path() != composed && legacy.join(".git").is_file()).then_some(legacy)
 }
 
 /// Whether a persisted worker row can still start a session. The boot
@@ -107,11 +70,7 @@ pub fn worker_row_can_start(
     }
     match is_git_repo {
         None => true,
-        Some(true) => {
-            let composed = worker_tag_dir(project_root, label, true);
-            composed.is_dir() || legacy_worktree_dir(project_root, label, &composed).is_some()
-        }
-        Some(false) => worker_tag_dir(project_root, label, false).is_dir(),
+        Some(flag) => worker_tag_dir(project_root, label, flag).is_dir(),
     }
 }
 
@@ -339,12 +298,11 @@ mod worker_tag_dir_tests {
         assert!(status.success(), "git {args:?} in {}", dir.display());
     }
 
-    /// A project path composes the CLI's location even when a pre-#2460
-    /// tree of that label stands under it - a fresh spawn must not adopt
-    /// a tree it did not create. A root that IS the label's worktree (the
-    /// entry a resume onto such a tree records) is that worktree.
+    /// A project that is a linked worktree composes its workers' tag
+    /// directory under the MAIN checkout; a non-git worker runs in its
+    /// tree itself.
     #[test]
-    fn worker_tag_dir_composes_the_cli_location_unless_the_root_is_the_worktree() {
+    fn worker_tag_dir_composes_the_cli_location() {
         let holder = tempdir().expect("holder");
         let main = holder.path().join("main");
         std::fs::create_dir_all(&main).expect("main dir");
@@ -359,45 +317,15 @@ mod worker_tag_dir_tests {
         let linked = holder.path().join("linked");
         run_git(&main, &["worktree", "add", "-q", "-b", "linked", linked.to_str().expect("utf8")]);
 
-        let legacy = linked.join(".claude").join("worktrees").join("old");
-        std::fs::create_dir_all(legacy.parent().expect("worktrees root")).expect("mkdir");
-        run_git(
-            &main,
-            &["worktree", "add", "-q", "-b", "worktree-old", legacy.to_str().expect("utf8")],
-        );
         assert_eq!(
             worker_tag_dir(&linked, "old", true),
             main.join(".claude").join("worktrees").join("old"),
-            "a project path composes the CLI's location, not a stale legacy tree",
+            "a linked-worktree project composes under the main checkout",
         );
-
-        assert_eq!(
-            worker_tag_dir(&legacy, "old", true),
-            legacy,
-            "a root that is the label's own worktree is where a resumed worker runs",
-        );
-
         assert_eq!(
             worker_tag_dir(&linked, "old", false),
             linked,
             "a non-git worker runs in the tree itself",
-        );
-    }
-
-    /// The owner of a composed path survives a label that itself spans
-    /// path components.
-    #[test]
-    fn worktree_owner_strips_a_multi_component_label() {
-        let path = Path::new("/main/.claude/worktrees/team/reviewer");
-        assert_eq!(
-            worktree_owner(path, "team/reviewer"),
-            Some(Path::new("/main").to_path_buf()),
-            "the owner is the checkout above `.claude/worktrees`",
-        );
-        assert_eq!(
-            worktree_owner(Path::new("/main/somewhere/else"), "reviewer"),
-            None,
-            "a path not shaped as a worktree has no owner",
         );
     }
 }
