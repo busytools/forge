@@ -643,6 +643,12 @@ impl WorkerFacade for ProdWorkerFacade {
         // ensure did is kept so a refusal can undo exactly that work -
         // and, on the fallback below, so the fresh session inherits it.
         let mut ensured = None;
+        // The checkout the worker's worktree belongs to: the CLI's
+        // canonical root, which is the main checkout when the project is
+        // itself a linked worktree (#2460). Every worktree operation here
+        // - the ensure, the leftover clear under it, and a refusal's
+        // discard - aims at it, not at the project path.
+        let base = forge_agent::env::worktree::worktree_base(&root);
         let (resume_existing, session_choice) = if resume_session {
             // The directory the label's sessions ran in: its worktree, or
             // the project root for a worker spawned without one. The
@@ -652,11 +658,15 @@ impl WorkerFacade for ProdWorkerFacade {
             let run_dir =
                 crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git_repo_at_spawn);
             if is_git_repo_at_spawn {
-                // The base, not `root`: the worktree (and the leftover
-                // clear under it) belongs to the checkout the CLI composed
-                // the path from, which is the main checkout when the
-                // project is itself a linked worktree (#2460).
-                let base = forge_agent::env::worktree::worktree_base(&root);
+                // Refuse before the ensure can reuse or repair a tree that
+                // belongs to another project (#2460): the base is
+                // repository-global, so the label alone does not identify
+                // this project's worktree.
+                if let Some(collision) = ws.worktree_collision(&run_dir, &cp.project_key) {
+                    return Err(WorkerSpawnError::WorktreeCreationFailed {
+                        reason: format!("this worker's worktree cannot be shared: {collision}"),
+                    });
+                }
                 match forge_agent::env::worktree::ensure_worker_worktree(&base, &label, &run_dir) {
                     Ok(outcome) => ensured = Some((run_dir.clone(), outcome)),
                     Err(err) => {
@@ -677,7 +687,7 @@ impl WorkerFacade for ProdWorkerFacade {
                 // answered, leaving the caller holding context it does
                 // not have.
                 Err(error) => {
-                    discard_refused_worktree(&root, &label, ensured.take());
+                    discard_refused_worktree(&base, &label, ensured.take());
                     return Err(WorkerSpawnError::ResumeLookupFailed {
                         label,
                         message: error.to_string(),
@@ -713,7 +723,7 @@ impl WorkerFacade for ProdWorkerFacade {
             return_to: Some(tx),
         };
         if let Err(err) = ws.dispatch(cmd) {
-            discard_refused_worktree(&root, &spawn_label, ensured.take());
+            discard_refused_worktree(&base, &spawn_label, ensured.take());
             return Err(WorkerSpawnError::DispatchFailed {
                 message: format!("dispatch failed: {err:?}"),
             });
@@ -734,7 +744,7 @@ impl WorkerFacade for ProdWorkerFacade {
                 Ok(reply)
             }
             Ok(Err(message)) => {
-                discard_refused_worktree(&root, &spawn_label, ensured.take());
+                discard_refused_worktree(&base, &spawn_label, ensured.take());
                 // The sync path's reply is a string the spawn handler
                 // built, not an SDK error, so there is no variant to
                 // name and the heuristics answer.

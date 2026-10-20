@@ -57,59 +57,74 @@ pub fn worker_root(cwd: &Path) -> Result<std::path::PathBuf, String> {
 /// resolves its cwd to that root before composing
 /// `<root>/.claude/worktrees/<label>`, so a project rooted in a linked
 /// worktree (or in a repo subdirectory) otherwise names a directory the
-/// CLI never creates (#2460). A path git cannot answer for stays itself.
+/// CLI never creates (#2460). A path that is not a repository is its own
+/// base.
 ///
 /// Memoised per root: callers include render paths that ask per row per
 /// frame, and a checkout's canonical root does not move under a live
-/// forge.
+/// forge. A git that could not answer is NOT memoised - a transient
+/// failure must not pin the path this exists to correct - and is reported
+/// once per root.
 pub fn worktree_base(root: &Path) -> PathBuf {
     static BASES: OnceLock<parking_lot::Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
+    static UNRESOLVED: OnceLock<parking_lot::Mutex<std::collections::HashSet<PathBuf>>> =
+        OnceLock::new();
     let cache = BASES.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
     if let Some(base) = cache.lock().get(root).cloned() {
         return base;
     }
-    let base = resolve_worktree_base(root);
+    // A path that is not there cannot be a repository: answer without a
+    // git call, so a caller on a render path (a stale row's gone tree)
+    // does not spawn one per frame.
+    if !root.is_dir() {
+        return root.to_path_buf();
+    }
+    let Some(base) = resolve_worktree_base(root) else {
+        // Not a repository is an answer; a repository git would not read
+        // is not. Only the second is worth reporting, and neither is
+        // cached: the next call re-asks.
+        if is_git_repo(root) && UNRESOLVED.get_or_init(Default::default).lock().insert(root.into())
+        {
+            tracing::warn!(
+                target: "forge_agent::env::worktree",
+                event_name = "worktree_base_unresolved",
+                repo = %root.display(),
+                "git would not name this checkout's root, so worker paths compose from the \
+                 project path until it can; a linked-worktree project records the wrong \
+                 directory meanwhile",
+            );
+        }
+        return root.to_path_buf();
+    };
     cache.lock().insert(root.to_path_buf(), base.clone());
     base
 }
 
-/// [`worktree_base`] without the memo.
-fn resolve_worktree_base(root: &Path) -> PathBuf {
-    let Some(out) =
-        git_in_repo(root, &["rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir"])
-    else {
-        return root.to_path_buf();
-    };
+/// [`worktree_base`] without the memo; `None` when git could not answer.
+fn resolve_worktree_base(root: &Path) -> Option<PathBuf> {
+    let common_dir = git_common_dir(root)?;
+    let out = git_in_repo(root, &["rev-parse", "--show-toplevel", "--git-dir"])?;
     let mut lines = out.lines();
-    let (Some(toplevel), Some(git_dir), Some(common_dir)) =
-        (lines.next(), lines.next(), lines.next())
-    else {
-        return root.to_path_buf();
+    let (Some(toplevel), Some(git_dir)) = (lines.next(), lines.next()) else {
+        return None;
     };
-    // `--show-toplevel` is absolute; the other two are relative to `root`
+    // `--show-toplevel` is absolute; `--git-dir` is relative to `root`
     // unless git echoed an absolute admin dir, and `--path-format` is not
     // on every git CI runs.
-    let resolve = |path: &str| {
-        let path = Path::new(path);
-        if path.is_absolute() { path.to_path_buf() } else { root.join(path) }
-    };
-    let (Ok(toplevel), Ok(git_dir), Ok(common_dir)) = (
-        std::fs::canonicalize(toplevel),
-        std::fs::canonicalize(resolve(git_dir)),
-        std::fs::canonicalize(resolve(common_dir)),
-    ) else {
-        return root.to_path_buf();
-    };
+    let git_dir = Path::new(git_dir);
+    let git_dir = if git_dir.is_absolute() { git_dir.to_path_buf() } else { root.join(git_dir) };
+    let toplevel = std::fs::canonicalize(toplevel).ok()?;
+    let git_dir = std::fs::canonicalize(git_dir).ok()?;
     if git_dir == common_dir {
-        return toplevel;
+        return Some(toplevel);
     }
     // A linked worktree: its git dir is `<main>/.git/worktrees/<name>`, so
     // the CLI's root is the checkout that common dir belongs to.
     match (common_dir.file_name().and_then(std::ffi::OsStr::to_str), common_dir.parent()) {
-        (Some(".git"), Some(main)) => main.to_path_buf(),
+        (Some(".git"), Some(main)) => Some(main.to_path_buf()),
         // A separate git dir names no checkout of its own; git's answer is
         // all there is.
-        _ => common_dir,
+        _ => Some(common_dir),
     }
 }
 
@@ -1460,7 +1475,7 @@ fn survivor_tips(repo_root: &Path, worktree_path: &Path) -> Option<Vec<String>> 
     Some(tips)
 }
 
-/// Managed agent worktrees under `<repo>/.claude/worktrees/` untouched
+/// Managed agent worktrees under `<base>/.claude/worktrees/` untouched
 /// for at least `age`, for the reconciliation sweep that runs at every
 /// session spawn: it reaps what a one-shot failure or a missed
 /// completion event left behind. A lock whose reason carries a live pid
@@ -1475,7 +1490,10 @@ pub fn stale_agent_worktrees(
     repo_root: &Path,
     age: std::time::Duration,
 ) -> std::io::Result<Vec<AgentWorktree>> {
-    let worktrees_dir = repo_root.join(".claude").join("worktrees");
+    // The CLI's own root, which is the main checkout for a project that is
+    // itself a linked worktree (#2460); the project path lists a directory
+    // the CLI never fills.
+    let worktrees_dir = worktree_base(repo_root).join(".claude").join("worktrees");
     let entries = match std::fs::read_dir(&worktrees_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1735,16 +1753,19 @@ mod tests {
     /// `--worktree <label>` composes `<canonical root>/.claude/worktrees/
     /// <label>`, and the canonical root of a linked worktree is the MAIN
     /// checkout, not the worktree path (#2460). A path inside a repo
-    /// resolves to its toplevel the same way; anything git cannot answer
-    /// for stays itself.
+    /// resolves to its toplevel the same way; a path that is not a
+    /// repository is its own base, and a git that could not answer is
+    /// re-asked rather than pinned.
     #[test]
     fn worktree_base_is_the_cli_canonical_root() {
         let repo = init_repo_with_commit();
         let main = fs::canonicalize(repo.path()).expect("canonical repo");
         let linked = main.join("linked");
         run_git(&main, &["worktree", "add", "-q", "-b", "linked", linked.to_str().expect("utf8")]);
-        let nested = linked.join("crates/deep");
-        fs::create_dir_all(&nested).expect("nested dir");
+        let linked_nested = linked.join("crates/deep");
+        fs::create_dir_all(&linked_nested).expect("nested dir");
+        let main_nested = main.join("crates/deep");
+        fs::create_dir_all(&main_nested).expect("nested dir");
 
         assert_eq!(
             worktree_base(&linked),
@@ -1753,17 +1774,82 @@ mod tests {
              checkout",
         );
         assert_eq!(
-            worktree_base(&nested),
+            worktree_base(&linked_nested),
             main,
-            "a path inside a repo resolves to its toplevel, as the CLI does",
+            "a path inside a linked worktree resolves to the main checkout",
+        );
+        assert_eq!(
+            worktree_base(&main_nested),
+            main,
+            "a subdirectory of a normal checkout resolves to its toplevel, as the CLI does",
         );
         assert_eq!(worktree_base(&main), main, "the main checkout is its own base");
+
+        // A declared project path can reach the main checkout through a
+        // symlink; the CLI composes from the canonical spelling, so the
+        // answer must not depend on which spelling the config used.
+        let holder = tempdir().expect("alias holder");
+        let alias = holder.path().join("project");
+        std::os::unix::fs::symlink(&main, &alias).expect("symlink");
+        assert_eq!(worktree_base(&alias), main, "a symlinked spelling resolves to the same root");
+
+        // A linked worktree of a repo kept in a separate git dir: the
+        // common dir is not named `.git`, and git's own answer is the base.
+        let separate = tempdir().expect("separate holder");
+        let checkout = separate.path().join("checkout");
+        let store = separate.path().join("store.git");
+        run_git(
+            separate.path(),
+            &[
+                "init",
+                "-q",
+                "--separate-git-dir",
+                store.to_str().expect("utf8"),
+                checkout.to_str().expect("utf8"),
+            ],
+        );
+        run_git(&checkout, &["config", "user.email", "t@example.com"]);
+        run_git(&checkout, &["config", "user.name", "Test"]);
+        run_git(&checkout, &["config", "commit.gpgsign", "false"]);
+        fs::write(checkout.join("README.md"), "seed").expect("write seed");
+        run_git(&checkout, &["add", "."]);
+        run_git(&checkout, &["commit", "-q", "-m", "init"]);
+        let separate_linked = checkout.join("linked");
+        run_git(
+            &checkout,
+            &["worktree", "add", "-q", "-b", "sep-linked", separate_linked.to_str().expect("utf8")],
+        );
+        assert_eq!(
+            worktree_base(&separate_linked),
+            fs::canonicalize(&store).expect("canonical store"),
+            "a separate git dir is the base when it is not named .git",
+        );
+
+        // A failed resolution is re-asked: with its link gone the worktree
+        // is not a repository, and once the link is back the same root
+        // answers with the main checkout rather than the pinned fallback.
+        // The path sits outside the main checkout so the lifted link
+        // leaves it in no repository at all.
+        let flaky_holder = tempdir().expect("flaky holder");
+        let flaky = flaky_holder.path().join("flaky");
+        run_git(&main, &["worktree", "add", "-q", "-b", "flaky", flaky.to_str().expect("utf8")]);
+        let link = flaky.join(".git");
+        let held = flaky_holder.path().join("flaky-link");
+        fs::rename(&link, &held).expect("lift the worktree link");
+        assert_eq!(worktree_base(&flaky), flaky, "a path git cannot answer for is its own base");
+        fs::rename(&held, &link).expect("restore the worktree link");
+        assert_eq!(
+            worktree_base(&flaky),
+            main,
+            "the failed resolution was not memoised, so the next call answers with the main \
+             checkout",
+        );
 
         let outside = tempdir().expect("outside");
         assert_eq!(
             worktree_base(outside.path()),
             outside.path(),
-            "a path git cannot answer for is its own base",
+            "a path outside any repo is its own base",
         );
     }
 
@@ -3933,7 +4019,11 @@ mod tests {
         let listed =
             stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).expect("listing works");
         assert_eq!(listed.len(), 1, "a fresh tree is stale at age zero: {listed:?}");
-        assert_eq!(listed[0].path, wt);
+        // The listing composes from the canonical base, as the CLI does.
+        assert_eq!(
+            fs::canonicalize(&listed[0].path).expect("canonical listed tree"),
+            fs::canonicalize(&wt).expect("canonical worktree"),
+        );
         assert_eq!(listed[0].branch, branch);
         assert_eq!(listed[0].repo_root, dir.path());
 
@@ -3943,6 +4033,30 @@ mod tests {
                 .is_empty(),
             "a tree younger than the age is not listed"
         );
+    }
+
+    /// A project that is itself a linked worktree: the CLI's agent
+    /// worktrees live under the MAIN checkout, and the sweep must list
+    /// there or every tree it never sees leaks (#2460).
+    #[test]
+    fn stale_agent_worktrees_reads_the_main_checkout_for_a_linked_project() {
+        let repo = init_repo_with_commit();
+        let main = fs::canonicalize(repo.path()).expect("canonical main");
+        let linked = main.join("linked");
+        run_git(&main, &["worktree", "add", "-q", "-b", "linked", linked.to_str().expect("utf8")]);
+        let branch = add_worker_worktree(&main, "agent-abc123");
+
+        let listed = stale_agent_worktrees(&linked, std::time::Duration::ZERO).expect("listing");
+        assert_eq!(
+            listed.len(),
+            1,
+            "the tree under the main checkout is seen from the linked project: {listed:?}",
+        );
+        assert_eq!(
+            fs::canonicalize(&listed[0].path).expect("canonical listed tree"),
+            main.join(".claude").join("worktrees").join("agent-abc123"),
+        );
+        assert_eq!(listed[0].branch, branch);
     }
 
     /// A pid whose process has already exited, for dead-owner fixtures.

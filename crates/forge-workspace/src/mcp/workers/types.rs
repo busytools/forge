@@ -26,12 +26,23 @@ use crate::SessionSlot;
 /// [`forge_agent::env::worktree::worktree_base`] resolves a project that
 /// is a linked worktree to the main checkout, which is where the CLI
 /// creates the worker's worktree (#2460).
+///
+/// A worker spawned before that fix on such a project still runs in
+/// `<root>/.claude/worktrees/<label>`, and its conversation is keyed to
+/// that cwd, so an existing worktree there is preferred over the new
+/// location until the worker is despawned; the next spawn for the label
+/// composes the CLI's location again.
 pub fn worker_tag_dir(root: &Path, label: &str, is_git_repo_at_spawn: bool) -> PathBuf {
-    if is_git_repo_at_spawn {
-        forge_agent::env::worktree::worktree_base(root).join(".claude/worktrees").join(label)
-    } else {
-        root.to_path_buf()
+    if !is_git_repo_at_spawn {
+        return root.to_path_buf();
     }
+    let current =
+        forge_agent::env::worktree::worktree_base(root).join(".claude/worktrees").join(label);
+    if current.exists() {
+        return current;
+    }
+    let legacy = root.join(".claude/worktrees").join(label);
+    if legacy != current && legacy.join(".git").is_file() { legacy } else { current }
 }
 
 /// Whether a persisted worker row can still start a session. The boot
@@ -285,6 +296,63 @@ mod is_git_repo_at_spawn_tests {
     fn worker_entry_carries_is_git_repo_at_spawn_false() {
         let entry = fake_entry(false);
         assert!(!entry.is_git_repo_at_spawn);
+    }
+}
+
+#[cfg(test)]
+mod worker_tag_dir_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status =
+            std::process::Command::new("git").arg("-C").arg(dir).args(args).status().expect("git");
+        assert!(status.success(), "git {args:?} in {}", dir.display());
+    }
+
+    /// A worker spawned before #2460 on a project that is itself a linked
+    /// worktree ran in the project path's own `.claude/worktrees`; that
+    /// directory is where its conversation lives, so it is preferred
+    /// while it stands. Once it is gone (a despawn), the CLI's location
+    /// under the main checkout is composed again.
+    #[test]
+    fn worker_tag_dir_keeps_a_legacy_linked_worktree_until_it_is_despawned() {
+        let holder = tempdir().expect("holder");
+        let main = holder.path().join("main");
+        std::fs::create_dir_all(&main).expect("main dir");
+        run_git(&main, &["init", "-q"]);
+        run_git(&main, &["config", "user.email", "t@example.com"]);
+        run_git(&main, &["config", "user.name", "Test"]);
+        run_git(&main, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.join("README.md"), "seed").expect("write seed");
+        run_git(&main, &["add", "."]);
+        run_git(&main, &["commit", "-q", "-m", "init"]);
+        let main = std::fs::canonicalize(&main).expect("canonical main");
+        let linked = holder.path().join("linked");
+        run_git(&main, &["worktree", "add", "-q", "-b", "linked", linked.to_str().expect("utf8")]);
+
+        let legacy = linked.join(".claude").join("worktrees").join("old");
+        std::fs::create_dir_all(&legacy).expect("legacy dir");
+        std::fs::write(legacy.join(".git"), "gitdir: /nowhere\n").expect("legacy link");
+        assert_eq!(
+            worker_tag_dir(&linked, "old", true),
+            legacy,
+            "an existing pre-#2460 worktree is where the worker still runs",
+        );
+
+        let current = main.join(".claude").join("worktrees").join("old");
+        std::fs::create_dir_all(&current).expect("current dir");
+        assert_eq!(
+            worker_tag_dir(&linked, "old", true),
+            current,
+            "the CLI's location wins once it exists",
+        );
+
+        assert_eq!(
+            worker_tag_dir(&linked, "old", false),
+            linked,
+            "a non-git worker runs in the tree itself",
+        );
     }
 }
 

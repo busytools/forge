@@ -1343,6 +1343,33 @@ pub(crate) fn handle_spawn_worker(
             .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&root))
     };
 
+    // The composed worktree is repository-global, so a label can name a
+    // tree that already belongs to another project - its own checkout, or
+    // a live worker's worktree. Reusing it would put two sessions in one
+    // tree and hand the later despawn the power to delete it; refuse
+    // before anything is minted.
+    if is_git
+        && let Some(collision) = workspace.worktree_collision(
+            &crate::mcp::workers::types::worker_tag_dir(&root, label, true),
+            &project_key,
+        )
+    {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            event_name = "worker_spawn_refused_shared_worktree",
+            project = %project_key.as_str(),
+            label = %label,
+            tree = %root.display(),
+            reason = %collision,
+            "the worker's worktree is shared with another project, so the spawn is refused",
+        );
+        let _ = return_to.send(Err(format!(
+            "this worker's worktree cannot be shared: {collision}; despawn the other worker, or \
+             spawn under a different label"
+        )));
+        return;
+    }
+
     // The pool key a fresh worker spawns under: an id minted here and
     // recorded under the worker's slot before the child starts, so the
     // pool, the registry entry, the gateway binding and the CLI's own
@@ -1946,25 +1973,53 @@ pub(crate) fn handle_despawn_worker_within(
     };
 
     // Resolve the worktree path for git-repo workers (claude's
-    // `<base>/.claude/worktrees/<label>/`, `base` being the canonical root
-    // of the tree the worker was spawned in, so a project that is itself a
-    // linked worktree resolves to the main checkout - which is where the
-    // CLI created the worktree, and where every operation below must aim).
-    // Non-git workers have no worktree to clean.
+    // `<base>/.claude/worktrees/<label>/`, `base` being the CLI's
+    // canonical root, so a project that is itself a linked worktree
+    // resolves to the main checkout - which is where the CLI created the
+    // worktree). Non-git workers have no worktree to clean.
     let project_view = workspace.list_projects().into_iter().find(|v| v.key == *project_key);
-    let worktree_root = recorded_cwd.or_else(|| project_view.as_ref().map(|v| v.path.clone()));
-    let worktree_root = if is_git_repo {
-        worktree_root.map(|root| forge_agent::env::worktree::worktree_base(&root))
-    } else {
-        worktree_root
-    };
+    let spawn_root = recorded_cwd.or_else(|| project_view.as_ref().map(|v| v.path.clone()));
     let worktree_path = if is_git_repo {
-        worktree_root
+        spawn_root
             .as_ref()
             .map(|root| crate::mcp::workers::types::worker_tag_dir(root, label, true))
     } else {
         None
     };
+    // Every worktree operation below runs against the checkout whose
+    // `.claude/worktrees` holds the tree: the composed path is
+    // `<owner>/.claude/worktrees/<label>`, so the owner is three ancestors
+    // up - the main checkout for the CLI's location, the project path
+    // itself for a worker still running where it was spawned before #2460.
+    let worktree_root = worktree_path
+        .as_ref()
+        .and_then(|path| path.ancestors().nth(3))
+        .map(std::path::Path::to_path_buf)
+        .or(spawn_root);
+
+    // The path is repository-global: it may be another project's checkout
+    // or a live worker's tree. Removing it would delete that, so refuse
+    // before the probe; a force cannot override this.
+    if let Some(path) = worktree_path.as_ref()
+        && let Some(collision) = workspace.worktree_collision(path, project_key)
+    {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            event_name = "despawn_refused_shared_worktree",
+            project = %project_key.as_str(),
+            label = %label,
+            worktree = %path.display(),
+            reason = %collision,
+            "the worker's worktree is shared with another project, so the despawn is refused",
+        );
+        let _ = respond.send(DespawnResult::Failed {
+            reason: format!(
+                "refusing to despawn '{label}': {collision}; if it is not that project's tree, \
+                 remove it by hand"
+            ),
+        });
+        return;
+    }
 
     // A worker's worktree carries its own build tree, so the removal
     // below deletes hundreds of thousands of files and can run for
@@ -2236,9 +2291,12 @@ struct DespawnCleanup {
     worktree_path: Option<std::path::PathBuf>,
     worktree_display: String,
     worktree_already_gone: bool,
-    /// The tree the worker was spawned in - the repo every `git` call in
-    /// the cleanup anchors on. `None` when the project is no longer
-    /// loaded and the row recorded no tree of its own.
+    /// The checkout whose `.claude/worktrees` holds the worker's tree -
+    /// the repo every `git` call in the cleanup anchors on. The main
+    /// checkout for a worker the CLI forked under it, the project path
+    /// itself for a worker still running where it was spawned before
+    /// #2460. `None` when the project is no longer loaded and the row
+    /// recorded no tree of its own.
     worktree_root: Option<std::path::PathBuf>,
     project_view: Option<crate::views::ProjectView>,
     live: Option<crate::mcp::workers::types::WorkerEntry>,
@@ -4087,6 +4145,217 @@ provider = "anthropic"
             String::from_utf8_lossy(&branches.stdout),
         );
         forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// A main repo with one linked worktree per name, each declared as a
+    /// project of that name. Every one of them composes its workers'
+    /// worktrees under the main checkout (#2460), so they share one
+    /// `<main>/.claude/worktrees/<label>` namespace. No project declares a
+    /// model, so a spawn that gets past the worktree checks dies at the
+    /// account walk instead of starting a child.
+    fn linked_projects_fixture(
+        names: &[&str],
+    ) -> (Arc<Workspace>, std::path::PathBuf, Vec<tempfile::TempDir>) {
+        let holder = tempdir().expect("holder");
+        let main = holder.path().join("main");
+        fs::create_dir_all(&main).expect("main dir");
+        run_git(&main, &["init", "-q"]);
+        run_git(&main, &["config", "user.email", "t@example.com"]);
+        run_git(&main, &["config", "user.name", "Test"]);
+        run_git(&main, &["config", "commit.gpgsign", "false"]);
+        fs::write(main.join("README.md"), "seed").expect("write seed");
+        run_git(&main, &["add", "."]);
+        run_git(&main, &["commit", "-q", "-m", "init"]);
+        let main = std::fs::canonicalize(&main).expect("canonical main");
+
+        let mut projects = String::new();
+        for name in names {
+            let linked = holder.path().join(name);
+            run_git(&main, &["worktree", "add", "-q", "-b", name, linked.to_str().expect("utf8")]);
+            let _ = writeln!(
+                projects,
+                "[[orgs.projects]]\nname = \"{name}\"\npath = \"{}\"\n",
+                linked.display()
+            );
+        }
+        let config = tempdir().expect("config tempdir");
+        fs::write(
+            forge_toml_path(config.path()),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n{projects}\
+                 [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(Workspace::new_for_test(config.path().to_owned()).expect("workspace"));
+        (workspace, main, vec![holder, config])
+    }
+
+    /// The base is repository-global, so two projects of one repo compose
+    /// the same worktree path for one label. The one-live-worker guard is
+    /// per project, so without this a second spawn would run in the first
+    /// worker's tree - and its despawn would delete it. A label that names
+    /// a project parked under `.claude/worktrees` is the same collision
+    /// against that project's own checkout.
+    #[tokio::test]
+    async fn a_spawn_refuses_a_worktree_another_project_holds() {
+        let (ws, main, _keep) = linked_projects_fixture(&["proj-a", "proj-b"]);
+        let key_of = |name: &str| {
+            ws.list_projects().into_iter().find(|v| v.name == name).expect("declared project").key
+        };
+        ws.insert_live_worker(&key_of("proj-a"), fake_git_worker_entry("shared", "worker-1"));
+
+        let err = spawn_reply(&ws, &key_of("proj-b"), "shared", false)
+            .await
+            .expect("reply channel")
+            .expect_err("the shared worktree is refused");
+        assert!(err.contains("live worker 'shared'"), "the refusal names the holder: {err}");
+        assert!(err.contains("proj-a"), "and the project it belongs to: {err}");
+        assert!(
+            ws.list_live_workers(&key_of("proj-b")).is_empty(),
+            "the refused spawn mints nothing",
+        );
+
+        // A project declared at the path a worker label would compose is
+        // its own checkout, not a worktree anyone may reuse or remove.
+        let checkout = main.join(".claude").join("worktrees").join("dev");
+        fs::create_dir_all(checkout.parent().expect("worktrees root")).expect("mkdir worktrees");
+        run_git(
+            &main,
+            &["worktree", "add", "-q", "-b", "dev-project", checkout.to_str().expect("utf8")],
+        );
+        ws.seed_test_project("proj-dev", &checkout.to_string_lossy());
+        let err = spawn_reply(&ws, &key_of("proj-b"), "dev", false)
+            .await
+            .expect("reply channel")
+            .expect_err("a project's own checkout is refused");
+        assert!(err.contains("checkout of project 'proj-dev'"), "the refusal names it: {err}");
+    }
+
+    /// The despawn end of the same collision: removing the shared tree
+    /// would delete the other project's live worker's cwd, so it refuses
+    /// even when forced and leaves the tree standing.
+    #[tokio::test]
+    async fn a_despawn_refuses_a_worktree_another_project_holds() {
+        let (ws, main, _keep) = linked_projects_fixture(&["proj-a", "proj-b"]);
+        let key_of = |name: &str| {
+            ws.list_projects().into_iter().find(|v| v.name == name).expect("declared project").key
+        };
+        let shared = main.join(".claude").join("worktrees").join("shared");
+        fs::create_dir_all(shared.parent().expect("worktrees root")).expect("mkdir worktrees");
+        run_git(
+            &main,
+            &["worktree", "add", "-q", "-b", "worktree-shared", shared.to_str().expect("utf8")],
+        );
+        ws.insert_live_worker(&key_of("proj-a"), fake_git_worker_entry("shared", "a-worker"));
+        ws.insert_live_worker(&key_of("proj-b"), fake_git_worker_entry("shared", "b-worker"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&ws, &key_of("proj-a"), "shared", true, tx);
+        let result = rx.await.expect("despawn result");
+        let crate::protocol::DespawnResult::Failed { reason } = result else {
+            panic!("a shared worktree must refuse the despawn even when forced: {result:?}");
+        };
+        assert!(reason.contains("live worker 'shared'"), "the reason names the holder: {reason}");
+        assert!(reason.contains("proj-b"), "and its project: {reason}");
+        assert!(shared.exists(), "the shared tree was not removed");
+        assert_eq!(ws.list_live_workers(&key_of("proj-a")).len(), 1, "and the worker stays live");
+    }
+
+    /// A linked project's worktree sits under the MAIN checkout, and the
+    /// despawn-side conversion is what lets the leftover fallback aim
+    /// there: composing against the project path refuses a directory that
+    /// is not under its `.claude/worktrees` and leaves it behind.
+    #[tokio::test]
+    async fn despawn_removes_a_deregistered_leftover_in_a_linked_project() {
+        let (ws, main, _keep) = linked_projects_fixture(&["proj-a"]);
+        let key = ws.list_projects().into_iter().next().expect("declared project").key;
+        let leftover = main.join(".claude").join("worktrees").join("leftover");
+        fs::create_dir_all(leftover.parent().expect("worktrees root")).expect("mkdir worktrees");
+        run_git(
+            &main,
+            &["worktree", "add", "-q", "-b", "worktree-leftover", leftover.to_str().expect("utf8")],
+        );
+        // The state a failed delete leaves: deregistered, directory on
+        // disk.
+        fs::remove_dir_all(main.join(".git").join("worktrees").join("leftover"))
+            .expect("deregister the worktree");
+        let refused = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force", leftover.to_str().expect("utf8 path")])
+            .current_dir(leftover.parent().expect("wt parent"))
+            .output()
+            .expect("spawn git");
+        assert!(
+            !refused.status.success(),
+            "fixture precondition: git refuses the deregistered leftover outright"
+        );
+        ws.insert_live_worker(&key, fake_git_worker_entry("leftover", "worker-1"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&ws, &key, "leftover", true, tx);
+        let result = rx.await.expect("despawn result");
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned {
+                    worktree_cleanup_warning: None,
+                    branch_cleanup_warning: None,
+                }
+            ),
+            "the leftover is removed under the main checkout: {result:?}"
+        );
+        assert!(!leftover.exists(), "the leftover directory is gone");
+    }
+
+    /// A worker spawned before #2460 on a linked project still runs in the
+    /// project path's own `.claude/worktrees`; its despawn must find that
+    /// tree (the conversation lives there), not compose a new location
+    /// under the main checkout.
+    #[tokio::test]
+    async fn a_legacy_linked_worktree_worker_is_despawned_where_it_runs() {
+        let (ws, main, _keep) = linked_projects_fixture(&["proj-a"]);
+        let key = ws.list_projects().into_iter().next().expect("declared project").key;
+        let linked = ws.project_root_for_key(&key).expect("project root");
+        let legacy = linked.join(".claude").join("worktrees").join("old");
+        fs::create_dir_all(legacy.parent().expect("worktrees root")).expect("mkdir worktrees");
+        run_git(
+            &main,
+            &["worktree", "add", "-q", "-b", "worktree-old", legacy.to_str().expect("utf8")],
+        );
+        ws.insert_live_worker(&key, fake_git_worker_entry("old", "worker-1"));
+
+        // Dirty there: the probe must read the legacy tree, not the
+        // composed one under the main checkout.
+        fs::write(legacy.join("dirty.txt"), "uncommitted").expect("write dirty file");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&ws, &key, "old", false, tx);
+        let blocked = rx.await.expect("despawn result");
+        let crate::protocol::DespawnResult::Blocked { reason } = blocked else {
+            panic!("the probe must read the tree the worker runs in: {blocked:?}");
+        };
+        assert!(reason.contains("uncommitted or untracked changes"), "its own verdict: {reason}");
+
+        fs::remove_file(legacy.join("dirty.txt")).expect("clean the worktree");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&ws, &key, "old", false, tx);
+        let result = rx.await.expect("despawn result");
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
+            "the legacy tree despawns: {result:?}"
+        );
+        assert!(!legacy.exists(), "the tree the worker ran in is the one removed");
+        let branches = std::process::Command::new("git")
+            .args(["branch", "--list", "worktree-old"])
+            .current_dir(&main)
+            .output()
+            .expect("git branch");
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "and its branch is reaped: {:?}",
+            String::from_utf8_lossy(&branches.stdout),
+        );
     }
 
     /// The one handle on the process-wide mock-binary slot below: the case

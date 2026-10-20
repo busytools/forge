@@ -7314,6 +7314,75 @@ impl Workspace {
         (!same).then_some(root)
     }
 
+    /// What a worker's composed worktree path collides with, when it does:
+    /// a declared project's own checkout, or the worktree of a live worker
+    /// under another project.
+    ///
+    /// The base is repository-global (#2460), so two projects of one
+    /// repository - the main checkout and a linked worktree of it, or two
+    /// linked worktrees - compose the same `<main>/.claude/worktrees/
+    /// <label>` and the same `worktree-<label>` branch for one label. The
+    /// one-live-worker guard is per project, so without this the second
+    /// spawn would run in the first worker's tree and a despawn would
+    /// remove it; a label naming a checkout parked under `.claude/worktrees`
+    /// would do the same to that project. Callers refuse rather than
+    /// reuse or remove. A separate forge process is not visible here.
+    pub(crate) fn worktree_collision(
+        &self,
+        path: &std::path::Path,
+        own: &ProjectKey,
+    ) -> Option<String> {
+        let composed = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        for view in self.list_projects() {
+            let declared = std::fs::canonicalize(&view.path).unwrap_or_else(|_| view.path.clone());
+            if declared == composed {
+                return Some(format!(
+                    "'{}' is the checkout of project '{}'; a worker cannot run in, or be \
+                     removed from, a project's own tree",
+                    path.display(),
+                    view.name
+                ));
+            }
+        }
+        // Snapshot the other projects' workers before composing: the tag
+        // dir resolves a git root, and no subprocess runs under the
+        // registry lock.
+        let others: Vec<(ProjectKey, String, bool, Option<std::path::PathBuf>)> = {
+            let workers = self.live_workers.lock();
+            workers
+                .iter()
+                .filter(|(key, _)| *key != own)
+                .flat_map(|(key, entries)| {
+                    entries.iter().map(|entry| {
+                        (
+                            key.clone(),
+                            entry.label.clone(),
+                            entry.is_git_repo_at_spawn,
+                            entry.cwd.clone(),
+                        )
+                    })
+                })
+                .collect()
+        };
+        for (key, label, is_git, cwd) in others {
+            let Some(root) = self.live_worker_root(&key, cwd.as_deref()) else {
+                continue;
+            };
+            let other = crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git);
+            let other = std::fs::canonicalize(&other).unwrap_or(other);
+            if other == composed {
+                let project = self
+                    .project_identity_for_key(&key)
+                    .map_or_else(|| key.as_str().to_owned(), |(_, name)| name);
+                return Some(format!(
+                    "the live worker '{label}' of project '{project}' already runs in '{}'",
+                    path.display()
+                ));
+            }
+        }
+        None
+    }
+
     /// The tree a live worker's directory composes against: the one its
     /// spawn resolved, or the project's own `forge.toml` path when the
     /// spawn stated none. `None` when the session is not a live worker,
@@ -16905,6 +16974,117 @@ provider = "anthropic"
         let _ = spawner.await.expect("facade task joins");
 
         assert!(worktree.exists(), "the facade recreated the worktree the despawn removed");
+        assert_eq!(resume_existing.as_deref(), Some(session_id.as_str()));
+    }
+
+    /// A resume on a project that is itself a linked worktree: its
+    /// workers' worktrees live under the MAIN checkout (#2460), so the
+    /// ensure's repo is the main checkout. A leftover directory there is
+    /// cleared through that root; composing the project path refuses it as
+    /// outside the project's own `.claude/worktrees` and fails the resume.
+    #[tokio::test]
+    async fn mcp_resume_clears_a_leftover_under_the_main_checkout_for_a_linked_project() {
+        let main = tempfile::tempdir().expect("main dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        run_git_in(main.path(), &["init", "-q"]);
+        run_git_in(main.path(), &["config", "user.email", "t@example.com"]);
+        run_git_in(main.path(), &["config", "user.name", "Test"]);
+        run_git_in(main.path(), &["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.path().join("README.md"), "seed").expect("write seed");
+        run_git_in(main.path(), &["add", "."]);
+        run_git_in(main.path(), &["commit", "-q", "-m", "init"]);
+        let main_root = std::fs::canonicalize(main.path()).expect("canonical main");
+
+        let holder = tempfile::tempdir().expect("holder");
+        let linked = holder.path().join("linked");
+        let linked_str = linked.to_string_lossy().replace('\\', "/");
+        run_git_in(&main_root, &["worktree", "add", "-q", "-b", "linked-project", &linked_str]);
+
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "demo"
+path = "{linked_str}"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+            ),
+        )
+        .expect("write forge.toml");
+
+        let session_id = "550e8400-e29b-41d4-a716-446655440098".to_owned();
+        let worktree = main_root.join(".claude").join("worktrees").join("steward");
+        let worktree_str = worktree.to_string_lossy().replace('\\', "/");
+        run_git_in(&main_root, &["worktree", "add", "-q", "-b", "worktree-steward", &worktree_str]);
+        // The transcript lives under the worktree's storage key in the
+        // config dir's projects tree, so it survives the worktree removal.
+        let storage_key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&worktree_str));
+        let jsonl_dir = forge_sdk::projects_dir_for(cfg.path()).join(&storage_key);
+        std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
+        std::fs::write(
+            jsonl_dir.join(format!("{session_id}.jsonl")),
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{worktree_str}\",\"message\":{{\"content\":\"hi\"}}}}\n\
+                 {{\"type\":\"tag\",\"tag\":\"forge:worker:steward\"}}\n"
+            ),
+        )
+        .expect("write tagged jsonl");
+        // The leftover a failed resume path meets: the registration is
+        // gone and an empty directory stands where the worktree was.
+        run_git_in(&main_root, &["worktree", "remove", "--force", &worktree_str]);
+        std::fs::create_dir_all(&worktree).expect("empty leftover");
+        assert!(!worktree.join(".git").exists(), "fixture precondition: no registration left");
+
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let _store = seed_stored_session(&ws, "steward", &session_id);
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "steward".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                    None,
+                    None,
+                )
+                .await
+        });
+        let resume_existing = poll_spawn_worker_field(&ws, |cmd| match cmd {
+            Command::SpawnWorker { label, resume_existing, .. } if label == "steward" => {
+                Some(resume_existing.clone())
+            }
+            _ => None,
+        })
+        .await
+        .expect("the resume spawn dispatched");
+        let _ = spawner.await.expect("facade task joins");
+
+        assert!(
+            worktree.exists(),
+            "the ensure cleared the leftover under the main checkout and recreated the worktree",
+        );
+        assert!(
+            !linked.join(".claude").join("worktrees").join("steward").exists(),
+            "nothing is composed under the project path",
+        );
         assert_eq!(resume_existing.as_deref(), Some(session_id.as_str()));
     }
 
