@@ -13,6 +13,7 @@ use futures_util::SinkExt;
 
 use crate::delivery::delivery_turn;
 use crate::transport::envelope::ServerMessage;
+use crate::transport::{WRITE_BOUND, write_within};
 use crate::{SeatUpdate, SessionUpdate};
 
 /// How long a batch waits for the updates behind it before it goes out.
@@ -177,7 +178,7 @@ where
         feed(socket, ServerMessage::Update { update: Box::new(update), seq: frame.seq, span })
             .await?;
     }
-    socket.flush().await?;
+    write_within(WRITE_BOUND, async { socket.flush().await.map_err(anyhow::Error::from) }).await?;
     Ok(())
 }
 
@@ -207,13 +208,17 @@ fn folded(frames: Vec<SeatUpdate>) -> Vec<(SeatUpdate, u64)> {
 }
 
 /// Put one message in the socket's buffer, where the batch's flush picks it
-/// up.
+/// up - under the write bound, because a full buffer blocks here and a peer
+/// that stopped reading keeps it full.
 async fn feed<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
     let text = serde_json::to_string(&message)?;
-    socket.feed(Message::Text(text.into())).await?;
+    write_within(WRITE_BOUND, async {
+        socket.feed(Message::Text(text.into())).await.map_err(anyhow::Error::from)
+    })
+    .await?;
     Ok(())
 }
 
@@ -395,6 +400,47 @@ mod tests {
             names(&sent(&sink)),
             ["one", "two", "three"],
             "and every update crosses as its own frame, in the order it was emitted",
+        );
+    }
+
+    /// A sink that takes frames and never completes a flush: a peer that
+    /// stopped reading accepts into its buffer and stops draining it.
+    struct NeverFlushes;
+
+    impl Sink<Message> for NeverFlushes {
+        type Error = axum::Error;
+
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// **A batched write is bounded like a single frame.** Most frames a
+    /// client receives go out in a batch, so a peer that stops reading in a
+    /// stream hangs here - and the bound must end the connection rather than
+    /// leave it waiting on a flush that never returns. A bound on the
+    /// single-frame path alone is the change this catches.
+    #[tokio::test(start_paused = true)]
+    async fn a_batch_whose_flush_never_completes_ends_at_the_write_bound() {
+        let mut sink = NeverFlushes;
+        let error = flush(&mut sink, vec![frame(status("one"))])
+            .await
+            .expect_err("a flush that never completes must not hold the connection");
+        assert!(
+            error.downcast_ref::<crate::transport::WriteStalled>().is_some(),
+            "the batch ends on the write bound rather than on a sink error: {error:?}",
         );
     }
 

@@ -115,6 +115,51 @@ impl Default for Heartbeat {
     }
 }
 
+/// The longest one frame may take to reach the socket before its peer is
+/// judged to have stopped reading.
+///
+/// **A write had no bound**: a peer that vanished with a frame in flight
+/// leaves no ping outstanding, so the keepalive cannot see it, and TCP can
+/// take minutes to report the socket gone (#2473). The floor is the slowest
+/// frame measured - a 3.5 MB snapshot to a slow client, 31.6 s - and 60 s
+/// clears it by close to double and is the keepalive's own dead bound, so the
+/// two mechanisms measure a dead peer on the same scale.
+pub(crate) const WRITE_BOUND: Duration = Duration::from_secs(60);
+
+/// A frame write that outlived [`WRITE_BOUND`].
+///
+/// **A partial frame cannot be resumed**: a client still parsing the frame it
+/// began would read a resumed stream as garbage, so the connection ends
+/// rather than the write being retried.
+#[derive(Debug)]
+pub(crate) struct WriteStalled {
+    pub(crate) bound: Duration,
+}
+
+impl std::fmt::Display for WriteStalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the peer stopped reading: a frame write did not complete within {:?}",
+            self.bound
+        )
+    }
+}
+
+impl std::error::Error for WriteStalled {}
+
+/// Wait on one socket write under `bound`, failing as [`WriteStalled`] when it
+/// does not complete in time.
+async fn write_within<T, F>(bound: Duration, write: F) -> anyhow::Result<T>
+where
+    F: std::future::Future<Output = anyhow::Result<T>>,
+{
+    match tokio::time::timeout(bound, write).await {
+        Ok(answered) => answered,
+        Err(_) => Err(anyhow::Error::new(WriteStalled { bound })),
+    }
+}
+
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations
 /// the stream has seeded, the live state a late subscriber cannot
@@ -405,5 +450,24 @@ mod tests {
         let heartbeat = Heartbeat::default();
         assert_eq!(heartbeat.every, Duration::from_secs(15), "a ping every 15 s");
         assert_eq!(heartbeat.dead, Duration::from_secs(60), "and 60 s without an answer");
+    }
+
+    /// **The shipping write bound is the value the book states.** It is what
+    /// the book tells a client author about a peer that stopped reading, so a
+    /// drift must fail a test rather than quietly change it - and it must
+    /// clear the slowest frame measured (31.6 s) with room.
+    #[test]
+    fn the_shipping_write_bound_is_the_documented_value() {
+        assert_eq!(WRITE_BOUND, Duration::from_secs(60), "one frame, 60 s");
+        assert!(
+            WRITE_BOUND > Duration::from_secs_f64(31.6),
+            "the slowest frame measured must not trip the bound: {WRITE_BOUND:?}",
+        );
+        assert_eq!(
+            WRITE_BOUND,
+            Heartbeat::default().dead,
+            "the book says the two bounds match, so the mechanisms measure a dead peer on one \
+             scale",
+        );
     }
 }
