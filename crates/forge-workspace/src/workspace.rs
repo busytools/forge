@@ -4296,16 +4296,10 @@ impl Workspace {
         // same one forge's machinery forges prose on and a view arms its
         // follow off what it says (#2198): taking it from the command keeps
         // the frame and the queued row's label one fact.
-        // The attachments' blocks are built before the command moves, carrying
-        // the mime and the size rather than the payloads.
         let prompt = match &cmd {
-            Command::PromptUnder { key, text, attachments, uuid, source } => Some((
-                key.clone(),
-                text.clone(),
-                forge_primitives::display_blocks(attachments),
-                uuid.clone(),
-                *source,
-            )),
+            Command::PromptUnder { key, text, uuid, source, .. } => {
+                Some((key.clone(), text.clone(), uuid.clone(), *source))
+            }
             _ => None,
         };
         // A composer's text that names a forge command is FORGE'S, not the
@@ -4319,29 +4313,35 @@ impl Workspace {
         // being emitted where it is decided: it has to land after the echo
         // below, because a client draws this stream in arrival order and one
         // sent first drew the answer above the prompt it answers.
-        let (outcome, answer, prompt_routed) = match &cmd {
-            Command::PromptUnder { key, text, .. } => match crate::prompt::forge_invocation(text) {
-                Some(crate::prompt::Invocation::Command(prompt)) => {
-                    let (outcome, answer) = self.run_forge_prompt(key, &prompt);
-                    (outcome, answer, false)
+        let (outcome, answer, images) = match &cmd {
+            Command::PromptUnder { key, text, attachments, .. } => {
+                match crate::prompt::forge_invocation(text) {
+                    Some(crate::prompt::Invocation::Command(prompt)) => {
+                        let (outcome, answer) = self.run_forge_prompt(key, &prompt);
+                        (outcome, answer, Vec::new())
+                    }
+                    Some(crate::prompt::Invocation::Misuse(usage)) => {
+                        (Ok(()), Some(forge_misuse(usage)), Vec::new())
+                    }
+                    None => {
+                        if let Some(refusal) = self.unrunnable_slash_name(key, text) {
+                            (Ok(()), Some(forge_misuse(&refusal)), Vec::new())
+                        } else {
+                            // Built here, only where the prompt is handed to
+                            // the CLI: the arms above never send the
+                            // attachments, so nothing is validated or carried
+                            // for them.
+                            let images = forge_primitives::display_blocks(attachments);
+                            (self.route(cmd), None, images)
+                        }
+                    }
                 }
-                Some(crate::prompt::Invocation::Misuse(usage)) => {
-                    (Ok(()), Some(forge_misuse(usage)), false)
-                }
-                None => match self.unrunnable_slash_name(key, text) {
-                    Some(refusal) => (Ok(()), Some(forge_misuse(&refusal)), false),
-                    None => (self.route(cmd), None, true),
-                },
-            },
-            _ => (self.route(cmd), None, false),
+            }
+            _ => (self.route(cmd), None, Vec::new()),
         };
         if outcome.is_ok()
-            && let Some((key, text, images, uuid, source)) = prompt
+            && let Some((key, text, uuid, source)) = prompt
         {
-            // A forge command and a refusal answer without routing the prompt
-            // the reader typed, so an attachment beside one never reached a
-            // model and the echo draws the words alone.
-            let images = if prompt_routed { images } else { Vec::new() };
             // Stamped at the forge, like the machinery's own: the CLI never
             // echoes a prompt, so this row is the one that opens every turn a
             // person starts, and a page attaching mid-turn reads its clock
@@ -20416,17 +20416,38 @@ mod prompt_frame_origin_tests {
         let dispatched = ws.dispatch_from_view(Command::Prompt {
             key: seat.clone(),
             text: "/resume".to_owned(),
-            attachments: Vec::new(),
+            // An attachment beside a wrongly invoked command never reaches a
+            // model, so the echo draws the words alone.
+            attachments: vec![forge_primitives::ImageAttachment {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            }],
         });
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
-        let notices: Vec<(SessionSlot, NoticeSeverity, String)> =
-            std::iter::from_fn(|| rx.try_recv().ok())
-                .filter_map(|frame| match frame.update {
-                    SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
-                    _ => None,
-                })
-                .collect();
+        let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let echoed = updates.iter().find_map(|frame| match &frame.update {
+            SessionUpdate::ChatAppended { msg, .. } => Some(msg),
+            _ => None,
+        });
+        let Some(Message::User { message, .. }) = echoed else {
+            panic!("the words the reader typed are echoed before the answer: {updates:?}")
+        };
+        assert!(
+            !message
+                .content
+                .iter()
+                .any(|block| matches!(block, forge_primitives::ContentBlock::Image { .. })),
+            "an attachment beside a wrongly invoked command never reached a model, so the \
+             echo draws the words alone: {message:?}",
+        );
+        let notices: Vec<(SessionSlot, NoticeSeverity, String)> = updates
+            .into_iter()
+            .filter_map(|frame| match frame.update {
+                SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
+                _ => None,
+            })
+            .collect();
         assert!(
             matches!(
                 notices.as_slice(),
@@ -20455,13 +20476,35 @@ mod prompt_frame_origin_tests {
         let dispatched = ws.dispatch_from_view(Command::Prompt {
             key: seat.clone(),
             text: "/spinner now".to_owned(),
-            attachments: Vec::new(),
+            // An attachment beside a refused slash name never reaches a model,
+            // so the echo draws the words alone.
+            attachments: vec![forge_primitives::ImageAttachment {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            }],
         });
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         // The refusal is answered after the echo of the words, so the two are
         // read off the stream together (the order is the case above).
-        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+        let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let echoed = updates.iter().find_map(|frame| match &frame.update {
+            SessionUpdate::ChatAppended { msg, .. } => Some(msg),
+            _ => None,
+        });
+        let Some(Message::User { message, .. }) = echoed else {
+            panic!("the words the reader typed are echoed before the answer: {updates:?}")
+        };
+        assert!(
+            !message
+                .content
+                .iter()
+                .any(|block| matches!(block, forge_primitives::ContentBlock::Image { .. })),
+            "an attachment beside a refused slash name never reached a model, so the echo \
+             draws the words alone: {message:?}",
+        );
+        let notices: Vec<(NoticeSeverity, String)> = updates
+            .into_iter()
             .filter_map(|frame| match frame.update {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
