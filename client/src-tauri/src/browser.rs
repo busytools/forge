@@ -1487,6 +1487,10 @@ impl BrowserHost {
             Ok(answer) => answer?,
             Err(_) => return Err("the browser did not start in time - try Open again".to_owned()),
         }
+        // **Every open asks the bar's arrows again.** The page resets them
+        // before the surface comes up, and an already-attached host would
+        // otherwise answer with a deduped silence until its history moved.
+        cef::surface::refresh_history();
         // **The page this raise shows is the page a restart reopens.** The
         // probe is outside the lock (its 2 s bound must not hold every
         // launch), and the write takes the short lock a call's refresh does.
@@ -2109,6 +2113,23 @@ pub async fn browser_takeover(app: tauri::AppHandle, on: bool) -> Result<(), Str
     outcome.map_err(|why| format!("the window could not change full screen: {why}"))
 }
 
+/// Which way the takeover's arrows move through the page's own history.
+#[cfg(desktop)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavDirection {
+    Back,
+    Forward,
+}
+
+/// The takeover bar's arrows: move the page to the neighbouring entry in its
+/// history - the same move Cmd+[ and Cmd+] make through the surface.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn browser_nav(direction: NavDirection) -> Result<(), String> {
+    cef::surface::navigate(direction)
+}
+
 /// Where the takeover's page area is, in CSS pixels from the viewport's
 /// top-left, and the device pixel ratio it is drawn at. The surface is placed
 /// and sized from this; it is reported on mount and on every resize.
@@ -2308,36 +2329,53 @@ mod tests {
         cef::osr::Ring::unlink("/forge-cef-deadlock-test");
     }
 
-    /// **A successful browsing call rewrites the carried page.** The driver is
-    /// a stub MCP server on stdio behind the real `Profile::call`, so this
-    /// drives `BrowserHost::call` itself: deleting the refresh from the call
-    /// path leaves the marker at its old value and this goes red.
+    /// **A host with a stub driver behind it.** The driver is the real one:
+    /// the stub is an MCP server on stdio in the vendored layout's place, so
+    /// `BrowserHost::call` runs its own path and only the answers are the
+    /// test's. Each `tools/call` is recorded in `calls.log` beside the stub,
+    /// so a test can say how many times one tool was asked for.
     #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn a_successful_call_rewrites_the_carried_page() {
-        use serde_json::json;
-        use std::os::unix::fs::PermissionsExt as _;
+    struct StubHost {
+        dir: tempfile::TempDir,
+        host: Arc<BrowserHost>,
+        cache: std::path::PathBuf,
+        pid: u32,
+        ring: String,
+        ring_value: Arc<cef::osr::Ring>,
+    }
 
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let paths = StackPaths {
-            stack: dir.path().join("stack"),
-            user_data: dir.path().join("user-data"),
-            output: dir.path().join("output"),
-            profiles: dir.path().join("profiles"),
-        };
-        // The vendored layout, with a stub in node's place: the wrapper runs
-        // the "cli" with python, which speaks the newline-delimited MCP
-        // handshake the driver expects.
-        let node = driver::node_path(&paths.stack);
-        std::fs::create_dir_all(node.parent().expect("the node dir")).expect("the node dir");
-        std::fs::write(&node, "#!/bin/sh\nexec python3 \"$@\"\n").expect("the node wrapper");
-        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
-            .expect("the wrapper is executable");
-        let cli = driver::cli_path(&paths.stack);
-        std::fs::create_dir_all(cli.parent().expect("the cli dir")).expect("the cli dir");
-        std::fs::write(
-            &cli,
-            r#"import sys, json
+    #[cfg(target_os = "macos")]
+    impl StubHost {
+        /// `answers` maps a tool name to the MCP result the stub gives it;
+        /// any other tool answers `ok`.
+        async fn start(ring: &str, answers: &serde_json::Value) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let dir = tempfile::tempdir().expect("a temp dir");
+            let paths = StackPaths {
+                stack: dir.path().join("stack"),
+                user_data: dir.path().join("user-data"),
+                output: dir.path().join("output"),
+                profiles: dir.path().join("profiles"),
+            };
+            // The vendored layout, with a stub in node's place: the wrapper
+            // runs the "cli" with python, which speaks the newline-delimited
+            // MCP handshake the driver expects.
+            let node = driver::node_path(&paths.stack);
+            std::fs::create_dir_all(node.parent().expect("the node dir")).expect("the node dir");
+            std::fs::write(&node, "#!/bin/sh\nexec python3 \"$@\"\n").expect("the node wrapper");
+            std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+                .expect("the wrapper is executable");
+            let cli = driver::cli_path(&paths.stack);
+            std::fs::create_dir_all(cli.parent().expect("the cli dir")).expect("the cli dir");
+            // The answers go in a file of their own: a JSON body in a python
+            // string literal would have its escapes read twice.
+            let answers_path = dir.path().join("answers.json");
+            std::fs::write(&answers_path, answers.to_string()).expect("the stub's answers");
+            let body = r#"import sys, json
+ANSWERS = json.load(open("__ANSWERS__"))
+CALLS = "__CALLS__"
+asked = {}
 for line in sys.stdin:
     try:
         message = json.loads(line)
@@ -2353,111 +2391,279 @@ for line in sys.stdin:
     elif method == "tools/list":
         result = {"tools": []}
     elif method == "tools/call":
-        result = {"content": [{"type": "text", "text": "ok"}]}
+        name = message.get("params", {}).get("name", "")
+        with open(CALLS, "a") as log:
+            log.write(name + "\n")
+        answer = ANSWERS.get(name)
+        if isinstance(answer, list):
+            at = min(asked.get(name, 0), len(answer) - 1)
+            asked[name] = asked.get(name, 0) + 1
+            answer = answer[at]
+        result = answer or {"content": [{"type": "text", "text": "ok"}]}
     else:
         result = {}
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}) + "\n")
     sys.stdout.flush()
-"#,
-        )
-        .expect("the stub driver");
-        std::fs::create_dir_all(&paths.output).expect("the output dir");
+"#
+            .replace("__ANSWERS__", &answers_path.display().to_string())
+            .replace("__CALLS__", &dir.path().join("calls.log").display().to_string());
+            std::fs::write(&cli, body).expect("the stub driver");
+            std::fs::create_dir_all(&paths.output).expect("the output dir");
 
-        let host = Arc::new(BrowserHost::new(paths.clone()));
-        let cache = paths.cef_shared();
-        std::fs::create_dir_all(&cache).expect("the cache root");
-        let stub_host = dir.path().join("stub-host.sh");
-        std::fs::write(&stub_host, "#!/bin/sh\nexec sleep 30\n").expect("the stub host");
-        std::fs::set_permissions(&stub_host, std::fs::Permissions::from_mode(0o755))
-            .expect("the stub host is executable");
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
-        let port = listener.local_addr().expect("the address").port();
-        listener.set_nonblocking(true).expect("non-blocking");
-        std::thread::spawn(move || {
-            use std::io::{Read as _, Write as _};
-            loop {
-                match listener.accept() {
-                    Ok((mut socket, _)) => {
-                        let mut buffer = [0_u8; 2048];
-                        let read = socket.read(&mut buffer).unwrap_or(0);
-                        let request = String::from_utf8_lossy(&buffer[..read]);
-                        let body = if request.starts_with("GET /json/list") {
-                            r#"[{"type":"page","url":"https://example.com/after-call"}]"#
-                        } else {
-                            r#"{"Browser":"Chrome/154.0"}"#
-                        };
-                        let answer = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                            body.len()
-                        );
-                        let _ = socket.write_all(answer.as_bytes());
+            let host = Arc::new(BrowserHost::new(paths.clone()));
+            let cache = paths.cef_shared();
+            std::fs::create_dir_all(&cache).expect("the cache root");
+            let stub_host = dir.path().join("stub-host.sh");
+            std::fs::write(&stub_host, "#!/bin/sh\nexec sleep 30\n").expect("the stub host");
+            std::fs::set_permissions(&stub_host, std::fs::Permissions::from_mode(0o755))
+                .expect("the stub host is executable");
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
+            let port = listener.local_addr().expect("the address").port();
+            listener.set_nonblocking(true).expect("non-blocking");
+            std::thread::spawn(move || {
+                use std::io::{Read as _, Write as _};
+                loop {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            let mut buffer = [0_u8; 2048];
+                            let read = socket.read(&mut buffer).unwrap_or(0);
+                            let request = String::from_utf8_lossy(&buffer[..read]);
+                            let body = if request.starts_with("GET /json/list") {
+                                r#"[{"type":"page","url":"https://example.com/after-call"}]"#
+                            } else {
+                                r#"{"Browser":"Chrome/154.0"}"#
+                            };
+                            let answer = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            let _ = socket.write_all(answer.as_bytes());
+                        }
+                        Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
                     }
-                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
                 }
-            }
-        });
-        let ring_name = "/forge-cef-call-test";
-        let ring = Arc::new(cef::osr::Ring::create(ring_name, 64, 64).expect("a ring"));
-        let pid = cef::spawn::spawn_with(&stub_host, &cache, port, ring_name, 800, 600)
-            .expect("the stub host starts");
-        cef::spawn::write_record(
-            &cache,
-            &cef::spawn::Record { pid, port, ring: ring_name.to_owned() },
-        )
-        .expect("the record");
-        host.hosts.lock().await.insert(
-            cache.clone(),
-            Arc::new(cef::spawn::ActiveHost {
-                pid,
-                port,
-                ring: Arc::clone(&ring),
-                profile: cache.clone(),
-            }),
-        );
-        write_carried_page(&cache, Some("https://example.com/before"));
-        // **A host that applies the cue**, as the host loop does: without it
-        // the call's bounded wait would burn its full 100 ms on every run.
-        let applier = Arc::clone(&ring);
-        tokio::spawn(async move {
-            loop {
-                // SAFETY: the ring outlives this task and holds a header.
-                let seq = unsafe {
-                    (*applier.header()).show_seq.load(std::sync::atomic::Ordering::Acquire)
-                };
-                if seq > 0 {
-                    // SAFETY: as above.
-                    unsafe {
-                        (*applier.header())
-                            .show_applied
-                            .store(seq, std::sync::atomic::Ordering::Release);
+            });
+            let ring_name = ring.to_owned();
+            let ring_value = Arc::new(cef::osr::Ring::create(&ring_name, 64, 64).expect("a ring"));
+            let pid = cef::spawn::spawn_with(&stub_host, &cache, port, &ring_name, 800, 600)
+                .expect("the stub host starts");
+            cef::spawn::write_record(
+                &cache,
+                &cef::spawn::Record { pid, port, ring: ring_name.clone() },
+            )
+            .expect("the record");
+            host.hosts.lock().await.insert(
+                cache.clone(),
+                Arc::new(cef::spawn::ActiveHost {
+                    pid,
+                    port,
+                    ring: Arc::clone(&ring_value),
+                    profile: cache.clone(),
+                }),
+            );
+            // **A host that applies the cue**, as the host loop does: without
+            // it the call's bounded wait would burn its full 100 ms per run.
+            let applier = Arc::clone(&ring_value);
+            tokio::spawn(async move {
+                loop {
+                    // SAFETY: the ring outlives this task and holds a header.
+                    let seq = unsafe {
+                        (*applier.header()).show_seq.load(std::sync::atomic::Ordering::Acquire)
+                    };
+                    if seq > 0 {
+                        // SAFETY: as above.
+                        unsafe {
+                            (*applier.header())
+                                .show_applied
+                                .store(seq, std::sync::atomic::Ordering::Release);
+                        }
+                        return;
                     }
-                    return;
+                    tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
-            }
-        });
+            });
+            Self { dir, host, cache, pid, ring: ring_name, ring_value }
+        }
 
-        let parts = host
+        /// The host's show sequence, as the ring carries it.
+        fn show_cues(&self) -> u64 {
+            // SAFETY: the ring is mapped for this fixture's lifetime.
+            unsafe {
+                (*self.ring_value.header()).show_seq.load(std::sync::atomic::Ordering::Acquire)
+            }
+        }
+
+        /// The tool names the stub was asked for, in order.
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.path().join("calls.log"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        async fn shutdown(self) {
+            cef::spawn::end(self.pid).await;
+            cef::spawn::remove_record(&self.cache);
+            cef::osr::Ring::unlink(&self.ring);
+        }
+    }
+
+    /// **A successful browsing call rewrites the carried page.** The driver is
+    /// a stub MCP server on stdio behind the real `Profile::call`, so this
+    /// drives `BrowserHost::call` itself: deleting the refresh from the call
+    /// path leaves the marker at its old value and this goes red.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_successful_call_rewrites_the_carried_page() {
+        let stub = StubHost::start(
+            "/forge-cef-call-test",
+            &json!({ "browser_navigate": { "content": [{ "type": "text", "text": "ok" }] } }),
+        )
+        .await;
+        write_carried_page(&stub.cache, Some("https://example.com/before"));
+
+        let parts = stub
+            .host
             .call(&seat(), "browser_navigate", json!({ "url": "https://example.com/after-call" }))
             .await
             .expect("the stub driver answers");
         assert_eq!(parts.len(), 1, "the stub's one part is the call's answer");
         assert_eq!(
-            std::fs::read_to_string(cache.join("page")).expect("the call wrote the page"),
+            std::fs::read_to_string(stub.cache.join("page")).expect("the call wrote the page"),
             "https://example.com/after-call",
             "a successful call rewrites the carry"
         );
-        // **The call cued the host before driving it.** The stub host never
-        // applies the cue, so the wait ran to its bound - the sequence is the
-        // proof the cue was sent.
-        // SAFETY: the ring is mapped and holds a header.
-        let cues = unsafe { (*ring.header()).show_seq.load(std::sync::atomic::Ordering::Acquire) };
+        // **The call cued the host before driving it.** The fixture's host
+        // applies the cue; the sequence is the proof it was sent.
+        let cues = stub.show_cues();
         assert!(cues >= 1, "the call asked the host to show the page first: {cues}");
 
-        cef::spawn::end(pid).await;
-        cef::spawn::remove_record(&cache);
-        cef::osr::Ring::unlink(ring_name);
+        stub.shutdown().await;
+    }
+
+    /// **A refused navigation's failure names the page the browser is on.**
+    /// The driver's own text names the address it was given; the page's own
+    /// title names the host that refused. Removing the failure-path probe, or
+    /// the note it appends, leaves the bare reason and this goes red.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_refused_navigation_names_the_page_the_browser_is_on() {
+        let refused = "browserBackend.callTool: net::ERR_CONNECTION_REFUSED at \
+                       https://job-boards.greenhouse.io/yieldmo/jobs/8243707";
+        let error_page = "### Result\n{\n  \"visibility\": \"visible\",\n  \"url\": \
+                          \"chrome-error://chromewebdata/\",\n  \"title\": \"yieldmo.com\"\n}\n\n\
+                          ### Ran Playwright code\n```js\nawait page.evaluate('...');\n```";
+        let stub = StubHost::start(
+            "/forge-cef-note-test",
+            &json!({
+                "browser_navigate": {
+                    "content": [{ "type": "text", "text": refused }],
+                    "isError": true,
+                },
+                "browser_evaluate": { "content": [{ "type": "text", "text": error_page }] },
+            }),
+        )
+        .await;
+
+        let why = stub
+            .host
+            .call(
+                &seat(),
+                "browser_navigate",
+                json!({ "url": "https://job-boards.greenhouse.io/yieldmo/jobs/8243707" }),
+            )
+            .await
+            .expect_err("the stub refuses the navigation");
+        assert!(
+            why.contains("net::ERR_CONNECTION_REFUSED"),
+            "the call's own reason is kept: {why}"
+        );
+        assert!(
+            why.contains("its own error page for \"yieldmo.com\""),
+            "the host that refused is named: {why}",
+        );
+
+        stub.shutdown().await;
+    }
+
+    /// **A page that cannot be read leaves the reason alone, and the probe is
+    /// retried once before it gives up.** The first evaluate after a failed
+    /// navigation is the one that dies on the destroyed context, so a single
+    /// attempt would drop the note in the case it exists for.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_page_that_cannot_be_read_keeps_the_reason_and_the_probe_is_retried() {
+        let refused = "browserBackend.callTool: net::ERR_CONNECTION_REFUSED at https://x.test/";
+        let stub = StubHost::start(
+            "/forge-cef-unreadable-test",
+            &json!({
+                "browser_navigate": {
+                    "content": [{ "type": "text", "text": refused }],
+                    "isError": true,
+                },
+                "browser_evaluate": {
+                    "content": [{ "type": "text", "text": "### Error Execution context was destroyed" }],
+                    "isError": true,
+                },
+            }),
+        )
+        .await;
+
+        let why = stub
+            .host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://x.test/" }))
+            .await
+            .expect_err("the stub refuses the navigation");
+        assert_eq!(why, refused, "a page that cannot be read adds nothing to the reason");
+        let evaluates = stub.calls().into_iter().filter(|tool| tool == "browser_evaluate").count();
+        assert_eq!(evaluates, 2, "the probe was retried once, not looped");
+
+        stub.shutdown().await;
+    }
+
+    /// **The retry is what reads the page after a refused navigation.** The
+    /// first evaluate is the one that dies on the context the navigation
+    /// destroyed; a retry that ran both and kept the first answer would drop
+    /// exactly the note this path exists for, with every other test green.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_second_probe_reads_the_page_the_first_one_lost() {
+        let refused = "browserBackend.callTool: net::ERR_CONNECTION_REFUSED at https://x.test/";
+        let destroyed =
+            "### Error Execution context was destroyed, most likely because of a navigation";
+        let error_page = "### Result\n{\n  \"visibility\": \"visible\",\n  \"url\": \
+                          \"chrome-error://chromewebdata/\",\n  \"title\": \"yieldmo.com\"\n}\n\n\
+                          ### Ran Playwright code\n```js\nawait page.evaluate('...');\n```";
+        let stub = StubHost::start(
+            "/forge-cef-retry-test",
+            &json!({
+                "browser_navigate": {
+                    "content": [{ "type": "text", "text": refused }],
+                    "isError": true,
+                },
+                "browser_evaluate": [
+                    { "content": [{ "type": "text", "text": destroyed }], "isError": true },
+                    { "content": [{ "type": "text", "text": error_page }] },
+                ],
+            }),
+        )
+        .await;
+
+        let why = stub
+            .host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://x.test/" }))
+            .await
+            .expect_err("the stub refuses the navigation");
+        assert!(
+            why.contains("its own error page for \"yieldmo.com\""),
+            "the second attempt's page is the note: {why}",
+        );
+        let evaluates = stub.calls().into_iter().filter(|tool| tool == "browser_evaluate").count();
+        assert_eq!(evaluates, 2, "both attempts ran");
+
+        stub.shutdown().await;
     }
 
     /// **The strip reads the surface, not the host.** A profile whose host is

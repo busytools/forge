@@ -1636,6 +1636,15 @@ export class Chat {
       /** Each row's messages after the reconciliation, which hold the page's own. */
       const copies: unknown[][] = [];
       /**
+       * The held turn a row the loop matched by NAME already answers for, one
+       * entry per `named` row.
+       *
+       * An array rather than a map of indices: the quiet splice below drops
+       * rows the pile pulled, and an index kept across it names the row that
+       * moved into that place rather than the one that was there.
+       */
+      const namedTurn: Array<Turn | null> = [];
+      /**
        * The frames that have answered for a copy of the reader's own words,
        * for the WHOLE page.
        *
@@ -1674,6 +1683,7 @@ export class Chat {
           const settled = messages === repeated.messages ? repeated : { ...repeated, messages };
           named.push(settled);
           copies.push(settled.messages);
+          namedTurn.push(repeated);
           continue;
         }
         // **A row the fold cut at a mid-turn prompt is not a row of its own.**
@@ -1717,6 +1727,7 @@ export class Chat {
         known.set(key, fresh);
         named.push(fresh);
         copies.push(fresh.messages);
+        namedTurn.push(null);
       }
       // **A page can carry the row the pile is already drawing.** The
       // transport keeps the forged turn it was sent, so a read taken while the
@@ -1730,19 +1741,25 @@ export class Chat {
       // into the hold would draw beside the card AND drain a second time.
       const quiet: unknown[][] = [];
       const quietNamed: Turn[] = [];
+      const quietNamedTurn: Array<Turn | null> = [];
       let pulled = false;
-      for (let at = 0; at < copies.length; at += 1) {
+      // Rows by `named`, which `copies` and `namedTurn` are pushed in lockstep
+      // with: one guard keeps all three spliced to the same length.
+      for (let at = 0; at < named.length; at += 1) {
+        const row = named[at];
+        if (row === undefined) continue;
         const copy = copies[at] ?? [];
         const kept = copy.filter((message) => !this.heldBack(message));
         if (kept.length !== copy.length) pulled = true;
         if (kept.length === 0) continue;
-        const row = named[at];
-        if (row !== undefined) quietNamed.push({ ...row, messages: kept });
+        quietNamed.push({ ...row, messages: kept });
         quiet.push(kept);
+        quietNamedTurn.push(namedTurn[at] ?? null);
       }
       if (pulled) {
         named.splice(0, named.length, ...quietNamed);
         copies.splice(0, copies.length, ...quiet);
+        namedTurn.splice(0, namedTurn.length, ...quietNamedTurn);
       }
       // A row the page settled: a turn the server has an END for, which is a
       // `result` frame where the wire carries one and any row but the last
@@ -1777,49 +1794,105 @@ export class Chat {
         // row to a page row that ran before it.
         return turn.messages.some((message) => held.carries(message, words));
       };
-      const replaced = new Set<Turn>();
-      const drawn = named.map((row, index) => {
+      /**
+       * Where a held turn's copy landed in `drawn`, by the turn.
+       *
+       * **A page can cut one exchange into two rows**: a prompt that arrived
+       * mid-turn opens a row of its own on the read path, and the question's
+       * assistant frames ride it while the prompt that opened the exchange
+       * stays above. One exchange is one row here, so the first row places it
+       * and every later one joins it rather than drawing it twice (#2458).
+       */
+      const placed = new Map<Turn, number>();
+      const drawn: Turn[] = [];
+      for (let index = 0; index < named.length; index += 1) {
+        const row = named[index];
+        if (row === undefined) continue;
         // The exchange is the row's messages AFTER the reconciliation above,
         // which hold the page's own copy of it: a repeated row is handed back
         // as the held object, whose messages can be the older of the two, so a
         // row taken before that reconciliation reads as not carrying what the
         // page plainly carries.
         const copy = copies[index] ?? [];
-        // This row's frames, indexed once for both asks below: the live-turn
-        // match, which runs per turn held, and the growth, which runs once.
+        // This row's frames, indexed once for both asks below: the match,
+        // which runs per turn held, and the growth, which runs once.
         const carried = new Frames(copy);
-        // One row per live turn: a turn this page already drew is not the
-        // exchange a later row of the same page is an account of. It is this
-        // that keeps two rows from landing under one key, which the virtualised
-        // list throws on.
-        const live = healed.turns.find(
-          (turn) => turn.live && !replaced.has(turn) && shares(carried, turn, !settledRow(index)),
+        // **A turn and a page row are one exchange when they share a frame**,
+        // whatever the row is called: frames belong to one turn, and a page
+        // that could not name a row - a turn still being written - names it by
+        // its own clock on a later read. Matching by name alone drew that
+        // exchange a second time, with the answer on the older copy.
+        const byName = namedTurn[index] ?? undefined;
+        const match =
+          byName ??
+          healed.turns.find((turn) => turn.live && shares(carried, turn, !settledRow(index))) ??
+          healed.turns.find((turn) => shares(carried, turn, false));
+        if (match === undefined) {
+          drawn.push(row);
+          continue;
+        }
+        const placedAt = placed.get(match);
+        if (placedAt !== undefined) {
+          // The same exchange cut again: its frames join the row already
+          // drawn rather than opening a second one.
+          const target = drawn[placedAt];
+          if (target === undefined) continue;
+          const have = new Frames(target.messages);
+          const grown = copy.filter((message) => !have.carries(message));
+          const also = target.also ?? [];
+          const later = also.includes(row.key) ? also : [...also, row.key];
+          drawn[placedAt] = {
+            ...target,
+            ...(grown.length > 0 ? { messages: [...target.messages, ...grown] } : {}),
+            ...(later === also ? {} : { also: later }),
+          };
+          continue;
+        }
+        placed.set(match, drawn.length);
+        if (byName !== undefined) {
+          // Reconciled against this turn above already: the name it matched
+          // under is one `known` holds, so the row is ready as it stands.
+          drawn.push(row);
+          continue;
+        }
+        // **The row keeps the name it already had.** A page that settles a
+        // turn the frames built is an account of the SAME exchange, and a list
+        // keys its rows by that name - so handing it the page's own unmounts
+        // the row and draws a fresh one, which closes every disclosure the
+        // reader had open and reopens every one they had closed. The page's own
+        // name is kept beside: the next page repeats the turn under it, and a
+        // turn that cannot be found by the name the page uses is drawn again
+        // beside the row already held.
+        const later = match.also ?? [];
+        const also = later.includes(row.key) ? later : [...later, row.key];
+        if (!match.live) {
+          // A held turn this page renews under a name it did not have when the
+          // first read cut it - a name it did have would have been found
+          // through `known` - and the page is the fuller account: the frames
+          // it lacks arrived after its read.
+          const missed = match.messages.filter((message) => !carried.carries(message));
+          drawn.push({ ...match, messages: [...copy, ...missed], also });
+          continue;
+        }
+        // A copy read while the turn was still being written carries both the
+        // words no frame did (the CLI never echoes a prompt) and the frames
+        // the page was read too early to have - so the frames still to come
+        // join it rather than opening a second row.
+        //
+        // **A page's settle is a positional guess, and a parked turn proves it
+        // wrong.** A row reads as settled when it is not the page's last or it
+        // carries a result - and a turn parked on a question keeps taking
+        // frames, so a row cut above one that arrived later reads settled
+        // while the frames are still writing it. Dropping what the page does
+        // not carry is what lost the question from its own row, and with it
+        // the answer (#2458).
+        const grown = match.messages.filter((message) => !carried.carries(message));
+        drawn.push(
+          settledRow(index) && grown.length === 0
+            ? { ...row, key: match.key, also }
+            : { key: match.key, messages: [...copy, ...grown], live: !settledRow(index), also },
         );
-        if (live === undefined) return row;
-        // The page is the account of the turn it copies, so the live turn is
-        // replaced either way - and where the copy is settled it is the whole
-        // account, so the row stands as it is.
-        replaced.add(live);
-        // **The row keeps the name it already had.** A page that settles a live
-        // turn is an account of the SAME exchange, and a list keys its rows by
-        // that name - so handing it the page's own unmounts the row and draws a
-        // fresh one, which closes every disclosure the reader had open and
-        // reopens every one they had closed.
-        const name = live.key;
-        // The page's own name for it is kept beside: the next page repeats the
-        // turn under that name, and a turn that cannot be found by the name the
-        // page uses is drawn again beside the row already held.
-        const also =
-          live.also?.includes(row.key) === true ? live.also : [...(live.also ?? []), row.key];
-        if (settledRow(index)) return { ...row, key: name, also };
-        // A copy read while the turn was still being written is not: the row
-        // stands in its place, marked live, and carries both the words no frame
-        // did (the CLI never echoes a prompt) and the frames the page was read
-        // too early to have - so the frames still to come join it rather than
-        // opening a second row.
-        const grown = live.messages.filter((message) => !carried.carries(message));
-        return { key: name, messages: [...copy, ...grown], live: true, also };
-      });
+      }
       // Frames that waited for a turn, against this page: one the page already
       // carries is the SAME frame read back, so its copy here is let go; the
       // rest are newer than the page's cut, and they ride its newest row -
@@ -1883,6 +1956,9 @@ export class Chat {
       }
       // The fresh fill: a FIRST landing that brought nothing but one running
       // turn has history above it that no reader can reach without a scroll.
+      // **`drawn` counts rows, so a page whose split rows joined reads as
+      // one** and may ask for a page it did not strictly need - a read rather
+      // than a wrong row, and the guard is what keeps the history reachable.
       walk.fill = direction === 'newest' && first && drawn.length <= 1 && cursor !== null;
       walk.reached = inPage;
       // A turn being written that no row of this page accounts for is kept - a
@@ -1906,9 +1982,12 @@ export class Chat {
       //
       // By the prompt's id, never by words: a delivery repeating earlier words
       // is still the reader's new row.
+      // **`drawn`, not `copies`**: a copy that joined an earlier row has no
+      // row of its own here, and an index read off the page's copies would
+      // grow a later turn with a frame the row above already carries.
       const rowOf = new Map<string, number>();
-      copies.forEach((copy, index) => {
-        for (const message of copy) {
+      drawn.forEach((row, index) => {
+        for (const message of row.messages) {
           const id = uuidOf(message);
           if (id !== null && !rowOf.has(id)) rowOf.set(id, index);
         }

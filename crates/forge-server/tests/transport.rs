@@ -6,16 +6,17 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use forge_primitives::{AgentCommand, SessionId, SessionSlot};
+use forge_primitives::{AgentCommand, ImageAttachment, SessionId, SessionSlot};
 use forge_server::Command;
 use forge_server::surface::SessionUpdate;
 use forge_server::surface::inspector::ContextUsage;
 use forge_server::testing::{Fleet, ViewFacts};
-use forge_server::transport::TransportState;
 use forge_server::transport::conversation::Conversation;
 use forge_server::transport::envelope::{ClientMessage, ServerMessage, Subject};
 use forge_server::transport::serve;
+use forge_server::transport::{Heartbeat, TransportState};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -50,17 +51,24 @@ async fn a_server() -> (String, Fleet) {
 /// itself, which is what a sleeping seat's page gets.
 async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-    let (url, state) = serve_fleet(&fleet).await;
+    let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
     (url, fleet, state)
 }
 
 /// The socket a fleet answers on, for a test that built its own fleet (and
 /// so owns the config the server reads).
-async fn serve_fleet(fleet: &Fleet) -> (String, Arc<TransportState>) {
-    let state = Arc::new(TransportState::for_workspace(
-        &fleet.workspace(),
-        forge_primitives::ClientConfig::default(),
-    ));
+///
+/// The keepalive is the caller's: the shipping pair is what every test but
+/// the reap's wants, and that one shortens it so a silent peer can be watched
+/// being reaped rather than waiting the minute out.
+async fn serve_fleet(fleet: &Fleet, heartbeat: Heartbeat) -> (String, Arc<TransportState>) {
+    let state = Arc::new(
+        TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        )
+        .with_heartbeat(heartbeat),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);
@@ -183,21 +191,37 @@ async fn send_wire(socket: &mut Client, frame: serde_json::Value) {
 }
 
 /// The server's next message, or `None` if it said nothing inside `ms`.
+///
+/// **Control frames are the socket's, not the protocol's**: the server's
+/// keepalive pings arrive on the same stream, and `to_text` reports a ping's
+/// payload as text, so a reader that took the next frame as a message would
+/// read one as an empty document.
 async fn next_server_within(socket: &mut Client, ms: u64) -> Option<ServerMessage> {
-    let msg = tokio::time::timeout(std::time::Duration::from_millis(ms), socket.next()).await;
-    let msg = msg.ok()?.expect("a message").expect("no error");
-    Some(serde_json::from_str(msg.to_text().expect("text")).expect("decode"))
+    let deadline = Instant::now() + Duration::from_millis(ms);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let msg = tokio::time::timeout(left, socket.next()).await.ok()?.expect("a message");
+        let msg = msg.expect("no error");
+        let Message::Text(text) = msg else { continue };
+        return Some(serde_json::from_str(&text).expect("decode"));
+    }
 }
 
 /// The server's next message as raw text, or `None` inside `ms`.
 ///
 /// For the messages the typed reader refuses: a `no_audio` outcome carries a
 /// `peak_db` that a no-signal take crosses as `null`, and unlike the level's
-/// own `peak_db` that field has no tolerance on the read side.
+/// own `peak_db` that field has no tolerance on the read side. Control frames
+/// are passed over for the reason [`next_server_within`] gives.
 async fn next_text_within(socket: &mut Client, ms: u64) -> Option<String> {
-    let msg = tokio::time::timeout(std::time::Duration::from_millis(ms), socket.next()).await;
-    let msg = msg.ok()?.expect("a message").expect("no error");
-    msg.to_text().ok().map(str::to_owned)
+    let deadline = Instant::now() + Duration::from_millis(ms);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let msg = tokio::time::timeout(left, socket.next()).await.ok()?.expect("a message");
+        let msg = msg.expect("no error");
+        let Message::Text(text) = msg else { continue };
+        return Some(text.to_string());
+    }
 }
 
 /// The server's next message.
@@ -639,6 +663,7 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -689,6 +714,73 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     }
 }
 
+/// **The surface a client names on its take crosses the socket into its
+/// end.** The transport rebuilds the command to stamp the connection, and a
+/// field dropped there never reaches the record the words are handed back
+/// from - the take itself still runs, so only the ending says so.
+#[tokio::test]
+async fn a_takes_surface_crosses_the_socket_into_its_end() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+
+    let mut owner = connect(&url).await;
+    send(
+        &mut owner,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut owner).await;
+
+    send(
+        &mut owner,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                surface: Some("review".to_owned()),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut owner, "the take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+
+    send(
+        &mut owner,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStop {
+                key: lead_seat(),
+                submit: false,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    let ended = update_until(&mut owner, "the take's end", |update| {
+        matches!(update, SessionUpdate::DictateEnded { .. })
+    })
+    .await;
+    let SessionUpdate::DictateEnded { surface, .. } = ended else {
+        panic!("the take must end, got {ended:?}")
+    };
+    assert_eq!(
+        surface.as_deref(),
+        Some("review"),
+        "the ending names the surface the client started the take with"
+    );
+}
+
 /// One live take per connection, enforced at the socket: the same client
 /// asking for a second take on another seat is refused by name, and the
 /// first take is untouched - which is what "a frame carries no seat" costs,
@@ -723,6 +815,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -740,6 +833,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
             command: Box::new(Command::DictateStream {
                 key: other_seat.clone(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -801,6 +895,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -841,6 +936,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -872,6 +968,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -962,6 +1059,7 @@ async fn a_clients_frames_feed_the_take_it_started() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1081,6 +1179,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1127,6 +1226,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1171,6 +1271,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1191,6 +1292,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1238,6 +1340,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1278,6 +1381,7 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1396,6 +1500,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1433,6 +1538,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1488,6 +1594,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -3260,7 +3367,7 @@ async fn the_configured_record_cap_reaches_the_served_page() {
             &format!("[server]\ntool_record_cap_kb = {kb}\n"),
         )
         .expect("the fleet builds");
-        let (url, state) = serve_fleet(&fleet).await;
+        let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
         let row = serde_json::json!({
             "type": "user",
             "uuid": "tool-result-1",
@@ -5795,15 +5902,29 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
     );
 }
 
-/// The text of a user turn, when the frame is one.
+/// The text of a user turn, when the frame is one: the first text block it
+/// carries, wherever it sits among the attachments.
 fn user_text(msg: &forge_primitives::Message) -> Option<String> {
     let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
-    let Some(forge_primitives::ContentBlock::Text { text, .. }) = message.content.first() else {
+    message.content.iter().find_map(|block| match block {
+        forge_primitives::ContentBlock::Text { text, .. } => Some(text.clone()),
+        _ => None,
+    })
+}
+
+/// The media type of the image a user turn carries, when the frame is one.
+fn user_image_mime(msg: &forge_primitives::Message) -> Option<String> {
+    let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
-    Some(text.clone())
+    message.content.iter().find_map(|block| match block {
+        forge_primitives::ContentBlock::Image { source, .. } => {
+            source.get("media_type")?.as_str().map(str::to_owned)
+        }
+        _ => None,
+    })
 }
 
 /// A prompt one client sends draws for every other client on that seat, and
@@ -5845,13 +5966,26 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
         };
     }
 
+    // **The attachment the prompt carries rides the frame too.** The read
+    // path draws it from the transcript's queued copy, so a live row without
+    // it shows words alone until the page re-reads - and this frame is the
+    // live path's only carrier.
+    let image =
+        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
+    // Malformed attachments are sent too, one per arm `validate_image`
+    // refuses: the sender drops them before the model sees them, so the live
+    // row must not draw one that disappears on reload.
+    let wrong_mime =
+        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "text/plain".to_owned() };
+    let bad_base64 =
+        ImageAttachment { data: "not base64!".to_owned(), mime_type: "image/png".to_owned() };
     send(
         &mut sender,
         ClientMessage::Command {
             command: Box::new(Command::Prompt {
                 key: lead_seat(),
                 text: "hello there".to_owned(),
-                attachments: Vec::new(),
+                attachments: vec![image.clone(), wrong_mime, bad_base64],
             }),
             reply_to: None,
         },
@@ -5868,12 +6002,68 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
             // (#2198).
             source: Some(forge_workspace::PromptSource::You),
             ..
-        } if user_text(msg).as_deref() == Some("hello there"))
+        } if user_text(msg).as_deref() == Some("hello there")
+            && user_image_mime(msg).as_deref() == Some(image.mime_type.as_str()))
     };
-    update_until(&mut watcher, "the prompt a client sent, drawn for another client", drawn).await;
-    update_until(&mut sender, "the prompt a client sent, drawn for the client that sent it", drawn)
-        .await;
-    update_until(&mut onlooker, "a third view's send, drawn for this one", drawn).await;
+    let first = update_until(
+        &mut watcher,
+        "the prompt a client sent, drawn for another client with the attachment it carried",
+        drawn,
+    )
+    .await;
+    let SessionUpdate::ChatAppended { msg, .. } = &first else {
+        panic!("a prompt draws as a chat frame: {first:?}")
+    };
+    let forge_primitives::Message::User { message, .. } = msg else {
+        panic!("a prompt draws as the user turn it was: {msg:?}")
+    };
+    let Some(forge_primitives::ContentBlock::Image { source, extras }) = message
+        .content
+        .iter()
+        .find(|block| matches!(block, forge_primitives::ContentBlock::Image { .. }))
+    else {
+        panic!("the live frame carries the attachment the prompt was sent with: {message:?}")
+    };
+    // **The payload never rides the live frame.** The frame is kept and
+    // re-served by every read of the row, so an image block here carries what
+    // a row prints - the mime and the measured size - exactly as the read
+    // path's stripped copy does.
+    assert_eq!(source.get("data"), None, "the live frame carries no base64 payload: {source}");
+    // The literal, not the helper the implementation calls: "iVBORw0KGgo=" is
+    // twelve base64 characters, eight bytes once the padding is out.
+    assert_eq!(
+        extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
+        Some(8),
+        "the row prints the eight bytes the payload weighed",
+    );
+    assert_eq!(
+        message.content.len(),
+        2,
+        "only the attachment the sender kept draws, beside the words: {message:?}",
+    );
+    // **The order the echo documents**: the images first and the words last,
+    // the array the prompt was sent as - a text-first echo draws the same row
+    // but stops matching the transcript's own copy of the message.
+    assert!(
+        matches!(message.content.first(), Some(forge_primitives::ContentBlock::Image { .. })),
+        "the attachment leads the echo: {message:?}",
+    );
+    assert!(
+        matches!(message.content.last(), Some(forge_primitives::ContentBlock::Text { .. })),
+        "the words close it: {message:?}",
+    );
+    update_until(
+        &mut sender,
+        "the prompt a client sent, drawn for the client that sent it with the attachment it carried",
+        drawn,
+    )
+    .await;
+    update_until(
+        &mut onlooker,
+        "a third view's send, drawn for this one with the attachment it carried",
+        drawn,
+    )
+    .await;
 
     // And exactly once: the evidence is ORDER, never a timeout,a nd a second
     // forged frame would have to arrive ahead of an update every subscriber
@@ -8292,6 +8482,241 @@ async fn a_waiting_capable_client_takes_the_role_when_the_holder_goes() {
     );
 }
 
+/// **A capable peer that stops answering is reaped, the role it held passes
+/// on, and the trail says which side ended it.** A connection whose peer
+/// vanished without closing reads nothing for ever, so the browser role it
+/// holds sits with a corpse and the live client behind it waits. The live
+/// control beside it is the other half: a peer that answers each ping is NOT
+/// cut, so the bound is silence being noticed rather than every connection
+/// expiring.
+///
+/// **The pair is shortened and the clock is real**, so this exercises the
+/// decision, the promotion and the lines - not the shipping threshold, which
+/// `the_shipping_heartbeat_is_the_documented_pair` pins.
+#[tokio::test]
+async fn a_silent_capable_client_is_reaped_and_the_role_passes_on() {
+    install_capture();
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    // Wide against a loaded runner: the live control's own answers must not
+    // be lost to one scheduling stall, or the negative half flakes.
+    let dead = Duration::from_millis(1_200);
+    let (url, state) =
+        serve_fleet(&fleet, Heartbeat { every: Duration::from_millis(200), dead }).await;
+
+    // The holder declares, reads the answer it is owed, and then stops
+    // reading: the server's pings are never drained, so its side hears
+    // nothing more.
+    let mut silent = connect(&url).await;
+    send(
+        &mut silent,
+        ClientMessage::Subscribe {
+            what: Subject::Usage,
+            answering: false,
+            browser: true,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut silent).await;
+    let held = state.browser.testing_host().expect("the capable connection holds the role");
+
+    // The live control: a second capable connection, read start to finish so
+    // its own ping answers go out.
+    let mut live = connect(&url).await;
+    send(
+        &mut live,
+        ClientMessage::Subscribe {
+            what: Subject::Usage,
+            answering: false,
+            browser: true,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut live).await;
+    let waiter = *state
+        .browser
+        .testing_waiting_ids()
+        .first()
+        .expect("the second capable connection is in line");
+    let pump = tokio::spawn(async move { while live.next().await.is_some() {} });
+
+    // **The reap.** The role leaves the silent holder inside the bound.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while state.browser.testing_host() == Some(held) {
+        assert!(Instant::now() < deadline, "the silent holder was never reaped");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // **The promotion.** The client already in line holds it, and the line is
+    // empty.
+    assert_eq!(
+        state.browser.testing_host(),
+        Some(waiter),
+        "the role passed to the client already in line",
+    );
+    assert_eq!(state.browser.testing_waiting(), 0, "and nothing is left waiting");
+
+    // **The live control is not itself reaped.** It answered the pings that
+    // cut the silent holder, so a second dead window must leave it in place -
+    // otherwise this test would pass on a keepalive that cuts everything.
+    let settled = Instant::now() + dead + Duration::from_millis(300);
+    while Instant::now() < settled {
+        assert_eq!(
+            state.browser.testing_host(),
+            Some(waiter),
+            "the peer that answers its pings kept the role through a second window",
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    pump.abort();
+
+    // **The trail.** The reap names the connection, and the role's release
+    // names the keepalive rather than a client close or a socket failure -
+    // which is the whole point of the reason.
+    let caught = captured();
+    let reap = caught
+        .lines()
+        .find(|line| line.contains("\"connection_reaped\""))
+        .unwrap_or_else(|| panic!("a silent peer must be reaped by name; caught: {caught}"));
+    let parsed: serde_json::Value = serde_json::from_str(reap).expect("the line is JSON");
+    assert_eq!(
+        parsed["client"],
+        serde_json::json!(held),
+        "the reap names the connection that went silent: {reap}",
+    );
+    assert!(parsed.get("waited_ms").is_some(), "and how long the ping went unanswered: {reap}");
+
+    // Parsed and matched on the field, not on a substring: connection 1 is a
+    // prefix of connection 12.
+    let released = caught
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|record| {
+            record["event_name"] == "browser_host_released"
+                && record["client"] == serde_json::json!(held)
+        })
+        .unwrap_or_else(|| panic!("the reaped holder's release is logged; caught: {caught}"));
+    assert_eq!(
+        released["reason"], "reaped",
+        "the release names the keepalive, not a client close: {released}",
+    );
+    assert!(released.get("held_ms").is_some(), "and how long the role was held: {released}");
+}
+
+/// **A client that closes its connection reads as `closed`, not `failed`.**
+/// The release's reason is what tells a reader whether the client left on
+/// purpose or its socket broke, and the two arms are one `if` apart, so each
+/// needs a test: the keepalive's own reason is pinned in the reap test.
+#[tokio::test]
+async fn a_client_that_closes_its_socket_releases_the_role_as_closed() {
+    install_capture();
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Usage,
+            answering: false,
+            browser: true,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut socket).await;
+    let held = state.browser.testing_host().expect("the capable connection holds the role");
+
+    // **Drain the answer's tail before closing.** The grant and the seat set
+    // follow the snapshot; a close sent while they sit unread makes the drop
+    // a reset, and a reset is `failed` by definition - which is not the close
+    // this test is about.
+    let _ = next_server_within(&mut socket, 500).await;
+    let _ = next_server_within(&mut socket, 500).await;
+
+    // A clean close: the close frame, the handshake completed, then dropped.
+    socket.send(Message::Close(None)).await.expect("the close frame goes");
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while socket.next().await.is_some() {}
+    })
+    .await;
+    drop(socket);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while state.browser.testing_host().is_some() {
+        assert!(Instant::now() < deadline, "the role was given back after the client closed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let caught = captured();
+    let released = caught
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|record| {
+            record["event_name"] == "browser_host_released"
+                && record["client"] == serde_json::json!(held)
+        })
+        .unwrap_or_else(|| panic!("the close releases the role and logs it; caught: {caught}"));
+    assert_eq!(
+        released["reason"], "closed",
+        "a client closing its connection is not a socket failure: {released}",
+    );
+}
+
+/// **A socket that fails reads as `failed`, not as a client closing.** The
+/// two arms are one `if` apart, so each needs a test: this one makes the
+/// server's read fail by sending a text frame whose payload is not UTF-8 -
+/// a protocol failure, which no close handshake produced.
+#[tokio::test]
+async fn a_socket_that_fails_releases_the_role_as_failed() {
+    use tokio_tungstenite::tungstenite::protocol::frame::Frame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data as OpData, OpCode};
+
+    install_capture();
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Usage,
+            answering: false,
+            browser: true,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut socket).await;
+    let held = state.browser.testing_host().expect("the capable connection holds the role");
+    // Drain the answer's tail, so the failure is the frame below rather than
+    // a reset from unread bytes.
+    let _ = next_server_within(&mut socket, 500).await;
+    let _ = next_server_within(&mut socket, 500).await;
+
+    // A masked text frame carrying 0xff: valid WebSocket framing, invalid
+    // UTF-8, so the server's own read answers an error.
+    let invalid = Message::Frame(Frame::message(vec![0xff], OpCode::Data(OpData::Text), true));
+    socket.send(invalid).await.expect("the invalid frame goes");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while state.browser.testing_host().is_some() {
+        assert!(Instant::now() < deadline, "the failed connection gave its role back");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let caught = captured();
+    let released = caught
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|record| {
+            record["event_name"] == "browser_host_released"
+                && record["client"] == serde_json::json!(held)
+        })
+        .unwrap_or_else(|| panic!("the failure releases the role and logs it; caught: {caught}"));
+    assert_eq!(
+        released["reason"], "failed",
+        "a socket that errored is not a client closing: {released}",
+    );
+}
+
 /// Every record this process's subscriber writes, installed on first use.
 ///
 /// **One process per test under nextest**, so a global subscriber is this
@@ -8321,7 +8746,9 @@ fn install_capture() -> Arc<Mutex<Vec<u8>>> {
         let subscriber = tracing_subscriber::fmt()
             .json()
             .flatten_event(true)
-            .with_env_filter("forge_server=debug")
+            // The relay's own lines are `forge_workspace::browser`: the
+            // reaped holder's release reason is asserted from here.
+            .with_env_filter("forge_server=debug,forge_workspace=debug")
             .with_writer(move || CaptureSink(Arc::clone(&sink)))
             .with_ansi(false)
             .finish();

@@ -26,6 +26,7 @@ use tauri::{Emitter as _, Manager as _};
 use super::input::{self, InputEvent, MouseKind, Sender};
 use super::osr::{MAX_HEIGHT, MAX_WIDTH, Ring};
 use super::spawn::ActiveHost;
+use crate::browser::NavDirection;
 
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -64,6 +65,9 @@ struct Overlay {
     /// the view is gone and a commit has had its turn; otherwise the bytes
     /// are unmapped under a live CGImage.
     ring: Arc<Ring>,
+    /// The page connection, for the bar's arrows: the command that comes
+    /// from the DOM has no view to reach through, so the slot keeps one.
+    sender: Sender,
 }
 
 static OVERLAY: Mutex<Option<Overlay>> = Mutex::new(None);
@@ -152,10 +156,11 @@ define_class!(
         /// equivalents through `performKeyEquivalent:` before `keyDown:`,
         /// and Tauri's default menu matches Cmd+W (Close Window) and the
         /// Edit menu's Cmd+A/X/C/V/Z even with no responder of its own. The
-        /// surface claims those six while IT holds first responder: Cmd+W
+        /// surface claims those eight while IT holds first responder: Cmd+W
         /// lowers the takeover, the editing chords go to the page over CDP,
-        /// and everything else defers to the superclass, which is the app's
-        /// menu - including when the DOM bar's feedback field has focus.
+        /// Cmd+[ and Cmd+] move through the page's history, and everything
+        /// else defers to the superclass, which is the app's menu -
+        /// including when the DOM bar's feedback field has focus.
         #[unsafe(method(performKeyEquivalent:))]
         unsafe fn perform_key_equivalent(
             &self,
@@ -177,6 +182,14 @@ define_class!(
                 }
                 Equivalent::Page(character) => {
                     self.send_command(character, modifiers(event));
+                    true.into()
+                }
+                Equivalent::Back => {
+                    self.navigate(NavDirection::Back);
+                    true.into()
+                }
+                Equivalent::Forward => {
+                    self.navigate(NavDirection::Forward);
                     true.into()
                 }
                 Equivalent::Defer => objc2::msg_send![super(self), performKeyEquivalent: event],
@@ -264,6 +277,13 @@ impl OverlayView {
     fn send(&self, event: InputEvent) {
         if let Some(sender) = self.ivars().sender.lock().ok().and_then(|slot| slot.clone()) {
             sender.send(event);
+        }
+    }
+
+    /// The arrows' keyboard route: the page connection owns the move.
+    fn navigate(&self, direction: NavDirection) {
+        if let Some(sender) = self.ivars().sender.lock().ok().and_then(|slot| slot.clone()) {
+            sender.navigate(direction);
         }
     }
 
@@ -387,6 +407,10 @@ pub enum Equivalent {
     Lower,
     /// Send this editing chord to the page.
     Page(char),
+    /// Move the page back through its own history.
+    Back,
+    /// Move the page forward through its own history.
+    Forward,
     /// Leave it to the app's menu.
     Defer,
 }
@@ -413,6 +437,8 @@ pub fn route_equivalent(
     }
     match character.to_ascii_lowercase() {
         'w' => Equivalent::Lower,
+        '[' => Equivalent::Back,
+        ']' => Equivalent::Forward,
         character @ ('a' | 'x' | 'c' | 'v' | 'z') => Equivalent::Page(character),
         _ => Equivalent::Defer,
     }
@@ -484,7 +510,7 @@ pub async fn attach(
             let _ = request.reply.send(picked);
         }
     });
-    let sender = input::start(host.port, Arc::clone(&cancel), panels).await?;
+    let sender = input::start(host.port, Arc::clone(&cancel), panels, app.clone()).await?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "the client window is not there".to_owned())?;
@@ -504,7 +530,7 @@ pub async fn attach(
                             mtm.alloc::<OverlayView>(),
                             frame_for(&superview, rect),
                         );
-                        overlay.set_sender(sender);
+                        overlay.set_sender(sender.clone());
                         overlay.set_app(app_for_view.clone());
                         overlay.setWantsLayer(true);
                         superview.addSubview(&overlay);
@@ -532,6 +558,7 @@ pub async fn attach(
                             generation,
                             cancel: Arc::clone(&cancel_for_closure),
                             ring: Arc::clone(&ring_for_view),
+                            sender,
                         });
                         // **The local reference goes; the hierarchy keeps
                         // one.** `addSubview` retained the view, so letting
@@ -682,6 +709,31 @@ pub fn set_rect(app: &tauri::AppHandle, host: &ActiveHost, rect: Rect) {
             }
         }
     });
+}
+
+/// The takeover's arrows, from the page's own DOM: move the open surface's
+/// page through its history. Answers why when no surface is up, so a bar
+/// whose click arrives late says so rather than pretending.
+pub fn navigate(direction: NavDirection) -> Result<(), String> {
+    let slot = OVERLAY.lock().map_err(|_| "the browser surface's state is unusable".to_owned())?;
+    let Some(overlay) = slot.as_ref() else {
+        return Err("the browser surface is not up".to_owned());
+    };
+    overlay.sender.navigate(direction);
+    Ok(())
+}
+
+/// The surface opened on a host that was already attached: publish the page's
+/// history again. The bar resets its arrows on every open, so the shell's
+/// change-only dedupe would otherwise leave them disabled until the page's
+/// history moves. A first open needs nothing - the attach's own read is the
+/// first one.
+pub fn refresh_history() {
+    if let Ok(slot) = OVERLAY.lock()
+        && let Some(overlay) = slot.as_ref()
+    {
+        overlay.sender.refresh_history();
+    }
 }
 
 /// Close the surface: stop drawing and take the overlay down.
@@ -898,6 +950,46 @@ mod tests {
             );
         }
         assert_eq!(route_equivalent('q', true, false, false, false, true), Equivalent::Defer);
+    }
+
+    /// **Cmd+[ and Cmd+] are the browser's back and forward**, claimed only
+    /// with exactly Command like the other chords - and only while the
+    /// surface holds the keyboard. Cmd+Shift+[ is a brace, the app's; a
+    /// neighbouring key is nothing.
+    #[test]
+    fn the_takeover_routes_cmd_bracket_to_the_page_s_history() {
+        assert_eq!(
+            route_equivalent('[', true, false, false, false, true),
+            Equivalent::Back,
+            "Cmd+[ goes back"
+        );
+        assert_eq!(
+            route_equivalent(']', true, false, false, false, true),
+            Equivalent::Forward,
+            "Cmd+] goes forward"
+        );
+        for character in ['[', ']'] {
+            assert_eq!(
+                route_equivalent(character, true, false, false, false, false),
+                Equivalent::Defer,
+                "an unfocused surface leaves Cmd+{character} to the menu"
+            );
+            for (shift, option, control) in
+                [(true, false, false), (false, true, false), (false, false, true)]
+            {
+                assert_eq!(
+                    route_equivalent(character, true, shift, option, control, true),
+                    Equivalent::Defer,
+                    "Cmd+{character} with an extra modifier is the app's \
+                     (shift {shift}, option {option}, control {control})"
+                );
+            }
+        }
+        assert_eq!(
+            route_equivalent('\\', true, false, false, false, true),
+            Equivalent::Defer,
+            "a bracket's neighbour is not the chord"
+        );
     }
 
     #[test]

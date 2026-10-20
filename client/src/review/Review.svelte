@@ -196,10 +196,13 @@
   /** Which box's mic opened the settings, which is the box that anchors the panel. */
   let panelIn = $state<BoxName | null>(null);
 
+  /** The page's own name: the take carries it and the memory reads it, one
+   *  literal so the two ends cannot disagree. */
+  const surface = 'review' as const;
   /** This page's memory of the seat's takes: the arm its own press set, and
    *  what it has placed. A landing is placed once, and the memory is the
    *  seat's - the record in hand can be another seat's between two reads. */
-  const landing = new Landing();
+  const landing = new Landing(surface);
 
   /** The boxes' own field elements, so a key or a panel close can put the
    *  keyboard back in the box that holds the take. */
@@ -255,6 +258,7 @@
   const dictate = new Dictation({
     connection: () => connection,
     seat: () => slot,
+    surface,
     shown: () => composer.take !== null,
     options: () => axesFor(boxKey(slot), defaults),
     device: () => deviceFor(boxKey(slot)),
@@ -401,20 +405,20 @@
    * words were submitted - the reader pressed finish, or the key went up -
    * so a box closed or moved between the release and the landing gets its
    * spot (or its thread) back and takes the words where the reader sees
-   * them, instead of the drop being silent. A notice this page never watched
-   * is still refused by the memory. The box takes the keyboard with them,
-   * the rule the composer's own landing keeps: an immediate Enter sends what
-   * just landed.
+   * them, instead of the drop being silent. The box takes the keyboard with
+   * them, the rule the composer's own landing keeps: an immediate Enter
+   * sends what just landed.
+   *
+   * **A carried notice is the record re-handing words to a box this page no
+   * longer holds** - the page that began the take is gone, so the spot, the
+   * thread or the turn they came from cannot be named. They are dropped, the
+   * same rule a closed box gets, rather than guessed into another box. A
+   * notice that names no surface is an older server and keeps its old road
+   * to the composer.
    */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.notice);
     if (words === null) return;
-    // **The seat's carried words are the composer's to place, not this page's**
-    // (#1360): a review box exists only while a take of THIS page's is in
-    // flight - read off the record, not off the last box the page began,
-    // which stays stamped after the take is over - so a notice this page
-    // never watched must not open one. The memory is left unmarked, and the
-    // composer's own box is where the record hands them.
     if (
       composer.take === null &&
       composer.notice?.kind === 'landed' &&

@@ -103,6 +103,9 @@ const progressed = (): unknown => ({
   uuid: 'progress-1',
 });
 
+/** A `system` frame that draws nothing, under an id of its own. */
+const blank = (id: string): unknown => ({ type: 'system', subtype: 'init', uuid: id });
+
 /** A `user` frame carrying only a tool result, which the fold draws nothing for. */
 const result = (id: string): unknown => ({
   type: 'user',
@@ -164,6 +167,43 @@ const delivered = (text: string): unknown => ({
   uuid: `c-${text}`,
   message: { role: 'user', content: [{ type: 'text', text }] },
 });
+
+/** The assistant frame that asks a question: it draws nothing until answered. */
+const asking = (id: string): unknown => ({
+  type: 'assistant',
+  uuid: `a-${id}`,
+  message: {
+    role: 'assistant',
+    model: 'claude-opus-5',
+    content: [
+      {
+        type: 'tool_use',
+        id,
+        name: 'AskUserQuestion',
+        input: { questions: [{ question: 'Which one?', options: [{ label: 'a' }] }] },
+      },
+    ],
+  },
+});
+
+/** The answer to `asking`, as the CLI hands it back with the record the card reads. */
+const chose = (id: string): unknown => ({
+  type: 'user',
+  uuid: `u-${id}-answer`,
+  message: {
+    role: 'user',
+    content: [{ type: 'tool_result', tool_use_id: id, content: 'answered' }],
+  },
+  tool_use_result: { answers: { 'Which one?': 'a' } },
+});
+
+/** Every answered card the conversation holds, and the turn it drew in. */
+const answeredCards = (chat: Chat): Array<{ at: number; asked: unknown }> =>
+  get(chat.value).turns.flatMap((held, at) =>
+    fold(held.messages).flatMap((unit) =>
+      unit.kind === 'question' ? [{ at, asked: unit.asked }] : [],
+    ),
+  );
 
 /** A dispatched agent's frame, whose words belong to the SUBAGENTS surface. */
 const dispatched = (): unknown => ({
@@ -2340,6 +2380,299 @@ describe('the conversation the chat draws', () => {
     expect(drawnIn?.leaf?.body, 'and the row is no longer left with nothing to open').not.toEqual(
       [],
     );
+  });
+
+  /**
+   * **A question answered minutes later draws its card where it was asked.**
+   *
+   * A parked ask takes frames while it waits, and the transcript's cut can
+   * split the exchange the frames built in one piece: a prompt that arrived
+   * mid-wait opens a row of its own on the read path, and the question's
+   * assistant frames ride it. The answer must still draw on the row the
+   * question was asked in, and the split must not draw the exchange twice
+   * (Ved, 2026-10-20, #2458).
+   */
+  it('draws a question answered after a page read in the turn it was asked in', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The frames build one turn: the reader's prompt, the model's thought, the
+    // question. The seat keeps taking frames while it waits.
+    server.update({ chat_appended: { key: LEAD, msg: typed('ASK') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('considering') } });
+    server.update({ chat_appended: { key: LEAD, msg: asking('toolu_q') } });
+
+    // The page read while parked. Its cut opens a turn at the prompt that
+    // arrived mid-wait, so the question's assistant frames sit in the second
+    // row while the reader's prompt is in the first.
+    server.send(
+      page(
+        [
+          { key: null, messages: [typed('ASK'), blank('sys-a')] },
+          {
+            key: null,
+            messages: [
+              typed('while you wait'),
+              blank('sys-b'),
+              said('considering'),
+              asking('toolu_q'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    // The answer, minutes later.
+    server.update({ chat_appended: { key: LEAD, msg: chose('toolu_q') } });
+
+    // The turn continues and settles, and the reader returns: the page now
+    // names the second row, which the earlier read could not.
+    server.send(
+      page(
+        [
+          { key: null, messages: [typed('ASK'), blank('sys-a')] },
+          {
+            key: 'settled-turn',
+            messages: [
+              typed('while you wait'),
+              blank('sys-b'),
+              said('considering'),
+              asking('toolu_q'),
+              chose('toolu_q'),
+              ended(),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    const cards = answeredCards(chat);
+    expect(cards, 'the answer draws one card').toHaveLength(1);
+    const turns = get(chat.value).turns;
+    expect(
+      turns.filter((held) => JSON.stringify(held.messages).includes('toolu_q')),
+      'and the exchange is one row, not two copies of the question',
+    ).toHaveLength(1);
+    expect(cards[0]?.at, 'and it draws in the last turn, where the question was asked').toBe(
+      turns.length - 1,
+    );
+    expect(
+      JSON.stringify(turns.at(-1)?.messages),
+      'the turn keeps the reader prompts the page cut apart',
+    ).toContain('while you wait');
+    expect(
+      JSON.stringify(turns.at(-1)?.messages),
+      'and the reader prompt that opened it',
+    ).toContain('"text":"ASK"');
+  });
+
+  /**
+   * **A page read never deletes a frame the client holds.** A read can be
+   * built before frames the client already has, so the page's copy of a turn
+   * can be older than the held one - and a settled row is the whole account
+   * of an exchange that is over, which a turn still writing is not. Dropping
+   * what the page lacked is how the question left its own row, and the answer
+   * then had no card to draw on (#2458).
+   */
+  it('keeps the frames a page read from before them does not carry', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: typed('ASK') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('considering') } });
+    server.update({ chat_appended: { key: LEAD, msg: asking('toolu_q') } });
+
+    // A read from before the assistant's frames, in a page with a row below
+    // it: the row reads settled by position while the turn is still written.
+    server.send(
+      page(
+        [
+          { key: null, messages: [typed('ASK')] },
+          { key: 't2', messages: turn('t2', 'later').messages },
+        ],
+        null,
+      ),
+    );
+
+    server.update({ chat_appended: { key: LEAD, msg: chose('toolu_q') } });
+
+    const cards = answeredCards(chat);
+    expect(cards, 'the question and its answer still draw one card').toHaveLength(1);
+    const asked = get(chat.value).turns.findIndex((held) =>
+      JSON.stringify(held.messages).includes('"text":"ASK"'),
+    );
+    expect(cards[0]?.at, 'on the row the reader asked it in').toBe(asked);
+  });
+
+  /**
+   * **A delivery the page keeps in an earlier row is never grown into a later
+   * one.** The id index `absorbed` reads is built over the page's copies, and
+   * a row that joined an earlier one has no entry of its own in `drawn` - so
+   * an id found in a later copy can point past the row that carries it. The
+   * delivery then drew twice: once where the page put it, once in the turn
+   * after (#2390's invariant, regressed by the join).
+   */
+  it('grows the row that carries a delivery, not the one its copy index names', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The frames build a turn, end it, then a delivery opens a turn of its own.
+    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('a1') } });
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    server.update({
+      chat_appended: { key: LEAD, msg: forgedUnder('from forge/gap-timings', 'forge_prompt_1') },
+    });
+
+    // The read: the first two rows are one exchange the frames built - both
+    // share its frames, so the second joins the first - and the delivery rides
+    // that second row. A later turn follows it.
+    server.send(
+      page(
+        [
+          { key: null, messages: [typed('mine'), said('a1')] },
+          {
+            key: null,
+            messages: [
+              typed('while you wait'),
+              said('a2'),
+              ended(),
+              {
+                type: 'user',
+                uuid: 'cli-row-1',
+                message: {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'queued_command',
+                      prompt: 'from forge/gap-timings',
+                      source_uuid: 'forge_prompt_1',
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+          { key: 't3', messages: [typed('next thing'), said('answered it')] },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      JSON.stringify(after).split('from forge/gap-timings').length - 1,
+      'the delivery draws once',
+    ).toBe(1);
+    const carrying = after.filter((row) =>
+      JSON.stringify(row.messages).includes('from forge/gap-timings'),
+    );
+    expect(
+      JSON.stringify(carrying[0]?.messages),
+      'and in the row the page put it in, not the turn after',
+    ).not.toContain('next thing');
+    stop();
+  });
+
+  /**
+   * **A page row that shares no frame with a held turn is not merged into it.**
+   * A row pulled out of the page (its words are waiting in the pile) shifts
+   * every later row down one, and a name match recorded before that shift
+   * belongs to the row that moved, not the one now in its place.
+   */
+  it('never merges a page row into a held turn it shares no frame with', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'hold me' } });
+
+    server.send(
+      page(
+        [
+          { key: null, messages: [forgedUnder('held words', 'p1')] },
+          { key: 't1', messages: turn('t1', 'first').messages },
+          { key: null, messages: [typed('someone else'), said('unrelated')] },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    const carrying = after.filter((row) => JSON.stringify(row.messages).includes('someone else'));
+    expect(carrying, 'the unrelated row stands on its own').toHaveLength(1);
+    expect(
+      JSON.stringify(carrying[0]?.messages),
+      'and is not folded into the turn it shares no frame with',
+    ).not.toContain('"text":"first"');
+    stop();
+  });
+
+  /**
+   * **A settled row reconciles on ids, never on prose.** Ids are unique, while
+   * two id-less rows saying the same words can be two messages - a delivery
+   * repeated is still the reader's next one - so the prose arm is only for the
+   * turn a page may have been read while it was still being written.
+   */
+  it('keeps a settled page row from swallowing the live row that says its words', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // A frame with no id opens a live turn of its own.
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+
+    // A settled page row saying the same words: it is an older copy of the
+    // delivery, and the live row must survive beside it.
+    server.send(
+      page(
+        [
+          { key: null, messages: [forged('check the build')] },
+          { key: 't2', messages: turn('t2', 'later').messages },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('check the build')),
+      'the live row is not swallowed by the settled copy',
+    ).toHaveLength(2);
+    stop();
+  });
+
+  it('keeps an id-less row from merging into a settled turn by its words', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([{ key: null, messages: [forged('check the build')] }], null));
+
+    server.send(
+      page(
+        [
+          { key: null, messages: [forged('check the build'), said('again')] },
+          { key: 't2', messages: turn('t2', 'later').messages },
+        ],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('check the build')),
+      'the repeat is a row of its own',
+    ).toHaveLength(2);
+    stop();
   });
 
   it('opens a turn at the first frame that draws when the seat has none', () => {

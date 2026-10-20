@@ -514,7 +514,9 @@
      trailing break, so every gap it draws is one line box. */
   .prose p + p { margin-top: 20px; }
   /* The reset above zeroes the padding a list draws its markers in. */
-  .prose ul, .prose ol { padding-left: 22px; margin: 20px 0; list-style-position: inside; }
+  .prose ul, .prose ol { padding-left: 22px; margin: 20px 0; list-style-position: outside; }
+  /* A number's marker is 28.6px at one digit and 47.6px at three. */
+  .prose ol { padding-left: 3.2em; }
   .prose li + li { margin-top: 4px; }
   .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
@@ -1745,6 +1747,19 @@ Set `service_key` per environment in the bot's own config.</pre>
               <tr><td>production</td><td>service_key</td></tr>
             </tbody>
           </table>
+          <!-- A loose list: every item is wrapped in a <p>, which is the shape
+               #2477 fixed. The marker hangs in the list's padding instead of
+               taking a line of its own above the paragraph. -->
+          <p>Two things to settle first:</p>
+          <ul>
+            <li>
+              <p><strong>Nothing here is rolled out yet.</strong> The limits are staged and the header is ignored until they go live.</p>
+            </li>
+            <li>
+              <p><strong>The bot keeps its own key.</strong> It rotates on the api's own schedule.</p>
+            </li>
+          </ul>
+          <p>Worth checking whether the staging limit still matches production.</p>
         </div>
 
         <!-- A stretch of work: every call, message and thought on its own row

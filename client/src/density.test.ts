@@ -168,6 +168,21 @@ describe("the conversation draws at the terminal's density", () => {
       expect(gap(block), `${block} does not carry the block gap`).toContain('20px');
     }
   });
+
+  /**
+   * A marker is drawn in the list's padding, not in the item's first block.
+   * An inside marker joins the item's first block, and markdown-it wraps every
+   * item of a loose list in a <p>, so the bullet takes a line above its text.
+   * The number gutter is fixed in em and wide enough for three digits: a
+   * marker box is 28.6px at one digit and 47.6px at three at this size, so a
+   * px gutter wide enough for today's list clips the next digit.
+   */
+  it('hangs a list marker in the list padding', () => {
+    expect(declared('.prose ul', 'list-style-position')).toBe('outside');
+    expect(declared('.prose ul', 'padding-left')).toBe('22px');
+    expect(declared('.prose ol', 'list-style-position')).toBe('outside');
+    expect(declared('.prose ol', 'padding-left')).toBe('3.2em');
+  });
 });
 
 describe("an icon's optical alignment", () => {

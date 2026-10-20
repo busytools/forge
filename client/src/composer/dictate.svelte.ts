@@ -30,6 +30,7 @@ import {
   type Mode,
 } from './dictate-key';
 import { rememberDefaultDevice } from './dictation';
+import type { Surface } from './wire';
 import { Microphone, micSilence, silenceCause, type MicSilence } from './mic';
 import { openShellMic } from './mic-shell';
 import { busyLine, LocalTake, type MicSource, type TakeConnection } from './take';
@@ -201,6 +202,12 @@ interface DictationWiring {
   connection: () => TakeConnection;
   /** The seat showing, which is the one a take is addressed to. */
   seat: () => SessionSlot;
+  /**
+   * Which surface this page is - `composer`, `review`, `files`, `doc`. The
+   * take names it, so the record's re-hand of the words reaches the surface
+   * that began them and no other.
+   */
+  surface: Surface;
   /** Whether the seat's record already shows a take this page did not start. */
   shown: () => boolean;
   /** The axes in force, read at the press rather than at the open. */
@@ -312,6 +319,7 @@ export class Dictation {
       const started = await LocalTake.begin({
         connection: this.#wiring.connection(),
         seat: this.#wiring.seat(),
+        surface: this.#wiring.surface,
         options: this.#wiring.options(),
         device: picked,
         capture: this.#wiring.capture,

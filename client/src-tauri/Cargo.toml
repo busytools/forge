@@ -16,13 +16,19 @@ default-run = "forge-client"
 [workspace]
 
 [features]
-# The overlay ivar check constructs an NSView, which is main-thread-only and
-# cannot be a `#[test]` body; `tests/overlay_ivars.rs` is harness-free and
-# runs it from `main`. Production builds never enable this.
+# The ivar checks construct AppKit objects (an NSView, the application
+# object), which are main-thread-only and cannot be `#[test]` bodies;
+# `tests/overlay_ivars.rs` and `tests/app_ivars.rs` are harness-free targets
+# that run them from `main`. Production builds never enable this.
 testing = []
 
 [[test]]
 name = "overlay_ivars"
+harness = false
+required-features = ["testing"]
+
+[[test]]
+name = "app_ivars"
 harness = false
 required-features = ["testing"]
 

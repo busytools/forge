@@ -1320,6 +1320,14 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .tb-btn { border: 1px solid var(--line); border-radius: 8px; padding: 4px 11px;
   background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
 .tb-btn.d { color: var(--muted); background: transparent; }
+/* The page's own history: two arrows beside back to chat. Disabled is the
+   shell's history event saying there is nowhere to go; the arrow keeps its
+   space so the bar does not jump as the page moves. */
+.tb-nav { display: flex; align-items: center; gap: 4px; }
+.tb-btn.nav { display: inline-flex; align-items: center; justify-content: center;
+  padding: 3px 6px; }
+.tb-btn:disabled { opacity: .45; }
+@media (pointer: coarse) { .tb-btn.nav { min-width: 44px; min-height: 44px; } }
 .tb-feedback { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
   border-top: 1px solid var(--line); background: var(--s2); }
 .tb-field { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
@@ -1604,10 +1612,12 @@ details.sfold div.wk:hover { background: none; }
    against the terminal's 1.23em, and this is the half of the change that makes
    a message taller rather than shorter. The rules below carry the same value. */
 .prose p + p { margin-top: 20px; }
-/* The reset above zeroes the padding a list draws its markers in. Inside
-   rather than outside: an outside marker is painted left of the list's box,
-   outside the scrolling column's clip, so the numbers never showed. */
-.prose ul, .prose ol { padding-left: 22px; margin: 20px 0; list-style-position: inside; }
+/* The reset above zeroes the padding a list draws its markers in, so the padding
+   below is their room; outside, because an inside marker joins a loose item's
+   <p> and takes a line above it. `ol`'s gutter is fixed in em so it holds the
+   marker whatever the count reaches: three digits need 47.6px at this size. */
+.prose ul, .prose ol { padding-left: 22px; margin: 20px 0; list-style-position: outside; }
+.prose ol { padding-left: 3.2em; }
 .prose li + li { margin-top: 4px; }
 .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
   background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }

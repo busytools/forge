@@ -111,9 +111,10 @@ that, since the words a take leaves reach a page only through the record's
 notice. A box the reader closed has nowhere to put them, so the words are
 dropped rather than written where the reader is not, and a notice about a
 take this page never watched (a viewer that attached or reloaded on the
-previous take's words) is not placed at all. The push-to-talk key is
-honoured while the box is open, the same press and release the composer's
-box reads.
+previous take's words) is not placed at all: a carried notice is the record
+re-handing words to a box this page no longer holds, so it is dropped
+rather than guessed into another box. The push-to-talk key is honoured
+while the box is open, the same press and release the composer's box reads.
 
 **The done is the review-left event and the hand-off's answer.** `done (n)`
 submits the drafted threads as one round through the same command a code

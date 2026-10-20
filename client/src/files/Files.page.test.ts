@@ -26,6 +26,27 @@ vi.mock('../session/live', () => ({
   }),
 }));
 
+/** A microphone that opens without an audio stack; the take's wire is the
+ *  subject here, not the capture. */
+const mic = vi.hoisted(() => ({
+  open: (): Promise<unknown> =>
+    Promise.resolve({
+      onFrame: null as ((bytes: Uint8Array) => void) | null,
+      resolved: undefined,
+      flush: () => null,
+      flushWorklet: () => undefined,
+      stop: () => undefined,
+    }),
+}));
+
+vi.mock('../composer/mic', () => ({
+  Microphone: { open: mic.open },
+  inputs: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
+  inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
+  micSilence: (): Promise<null> => Promise.resolve(null),
+  silenceCause: (): null => null,
+}));
+
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import Files from './Files.svelte';
@@ -103,5 +124,170 @@ describe('the files page tree', () => {
       (file?.getAttribute('src') ?? '').split('?')[0],
       'and a file row takes its own glyph',
     ).toMatch(/\/readme\.svg$/);
+  });
+});
+
+describe('the files page take', () => {
+  /** A socket that records the commands the page sends. */
+  function fakeConnection() {
+    const sent: Record<string, unknown>[] = [];
+    return {
+      sent,
+      connection: {
+        settings: () => null,
+        dispatch(command: unknown): null {
+          sent.push(command as Record<string, unknown>);
+          return null;
+        },
+        status: () => 'open',
+        onStatus: () => () => {},
+        onMessage: () => () => {},
+        frame: () => true,
+      } as unknown as Connection,
+    };
+  }
+
+  /**
+   * **The take names this page**, so the record can hand its words back here
+   * and nowhere else. A copied name still compiles, so the wire itself is
+   * what this pins.
+   */
+  it('names this page on its take command', async () => {
+    // jsdom has no media queries, and the page's rail reads one to decide
+    // whether its summary box is up.
+    (globalThis as { matchMedia?: unknown }).matchMedia = () => ({
+      matches: false,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    const fake = fakeConnection();
+    app = mount(Files, {
+      target: document.body,
+      props: { connection: fake.connection, slot: SLOT, dictation: true },
+    });
+    flushSync();
+    push({ wire: record('/Users/me/proj'), refused: null });
+    flushSync();
+
+    const button =
+      document.querySelector<HTMLButtonElement>('.files-railhold .mic') ??
+      document.querySelector<HTMLButtonElement>('.mic');
+    if (button === null) throw new Error('the files page drew no mic');
+    button.click();
+    await vi.waitFor(
+      () => {
+        expect(
+          fake.sent.some((command) => command['dictate_stream'] !== undefined),
+          'the mic began no take',
+        ).toBe(true);
+      },
+      { timeout: 2000 },
+    );
+    const start = fake.sent.find((command) => command['dictate_stream'] !== undefined);
+    expect(start?.['dictate_stream'], 'the take names this page').toMatchObject({
+      surface: 'files',
+    });
+  });
+
+  /**
+   * **A carried notice for a box this page no longer holds is dropped**, even
+   * with the rail's summary still stamped as the box the last take began in -
+   * the re-hand names no box, so it is never written into the last one.
+   */
+  it('drops a carried notice rather than reusing its stale box', async () => {
+    (globalThis as { matchMedia?: unknown }).matchMedia = () => ({
+      matches: false,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    const fake = fakeConnection();
+    app = mount(Files, {
+      target: document.body,
+      props: { connection: fake.connection, slot: SLOT, dictation: true },
+    });
+    flushSync();
+    const base = record('/Users/me/proj') as Record<string, unknown>;
+    const at = (composer: unknown): unknown => ({ ...base, composer });
+    push({
+      wire: at({ take: null, notice: null, compacting: false, sign_in: null }),
+      refused: null,
+    });
+    flushSync();
+
+    const button = document.querySelector<HTMLButtonElement>('.files-finish .mic');
+    if (button === null) throw new Error('the rail drew no mic');
+    button.click();
+    await vi.waitFor(
+      () => {
+        expect(
+          fake.sent.some((command) => command['dictate_stream'] !== undefined),
+          'the mic began no take',
+        ).toBe(true);
+      },
+      { timeout: 2000 },
+    );
+    // The server shows the take, lands its words, and the page places them;
+    // then the record re-hands the seat's words carried.
+    push({
+      wire: at({
+        take: {
+          phase: 'recording',
+          levels: [],
+          peak_db: -50,
+          progress: { done: 0, total: null },
+          elapsed_ms: 1200,
+          floor_db: -50,
+        },
+        notice: null,
+        compacting: false,
+        sign_in: null,
+      }),
+      refused: null,
+    });
+    flushSync();
+    push({
+      wire: at({
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false, generation: 1 },
+        compacting: false,
+        sign_in: null,
+      }),
+      refused: null,
+    });
+    flushSync();
+    // The reader's release: the take ends and the field comes back with the
+    // words the live landing placed.
+    button.click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.files-finish .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.files-finish .rv-txarea')?.value ?? '',
+      'the live landing reaches the rail box',
+    ).toContain('the words');
+
+    push({
+      wire: at({
+        take: null,
+        notice: {
+          kind: 'landed',
+          text: 'the unsent words',
+          truncated: false,
+          carried: true,
+          generation: 4,
+        },
+        compacting: false,
+        sign_in: null,
+      }),
+      refused: null,
+    });
+    flushSync();
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.files-finish .rv-txarea')?.value ?? '',
+      'the re-hand names no box, so it is dropped rather than written into the last one',
+    ).not.toContain('the unsent words');
   });
 });

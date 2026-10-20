@@ -31,6 +31,27 @@ export interface Take {
 }
 
 /**
+ * A page that takes typing with a take of its own: the name the take carries
+ * and the record hands back. A closed set, because a value this client does
+ * not know is one no surface can own.
+ */
+const SURFACES = ['composer', 'review', 'files', 'doc'] as const;
+export type Surface = (typeof SURFACES)[number];
+
+/**
+ * The surface off the wire, or `null` for one this client does not know.
+ *
+ * **An unknown name reads as absent, not as itself** - the old-server rule:
+ * the arm decides a live landing and the seat's carried words reach the
+ * composer. Refusing it everywhere would lose the words to a newer client's
+ * name this build cannot place.
+ */
+export function surfaceFrom(value: unknown): Surface | null {
+  const name = text(value);
+  return SURFACES.find((known): known is Surface => known === name) ?? null;
+}
+
+/**
  * A notice as the record carries it.
  *
  * `generation` is the take's own number, kept where the wire sends one: two
@@ -39,7 +60,21 @@ export interface Take {
  * words again (the landing memory's own discriminator, `landing.ts`).
  */
 export type Notice =
-  | { kind: 'landed'; text: string; truncated: boolean; generation?: number; carried?: true }
+  | {
+      kind: 'landed';
+      text: string;
+      truncated: boolean;
+      generation?: number;
+      carried?: true;
+      /**
+       * The surface whose own capture began the take. A landed take belongs
+       * to the surface that started it, so another surface places nothing.
+       * Absent from a server older than the field (or naming a surface this
+       * build does not know), where the arm decides a live landing and each
+       * page's own guard decides a carried one, as they did before.
+       */
+      surface?: Surface;
+    }
   | { kind: 'line'; tone: string; text: string; generation?: number };
 
 /** The sign-in a seat is waiting on, which makes the hint say which account. */
@@ -211,12 +246,14 @@ function noticeFrom(value: unknown): Notice | null {
     // (#1360): the same words a live landing carries, but any page may place
     // them, because the page that dictated is not necessarily this one.
     const carried = held['carried'] === true ? ({ carried: true } as const) : {};
+    const surface = surfaceFrom(held['surface']);
     return {
       kind: 'landed',
       text: text_,
       truncated: held['truncated'] === true,
       ...kept,
       ...carried,
+      ...(surface === null ? {} : { surface }),
     };
   }
   return { kind: 'line', tone: text(held['tone']) ?? 'q', text: text_, ...kept };

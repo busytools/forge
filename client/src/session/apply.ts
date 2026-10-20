@@ -16,6 +16,7 @@
 
 import { fold } from '../chat/units';
 import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
+import { surfaceFrom } from '../composer/wire';
 import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
@@ -408,7 +409,16 @@ export const HANDLERS: Record<string, Apply> = {
       composer: {
         ...held.composer,
         take: null,
-        notice: notice === null ? null : { ...notice, ...generationOf(payload) },
+        notice:
+          notice === null
+            ? null
+            : {
+                ...notice,
+                ...generationOf(payload),
+                // The surface belongs to the words, not to a refusal's line:
+                // only a landed notice carries it.
+                ...(notice.kind === 'landed' ? surfaceOf(payload) : {}),
+              },
       },
     };
   },
@@ -874,6 +884,16 @@ function push(take: Record<string, unknown>, peakDb: number): Record<string, unk
 function generationOf(payload: Record<string, unknown>): Record<string, unknown> {
   const generation = number(payload['generation']);
   return generation === null ? {} : { generation };
+}
+
+/**
+ * The surface whose capture began a landed take, absent from a record from a
+ * server older than the field - and from a name this build does not know,
+ * which reads as absent so the words still land somewhere.
+ */
+function surfaceOf(payload: Record<string, unknown>): Record<string, unknown> {
+  const at = surfaceFrom(payload['surface']);
+  return at === null ? {} : { surface: at };
 }
 
 /**

@@ -18,6 +18,18 @@ network and is never exposed publicly**, which is the whole reason the
 socket carries no authentication: the network is what the access control
 stands on, not a proxy in front of a public bind.
 
+**The connection is kept alive by a ping.** The server pings every 15
+seconds and ends a connection whose ping has gone unanswered for 60: a
+peer that vanished without closing would otherwise read nothing for ever,
+and the browser role a capable client holds would sit with it. The pair
+is chosen rather than measured, and the dead bound is what caps how long
+a browser call on a paused host waits before it fails: between 60 and 90
+seconds from the last answer, because the next ping can be up to 15
+seconds later and the reap lands at the first beat at or past 60. The
+ask's own bound is longer. Every WebSocket client answers a ping itself, so a
+client needs no code for this; one that stops answering is disconnected,
+and its reconnect declares its subscriptions again like any other.
+
 ## The greeting
 
 The first message a client receives is the greeting, before it has asked
@@ -375,13 +387,15 @@ already filled, or one naming an ask that was never sent on this connection.
 Neither is answered - a binary frame has no reply channel - so the record is
 what makes it legible.
 
-**`dictate_stream {key, options}`** - begin a take the CLIENT captures.
-The connection that sends it feeds the audio as the binary frames above,
-so nothing is opened on the server; the take registers as the message is
-dispatched, so the frame that follows on the same ordered connection
-always finds it. `options` is the axes that client's panel was showing.
-A server-side take records from forge's
-machine, and its axes are the session's stored overrides.
+**`dictate_stream {key, options, surface}`** - begin a take the CLIENT
+captures. The connection that sends it feeds the audio as the binary frames
+above, so nothing is opened on the server; the take registers as the message
+is dispatched, so the frame that follows on the same ordered connection
+always finds it. `options` is the axes that client's panel was showing, and
+`surface` names the page whose own capture began the take (`composer`,
+`review`, `files`, `doc`), so the record can hand the landed words back to
+that page and no other. A server-side take records from forge's machine, and
+its axes are the session's stored overrides.
 
 **A take belongs to the connection that started it.** Every `dictate_*`
 update about it - the start, the levels, the phases, the end - goes back to
@@ -391,8 +405,11 @@ phases or its words, and the seat's record carries no take at all. A second
 naming the reason, and only the refused connection hears it. A connection
 that goes away drops its take rather than submitting it - its reader is
 gone, so nothing more is transcribed and nothing lands anywhere. What does
-land sits in that reader's box, and pressing enter sends it as an ordinary
-prompt every view then sees.
+land sits in the box that began the take while the page that holds it is
+there. On the review, files and document pages a re-hand for a box the page
+no longer holds is dropped rather than placed in another box; the composer
+is the exception, and re-places its own carried landing after a remount.
+Pressing enter sends the words as an ordinary prompt every view then sees.
 
 **`command {command, reply_to?}`** - any of the core's own commands, as
 the core's own enum. `reply_to` is absent or `null` on most of them, and
@@ -573,7 +590,7 @@ conversation, and what the composer is doing.
 | `reviews`                     | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `state`                       | The seat's scan cwd and `queue` - the prompts still waiting in the CLI's queue, oldest first, each `{uuid, source, text}`. The queue is a fact about the seat, so it is read here as well as followed on the stream: `prompt_queued` adds a row and `prompt_lifecycle` settles it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `composer`                    | What the composer is doing: whether the session is compacting, a sign-in it is waiting on, and the push-to-talk key and mode `forge.toml` configures. **No take and no notice**: a take belongs to the connection that started it, so its meter, its phases and its words ride that connection's own updates and never the record. The asks it is answering ride `pending_asks` rather than being copied here.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `composer`                    | What the composer is doing: whether the session is compacting, a sign-in it is waiting on, the push-to-talk key and mode `forge.toml` configures, and the last landed take nobody has sent (`notice`, with `carried: true` and the `surface` whose capture began it - `null` for a server-side take or a client older than the field - which a page reads back after a reload). **No take**: a take belongs to the connection that started it, so its meter and its phases ride that connection's own updates and never the record. The asks it is answering ride `pending_asks` rather than being copied here.                                                                                                                                                                                                         |
 
 **`usage`** is the token/cost pool, scanned on the ask.
 

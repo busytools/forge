@@ -5,14 +5,14 @@
   import Pinned from '../chat/Pinned.svelte';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
-  import { drawsSurface } from '../browser/host';
+  import { drawsSurface, navigateBrowser } from '../browser/host';
   import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
   import { report } from '../socket';
   import { mintPromptId } from '../wire/ids';
-  import { Boxes, boxKey, type Box } from './box.svelte';
+  import { Boxes, COMPOSER_SURFACE, boxKey, type Box } from './box.svelte';
   import { noticeIdentity } from './landing';
   import Autocomplete from './Autocomplete.svelte';
   import TakeCard from './TakeCard.svelte';
@@ -169,6 +169,7 @@
   const dictate = new Dictation({
     connection: () => connection,
     seat: () => untrack(() => slot),
+    surface: COMPOSER_SURFACE,
     shown: () => composer.take !== null,
     options: () => untrack(() => seatAxes),
     device: () => deviceFor(boxKey(untrack(() => slot))),
@@ -1115,6 +1116,11 @@
     void closeSurface();
   }
 
+  /** The bar's arrows: the shell moves the page through its own history. */
+  function takeoverNav(direction: 'back' | 'forward'): void {
+    void navigateBrowser(direction);
+  }
+
   /**
    * The failure state's own door: ask the shell for the surface again.
    *
@@ -1180,12 +1186,14 @@
       take={composer.take}
       {wire}
       silent={silentLine}
+      nav={surface.nav}
       onabandon={abandon}
       onmic={() => dictate.toggle()}
       {dictation}
       ondone={takeoverAsk === null ? null : () => takeoverAnswer(true)}
       onnotnow={takeoverAsk === null ? null : () => takeoverAnswer(false)}
       onback={takeoverBack}
+      onnav={takeoverNav}
       onfeedback={takeoverAsk === null ? null : takeoverFeedback}
       onretry={surface.phase === 'failed' ? takeoverRetry : null}
     />

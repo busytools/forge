@@ -387,6 +387,7 @@ pub fn run() {
             browser::browser_windowed,
             browser::browser_show,
             browser::browser_hide,
+            browser::browser_nav,
             browser::browser_surface_rect,
             browser::browser_takeover,
             browser::browser_used,

@@ -3,6 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::content::ContentBlock;
+use crate::messages::Extras;
+
 /// MIME types the Anthropic Vision API accepts as image attachments.
 pub const SUPPORTED_IMAGE_MIME_TYPES: &[&str] =
     &["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -12,6 +15,55 @@ pub const SUPPORTED_IMAGE_MIME_TYPES: &[&str] =
 pub struct ImageAttachment {
     pub data: String,
     pub mime_type: String,
+}
+
+impl ImageAttachment {
+    /// The source object both block shapes share: the mime the row names, and
+    /// the payload only where the model must receive it.
+    fn source(&self, with_payload: bool) -> serde_json::Value {
+        let mut source = serde_json::Map::new();
+        source.insert("type".to_owned(), serde_json::Value::String("base64".to_owned()));
+        source.insert("media_type".to_owned(), serde_json::Value::String(self.mime_type.clone()));
+        if with_payload {
+            source.insert("data".to_owned(), serde_json::Value::String(self.data.clone()));
+        }
+        serde_json::Value::Object(source)
+    }
+
+    /// The content block the CLI receives, payload included.
+    pub fn wire_block(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "image",
+            "source": self.source(true),
+        })
+    }
+
+    /// The content block a view draws: the mime the row names and the size it
+    /// prints, never the payload - a frame carrying the base64 is re-served by
+    /// every read of the row.
+    pub fn display_block(&self) -> ContentBlock {
+        let mut extras = Extras::new();
+        extras.insert("forge_bytes".to_owned(), serde_json::json!(payload_bytes(&self.data)));
+        ContentBlock::Image { source: self.source(false), extras }
+    }
+}
+
+/// The image blocks a prompt's attachments draw as: the ones the sender would
+/// keep, in the order they were sent, each carrying the mime and the measured
+/// size rather than its payload.
+pub fn display_blocks(images: &[ImageAttachment]) -> Vec<ContentBlock> {
+    images
+        .iter()
+        .filter(|image| validate_image(&image.data, &image.mime_type).is_ok())
+        .map(ImageAttachment::display_block)
+        .collect()
+}
+
+/// The bytes a base64 payload stands for: four characters carry three, and
+/// padding is not a byte.
+pub fn payload_bytes(data: &str) -> u64 {
+    let padding = if data.ends_with("==") { 2 } else { u64::from(data.ends_with('=')) };
+    (data.len() as u64 * 3 / 4).saturating_sub(padding)
 }
 
 /// Returns `true` if `mime_type` is a supported image MIME type.
@@ -50,4 +102,30 @@ pub fn validate_image(data: &str, mime_type: &str) -> Result<(), String> {
         return Err("image data is not valid base64".to_owned());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The sender's block carries the payload.** A block without `data`
+    /// still names an image, so the model reads a picture it was sent no bytes
+    /// for - and nothing else in the suite reads this shape.
+    #[test]
+    fn the_wire_block_carries_the_base64_payload() {
+        let image =
+            ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
+        assert_eq!(
+            image.wire_block(),
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "iVBORw0KGgo=",
+                },
+            }),
+            "the block the CLI receives keeps the payload it was sent",
+        );
+    }
 }

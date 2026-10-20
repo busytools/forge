@@ -1927,6 +1927,7 @@ async fn session(
                         "truncated": landed.truncated,
                         "generation": landed.generation,
                         "carried": true,
+                        "surface": landed.surface,
                     })
                 }),
             }
@@ -2369,6 +2370,7 @@ mod tests {
     use super::*;
     use crate::surface::PendingKind;
     use crate::testing::ViewFacts;
+    use crate::transport::Heartbeat;
     use crate::work::WorkCache;
     use forge_primitives::git_diff::GitDiffSnapshot;
 
@@ -2566,6 +2568,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         // The transport does not read a transcript, so the seat's
         // conversation is put where a `Connected` would have left it.
@@ -2681,6 +2684,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2712,6 +2716,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2753,6 +2758,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded =
@@ -2795,6 +2801,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded =
@@ -2839,6 +2846,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         fleet
             .hold_conversation(&state, "TestOrg", "proj", "lead")
@@ -2905,6 +2913,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded =
@@ -2943,6 +2952,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded =
@@ -2992,6 +3002,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
@@ -3116,6 +3127,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
@@ -3184,6 +3196,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
@@ -3228,6 +3241,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded =
@@ -3333,6 +3347,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Usage).await.expect("encode");
@@ -3367,6 +3382,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         let huge = "x".repeat(100_000);
         let frame = |uuid: &str, record: Value| -> Message {
@@ -3657,6 +3673,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
@@ -3705,6 +3722,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Extensions).await.expect("encode");
@@ -3865,6 +3883,7 @@ mode = \"toggle\"
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let session =
@@ -3897,6 +3916,7 @@ mode = \"toggle\"
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         let seat = fixture_seat();
         let landing = crate::SessionUpdate::DictateEnded {
@@ -3906,6 +3926,7 @@ mode = \"toggle\"
                 truncated: true,
             },
             generation: 7,
+            surface: Some("review".to_owned()),
             initiator: None,
         };
 
@@ -3931,6 +3952,10 @@ mode = \"toggle\"
         assert_eq!(
             session["composer"]["notice"]["carried"], true,
             "and marked as the seat's re-hand rather than a landing of this page's own",
+        );
+        assert_eq!(
+            session["composer"]["notice"]["surface"], "review",
+            "and naming the surface that began it, so only that surface places it",
         );
 
         let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
@@ -3973,6 +3998,7 @@ mode = \"toggle\"
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -3999,6 +4025,7 @@ mode = \"toggle\"
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -4027,6 +4054,7 @@ mode = \"toggle\"
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -4101,6 +4129,7 @@ mode = \"toggle\"
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -4165,6 +4194,7 @@ mode = \"toggle\"
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");

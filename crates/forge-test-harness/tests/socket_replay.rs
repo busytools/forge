@@ -1387,6 +1387,7 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
         sample(Command::DictateStream {
             key: seat.clone(),
             options: forge_workspace::DictateAxes::default(),
+            surface: None,
             initiator: None,
         }),
     );

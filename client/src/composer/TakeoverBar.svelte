@@ -13,6 +13,7 @@
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import { surface } from '../browser/surface.svelte';
+  import type { NavState } from '../browser/surface.svelte';
   import type { Take } from './wire';
 
   let {
@@ -21,12 +22,14 @@
     take = null,
     wire = null,
     silent = null,
+    nav = { can_back: false, can_forward: false },
     onabandon = () => {},
     onmic = () => {},
     dictation = false,
     ondone = null,
     onnotnow = null,
     onback,
+    onnav = null,
     onfeedback = null,
     onretry = null,
   }: {
@@ -41,6 +44,8 @@
       elapsedMs: number;
     } | null;
     silent?: string | null;
+    /** What the page's own history allows; the shell pushes it as it moves. */
+    nav?: NavState;
     onabandon?: () => void;
     onmic?: () => void;
     dictation?: boolean;
@@ -48,6 +53,8 @@
     ondone?: (() => void) | null;
     onnotnow?: (() => void) | null;
     onback: () => void;
+    /** The history arrows' click; their keys are the surface's own. */
+    onnav?: ((direction: 'back' | 'forward') => void) | null;
     onfeedback?: ((text: string) => void) | null;
     /** Present while the surface failed: the door back to a live page. */
     onretry?: (() => void) | null;
@@ -83,6 +90,28 @@
 <div class="takeover-bar" role="region" aria-label="the browser takeover" bind:this={barEl}>
   <div class="tb-row">
     <button class="tb-btn d" type="button" onclick={onback}>back to chat</button>
+    <span class="tb-nav" role="group" aria-label="the page's history">
+      <button
+        class="tb-btn nav"
+        type="button"
+        aria-label="back"
+        title="back (Cmd+[)"
+        disabled={!nav.can_back}
+        onclick={() => onnav?.('back')}
+      >
+        <Icon name="back" />
+      </button>
+      <button
+        class="tb-btn nav"
+        type="button"
+        aria-label="forward"
+        title="forward (Cmd+])"
+        disabled={!nav.can_forward}
+        onclick={() => onnav?.('forward')}
+      >
+        <Icon name="forward" />
+      </button>
+    </span>
     <span class="tb-title">{title}</span>
     {#if onretry !== null}
       <span class="tb-acts">
