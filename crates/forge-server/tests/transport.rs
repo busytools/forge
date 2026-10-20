@@ -5918,7 +5918,7 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     // re-served by every read of the row, so an image block here carries what
     // a row prints - the mime and the measured size - exactly as the read
     // path's stripped copy does.
-    assert_eq!(source.get("data"), None, "the live frame carries no base64 payload: {source}",);
+    assert_eq!(source.get("data"), None, "the live frame carries no base64 payload: {source}");
     assert_eq!(
         extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
         Some(forge_primitives::payload_bytes(&image.data)),
