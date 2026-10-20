@@ -1927,6 +1927,7 @@ async fn session(
                         "truncated": landed.truncated,
                         "generation": landed.generation,
                         "carried": true,
+                        "surface": landed.surface,
                     })
                 }),
             }
@@ -3906,6 +3907,7 @@ mode = \"toggle\"
                 truncated: true,
             },
             generation: 7,
+            surface: Some("review".to_owned()),
             initiator: None,
         };
 
@@ -3931,6 +3933,10 @@ mode = \"toggle\"
         assert_eq!(
             session["composer"]["notice"]["carried"], true,
             "and marked as the seat's re-hand rather than a landing of this page's own",
+        );
+        assert_eq!(
+            session["composer"]["notice"]["surface"], "review",
+            "and naming the surface that began it, so only that surface places it",
         );
 
         let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({

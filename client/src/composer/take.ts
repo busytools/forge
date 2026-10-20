@@ -19,6 +19,7 @@ import type { DictateAxes } from '../session/wire';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { FrameRing } from './capture.svelte';
+import type { Surface } from './wire';
 
 /** How long a release waits for a connection that is not up yet. */
 export const RELEASE_WAIT_MS = 5_000;
@@ -74,6 +75,12 @@ export type TakeConnection = Pick<
 interface TakeWiring {
   connection: TakeConnection;
   seat: SessionSlot;
+  /**
+   * The surface whose own capture began this take - `composer`, `review`,
+   * `files`, `doc`. The record keeps it with the landed words, so the surface
+   * that began them is the one the re-hand reaches.
+   */
+  surface: Surface;
   options: DictateAxes;
   /** The picked input, or `null` for the system default. */
   device: string | null;
@@ -91,6 +98,8 @@ interface TakeWiring {
 /** One live take. */
 export class LocalTake {
   readonly seat: SessionSlot;
+  /** The surface that began this take, as `dictate_stream` names it. */
+  private readonly surface: Surface;
   /** The input the take's stream opened, when the source reported one. */
   readonly resolved: { id: string; label: string } | null;
   /**
@@ -143,6 +152,7 @@ export class LocalTake {
     private readonly wiring: Omit<TakeWiring, 'connection' | 'options' | 'device' | 'capture'>,
   ) {
     this.seat = wiring.seat;
+    this.surface = wiring.surface;
     this.resolved = mic.resolved ?? null;
     this.ring = new FrameRing((bytes) => connection.frame(bytes));
     const ring = this.ring;
@@ -187,6 +197,7 @@ export class LocalTake {
     }
     return new LocalTake(mic, wiring.connection, wiring.options, {
       seat: wiring.seat,
+      surface: wiring.surface,
       onLine: wiring.onLine,
       onEnded: wiring.onEnded,
     });
@@ -353,7 +364,7 @@ export class LocalTake {
     if (this.started || this.ended) return;
     try {
       void this.connection.dispatch({
-        dictate_stream: { key: this.seat, options: this.options },
+        dictate_stream: { key: this.seat, options: this.options, surface: this.surface },
       });
     } catch {
       // Still not open: the next status change comes back here.

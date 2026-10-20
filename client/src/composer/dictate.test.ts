@@ -112,6 +112,7 @@ function wired(held: Held) {
   const dictate = new Dictation({
     connection: () => shared.connection,
     seat: held.seat,
+    surface: 'composer',
     shown: held.shown,
     options: held.options,
     device: held.device,
@@ -150,7 +151,7 @@ describe('starting a take', () => {
     await dictate.begin();
 
     expect(shared.sent[0]?.command).toEqual({
-      dictate_stream: { key: SEAT, options: DEFAULT_AXES },
+      dictate_stream: { key: SEAT, options: DEFAULT_AXES, surface: 'composer' },
     });
     expect(dictate.take, 'and the page holds the take it started').not.toBeNull();
   });
@@ -243,7 +244,7 @@ describe('the press', () => {
     await vi.waitUntil(() => shared.sent.length > 1);
 
     expect(shared.sent[0]?.command).toEqual({
-      dictate_stream: { key: SEAT, options: DEFAULT_AXES },
+      dictate_stream: { key: SEAT, options: DEFAULT_AXES, surface: 'composer' },
     });
     expect(shared.sent[1]?.command, 'the release is what the gesture asked for').toEqual({
       dictate_stop: { key: SEAT, submit: true },
@@ -259,7 +260,7 @@ describe('the bound key', () => {
     await vi.waitUntil(() => dictate.take !== null);
 
     expect(shared.sent[0]?.command).toEqual({
-      dictate_stream: { key: SEAT, options: DEFAULT_AXES },
+      dictate_stream: { key: SEAT, options: DEFAULT_AXES, surface: 'composer' },
     });
   });
 

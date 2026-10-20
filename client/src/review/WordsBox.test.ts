@@ -77,6 +77,7 @@ function drawn(
   const dictate = new Dictation({
     connection: () => shared.connection,
     seat: () => SEAT,
+    surface: 'review',
     shown: () => false,
     options: () => DEFAULT_AXES,
     device: () => null,
@@ -255,7 +256,7 @@ describe('the mic', () => {
     await vi.waitUntil(() => at.dictate.take !== null);
 
     expect(at.shared.sent[0]?.command).toEqual({
-      dictate_stream: { key: SEAT, options: DEFAULT_AXES },
+      dictate_stream: { key: SEAT, options: DEFAULT_AXES, surface: 'review' },
     });
     expect(at.button().getAttribute('aria-label')).toBe('stop dictating');
   });

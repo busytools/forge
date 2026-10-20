@@ -1602,6 +1602,7 @@ describe('the key', () => {
             dictate_stream: {
               key: { org: 'Busytools', project: 'forge', label: 'lead' },
               options: { styling: 'semi_formal', structure: 'prose', context: 'general' },
+              surface: 'composer',
             },
           },
         },
@@ -2537,6 +2538,71 @@ describe('the key', () => {
         },
       },
     ]);
+  });
+});
+
+/**
+ * The seat's landed words are not every surface's to take.
+ *
+ * A take begun on another page of the same seat - a review box, a document's
+ * hand-off box, the files page - lands on the seat, and the record re-hands
+ * it with `carried` for the page that reloaded mid-landing. The composer took
+ * any carried landing, so returning to the session filled its draft with
+ * words the reader had already put in a review box.
+ */
+describe('a landing the seat carries', () => {
+  it('does not take a carried landing another surface began', () => {
+    open({
+      record: withNotice({ ...LANDED, carried: true, surface: 'review' }),
+      dictation: true,
+    });
+    expect(field().value, 'the review box already took these words').toBe('');
+  });
+
+  it('does not take a live landing another surface began', async () => {
+    const harness = open({ dictation: true });
+    key('ControlRight', 'keydown');
+    await opened();
+    harness.page.record = withNotice({ ...LANDED, surface: 'review' });
+    flushSync();
+    // The take has to end for the box to draw its field again. Ending it with
+    // no words leaves the foreign landing as the only thing that could have
+    // reached this draft.
+    harness.say({
+      kind: 'update',
+      update: { dictate_ended: { key: SLOT, outcome: 'cancelled', generation: 1 } },
+    });
+    flushSync();
+    expect(field().value, 'this box began no review take, and keeps its words out').toBe('');
+  });
+
+  /**
+   * **The page that comes back to the session** (or reloads) reads the record
+   * once, and the seat's carried landing is its own take's words: the composer
+   * still places them - and the record's next hand-over of the same notice
+   * appends nothing.
+   */
+  it('takes its own carried landing after the page comes back, once', () => {
+    const carried = { ...LANDED, carried: true, surface: 'composer' };
+    const harness = open({ record: withNotice(carried), dictation: true });
+    expect(field().value, "a re-handed composer take is still the composer's to place").toBe(
+      LANDED.text,
+    );
+    harness.page.record = withNotice(carried);
+    flushSync();
+    expect(field().value, 'the second hand-over of the same notice appends nothing').toBe(
+      LANDED.text,
+    );
+  });
+
+  /**
+   * **A server older than the field degrades to the old behaviour**: the
+   * record names no surface, so nothing refuses the words and the landing
+   * places as it always did - never a silent drop.
+   */
+  it('places a carried landing a record without a surface re-hands', () => {
+    open({ record: withNotice({ ...LANDED, carried: true }), dictation: true });
+    expect(field().value, 'the old server has no surface to refuse').toBe(LANDED.text);
   });
 });
 

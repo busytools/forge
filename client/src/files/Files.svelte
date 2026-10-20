@@ -198,7 +198,10 @@
   /** Which box's mic opened the settings, which is the box that anchors the panel. */
   let panelIn = $state<BoxName | null>(null);
   let dictateLine = $state<TakeLine | null>(null);
-  const landing = new Landing();
+  /** The page's own name: the take carries it and the memory reads it, one
+   *  literal so the two ends cannot disagree. */
+  const surface = 'files' as const;
+  const landing = new Landing(surface);
   const elements: Record<BoxName, HTMLElement | null> = {
     comment: null,
     reply: null,
@@ -227,6 +230,7 @@
   const dictate = new Dictation({
     connection: () => connection,
     seat: () => slot,
+    surface,
     shown: () => composer.take !== null,
     options: () => axesFor(boxKey(slot), defaults),
     device: () => deviceFor(boxKey(slot)),
@@ -399,7 +403,16 @@
     }
   });
 
-  /** A landed take puts its words in the box that began it, once. */
+  /**
+   * A landed take puts its words in the box that began it, once.
+   *
+   * **A carried notice is the record re-handing words to a box this page no
+   * longer holds** - the page that began the take is gone, so the spot, the
+   * thread or the turn they came from cannot be named. They are dropped, the
+   * same rule a closed box gets, rather than guessed into another box. A
+   * notice that names no surface is an older server and keeps its old road
+   * to the composer.
+   */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.notice);
     if (words === null) return;

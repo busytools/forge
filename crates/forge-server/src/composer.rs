@@ -45,6 +45,11 @@ pub struct Landed {
     pub text: String,
     pub truncated: bool,
     pub generation: u64,
+    /// The surface whose own capture began the take, as the stream carried
+    /// it: the words are that surface's to place, and the record says so on
+    /// every re-hand.
+    #[serde(default)]
+    pub surface: Option<String>,
 }
 
 impl Composer {
@@ -70,11 +75,17 @@ impl Composer {
                 key,
                 outcome: crate::surface::DictateOutcome::Landed { text, truncated },
                 generation,
+                surface,
                 ..
             } => {
                 self.landed.insert(
                     key.clone(),
-                    Landed { text: text.clone(), truncated: *truncated, generation: *generation },
+                    Landed {
+                        text: text.clone(),
+                        truncated: *truncated,
+                        generation: *generation,
+                        surface: surface.clone(),
+                    },
                 );
             }
             // **The dock's answer is a send too** (#1360): a reader who dictated
@@ -149,6 +160,7 @@ mod tests {
             key: seat(),
             outcome: DictateOutcome::Landed { text: text.to_owned(), truncated: false },
             generation,
+            surface: None,
             initiator: None,
         }
     }
@@ -271,6 +283,7 @@ mod tests {
             key: seat(),
             outcome: DictateOutcome::Failed,
             generation: 2,
+            surface: None,
             initiator: None,
         });
         assert_eq!(

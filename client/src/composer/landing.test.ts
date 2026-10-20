@@ -32,7 +32,7 @@ const ELSEWHERE = 'session:Busytools/forge/worker';
 
 describe('a landing', () => {
   it('places its words once, and remembers them for the cut row', () => {
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, null);
     expect(landing.place(SEAT, words)).toBe('this read is the whole input');
     landing.placed(words);
@@ -44,7 +44,7 @@ describe('a landing', () => {
   it('places words for a take the record never showed a take for', () => {
     // The record is written once per painted frame, so a take's start and its
     // end can fold into one write: the arm is the press's own.
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, null);
     expect(landing.place(SEAT, words)).toBe('this read is the whole input');
   });
@@ -55,7 +55,7 @@ describe('a landing', () => {
    * take is the take's own number - not its words, which can repeat.
    */
   it('places the same words again when another take spoke them', () => {
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, null);
     expect(landing.place(SEAT, words)).toBe('this read is the whole input');
     landing.placed(words);
@@ -75,7 +75,7 @@ describe('a landing', () => {
    * belongs to.
    */
   it('skips the notice the arm was set under without spending the arm', () => {
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, words);
     expect(landing.place(SEAT, words), 'the notice it was set under places nothing').toBeNull();
     expect(landing.place(SEAT, words), 'however many times it is handed over').toBeNull();
@@ -85,7 +85,7 @@ describe('a landing', () => {
   });
 
   it("is not this page's when no take of its own is behind it", () => {
-    const landing = new Landing();
+    const landing = new Landing('composer');
     expect(landing.place(SEAT, words)).toBeNull();
     expect(landing.holds(words), 'and it holds none of the words').toBe(false);
   });
@@ -104,7 +104,7 @@ describe('a landing', () => {
       generation: 1,
       carried: true,
     };
-    const landing = new Landing();
+    const landing = new Landing('composer');
     expect(
       landing.place(SEAT, carried),
       "a reloaded page never armed, and the seat's unsent words are still its to place",
@@ -137,7 +137,7 @@ describe('a landing', () => {
       truncated: false,
       generation: 2,
     };
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, carried);
     expect(landing.place(SEAT, null), 'the take start clears the record').toBeNull();
     expect(landing.place(SEAT, carried), 'a read re-handing them places nothing').toBeNull();
@@ -173,7 +173,7 @@ describe('a landing', () => {
       truncated: false,
       generation: 3,
     };
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, line);
     expect(landing.place(SEAT, carried), "the older unsent words are not this take's").toBeNull();
     expect(
@@ -182,10 +182,40 @@ describe('a landing', () => {
     ).toBe('new spoken');
   });
 
+  /**
+   * **A landing names the surface that began it, and another surface places
+   * nothing**. The record keeps the seat's words until a prompt sends
+   * them, so it re-hands a review box's words to whatever page reads next;
+   * without this the composer took them on its next mount.
+   */
+  it('places nothing for a landing another surface began', () => {
+    const landing = new Landing('composer');
+    const foreign: Notice = { ...words, surface: 'review' };
+    landing.arm(SEAT, null);
+    expect(landing.place(SEAT, foreign), 'the review box began these words').toBeNull();
+    // The arm went with the notice: the take it was set for never landed (the
+    // server registered the other surface's stream), so it cannot ride the
+    // next one.
+    expect(landing.place(SEAT, other), "and the spent arm is not the next notice's").toBeNull();
+  });
+
+  it("places its own surface's landing, live and carried", () => {
+    const live = new Landing('review');
+    live.arm(SEAT, null);
+    expect(live.place(SEAT, { ...words, surface: 'review' }), 'live').toBe(
+      'this read is the whole input',
+    );
+    const carried = new Landing('review');
+    expect(
+      carried.place(SEAT, { ...words, surface: 'review', carried: true }),
+      'and a re-hand of its own words after a reload',
+    ).toBe('this read is the whole input');
+  });
+
   it('places only for the seat its arm was set on, and keeps that arm', () => {
     // The arm is the seat's, as a page's boxes are: a take that outlives a
     // visit elsewhere still lands on the seat it began on.
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, null);
     expect(landing.place(ELSEWHERE, other), 'another seat has no arm of its own').toBeNull();
     expect(landing.place(SEAT, words), 'and the arm is still the one it was set on').toBe(
@@ -194,7 +224,7 @@ describe('a landing', () => {
   });
 
   it('places words only: a line about a take is not words for the box', () => {
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, null);
     expect(landing.place(SEAT, line)).toBeNull();
     expect(landing.holds(line), 'and the line is not words this box holds').toBe(false);
@@ -211,7 +241,7 @@ describe('a landing', () => {
    * visible.
    */
   it('falls back to kind and text where the record carries no take number', () => {
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, null);
     expect(landing.place(SEAT, older)).toBe('this read is the whole input');
     landing.placed(older);
@@ -224,7 +254,7 @@ describe('a landing', () => {
   });
 
   it('a take starting keeps the placed memory: the words are still in the box', () => {
-    const landing = new Landing();
+    const landing = new Landing('composer');
     landing.arm(SEAT, null);
     expect(landing.place(SEAT, words)).toBe('this read is the whole input');
     landing.placed(words);

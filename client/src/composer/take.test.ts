@@ -96,6 +96,7 @@ function wiring(connection: ReturnType<typeof fakeConnection>) {
     wiring: {
       connection,
       seat: { org: 'TestOrg', project: 'proj', label: 'lead' },
+      surface: 'composer',
       options: DEFAULT_AXES,
       onLine: (line: string) => lines.push(line),
       onEnded: () => {
@@ -116,11 +117,14 @@ describe('a take on a socket that is up', () => {
       const w = wiring(connection);
       const take = new LocalTake(mic, connection, DEFAULT_AXES, {
         seat: SEAT,
+        surface: 'composer',
         onLine: w.wiring.onLine,
         onEnded: w.wiring.onEnded,
       });
 
-      expect(connection.sent[0]).toEqual({ dictate_stream: { key: SEAT, options: DEFAULT_AXES } });
+      expect(connection.sent[0]).toEqual({
+        dictate_stream: { key: SEAT, options: DEFAULT_AXES, surface: 'composer' },
+      });
 
       const frame = encodeFrame([0.5]);
       mic.onFrame?.(frame);
@@ -158,6 +162,7 @@ describe('a take on a socket that is up', () => {
       const w = wiring(connection);
       const take = new LocalTake(mic, connection, DEFAULT_AXES, {
         seat: SEAT,
+        surface: 'composer',
         onLine: w.wiring.onLine,
         onEnded: w.wiring.onEnded,
       });
@@ -195,6 +200,7 @@ describe('a take on a socket that is up', () => {
       const w = wiring(connection);
       const take = new LocalTake(mic, connection, DEFAULT_AXES, {
         seat: SEAT,
+        surface: 'composer',
         onLine: w.wiring.onLine,
         onEnded: w.wiring.onEnded,
       });
@@ -231,6 +237,7 @@ describe('a take on a socket that is up', () => {
     const w = wiring(connection);
     const take = new LocalTake(mic, connection, DEFAULT_AXES, {
       seat: SEAT,
+      surface: 'composer',
       onLine: w.wiring.onLine,
       onEnded: w.wiring.onEnded,
     });
@@ -263,6 +270,7 @@ describe('a take on a socket that is up', () => {
       const w = wiring(connection);
       const take = new LocalTake(mic, connection, DEFAULT_AXES, {
         seat: SEAT,
+        surface: 'composer',
         onLine: w.wiring.onLine,
         onEnded: w.wiring.onEnded,
       });
@@ -289,6 +297,7 @@ describe('a take on a socket that is up', () => {
     const w = wiring(connection);
     const take = new LocalTake(mic, connection, DEFAULT_AXES, {
       seat: SEAT,
+      surface: 'composer',
       onLine: w.wiring.onLine,
       onEnded: w.wiring.onEnded,
     });
@@ -309,6 +318,7 @@ describe('a take on a socket that is up', () => {
     const w = wiring(connection);
     const take = new LocalTake(mic, connection, DEFAULT_AXES, {
       seat: SEAT,
+      surface: 'composer',
       onLine: w.wiring.onLine,
       onEnded: w.wiring.onEnded,
     });
@@ -325,6 +335,7 @@ describe('a take on a socket that is up', () => {
     const w = wiring(connection);
     new LocalTake(mic, connection, DEFAULT_AXES, {
       seat: SEAT,
+      surface: 'composer',
       onLine: w.wiring.onLine,
       onEnded: w.wiring.onEnded,
     });
@@ -343,6 +354,7 @@ describe('a take on a socket that is up', () => {
     const w = wiring(connection);
     new LocalTake(mic, connection, DEFAULT_AXES, {
       seat: SEAT,
+      surface: 'composer',
       onLine: w.wiring.onLine,
       onEnded: w.wiring.onEnded,
     });
@@ -367,6 +379,7 @@ describe('a take on a socket that is up', () => {
     const w = wiring(connection);
     new LocalTake(mic, connection, DEFAULT_AXES, {
       seat: SEAT,
+      surface: 'composer',
       onLine: w.wiring.onLine,
       onEnded: w.wiring.onEnded,
     });
@@ -381,6 +394,7 @@ describe('a take on a socket that is up', () => {
     const w = wiring(connection);
     const heard = {
       seat: SEAT,
+      surface: 'composer' as const,
       onLine: w.wiring.onLine,
       onEnded: w.wiring.onEnded,
     };
@@ -408,6 +422,7 @@ describe('a take whose socket is down', () => {
     const w = wiring(connection);
     new LocalTake(mic, connection, DEFAULT_AXES, {
       seat: SEAT,
+      surface: 'composer',
       onLine: w.wiring.onLine,
       onEnded: w.wiring.onEnded,
     });
@@ -418,7 +433,9 @@ describe('a take whose socket is down', () => {
     expect(connection.frames).toHaveLength(0);
 
     connection.move('open');
-    expect(connection.sent[0]).toEqual({ dictate_stream: { key: SEAT, options: DEFAULT_AXES } });
+    expect(connection.sent[0]).toEqual({
+      dictate_stream: { key: SEAT, options: DEFAULT_AXES, surface: 'composer' },
+    });
     expect(connection.frames, 'both held frames go, in the order spoken').toEqual([
       encodeFrame([0.5]),
       encodeFrame([0.25]),
@@ -433,6 +450,7 @@ describe('a take whose socket is down', () => {
       const w = wiring(connection);
       const take = new LocalTake(mic, connection, DEFAULT_AXES, {
         seat: SEAT,
+        surface: 'composer',
         onLine: w.wiring.onLine,
         onEnded: w.wiring.onEnded,
       });
@@ -460,6 +478,7 @@ describe('a take whose socket is down', () => {
       const w = wiring(connection);
       const take = new LocalTake(mic, connection, DEFAULT_AXES, {
         seat: SEAT,
+        surface: 'composer',
         onLine: w.wiring.onLine,
         onEnded: w.wiring.onEnded,
       });
@@ -489,6 +508,7 @@ describe('a take whose socket is down', () => {
     const w = wiring(connection);
     const take = new LocalTake(mic, connection, DEFAULT_AXES, {
       seat: SEAT,
+      surface: 'composer',
       onLine: w.wiring.onLine,
       onEnded: w.wiring.onEnded,
     });

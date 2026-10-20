@@ -460,6 +460,7 @@ async fn run_connection(
                     initiator: Some(id),
                     outcome,
                     generation,
+                    ..
                 } = &update
                     && *id == me
                 {
@@ -951,8 +952,8 @@ async fn handle_client(
             // take's updates is what routes them home. A client cannot
             // claim another's - the field never crosses the wire.
             let command = match *command {
-                Command::DictateStream { key, options, .. } => {
-                    Command::DictateStream { key, options, initiator: Some(me) }
+                Command::DictateStream { key, options, surface, .. } => {
+                    Command::DictateStream { key, options, surface, initiator: Some(me) }
                 }
                 Command::DictateStop { key, submit, .. } => {
                     Command::DictateStop { key, submit, initiator: Some(me) }

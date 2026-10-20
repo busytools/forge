@@ -5050,7 +5050,7 @@ impl Workspace {
                     self.push_models();
                     return outcome;
                 }
-                Command::DictateStream { key, options, initiator } => {
+                Command::DictateStream { key, options, surface, initiator } => {
                     let updates = self.update_sender();
                     // Registered HERE, inline, rather than on a spawned
                     // task: the connection this arrived on is ordered, so
@@ -5059,7 +5059,13 @@ impl Workspace {
                     // is nothing to take off the runtime thread. The test
                     // `a_stream_take_registers_synchronously_and_keeps_its_frames`
                     // fails the moment this moves onto one.
-                    match crate::dictate::register_stream_take(self, &key, options, initiator) {
+                    match crate::dictate::register_stream_take(
+                        self,
+                        &key,
+                        options,
+                        surface.clone(),
+                        initiator,
+                    ) {
                         Ok(take) => {
                             let _ = updates.send(SessionUpdate::DictateStarted {
                                 key: key.clone(),
@@ -5083,6 +5089,7 @@ impl Workspace {
                                 key,
                                 outcome: crate::protocol::DictateOutcome::Refused { message },
                                 generation: 0,
+                                surface,
                                 initiator,
                             });
                         }
