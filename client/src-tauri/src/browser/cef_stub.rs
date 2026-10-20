@@ -206,4 +206,11 @@ pub mod surface {
     pub fn set_rect(_app: &tauri::AppHandle, _host: &ActiveHost, _rect: Rect) {}
 
     pub fn detach(_app: &tauri::AppHandle) {}
+
+    pub fn navigate(_direction: crate::browser::NavDirection) -> Result<(), String> {
+        Err(REFUSAL.to_owned())
+    }
+
+    /// No surface is ever attached here, so there is nothing to ask.
+    pub fn refresh_history() {}
 }

@@ -24,7 +24,7 @@ process is the desktop's.
 | Region | Shows | Read from |
 |---|---|---|
 | The hand-off's card | `browser hand-off` (and the profile, when one is named); **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar | the `browser_hand_off` ask, and the page's own surface state |
-| The takeover's bar | **back to chat**, the hand-off's title, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state and the parked hand-off |
+| The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the hand-off's title, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the shell's history event |
 | The feedback line | a text field and **send**: the person's words go to the agent as a prompt and the hand-off is declined | the page's own state; the prompt rides the socket |
 | The surface | the profile's page, filling the window under the bar: no window, no tab strip, no browser chrome | the host's ring, drawn by the shell over the page area |
 | The strip's row | `browser` with its profile count, the work ring while a call runs, a disc when the takeover is up and a flat disc once it has been driven; **show** / **hide** | the host's own rows, and the surface state |
@@ -74,10 +74,21 @@ whole reason the events are replayed rather than synthesised in the page.
 offers key equivalents before the page's keys, and Tauri's default menu takes
 Cmd+A, X, C, V and Z (and Close Window on Cmd+W) even with the surface
 focused. So while the overlay holds first responder, those five go to the
-page over CDP - Cmd+V as the pasteboard's text - and Cmd+W lowers the takeover
-the way back to chat does. With the bar's own feedback field focused, the
-menu keeps its editing as it does everywhere else, and every other Command
-chord belongs to the app.
+page over CDP - Cmd+V as the pasteboard's text - Cmd+W lowers the takeover
+the way back to chat does, and Cmd+[ and Cmd+] move through the page's
+history. With the bar's own feedback field focused, the menu keeps its
+editing as it does everywhere else, and every other Command chord belongs to
+the app.
+
+**The arrows are the page's own history.** The shell reads
+`Page.getNavigationHistory` over the same CDP connection that carries the
+input - on the surface's first connection, on every re-open, and after every
+navigation the page commits, including a same-document one - and pushes the
+two booleans to the bar. An arrow is disabled exactly when the history has no
+entry that way; back and forward call `Page.navigateToHistoryEntry` with the
+neighbouring entry's id. A query that cannot be read is no news: the arrows
+stay exactly as they were rather than guessing a new state. There is no URL
+bar: the history is the page's own, and the arrows are its only map.
 
 **The native edges have their own doors.** A file chooser the page opens - a
 click on the input, a click on its label, a scripted `input.click()` - is

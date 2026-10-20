@@ -1320,6 +1320,14 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .tb-btn { border: 1px solid var(--line); border-radius: 8px; padding: 4px 11px;
   background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
 .tb-btn.d { color: var(--muted); background: transparent; }
+/* The page's own history: two arrows beside back to chat. Disabled is the
+   shell's history event saying there is nowhere to go; the arrow keeps its
+   space so the bar does not jump as the page moves. */
+.tb-nav { display: flex; align-items: center; gap: 4px; }
+.tb-btn.nav { display: inline-flex; align-items: center; justify-content: center;
+  padding: 3px 6px; }
+.tb-btn:disabled { opacity: .45; }
+@media (pointer: coarse) { .tb-btn.nav { min-width: 44px; min-height: 44px; } }
 .tb-feedback { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
   border-top: 1px solid var(--line); background: var(--s2); }
 .tb-field { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;

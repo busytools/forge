@@ -47,6 +47,10 @@
   .bt { border: 1px solid var(--line); border-radius: 8px; padding: 4px 11px;
     background: var(--s3); color: var(--text); font-size: var(--fs-data); }
   .bt.d { color: var(--muted); background: transparent; }
+  .bnav { display: flex; align-items: center; gap: 4px; }
+  .bt.arrow { display: inline-flex; align-items: center; justify-content: center; padding: 4px 7px; }
+  .bt.arrow svg { width: 15px; height: 15px; }
+  .bt.off { opacity: .45; }
   .btitle { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
   .bacts { margin-left: auto; display: flex; gap: 8px; }
   .feedback { display: flex; gap: 8px; padding: 7px 12px;
@@ -113,6 +117,10 @@
     <div class="takeover">
       <div class="bar">
         <span class="bt d">back to chat</span>
+        <span class="bnav">
+          <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
+          <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        </span>
         <span class="btitle">browser hand-off</span>
         <span class="bacts">
           <span class="bt">Done</span>
@@ -135,7 +143,9 @@
       </div>
     </div>
     <div class="tnote">clicks, keys and the wheel land on the page as trusted input; the person's
-    own cursor is drawn by the page, not by the client.</div>
+    own cursor is drawn by the page, not by the client. The two arrows are the page's own history:
+    back was enabled by the link that reached this page, forward has nowhere to go yet, and Cmd+[
+    and Cmd+] are their keys.</div>
   </div>
 
   <h2>The bar's other two doors</h2>
@@ -144,6 +154,10 @@
     <div class="takeover" style="min-height: 0;">
       <div class="bar">
         <span class="bt d">back to chat</span>
+        <span class="bnav">
+          <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
+          <span class="bt arrow" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        </span>
         <span class="btitle">browser hand-off &middot; job-hunt</span>
         <span class="bacts">
           <span class="bt">Done</span>
@@ -189,6 +203,10 @@
     <div class="takeover" style="min-height: 0;">
       <div class="bar">
         <span class="bt d">back to chat</span>
+        <span class="bnav">
+          <span class="bt arrow off" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
+          <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        </span>
         <span class="btitle">browser hand-off</span>
         <span class="bacts">
           <span class="bt">Done</span>
@@ -206,6 +224,10 @@
     <div class="takeover" style="min-height: 0;">
       <div class="bar">
         <span class="bt d">back to chat</span>
+        <span class="bnav">
+          <span class="bt arrow off" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
+          <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        </span>
         <span class="btitle">browser hand-off</span>
         <span class="bacts">
           <span class="bt">try again</span>

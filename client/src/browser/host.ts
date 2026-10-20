@@ -227,6 +227,24 @@ export async function reportSurfaceRect(
   await invoke('browser_surface_rect', { ...rect, scale });
 }
 
+/**
+ * Move the takeover's page through its own history: the bar's arrows.
+ *
+ * **The arrows' state is not read back from here** - the shell pushes it as
+ * `browser_nav_state` when the page commits a navigation, and asks the page
+ * again after a move that lands - so a refused move is logged rather than
+ * drawn; the bar already says what the page allows.
+ */
+export async function navigateBrowser(direction: 'back' | 'forward'): Promise<void> {
+  if (!canHost()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('browser_nav', { direction });
+  } catch (why) {
+    console.warn('the page did not move through its history', why);
+  }
+}
+
 /** Whether a session has driven this client's browser since it came up. */
 export async function browserUsed(): Promise<boolean> {
   if (!canHost()) return false;
