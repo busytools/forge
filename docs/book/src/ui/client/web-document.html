@@ -205,7 +205,11 @@
       .prose ol {
         padding-left: 22px;
         margin: 20px 0;
-        list-style-position: inside;
+        list-style-position: outside;
+      }
+      /* A number's marker is 28.6px for one digit; 22px clips it. */
+      .prose ol {
+        padding-left: 40px;
       }
       .prose li + li {
         margin-top: 4px;
