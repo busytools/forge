@@ -2579,6 +2579,93 @@ async fn a_reply_to_on_a_command_that_has_no_reply_is_refused() {
     assert!(fleet.dispatched().is_empty(), "a refused command must not run behind the refusal");
 }
 
+/// **A pending reply does not hold the connection's read loop** (#2445).
+///
+/// The server used to answer a reply-carrying command inline: a despawn's
+/// reply comes only when its detached worktree cleanup finishes (seconds to
+/// minutes), and a read loop awaiting it read nothing behind it - a subscribe,
+/// a spawn or a review save on the same connection waited, and its client
+/// bound could fire on a command nothing was wrong with.
+///
+/// The core is intercepted, so the command is never answered: the reply stays
+/// pending for the whole test, which holds the despawn's window still. **That
+/// pending reply is the intercept's doing** - the buffered command keeps its
+/// oneshot sender alive, so nothing answers it. An intercept that dropped
+/// commands would answer this one, and the test would stop discriminating
+/// while still passing.
+#[tokio::test]
+async fn a_pending_reply_does_not_hold_the_connections_read_loop() {
+    let (url, fleet) = a_server().await;
+    fleet.intercept_dispatch();
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::DespawnWorker {
+                project_key: forge_workspace::ProjectKey::new("proj"),
+                label: "w1".to_owned(),
+                force: false,
+                respond: None,
+            }),
+            reply_to: Some(1),
+        },
+    )
+    .await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: false,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+
+    let next = next_server_within(&mut socket, 5_000).await;
+    assert!(
+        matches!(&next, Some(ServerMessage::Snapshot { .. })),
+        "the message behind a pending reply was never read: {next:?}",
+    );
+}
+
+/// **An answer dispatched off the read loop still carries its `reply_to`**
+/// (#2445): the client resolves a pending command by that field alone, so the
+/// task that waits for the answer has to hand the right one back.
+#[tokio::test]
+async fn an_answer_off_the_read_loop_carries_its_reply_to() {
+    let (url, fleet) = a_server().await;
+    let key = fleet
+        .workspace()
+        .list_projects()
+        .into_iter()
+        .next()
+        .expect("the fleet declares a project")
+        .key;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::DespawnWorker {
+                project_key: key,
+                label: "w1".to_owned(),
+                force: false,
+                respond: None,
+            }),
+            reply_to: Some(9),
+        },
+    )
+    .await;
+
+    let next = next_server_within(&mut socket, 5_000).await;
+    let Some(ServerMessage::Reply { reply_to, .. }) = &next else {
+        panic!("the answer to a reply-carrying command never came: {next:?}");
+    };
+    assert_eq!(*reply_to, 9, "the answer names the dispatch that asked for it");
+}
+
 /// **A refused dispatch answers the press that made it.** The connection
 /// reads the dispatch id off the command and echoes it on the refusal, which
 /// is the whole of the attribution: a page holding a draft until its own
