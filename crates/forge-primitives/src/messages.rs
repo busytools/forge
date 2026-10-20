@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::content::ContentBlock;
-use crate::image::ImageAttachment;
+use crate::image::{ImageAttachment, validate_image};
 use crate::runtime::TerminalReason;
 
 /// Wire fields forge does not model, kept verbatim so a decode is lossless:
@@ -719,6 +719,10 @@ impl Message {
     /// the images first and the words last, each image in the shape both paths
     /// draw - mime and measured size, no payload - so a live row draws the
     /// attachments its transcript copy carries.
+    ///
+    /// An attachment the sender would drop - unsupported mime or invalid
+    /// base64 - is left out here too: the model never receives it, so the row
+    /// must not draw one that disappears on reload.
     pub fn display_only_user_with_images(
         text: String,
         images: &[ImageAttachment],
@@ -726,6 +730,9 @@ impl Message {
     ) -> Self {
         let mut content = Vec::with_capacity(images.len() + 1);
         for image in images {
+            if validate_image(&image.data, &image.mime_type).is_err() {
+                continue;
+            }
             content.push(image.display_block());
         }
         content.push(ContentBlock::Text { text, extras: Extras::new() });

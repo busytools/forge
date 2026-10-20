@@ -5865,13 +5865,17 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     // live path's only carrier.
     let image =
         ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
+    // A malformed attachment is sent too: the sender drops it before the model
+    // sees it, so the live row must not draw one that disappears on reload.
+    let malformed =
+        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "text/plain".to_owned() };
     send(
         &mut sender,
         ClientMessage::Command {
             command: Box::new(Command::Prompt {
                 key: lead_seat(),
                 text: "hello there".to_owned(),
-                attachments: vec![image.clone()],
+                attachments: vec![image.clone(), malformed],
             }),
             reply_to: None,
         },
@@ -5919,6 +5923,11 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
         extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
         Some(forge_primitives::payload_bytes(&image.data)),
         "the row prints the size the payload weighed, the figure the read path sends",
+    );
+    assert_eq!(
+        message.content.len(),
+        2,
+        "only the attachment the sender kept draws, beside the words: {message:?}",
     );
     update_until(
         &mut sender,
