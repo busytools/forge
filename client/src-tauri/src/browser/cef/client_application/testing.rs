@@ -10,6 +10,11 @@ use objc2::{ClassType as _, MainThreadMarker, runtime::NSObjectProtocol};
 
 use super::ClientApplication;
 
+/// **The check's teeth are the probe's drop glue**: without it objc2 keeps no
+/// drop flag, an uninitialized read is zeroed memory, and the old shape would
+/// pass. Deleting the probe must fail the build, not weaken the test.
+const _: () = assert!(std::mem::needs_drop::<super::ClientApplicationIvars>());
+
 /// Build the application the way the host does, store and clear its flag.
 ///
 /// **`+sharedApplication` is the class's one construction point**, and the
