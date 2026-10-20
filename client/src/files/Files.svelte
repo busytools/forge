@@ -72,6 +72,7 @@
   import Rail from './Rail.svelte';
   import Reader from './Reader.svelte';
   import { contextForComment, railRows, threadsOnPath, treeScope, type RailRow } from './comments';
+  import { fileIcon, folderIcon, rootIcon } from './icons';
   import type { ReaderBlock, ReaderHandle } from './reader';
   import {
     foldsFor,
@@ -105,6 +106,12 @@
   /** The seat's files, directories dropped: the walk lists both, and the
    *  tree derives its own directories. */
   const entries = $derived(record === null ? [] : filesOnly(filesFrom(record.file_index)));
+  /** The tree's own root row: the project's name and the seat's tree. */
+  const projectRow = $derived(
+    record === null
+      ? null
+      : { name: slot.project, path: record.state.scan_cwd, icon: rootIcon(record.state.scan_cwd) },
+  );
 
   let query = $state('');
   /** The folds the reader set themselves: true shut, false open. A folder
@@ -1022,6 +1029,11 @@
               here={open}
               active={keyRow}
               foldable={query.trim() === ''}
+              icon={(row: TreeRow<unknown>) =>
+                row.kind === 'file'
+                  ? fileIcon(row.path)
+                  : folderIcon(row.path, !closed.has(row.path))}
+              root={projectRow}
               ondir={fold}
               onfile={(path) => (open = path)}
             >

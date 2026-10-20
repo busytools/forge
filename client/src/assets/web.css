@@ -3598,6 +3598,17 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 /* A folder row drawn without its disclosure (under a filter): it opens
    nothing, so it offers no pointer. */
 .rv-dir.plain { cursor: default; }
+/* The Files tree's per-type glyphs, from the theme's own 16px SVGs, and the
+   project row they sit under - the project's name with its path beside it.
+   The icons bring their own colour; the row keeps the sheet's tokens. */
+.rv-icon { flex: none; width: 16px; height: 16px; align-self: center; }
+.rv-fname { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rv-root { display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 2px 6px 6px 4px; }
+.rv-rootname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+  font-weight: 600; white-space: nowrap; }
+.rv-rootpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
   transition: transform .12s ease; }
 .rv-arw.open { transform: rotate(90deg); }
