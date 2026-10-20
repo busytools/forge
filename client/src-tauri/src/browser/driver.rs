@@ -102,6 +102,19 @@ impl Driver {
         cdp_endpoint: &str,
         output_dir: &Path,
     ) -> Result<Self, String> {
+        Self::start_within(node, cli, cdp_endpoint, output_dir, START_TIMEOUT).await
+    }
+
+    /// [`Self::start`] with the handshake's budget given. **A seam for
+    /// tests**: a test that spawns a real child must not race the production
+    /// wall-clock constant for a reason unrelated to what it checks.
+    pub async fn start_within(
+        node: &Path,
+        cli: &Path,
+        cdp_endpoint: &str,
+        output_dir: &Path,
+        handshake: Duration,
+    ) -> Result<Self, String> {
         if !node.is_file() || !cli.is_file() {
             return Err(format!(
                 "the vendored driver is not there ({} / {}) - run `just vendor-browser-stack`",
@@ -136,12 +149,12 @@ impl Driver {
 
         // **The handshake is bounded**: a child that spawns and never answers
         // parks the session exactly as a wedge does, with nothing to read.
-        let service = tokio::time::timeout(START_TIMEOUT, ().serve(transport))
+        let service = tokio::time::timeout(handshake, ().serve(transport))
             .await
             .map_err(|_| {
                 format!(
                     "the driver did not answer its MCP handshake within {} s",
-                    START_TIMEOUT.as_secs()
+                    handshake.as_secs()
                 )
             })?
             .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;

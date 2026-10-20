@@ -539,7 +539,7 @@ impl BrowserHost {
                             self.refresh_carry(&paths.cef_shared()).await;
                             Ok(parts)
                         }
-                        Err(why) => Err(why),
+                        Err(why) => Err(note_stat_missing(seat, None, tool, why)),
                     }
                 }
                 Some(name) => {
@@ -578,7 +578,7 @@ impl BrowserHost {
                             self.refresh_carry(&cache).await;
                             Ok(parts)
                         }
-                        Err(why) => Err(why),
+                        Err(why) => Err(note_stat_missing(seat, Some(&name), tool, why)),
                     }
                 }
             }
@@ -633,7 +633,12 @@ impl BrowserHost {
             // relaunch within a run (its WebView is the app's own), so a
             // dead driver has nothing to rebuild against - its next call
             // fails with the reason, and a client restart is the repair.
-            shared.call(&start, tool, args).await
+            // The stat line is the same as the desktop's: the phone's
+            // setInputFiles can lose the driver's view of a file too.
+            shared
+                .call(&start, tool, args)
+                .await
+                .map_err(|why| note_stat_missing(seat, None, tool, why))
         }
     }
 
@@ -2024,6 +2029,95 @@ fn take_profile(mut args: Value) -> Result<(Option<String>, Value), String> {
         Value::Null => Ok((None, args)),
         Value::String(name) => Ok((Some(name), args)),
         other => Err(format!("`profile` is the name of a profile, not {other}")),
+    }
+}
+
+/// Log a driver stat failure with the seat and profile that made the call,
+/// and hand the reason back untouched - the note itself is appended where the
+/// call is routed. The seat lives here, not in the profile, which is why the
+/// line is built at this layer.
+///
+/// **`info!` for a session's tool failure is a rule-20 exception**: the client
+/// runs at the Info level, so a lower level would drop the line, and this is
+/// the line a recurrence of the measured transient is diagnosed by.
+fn note_stat_missing(seat: &Seat, profile: Option<&str>, tool: &str, why: String) -> String {
+    if let Some(line) = profiles::stat_missing_line(seat, profile, tool, &why) {
+        tauri_plugin_log::log::info!("{line}");
+    }
+    why
+}
+
+#[cfg(test)]
+mod stat_note_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A logger that keeps the lines the note's site writes. **The emission
+    /// itself is the other half of the cut**: a helper that builds the line
+    /// and drops it leaves this capture empty.
+    struct Capture;
+
+    static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    impl log::Log for Capture {
+        fn enabled(&self, _metadata: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            if let Ok(mut lines) = LINES.lock() {
+                lines.push(record.args().to_string());
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    fn seat() -> Seat {
+        Seat { org: "Busytools".to_owned(), project: "forge".to_owned(), label: "lead".to_owned() }
+    }
+
+    /// **The call's own reason is what the arm returns, and the line is
+    /// emitted.** The note is appended where the call is routed, so this
+    /// helper must hand the reason back untouched; the `info!` is the half a
+    /// recurrence reads, so it is captured here rather than assumed.
+    #[test]
+    fn the_stat_line_is_logged_and_the_reason_returns_untouched() {
+        let installed = log::set_logger(&Capture);
+        assert!(installed.is_ok(), "the capture logger installs: {installed:?}");
+        // **`set_logger` does not set the filter** - a fresh process starts
+        // at Off, and a logger alone would never see the record.
+        log::set_max_level(log::LevelFilter::Trace);
+        if let Ok(mut lines) = LINES.lock() {
+            lines.clear();
+        }
+        if let Ok(mut lines) = LINES.lock() {
+            lines.clear();
+        }
+        let why = "Error: ENOENT: no such file or directory, stat '/tmp/cv.pdf'".to_owned();
+        let returned = note_stat_missing(&seat(), None, "browser_run_code_unsafe", why.clone());
+        assert_eq!(returned, why, "the reason is the arm's answer");
+        let lines = LINES.lock().expect("the capture is not poisoned").clone();
+        assert!(
+            lines.iter().any(|line| line.contains("event_name cef_driver_stat_missing")),
+            "the stat line is emitted: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("seat Busytools/forge/lead")
+                && line.contains("tool browser_run_code_unsafe")
+                && line.contains("path /tmp/cv.pdf")),
+            "the line carries the seat, tool and path: {lines:?}"
+        );
+
+        if let Ok(mut lines) = LINES.lock() {
+            lines.clear();
+        }
+        let plain = "TypeError: page is not defined".to_owned();
+        assert_eq!(
+            note_stat_missing(&seat(), None, "browser_click", plain.clone()),
+            plain,
+            "a failure of another class returns untouched"
+        );
+        let lines = LINES.lock().expect("the capture is not poisoned").clone();
+        assert!(lines.is_empty(), "and emits nothing: {lines:?}");
     }
 }
 

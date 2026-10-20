@@ -224,12 +224,71 @@ pub(super) async fn routed_call(
     args: &Value,
     bound: Duration,
 ) -> Result<Vec<ReplyPart>, String> {
-    match custom::route(tool, args)? {
+    let outcome = match custom::route(tool, args)? {
         custom::Routed::Upstream { tool, args } => driver.call_within(&tool, args, bound).await,
         custom::Routed::Snippet(code) => {
             driver.call_within("browser_run_code_unsafe", json!({ "code": code }), bound).await
         }
+    };
+    outcome.map_err(|why| {
+        if !driver_stat_missing(&why) {
+            return why;
+        }
+        format!("{why}\n\n{STAT_MISSING_NOTE}")
+    })
+}
+
+/// **The driver's own Node stat error**: `ENOENT: no such file or directory,
+/// stat '<path>'`. The CEF host's own CDP errors carry the OS words without
+/// Node's prefix, so this names the driver's process view and nothing else. It
+/// is deliberately not called "upload": any tool whose code stats a file can
+/// produce it.
+fn driver_stat_missing(why: &str) -> bool {
+    why.contains("ENOENT: no such file or directory, stat '")
+}
+
+/// The path the driver could not stat, as the error names it. **The closing
+/// quote is the message's last one**, because a path may carry an apostrophe
+/// (`Bob's resume.pdf`); the first quote would truncate it.
+fn stat_path(why: &str) -> Option<&str> {
+    let start = why.find("stat '")? + "stat '".len();
+    let rest = &why[start..];
+    let end = rest.rfind('\'')?;
+    Some(&rest[..end])
+}
+
+/// The paragraph a driver stat failure carries back to the agent. **It states
+/// the measured case as the measured case** - one file that was on disk and a
+/// retry of the call that succeeded after a brief pause - and it makes the
+/// retry conditional, because arbitrary `run_code_unsafe` code can carry
+/// steps a repeat would run twice.
+///
+/// The note names no path: the path is in the driver's own reason and in the
+/// `cef_driver_stat_missing` line, which is where a recurrence reads it.
+const STAT_MISSING_NOTE: &str = "The browser driver could not stat a file this call named. In \
+                                 one measured case the file was on disk and a retry of it \
+                                 succeeded after a brief pause. If this call is safe to repeat, \
+                                 retry it once after a brief pause; if it carries other steps, \
+                                 retry only the upload step.";
+
+/// The log line for one stat failure, with the path the driver named and the
+/// seat and profile that made the call - everything a recurrence needs to say
+/// WHICH view was wrong. Pure, so the line is pinned without a driver.
+pub(super) fn stat_missing_line(
+    seat: &Seat,
+    profile: Option<&str>,
+    tool: &str,
+    why: &str,
+) -> Option<String> {
+    if !driver_stat_missing(why) {
+        return None;
     }
+    let path = stat_path(why).unwrap_or("(the driver named no path)");
+    Some(format!(
+        "a driver call could not stat a file it named (event_name cef_driver_stat_missing, seat \
+         {seat}, profile {}, tool {tool}, path {path})",
+        profile.unwrap_or("shared"),
+    ))
 }
 
 #[cfg(desktop)]
@@ -729,5 +788,223 @@ mod tests {
         std::fs::write(broken_dir.join(OWNER_FILE), b"not json").expect("a bad record");
         let why = raise_refusal("broken", &broken_dir, &mine).expect_err("unreadable");
         assert!(why.contains("cannot be read"), "{why}");
+    }
+
+    /// **The classifier and the note.** The strings are the measured forms -
+    /// the transcript's `### Error` line, then the driver's `Error: ENOENT:
+    /// ... stat '<path>'`. A CDP refusal reads "No such file or directory"
+    /// without Node's prefix; a Node `open` failure lacks the stat clause;
+    /// neither is this class.
+    #[test]
+    fn a_driver_stat_enoent_is_named_with_its_path() {
+        let measured = "### Error\nError: ENOENT: no such file or directory, stat \
+                        '/Users/vedhavyas/Madness/Personal/Ved/Resume (Speedcast).pdf'";
+        assert!(driver_stat_missing(measured), "the measured upload error is this class");
+        assert_eq!(
+            stat_path(measured),
+            Some("/Users/vedhavyas/Madness/Personal/Ved/Resume (Speedcast).pdf"),
+            "the path the driver named is what the log carries"
+        );
+        assert!(
+            driver_stat_missing(
+                "### Error\nError: ENOENT: no such file or directory, stat '/tmp/Bob's resume.pdf'"
+            ),
+            "a path with an apostrophe is still this class"
+        );
+        assert_eq!(
+            stat_path("Error: ENOENT: no such file or directory, stat '/tmp/Bob's resume.pdf'"),
+            Some("/tmp/Bob's resume.pdf"),
+            "and the path is parsed to the closing quote, not the apostrophe"
+        );
+        let older = "### Error\nError: ENOENT: no such file or directory, stat \
+                     '/Users/vedhavyas/Projects/companies/.playwright-mcp/Resume (Koottu).pdf'";
+        assert!(driver_stat_missing(older), "the same shape from an older attempt");
+        assert!(
+            !driver_stat_missing("DOM.setFileInputFiles: No such file or directory"),
+            "a CDP refusal is not the driver's Node error"
+        );
+        assert!(
+            !driver_stat_missing("Error: ENOENT: no such file or directory, open '/tmp/x.pdf'"),
+            "a Node OPEN failure lacks the stat clause and is not this class"
+        );
+        assert!(
+            !driver_stat_missing("TypeError: page is not defined"),
+            "an unrelated failure is not a stat error"
+        );
+
+        // The line names everything a recurrence needs: the seat, the
+        // profile, the tool and the path. The note states the measured case
+        // and makes the retry conditional on the call being safe to repeat.
+        let seat = seat("lead");
+        let line = stat_missing_line(&seat, None, "browser_run_code_unsafe", measured)
+            .expect("the stat failure has a line");
+        assert!(line.contains("event_name cef_driver_stat_missing"), "{line}");
+        assert!(line.contains("seat Busytools/forge/lead"), "{line}");
+        assert!(line.contains("profile shared"), "{line}");
+        assert!(line.contains("tool browser_run_code_unsafe"), "{line}");
+        assert!(line.contains("Resume (Speedcast).pdf"), "{line}");
+        // The note itself, as a reader sees it: not the constant the seam
+        // test also imports, so altered advice fails here.
+        assert!(
+            STAT_MISSING_NOTE
+                .contains("In one measured case the file was on disk and a retry of it succeeded"),
+            "the measured case is stated as measured: {STAT_MISSING_NOTE}"
+        );
+        assert!(
+            STAT_MISSING_NOTE.contains("If this call is safe to repeat"),
+            "the advice is conditional: {STAT_MISSING_NOTE}"
+        );
+        assert!(
+            STAT_MISSING_NOTE.contains("if it carries other steps, retry only the upload step."),
+            "the else-branch stops a repeat of side-effectful steps: {STAT_MISSING_NOTE}"
+        );
+        assert!(
+            !STAT_MISSING_NOTE.contains("identical") && !STAT_MISSING_NOTE.contains("immediate"),
+            "the measured case is not overstated: {STAT_MISSING_NOTE}"
+        );
+        assert!(
+            stat_missing_line(&seat, Some("job-hunt-3"), "browser_click", measured)
+                .is_some_and(|line| line.contains("profile job-hunt-3")),
+            "a named profile is named"
+        );
+        assert_eq!(
+            stat_missing_line(&seat, None, "browser_click", "TypeError: page is not defined"),
+            None,
+            "every other failure has no line, so the log stays quiet"
+        );
+    }
+
+    /// The stub child both seam tests drive: it answers the MCP handshake and
+    /// then a `tools/call` whose code names one of the measured failures.
+    #[cfg(all(desktop, unix))]
+    fn stub_driver(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let node = root.join("node");
+        std::fs::write(&node, "#!/bin/sh\nexec python3 \"$@\"\n").expect("the wrapper");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("the wrapper is executable");
+        let cli = root.join("cli.mjs");
+        std::fs::write(
+            &cli,
+            r#"import sys, json
+MISSING = "Error: ENOENT: no such file or directory, stat '/Users/vedhavyas/Madness/Personal/Ved/Resume (Speedcast).pdf'"
+PLAIN = "TypeError: page is not defined"
+for line in sys.stdin:
+    try:
+        message = json.loads(line)
+    except Exception:
+        continue
+    if message.get("id") is None:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        version = message.get("params", {}).get("protocolVersion", "2025-06-18")
+        result = {"protocolVersion": version, "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "stub", "version": "0"}}
+    elif method == "tools/list":
+        result = {"tools": []}
+    elif method == "tools/call":
+        code = json.dumps(message.get("params", {}).get("arguments", {}))
+        result = {"content": [{"type": "text", "text": PLAIN if "plaincall" in code else MISSING}],
+                  "isError": True}
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}) + "\n")
+    sys.stdout.flush()
+"#,
+        )
+        .expect("the stub driver");
+        (node, cli)
+    }
+
+    /// **The start budget is the caller's, honoured.** A 1 ms budget must time
+    /// out before the stub child answers; a seam that ignored its parameter
+    /// and used the production constant would let the handshake through.
+    #[cfg(all(desktop, unix))]
+    #[tokio::test]
+    async fn a_start_with_a_tiny_budget_names_its_timeout() {
+        use crate::browser::driver;
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path();
+        let (node, cli) = stub_driver(root);
+        let why = driver::Driver::start_within(
+            &node,
+            &cli,
+            "http://127.0.0.1:1",
+            &root.join("output"),
+            Duration::from_millis(1),
+        )
+        .await
+        .err()
+        .expect("a 1 ms budget times out");
+        assert!(
+            why.contains("did not answer its MCP handshake within 0 s"),
+            "the caller's budget is what the timeout names: {why}"
+        );
+    }
+
+    /// **At the driver seam, the measured error comes back with the note.**
+    /// The stub child answers the exact error shape, so the note is pinned
+    /// where a caller receives it rather than only in the classifier. A
+    /// blind retry is deliberately not what this does: arbitrary code can
+    /// carry side effects, so the agent is told to retry deliberately.
+    #[cfg(all(desktop, unix))]
+    #[tokio::test]
+    async fn an_upload_enoent_from_the_driver_carries_the_reason() {
+        use crate::browser::driver;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path();
+        let (node, cli) = stub_driver(root);
+
+        let output = root.join("output");
+        // **The test's own generous budget**, not the production constant:
+        // the child races other builds on a loaded machine, and that is not
+        // what this test is about.
+        let driver = driver::Driver::start_within(
+            &node,
+            &cli,
+            "http://127.0.0.1:1",
+            &output,
+            Duration::from_secs(120),
+        )
+        .await
+        .expect("the stub driver answers");
+        let why = routed_call(
+            &driver,
+            "browser_run_code_unsafe",
+            &json!({ "code": "async (page) => { await page.locator('#r').setInputFiles('/x.pdf'); }" }),
+            driver::CALL_TIMEOUT,
+        )
+        .await
+        .expect_err("the stub reports the file missing");
+        assert!(
+            why.contains("ENOENT: no such file or directory, stat"),
+            "the reason is kept: {why}"
+        );
+        // The note as a reader sees it, not the constant: altered advice
+        // fails here.
+        assert!(
+            why.contains(
+                "The browser driver could not stat a file this call named. In one measured \
+                 case the file was on disk and a retry of it succeeded after a brief pause."
+            ),
+            "the measured note is appended: {why}"
+        );
+        // **The guard.** A failure of another class comes back untouched -
+        // appending the note to every error fails here.
+        let plain = routed_call(
+            &driver,
+            "browser_run_code_unsafe",
+            &json!({ "code": "plaincall" }),
+            driver::CALL_TIMEOUT,
+        )
+        .await
+        .expect_err("the stub reports its own failure");
+        assert!(plain.contains("TypeError: page is not defined"), "{plain}");
+        assert!(
+            !plain.contains("could not stat a file"),
+            "only the stat class gets the note: {plain}"
+        );
     }
 }
