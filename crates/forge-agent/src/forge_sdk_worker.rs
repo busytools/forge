@@ -853,14 +853,16 @@ pub(crate) async fn send_prompt(
                     "type": "text",
                     "text": c.value.as_str().unwrap_or(""),
                 }),
-                "image" => serde_json::json!({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": c.value.get("mime_type").and_then(|v| v.as_str()).unwrap_or("image/png"),
-                        "data": c.value.get("data").and_then(|v| v.as_str()).unwrap_or(""),
-                    },
-                }),
+                "image" => forge_primitives::ImageAttachment {
+                    data: c.value.get("data").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                    mime_type: c
+                        .value
+                        .get("mime_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("image/png")
+                        .to_owned(),
+                }
+                .wire_block(),
                 _ => c.value,
             })
             .collect();

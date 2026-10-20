@@ -18,19 +18,33 @@ pub struct ImageAttachment {
 }
 
 impl ImageAttachment {
+    /// The source object both block shapes share: the mime the row names, and
+    /// the payload only where the model must receive it.
+    fn source(&self, with_payload: bool) -> serde_json::Value {
+        let mut source = serde_json::Map::new();
+        source.insert("type".to_owned(), serde_json::Value::String("base64".to_owned()));
+        source.insert("media_type".to_owned(), serde_json::Value::String(self.mime_type.clone()));
+        if with_payload {
+            source.insert("data".to_owned(), serde_json::Value::String(self.data.clone()));
+        }
+        serde_json::Value::Object(source)
+    }
+
+    /// The content block the CLI receives, payload included.
+    pub fn wire_block(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "image",
+            "source": self.source(true),
+        })
+    }
+
     /// The content block a view draws: the mime the row names and the size it
     /// prints, never the payload - a frame carrying the base64 is re-served by
     /// every read of the row.
     pub fn display_block(&self) -> ContentBlock {
         let mut extras = Extras::new();
         extras.insert("forge_bytes".to_owned(), serde_json::json!(payload_bytes(&self.data)));
-        ContentBlock::Image {
-            source: serde_json::json!({
-                "type": "base64",
-                "media_type": self.mime_type,
-            }),
-            extras,
-        }
+        ContentBlock::Image { source: self.source(false), extras }
     }
 }
 
