@@ -1473,6 +1473,10 @@ impl BrowserHost {
             Ok(answer) => answer?,
             Err(_) => return Err("the browser did not start in time - try Open again".to_owned()),
         }
+        // **Every open asks the bar's arrows again.** The page resets them
+        // before the surface comes up, and an already-attached host would
+        // otherwise answer with a deduped silence until its history moved.
+        cef::surface::refresh_history();
         // **The page this raise shows is the page a restart reopens.** The
         // probe is outside the lock (its 2 s bound must not hold every
         // launch), and the write takes the short lock a call's refresh does.
@@ -2093,6 +2097,23 @@ pub async fn browser_takeover(app: tauri::AppHandle, on: bool) -> Result<(), Str
         outcome.is_ok(),
     );
     outcome.map_err(|why| format!("the window could not change full screen: {why}"))
+}
+
+/// Which way the takeover's arrows move through the page's own history.
+#[cfg(desktop)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavDirection {
+    Back,
+    Forward,
+}
+
+/// The takeover bar's arrows: move the page to the neighbouring entry in its
+/// history - the same move Cmd+[ and Cmd+] make through the surface.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn browser_nav(direction: NavDirection) -> Result<(), String> {
+    cef::surface::navigate(direction)
 }
 
 /// Where the takeover's page area is, in CSS pixels from the viewport's
