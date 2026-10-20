@@ -1084,6 +1084,72 @@ mod tests {
         );
     }
 
+    /// A resource wait parked by design is left alone by the stall chase too;
+    /// un-parked, its real age arms the stall and it fires at once (#2472).
+    #[test]
+    fn a_parked_wait_is_not_stall_chased() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let mut row = task("t-1", TaskStatus::Waiting);
+        row.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("needs the owner's dashboard".to_owned()),
+            on: None,
+            verification: false,
+            parked: true,
+        });
+        row.updated_at = epoch(0);
+        ws.seed_test_task(row);
+        let deliver = Recording::default();
+
+        assert_eq!(
+            sweep(&ws, &deliver, WINDOW + 1),
+            0,
+            "a parked wait is not a stall: {:?}",
+            deliver.seen.lock(),
+        );
+        assert!(
+            ws.chases_for_project(PROJECT).iter().all(|chase| chase.rung != ChaseRung::WaitStall),
+            "and no WaitStall mark is left for it",
+        );
+
+        ws.update_task(PROJECT, &TaskId::from("t-1"), By::System, |task| {
+            if let Some(wait) = task.waiting_on.as_mut() {
+                wait.parked = false;
+            }
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        let updated_at = ws
+            .tasks_for_project(PROJECT)
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-1"))
+            .expect("the row survived")
+            .updated_at;
+        let later = updated_at + Duration::from_secs(WINDOW + 2);
+        let later_secs =
+            later.duration_since(SystemTime::UNIX_EPOCH).expect("the epoch is before it").as_secs();
+        let rows = ws.board_rows(PROJECT, epoch(later_secs), WINDOW);
+        let moved = rows.iter().find(|row| row.task.id == TaskId::from("t-1")).expect("the row");
+        assert!(!moved.task.waiting_on.as_ref().expect("the wait holds").parked, "un-parked");
+        assert!(
+            moved.marks.waiting_too_long,
+            "its real age is the stall again: status={:?} age={} updated={:?} now={:?} wait={:?}",
+            moved.task.status,
+            moved.updated_secs_ago,
+            moved.task.updated_at,
+            epoch(later_secs),
+            moved.task.waiting_on,
+        );
+        assert_eq!(sweep(&ws, &deliver, later_secs), 1, "un-parked, the stall fires");
+        let seen = deliver.seen.lock();
+        assert!(
+            seen.iter().any(|(_, text)| text.contains("unblock it or change its plan")),
+            "the WaitStall names the row: {seen:?}",
+        );
+    }
+
     /// A verification park whose row owns no gate - the shape an inherited
     /// gate left behind - is not a user wait (#2423): the digest does not
     /// name it, and no one is asked to confirm it.

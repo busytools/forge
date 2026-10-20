@@ -532,7 +532,9 @@ always. What it asks, and on what clock, is a constant in the code:
   long draws the `no movement` mark; a ready row with no owner, and a
   dependency or resource wait, ask the lead every 30 minutes once they
   pass it. The estimate is what arms the chase for a row that has one;
-  this is the fallback for rows that have none.
+  this is the fallback for rows that have none. **A wait parked by design
+  carries neither mark and draws no stall ask**; un-parking restores both
+  from the row's real age.
 - **A row past its estimate asks its owner once**, and a restated
   estimate arms the nudge again; a wait that resolved asks its waiter
   once to resume it.

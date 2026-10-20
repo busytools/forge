@@ -190,6 +190,9 @@ impl Workspace {
                 let mine = by_task.get(&task.id).map_or(&[][..], Vec::as_slice);
                 let worked = worked_secs(mine, now);
                 let updated_secs_ago = secs_ago(task.updated_at, now);
+                // A wait parked by design is the user's own deferral: its age
+                // is not a stall (#2472).
+                let parked = task.waiting_on.as_ref().is_some_and(|wait| wait.parked);
                 let children: Vec<&Task> =
                     tasks.iter().filter(|c| c.parent.as_ref() == Some(&task.id)).collect();
                 let children_terminal =
@@ -203,8 +206,9 @@ impl Workspace {
                         .iter()
                         .any(|l| l.kind == LinkKind::Pr && l.state.as_deref() != Some("merged")),
                     overdue: task.estimate.as_ref().is_some_and(|e| e.secs > 0 && worked > e.secs),
-                    no_movement: updated_secs_ago > stale_secs,
+                    no_movement: !parked && updated_secs_ago > stale_secs,
                     waiting_too_long: task.status == TaskStatus::Waiting
+                        && !parked
                         && updated_secs_ago > stale_secs,
                     stale: task.owner.as_ref().is_some_and(|owner| !self.seat_is_live(owner)),
                     to_close: task.parent.is_none() && children_terminal && retro_ran(task),
@@ -628,6 +632,69 @@ mod tests {
 
         let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
         assert!(row(&rows, "t-1").marks.waiting_too_long, "the wait's own age is the signal");
+    }
+
+    /// A wait parked by design is the user's own deferral, so the row carries
+    /// neither stalled mark however old it is; un-parking restores both from
+    /// its real age (#2472).
+    #[test]
+    fn a_parked_wait_carries_neither_stalled_mark() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let wait = |parked: bool| Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("needs the owner's dashboard".to_owned()),
+            on: None,
+            verification: false,
+            parked,
+        };
+        let mut parked = task("t-parked", TaskStatus::Waiting);
+        parked.waiting_on = Some(wait(true));
+        parked.updated_at = epoch(0);
+        ws.seed_test_task(parked);
+        let mut unsettled = task("t-unparked", TaskStatus::Waiting);
+        unsettled.waiting_on = Some(wait(false));
+        unsettled.updated_at = epoch(0);
+        ws.seed_test_task(unsettled);
+
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        assert!(
+            !row(&rows, "t-parked").marks.no_movement,
+            "a parked wait is a deferral, not a row nobody has moved",
+        );
+        assert!(
+            !row(&rows, "t-parked").marks.waiting_too_long,
+            "and its age is no stall while it is parked",
+        );
+        assert!(
+            row(&rows, "t-unparked").marks.no_movement,
+            "the un-parked control keeps the no-movement mark",
+        );
+        assert!(row(&rows, "t-unparked").marks.waiting_too_long, "and keeps the wait-stall mark");
+
+        ws.update_task(PROJECT, &TaskId::from("t-parked"), By::System, |task| {
+            if let Some(wait) = task.waiting_on.as_mut() {
+                wait.parked = false;
+            }
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        let updated_at = ws
+            .tasks_for_project(PROJECT)
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-parked"))
+            .expect("the row survived")
+            .updated_at;
+        let later = updated_at + Duration::from_secs(WINDOW + 1);
+        let rows = ws.board_rows(PROJECT, later, WINDOW);
+        assert!(
+            row(&rows, "t-parked").marks.no_movement,
+            "un-parked, its real age is the mark again",
+        );
+        assert!(
+            row(&rows, "t-parked").marks.waiting_too_long,
+            "both marks come back with the park gone",
+        );
     }
 
     /// A withdrawn park leaves the waiting-on-you presentation (#2340):
