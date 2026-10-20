@@ -250,6 +250,12 @@ impl ViewSurface {
         self.workspace.seat_unringed_between(slot, from, to)
     }
 
+    /// Whether `slot`'s current epoch was opened by a seal, whose history no
+    /// ring holds.
+    pub fn seat_opened_by_seal(&self, slot: &SessionSlot) -> bool {
+        self.workspace.seat_opened_by_seal(slot)
+    }
+
     /// The live workers, per project.
     pub fn workers(&self) -> Workers {
         Workers::collect(Arc::clone(&self.workspace))

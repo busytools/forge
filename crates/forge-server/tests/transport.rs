@@ -13,6 +13,7 @@ use forge_server::surface::SessionUpdate;
 use forge_server::surface::inspector::ContextUsage;
 use forge_server::testing::{Fleet, ViewFacts};
 use forge_server::transport::TransportState;
+use forge_server::transport::conversation::Conversation;
 use forge_server::transport::envelope::{ClientMessage, ServerMessage, Subject};
 use forge_server::transport::serve;
 use futures_util::{SinkExt, StreamExt};
@@ -3787,6 +3788,11 @@ async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
         &seat,
         ViewFacts { session_id: Some(session.clone()), ..Default::default() },
     );
+    // **A copy the replay route materialised carries no occupant**, so the
+    // occupant check takes it as the seat's and the first answer fills it from
+    // the window. A copy materialised from the ring would be refused instead
+    // (#2446); the skip-guard this pins is the fold's own.
+    state.conversations.insert(&seat, Conversation::empty());
 
     state.conversations.hold_the_fold(true);
     fleet.emit(SessionUpdate::Connected {
@@ -3864,6 +3870,111 @@ async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
         serde_json::to_string(&data["conversation"]).unwrap_or_default(),
     );
     assert_eq!(says_times(&data, "the live row"), 1, "and the live row exactly once");
+}
+
+/// **A fill that cannot reach the seal's history is refused, not synthesised**
+/// (#2446).
+///
+/// The measured window: a `Connected` carrying one history row plus one
+/// `ChatAppended`, the fold held, and a subscribe. A seal is not in the ring,
+/// so catch_up's fallback built a copy from the ring's frames alone and the
+/// answer paired the new epoch's number with the live row and no history. The
+/// occupant check cannot catch it: the fill stamps the synthetic copy with the
+/// header's occupant, so it reads as the seat's own.
+///
+/// The property is that no answer carries a copy missing the rows its epoch
+/// opened on. The refusal is the honest answer while the seal is unapplied,
+/// and the same read answers once the fold has taken it.
+#[tokio::test]
+async fn a_fill_through_a_pending_seal_is_refused_rather_than_synthesised() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let session = SessionId::from("3b4c5d6e-7f80-4a91-b0c1-d2e3f4a5b6c7");
+
+    // The header names the new occupant before the seal reaches the fold,
+    // which is what makes a synthetic copy read as the seat's own.
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts { session_id: Some(session.clone()), ..Default::default() },
+    );
+
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: session,
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the seal's history row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the live row"),
+    });
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let answer = loop {
+        match next_server(&mut socket).await {
+            ServerMessage::Update { .. } => {}
+            other => break other,
+        }
+    };
+    state.conversations.hold_the_fold(false);
+
+    let ServerMessage::Error { what, why, .. } = answer else {
+        panic!(
+            "an answer whose copy never had the seal's history was served rather than refused: \
+             {answer:?}"
+        );
+    };
+    assert_eq!(what, "subscribe", "the refusal names what was asked for");
+    assert!(
+        why.contains(&seat.display()) && why.contains("has not settled"),
+        "and names the seat and the reason, so the silent row loss has an artefact: {why}",
+    );
+
+    // **The same read after the fold has taken the seal answers its history**,
+    // which is what the refusal was protecting.
+    let settled = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
+    assert!(
+        state.conversations.await_consumed(&seat, settled, SEED_WAIT).await,
+        "the fold never took the seal and the live row: the watermark is {}",
+        state.conversations.consumed_for(&seat),
+    );
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+
+    assert_eq!(
+        says_times(&data, "the seal's history row"),
+        1,
+        "the seal's history must be in the answer once the fold has applied it: {data}",
+    );
+    assert_eq!(says_times(&data, "the live row"), 1, "and the live row exactly once: {data}");
 }
 
 /// **An answer inside the seal's window is the new epoch's, not the previous

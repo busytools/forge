@@ -1,6 +1,6 @@
 //! Fan-out for the workspace's [`SessionUpdate`] stream.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -83,6 +83,14 @@ struct Shared {
     /// the numbers a seal's epoch carried are re-minted by the run after it -
     /// and the record of them goes with the ring.
     unringed: HashMap<SessionSlot, Vec<u64>>,
+    /// The seats whose current epoch was opened by a seal.
+    ///
+    /// **A seal's history is not in the ring**, so a reader filling a copy
+    /// from the window cannot rebuild what the epoch opened on (#2446). This
+    /// is recorded at the mint, which is the only point that knows, rather
+    /// than inferred later from a header or a ring that a seat with no seal
+    /// leaves in the same shape.
+    sealed: HashSet<SessionSlot>,
     /// How many frames a ring keeps. [`SEAT_RING`] in production; a test
     /// drives it down so the transcript fallback is reachable without
     /// emitting thousands of frames.
@@ -98,6 +106,7 @@ impl Default for Shared {
             sequences: HashMap::new(),
             rings: HashMap::new(),
             unringed: HashMap::new(),
+            sealed: HashSet::new(),
             ring_cap: SEAT_RING,
         }
     }
@@ -144,6 +153,7 @@ impl Shared {
             // again, and a stale one would cover a gap the new run opened.
             self.rings.remove(&slot);
             self.unringed.remove(&slot);
+            self.sealed.insert(slot.clone());
         } else if matches!(update, SessionUpdate::Releasing { .. }) {
             // The seat is being taken down, and its frames are on the far side
             // of a release: nothing asks for the numbers of a seat that is
@@ -205,6 +215,11 @@ impl Shared {
     /// number to expect, and 0 would have it expect a frame that cannot exist.
     fn next_seq(&self, slot: &SessionSlot) -> u64 {
         self.sequences.get(slot).copied().unwrap_or(0) + 1
+    }
+
+    /// Whether `slot`'s current epoch was opened by a seal.
+    fn opened_by_seal(&self, slot: &SessionSlot) -> bool {
+        self.sealed.contains(slot)
     }
 }
 
@@ -290,6 +305,12 @@ impl UpdateFanout {
     /// How many numbers in `from..=to` on `slot`'s stream no window can hold.
     pub(crate) fn unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
         self.shared.lock().unringed_between(slot, from, to)
+    }
+
+    /// Whether `slot`'s current epoch was opened by a seal, whose history no
+    /// ring holds.
+    pub(crate) fn opened_by_seal(&self, slot: &SessionSlot) -> bool {
+        self.shared.lock().opened_by_seal(slot)
     }
 
     /// Drive the ring's cap down, so a test reaches the transcript fallback

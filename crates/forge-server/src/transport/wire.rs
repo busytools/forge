@@ -1622,10 +1622,28 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
     // the applies below, one place a row may enter so nothing doubles - tagged
     // with the occupant it is for, and the fold skips these frames afterwards
     // by the watermark this marks last.
+    //
+    // **Except when the epoch was opened by a seal, whose history the ring
+    // cannot carry.** A copy built from the frames below would answer the new
+    // epoch's number without the rows that seal opened on, and the occupant
+    // check cannot catch it: the synthetic copy carries the header's own
+    // occupant (#2446). Refused rather than synthesised; the fold's apply of
+    // the seal is what makes the read answer.
     let occupant = state.surface.header(slot).session_id;
     let matching =
         state.conversations.get(slot).is_some_and(|held| held.holds_occupant(occupant.as_ref()));
     if !matching {
+        if state.surface.seat_opened_by_seal(slot) {
+            tracing::error!(
+                event_name = "seat_copy_awaits_seal",
+                slot = %slot.display(),
+                want,
+                "the seat's copy is behind a seal the fold has not applied, and the ring cannot \
+                 carry the history that seal opened on; the read is refused rather than answered \
+                 with a hole",
+            );
+            return false;
+        }
         let mut conversation = crate::transport::conversation::Conversation::empty();
         conversation.set_occupant(occupant);
         state.conversations.replace(slot, conversation);
