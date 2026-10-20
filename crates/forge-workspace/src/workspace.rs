@@ -4297,8 +4297,8 @@ impl Workspace {
         // follow off what it says (#2198): taking it from the command keeps
         // the frame and the queued row's label one fact.
         let prompt = match &cmd {
-            Command::PromptUnder { key, text, uuid, source, .. } => {
-                Some((key.clone(), text.clone(), uuid.clone(), *source))
+            Command::PromptUnder { key, text, attachments, uuid, source } => {
+                Some((key.clone(), text.clone(), attachments.clone(), uuid.clone(), *source))
             }
             _ => None,
         };
@@ -4329,13 +4329,13 @@ impl Workspace {
             _ => (self.route(cmd), None),
         };
         if outcome.is_ok()
-            && let Some((key, text, uuid, source)) = prompt
+            && let Some((key, text, attachments, uuid, source)) = prompt
         {
             // Stamped at the forge, like the machinery's own: the CLI never
             // echoes a prompt, so this row is the one that opens every turn a
             // person starts, and a page attaching mid-turn reads its clock
             // from the first row that carries a stamp.
-            let mut framed = Message::display_only_user(text, uuid);
+            let mut framed = Message::display_only_user_with_images(text, &attachments, uuid);
             framed.stamp_if_absent(&crate::install::rfc3339_now());
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),

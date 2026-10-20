@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use forge_primitives::{AgentCommand, SessionId, SessionSlot};
+use forge_primitives::{AgentCommand, ImageAttachment, SessionId, SessionSlot};
 use forge_server::Command;
 use forge_server::surface::SessionUpdate;
 use forge_server::surface::inspector::ContextUsage;
@@ -5795,15 +5795,32 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
     );
 }
 
-/// The text of a user turn, when the frame is one.
+/// The text of a user turn, when the frame is one: the first text block it
+/// carries, wherever it sits among the attachments.
 fn user_text(msg: &forge_primitives::Message) -> Option<String> {
     let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
-    let Some(forge_primitives::ContentBlock::Text { text, .. }) = message.content.first() else {
+    message.content.iter().find_map(|block| match block {
+        forge_primitives::ContentBlock::Text { text, .. } => Some(text.clone()),
+        _ => None,
+    })
+}
+
+/// The image a user turn carries, when the frame is one: its media type and
+/// payload, so a frame that names an attachment it did not carry cannot pass.
+fn user_image(msg: &forge_primitives::Message) -> Option<(String, String)> {
+    let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
-    Some(text.clone())
+    message.content.iter().find_map(|block| match block {
+        forge_primitives::ContentBlock::Image { source, .. } => {
+            let mime = source.get("media_type")?.as_str()?.to_owned();
+            let data = source.get("data")?.as_str()?.to_owned();
+            Some((mime, data))
+        }
+        _ => None,
+    })
 }
 
 /// A prompt one client sends draws for every other client on that seat, and
@@ -5845,13 +5862,19 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
         };
     }
 
+    // **The attachment the prompt carries rides the frame too.** The read
+    // path draws it from the transcript's queued copy, so a live row without
+    // it shows words alone until the page re-reads - and this frame is the
+    // live path's only carrier.
+    let image =
+        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
     send(
         &mut sender,
         ClientMessage::Command {
             command: Box::new(Command::Prompt {
                 key: lead_seat(),
                 text: "hello there".to_owned(),
-                attachments: Vec::new(),
+                attachments: vec![image.clone()],
             }),
             reply_to: None,
         },
@@ -5868,12 +5891,27 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
             // (#2198).
             source: Some(forge_workspace::PromptSource::You),
             ..
-        } if user_text(msg).as_deref() == Some("hello there"))
+        } if user_text(msg).as_deref() == Some("hello there")
+            && user_image(msg) == Some((image.mime_type.clone(), image.data.clone())))
     };
-    update_until(&mut watcher, "the prompt a client sent, drawn for another client", drawn).await;
-    update_until(&mut sender, "the prompt a client sent, drawn for the client that sent it", drawn)
-        .await;
-    update_until(&mut onlooker, "a third view's send, drawn for this one", drawn).await;
+    update_until(
+        &mut watcher,
+        "the prompt a client sent, drawn for another client with the attachment it carried",
+        drawn,
+    )
+    .await;
+    update_until(
+        &mut sender,
+        "the prompt a client sent, drawn for the client that sent it with the attachment it carried",
+        drawn,
+    )
+    .await;
+    update_until(
+        &mut onlooker,
+        "a third view's send, drawn for this one with the attachment it carried",
+        drawn,
+    )
+    .await;
 
     // And exactly once: the evidence is ORDER, never a timeout,a nd a second
     // forged frame would have to arrive ahead of an update every subscriber

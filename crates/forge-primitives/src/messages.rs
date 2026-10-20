@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::content::ContentBlock;
+use crate::image::ImageAttachment;
 use crate::runtime::TerminalReason;
 
 /// Wire fields forge does not model, kept verbatim so a decode is lossless:
@@ -711,12 +712,31 @@ impl Message {
     /// which carries the same id, the CLI writing the client's uuid into the
     /// transcript it delivers. Nothing routes on the empty `session_id`.
     pub fn display_only_user(text: String, uuid: String) -> Self {
-        Message::User {
-            message: UserEnvelope {
-                role: "user".to_owned(),
-                content: vec![ContentBlock::Text { text, extras: Extras::new() }],
+        Self::display_only_user_with_images(text, &[], uuid)
+    }
+
+    /// [`Self::display_only_user`] for a prompt sent with image attachments:
+    /// the images first and the words last, the array the CLI received - so a
+    /// live row draws the attachments its transcript copy carries.
+    pub fn display_only_user_with_images(
+        text: String,
+        images: &[ImageAttachment],
+        uuid: String,
+    ) -> Self {
+        let mut content = Vec::with_capacity(images.len() + 1);
+        for image in images {
+            content.push(ContentBlock::Image {
+                source: serde_json::json!({
+                    "type": "base64",
+                    "media_type": image.mime_type,
+                    "data": image.data,
+                }),
                 extras: Extras::new(),
-            },
+            });
+        }
+        content.push(ContentBlock::Text { text, extras: Extras::new() });
+        Message::User {
+            message: UserEnvelope { role: "user".to_owned(), content, extras: Extras::new() },
             extras: Extras::new(),
             session_id: String::new(),
             parent_tool_use_id: None,
