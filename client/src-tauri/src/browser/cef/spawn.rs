@@ -15,6 +15,11 @@ use super::osr::Ring;
 /// The longest a host is given from spawn to answering `/json/version`.
 pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long a show cue waits for the host to apply it. The host's loop runs
+/// about every millisecond, so this is a stall bound, not a budget: past it
+/// the call goes ahead rather than stall on a wedged pump.
+pub const SHOW_ACK_BOUND: Duration = Duration::from_millis(100);
+
 /// How often the wait asks the endpoint.
 const PROBE_EVERY: Duration = Duration::from_millis(50);
 
@@ -50,6 +55,21 @@ impl ActiveHost {
     /// process, and the driver rebuilt against the new port follows from it.
     pub fn identity(&self) -> String {
         format!("cef-{}", self.pid)
+    }
+
+    /// Cue the host to re-assert the page visible before a call drives it,
+    /// and wait (bounded) for it to be applied. **The wait is load-bearing**:
+    /// the host pumps on its own loop, and a cue it has not reached yet would
+    /// leave this call running against the hidden page.
+    pub async fn show(&self) {
+        let seq = self.ring.show();
+        let deadline = tokio::time::Instant::now() + SHOW_ACK_BOUND;
+        while !self.ring.shown(seq) {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
     }
 }
 
@@ -563,6 +583,63 @@ fn whole_body_len(answer: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// **A cue is not one-way.** The client waits for the host to apply it
+    /// before driving the call; the applier here is the host loop's own
+    /// store, stood up as its own task so a missing wait shows as an
+    /// unacknowledged cue.
+    #[tokio::test]
+    async fn a_show_cue_waits_for_the_host_to_apply_it() {
+        let name = "/forge-cef-test-show-wait";
+        let ring = Arc::new(Ring::create(name, 4, 4).expect("a test ring"));
+        let host = ActiveHost {
+            pid: 999_999,
+            port: 1,
+            ring: Arc::clone(&ring),
+            profile: PathBuf::from("/nonexistent"),
+        };
+        let applier = Arc::clone(&ring);
+        tokio::spawn(async move {
+            loop {
+                // SAFETY: the ring outlives this task and holds a header.
+                let seq = unsafe { (*applier.header()).show_seq.load(Ordering::Acquire) };
+                if seq > 0 {
+                    // SAFETY: as above.
+                    unsafe { (*applier.header()).show_applied.store(seq, Ordering::Release) };
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        host.show().await;
+        assert!(ring.shown(1), "the cue was applied before show returned");
+        Ring::unlink(name);
+    }
+
+    /// **The wait is bounded.** A host that never applies the cue must not
+    /// hold a call forever: the client goes ahead after the bound.
+    #[tokio::test]
+    async fn a_show_cue_gives_up_after_its_bound() {
+        let name = "/forge-cef-test-show-bound";
+        let ring = Arc::new(Ring::create(name, 4, 4).expect("a test ring"));
+        let host = ActiveHost {
+            pid: 999_999,
+            port: 1,
+            ring: Arc::clone(&ring),
+            profile: PathBuf::from("/nonexistent"),
+        };
+        let started = std::time::Instant::now();
+        host.show().await;
+        let waited = started.elapsed();
+        assert!(
+            waited >= SHOW_ACK_BOUND.saturating_sub(Duration::from_millis(10)),
+            "the wait ran to its bound: {waited:?}"
+        );
+        assert!(waited < SHOW_ACK_BOUND * 4, "and did not run past it: {waited:?}");
+        assert!(!ring.shown(1), "nothing acknowledged an unapplied cue");
+        Ring::unlink(name);
+    }
 
     /// **The singleton lock names the host the record lost.** A profile
     /// whose record is gone is still reaped from Chromium's own symlink, and

@@ -510,6 +510,10 @@ impl BrowserHost {
                     // client's is used. Set after the profile is resolved, so a
                     // refused call never lights the mark.
                     self.used.store(true, std::sync::atomic::Ordering::Release);
+                    // **The page is shown before it is driven.** A hidden page
+                    // is the first-call-of-a-fire failure #2455 names; the
+                    // host owns the only lever, and this is the cue.
+                    active.show().await;
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
                     let identity = active.identity();
                     let shared = self.shared_profile().await;
@@ -556,6 +560,10 @@ impl BrowserHost {
                         launched
                     };
                     self.used.store(true, std::sync::atomic::Ordering::Release);
+                    // The same cue before a named profile's call: the page a
+                    // fire drives is never left hidden by the gap since the
+                    // last one.
+                    active.show().await;
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
                     let identity = active.identity();
                     let start = DriverStart {
@@ -1459,6 +1467,12 @@ impl BrowserHost {
         let claimed = tokio::time::timeout(LAUNCH_WAIT, async {
             let _launching = self.launch.lock().await;
             self.touch(&cache).await;
+            // **The raised page is shown too, inside the claim.** A takeover
+            // opened onto a page that went hidden while nothing drove it
+            // would be a frozen picture under the bar; the cue waits under
+            // the same lock, so the idle sweep cannot take the free mutex
+            // during its ack window and end the host under the claim.
+            host.show().await;
             // One surface at a time: opening this profile's takes the window,
             // and a previous profile's host keeps running under it.
             *self.surface.lock().await =
@@ -2394,9 +2408,35 @@ for line in sys.stdin:
         .expect("the record");
         host.hosts.lock().await.insert(
             cache.clone(),
-            Arc::new(cef::spawn::ActiveHost { pid, port, ring, profile: cache.clone() }),
+            Arc::new(cef::spawn::ActiveHost {
+                pid,
+                port,
+                ring: Arc::clone(&ring),
+                profile: cache.clone(),
+            }),
         );
         write_carried_page(&cache, Some("https://example.com/before"));
+        // **A host that applies the cue**, as the host loop does: without it
+        // the call's bounded wait would burn its full 100 ms on every run.
+        let applier = Arc::clone(&ring);
+        tokio::spawn(async move {
+            loop {
+                // SAFETY: the ring outlives this task and holds a header.
+                let seq = unsafe {
+                    (*applier.header()).show_seq.load(std::sync::atomic::Ordering::Acquire)
+                };
+                if seq > 0 {
+                    // SAFETY: as above.
+                    unsafe {
+                        (*applier.header())
+                            .show_applied
+                            .store(seq, std::sync::atomic::Ordering::Release);
+                    }
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
 
         let parts = host
             .call(&seat(), "browser_navigate", json!({ "url": "https://example.com/after-call" }))
@@ -2408,6 +2448,12 @@ for line in sys.stdin:
             "https://example.com/after-call",
             "a successful call rewrites the carry"
         );
+        // **The call cued the host before driving it.** The stub host never
+        // applies the cue, so the wait ran to its bound - the sequence is the
+        // proof the cue was sent.
+        // SAFETY: the ring is mapped and holds a header.
+        let cues = unsafe { (*ring.header()).show_seq.load(std::sync::atomic::Ordering::Acquire) };
+        assert!(cues >= 1, "the call asked the host to show the page first: {cues}");
 
         cef::spawn::end(pid).await;
         cef::spawn::remove_record(&cache);

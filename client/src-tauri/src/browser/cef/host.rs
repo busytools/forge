@@ -60,6 +60,13 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Option<Args> {
 /// Set by SIGTERM/SIGINT, read by the pump loop.
 static STOP: AtomicBool = AtomicBool::new(false);
 
+/// **The test build's hidden page.** Set from a marker file in the profile,
+/// so the visibility proof can start from a page that really is hidden:
+/// `was_hidden(1)` is otherwise never called and no test can produce the
+/// state #2455 reports. Compiled out of every shipping build.
+#[cfg(feature = "testing")]
+static TEST_HIDE: AtomicBool = AtomicBool::new(false);
+
 extern "C" fn stop_on_signal(_signal: i32) {
     STOP.store(true, Ordering::Release);
 }
@@ -91,6 +98,10 @@ pub fn run(args: Args) -> ! {
     if let Err(why) = std::fs::create_dir_all(&args.profile) {
         fail(&why.to_string());
     }
+    // The test build's marker, read once: a page hidden from the start, for
+    // the visibility proof only.
+    #[cfg(feature = "testing")]
+    TEST_HIDE.store(args.profile.join("test-hide").exists(), Ordering::Relaxed);
     let ring = match Ring::create(&args.ring, args.width, args.height) {
         Ok(ring) => Arc::new(ring),
         Err(why) => fail(&why),
@@ -153,6 +164,10 @@ pub fn run(args: Args) -> ! {
     );
 
     let mut last_begin = 0_u64;
+    // **Zero, not the header's current value**: a client's cue written while
+    // this loop was still starting is then acted on by the first pass, not
+    // mistaken for the state it started in.
+    let mut last_show = 0_u64;
     // SAFETY: the header is mapped for this process's whole life.
     let mut last_request = unsafe { (*ring.header()).request_seq.load(Ordering::Acquire) };
     loop {
@@ -178,6 +193,26 @@ pub fn run(args: Args) -> ! {
                 host.notify_screen_info_changed();
                 host.was_resized();
             }
+        }
+        // **Every call the client drives with re-asserts the page visible.**
+        // A windowless browser's only visibility lever is this call; a page
+        // that went hidden while nothing drove it (the reported
+        // `document.visibilityState` "hidden" on the first call of a fire)
+        // must not stay hidden under a click that needs its frames. The
+        // applied sequence is published so the caller can wait for it, and
+        // the line names the cue a real fire can be read by.
+        let show = header_ref.show_seq.load(Ordering::Acquire);
+        if show != last_show {
+            last_show = show;
+            // **The ack follows the visibility call, never a bare read.** A
+            // browser with no host cannot be shown, so its cue is not
+            // acknowledged as applied.
+            if let Some(host) = browser.host() {
+                host.was_hidden(0);
+                host.set_focus(1);
+                header_ref.show_applied.store(show, Ordering::Release);
+            }
+            eprintln!("cef host: page shown before a call (event_name cef_page_shown, seq {show})");
         }
         // **8 ms, not 16.** A BeginFrame every screen refresh is the paint
         // rate, but a click landing just after one waited out the whole
@@ -237,11 +272,29 @@ cef::wrap_load_handler! {
             // CEF's visibility and focus calls are re-asserted once a page is
             // there: the windowless surface has no window to inherit them
             // from.
-            let Some(host) = browser.and_then(|browser| browser.host()) else { return };
+            let Some(browser) = browser else { return };
+            let Some(host) = browser.host() else { return };
             host.was_hidden(0);
             host.set_focus(1);
             host.set_windowless_frame_rate(60);
             host.was_resized();
+            // **The test build hides the page here, after the re-assert.**
+            // The page records that it saw the hidden state, so one later
+            // call can prove the cue flipped it back to visible.
+            #[cfg(feature = "testing")]
+            if TEST_HIDE.load(Ordering::Relaxed) {
+                let code = CefString::from(
+                    "window.__sawHidden = document.visibilityState === 'hidden'; \
+                     document.addEventListener('visibilitychange', function () { \
+                       if (document.visibilityState === 'hidden') window.__sawHidden = true; \
+                     });",
+                );
+                if let Some(frame) = browser.main_frame() {
+                    frame.execute_java_script(Some(&code), None, 0);
+                }
+                host.was_hidden(1);
+                eprintln!("cef host: test hook hid the page (event_name cef_test_hidden)");
+            }
         }
     }
 }

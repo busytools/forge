@@ -58,6 +58,9 @@ pub mod spawn {
         pub fn identity(&self) -> String {
             format!("cef-{}", self.pid)
         }
+
+        /// No host runs here, so there is no page to show.
+        pub async fn show(&self) {}
     }
 
     impl std::fmt::Debug for ActiveHost {
