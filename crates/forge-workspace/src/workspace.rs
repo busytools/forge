@@ -3934,6 +3934,13 @@ impl Workspace {
         self.update_tx.unringed_between(key, from, to)
     }
 
+    /// Whether `key`'s latest epoch-opening seal carried rows, which no ring
+    /// holds: what tells a copy filled from the window that it cannot reach
+    /// the rows the epoch began with.
+    pub fn seat_epoch_opened_with_rows(&self, key: &SessionSlot) -> bool {
+        self.update_tx.epoch_opened_with_rows(key)
+    }
+
     /// Borrow the workspace-side [`DomainSession`] for `key`.
     ///
     /// Returns the [`Arc`]-cloned mutex protecting the domain bucket.

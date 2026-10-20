@@ -1565,6 +1565,26 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
 /// keeps the bound from being a way to lose frames.
 const CATCH_UP_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How long a read whose copy needs an unapplied seal waits for the fold
+/// before refusing.
+///
+/// **The window cannot stand in for the fold here.** A seal's history is not
+/// ringed, so nothing the fill below can reach carries it; only the fold's own
+/// apply does. That apply lands in milliseconds when the fold is running, so
+/// this bound is reached only by a fold that is not - and a client has no
+/// re-ask for a refused subscribe, which is why the wait exists at all.
+const SEAL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Why a read could not bring its copy current, which the refusal's text says
+/// apart: the two are different losses and only one is about a number.
+#[derive(Debug)]
+enum NotReady {
+    /// The seat's window no longer reaches back to the copy's front.
+    Behind,
+    /// The epoch's seal rows are unapplied, so its history cannot be reached.
+    AwaitsSeal,
+}
+
 /// Bring `slot`'s held conversation up to `want`, or report that it cannot.
 ///
 /// **One requirement: the copy an answer carries must hold every frame
@@ -1576,12 +1596,24 @@ const CATCH_UP_WAIT: std::time::Duration = std::time::Duration::from_millis(250)
 /// them. Only a gap wider than that window is refused, loudly and by name: a
 /// stuck fold is forge's problem, and an answer that pretended otherwise is a
 /// row lost in silence.
-async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool {
+async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Result<(), NotReady> {
     if want == 0 || state.conversations.consumed_for(slot) >= want {
-        return true;
+        return Ok(());
     }
     if state.conversations.await_consumed(slot, want, CATCH_UP_WAIT).await {
-        return true;
+        return Ok(());
+    }
+    // **A seal's rows the fold has not applied cannot be stood in for by the
+    // ring.** They are what the epoch opened on, and no window holds them
+    // (#2446), so the fill below would answer the new epoch's number without
+    // them. Waited on here, before the fill lock, for the fold's own mark:
+    // applying the seal resets it to zero and the frames after it climb back
+    // to `want`, so reaching `want` means the reseed is in place. The wait is
+    // what keeps a transient lag from failing the read.
+    if awaits_seal_history(state, slot)
+        && state.conversations.await_consumed(slot, want, SEAL_WAIT).await
+    {
+        return Ok(());
     }
     // **The fill runs under the seat's lock, and re-reads the watermark.**
     // The fold may have caught up while the wait ran, and it applies the same
@@ -1590,7 +1622,7 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
     let fill = state.conversations.fill_lock(slot);
     let _filling = fill.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if state.conversations.consumed_for(slot) >= want {
-        return true;
+        return Ok(());
     }
     let from = state.conversations.consumed_for(slot).saturating_add(1);
     let frames = state.surface.seat_frames_between(slot, from, want);
@@ -1612,7 +1644,7 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
             "the seat's copy is behind the number an answer would carry and its own window no \
              longer reaches back; the read is refused rather than answered with a hole",
         );
-        return false;
+        return Err(NotReady::Behind);
     }
     // **A seat with no copy gets one from the frames themselves, and a copy of
     // another occupant is no copy.** The fold holds nothing for a seat nothing
@@ -1622,10 +1654,28 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
     // the applies below, one place a row may enter so nothing doubles - tagged
     // with the occupant it is for, and the fold skips these frames afterwards
     // by the watermark this marks last.
+    //
+    // **Except when the epoch opened on a seal's rows, which the ring cannot
+    // carry.** A copy built from the frames below would answer the new
+    // epoch's number without them, and the occupant check cannot catch it:
+    // the synthetic copy carries the header's own occupant (#2446). Refused
+    // rather than synthesised; the fold's apply of the seal is what makes the
+    // read answer.
     let occupant = state.surface.header(slot).session_id;
     let matching =
         state.conversations.get(slot).is_some_and(|held| held.holds_occupant(occupant.as_ref()));
     if !matching {
+        if state.surface.seat_epoch_opened_with_rows(slot) {
+            tracing::error!(
+                event_name = "seat_copy_awaits_seal",
+                slot = %slot.display(),
+                want,
+                "the seat's copy is behind a seal the fold has not applied, and the ring cannot \
+                 carry the history that seal opened on; the read is refused rather than answered \
+                 with a hole",
+            );
+            return Err(NotReady::AwaitsSeal);
+        }
         let mut conversation = crate::transport::conversation::Conversation::empty();
         conversation.set_occupant(occupant);
         state.conversations.replace(slot, conversation);
@@ -1634,7 +1684,21 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
         state.conversations.apply(&frame.update, frame.seq);
     }
     state.conversations.consumed(slot, want);
-    true
+    Ok(())
+}
+
+/// Whether `slot`'s copy is missing rows its epoch opened on.
+///
+/// The mark describes the LATEST seal, so between an occupant change and its
+/// seal's mint the value is still the previous seal's - which is what notices
+/// that gap whenever the previous epoch carried rows. A seat whose first
+/// epoch is pending, or whose previous seal was empty, has no such mark, and a
+/// read in that mint gap can still synthesise a copy.
+fn awaits_seal_history(state: &TransportState, slot: &SessionSlot) -> bool {
+    let occupant = state.surface.header(slot).session_id;
+    let matching =
+        state.conversations.get(slot).is_some_and(|held| held.holds_occupant(occupant.as_ref()));
+    !matching && state.surface.seat_epoch_opened_with_rows(slot)
 }
 
 /// One session's record, from the reads a session-scoped view makes.
@@ -1657,12 +1721,15 @@ async fn session(
     // before the read can land after it: waited on briefly, and filled from
     // the seat's own window when the wait runs out. The answer never names a
     // number its copy cannot cover - a refusal is visible, a lost row is not.
-    if !catch_up(state, slot, seq.saturating_sub(1)).await {
-        anyhow::bail!(
-            "the seat's stream has not settled for {}; its copy is behind the number an answer \
-             would carry",
-            slot.display()
-        );
+    if let Err(reason) = catch_up(state, slot, seq.saturating_sub(1)).await {
+        let why = match reason {
+            NotReady::Behind => "its copy is behind the number an answer would carry",
+            NotReady::AwaitsSeal => {
+                "the fold has not applied its epoch's seal, whose history an answer would be \
+                 missing"
+            }
+        };
+        anyhow::bail!("the seat's stream has not settled for {}; {why}", slot.display());
     }
     // The conversation's share of the record, taken through one blocking task
     // so the fold never runs on the reactor or under the lock. A seat with no

@@ -1,6 +1,6 @@
 //! Fan-out for the workspace's [`SessionUpdate`] stream.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -83,6 +83,15 @@ struct Shared {
     /// the numbers a seal's epoch carried are re-minted by the run after it -
     /// and the record of them goes with the ring.
     unringed: HashMap<SessionSlot, Vec<u64>>,
+    /// The seats whose latest epoch-opening seal carried rows.
+    ///
+    /// **A seal's history is not in the ring**, so a reader filling a copy
+    /// from the window cannot rebuild what the epoch opened on (#2446). An
+    /// empty-history seal opens its epoch with nothing to miss, so each mint
+    /// REPLACES this rather than adding to it. The value standing between an
+    /// occupant change and its seal's mint is the previous seal's, which is
+    /// what notices that gap.
+    sealed_with_rows: HashSet<SessionSlot>,
     /// How many frames a ring keeps. [`SEAT_RING`] in production; a test
     /// drives it down so the transcript fallback is reachable without
     /// emitting thousands of frames.
@@ -98,6 +107,7 @@ impl Default for Shared {
             sequences: HashMap::new(),
             rings: HashMap::new(),
             unringed: HashMap::new(),
+            sealed_with_rows: HashSet::new(),
             ring_cap: SEAT_RING,
         }
     }
@@ -144,6 +154,22 @@ impl Shared {
             // again, and a stale one would cover a gap the new run opened.
             self.rings.remove(&slot);
             self.unringed.remove(&slot);
+            // **The mark describes the LATEST seal, so each mint replaces
+            // it.** Only a seal that carried rows leaves a gap the ring cannot
+            // fill, and a later blank epoch must not inherit the previous
+            // one's mark: its ring was cleared at this mint, so a fill holds
+            // its whole history. Before the mint the value is still the
+            // previous seal's, which is what notices the header-move window.
+            let carried = match &update {
+                SessionUpdate::Connected { history, .. }
+                | SessionUpdate::SessionReplaced { history, .. } => !history.is_empty(),
+                _ => false,
+            };
+            if carried {
+                self.sealed_with_rows.insert(slot.clone());
+            } else {
+                self.sealed_with_rows.remove(&slot);
+            }
         } else if matches!(update, SessionUpdate::Releasing { .. }) {
             // The seat is being taken down, and its frames are on the far side
             // of a release: nothing asks for the numbers of a seat that is
@@ -205,6 +231,11 @@ impl Shared {
     /// number to expect, and 0 would have it expect a frame that cannot exist.
     fn next_seq(&self, slot: &SessionSlot) -> u64 {
         self.sequences.get(slot).copied().unwrap_or(0) + 1
+    }
+
+    /// Whether `slot`'s latest epoch-opening seal carried rows.
+    fn epoch_opened_with_rows(&self, slot: &SessionSlot) -> bool {
+        self.sealed_with_rows.contains(slot)
     }
 }
 
@@ -290,6 +321,12 @@ impl UpdateFanout {
     /// How many numbers in `from..=to` on `slot`'s stream no window can hold.
     pub(crate) fn unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
         self.shared.lock().unringed_between(slot, from, to)
+    }
+
+    /// Whether `slot`'s latest epoch-opening seal carried rows, which no ring
+    /// holds.
+    pub(crate) fn epoch_opened_with_rows(&self, slot: &SessionSlot) -> bool {
+        self.shared.lock().epoch_opened_with_rows(slot)
     }
 
     /// Drive the ring's cap down, so a test reaches the transcript fallback
