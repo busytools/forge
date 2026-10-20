@@ -711,12 +711,22 @@ impl Message {
     /// which carries the same id, the CLI writing the client's uuid into the
     /// transcript it delivers. Nothing routes on the empty `session_id`.
     pub fn display_only_user(text: String, uuid: String) -> Self {
+        Self::display_only_user_with_blocks(text, Vec::new(), uuid)
+    }
+
+    /// [`Self::display_only_user`] with the image blocks a prompt's
+    /// attachments draw as, placed before the words: the caller builds them
+    /// from the attachments it holds, so a dispatch never clones a payload it
+    /// will not draw.
+    pub fn display_only_user_with_blocks(
+        text: String,
+        images: Vec<ContentBlock>,
+        uuid: String,
+    ) -> Self {
+        let mut content = images;
+        content.push(ContentBlock::Text { text, extras: Extras::new() });
         Message::User {
-            message: UserEnvelope {
-                role: "user".to_owned(),
-                content: vec![ContentBlock::Text { text, extras: Extras::new() }],
-                extras: Extras::new(),
-            },
+            message: UserEnvelope { role: "user".to_owned(), content, extras: Extras::new() },
             extras: Extras::new(),
             session_id: String::new(),
             parent_tool_use_id: None,

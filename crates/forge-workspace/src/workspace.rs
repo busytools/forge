@@ -4313,20 +4313,31 @@ impl Workspace {
         // being emitted where it is decided: it has to land after the echo
         // below, because a client draws this stream in arrival order and one
         // sent first drew the answer above the prompt it answers.
-        let (outcome, answer) = match &cmd {
-            Command::PromptUnder { key, text, .. } => match crate::prompt::forge_invocation(text) {
-                Some(crate::prompt::Invocation::Command(prompt)) => {
-                    self.run_forge_prompt(key, &prompt)
+        let (outcome, answer, images) = match &cmd {
+            Command::PromptUnder { key, text, attachments, .. } => {
+                match crate::prompt::forge_invocation(text) {
+                    Some(crate::prompt::Invocation::Command(prompt)) => {
+                        let (outcome, answer) = self.run_forge_prompt(key, &prompt);
+                        (outcome, answer, Vec::new())
+                    }
+                    Some(crate::prompt::Invocation::Misuse(usage)) => {
+                        (Ok(()), Some(forge_misuse(usage)), Vec::new())
+                    }
+                    None => {
+                        if let Some(refusal) = self.unrunnable_slash_name(key, text) {
+                            (Ok(()), Some(forge_misuse(&refusal)), Vec::new())
+                        } else {
+                            // Built here, only where the prompt is handed to
+                            // the CLI: the arms above never send the
+                            // attachments, so nothing is validated or carried
+                            // for them.
+                            let images = forge_primitives::display_blocks(attachments);
+                            (self.route(cmd), None, images)
+                        }
+                    }
                 }
-                Some(crate::prompt::Invocation::Misuse(usage)) => {
-                    (Ok(()), Some(forge_misuse(usage)))
-                }
-                None => match self.unrunnable_slash_name(key, text) {
-                    Some(refusal) => (Ok(()), Some(forge_misuse(&refusal))),
-                    None => (self.route(cmd), None),
-                },
-            },
-            _ => (self.route(cmd), None),
+            }
+            _ => (self.route(cmd), None, Vec::new()),
         };
         if outcome.is_ok()
             && let Some((key, text, uuid, source)) = prompt
@@ -4335,7 +4346,7 @@ impl Workspace {
             // echoes a prompt, so this row is the one that opens every turn a
             // person starts, and a page attaching mid-turn reads its clock
             // from the first row that carries a stamp.
-            let mut framed = Message::display_only_user(text, uuid);
+            let mut framed = Message::display_only_user_with_blocks(text, images, uuid);
             framed.stamp_if_absent(&crate::install::rfc3339_now());
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
@@ -20309,14 +20320,31 @@ mod prompt_frame_origin_tests {
         ws.dispatch_from_view(Command::Prompt {
             key: seat.clone(),
             text: "/mode sideways".to_owned(),
-            attachments: Vec::new(),
+            // An attachment beside a forge command never reaches a model: the
+            // command answers instead of routing the prompt, so the echo must
+            // draw the words alone.
+            attachments: vec![forge_primitives::ImageAttachment {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            }],
         })
         .expect("the core takes it");
 
         let first = rx.try_recv().expect("the echo is the first update on the stream");
+        let SessionUpdate::ChatAppended { key, msg, .. } = &first.update else {
+            panic!("the reader's own words are echoed before the answer: {first:?}")
+        };
+        assert_eq!(key, &seat, "the echo is for the seat that asked");
+        let Message::User { message, .. } = msg else {
+            panic!("the echo draws as the user turn it was: {msg:?}")
+        };
         assert!(
-            matches!(&first.update, SessionUpdate::ChatAppended { key, .. } if key == &seat),
-            "the reader's own words are echoed before the answer: {first:?}",
+            !message
+                .content
+                .iter()
+                .any(|block| { matches!(block, forge_primitives::ContentBlock::Image { .. }) }),
+            "an attachment beside a forge command never reached a model, so the echo draws \
+             the words alone: {message:?}",
         );
         let second = rx.try_recv().expect("the answer follows the echo");
         assert!(
@@ -20388,17 +20416,38 @@ mod prompt_frame_origin_tests {
         let dispatched = ws.dispatch_from_view(Command::Prompt {
             key: seat.clone(),
             text: "/resume".to_owned(),
-            attachments: Vec::new(),
+            // An attachment beside a wrongly invoked command never reaches a
+            // model, so the echo draws the words alone.
+            attachments: vec![forge_primitives::ImageAttachment {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            }],
         });
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
-        let notices: Vec<(SessionSlot, NoticeSeverity, String)> =
-            std::iter::from_fn(|| rx.try_recv().ok())
-                .filter_map(|frame| match frame.update {
-                    SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
-                    _ => None,
-                })
-                .collect();
+        let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let echoed = updates.iter().find_map(|frame| match &frame.update {
+            SessionUpdate::ChatAppended { msg, .. } => Some(msg),
+            _ => None,
+        });
+        let Some(Message::User { message, .. }) = echoed else {
+            panic!("the words the reader typed are echoed before the answer: {updates:?}")
+        };
+        assert!(
+            !message
+                .content
+                .iter()
+                .any(|block| matches!(block, forge_primitives::ContentBlock::Image { .. })),
+            "an attachment beside a wrongly invoked command never reached a model, so the \
+             echo draws the words alone: {message:?}",
+        );
+        let notices: Vec<(SessionSlot, NoticeSeverity, String)> = updates
+            .into_iter()
+            .filter_map(|frame| match frame.update {
+                SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
+                _ => None,
+            })
+            .collect();
         assert!(
             matches!(
                 notices.as_slice(),
@@ -20427,13 +20476,35 @@ mod prompt_frame_origin_tests {
         let dispatched = ws.dispatch_from_view(Command::Prompt {
             key: seat.clone(),
             text: "/spinner now".to_owned(),
-            attachments: Vec::new(),
+            // An attachment beside a refused slash name never reaches a model,
+            // so the echo draws the words alone.
+            attachments: vec![forge_primitives::ImageAttachment {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            }],
         });
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         // The refusal is answered after the echo of the words, so the two are
         // read off the stream together (the order is the case above).
-        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+        let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let echoed = updates.iter().find_map(|frame| match &frame.update {
+            SessionUpdate::ChatAppended { msg, .. } => Some(msg),
+            _ => None,
+        });
+        let Some(Message::User { message, .. }) = echoed else {
+            panic!("the words the reader typed are echoed before the answer: {updates:?}")
+        };
+        assert!(
+            !message
+                .content
+                .iter()
+                .any(|block| matches!(block, forge_primitives::ContentBlock::Image { .. })),
+            "an attachment beside a refused slash name never reached a model, so the echo \
+             draws the words alone: {message:?}",
+        );
+        let notices: Vec<(NoticeSeverity, String)> = updates
+            .into_iter()
             .filter_map(|frame| match frame.update {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,

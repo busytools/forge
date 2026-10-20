@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use forge_primitives::{AgentCommand, SessionId, SessionSlot};
+use forge_primitives::{AgentCommand, ImageAttachment, SessionId, SessionSlot};
 use forge_server::Command;
 use forge_server::surface::SessionUpdate;
 use forge_server::surface::inspector::ContextUsage;
@@ -5795,15 +5795,29 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
     );
 }
 
-/// The text of a user turn, when the frame is one.
+/// The text of a user turn, when the frame is one: the first text block it
+/// carries, wherever it sits among the attachments.
 fn user_text(msg: &forge_primitives::Message) -> Option<String> {
     let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
-    let Some(forge_primitives::ContentBlock::Text { text, .. }) = message.content.first() else {
+    message.content.iter().find_map(|block| match block {
+        forge_primitives::ContentBlock::Text { text, .. } => Some(text.clone()),
+        _ => None,
+    })
+}
+
+/// The media type of the image a user turn carries, when the frame is one.
+fn user_image_mime(msg: &forge_primitives::Message) -> Option<String> {
+    let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
-    Some(text.clone())
+    message.content.iter().find_map(|block| match block {
+        forge_primitives::ContentBlock::Image { source, .. } => {
+            source.get("media_type")?.as_str().map(str::to_owned)
+        }
+        _ => None,
+    })
 }
 
 /// A prompt one client sends draws for every other client on that seat, and
@@ -5845,13 +5859,26 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
         };
     }
 
+    // **The attachment the prompt carries rides the frame too.** The read
+    // path draws it from the transcript's queued copy, so a live row without
+    // it shows words alone until the page re-reads - and this frame is the
+    // live path's only carrier.
+    let image =
+        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
+    // Malformed attachments are sent too, one per arm `validate_image`
+    // refuses: the sender drops them before the model sees them, so the live
+    // row must not draw one that disappears on reload.
+    let wrong_mime =
+        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "text/plain".to_owned() };
+    let bad_base64 =
+        ImageAttachment { data: "not base64!".to_owned(), mime_type: "image/png".to_owned() };
     send(
         &mut sender,
         ClientMessage::Command {
             command: Box::new(Command::Prompt {
                 key: lead_seat(),
                 text: "hello there".to_owned(),
-                attachments: Vec::new(),
+                attachments: vec![image.clone(), wrong_mime, bad_base64],
             }),
             reply_to: None,
         },
@@ -5868,12 +5895,68 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
             // (#2198).
             source: Some(forge_workspace::PromptSource::You),
             ..
-        } if user_text(msg).as_deref() == Some("hello there"))
+        } if user_text(msg).as_deref() == Some("hello there")
+            && user_image_mime(msg).as_deref() == Some(image.mime_type.as_str()))
     };
-    update_until(&mut watcher, "the prompt a client sent, drawn for another client", drawn).await;
-    update_until(&mut sender, "the prompt a client sent, drawn for the client that sent it", drawn)
-        .await;
-    update_until(&mut onlooker, "a third view's send, drawn for this one", drawn).await;
+    let first = update_until(
+        &mut watcher,
+        "the prompt a client sent, drawn for another client with the attachment it carried",
+        drawn,
+    )
+    .await;
+    let SessionUpdate::ChatAppended { msg, .. } = &first else {
+        panic!("a prompt draws as a chat frame: {first:?}")
+    };
+    let forge_primitives::Message::User { message, .. } = msg else {
+        panic!("a prompt draws as the user turn it was: {msg:?}")
+    };
+    let Some(forge_primitives::ContentBlock::Image { source, extras }) = message
+        .content
+        .iter()
+        .find(|block| matches!(block, forge_primitives::ContentBlock::Image { .. }))
+    else {
+        panic!("the live frame carries the attachment the prompt was sent with: {message:?}")
+    };
+    // **The payload never rides the live frame.** The frame is kept and
+    // re-served by every read of the row, so an image block here carries what
+    // a row prints - the mime and the measured size - exactly as the read
+    // path's stripped copy does.
+    assert_eq!(source.get("data"), None, "the live frame carries no base64 payload: {source}");
+    // The literal, not the helper the implementation calls: "iVBORw0KGgo=" is
+    // twelve base64 characters, eight bytes once the padding is out.
+    assert_eq!(
+        extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
+        Some(8),
+        "the row prints the eight bytes the payload weighed",
+    );
+    assert_eq!(
+        message.content.len(),
+        2,
+        "only the attachment the sender kept draws, beside the words: {message:?}",
+    );
+    // **The order the echo documents**: the images first and the words last,
+    // the array the prompt was sent as - a text-first echo draws the same row
+    // but stops matching the transcript's own copy of the message.
+    assert!(
+        matches!(message.content.first(), Some(forge_primitives::ContentBlock::Image { .. })),
+        "the attachment leads the echo: {message:?}",
+    );
+    assert!(
+        matches!(message.content.last(), Some(forge_primitives::ContentBlock::Text { .. })),
+        "the words close it: {message:?}",
+    );
+    update_until(
+        &mut sender,
+        "the prompt a client sent, drawn for the client that sent it with the attachment it carried",
+        drawn,
+    )
+    .await;
+    update_until(
+        &mut onlooker,
+        "a third view's send, drawn for this one with the attachment it carried",
+        drawn,
+    )
+    .await;
 
     // And exactly once: the evidence is ORDER, never a timeout,a nd a second
     // forged frame would have to arrive ahead of an update every subscriber
