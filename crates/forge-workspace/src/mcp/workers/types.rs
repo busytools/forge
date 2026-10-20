@@ -57,8 +57,9 @@ pub fn worker_tag_dir(root: &Path, label: &str, is_git_repo_at_spawn: bool) -> P
 /// `is_git_repo` is `None` on a row written before the field existed. That
 /// answers "yes, it can start": the spawn probes and records the flag, and
 /// a row whose directory forge cannot compose is never hidden on a guess.
-/// The launchpad calls this per row per frame, so it only stats the path;
-/// the canonical root under it is memoised rather than probed per call.
+/// The launchpad calls this per row per frame: the first call per root
+/// resolves the canonical base once (memoised), and every later call is a
+/// stat.
 pub fn worker_row_can_start(
     project_root: &Path,
     label: &str,

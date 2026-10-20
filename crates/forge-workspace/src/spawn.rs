@@ -1359,8 +1359,7 @@ pub(crate) fn handle_spawn_worker(
             "the worker's worktree is shared with another project, so the spawn is refused",
         );
         let _ = return_to.send(Err(format!(
-            "this worker's worktree cannot be shared: {collision}; despawn the other worker, or \
-             spawn under a different label"
+            "this worker's worktree cannot be shared: {collision}; spawn under a different label"
         )));
         return;
     }
@@ -4208,6 +4207,43 @@ provider = "anthropic"
         assert!(
             err.contains("worker 'ghost'") && err.contains("proj-b"),
             "the refusal names the crashed worker and its project: {err}",
+        );
+
+        // A seat still spawning holds its tree too: every state counts,
+        // not only Running.
+        let mut spawning = fake_git_worker_entry("launching", "worker-3");
+        spawning.status = forge_primitives::WorkerLiveness::Spawning;
+        ws.insert_live_worker(&key_of("proj-b"), spawning);
+        let err = spawn_reply(&ws, &key_of("proj-a"), "launching", false)
+            .await
+            .expect("reply channel")
+            .expect_err("a spawning worker's tree is claimed");
+        assert!(
+            err.contains("worker 'launching'") && err.contains("proj-b"),
+            "the refusal names the spawning worker and its project: {err}",
+        );
+
+        // A durable row claims the tree even with no in-memory entry:
+        // after a restart, before that project's lead connects.
+        ws.record_worker_row(
+            &key_of("proj-b"),
+            "parked",
+            "550e8400-e29b-41d4-a716-446655440083",
+            "charter",
+            None,
+            None,
+            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
+            None,
+        )
+        .expect("record proj-b's parked row");
+        let err = spawn_reply(&ws, &key_of("proj-a"), "parked", false)
+            .await
+            .expect("reply channel")
+            .expect_err("the durable row claims the composed path");
+        assert!(
+            err.contains("worker 'parked'") && err.contains("proj-b"),
+            "the durable row names its project: {err}",
         );
 
         // A project declared at the path a worker label would compose is

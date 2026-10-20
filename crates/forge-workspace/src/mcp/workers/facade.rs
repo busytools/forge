@@ -89,11 +89,11 @@ pub enum WorkerSpawnError {
     /// Spawn was dispatched but the workspace returned an error
     /// (e.g. tag-write failed). Forwarded as-is to the LLM.
     DispatchFailed { message: String },
-    /// claude failed to create the git worktree for `--worktree <label>`.
-    /// Reason text comes from claude's error output, passed through
-    /// verbatim so the lead's LLM can decide whether to retry (e.g.
-    /// pick a different label, or `git commit --allow-empty` first
-    /// in the empty-repo case).
+    /// The worker's git worktree is missing or unusable, so nothing was
+    /// spawned: claude could not create `--worktree <label>` (its reason
+    /// passed through verbatim), or the composed path belongs to another
+    /// project's checkout or worker and was refused before anything
+    /// could touch it.
     WorktreeCreationFailed { reason: String },
     /// `resume_session` was set and the label's prior session could not
     /// be looked up: the transcript directory, or a transcript in it, is
@@ -463,12 +463,26 @@ pub(super) fn validate_worker_spawn(
 /// Undo the worktree a refused spawn's `ensure_worker_worktree` step
 /// created, so a refusal strands neither worktree nor branch. `ensured`
 /// is `None` when this spawn never touched a worktree.
+///
+/// A concurrent spawn that won the registry for this label holds that
+/// worktree now, so the rollback leaves it alone.
 fn discard_refused_worktree(
+    ws: &Workspace,
+    project_key: &crate::target::ProjectKey,
     repo: &std::path::Path,
     label: &str,
     ensured: Option<(std::path::PathBuf, forge_agent::env::worktree::WorktreeEnsure)>,
 ) {
     let Some((worktree, outcome)) = ensured else { return };
+    if let Some(entry) = ws.list_live_workers(project_key).into_iter().find(|e| e.label == label)
+        && ws.cwd_for_session(&entry.slot).is_some_and(|dir| {
+            let dir = std::path::Path::new(&dir);
+            std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
+                == std::fs::canonicalize(&worktree).unwrap_or_else(|_| worktree.clone())
+        })
+    {
+        return;
+    }
     if let Some(warning) =
         forge_agent::env::worktree::discard_worker_worktree(repo, label, &worktree, outcome)
     {
@@ -658,6 +672,18 @@ impl WorkerFacade for ProdWorkerFacade {
             let run_dir =
                 crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git_repo_at_spawn);
             if is_git_repo_at_spawn {
+                // Refuse before the ensure or the transcript lookup can
+                // touch a tree that belongs to another project (#2460):
+                // the base is repository-global, so the label alone does
+                // not identify this project's worktree. The ensure is not
+                // read-only - it clears a deregistered leftover and
+                // rewrites a stale link - and the lookup would read that
+                // project's conversation.
+                if let Some(collision) = ws.worktree_collision(&run_dir, &cp.project_key) {
+                    return Err(WorkerSpawnError::WorktreeCreationFailed {
+                        reason: format!("this worker's worktree cannot be shared: {collision}"),
+                    });
+                }
                 match forge_agent::env::worktree::ensure_worker_worktree(&base, &label, &run_dir) {
                     Ok(outcome) => ensured = Some((run_dir.clone(), outcome)),
                     Err(err) => {
@@ -678,7 +704,7 @@ impl WorkerFacade for ProdWorkerFacade {
                 // answered, leaving the caller holding context it does
                 // not have.
                 Err(error) => {
-                    discard_refused_worktree(&base, &label, ensured.take());
+                    discard_refused_worktree(&ws, &cp.project_key, &base, &label, ensured.take());
                     return Err(WorkerSpawnError::ResumeLookupFailed {
                         label,
                         message: error.to_string(),
@@ -714,7 +740,7 @@ impl WorkerFacade for ProdWorkerFacade {
             return_to: Some(tx),
         };
         if let Err(err) = ws.dispatch(cmd) {
-            discard_refused_worktree(&base, &spawn_label, ensured.take());
+            discard_refused_worktree(&ws, &cp.project_key, &base, &spawn_label, ensured.take());
             return Err(WorkerSpawnError::DispatchFailed {
                 message: format!("dispatch failed: {err:?}"),
             });
@@ -735,7 +761,7 @@ impl WorkerFacade for ProdWorkerFacade {
                 Ok(reply)
             }
             Ok(Err(message)) => {
-                discard_refused_worktree(&base, &spawn_label, ensured.take());
+                discard_refused_worktree(&ws, &cp.project_key, &base, &spawn_label, ensured.take());
                 // The sync path's reply is a string the spawn handler
                 // built, not an SDK error, so there is no variant to
                 // name and the heuristics answer.

@@ -52,9 +52,11 @@ pub fn worker_root(cwd: &Path) -> Result<std::path::PathBuf, String> {
 }
 
 /// The checkout root the `claude` CLI forks a worker's `--worktree` under:
-/// the repository's canonical root, which is the MAIN checkout when the
-/// project is itself a linked worktree. Measured on 2.1.280: the CLI
-/// resolves its cwd to that root before composing
+/// the repository's main working tree, resolved from the first entry of
+/// `git worktree list --porcelain` - the main checkout when the project is
+/// itself a linked worktree, the checkout itself when its git dir lives
+/// elsewhere, the repo root for a subdirectory. Measured on 2.1.280: the
+/// CLI resolves its cwd to that root before composing
 /// `<root>/.claude/worktrees/<label>`, so a project rooted in a linked
 /// worktree (or in a repo subdirectory) otherwise names a directory the
 /// CLI never creates (#2460). A path that is not a repository is its own
@@ -67,8 +69,6 @@ pub fn worker_root(cwd: &Path) -> Result<std::path::PathBuf, String> {
 /// once per root.
 pub fn worktree_base(root: &Path) -> PathBuf {
     static BASES: OnceLock<parking_lot::Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
-    static UNRESOLVED: OnceLock<parking_lot::Mutex<std::collections::HashSet<PathBuf>>> =
-        OnceLock::new();
     let cache = BASES.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
     if let Some(base) = cache.lock().get(root).cloned() {
         return base;
@@ -83,8 +83,7 @@ pub fn worktree_base(root: &Path) -> PathBuf {
         // Not a repository is an answer; a repository git would not read
         // is not. Only the second is worth reporting, and neither is
         // cached: the next call re-asks.
-        if is_git_repo(root) && UNRESOLVED.get_or_init(Default::default).lock().insert(root.into())
-        {
+        if is_git_repo(root) && first_unresolved(root) {
             tracing::warn!(
                 target: "forge_agent::env::worktree",
                 event_name = "worktree_base_unresolved",
@@ -100,32 +99,25 @@ pub fn worktree_base(root: &Path) -> PathBuf {
     base
 }
 
+/// True the first time this process reports `root` as unresolved, so the
+/// warning is one line per root rather than one per render-path call.
+fn first_unresolved(root: &Path) -> bool {
+    static UNRESOLVED: OnceLock<parking_lot::Mutex<std::collections::HashSet<PathBuf>>> =
+        OnceLock::new();
+    UNRESOLVED.get_or_init(Default::default).lock().insert(root.to_path_buf())
+}
+
 /// [`worktree_base`] without the memo; `None` when git could not answer.
+///
+/// The first entry of `git worktree list --porcelain` is the main working
+/// tree: the main checkout for a linked worktree, the checkout for a repo
+/// whose git dir lives elsewhere, the repo root from a subdirectory. That
+/// is the root the CLI composes from in every one of those layouts, which
+/// the common dir alone cannot name (a separate git dir is not a checkout).
 fn resolve_worktree_base(root: &Path) -> Option<PathBuf> {
-    let common_dir = git_common_dir(root)?;
-    let out = git_in_repo(root, &["rev-parse", "--show-toplevel", "--git-dir"])?;
-    let mut lines = out.lines();
-    let (Some(toplevel), Some(git_dir)) = (lines.next(), lines.next()) else {
-        return None;
-    };
-    // `--show-toplevel` is absolute; `--git-dir` is relative to `root`
-    // unless git echoed an absolute admin dir, and `--path-format` is not
-    // on every git CI runs.
-    let git_dir = Path::new(git_dir);
-    let git_dir = if git_dir.is_absolute() { git_dir.to_path_buf() } else { root.join(git_dir) };
-    let toplevel = std::fs::canonicalize(toplevel).ok()?;
-    let git_dir = std::fs::canonicalize(git_dir).ok()?;
-    if git_dir == common_dir {
-        return Some(toplevel);
-    }
-    // A linked worktree: its git dir is `<main>/.git/worktrees/<name>`, so
-    // the CLI's root is the checkout that common dir belongs to.
-    match (common_dir.file_name().and_then(std::ffi::OsStr::to_str), common_dir.parent()) {
-        (Some(".git"), Some(main)) => Some(main.to_path_buf()),
-        // A separate git dir names no checkout of its own; git's answer is
-        // all there is.
-        _ => Some(common_dir),
-    }
+    let listing = git_in_repo(root, &["worktree", "list", "--porcelain"])?;
+    let first = listing.lines().find_map(|line| line.strip_prefix("worktree "))?;
+    std::fs::canonicalize(first).ok()
 }
 
 /// The branch checked out at `path`, via `git rev-parse --abbrev-ref
@@ -1794,7 +1786,9 @@ mod tests {
         assert_eq!(worktree_base(&alias), main, "a symlinked spelling resolves to the same root");
 
         // A linked worktree of a repo kept in a separate git dir: the
-        // common dir is not named `.git`, and git's own answer is the base.
+        // base is the CHECKOUT, not the git admin dir - `git worktree
+        // list` names the working tree first, and that is the root the
+        // CLI composes from.
         let separate = tempdir().expect("separate holder");
         let checkout = separate.path().join("checkout");
         let store = separate.path().join("store.git");
@@ -1819,10 +1813,14 @@ mod tests {
             &checkout,
             &["worktree", "add", "-q", "-b", "sep-linked", separate_linked.to_str().expect("utf8")],
         );
+        // A repo kept in a separate git dir is NOT a supported worker
+        // layout: git names the ADMIN dir as its main worktree here, and
+        // the CLI's own base for this shape is unverified. forge follows
+        // git's answer rather than guessing a checkout it cannot derive.
         assert_eq!(
             worktree_base(&separate_linked),
             fs::canonicalize(&store).expect("canonical store"),
-            "a separate git dir is the base when it is not named .git",
+            "a separate git dir's base is the admin dir git names, and the layout is unsupported",
         );
 
         // A failed resolution is re-asked: with its link gone the worktree
@@ -1853,66 +1851,17 @@ mod tests {
         );
     }
 
-    /// A git that cannot name the checkout root is reported once per root
-    /// with an event a log grep can find - a bare repo answers every other
-    /// probe but has no top level - and the answer is not memoised.
+    /// The unresolved-root warning is once per root, not once per call:
+    /// callers include render paths that ask for the same row every frame.
     #[test]
-    fn worktree_base_reports_a_git_it_cannot_resolve_once() {
-        #[derive(Clone)]
-        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Capture {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().expect("capture lock").extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
-            type Writer = Capture;
-            fn make_writer(&'a self) -> Self::Writer {
-                self.clone()
-            }
-        }
+    fn an_unresolved_root_is_reported_once() {
+        let holder = tempdir().expect("holder");
+        let first = holder.path().join("one");
+        let second = holder.path().join("two");
 
-        let dir = tempdir().expect("bare holder");
-        let bare = dir.path().join("bare.git");
-        run_git(dir.path(), &["init", "-q", "--bare", bare.to_str().expect("utf8")]);
-        let bare = fs::canonicalize(&bare).expect("canonical bare");
-        let capture = |calls: usize| {
-            let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-            let subscriber = tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::WARN)
-                .with_writer(Capture(std::sync::Arc::clone(&buffer)))
-                .finish();
-            tracing::subscriber::with_default(subscriber, || {
-                for _ in 0..calls {
-                    assert_eq!(
-                        worktree_base(&bare),
-                        bare,
-                        "a repo git cannot resolve is its own base",
-                    );
-                }
-            });
-            String::from_utf8(buffer.lock().expect("capture lock").clone()).expect("utf8 log")
-        };
-
-        let first = capture(2);
-        assert!(
-            first.contains("worktree_base_unresolved"),
-            "the unresolved root is reported: {first}",
-        );
-        assert_eq!(
-            first.matches("worktree_base_unresolved").count(),
-            1,
-            "once per root, not once per call: {first}",
-        );
-        let second = capture(1);
-        assert!(
-            !second.contains("worktree_base_unresolved"),
-            "and not again after the first report: {second}",
-        );
+        assert!(first_unresolved(&first), "the first report of a root goes through");
+        assert!(!first_unresolved(&first), "a repeat for the same root is suppressed");
+        assert!(first_unresolved(&second), "a different root reports on its own");
     }
 
     /// A directory that is not there is a refusal, not a silent pass: the

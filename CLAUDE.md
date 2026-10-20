@@ -897,10 +897,13 @@ them:
 
 - `--worktree [name]` defaults to in-repo
   `<repo>/.claude/worktrees/<name>/`, not a sibling dir. forge matches.
-  `<repo>` is the canonical root resolved through git's common dir, so a
-  project that is itself a linked worktree gets its workers' worktrees
-  under the MAIN checkout, not under the project path (measured on
-  2.1.280, #2460).
+  `<repo>` is the main working tree, the first entry of
+  `git worktree list --porcelain`, so a project that is itself a linked
+  worktree gets its workers' worktrees under the MAIN checkout, not under
+  the project path (measured on 2.1.280, #2460). A repo kept in a separate
+  git dir is NOT a supported worker layout: git names its admin dir as the
+  main worktree, and forge follows git's answer rather than guessing a
+  checkout it cannot derive.
 - `EnterWorktree` / `ExitWorktree` are built-in tools the model can
   call; forge decides per session whether to block them in favour of
   `mcp__forge__*`.
