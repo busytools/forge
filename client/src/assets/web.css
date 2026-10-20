@@ -1606,10 +1606,10 @@ details.sfold div.wk:hover { background: none; }
 .prose p + p { margin-top: 20px; }
 /* The reset above zeroes the padding a list draws its markers in, so the padding
    below is their room; outside, because an inside marker joins a loose item's
-   <p> and takes a line above it. `ol`'s gutter is wider because a number's
-   marker is 28.6px at one digit and 22px clips it. */
+   <p> and takes a line above it. `ol`'s gutter is fixed in em so it holds the
+   marker whatever the count reaches: three digits need 47.6px at this size. */
 .prose ul, .prose ol { padding-left: 22px; margin: 20px 0; list-style-position: outside; }
-.prose ol { padding-left: 40px; }
+.prose ol { padding-left: 3.2em; }
 .prose li + li { margin-top: 4px; }
 .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
   background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }

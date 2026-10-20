@@ -162,6 +162,9 @@ const PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 
 /** The board drawing carries state classes too (the board's own marks). */
 const BOARD_PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-board.html'), 'utf8');
 
+/** The document drawing copies the prose rules for its note and draft rows. */
+const DOCUMENT_PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-document.html'), 'utf8');
+
 /**
  * Every `<style>` block in a drawing, joined rather than the first taken: a
  * second block is where a rule escapes a read that asked for one.
@@ -173,6 +176,7 @@ const sheetOf = (page: string): string =>
 
 const BOOK = sheetOf(PAGE);
 const BOARD_BOOK = sheetOf(BOARD_PAGE);
+const DOC_BOOK = sheetOf(DOCUMENT_PAGE);
 
 const SHEETS: [string, string][] = [
   ['assets/web.css', SHEET],
@@ -206,6 +210,38 @@ describe('the sheet a state class draws in', () => {
           'rule pattern is what moved',
       ).toBe(opens);
     }
+  });
+
+  /**
+   * The drawings copy the sheet's prose-list rules by hand, and a drawing is
+   * the visual truth for the surface: a copy that drifts draws a list the app
+   * no longer has. These are the declarations #2477 turns on - the marker's
+   * position and the two gutters that hold it.
+   */
+  it('copies the prose list declarations into the drawings', () => {
+    const declaration = (sheet: string, selector: string, property: string) => {
+      const found = rules(sheet)
+        .filter((rule) => selectorParts(rule.selector).includes(selector))
+        .flatMap((rule) => {
+          const value = new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`).exec(rule.body)?.[1];
+          return value === undefined ? [] : [value.trim()];
+        });
+      return found.at(-1);
+    };
+    const lists = (sheet: string) => ({
+      position: declaration(sheet, '.prose ul', 'list-style-position'),
+      bullet: declaration(sheet, '.prose ul', 'padding-left'),
+      number: declaration(sheet, '.prose ol', 'padding-left'),
+    });
+
+    const shipped = lists(SHEET);
+    expect(shipped, 'the sheet carries the fixed declarations').toEqual({
+      position: 'outside',
+      bullet: '22px',
+      number: '3.2em',
+    });
+    expect(lists(BOOK), 'the session drawing keeps the sheet').toEqual(shipped);
+    expect(lists(DOC_BOOK), 'the document drawing keeps the sheet').toEqual(shipped);
   });
 
   it('draws a state class in the tone that class names', () => {
