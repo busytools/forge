@@ -2,7 +2,7 @@
 //! the asks the browser MCP family sends through it.
 
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::{BrowserPart, HandOff, HandOffEnding};
@@ -94,6 +94,50 @@ pub enum Notice {
     Seats(Vec<SessionSlot>),
 }
 
+/// Which side let a capable connection go, for the trail a refusal reads.
+///
+/// **The relay cannot see a client's process**, only its connection: so the
+/// side named here is the connection's. A client that died, slept or was quit
+/// reads as [`Release::Closed`] or [`Release::Failed`] depending on what its
+/// socket did, and as [`Release::Reaped`] when the transport's keepalive ended
+/// a socket that never closed at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Release {
+    /// The connection ended on its own: the client closed it, or its read
+    /// loop finished.
+    Closed,
+    /// The socket failed under the connection, so the peer never closed it.
+    Failed,
+    /// The transport's keepalive ended it: the peer stopped answering a ping
+    /// it had already been sent. **Not [`Release::Failed`]**: a socket that fails
+    /// reports its own error, where this is a peer that is alive enough to
+    /// hold a socket and too wedged to answer one.
+    Reaped,
+    /// Another capable connection took the role by force.
+    Taken,
+}
+
+impl Release {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Failed => "failed",
+            Self::Reaped => "reaped",
+            Self::Taken => "taken",
+        }
+    }
+}
+
+/// The role's last departure, kept so a refusal can say when the host left
+/// and which side let it go - the question a bare "no client connected"
+/// leaves a reader unable to answer.
+#[derive(Clone, Copy, Debug)]
+struct Departed {
+    client: u64,
+    at: Instant,
+    reason: Release,
+}
+
 /// The registered connection, and the channels its asks and its notices go
 /// down.
 #[derive(Debug)]
@@ -104,6 +148,9 @@ struct Client {
     id: u64,
     to_host: mpsc::UnboundedSender<BrowserRequest>,
     notices: mpsc::UnboundedSender<Notice>,
+    /// When this connection took the role, or joined the line: a release
+    /// line says how long it held it, and a promotion restarts the clock.
+    since: Instant,
 }
 
 /// Who holds the role, and who is in line for it.
@@ -116,6 +163,8 @@ struct Role {
     /// the holder hands over without the waiter being asked to declare
     /// anything again.
     waiting: Vec<Client>,
+    /// The last connection to give the role up, and why.
+    departed: Option<Departed>,
 }
 
 /// The one client connection that drives the browser.
@@ -168,9 +217,10 @@ impl BrowserRelay {
         // honest reading of "offered just now".
         role.waiting.retain(|client| client.id != id);
         let held = role.host.as_ref().map(|host| host.id);
+        let since = Instant::now();
         match held {
             Some(host_id) if host_id != id => {
-                role.waiting.push(Client { id, to_host, notices });
+                role.waiting.push(Client { id, to_host, notices, since });
                 tracing::debug!(
                     event_name = "browser_host_waiting",
                     client = id,
@@ -180,7 +230,7 @@ impl BrowserRelay {
                 false
             }
             _ => {
-                role.host = Some(Client { id, to_host, notices });
+                role.host = Some(Client { id, to_host, notices, since });
                 tracing::debug!(
                     event_name = "browser_host_registered",
                     client = id,
@@ -208,9 +258,22 @@ impl BrowserRelay {
             return false;
         };
         if let Some(displaced) = role.host.take() {
+            // The departure is recorded here rather than at the displaced
+            // connection's drop: by then the role is the claimant's, and the
+            // side that let it go would read as nothing at all.
+            role.departed =
+                Some(Departed { client: displaced.id, at: Instant::now(), reason: Release::Taken });
+            tracing::debug!(
+                event_name = "browser_host_taken",
+                client = displaced.id,
+                claimant = id,
+                held_ms = displaced.since.elapsed().as_secs_f64() * 1000.0,
+                "another capable client took the browser role by force",
+            );
             let _ = displaced.notices.send(Notice::Taken);
         }
-        let claimant = role.waiting.remove(at);
+        let mut claimant = role.waiting.remove(at);
+        claimant.since = Instant::now();
         role.host = Some(claimant);
         true
     }
@@ -229,21 +292,35 @@ impl BrowserRelay {
     }
 
     /// Give the role back, if `id` holds it - and hand it to whoever is next
-    /// in line.
-    pub fn unregister(&self, id: u64) {
+    /// in line. `how` is the side that ended the connection, which is what
+    /// the release line and the next refusal report.
+    pub fn unregister(&self, id: u64, how: Release) {
         let mut role = self.lock();
-        if role.host.as_ref().is_some_and(|host| host.id == id) {
-            role.host = None;
+        if let Some(host) = role.host.take_if(|host| host.id == id) {
+            role.departed = Some(Departed { client: id, at: Instant::now(), reason: how });
             // **The archaeology line**: a host that parks instead of
-            // answering names itself here, and this line says when it left.
+            // answering names itself here, and this line says when it left
+            // and which side let it go.
             tracing::debug!(
                 event_name = "browser_host_released",
                 client = id,
+                reason = %how.as_str(),
+                held_ms = host.since.elapsed().as_secs_f64() * 1000.0,
+                waiting = role.waiting.len(),
                 "the connection holding the browser role released it",
             );
             promote(&mut role);
         }
-        role.waiting.retain(|client| client.id != id);
+        if let Some(at) = role.waiting.iter().position(|client| client.id == id) {
+            let left = role.waiting.remove(at);
+            tracing::debug!(
+                event_name = "browser_waiter_left",
+                client = id,
+                reason = %how.as_str(),
+                waited_ms = left.since.elapsed().as_secs_f64() * 1000.0,
+                "a capable client waiting for the browser role went away",
+            );
+        }
     }
 
     /// Send one ask to the host and wait for its answer.
@@ -263,6 +340,30 @@ impl BrowserRelay {
         let (id, host_id, to_host) = {
             let role = self.lock();
             let Some(host) = role.host.as_ref() else {
+                // **The refusal says what the relay knows.** A bare "no
+                // client connected" cannot be acted on: whether no client
+                // ever declared, or the host left a minute ago and which side
+                // ended it, is the whole difference between a machine with
+                // nothing attached and a relay that lost a host it should
+                // still have.
+                let (last_host, last_host_ms_ago, last_host_release) = match role.departed {
+                    Some(gone) => (
+                        gone.client.to_string(),
+                        gone.at.elapsed().as_secs_f64() * 1000.0,
+                        gone.reason.as_str(),
+                    ),
+                    None => ("none".to_owned(), 0.0, "none"),
+                };
+                tracing::debug!(
+                    event_name = "browser_ask_no_host",
+                    tool = %tool,
+                    slot = %seat.display(),
+                    waiting = role.waiting.len(),
+                    last_host = %last_host,
+                    last_host_ms_ago,
+                    last_host_release = %last_host_release,
+                    "a browser ask found no capable client connected",
+                );
                 return Err(NO_BROWSER_CLIENT.to_owned());
             };
             (mint_id(), host.id, host.to_host.clone())
@@ -330,14 +431,50 @@ impl BrowserRelay {
         }
     }
 
+    /// Which connection holds the role, for a test that watches it move.
+    #[cfg(feature = "testing")]
+    pub fn testing_host(&self) -> Option<u64> {
+        self.lock().host.as_ref().map(|host| host.id)
+    }
+
+    /// How many capable connections are in line, for the same reason.
+    #[cfg(feature = "testing")]
+    pub fn testing_waiting(&self) -> usize {
+        self.lock().waiting.len()
+    }
+
+    /// The connections in line, so a test can name the one a promotion
+    /// reached rather than infer it from a count.
+    #[cfg(feature = "testing")]
+    pub fn testing_waiting_ids(&self) -> Vec<u64> {
+        self.lock().waiting.iter().map(|client| client.id).collect()
+    }
+
     /// Forget a host whose channel has no receiver left - and a waiter whose
     /// channel is dead too, so a role is never handed to a connection that
     /// has already gone.
     fn forget_the_dead(&self) {
         let mut role = self.lock();
-        role.waiting.retain(|client| !client.to_host.is_closed());
-        if role.host.as_ref().is_some_and(|host| host.to_host.is_closed()) {
-            role.host = None;
+        for gone in role.waiting.extract_if(.., |client| client.to_host.is_closed()) {
+            tracing::debug!(
+                event_name = "browser_waiter_left",
+                client = gone.id,
+                reason = %Release::Failed.as_str(),
+                waited_ms = gone.since.elapsed().as_secs_f64() * 1000.0,
+                "a capable client waiting for the browser role went away",
+            );
+        }
+        if let Some(host) = role.host.take_if(|host| host.to_host.is_closed()) {
+            role.departed =
+                Some(Departed { client: host.id, at: Instant::now(), reason: Release::Failed });
+            tracing::debug!(
+                event_name = "browser_host_released",
+                client = host.id,
+                reason = %Release::Failed.as_str(),
+                held_ms = host.since.elapsed().as_secs_f64() * 1000.0,
+                waiting = role.waiting.len(),
+                "the connection holding the browser role released it",
+            );
             promote(&mut role);
         }
     }
@@ -350,10 +487,11 @@ fn promote(role: &mut Role) {
         return;
     }
     while !role.waiting.is_empty() {
-        let next = role.waiting.remove(0);
+        let mut next = role.waiting.remove(0);
         if next.to_host.is_closed() {
             continue;
         }
+        next.since = Instant::now();
         let _ = next.notices.send(Notice::Granted);
         tracing::debug!(
             event_name = "browser_host_promoted",
@@ -477,12 +615,94 @@ mod tests {
         serde_json::json!({ "url": "https://example.com" })
     }
 
+    /// Buffers tracing output so a record the relay emitted can be read back,
+    /// the way a reader of forge's log would see it.
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Capture every record emitted while the guard lives.
+    fn capture_logs() -> (LogCapture, tracing::subscriber::DefaultGuard) {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            // Plain bytes: the default field formatter paints its `=` and
+            // field names, and the escapes would split every assertion here.
+            .with_ansi(false)
+            .finish();
+        (capture, tracing::subscriber::set_default(subscriber))
+    }
+
+    fn captured(capture: &LogCapture) -> String {
+        let bytes = capture.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// **A refusal says what the relay knows, not only what is missing.** A
+    /// bare "no client connected" reads the same whether the machine has
+    /// nothing attached or a host was lost that should still be driving: the
+    /// last holder, how long ago it went and which side ended it are the whole
+    /// difference, and the line a reader needs to act.
+    #[tokio::test]
+    async fn a_refusal_names_the_last_host_and_which_side_let_it_go() {
+        let relay = Arc::new(BrowserRelay::new());
+        let (to_host, asks) = mpsc::unbounded_channel();
+        assert!(relay.register(7, to_host, notices()), "a capable connection holds the role");
+        // The connection went: its receiver is dropped, which is the relay's
+        // only sighting of a host that left.
+        drop(asks);
+        assert_eq!(
+            relay.ask(&seat(), "browser_close", args()).await,
+            Err(HOST_GONE.to_owned()),
+            "the ask that found the dead channel says the host went",
+        );
+
+        let (capture, _guard) = capture_logs();
+        let refused = relay.ask(&seat(), "browser_navigate", args()).await;
+        let logged = captured(&capture);
+
+        assert_eq!(
+            refused,
+            Err(NO_BROWSER_CLIENT.to_owned()),
+            "the named error is still what the tool returns",
+        );
+        assert!(logged.contains("browser_ask_no_host"), "the refusal is logged: {logged}");
+        assert!(logged.contains("tool=browser_navigate"), "and names the tool: {logged}");
+        assert!(logged.contains("slot=TestOrg/proj/lead"), "and the seat: {logged}");
+        assert!(logged.contains("last_host=7"), "and the last holder: {logged}");
+        assert!(logged.contains("last_host_ms_ago="), "and how long ago it left: {logged}");
+        assert!(logged.contains("last_host_release=failed"), "and which side ended it: {logged}");
+        assert!(logged.contains("waiting=0"), "and who is in line for it: {logged}");
+    }
+
     /// One ask, landed on `rx`: the ask is answered there and the caller is
     /// told the parts. Named so the tests below read as where the ask went.
     async fn lands_on(relay: &Arc<BrowserRelay>, rx: &mut mpsc::UnboundedReceiver<BrowserRequest>) {
         let relay = Arc::clone(relay);
         let asked = tokio::spawn(async move { relay.ask(&seat(), "browser_close", args()).await });
-        let request = rx.recv().await.expect("the ask reaches this connection");
+        // Bounded, so a role that never moved fails here by name rather than
+        // hanging the test on a channel nobody writes to.
+        let request = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the ask reaches this connection inside the test's bound")
+            .expect("the ask reaches this connection");
         request.reply.send(Ok(Vec::new())).ok();
         assert!(
             asked.await.expect("the asker task ran").is_ok(),
@@ -528,13 +748,13 @@ mod tests {
             "the second waits in line rather than taking it"
         );
 
-        relay.unregister(1);
+        relay.unregister(1, Release::Closed);
         lands_on(&relay, &mut second_rx).await;
 
         // A late unregister from a connection that no longer holds it must
         // not take the role away from its new holder.
         let (third, mut third_rx) = mpsc::unbounded_channel();
-        relay.unregister(1);
+        relay.unregister(1, Release::Closed);
         assert!(!relay.register(3, third, notices()), "the role is taken, so a third waits");
         lands_on(&relay, &mut second_rx).await;
         assert!(third_rx.try_recv().is_err(), "and the third is not asked");
@@ -553,8 +773,134 @@ mod tests {
         drop(second_rx);
         assert!(!relay.register(3, third, notices()));
 
-        relay.unregister(1);
+        relay.unregister(1, Release::Closed);
         lands_on(&relay, &mut third_rx).await;
+    }
+
+    /// **A release names the side and how long the role was held**, so a day
+    /// of a role changing hands reads as who let it go, when, and how - which
+    /// is the trail "no client connected" alone never gives.
+    #[tokio::test]
+    async fn a_release_names_the_side_and_the_hold() {
+        let relay = BrowserRelay::new();
+        let (to_host, _asks) = mpsc::unbounded_channel();
+        assert!(relay.register(4, to_host, notices()), "a capable connection holds the role");
+
+        let (capture, _guard) = capture_logs();
+        relay.unregister(4, Release::Closed);
+        let logged = captured(&capture);
+
+        assert!(logged.contains("browser_host_released"), "the release is logged: {logged}");
+        assert!(logged.contains("client=4"), "and names the connection: {logged}");
+        assert!(logged.contains("reason=closed"), "and which side ended it: {logged}");
+        assert!(logged.contains("held_ms="), "and how long it held the role: {logged}");
+    }
+
+    /// **A force-take names both sides.** The displaced holder's own drop
+    /// cannot report this - by then the role is the claimant's - so without
+    /// the line here the role simply appears to move.
+    #[tokio::test]
+    async fn a_force_take_names_the_holder_and_the_claimant() {
+        let relay = BrowserRelay::new();
+        let (first, _first_rx) = mpsc::unbounded_channel();
+        let (second, _second_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first, notices()), "the first connection holds it");
+        assert!(!relay.register(2, second, notices()), "and the second waits in line");
+
+        let (capture, _guard) = capture_logs();
+        assert!(relay.claim(2), "the claim moves the role");
+        let logged = captured(&capture);
+
+        assert!(logged.contains("browser_host_taken"), "the take is logged: {logged}");
+        assert!(logged.contains("client=1"), "and names the displaced holder: {logged}");
+        assert!(logged.contains("claimant=2"), "and the claimant: {logged}");
+    }
+
+    /// **The hold clock starts when the role is taken, not when the
+    /// connection queued.** A waiter promoted an hour after it arrived must
+    /// report an hour of waiting and a fresh hold, or `held_ms` reads as the
+    /// queue time and a reader draws the wrong history.
+    #[test]
+    fn a_promotion_restarts_the_hold_clock() {
+        let mut role = Role::default();
+        let (to_host, _asks) = mpsc::unbounded_channel();
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(600))
+            .expect("the test's clock has ten minutes behind it");
+        role.waiting.push(Client { id: 2, to_host, notices: notices(), since: long_ago });
+
+        promote(&mut role);
+
+        let held = role.host.as_ref().expect("the waiter is promoted");
+        assert!(
+            held.since > long_ago + Duration::from_secs(1),
+            "the hold starts at the promotion rather than when the connection queued",
+        );
+    }
+
+    /// And a force-take restarts it for the claimant, for the same reason.
+    #[test]
+    fn a_claim_restarts_the_claimants_hold_clock() {
+        let relay = BrowserRelay::new();
+        let (first, _first_rx) = mpsc::unbounded_channel();
+        let (second, _second_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first, notices()), "the first connection holds it");
+        assert!(!relay.register(2, second, notices()), "and the second waits in line");
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(600))
+            .expect("the test's clock has ten minutes behind it");
+        relay.lock().waiting[0].since = long_ago;
+
+        assert!(relay.claim(2), "the claim moves the role");
+
+        let role = relay.lock();
+        let held = role.host.as_ref().expect("the claimant holds it");
+        assert_eq!(held.id, 2);
+        assert!(
+            held.since > long_ago + Duration::from_secs(1),
+            "the claim starts the claimant's hold clock rather than its wait",
+        );
+    }
+
+    /// **A waiter that goes is named**, so a line that keeps growing across a
+    /// day of reconnects is visible as clients leaving rather than as a role
+    /// quietly changing hands.
+    #[test]
+    fn a_waiter_that_leaves_is_named() {
+        let relay = BrowserRelay::new();
+        let (first, _first_rx) = mpsc::unbounded_channel();
+        let (second, _second_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first, notices()), "the first connection holds it");
+        assert!(!relay.register(2, second, notices()), "and the second waits in line");
+
+        let (capture, _guard) = capture_logs();
+        relay.unregister(2, Release::Failed);
+        let logged = captured(&capture);
+
+        assert!(logged.contains("browser_waiter_left"), "the departure is logged: {logged}");
+        assert!(logged.contains("client=2"), "and names the connection: {logged}");
+        assert!(logged.contains("reason=failed"), "and the side: {logged}");
+        assert!(logged.contains("waited_ms="), "and how long it waited: {logged}");
+    }
+
+    /// The sweep an ask runs names the dead waiters it clears, which is the
+    /// other place a connection leaves the line.
+    #[test]
+    fn a_dead_waiter_cleared_by_an_ask_is_named() {
+        let relay = BrowserRelay::new();
+        let (first, _first_rx) = mpsc::unbounded_channel();
+        let (second, second_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first, notices()), "the first connection holds it");
+        assert!(!relay.register(2, second, notices()), "and the second waits in line");
+        drop(second_rx);
+
+        let (capture, _guard) = capture_logs();
+        relay.forget_the_dead();
+        let logged = captured(&capture);
+
+        assert!(logged.contains("browser_waiter_left"), "the sweep is logged: {logged}");
+        assert!(logged.contains("client=2"), "and names the connection: {logged}");
+        assert!(logged.contains("reason=failed"), "and the side: {logged}");
     }
 
     /// Nothing capable connected is the named error rather than a hang.
@@ -733,7 +1079,7 @@ mod tests {
 
         let (again, mut again_rx) = mpsc::unbounded_channel();
         assert!(!relay.register(3, again, notices()), "the third still waits behind it");
-        relay.unregister(2);
+        relay.unregister(2, Release::Closed);
         tokio::time::timeout(std::time::Duration::from_secs(5), lands_on(&relay, &mut again_rx))
             .await
             .expect("the role promotes in line after the claimant goes");
@@ -753,7 +1099,7 @@ mod tests {
         assert!(!relay.register(2, second, second_notes));
         assert!(second_note_rx.try_recv().is_err(), "in line, nothing is said yet");
 
-        relay.unregister(1);
+        relay.unregister(1, Release::Closed);
 
         assert_eq!(
             second_note_rx.try_recv(),

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -16,7 +16,7 @@ use base64::Engine as _;
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::BrowserPart;
 use forge_primitives::document::DocumentRead;
-use forge_workspace::browser::{BrowserRelay, BrowserRequest, Notice};
+use forge_workspace::browser::{BrowserRelay, BrowserRequest, Notice, Release};
 
 use super::PROTOCOL_VERSION;
 use super::TransportState;
@@ -78,6 +78,91 @@ impl Drop for Holds<'_> {
 const BEFORE_ANSWER: &str = "the browser host sent an image frame before the answer that \
                               declares the image, so the call cannot be completed";
 
+/// How often a connection is asked to prove it is still there.
+///
+/// **The socket carried no keepalive**, so a peer that vanished without
+/// closing - a slept machine, a wedged process, a network that went away -
+/// left its browser role held and any companion waiting, with neither side
+/// told the other was gone. Every WebSocket client answers a Ping without its
+/// app's involvement, so the answer is the proof.
+pub(crate) const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
+
+/// How long a ping may go unanswered before the connection is reaped. Four
+/// missed beats: long enough that a busy peer is never cut, short enough that
+/// a role is not held by a corpse for the minutes a TCP retransmission timeout
+/// takes. **Chosen, not measured**: the one number it changes for a person is
+/// how fast a call on a paused host fails (the ask's own bound is longer).
+pub(crate) const HEARTBEAT_DEAD: Duration = Duration::from_secs(60);
+
+/// One connection's keepalive: the ping it has out, if any.
+///
+/// **A silent read is not evidence of a dead peer until something has been
+/// asked of it.** A connection can spend longer than the bound in a single
+/// write - a 3.5 MB snapshot to a slow client was measured at 31.6 s - and
+/// through that stall no beat runs and no ping goes out, so a rule that
+/// counted "no frame read" as silence would kill a live client on the first
+/// tick after the write. What is tracked here is the one thing the peer was
+/// actually asked for: an unanswered ping.
+#[derive(Debug, Default)]
+struct Keepalive {
+    /// When the outstanding ping was sent, `None` when none is out. Any
+    /// inbound frame clears it, because any frame is the peer answering in
+    /// some form. A lock rather than a cell: [`Keepalive::ping`] holds
+    /// `&self` across its send, and a cell is not `Sync`, which would make
+    /// the connection's future not `Send` for the sake of a stamp.
+    sent: std::sync::Mutex<Option<Instant>>,
+}
+
+/// What one beat should do.
+#[derive(Debug, PartialEq, Eq)]
+enum Beat {
+    /// Send a ping, and wait for an answer.
+    Ping,
+    /// A ping is out and still inside the bound.
+    Wait,
+    /// A ping went unanswered past the bound: the peer is not reading.
+    Reap,
+}
+
+impl Keepalive {
+    /// The outstanding ping's send time, if one is out.
+    fn sent(&self) -> Option<Instant> {
+        *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A frame arrived, so whatever was asked, the peer is answering.
+    fn heard(&self) {
+        *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    /// What this beat should do. **Asking does not stamp the deadline**: a
+    /// send that queues behind a full buffer reaches the peer late, and a
+    /// deadline taken before it would have expired before the peer saw it.
+    fn beat(&self, now: Instant, dead: Duration) -> Beat {
+        match self.sent() {
+            Some(at) if now.duration_since(at) >= dead => Beat::Reap,
+            Some(_) => Beat::Wait,
+            None => Beat::Ping,
+        }
+    }
+
+    /// Send the ping and start its deadline, **in that order**.
+    ///
+    /// The stamp is taken here, only once the send answers, so no caller can
+    /// stamp it early: a ping still held in a full buffer owes nothing until
+    /// it reaches the peer. The send is a `Sink` rather than a closure so a
+    /// test can hold it and watch the state at each side of the await.
+    async fn ping<S>(&self, sink: &mut S) -> anyhow::Result<()>
+    where
+        S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+    {
+        use futures_util::SinkExt as _;
+        sink.send(Message::Ping(tokio_tungstenite::tungstenite::Bytes::new())).await?;
+        *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
+        Ok(())
+    }
+}
+
 /// Why an in-flight ask failed because a force-take moved the role mid-call.
 ///
 /// Named like [`BEFORE_ANSWER`]: the call was not wrong, the role moved out
@@ -95,7 +180,7 @@ struct Hosting {
     /// The asks sent to the client and not yet answered, by id.
     in_flight: HashMap<u64, InFlight>,
     /// The role itself, given back when this drops, a panic included.
-    _role: BrowserRole,
+    role: BrowserRole,
 }
 
 impl Hosting {
@@ -116,7 +201,7 @@ impl Hosting {
                 asks,
                 notices,
                 in_flight: HashMap::new(),
-                _role: BrowserRole { relay: Arc::clone(relay), id },
+                role: BrowserRole { relay: Arc::clone(relay), id, ending: None },
             },
             held,
         )
@@ -131,6 +216,11 @@ impl Hosting {
 struct BrowserRole {
     relay: Arc<BrowserRelay>,
     id: u64,
+    /// Which side ended the connection, set on the way out. Unset reaches the
+    /// drop only when the connection task never got that far - a panic, or a
+    /// return before the loop, which are failures rather than a client
+    /// closing.
+    ending: Option<Release>,
 }
 
 /// Counts this connection among the attached clients for as long as it
@@ -154,7 +244,7 @@ impl Drop for AttachedClient {
 
 impl Drop for BrowserRole {
     fn drop(&mut self) {
-        self.relay.unregister(self.id);
+        self.relay.unregister(self.id, self.ending.unwrap_or(Release::Failed));
     }
 }
 
@@ -277,6 +367,17 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
         me,
     )
     .await;
+    // **Which side ended the connection**, read before the hosting drops: the
+    // role it gives back carries this into the relay's trail, so a host that
+    // vanished on a socket error is not indistinguishable from one the client
+    // closed on purpose.
+    if let Some(hosting) = hosting.as_mut() {
+        hosting.role.ending.get_or_insert(if outcome.is_ok() {
+            Release::Closed
+        } else {
+            Release::Failed
+        });
+    }
 
     // Every take this connection started ends with it: each is DROPPED
     // rather than submitted - its reader is gone, so nothing it produced
@@ -405,12 +506,29 @@ async fn run_connection(
     // The served-record bound every frame to a client takes (#2374), read once
     // rather than per frame.
     let cap = state.surface.tool_record_cap_bytes();
+    // **The peer proves it is there by answering.** Without this a connection
+    // whose peer went away without closing reads nothing for ever, and the
+    // browser role it holds sits with it. The first tick is consumed because
+    // an interval fires at once.
+    let beat_every = state.heartbeat.every;
+    let beat_dead = state.heartbeat.dead;
+    let mut beat = tokio::time::interval(beat_every);
+    beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    beat.tick().await;
+    let keepalive = Keepalive::default();
     loop {
         let due = held.due();
         tokio::select! {
+            // **A queued answer is read before the beat decides.** A pong can
+            // sit unread while this task is busy in a write, and by the time
+            // both branches are ready the outstanding ping may already look
+            // expired; without the bias the tick could win that race and reap
+            // a peer that answered. Reads first, always.
+            biased;
             msg = socket.next() => {
                 let Some(msg) = msg else { break };   // the client went away
                 let msg = msg?;
+                keepalive.heard();
                 // What the core has already said goes out first: an answer is
                 // composed after it, and a snapshot overtaking an update the
                 // core emitted before it would land older news on newer.
@@ -524,6 +642,9 @@ async fn run_connection(
                     // because its strip must not go on saying it hosts.
                     HostingEvent::Notice(Notice::Taken) => {
                         fail_every_in_flight(hosting, HOST_GONE_BY_TAKE);
+                        // No ending is recorded here: `claim` already recorded
+                        // the take, and by the time this drops the role is the
+                        // claimant's, so the release reports neither.
                         hosting.take();
                         batch::flush(socket, held.take()).await?;
                         send(socket, ServerMessage::BrowserRole { hosting: false }).await?;
@@ -545,6 +666,38 @@ async fn run_connection(
                     HostingEvent::Notice(Notice::Seats(seats)) => {
                         batch::flush(socket, held.take()).await?;
                         send(socket, ServerMessage::BrowserSeats { seats }).await?;
+                    }
+                }
+            }
+            // **The keepalive's beat.** A ping that went unanswered past the
+            // bound is the evidence, never a quiet read: a busy connection
+            // sends no ping at all while it works. A live peer answers the
+            // ping itself, so this costs the app nothing.
+            _ = beat.tick() => {
+                match keepalive.beat(Instant::now(), beat_dead) {
+                    Beat::Wait => {}
+                    // The deadline is taken inside `ping`, after the send
+                    // answers: a send queued behind a full buffer reaches the
+                    // peer late, and the peer is owed the whole bound from
+                    // when it could first answer.
+                    Beat::Ping => keepalive.ping(socket).await?,
+                    Beat::Reap => {
+                        let waited =
+                            keepalive.sent().map(|at| at.elapsed()).unwrap_or_default();
+                        tracing::debug!(
+                            target: "forge_server::transport",
+                            event_name = "connection_reaped",
+                            client = me,
+                            waited_ms = waited.as_secs_f64() * 1000.0,
+                            "the peer never answered the keepalive's ping, so its connection is ended",
+                        );
+                        // Not the client closing, and not a socket error: the
+                        // keepalive ended this, which is what the role's
+                        // release records.
+                        if let Some(hosting) = hosting.as_mut() {
+                            hosting.role.ending = Some(Release::Reaped);
+                        }
+                        break;
                     }
                 }
             }
@@ -2314,7 +2467,168 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::transport::Heartbeat;
     use crate::work::WorkCache;
+
+    /// **Only a ping that went out can go unanswered.** The state holds no
+    /// read clock at all, so a quiet read - a connection busy in one long
+    /// write - cannot be mistaken for silence: a beat with no outstanding
+    /// ping asks again, however long it has been.
+    #[tokio::test]
+    async fn a_ping_is_the_only_thing_that_can_go_unanswered() {
+        let dead = Duration::from_secs(60);
+        let keepalive = Keepalive::default();
+        let start = Instant::now();
+
+        assert_eq!(keepalive.beat(start, dead), Beat::Ping, "no ping out: ask");
+        assert_eq!(
+            keepalive.beat(start + Duration::from_secs(65), dead),
+            Beat::Ping,
+            "nothing was sent, so nothing went unanswered and the beat asks",
+        );
+
+        // A ping ON THE WIRE is what starts the clock.
+        let mut sink = NullSink;
+        keepalive.ping(&mut sink).await.expect("the ping goes");
+        let at = keepalive.sent().expect("the send stamped the deadline");
+        assert_eq!(
+            keepalive.beat(at + Duration::from_secs(30), dead),
+            Beat::Wait,
+            "inside the bound the answer is still owed",
+        );
+        assert_eq!(
+            keepalive.beat(at + Duration::from_secs(65), dead),
+            Beat::Reap,
+            "past it the peer has not answered, and that is the evidence",
+        );
+    }
+
+    /// **Asking does not stamp the deadline.** A send can block in flush
+    /// behind a full buffer; a deadline taken when the beat decided would
+    /// expire before the peer ever saw the ping, and the next tick would cut
+    /// a peer that was never given time to answer.
+    #[test]
+    fn asking_does_not_stamp_the_deadline() {
+        let dead = Duration::from_secs(60);
+        let keepalive = Keepalive::default();
+        let start = Instant::now();
+
+        assert_eq!(keepalive.beat(start, dead), Beat::Ping);
+        assert_eq!(keepalive.sent(), None, "the deadline starts when the ping is on the wire");
+        assert_eq!(
+            keepalive.beat(start + Duration::from_secs(300), dead),
+            Beat::Ping,
+            "and it cannot expire a ping that was never sent",
+        );
+    }
+
+    /// A sink that accepts every frame at once, for the tests that only need
+    /// a send to complete.
+    struct NullSink;
+
+    impl futures_util::Sink<Message> for NullSink {
+        type Error = axum::Error;
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A sink whose write is held until the test releases it.
+    struct HeldSink {
+        ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl futures_util::Sink<Message> for HeldSink {
+        type Error = axum::Error;
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            if self.ready.load(std::sync::atomic::Ordering::Relaxed) {
+                std::task::Poll::Ready(Ok(()))
+            } else {
+                std::task::Poll::Pending
+            }
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// **The stamp is taken after the send returns**, which is the caller's
+    /// ordering and not the state machine's: a ping held in a full buffer
+    /// must owe nothing until it is on the wire. The held sink is the stall,
+    /// and the state is read at each side of the await.
+    #[tokio::test]
+    async fn the_deadline_starts_when_the_ping_goes_out() {
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut sink = HeldSink { ready: std::sync::Arc::clone(&ready) };
+        let keepalive = Keepalive::default();
+        let mut sending = Box::pin(keepalive.ping(&mut sink));
+
+        assert!(
+            futures_util::poll!(sending.as_mut()).is_pending(),
+            "the write is held in the buffer",
+        );
+        assert_eq!(
+            keepalive.sent(),
+            None,
+            "nothing may be owed while the ping is still to be written",
+        );
+
+        ready.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(futures_util::poll!(sending.as_mut()).is_ready(), "the write completed");
+        assert!(keepalive.sent().is_some(), "and the answer is owed from the send's return");
+    }
+
+    /// Any frame is the answer, and the next beat asks again rather than
+    /// reaping.
+    #[tokio::test]
+    async fn an_answer_clears_the_outstanding_ping() {
+        let dead = Duration::from_secs(60);
+        let keepalive = Keepalive::default();
+        let mut sink = NullSink;
+        keepalive.ping(&mut sink).await.expect("the ping goes");
+        let at = keepalive.sent().expect("the send stamped the deadline");
+
+        keepalive.heard();
+
+        assert_eq!(
+            keepalive.beat(at + Duration::from_secs(65), dead),
+            Beat::Ping,
+            "the answer retired the ping, so the next beat asks again",
+        );
+    }
 
     /// The oldest boundary a window names, as a walk below the floor starts
     /// from it - the oldest candidate the file may or may not carry (#2280).
@@ -2347,6 +2661,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         // The ask needs a subscriber that can ANSWER it to land on - the
         // raise is a parked prompt, so an observing stream alone fails it
@@ -2416,6 +2731,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         // A client observing, with two updates queued and nobody reading them.
@@ -2451,6 +2767,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         let seat = forge_primitives::SessionSlot::lead("TestOrg", "proj");
         let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
@@ -2499,6 +2816,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
 
         let mut updates = Some((state.surface.subscribe_client(true), true));
@@ -3016,6 +3334,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -3124,6 +3443,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -3214,6 +3534,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -3364,6 +3685,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
         let BelowFloor::Page(page) = rows_below_floor(&state, &seat, &cwd, Some(boundary), 4).await
@@ -3533,6 +3855,7 @@ mod tests {
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");

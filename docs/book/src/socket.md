@@ -18,6 +18,16 @@ network and is never exposed publicly**, which is the whole reason the
 socket carries no authentication: the network is what the access control
 stands on, not a proxy in front of a public bind.
 
+**The connection is kept alive by a ping.** The server pings every 15
+seconds and ends a connection whose ping has gone unanswered for 60: a
+peer that vanished without closing would otherwise read nothing for ever,
+and the browser role a capable client holds would sit with it. The pair
+is chosen rather than measured, and the dead bound is what caps how long
+a browser call on a paused host waits before it fails; the ask's own
+bound is longer. Every WebSocket client answers a ping itself, so a
+client needs no code for this; one that stops answering is disconnected,
+and its reconnect declares its subscriptions again like any other.
+
 ## The greeting
 
 The first message a client receives is the greeting, before it has asked

@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use forge_primitives::tasks::{Task, TaskId, TaskStatus};
 use forge_server::live::Live;
 use forge_server::testing::Fleet;
-use forge_server::transport::TransportState;
 use forge_server::transport::serve;
+use forge_server::transport::{Heartbeat, TransportState};
 use forge_server::work::WorkCache;
 use serde_json::Value;
 
@@ -68,6 +68,7 @@ async fn serve_over(fleet: &Fleet) -> String {
         live: Mutex::new(Live::new()),
         client: forge_primitives::ClientConfig::default(),
         browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        heartbeat: Heartbeat::default(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
