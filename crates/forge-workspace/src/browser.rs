@@ -637,14 +637,16 @@ mod tests {
         }
     }
 
-    /// Capture every record emitted while the guard lives.
+    /// Capture every record emitted while the guard lives, one flattened JSON
+    /// object per line - the shape forge's own log writes - so a test reads
+    /// fields rather than substrings (a `client=1` search finds `client=12`).
     fn capture_logs() -> (LogCapture, tracing::subscriber::DefaultGuard) {
         let capture = LogCapture::default();
         let subscriber = tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
             .with_writer(capture.clone())
             .with_max_level(tracing::Level::DEBUG)
-            // Plain bytes: the default field formatter paints its `=` and
-            // field names, and the escapes would split every assertion here.
             .with_ansi(false)
             .finish();
         (capture, tracing::subscriber::set_default(subscriber))
@@ -653,6 +655,22 @@ mod tests {
     fn captured(capture: &LogCapture) -> String {
         let bytes = capture.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// Every captured record carrying `event_name`, in order.
+    fn records(capture: &LogCapture, event_name: &str) -> Vec<serde_json::Value> {
+        captured(capture)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|record| record["event_name"] == event_name)
+            .collect()
+    }
+
+    /// The one captured record carrying `event_name`.
+    fn record(capture: &LogCapture, event_name: &str) -> serde_json::Value {
+        let mut found = records(capture, event_name);
+        assert_eq!(found.len(), 1, "one {event_name} record, got {}", found.len());
+        found.remove(0)
     }
 
     /// **A refusal says what the relay knows, not only what is missing.** A
@@ -676,20 +694,19 @@ mod tests {
 
         let (capture, _guard) = capture_logs();
         let refused = relay.ask(&seat(), "browser_navigate", args()).await;
-        let logged = captured(&capture);
 
         assert_eq!(
             refused,
             Err(NO_BROWSER_CLIENT.to_owned()),
             "the named error is still what the tool returns",
         );
-        assert!(logged.contains("browser_ask_no_host"), "the refusal is logged: {logged}");
-        assert!(logged.contains("tool=browser_navigate"), "and names the tool: {logged}");
-        assert!(logged.contains("slot=TestOrg/proj/lead"), "and the seat: {logged}");
-        assert!(logged.contains("last_host=7"), "and the last holder: {logged}");
-        assert!(logged.contains("last_host_ms_ago="), "and how long ago it left: {logged}");
-        assert!(logged.contains("last_host_release=failed"), "and which side ended it: {logged}");
-        assert!(logged.contains("waiting=0"), "and who is in line for it: {logged}");
+        let record = record(&capture, "browser_ask_no_host");
+        assert_eq!(record["tool"], "browser_navigate", "the line names the tool: {record}");
+        assert_eq!(record["slot"], "TestOrg/proj/lead", "and the seat: {record}");
+        assert_eq!(record["last_host"], "7", "and the last holder: {record}");
+        assert!(record["last_host_ms_ago"].is_number(), "and how long ago it left: {record}");
+        assert_eq!(record["last_host_release"], "failed", "and which side ended it: {record}");
+        assert_eq!(record["waiting"], 0, "and who is in line for it: {record}");
     }
 
     /// One ask, landed on `rx`: the ask is answered there and the caller is
@@ -788,12 +805,11 @@ mod tests {
 
         let (capture, _guard) = capture_logs();
         relay.unregister(4, Release::Closed);
-        let logged = captured(&capture);
 
-        assert!(logged.contains("browser_host_released"), "the release is logged: {logged}");
-        assert!(logged.contains("client=4"), "and names the connection: {logged}");
-        assert!(logged.contains("reason=closed"), "and which side ended it: {logged}");
-        assert!(logged.contains("held_ms="), "and how long it held the role: {logged}");
+        let record = record(&capture, "browser_host_released");
+        assert_eq!(record["client"], 4, "the line names the connection: {record}");
+        assert_eq!(record["reason"], "closed", "and which side ended it: {record}");
+        assert!(record["held_ms"].is_number(), "and how long it held the role: {record}");
     }
 
     /// **A force-take names both sides.** The displaced holder's own drop
@@ -809,11 +825,24 @@ mod tests {
 
         let (capture, _guard) = capture_logs();
         assert!(relay.claim(2), "the claim moves the role");
-        let logged = captured(&capture);
 
-        assert!(logged.contains("browser_host_taken"), "the take is logged: {logged}");
-        assert!(logged.contains("client=1"), "and names the displaced holder: {logged}");
-        assert!(logged.contains("claimant=2"), "and the claimant: {logged}");
+        let record = record(&capture, "browser_host_taken");
+        assert_eq!(record["client"], 1, "the line names the displaced holder: {record}");
+        assert_eq!(record["claimant"], 2, "and the claimant: {record}");
+    }
+
+    /// **Every reason has its own word.** The refusal's `last_host_release`
+    /// and the release line are read as text, so a variant that spelled
+    /// itself as another would misreport the side with nothing else seeing
+    /// it. `Taken` is not reachable in the refusal - a take always leaves a
+    /// holder, and the claimant's own departure is what lands next - so its
+    /// spelling is pinned here rather than through a state no sequence makes.
+    #[test]
+    fn every_release_reason_is_spelled_out() {
+        assert_eq!(Release::Closed.as_str(), "closed");
+        assert_eq!(Release::Failed.as_str(), "failed");
+        assert_eq!(Release::Reaped.as_str(), "reaped");
+        assert_eq!(Release::Taken.as_str(), "taken");
     }
 
     /// **The hold clock starts when the role is taken, not when the
@@ -875,12 +904,11 @@ mod tests {
 
         let (capture, _guard) = capture_logs();
         relay.unregister(2, Release::Failed);
-        let logged = captured(&capture);
 
-        assert!(logged.contains("browser_waiter_left"), "the departure is logged: {logged}");
-        assert!(logged.contains("client=2"), "and names the connection: {logged}");
-        assert!(logged.contains("reason=failed"), "and the side: {logged}");
-        assert!(logged.contains("waited_ms="), "and how long it waited: {logged}");
+        let record = record(&capture, "browser_waiter_left");
+        assert_eq!(record["client"], 2, "the line names the connection: {record}");
+        assert_eq!(record["reason"], "failed", "and the side: {record}");
+        assert!(record["waited_ms"].is_number(), "and how long it waited: {record}");
     }
 
     /// The sweep an ask runs names the dead waiters it clears, which is the
@@ -896,11 +924,10 @@ mod tests {
 
         let (capture, _guard) = capture_logs();
         relay.forget_the_dead();
-        let logged = captured(&capture);
 
-        assert!(logged.contains("browser_waiter_left"), "the sweep is logged: {logged}");
-        assert!(logged.contains("client=2"), "and names the connection: {logged}");
-        assert!(logged.contains("reason=failed"), "and the side: {logged}");
+        let record = record(&capture, "browser_waiter_left");
+        assert_eq!(record["client"], 2, "the line names the connection: {record}");
+        assert_eq!(record["reason"], "failed", "and the side: {record}");
     }
 
     /// Nothing capable connected is the named error rather than a hang.

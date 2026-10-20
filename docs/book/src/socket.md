@@ -23,8 +23,10 @@ seconds and ends a connection whose ping has gone unanswered for 60: a
 peer that vanished without closing would otherwise read nothing for ever,
 and the browser role a capable client holds would sit with it. The pair
 is chosen rather than measured, and the dead bound is what caps how long
-a browser call on a paused host waits before it fails; the ask's own
-bound is longer. Every WebSocket client answers a ping itself, so a
+a browser call on a paused host waits before it fails: between 60 and 90
+seconds from the last answer, because the next ping can be up to 15
+seconds later and the reap lands at the first beat at or past 60. The
+ask's own bound is longer. Every WebSocket client answers a ping itself, so a
 client needs no code for this; one that stops answering is disconnected,
 and its reconnect declares its subscriptions again like any other.
 

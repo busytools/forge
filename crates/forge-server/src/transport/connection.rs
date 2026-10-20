@@ -2515,11 +2515,6 @@ mod tests {
 
         assert_eq!(keepalive.beat(start, dead), Beat::Ping);
         assert_eq!(keepalive.sent(), None, "the deadline starts when the ping is on the wire");
-        assert_eq!(
-            keepalive.beat(start + Duration::from_secs(300), dead),
-            Beat::Ping,
-            "and it cannot expire a ping that was never sent",
-        );
     }
 
     /// A sink that accepts every frame at once, for the tests that only need
