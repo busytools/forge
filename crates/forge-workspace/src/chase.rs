@@ -1144,9 +1144,11 @@ mod tests {
         );
         assert_eq!(sweep(&ws, &deliver, later_secs), 1, "un-parked, the stall fires");
         let seen = deliver.seen.lock();
-        assert!(
-            seen.iter().any(|(_, text)| text.contains("unblock it or change its plan")),
-            "the WaitStall names the row: {seen:?}",
+        assert_eq!(seen.len(), 1, "one WaitStall: {seen:?}");
+        assert_eq!(
+            seen[0].1,
+            "task board: \"subject t-1\" has waited 4h on a resource - unblock it or change its plan.",
+            "the WaitStall names the row, its age and the kind it waits on",
         );
     }
 
