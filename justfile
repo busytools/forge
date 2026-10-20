@@ -313,8 +313,8 @@ client-tauri-clippy:
 #
 # Run the shell crate's tests.
 client-tauri-test:
-    # `testing` carries the overlay check's entry point to its harness-free
-    # target, which must run on the main thread.
+    # `testing` carries the ivar checks' entry points to their harness-free
+    # targets, which must run on the main thread.
     RUSTFLAGS="-D warnings" cargo nextest run --manifest-path client/src-tauri/Cargo.toml --features testing
 
 # Compile the desktop shell in the configuration that ships. This is the routine

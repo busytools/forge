@@ -8,16 +8,24 @@
 use cef::application_mac::{CefAppProtocol, CrAppControlProtocol, CrAppProtocol};
 use objc2::{
     ClassType as _, DefinedClass as _, MainThreadMarker, define_class, extern_methods, msg_send,
-    rc::Retained,
+    rc::{Allocated, Retained},
     runtime::{Bool, NSObjectProtocol},
 };
 use objc2_app_kit::{NSApp, NSApplication, NSEvent};
 use std::cell::Cell;
 
+#[cfg(feature = "testing")]
+pub mod testing;
+
 /// The flag Chromium's two protocols read and write around `sendEvent:`.
 #[derive(Default)]
 pub struct ClientApplicationIvars {
     handling_send_event: Cell<Bool>,
+    /// Test builds only: a droppable field makes objc2 register its drop
+    /// flag, so an ivar read before `set_ivars` panics in a debug build. A
+    /// bare `Cell` gives that check nothing to read.
+    #[cfg(feature = "testing")]
+    _probe: Option<Box<()>>,
 }
 
 define_class!(
@@ -26,6 +34,16 @@ define_class!(
     pub struct ClientApplication;
 
     impl ClientApplication {
+        /// **objc2 requires an ivars class's initializer to call
+        /// `set_ivars`.** `+sharedApplication` allocates the receiver class
+        /// and sends it `-init`, so this override is the class's one
+        /// construction path.
+        #[unsafe(method_id(init))]
+        unsafe fn init(this: Allocated<Self>) -> Retained<Self> {
+            let this = this.set_ivars(ClientApplicationIvars::default());
+            unsafe { msg_send![super(this), init] }
+        }
+
         #[unsafe(method(sendEvent:))]
         unsafe fn send_event(&self, event: &NSEvent) {
             let was_sending = self.is_handling_send_event();
