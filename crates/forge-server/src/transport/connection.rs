@@ -259,6 +259,10 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // None until a subscribe declares the browser capability and the role is
     // free. Dropping it hands the role back.
     let mut hosting: Option<Hosting> = None;
+    // Answers to reply-carrying commands, sent by the tasks that ran them:
+    // the read loop hands a reply off rather than awaiting it, so a slow
+    // handler holds nothing behind it (#2445).
+    let (reply_tx, mut answers) = mpsc::unbounded_channel();
 
     let outcome = run_connection(
         socket,
@@ -268,6 +272,8 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
         &mut updates,
         &mut dictate,
         &mut hosting,
+        &reply_tx,
+        &mut answers,
         me,
     )
     .await;
@@ -391,6 +397,8 @@ async fn run_connection(
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
+    reply_tx: &mpsc::UnboundedSender<ServerMessage>,
+    answers: &mut mpsc::UnboundedReceiver<ServerMessage>,
     me: u64,
 ) -> anyhow::Result<()> {
     let mut held = Batch::default();
@@ -407,8 +415,20 @@ async fn run_connection(
                 // composed after it, and a snapshot overtaking an update the
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
-                handle_client(socket, state, watched, holds, updates, dictate, hosting, me, msg)
-                    .await?;
+                handle_client(
+                    socket, state, watched, holds, updates, dictate, hosting, reply_tx, me, msg,
+                )
+                .await?;
+            }
+            // **A reply-carrying command's answer, sent by the task that ran
+            // it.** The read loop never waits for one, so a slow handler
+            // leaves this connection reading; the client tells the answers
+            // apart by `reply_to`. The core's news goes out first, as every
+            // send here keeps.
+            reply = answers.recv() => {
+                let Some(reply) = reply else { break };
+                batch::flush(socket, held.take()).await?;
+                send(socket, reply).await?;
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
@@ -659,6 +679,7 @@ async fn handle_client(
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
+    reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     me: u64,
     msg: Message,
 ) -> anyhow::Result<()> {
@@ -975,7 +996,8 @@ async fn handle_client(
             match (reply_to, answers_through_a_reply(&command)) {
                 (Some(to), true) => {
                     dispatched(me, &command);
-                    dispatch_answering(socket, state, command, to).await
+                    dispatch_answering(state, command, to, reply_tx);
+                    Ok(())
                 }
                 (None, true) => {
                     send(
@@ -2025,16 +2047,19 @@ fn page_of_span(
     page
 }
 
-/// Dispatch one command, and answer a client that asked for an answer.
+/// Dispatch one reply-carrying command and hand its answer to the connection.
 ///
-/// Success sends nothing extra: the update arrives through the subscription
-/// the client already has, which is why a client subscribes before it acts.
-async fn dispatch_answering(
-    socket: &mut WebSocket,
+/// **The caller does not wait for the answer.** The dispatch stays here, where
+/// its order against the commands around it is unchanged; the wait and the
+/// reply move to a task of their own and come back through `reply_tx`. A
+/// despawn's reply arrives only when its detached cleanup finishes (seconds to
+/// minutes), and a read loop awaiting it reads nothing behind it (#2445).
+fn dispatch_answering(
     state: &TransportState,
     command: Command,
     to: u64,
-) -> anyhow::Result<()> {
+    reply_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
     //
@@ -2078,24 +2103,24 @@ async fn dispatch_answering(
                 from_boot_respawn,
                 return_to: Some(tx),
             };
-            answered(socket, state, command, to, rx).await
+            answered(state, command, to, rx, reply_tx);
         }
         Command::DespawnWorker { project_key, label, force, .. } => {
             let (tx, rx) = oneshot::channel();
             let command = Command::DespawnWorker { project_key, label, force, respond: Some(tx) };
-            answered(socket, state, command, to, rx).await
+            answered(state, command, to, rx, reply_tx);
         }
         Command::UpsertReviewThread { project, branch, thread, .. } => {
             let (tx, rx) = oneshot::channel();
             let command =
                 Command::UpsertReviewThread { project, branch, thread, respond: Some(tx) };
-            answered(socket, state, command, to, rx).await
+            answered(state, command, to, rx, reply_tx);
         }
         Command::DeleteReviewThread { project, branch, thread_id, .. } => {
             let (tx, rx) = oneshot::channel();
             let command =
                 Command::DeleteReviewThread { project, branch, thread_id, respond: Some(tx) };
-            answered(socket, state, command, to, rx).await
+            answered(state, command, to, rx, reply_tx);
         }
         Command::SubmitReview { project, branch, summary, thread_ids, origin, .. } => {
             let (tx, rx) = oneshot::channel();
@@ -2107,7 +2132,7 @@ async fn dispatch_answering(
                 origin,
                 respond: Some(tx),
             };
-            answered(socket, state, command, to, rx).await
+            answered(state, command, to, rx, reply_tx);
         }
         Command::BrowserIdleWarning {
             key, profile, idle_minutes, grace_minutes, at_close, ..
@@ -2121,18 +2146,23 @@ async fn dispatch_answering(
                 at_close,
                 verdict: Some(tx),
             };
-            answered(socket, state, command, to, rx).await
+            answered(state, command, to, rx, reply_tx);
         }
         // Every other command is fire-and-forget: success sends nothing
         // extra, because the update arrives through the subscription the
         // client already has.
         other => {
-            // As at the fire-and-forget path: whatever dispatch a press
-            // named rides the refusal back.
-            let dispatch_id = other.dispatch_id();
-            match state.surface.dispatch(other) {
-                Ok(()) => Ok(()),
-                Err(refusal) => send(socket, dispatch_refusal(&refusal, dispatch_id)).await,
+            // A seventh reply-carrying variant added without an arm lands
+            // here: a refusal is answered below, a success is not, so its
+            // caller hangs (a despawn-shaped one has no client bound at all).
+            // Caught in debug rather than allowed to pass.
+            debug_assert!(
+                !answers_through_a_reply(&other),
+                "a reply-carrying command reached the fire-and-forget arm",
+            );
+            if let Err(refusal) = state.surface.dispatch(other) {
+                let body = serde_json::Value::String(refusal.to_string());
+                let _ = reply_tx.send(ServerMessage::Reply { reply_to: to, body });
             }
         }
     }
@@ -2249,21 +2279,34 @@ fn answers_through_a_reply(command: &Command) -> bool {
     )
 }
 
-/// Dispatch one of those six, and send back the answer it carries.
-async fn answered<T: serde::Serialize>(
-    socket: &mut WebSocket,
+/// Dispatch one of those six, and answer the client that asked.
+///
+/// A client that asked for an answer always hears one - INCLUDING a refusal,
+/// so it is never left watching a channel that stays empty. The wait and the
+/// reply are a task's own, so nothing behind the command waits on them.
+fn answered<T: serde::Serialize + Send + 'static>(
     state: &TransportState,
     command: Command,
     to: u64,
     answer: oneshot::Receiver<T>,
-) -> anyhow::Result<()> {
+    reply_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
     let outcome = state.surface.dispatch(command);
-    let body = match (outcome, answer.await) {
-        (Ok(()), Ok(reply)) => serde_json::to_value(reply)?,
-        (Err(refusal), _) => serde_json::to_value(refusal.to_string())?,
-        (Ok(()), Err(_)) => serde_json::to_value("the session closed before answering")?,
-    };
-    send(socket, ServerMessage::Reply { reply_to: to, body }).await
+    let reply_tx = reply_tx.clone();
+    tokio::spawn(async move {
+        let body = match (outcome, answer.await) {
+            (Ok(()), Ok(reply)) => serde_json::to_value(reply).unwrap_or_else(|_| {
+                serde_json::Value::String("the answer could not be encoded".to_owned())
+            }),
+            (Err(refusal), _) => serde_json::Value::String(refusal.to_string()),
+            (Ok(()), Err(_)) => {
+                serde_json::Value::String("the session closed before answering".to_owned())
+            }
+        };
+        // A connection that has gone has nothing to send to; the command's
+        // outcome is the core's, and the socket's death is its own.
+        let _ = reply_tx.send(ServerMessage::Reply { reply_to: to, body });
+    });
 }
 
 #[cfg(test)]
