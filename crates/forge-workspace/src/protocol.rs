@@ -728,6 +728,17 @@ pub enum Command {
     DictateStream {
         key: SessionSlot,
         options: crate::dictate::DictateAxes,
+        /// The surface whose own capture began this take - `composer`,
+        /// `review`, `files`, `doc` - carried so the landed words reach the
+        /// surface that began them and no other. Absent from a client older
+        /// than the field, which is the one case every surface reads as "the
+        /// old rules decide", as it did before.
+        ///
+        /// **Read as an opaque name, never validated.** The vocabulary is the
+        /// client's own, and under forge's trust model a client that misnames
+        /// its take only mislabels its own words.
+        #[serde(default)]
+        surface: Option<String>,
         /// The connection that sent this, stamped by the transport that
         /// received it: the take belongs to that connection, so every
         /// update about it goes back there alone. `None` is this
@@ -2039,6 +2050,12 @@ pub enum SessionUpdate {
         key: SessionSlot,
         outcome: DictateOutcome,
         generation: u64,
+        /// The surface whose own capture began the take, as
+        /// [`Command::DictateStream`] carried it: the landed words are that
+        /// surface's to place, and no other's. `None` for a take
+        /// begun in process or by a client older than the field.
+        #[serde(default)]
+        surface: Option<String>,
         /// The take's own - and for a refusal, the connection that was
         /// refused, so only it learns why. `None` is this process's own.
         #[serde(skip)]
@@ -2966,6 +2983,7 @@ mod dictate_level_wire_tests {
             key: key.clone(),
             outcome: DictateOutcome::NoAudio { peak_db: f32::NEG_INFINITY, seconds: 3 },
             generation: 1,
+            surface: None,
             initiator: None,
         };
         let encoded = serde_json::to_value(&silent).expect("an end encodes");
@@ -2989,6 +3007,7 @@ mod dictate_level_wire_tests {
             key,
             outcome: DictateOutcome::NoAudio { peak_db: -41.5, seconds: 3 },
             generation: 1,
+            surface: None,
             initiator: None,
         };
         let encoded = serde_json::to_value(&quiet).expect("an end encodes");
@@ -3031,6 +3050,7 @@ mod dictate_wire_ownership_tests {
                 key,
                 outcome: DictateOutcome::Cancelled,
                 generation: 1,
+                surface: None,
                 initiator: Some(7),
             },
         ];

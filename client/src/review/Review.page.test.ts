@@ -654,6 +654,41 @@ describe('a landing', () => {
   });
 
   /**
+   * **A carried notice for a box this page no longer holds is dropped**, even
+   * when it names this page and the page still stamps the box its last take
+   * began in. The spot, thread or turn is not on the re-hand, so the words are
+   * dropped deliberately rather than guessed into the stale box.
+   */
+  it('drops a carried notice naming this page rather than reusing its stale box', async () => {
+    await draw();
+    await openComment();
+    await dictateInto('.rv-thread.comment');
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+
+    push({
+      wire: record({
+        ...IDLE,
+        notice: {
+          kind: 'landed',
+          text: 'the unsent words',
+          truncated: false,
+          carried: true,
+          generation: 4,
+          surface: 'review',
+        },
+      }),
+      refused: null,
+    });
+    flushSync();
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value ?? '',
+      'the re-hand names no spot, so it is dropped rather than written into the last box',
+    ).not.toContain('the unsent words');
+  });
+
+  /**
    * **A parked row is not a dead end** (Ved, 2026-10-15). The Outdated rows
    * used to draw no actions at all - no respond, no resolve - so the one
    * thread the resolver could not place was the one row with no door back.
@@ -2080,6 +2115,10 @@ describe("the key's box", () => {
     );
     await opened();
     expect(wire(), 'the key began no take at all').toContain('dictate_stream');
+    expect(
+      wire(),
+      'the take names this page, so the record hands the words back here and nowhere else',
+    ).toContain('"surface":"review"');
 
     push({ wire: record(TAKE), refused: null });
     flushSync();
@@ -2102,6 +2141,47 @@ describe("the key's box", () => {
       document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
       'the key take went somewhere other than the box the reader was in',
     ).toBe('this read is the whole input');
+  });
+
+  /**
+   * **A landing the composer's own capture began places nothing here.** The
+   * take news of a seat reaches every surface drawing it, and the record keeps
+   * a landing until a prompt sends it: with this page armed for a take of its
+   * own, words the composer began must not fill a review box.
+   */
+  it('places nothing for a landing the composer began', async () => {
+    await draw();
+    await openComment();
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    push({
+      wire: record({ ...LANDED, notice: { ...LANDED.notice, surface: 'composer' } }),
+      refused: null,
+    });
+    flushSync();
+    // The take still has to end for the box to draw its field again, and the
+    // hold has to clear TAP_MS or the release is a tap that means nothing.
+    await new Promise((resolve) => setTimeout(resolve, TAP_MS + 100));
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.rv-thread.comment .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
+      'the composer began these words, and this box has none of them',
+    ).toBe('');
   });
 
   it('starts a take in the reply box the reader is in', async () => {

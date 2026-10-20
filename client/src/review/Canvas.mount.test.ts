@@ -182,6 +182,7 @@ function draw(held: ReviewThreadRecord = thread, at: DiffLayerRecord = layer): v
   const dictate = new Dictation({
     connection: () => shared.connection,
     seat: () => SEAT,
+    surface: 'review',
     shown: () => false,
     options: () => DEFAULT_AXES,
     device: () => null,

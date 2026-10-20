@@ -27,6 +27,10 @@ export function boxKey(slot: SessionSlot): string {
   return subjectKey({ session: slot });
 }
 
+/** The composer's own name on a take, shared by its landing memory and its
+ *  dictation so the two ends cannot disagree. */
+export const COMPOSER_SURFACE = 'composer' as const;
+
 export class Box {
   /** The reader's own words, and the command a send named. A send still on its way is not here: it is the conversation's own row (`chat/echoes.svelte`). */
   draft = $state('');
@@ -116,7 +120,7 @@ export class Box {
    * moves, and its notice reaches whatever surface is mounted then - this
    * box's arm is what keeps words this box never began out of its draft.
    */
-  landing = new Landing();
+  landing = new Landing(COMPOSER_SURFACE);
   /**
    * Which box a take's words belong to, captured when the take STARTS: the
    * dock when it held the slot with a words row, the composer's draft

@@ -280,7 +280,9 @@ the take, if it is still open when the take settles - a box the reader
 closed has nowhere to put them, and the words are dropped rather than
 written where the reader is not. A notice about a take this page never
 watched (a page that attached or reloaded on the previous take's words) is
-not placed at all, and a take that could not start says so in the box it was
+not placed at all: a carried notice is the record re-handing words to a box
+this page no longer holds, so it is dropped rather than guessed into
+another box. A take that could not start says so in the box it was
 pressed in - the line belongs to the attempt, not to the next line the
 reader opens.
 

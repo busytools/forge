@@ -963,7 +963,7 @@ describe("the block's own take", () => {
   }
 
   it('lands the words in the box that was open, with the bar taking its line', async () => {
-    drawWithDictation();
+    const page = drawWithDictation();
     push(seatRecord(IDLE));
     blockTarget('line two').click();
     flushSync();
@@ -979,6 +979,13 @@ describe("the block's own take", () => {
       },
       { timeout: 2000 },
     );
+    const start = (page.sent as Record<string, Record<string, unknown>>[]).find(
+      (command) => command['dictate_stream'] !== undefined,
+    );
+    expect(
+      start?.['dictate_stream'],
+      'the take names this page, so the record hands its words back here',
+    ).toMatchObject({ surface: 'doc' });
 
     // The server registers the take where the record can see it, then the
     // release lands the words - the order the frames really arrive in.

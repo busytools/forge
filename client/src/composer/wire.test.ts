@@ -160,4 +160,43 @@ describe('the composer record', () => {
     const composer = composerFrom({ take: null, notice: null, compacting: false, sign_in: null });
     expect(composer.notice).toBeNull();
   });
+
+  /**
+   * **A surface this build does not know reads as absent**, the old-server
+   * rule: the arm decides a live landing and the seat's carried words reach
+   * the composer, rather than a newer client's name being refused by every
+   * surface and losing the words.
+   */
+  it('reads a known surface, and drops a name this build does not know', () => {
+    const at = (surface: string): unknown =>
+      composerFrom({
+        take: null,
+        notice: {
+          kind: 'landed',
+          text: 'the unsent words',
+          truncated: false,
+          generation: 7,
+          carried: true,
+          surface,
+        },
+        compacting: false,
+        sign_in: null,
+      }).notice;
+
+    expect(at('review')).toEqual({
+      kind: 'landed',
+      text: 'the unsent words',
+      truncated: false,
+      generation: 7,
+      carried: true,
+      surface: 'review',
+    });
+    expect(at('from-a-newer-client'), 'an unknown name is absent, not a refusal').toEqual({
+      kind: 'landed',
+      text: 'the unsent words',
+      truncated: false,
+      generation: 7,
+      carried: true,
+    });
+  });
 });

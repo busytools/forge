@@ -956,6 +956,7 @@ pub(crate) struct RegisteredTake {
     pub(crate) generation: u64,
     pub(crate) floor_db: f32,
     pub(crate) options: forge_dictate::NormalizeOptions,
+    pub(crate) surface: Option<String>,
     pub(crate) initiator: Option<u64>,
 }
 
@@ -971,6 +972,7 @@ pub(crate) fn register_stream_take(
     ws: &Arc<crate::Workspace>,
     key: &SessionSlot,
     axes: DictateAxes,
+    surface: Option<String>,
     initiator: Option<u64>,
 ) -> Result<RegisteredTake, String> {
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
@@ -1023,6 +1025,7 @@ pub(crate) fn register_stream_take(
         generation,
         floor_db,
         options: axes.normalize_options(),
+        surface,
         initiator,
     })
 }
@@ -1043,6 +1046,7 @@ pub(crate) async fn run_stream_take(
         take.stop,
         updates,
         take.options,
+        take.surface,
         take.initiator,
     )
     .await;
@@ -1090,6 +1094,7 @@ async fn run_recording(
     mut stop: tokio::sync::mpsc::Receiver<bool>,
     updates: crate::update_fanout::UpdateFanout,
     options: forge_dictate::NormalizeOptions,
+    surface: Option<String>,
     initiator: Option<u64>,
 ) {
     // Take progress spans the whole take: segments settle while the
@@ -1114,6 +1119,7 @@ async fn run_recording(
             key,
             outcome: DictateOutcome::Cancelled,
             generation,
+            surface,
             initiator,
         });
         return;
@@ -1131,6 +1137,7 @@ async fn run_recording(
             key,
             outcome: DictateOutcome::Failed,
             generation,
+            surface,
             initiator,
         });
         return;
@@ -1170,7 +1177,8 @@ async fn run_recording(
         },
     };
     remove_finishing(&ws, &key);
-    let _ = updates.send(SessionUpdate::DictateEnded { key, outcome, generation, initiator });
+    let _ =
+        updates.send(SessionUpdate::DictateEnded { key, outcome, generation, surface, initiator });
 }
 
 /// Forward a take's progress steps as updates while it runs. Steps
@@ -1866,6 +1874,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -1917,6 +1926,112 @@ mod dictate_lifecycle_tests {
         assert!(
             ws.dictate_runtime.lock().recordings.is_empty(),
             "a resolved take leaves no live entry behind"
+        );
+    }
+
+    /// **The surface a client names on its take reaches the ending update.**
+    /// The record keeps it with the landed words and hands them back to that
+    /// page alone, so a seam that drops it here sends them to the wrong one.
+    #[tokio::test]
+    async fn a_stream_takes_surface_reaches_its_end() {
+        let (ws, mut updates) = crate::Workspace::testing_stub();
+        let (_dir, engine) = synthetic_engine();
+        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
+        let session = key("streamer");
+        live_session(&ws, &session);
+
+        ws.dispatch(Command::DictateStream {
+            key: session.clone(),
+            options: DictateAxes::default(),
+            surface: Some("review".to_owned()),
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+        let started = tokio::time::timeout(Duration::from_secs(2), updates.recv())
+            .await
+            .expect("the start echoes")
+            .expect("the stream stays open");
+        assert!(
+            matches!(started.update, SessionUpdate::DictateStarted { .. }),
+            "the take registers, got {started:?}"
+        );
+
+        ws.dispatch(Command::DictateStop {
+            key: session.clone(),
+            submit: false,
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+        let carried = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match updates.recv().await.map(|frame| frame.update) {
+                    Some(SessionUpdate::DictateEnded { surface, .. }) => break surface,
+                    Some(_) => {}
+                    None => panic!("the update stream closed before the take resolved"),
+                }
+            }
+        })
+        .await
+        .expect("the take must resolve");
+        assert_eq!(
+            carried.as_deref(),
+            Some("review"),
+            "the ending names the surface the client started the take with"
+        );
+    }
+
+    /// **The submitted take's ending carries the surface too.** The final send
+    /// is the one a landed take uses, and the one the composer folds into its
+    /// record, so a seam that drops it there loses the words' page.
+    #[tokio::test]
+    async fn a_submitted_takes_end_carries_its_surface() {
+        let (ws, mut updates) = crate::Workspace::testing_stub();
+        let (_dir, engine) = synthetic_engine();
+        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
+        let session = key("streamer");
+        live_session(&ws, &session);
+
+        ws.dispatch(Command::DictateStream {
+            key: session.clone(),
+            options: DictateAxes::default(),
+            surface: Some("review".to_owned()),
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+        let started = tokio::time::timeout(Duration::from_secs(2), updates.recv())
+            .await
+            .expect("the start echoes")
+            .expect("the stream stays open");
+        assert!(
+            matches!(started.update, SessionUpdate::DictateStarted { .. }),
+            "the take registers, got {started:?}"
+        );
+        assert!(
+            ws.dictate_push(&session, &[0.5; 320], Some(1)),
+            "the frame after a start must find its take"
+        );
+
+        ws.dispatch(Command::DictateStop {
+            key: session.clone(),
+            submit: true,
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+        let carried = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match updates.recv().await.map(|frame| frame.update) {
+                    Some(SessionUpdate::DictateEnded { surface, .. }) => break surface,
+                    Some(_) => {}
+                    None => panic!("the update stream closed before the take resolved"),
+                }
+            }
+        })
+        .await
+        .expect("the take must resolve");
+        assert_eq!(
+            carried.as_deref(),
+            Some("review"),
+            "the submitted ending names the surface the client started the take with"
         );
     }
 
@@ -1977,6 +2092,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -2045,12 +2161,14 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(2),
         })
         .expect("dispatch");
@@ -2103,6 +2221,7 @@ mod dictate_lifecycle_tests {
             ws.dispatch(Command::DictateStream {
                 key: session.clone(),
                 options: DictateAxes::default(),
+                surface: None,
                 initiator: Some(at as u64 + 1),
             })
             .expect("dispatch");
@@ -2131,12 +2250,14 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: first.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
         ws.dispatch(Command::DictateStream {
             key: second.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -2181,6 +2302,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -2216,6 +2338,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -2250,6 +2373,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -2293,6 +2417,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -2330,6 +2455,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -2375,6 +2501,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -2399,6 +2526,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: session.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: Some(1),
         })
         .expect("dispatch");
@@ -2687,6 +2815,7 @@ mod dictate_lifecycle_tests {
         ws.dispatch(Command::DictateStream {
             key: owner.clone(),
             options: DictateAxes::default(),
+            surface: None,
             initiator: None,
         })
         .expect("dispatch");

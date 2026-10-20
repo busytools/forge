@@ -9,12 +9,20 @@
  * are: a take that outlives a visit elsewhere still lands on the seat it began
  * on.
  *
+ * **And the take names the surface it began on**, which is what keeps a LANDED
+ * notice out of a surface that never began it: the seat holds the words until a
+ * prompt sends them, so the record re-hands them (`carried`) to whatever page
+ * reads next - and a review box's words must not arrive in the composer that
+ * way. The arm covers a take this page watched; the surface covers the record's
+ * own re-hand.
+ *
  * Shared rather than one per page - the composer's own box holds one - because
  * the rules are the same on every surface that dictates: what a surface
- * differs in is only which of its boxes the words go into.
+ * differs in is only which of its boxes the words go into, and its own name in
+ * the take.
  */
 
-import type { Notice } from './wire';
+import type { Notice, Surface } from './wire';
 
 /**
  * What a notice IS, for a memory that has to tell one from another.
@@ -32,11 +40,17 @@ export function noticeIdentity(notice: Notice): string {
 }
 
 export class Landing {
+  /** Which surface this memory belongs to: the name its own takes carry. */
+  readonly #surface: Surface;
   #seat: string | null = null;
   /** The seat this page's own capture began a take on, and the notice it was set under. */
   #armed: { seat: string; under: string | null } | null = null;
   /** The notice whose words this box took, by identity. */
   #placed: string | null = null;
+
+  constructor(surface: Surface) {
+    this.#surface = surface;
+  }
 
   /**
    * This page's own capture has begun a take on `seat`: the arm its landing
@@ -88,6 +102,12 @@ export class Landing {
    * - **The arm is spent by the notice, whatever kind it is** - a landed one
    *   places its words, a line is the take's failure - so a later notice meets
    *   no arm and places nothing.
+   * - **A landing begun on another surface is not this one's to place**, arm or
+   *   none. The record keeps the seat's words until a prompt sends them and
+   *   re-hands them as `carried`, so without this the composer takes the review
+   *   box's words on the next mount. A record from a server older than the
+   *   field says nothing: a live landing is the arm's, and a carried one is
+   *   each page's own guard - the composer takes it, as it did before.
    * - **Words this box already took place nothing**: the record hands the same
    *   landing over on every write, and by identity only the words' own take
    *   landing again is a landing of its own.
@@ -127,6 +147,10 @@ export class Landing {
     const armed = this.#armed !== null && this.#armed.seat === seat;
     if (armed) this.#armed = null;
     if (notice.kind !== 'landed' || identity === this.#placed) return null;
+    // **A landing begun on another surface places nothing here**.
+    // Spent above, so the arm this surface set for a take that never landed
+    // (its stream was the one refused) cannot ride a later notice of its own.
+    if (notice.surface !== undefined && notice.surface !== this.#surface) return null;
     // **The seat's carried words are any page's to place** (#1360): a page
     // that reloaded between the landing and the send never armed, and these
     // are the same words it would have placed live. A LIVE landing stays the

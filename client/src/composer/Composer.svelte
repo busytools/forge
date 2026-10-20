@@ -12,7 +12,7 @@
   import { variantOf } from '../session/apply';
   import { report } from '../socket';
   import { mintPromptId } from '../wire/ids';
-  import { Boxes, boxKey, type Box } from './box.svelte';
+  import { Boxes, COMPOSER_SURFACE, boxKey, type Box } from './box.svelte';
   import { noticeIdentity } from './landing';
   import Autocomplete from './Autocomplete.svelte';
   import TakeCard from './TakeCard.svelte';
@@ -169,6 +169,7 @@
   const dictate = new Dictation({
     connection: () => connection,
     seat: () => untrack(() => slot),
+    surface: COMPOSER_SURFACE,
     shown: () => composer.take !== null,
     options: () => untrack(() => seatAxes),
     device: () => deviceFor(boxKey(untrack(() => slot))),

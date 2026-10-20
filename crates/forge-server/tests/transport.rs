@@ -639,6 +639,7 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -689,6 +690,73 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     }
 }
 
+/// **The surface a client names on its take crosses the socket into its
+/// end.** The transport rebuilds the command to stamp the connection, and a
+/// field dropped there never reaches the record the words are handed back
+/// from - the take itself still runs, so only the ending says so.
+#[tokio::test]
+async fn a_takes_surface_crosses_the_socket_into_its_end() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+
+    let mut owner = connect(&url).await;
+    send(
+        &mut owner,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut owner).await;
+
+    send(
+        &mut owner,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                surface: Some("review".to_owned()),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut owner, "the take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+
+    send(
+        &mut owner,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStop {
+                key: lead_seat(),
+                submit: false,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    let ended = update_until(&mut owner, "the take's end", |update| {
+        matches!(update, SessionUpdate::DictateEnded { .. })
+    })
+    .await;
+    let SessionUpdate::DictateEnded { surface, .. } = ended else {
+        panic!("the take must end, got {ended:?}")
+    };
+    assert_eq!(
+        surface.as_deref(),
+        Some("review"),
+        "the ending names the surface the client started the take with"
+    );
+}
+
 /// One live take per connection, enforced at the socket: the same client
 /// asking for a second take on another seat is refused by name, and the
 /// first take is untouched - which is what "a frame carries no seat" costs,
@@ -723,6 +791,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -740,6 +809,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
             command: Box::new(Command::DictateStream {
                 key: other_seat.clone(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -801,6 +871,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -841,6 +912,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -872,6 +944,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -962,6 +1035,7 @@ async fn a_clients_frames_feed_the_take_it_started() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1081,6 +1155,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1127,6 +1202,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1171,6 +1247,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1191,6 +1268,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1238,6 +1316,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1278,6 +1357,7 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1396,6 +1476,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1433,6 +1514,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,
@@ -1488,6 +1570,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
             command: Box::new(Command::DictateStream {
                 key: lead_seat(),
                 options: forge_workspace::DictateAxes::default(),
+                surface: None,
                 initiator: None,
             }),
             reply_to: None,

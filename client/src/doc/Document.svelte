@@ -223,7 +223,10 @@
    *  block's own box - and the memory of a landed notice, which is what says
    *  whether a take's words are this page's to place at all. */
   let dictateLine = $state<TakeLine | null>(null);
-  const landing = new Landing();
+  /** The page's own name: the take carries it and the memory reads it, one
+   *  literal so the two ends cannot disagree. */
+  const surface = 'doc' as const;
+  const landing = new Landing(surface);
 
   /** The box's own field, so a landing, or a panel close, can put the
    *  keyboard back where the words are. */
@@ -257,6 +260,7 @@
   const dictate = new Dictation({
     connection: () => connection,
     seat: () => slot,
+    surface,
     shown: () => composer.take !== null,
     options: () => axesFor(boxKey(slot), defaults),
     device: () => deviceFor(boxKey(slot)),
@@ -328,21 +332,20 @@
    * A landed take puts its words at the end of the box that began it, once.
    *
    * **A box that is not open, or no longer the take's own, has nowhere to put
-   * them** - the reader closed the composer or moved it, or the notice is one
-   * this page never watched (which the memory refuses) - and the words are
-   * dropped rather than written where the reader is not. The box takes the
-   * keyboard with them, the rule the composer's own landing keeps.
+   * them** - the reader closed the composer or moved it - and the words are
+   * dropped rather than written where the reader is not. A notice this page
+   * never watched is refused by the memory and must not touch the open box.
+   *
+   * **A carried notice is the record re-handing words to a box this page no
+   * longer holds** - the page that began the take is gone, so the spot, the
+   * thread or the turn they came from cannot be named. They are dropped, the
+   * same rule a closed box gets, rather than guessed into another box. A
+   * notice that names no surface is an older server and keeps its old road
+   * to the composer.
    */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.notice);
-    // A take this page never began (a second dictating client on the seat)
-    // places nothing - and must not touch the box the reader has open.
     if (words === null) return;
-    // **The seat's carried words are the composer's to place, not this page's**
-    // (#1360): a document box exists only while a take of THIS page's is in
-    // flight - read off the record, not off the last box the page began -
-    // so the record's re-hand must not open one. The memory stays unmarked
-    // and the composer's own box takes them.
     if (
       composer.take === null &&
       composer.notice?.kind === 'landed' &&

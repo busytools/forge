@@ -870,6 +870,7 @@ describe('applyUpdate', () => {
           key: SLOT,
           outcome: { landed: { text: 'hello', truncated: false } },
           generation: 1,
+          surface: 'review',
         },
       });
       expect(ended.composer.take).toBeNull();
@@ -878,6 +879,10 @@ describe('applyUpdate', () => {
         text: 'hello',
         truncated: false,
         generation: 1,
+        // **The surface that began the take crosses with its words**,
+        // so a surface reading the live notice can refuse one that is not its
+        // own - the record's re-hand says the same thing.
+        surface: 'review',
       });
     });
 
