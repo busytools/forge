@@ -5,7 +5,7 @@
 //! first and the server sends only what a client asked for.
 
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::routing::get;
@@ -95,6 +95,26 @@ pub mod wire;
 /// record a v7 server emitted.
 pub const PROTOCOL_VERSION: u32 = 8;
 
+/// The socket's keepalive: how often a connection is asked to prove it is
+/// still there, and how long it may stay silent before it is reaped.
+///
+/// **The socket carried none**, so a peer that vanished without closing - a
+/// slept machine, a wedged process, a network that went away - left its
+/// browser role held and any companion waiting, with neither side told the
+/// other was gone. A test shortens the pair rather than waiting the shipping
+/// one out.
+#[derive(Clone, Copy, Debug)]
+pub struct Heartbeat {
+    pub every: Duration,
+    pub dead: Duration,
+}
+
+impl Default for Heartbeat {
+    fn default() -> Self {
+        Self { every: connection::HEARTBEAT_EVERY, dead: connection::HEARTBEAT_DEAD }
+    }
+}
+
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations
 /// the stream has seeded, the live state a late subscriber cannot
@@ -115,6 +135,9 @@ pub struct TransportState {
     /// on the spot, because it has to be the SAME relay the sessions' tool
     /// handlers hold - see [`Workspace::browser_relay`](forge_workspace::Workspace::browser_relay).
     pub browser: Arc<forge_workspace::browser::BrowserRelay>,
+    /// The socket's keepalive: how often a connection is asked to prove it
+    /// is there, and how long it may stay silent before it is reaped.
+    pub heartbeat: Heartbeat,
 }
 
 impl TransportState {
@@ -142,7 +165,18 @@ impl TransportState {
             live: Mutex::new(Live::new()),
             client,
             browser: workspace.browser_relay(),
+            heartbeat: Heartbeat::default(),
         }
+    }
+
+    /// [`TransportState::for_workspace`] with the keepalive shortened, so a
+    /// test can watch a silent peer be reaped without waiting a minute of
+    /// real time. Production builds never see it.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn with_heartbeat(mut self, heartbeat: Heartbeat) -> Self {
+        self.heartbeat = heartbeat;
+        self
     }
 }
 
@@ -355,5 +389,21 @@ fn request_context_usage(
             slot = %key.display(),
             "a seat a client reads was due a context reading and its probe was not requested",
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The shipping keepalive is the pair the book states.** Those numbers
+    /// are what a client author reads, and the dead one is how fast a call on
+    /// a paused host fails, so a drift here must fail a test rather than
+    /// quietly change both.
+    #[test]
+    fn the_shipping_heartbeat_is_the_documented_pair() {
+        let heartbeat = Heartbeat::default();
+        assert_eq!(heartbeat.every, Duration::from_secs(15), "a ping every 15 s");
+        assert_eq!(heartbeat.dead, Duration::from_secs(60), "and 60 s without an answer");
     }
 }
