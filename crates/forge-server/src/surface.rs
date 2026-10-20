@@ -250,10 +250,10 @@ impl ViewSurface {
         self.workspace.seat_unringed_between(slot, from, to)
     }
 
-    /// Whether `slot`'s current epoch was opened by a seal, whose history no
-    /// ring holds.
-    pub fn seat_opened_by_seal(&self, slot: &SessionSlot) -> bool {
-        self.workspace.seat_opened_by_seal(slot)
+    /// Whether `slot`'s latest epoch-opening seal carried rows, which no ring
+    /// holds.
+    pub fn seat_epoch_opened_with_rows(&self, slot: &SessionSlot) -> bool {
+        self.workspace.seat_epoch_opened_with_rows(slot)
     }
 
     /// The live workers, per project.

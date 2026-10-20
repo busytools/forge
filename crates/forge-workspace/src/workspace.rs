@@ -3934,11 +3934,11 @@ impl Workspace {
         self.update_tx.unringed_between(key, from, to)
     }
 
-    /// Whether `key`'s current epoch was opened by a seal, whose history no
-    /// ring holds: what tells a copy filled from the window that it cannot
-    /// reach the rows the epoch began with.
-    pub fn seat_opened_by_seal(&self, key: &SessionSlot) -> bool {
-        self.update_tx.opened_by_seal(key)
+    /// Whether `key`'s latest epoch-opening seal carried rows, which no ring
+    /// holds: what tells a copy filled from the window that it cannot reach
+    /// the rows the epoch began with.
+    pub fn seat_epoch_opened_with_rows(&self, key: &SessionSlot) -> bool {
+        self.update_tx.epoch_opened_with_rows(key)
     }
 
     /// Borrow the workspace-side [`DomainSession`] for `key`.

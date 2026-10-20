@@ -1581,7 +1581,7 @@ const SEAL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 enum NotReady {
     /// The seat's window no longer reaches back to the copy's front.
     Behind,
-    /// The epoch's seal is unapplied, so its history cannot be reached at all.
+    /// The epoch's seal rows are unapplied, so its history cannot be reached.
     AwaitsSeal,
 }
 
@@ -1603,14 +1603,15 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
     if state.conversations.await_consumed(slot, want, CATCH_UP_WAIT).await {
         return Ok(());
     }
-    // **A seal the fold has not applied cannot be stood in for by the ring.**
-    // The history it carries is the rows its epoch opened on, and no window
-    // holds them (#2446), so the fill below would answer the new epoch's
-    // number without them. Waited on here, before the fill lock, for the
-    // fold's own mark: applying the seal resets it to zero and the frames
-    // after it climb back to `want`, so reaching `want` means the reseed is in
-    // place. The wait is what keeps a transient lag from failing the read.
-    if needs_a_seal(state, slot) && state.conversations.await_consumed(slot, want, SEAL_WAIT).await
+    // **A seal's rows the fold has not applied cannot be stood in for by the
+    // ring.** They are what the epoch opened on, and no window holds them
+    // (#2446), so the fill below would answer the new epoch's number without
+    // them. Waited on here, before the fill lock, for the fold's own mark:
+    // applying the seal resets it to zero and the frames after it climb back
+    // to `want`, so reaching `want` means the reseed is in place. The wait is
+    // what keeps a transient lag from failing the read.
+    if awaits_seal_history(state, slot)
+        && state.conversations.await_consumed(slot, want, SEAL_WAIT).await
     {
         return Ok(());
     }
@@ -1654,17 +1655,17 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
     // with the occupant it is for, and the fold skips these frames afterwards
     // by the watermark this marks last.
     //
-    // **Except when the epoch was opened by a seal, whose history the ring
-    // cannot carry.** A copy built from the frames below would answer the new
-    // epoch's number without the rows that seal opened on, and the occupant
-    // check cannot catch it: the synthetic copy carries the header's own
-    // occupant (#2446). Refused rather than synthesised; the fold's apply of
-    // the seal is what makes the read answer.
+    // **Except when the epoch opened on a seal's rows, which the ring cannot
+    // carry.** A copy built from the frames below would answer the new
+    // epoch's number without them, and the occupant check cannot catch it:
+    // the synthetic copy carries the header's own occupant (#2446). Refused
+    // rather than synthesised; the fold's apply of the seal is what makes the
+    // read answer.
     let occupant = state.surface.header(slot).session_id;
     let matching =
         state.conversations.get(slot).is_some_and(|held| held.holds_occupant(occupant.as_ref()));
     if !matching {
-        if state.surface.seat_opened_by_seal(slot) {
+        if state.surface.seat_epoch_opened_with_rows(slot) {
             tracing::error!(
                 event_name = "seat_copy_awaits_seal",
                 slot = %slot.display(),
@@ -1686,18 +1687,18 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
     Ok(())
 }
 
-/// Whether `slot`'s copy is missing the reseed that opened its epoch.
+/// Whether `slot`'s copy is missing rows its epoch opened on.
 ///
-/// **A seat that has sealed before keeps the mark across epochs on purpose**:
-/// the header moves to the new occupant before the seal is minted, so the
-/// stamp left by the previous seal is what notices that gap for every seal
-/// after a seat's first. A seat whose first epoch is pending has no earlier
-/// stamp, and a read in that window can still synthesise a copy.
-fn needs_a_seal(state: &TransportState, slot: &SessionSlot) -> bool {
+/// The mark describes the LATEST seal, so between an occupant change and its
+/// seal's mint the value is still the previous seal's - which is what notices
+/// that gap whenever the previous epoch carried rows. A seat whose first
+/// epoch is pending, or whose previous seal was empty, has no such mark, and a
+/// read in that mint gap can still synthesise a copy.
+fn awaits_seal_history(state: &TransportState, slot: &SessionSlot) -> bool {
     let occupant = state.surface.header(slot).session_id;
     let matching =
         state.conversations.get(slot).is_some_and(|held| held.holds_occupant(occupant.as_ref()));
-    !matching && state.surface.seat_opened_by_seal(slot)
+    !matching && state.surface.seat_epoch_opened_with_rows(slot)
 }
 
 /// One session's record, from the reads a session-scoped view makes.

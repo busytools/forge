@@ -3765,9 +3765,11 @@ async fn a_copy_no_window_can_cover_is_refused_rather_than_answered() {
     };
     assert_eq!(what, "subscribe", "the refusal names what was asked for");
     assert!(
-        why.contains(&seat.display()) && why.contains("has not settled"),
-        "and names the seat and the reason, so a stuck fold is forge's problem and not a row \
-         lost in silence: {why}",
+        why.contains(&seat.display())
+            && why.contains("has not settled")
+            && why.contains("behind the number an answer would carry"),
+        "and names the seat and this reason rather than the seal one, so a stuck fold is forge's \
+         problem and not a row lost in silence: {why}",
     );
 }
 
@@ -4050,6 +4052,94 @@ async fn an_empty_history_seal_still_fills_from_the_ring() {
     };
     let said = says_times(&data, "the live row");
     assert_eq!(said, 1, "the ring's frame is the whole epoch: {data}");
+}
+
+/// **A later empty-history epoch does not inherit the previous seal's mark**
+/// (#2446).
+///
+/// The mark describes the latest epoch-opening seal. Once a seat has opened
+/// one with rows, a `/new` or a reconnect that starts blank must not leave the
+/// mark standing: its seal cleared the ring at the mint, so a fill holds the
+/// whole new epoch and there is nothing to wait for or refuse.
+#[tokio::test]
+async fn an_empty_history_epoch_after_a_sealed_one_still_fills_from_the_ring() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let first = SessionId::from("5d6e7f80-91a2-4bc3-d2e3-f4a5b6c7d8e9");
+
+    // The first epoch genuinely opens on rows, and the fold applies its seal.
+    // Its mark is never taken - a seal is not a frame - so the epoch's first
+    // number is still owed when the read below runs.
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: first.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the first run's history row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    let mut seeded = false;
+    for _ in 0..200 {
+        if state.conversations.get(&seat).is_some_and(|held| held.holds_occupant(Some(&first))) {
+            seeded = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(seeded, "the first epoch's seal never reached the copy");
+
+    // The second epoch opens without history, with the fold held at its seal.
+    let second = SessionId::from("6e7f8091-a2b3-4cd4-e3f4-a5b6c7d8e9f0");
+    state.conversations.hold_the_fold(true);
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts { session_id: Some(second.clone()), ..Default::default() },
+    );
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: second,
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the new run's row"),
+    });
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let answer = an_answer(&mut socket).await;
+    state.conversations.hold_the_fold(false);
+
+    let ServerMessage::Snapshot { data, .. } = answer else {
+        panic!(
+            "a blank epoch leaves nothing for the ring to miss, so the read must answer: {answer:?}"
+        );
+    };
+    let said = says_times(&data, "the new run's row");
+    assert_eq!(said, 1, "the new epoch's frame is the whole epoch: {data}");
+    let previous = says_times(&data, "the first run's history row");
+    assert_eq!(previous, 0, "and none of the previous run's rows: {data}");
 }
 
 /// **A read inside a LAGGING seal's window answers once the fold catches up,
