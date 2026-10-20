@@ -72,6 +72,11 @@ pub(super) struct DriverStart<'a> {
     /// reason until the app is restarted.
     pub identity: &'a str,
     pub output: &'a Path,
+    /// The profile's cache root (desktop), where the carried page sits: a
+    /// driver rebuilt after a dead page context logs that marker, which is
+    /// the page the profile last carried rather than the driver's tab.
+    #[cfg(desktop)]
+    pub profile: &'a Path,
     /// The unix socket the in-app driver dials (phone only).
     #[cfg(target_os = "android")]
     pub socket: &'a Path,
@@ -102,7 +107,18 @@ impl DriverStart<'_> {
 pub(super) struct Held {
     identity: String,
     driver: Option<Arc<Driver>>,
+    /// When this profile's last rebuild left it still dead, so a run of
+    /// calls against an unrecoverable browser does not pay a driver start
+    /// each. Cleared by any call that answers.
+    #[cfg(desktop)]
+    stale_since: Option<std::time::Instant>,
 }
+
+/// How long a profile that could not be recovered is left alone before
+/// another call tries a rebuild: long enough that a run of calls fails fast,
+/// short enough that a browser which recovers is picked up by the next fire.
+#[cfg(desktop)]
+const REBUILD_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// A profile and the driver that serves it.
 ///
@@ -114,7 +130,14 @@ pub struct Profile {
 
 impl Profile {
     pub(super) fn new() -> Self {
-        Self { held: Mutex::new(Held { identity: String::new(), driver: None }) }
+        Self {
+            held: Mutex::new(Held {
+                identity: String::new(),
+                driver: None,
+                #[cfg(desktop)]
+                stale_since: None,
+            }),
+        }
     }
 
     /// The lock a call holds for its whole round: a delete takes the same one
@@ -153,12 +176,104 @@ impl Profile {
         let driver = live_driver(&mut held, start).await?;
         #[cfg(desktop)]
         {
-            visibility::dispatch(&driver, tool, &args).await
+            let outcome = visibility::dispatch(&driver, tool, &args).await;
+            if outcome.is_ok() {
+                held.stale_since = None;
+            }
+            match outcome {
+                Ok(parts) => Ok(parts),
+                Err(why) if stale_page(&why) => {
+                    self.rebuild_after_dead_page(&mut held, start, tool, &args, why, driver).await
+                }
+                Err(why) => Err(why),
+            }
         }
         #[cfg(target_os = "android")]
         {
             routed_call(&driver, tool, &args, driver::CALL_TIMEOUT).await
         }
+    }
+
+    /// **A page context that died under a live driver is rebuilt, not
+    /// reported.** A renderer death leaves the host and its page target
+    /// alive, so the browser looks healthy from here and the driver's
+    /// identity never moves - but the driver's held page belongs to the dead
+    /// renderer and every call against it throws the driver's
+    /// `browserBackend.callTool: Cannot read properties of undefined
+    /// (reading '_page')`, for ever. A fresh driver re-reads the browser's
+    /// pages and works, which is what the seat's `browser_close` recovery was
+    /// doing by hand.
+    ///
+    /// The call itself is repeated only where repeating it cannot change the
+    /// page twice; anything else hands back the reason with the rebuild
+    /// named, so a click or a submit is never run twice.
+    ///
+    /// **`browser_close` answers "No open tabs. Navigate to a URL to create
+    /// one." for every call**, because that line is its fixed text rather
+    /// than a reading of the context - so it is not evidence a reset left no
+    /// page, and it was read as such once.
+    #[cfg(desktop)]
+    async fn rebuild_after_dead_page(
+        &self,
+        held: &mut Held,
+        start: &DriverStart<'_>,
+        tool: &str,
+        args: &Value,
+        why: String,
+        stale: Arc<Driver>,
+    ) -> Result<Vec<ReplyPart>, String> {
+        // **A browser that stayed dead is not started again on every call.**
+        // The retry below already showed one rebuild is not enough; paying a
+        // driver start per call against it helps nobody, so the next calls
+        // fail fast until the cooldown runs out or a call answers.
+        if held.stale_since.is_some_and(|at| at.elapsed() < REBUILD_COOLDOWN) {
+            log_rebuild(start.profile, tool, "not rebuilt again yet", &why);
+            return Err(format!(
+                "{why}\n\nThe browsing context died again after a rebuild and the driver has not \
+                 been rebuilt a second time yet; try again shortly."
+            ));
+        }
+        // **The stale driver is let go before the fresh one starts**: clearing
+        // the held slot alone leaves this call's own `Arc` holding the child
+        // and its CDP connection open while the new driver attaches beside it.
+        held.driver = None;
+        drop(stale);
+        let fresh = match live_driver(held, start).await {
+            Ok(fresh) => fresh,
+            Err(cannot) => {
+                held.stale_since = Some(std::time::Instant::now());
+                log_rebuild(start.profile, tool, "rebuild failed", &why);
+                return Err(format!(
+                    "{why}\n\nThe browsing context was dead and the driver could not be \
+                     rebuilt: {cannot}"
+                ));
+            }
+        };
+        if repeatable(tool, args) {
+            return match visibility::dispatch(&fresh, tool, args).await {
+                Ok(parts) => {
+                    held.stale_since = None;
+                    log_rebuild(start.profile, tool, "rebuilt, call retried and answered", &why);
+                    Ok(parts)
+                }
+                Err(retry_why) => {
+                    held.stale_since = Some(std::time::Instant::now());
+                    log_rebuild(start.profile, tool, "rebuilt, retried call failed", &why);
+                    // **No second rebuild in this call**: the repeated
+                    // failure is handed back with both reasons, not met with
+                    // another driver start.
+                    Err(format!(
+                        "{why}\n\nThe driver was rebuilt after the dead page context and the \
+                         repeated call failed too: {retry_why}"
+                    ))
+                }
+            };
+        }
+        log_rebuild(start.profile, tool, "rebuilt, call handed back", &why);
+        Err(format!(
+            "{why}\n\nThe browsing context was dead and has been rebuilt; this call was not \
+             repeated because {tool} is not safe to run twice. Repeat it."
+        ))
     }
 
     /// Forget the driver, so the next call builds a fresh one. Called when a
@@ -170,6 +285,67 @@ impl Profile {
     pub(super) async fn drop_driver(&self) {
         self.held.lock().await.driver = None;
     }
+}
+
+/// The driver's own words for a page whose renderer is gone: the wrapping
+/// prefix and the reading together, so a page script's own TypeError that
+/// carries the same reading is not mistaken for it.
+#[cfg(desktop)]
+const DEAD_PAGE: &str =
+    "browserBackend.callTool: Cannot read properties of undefined (reading '_page')";
+
+/// Whether a failure is the driver's held page outliving its renderer.
+#[cfg(desktop)]
+fn stale_page(why: &str) -> bool {
+    why.contains(DEAD_PAGE)
+}
+
+/// The line a rebuild logs. Pure, so the page it names is pinned by a test
+/// rather than only by the helper that reads it.
+#[cfg(desktop)]
+fn rebuild_warning(profile: &Path, page: &str, tool: &str, outcome: &str) -> String {
+    format!(
+        "the driver's page context was dead (event_name browser_page_context_rebuilt, profile {}, \
+         page {page}, tool {tool}, outcome {outcome})",
+        profile.display()
+    )
+}
+
+/// Log one rebuild, after its outcome is known: a rebuild that failed must
+/// not read as one that happened.
+#[cfg(desktop)]
+fn log_rebuild(profile: &Path, tool: &str, outcome: &str, why: &str) {
+    let warning = rebuild_warning(profile, &carried_page_of(profile), tool, outcome);
+    tauri_plugin_log::log::warn!("{warning}: {why}");
+}
+
+/// Whether a call can run again after its driver was rebuilt. A navigation to
+/// an explicit address, a snapshot and a tab list or select leave the browser
+/// where a repeat leaves it; a click, a key, arbitrary code or a history move
+/// can land twice.
+#[cfg(desktop)]
+fn repeatable(tool: &str, args: &Value) -> bool {
+    match tool {
+        "browser_navigate" => {
+            args.get("url").and_then(Value::as_str).is_some_and(|url| !url.is_empty())
+        }
+        "browser_snapshot" => true,
+        "browser_tabs" => {
+            matches!(args.get("action").and_then(Value::as_str), Some("list" | "select"))
+        }
+        _ => false,
+    }
+}
+
+/// The profile's carried page - the page a raise or a browsing call last put
+/// on the profile, not the driver's own selected tab.
+#[cfg(desktop)]
+fn carried_page_of(profile: &Path) -> String {
+    std::fs::read_to_string(profile.join("page"))
+        .map(|page| page.trim().to_owned())
+        .ok()
+        .filter(|page| !page.is_empty())
+        .unwrap_or_else(|| "no carried page".to_owned())
 }
 
 /// The driver to run with: rebuilt when there is none, when it died, or when
@@ -699,6 +875,83 @@ mod tests {
     #[test]
     fn a_seat_prints_as_its_slot() {
         assert_eq!(seat("lead").to_string(), "Busytools/forge/lead");
+    }
+
+    /// **The renderer-death failure is recognised by the driver's whole
+    /// line, not by the reading alone**: a page script's own TypeError, or a
+    /// malformed argument quoting the same text, must not make a live context
+    /// look dead and send a session to repeat a click that already landed.
+    #[test]
+    fn a_dead_page_context_is_the_drivers_own_line() {
+        assert!(stale_page(
+            "### Error TypeError: browserBackend.callTool: Cannot read properties of undefined \
+             (reading '_page')"
+        ));
+        assert!(
+            !stale_page(
+                "page.evaluate: TypeError: Cannot read properties of undefined \
+                         (reading '_page')"
+            ),
+            "a page script's own TypeError is not the driver's page",
+        );
+        assert!(
+            !stale_page("### Error invalid target argument: reading '_page' is not a selector"),
+            "nor is an argument echoing the words",
+        );
+        assert!(!stale_page("### Error no element matches \"e1\""));
+        assert!(!stale_page(
+            "browserBackend.callTool: net::ERR_CONNECTION_REFUSED at https://x.test/"
+        ));
+    }
+
+    /// The rebuild's log line names the profile, the carried page and its own
+    /// outcome.
+    #[test]
+    fn a_rebuild_log_line_names_the_page_and_the_outcome() {
+        let line = rebuild_warning(
+            Path::new("/profiles/hunt/cef"),
+            "https://example.com/apply",
+            "browser_navigate",
+            "rebuilt, call retried",
+        );
+        assert!(line.contains("/profiles/hunt/cef"), "{line}");
+        assert!(line.contains("page https://example.com/apply"), "{line}");
+        assert!(line.contains("outcome rebuilt, call retried"), "{line}");
+        assert!(line.contains("browser_page_context_rebuilt"), "{line}");
+    }
+
+    /// **Only calls a repeat cannot land twice are repeated after the
+    /// rebuild**: a click, a key, arbitrary code and a history move are not.
+    #[test]
+    fn only_a_repeatable_call_is_repeated() {
+        assert!(repeatable("browser_navigate", &json!({ "url": "https://x.test/" })));
+        assert!(!repeatable("browser_navigate", &json!({})));
+        assert!(repeatable("browser_snapshot", &json!({})));
+        assert!(repeatable("browser_tabs", &json!({ "action": "list" })));
+        assert!(repeatable("browser_tabs", &json!({ "action": "select", "index": 0 })));
+        assert!(!repeatable("browser_tabs", &json!({ "action": "new", "url": "https://x.test/" })));
+        for tool in [
+            "browser_click",
+            "browser_type",
+            "browser_press_key",
+            "browser_evaluate",
+            "browser_fill_form",
+            "browser_run_code_unsafe",
+            "browser_navigate_back",
+            "browser_close",
+        ] {
+            assert!(!repeatable(tool, &json!({})), "{tool} is never repeated");
+        }
+    }
+
+    /// The page a rebuilt driver logs is the profile's own marker, and a
+    /// profile without one says so rather than logging a blank.
+    #[test]
+    fn a_profiles_carried_page_is_named_or_said_missing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        assert_eq!(carried_page_of(dir.path()), "no carried page");
+        std::fs::write(dir.path().join("page"), b" https://example.com/ \n").expect("the marker");
+        assert_eq!(carried_page_of(dir.path()), "https://example.com/");
     }
 
     /// A hand-off's raise is refused only for another seat's recorded
