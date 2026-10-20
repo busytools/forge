@@ -5807,17 +5807,14 @@ fn user_text(msg: &forge_primitives::Message) -> Option<String> {
     })
 }
 
-/// The image a user turn carries, when the frame is one: its media type and
-/// payload, so a frame that names an attachment it did not carry cannot pass.
-fn user_image(msg: &forge_primitives::Message) -> Option<(String, String)> {
+/// The media type of the image a user turn carries, when the frame is one.
+fn user_image_mime(msg: &forge_primitives::Message) -> Option<String> {
     let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
     message.content.iter().find_map(|block| match block {
         forge_primitives::ContentBlock::Image { source, .. } => {
-            let mime = source.get("media_type")?.as_str()?.to_owned();
-            let data = source.get("data")?.as_str()?.to_owned();
-            Some((mime, data))
+            source.get("media_type")?.as_str().map(str::to_owned)
         }
         _ => None,
     })
@@ -5892,14 +5889,37 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
             source: Some(forge_workspace::PromptSource::You),
             ..
         } if user_text(msg).as_deref() == Some("hello there")
-            && user_image(msg) == Some((image.mime_type.clone(), image.data.clone())))
+            && user_image_mime(msg).as_deref() == Some(image.mime_type.as_str()))
     };
-    update_until(
+    let first = update_until(
         &mut watcher,
         "the prompt a client sent, drawn for another client with the attachment it carried",
         drawn,
     )
     .await;
+    let SessionUpdate::ChatAppended { msg, .. } = &first else {
+        panic!("a prompt draws as a chat frame: {first:?}")
+    };
+    let forge_primitives::Message::User { message, .. } = msg else {
+        panic!("a prompt draws as the user turn it was: {msg:?}")
+    };
+    let Some(forge_primitives::ContentBlock::Image { source, extras }) = message
+        .content
+        .iter()
+        .find(|block| matches!(block, forge_primitives::ContentBlock::Image { .. }))
+    else {
+        panic!("the live frame carries the attachment the prompt was sent with: {message:?}")
+    };
+    // **The payload never rides the live frame.** The frame is kept and
+    // re-served by every read of the row, so an image block here carries what
+    // a row prints - the mime and the measured size - exactly as the read
+    // path's stripped copy does.
+    assert_eq!(source.get("data"), None, "the live frame carries no base64 payload: {source}",);
+    assert_eq!(
+        extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
+        Some(forge_primitives::payload_bytes(&image.data)),
+        "the row prints the size the payload weighed, the figure the read path sends",
+    );
     update_until(
         &mut sender,
         "the prompt a client sent, drawn for the client that sent it with the attachment it carried",

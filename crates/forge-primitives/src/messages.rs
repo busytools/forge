@@ -716,8 +716,9 @@ impl Message {
     }
 
     /// [`Self::display_only_user`] for a prompt sent with image attachments:
-    /// the images first and the words last, the array the CLI received - so a
-    /// live row draws the attachments its transcript copy carries.
+    /// the images first and the words last, each image in the shape both paths
+    /// draw - mime and measured size, no payload - so a live row draws the
+    /// attachments its transcript copy carries.
     pub fn display_only_user_with_images(
         text: String,
         images: &[ImageAttachment],
@@ -725,14 +726,7 @@ impl Message {
     ) -> Self {
         let mut content = Vec::with_capacity(images.len() + 1);
         for image in images {
-            content.push(ContentBlock::Image {
-                source: serde_json::json!({
-                    "type": "base64",
-                    "media_type": image.mime_type,
-                    "data": image.data,
-                }),
-                extras: Extras::new(),
-            });
+            content.push(image.display_block());
         }
         content.push(ContentBlock::Text { text, extras: Extras::new() });
         Message::User {

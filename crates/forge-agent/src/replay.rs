@@ -165,7 +165,7 @@ fn attachment(source: Value, extras: Extras) -> ContentBlock {
     let Some(data) = source.get("data").and_then(Value::as_str) else {
         return ContentBlock::Image { source, extras };
     };
-    let size = payload_bytes(data);
+    let size = forge_primitives::payload_bytes(data);
     let mut keeps = source;
     if let Some(fields) = keeps.as_object_mut() {
         fields.remove("data");
@@ -173,13 +173,6 @@ fn attachment(source: Value, extras: Extras) -> ContentBlock {
     let mut kept = extras;
     kept.insert("forge_bytes".to_owned(), json!(size));
     ContentBlock::Image { source: keeps, extras: kept }
-}
-
-/// The bytes a base64 payload stands for, by the same arithmetic the view's
-/// own row uses: four characters carry three bytes, and padding is not a byte.
-fn payload_bytes(data: &str) -> u64 {
-    let padding = if data.ends_with("==") { 2 } else { u64::from(data.ends_with('=')) };
-    (data.len() as u64 * 3 / 4).saturating_sub(padding)
 }
 
 #[cfg(test)]
