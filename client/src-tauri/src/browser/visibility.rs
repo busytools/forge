@@ -18,21 +18,25 @@
 //! mid-call is diagnosed too. **Nothing here raises the tab**: the person's
 //! focus is never taken, and every refusal names the remedy instead.
 //!
+//! **A network failure names the address it was given, not the host that
+//! failed**: a redirect can end the navigation elsewhere, and where the
+//! browser is now is the one fact the reason cannot carry, so it is appended.
+//!
 //! **Desktop only.** The remedy is `page.bringToFront`, and it cannot make a
 //! phone's WebView visible - the phone also keeps that WebView in an
 //! invisible holder while no takeover is up, where this would fire on the
 //! normal flow and the remedy could loop. The phone keeps the behaviour it
 //! had.
 //!
-//! **The probe costs one driver round trip, and upstream's own settle.** The
-//! vendored driver waits its `timeouts.settle` (500 ms) after every tool call
-//! it runs through its own `waitForCompletion`, `browser_evaluate` included,
-//! so each watched call on a visible page pays that once - the watched calls
-//! are `browser_snapshot` and the pointer class, and the re-probe runs only
-//! after a failure. A CDP read of our own would skip the settle but cannot
-//! address the driver's CURRENT tab when the browser holds several - probing
-//! the wrong page would refuse a visible tab or drive a hidden one, which is
-//! worse than the settle.
+//! **The probe costs a driver round trip per attempt, and upstream's own
+//! settle.** The vendored driver waits its `timeouts.settle` (500 ms) after
+//! every tool call it runs through its own `waitForCompletion`,
+//! `browser_evaluate` included, so a watched call on a visible page pays that
+//! once before it runs, and a failure's probe pays it per attempt - up to
+//! [`PROBE_ATTEMPTS`] of them. A CDP read of our own would skip the settle but
+//! cannot address the driver's CURRENT tab when the browser holds several -
+//! probing the wrong page would refuse a visible tab or drive a hidden one,
+//! which is worse than the settle.
 
 use std::time::Duration;
 
@@ -42,14 +46,35 @@ use serde_json::Value;
 use super::driver::{self, Driver, ReplyPart};
 use super::profiles::{routed_call, routing_refusal};
 
-/// The longest the probe is given. A live page answers an evaluate in
+/// The longest one probe attempt is given. A live page answers an evaluate in
 /// milliseconds; a probe that cannot answer inside this is no evidence about
 /// the page, and a bound of its own keeps it off the call's.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How many attempts a failure's probe gets. **The first evaluate after a
+/// failed navigation dies on the context that navigation destroyed**: the
+/// shipped driver answered "Execution context was destroyed" on 8 of 8
+/// measured runs at a refused address, and the next call read the page on 8
+/// of 8. Each attempt is a driver round trip of its own, so the retry is also
+/// the wait the error page's commit needs.
+const PROBE_ATTEMPTS: u32 = 2;
+
 /// The probe: one evaluate, the read a hidden page still answers.
 const PROBE: &str = "() => ({ visibility: document.visibilityState, url: document.location.href, \
                      title: document.title })";
+
+/// The tools that navigate as their whole job.
+const NAVIGATING: &[&str] = &["browser_navigate", "browser_navigate_back", "browser_tabs"];
+
+/// The prefixes Playwright puts on a navigation a snippet ran itself - `goto`,
+/// `goBack`, `goForward` and `reload` - so a script that goes to a page is
+/// admitted and one that only throws or evaluates is not.
+const NAVIGATION_PREFIXES: &[&str] = &[
+    "page.goto: net::ERR_",
+    "page.goBack: net::ERR_",
+    "page.goForward: net::ERR_",
+    "page.reload: net::ERR_",
+];
 
 /// The pointer actions whose actionability gate waits on frames, so a hidden
 /// page kills them. `browser_click` is absent because a forced click is the
@@ -215,11 +240,14 @@ pub(super) fn needs_reprobe(tool: &str, args: &Value, why: &str, bound: Duration
     (tool == WAIT || waits_on_stability(tool, args)) && timed_out(why, tool, bound)
 }
 
-/// The bound a call gets. A call that may re-probe keeps PROBE_TIMEOUT below
-/// the driver's own bound, so the probe after its failure still fits in it.
+/// The bound a call's action gets. A call re-probed by its shape reserves
+/// what its failure's probe can spend (PROBE_ATTEMPTS attempts), so the whole
+/// call still fits inside the driver's bound. **A network failure is only
+/// known after the fact**, so on any other tool its probe runs past this
+/// bound by that much - slack in the wedge-breaker, not in the action.
 pub(super) fn action_bound(tool: &str, args: &Value) -> Duration {
     if reprobed(tool, args) {
-        driver::CALL_TIMEOUT.saturating_sub(PROBE_TIMEOUT)
+        driver::CALL_TIMEOUT.saturating_sub(PROBE_TIMEOUT * PROBE_ATTEMPTS)
     } else {
         driver::CALL_TIMEOUT
     }
@@ -253,7 +281,19 @@ pub(super) async fn probe(driver: &Driver) -> Option<PageState> {
     parse_state(text)
 }
 
-/// A call failed: re-probe, and name a page that is hidden now.
+/// The probe after a failure: bounded attempts, because the first one races
+/// the error page's commit.
+async fn probe_after_failure(driver: &Driver) -> Option<PageState> {
+    for _ in 0..PROBE_ATTEMPTS {
+        if let Some(state) = probe(driver).await {
+            return Some(state);
+        }
+    }
+    None
+}
+
+/// A call failed: ask the page, and name it when that explains the failure -
+/// the host a network failure is on, or a page that is hidden now.
 async fn after_failure(
     driver: &Driver,
     tool: &str,
@@ -261,11 +301,109 @@ async fn after_failure(
     why: String,
     bound: Duration,
 ) -> String {
-    if !needs_reprobe(tool, args, &why, bound) {
+    if !failure_probe_needed(tool, args, &why, bound) {
         return why;
     }
-    let state = probe(driver).await;
-    failure_verdict(tool, args, &why, bound, state.as_ref()).unwrap_or(why)
+    let state = probe_after_failure(driver).await;
+    if note_dropped(tool, &why, state.as_ref()) {
+        // **A dropped note is logged** - the note is forge's own feature, and
+        // without it the reason reads as if the address it names is the host
+        // that failed.
+        let address = asked_address(args, &why);
+        tauri_plugin_log::log::warn!(
+            "the page could not be read after a network failure (event_name \
+             browser_failure_probe_unreadable, tool {tool}, address {address}): the reason is \
+             reported without the page it ended on"
+        );
+    }
+    failure_verdict_for(tool, args, &why, bound, state.as_ref()).unwrap_or(why)
+}
+
+/// Whether a failure asks the page at all: a navigation's network failure is
+/// named by the page, and a re-probeable call asks about its state.
+fn failure_probe_needed(tool: &str, args: &Value, why: &str, bound: Duration) -> bool {
+    net_failure(tool, why) || needs_reprobe(tool, args, why, bound)
+}
+
+/// Whether the note a network failure wanted was lost. **A page that was read
+/// but had nothing to name is not a loss**: an untitled error page is
+/// suppressed on purpose.
+fn note_dropped(tool: &str, why: &str, state: Option<&PageState>) -> bool {
+    net_failure(tool, why) && state.is_none()
+}
+
+/// The address a failed call asked for: its own `url` when the tool takes
+/// one, else the one the driver's reason names (`... at https://...`), so a
+/// snippet's navigation is logged with its address too.
+fn asked_address<'a>(args: &'a Value, why: &'a str) -> &'a str {
+    if let Some(url) = args.get("url").and_then(Value::as_str) {
+        return url;
+    }
+    why.split_once(" at ")
+        .and_then(|(_, address)| address.split_whitespace().next())
+        .filter(|address| address.starts_with("http"))
+        .unwrap_or("no address")
+}
+
+/// The verdict for a failed call, from the page the probe found. **The two
+/// are told apart by the failure's shape, and the network note wins**: a
+/// snippet can fail with a navigation's network error or with its own
+/// timeout, and only the first is a fact about where the navigation ended -
+/// a timeout still reaches the hidden-page diagnosis below.
+fn failure_verdict_for(
+    tool: &str,
+    args: &Value,
+    why: &str,
+    bound: Duration,
+    state: Option<&PageState>,
+) -> Option<String> {
+    if net_failure(tool, why) {
+        return net_verdict(tool, why, state);
+    }
+    failure_verdict(tool, args, why, bound, state)
+}
+
+/// Whether the reason is the driver reporting a navigation's own network
+/// failure: `net::ERR_x` and the address it was given (`at https://...`), on
+/// a tool that navigates - or on a snippet whose failure names the page call
+/// that navigated. **Both the tool and the shape decide**, so a script that
+/// only throws a string carrying an address is not a page fact.
+fn net_failure(tool: &str, why: &str) -> bool {
+    let shaped = why.contains("net::ERR_") && why.contains(" at http");
+    if !shaped {
+        return false;
+    }
+    if NAVIGATING.contains(&tool) {
+        return true;
+    }
+    tool == RUN_CODE && NAVIGATION_PREFIXES.iter().any(|prefix| why.contains(prefix))
+}
+
+/// The network half of a failure's verdict: the call's own reason kept, with
+/// where the browser is now appended. **The guard repeats what the caller
+/// established** so the note cannot be attached to a tool's own failure.
+fn net_verdict(tool: &str, why: &str, state: Option<&PageState>) -> Option<String> {
+    if !net_failure(tool, why) {
+        return None;
+    }
+    let note = unreachable_note(state?)?;
+    Some(format!("{why}\n\n{note}"))
+}
+
+/// Where the browser is now, as a failure's note. A Chromium error page
+/// carries the host it failed on as its title; a page with nothing to name
+/// adds nothing.
+fn unreachable_note(state: &PageState) -> Option<String> {
+    let title = state.title.trim();
+    if state.url.starts_with("chrome-error://") {
+        return (!title.is_empty()).then(|| {
+            format!("The browser is on its own error page for \"{}\" now.", clipped(title))
+        });
+    }
+    if title.is_empty() && state.url.is_empty() {
+        return None;
+    }
+    Some(format!("The browser is on {} now.", tab_name(state)))
 }
 
 /// The pure half of [`after_failure`], testable without a driver. A call's
@@ -682,6 +820,268 @@ mod tests {
         );
     }
 
+    /// **A refused navigation names the host the browser actually stopped at.**
+    /// A Greenhouse job URL answered 302 to yieldmo.com, whose address this
+    /// machine's DNS sinks to `0.0.0.0`; the call's own reason named the
+    /// Greenhouse address, and the session chased a host that had answered.
+    /// The page the driver is on is the fact the reason cannot carry.
+    #[test]
+    fn a_network_failure_names_the_page_the_browser_stopped_on() {
+        let navigate = "browser_navigate";
+        let refused = "Error: browserBackend.callTool: net::ERR_CONNECTION_REFUSED at \
+                       https://job-boards.greenhouse.io/yieldmo/jobs/8243707";
+        assert!(net_failure(navigate, refused), "the driver's navigation error is recognised");
+        assert!(!net_failure(navigate, "Timeout 5000ms exceeded"), "a tool's timeout is not one");
+        assert!(!net_failure(navigate, "no element matches \"e1\""), "nor a selector miss");
+        assert!(
+            !net_failure(RUN_CODE, "Error: net::ERR_FAKE at https://x.test/"),
+            "**a script's throw carrying an address is not a navigation**: no page call is \
+             named in it",
+        );
+        assert!(
+            net_failure(
+                RUN_CODE,
+                "Error: page.goto: net::ERR_CONNECTION_REFUSED at https://x.test/"
+            ),
+            "a snippet that went to a page carries the same failure",
+        );
+        assert!(
+            net_failure(
+                RUN_CODE,
+                "Error: page.reload: net::ERR_NAME_NOT_RESOLVED at https://x.test/",
+            ),
+            "and so does one that reloaded",
+        );
+        assert!(
+            net_failure(
+                RUN_CODE,
+                "Error: page.goBack: net::ERR_CONNECTION_REFUSED at https://x.test/",
+            ),
+            "and one that went back",
+        );
+        assert!(
+            net_failure(
+                RUN_CODE,
+                "Error: page.goForward: net::ERR_CONNECTION_REFUSED at https://x.test/",
+            ),
+            "and one that went forward",
+        );
+        assert!(
+            !net_failure(RUN_CODE, "Error: page.evaluate: net::ERR_FAKE at https://x.test/",),
+            "**a page call that does not navigate is not admitted**: the prefix is the page \
+             call's, not a bare `page.`",
+        );
+
+        let error_page = PageState {
+            hidden: false,
+            url: "chrome-error://chromewebdata/".to_owned(),
+            title: "yieldmo.com".to_owned(),
+        };
+        let verdict =
+            net_verdict(navigate, refused, Some(&error_page)).expect("a network failure is named");
+        assert!(verdict.starts_with(refused), "the call's own reason is kept: {verdict}");
+        assert!(
+            verdict.contains("its own error page for \"yieldmo.com\""),
+            "the host it stopped at is named, as the error page's own: {verdict}",
+        );
+
+        // **The note says where the browser is, not how it got there.** A
+        // navigation that aborts leaves the tab where it was, and a failed
+        // resolution names the address that was asked for; neither is a
+        // redirect, so the note claims neither.
+        let previous = PageState {
+            hidden: false,
+            url: "https://example.com/previous".to_owned(),
+            title: "Previous".to_owned(),
+        };
+        let aborted = net_verdict(
+            navigate,
+            "page.goto: net::ERR_ABORTED at https://x.test/",
+            Some(&previous),
+        )
+        .expect("an aborted navigation still says where the browser is");
+        assert!(
+            aborted.contains("\"Previous\" (https://example.com/previous)"),
+            "the page it is on now is named: {aborted}",
+        );
+        assert!(!aborted.contains("error page"), "and it is not called an error page: {aborted}");
+
+        // **A snippet that navigates is named the same way**, and one that
+        // only throws is not named at all.
+        let snippet = "Error: page.goto: net::ERR_CONNECTION_REFUSED at https://x.test/";
+        let from_snippet = failure_verdict_for(
+            RUN_CODE,
+            &json!({}),
+            snippet,
+            driver::CALL_TIMEOUT,
+            Some(&error_page),
+        )
+        .expect("a snippet's refused navigation is named");
+        assert!(from_snippet.contains("yieldmo.com"), "{from_snippet}");
+        assert_eq!(
+            failure_verdict_for(
+                RUN_CODE,
+                &json!({}),
+                "Error: net::ERR_FAKE at https://x.test/",
+                driver::CALL_TIMEOUT,
+                Some(&error_page),
+            ),
+            None,
+            "a script's own throw is left as it is",
+        );
+
+        // **An error page with no title names no host**, so there is no note
+        // to add; the session is left with the reason alone.
+        let untitled = PageState {
+            hidden: false,
+            url: "chrome-error://chromewebdata/".to_owned(),
+            title: String::new(),
+        };
+        assert_eq!(net_verdict(navigate, refused, Some(&untitled)), None);
+
+        // One enormous host name is clipped like every other tab name, so it
+        // cannot bury the reason.
+        let enormous = PageState {
+            hidden: false,
+            url: "chrome-error://chromewebdata/".to_owned(),
+            title: "h".repeat(500),
+        };
+        let clipped_note = net_verdict(navigate, refused, Some(&enormous)).expect("named");
+        assert!(clipped_note.contains("..."), "the name is clipped: {clipped_note}");
+        assert!(clipped_note.chars().count() < 500, "{clipped_note}");
+
+        assert_eq!(
+            net_verdict(navigate, refused, None),
+            None,
+            "a page that cannot be read is no evidence and adds nothing",
+        );
+        assert_eq!(
+            net_verdict(navigate, "no element matches \"e1\"", Some(&error_page)),
+            None,
+            "a tool's own failure is not given a page",
+        );
+    }
+
+    /// **The route to the page is the failure's own, not the tool's.** A
+    /// navigating tool's network failure asks the page - `browser_navigate` is
+    /// in no re-probe set - while that same tool's ordinary failure does not,
+    /// and a script's throw that carries an address is not a network failure.
+    #[test]
+    fn a_network_failure_asks_the_page_on_a_navigating_tool() {
+        let navigate = json!({ "url": "https://nope.invalid/" });
+        let bound = action_bound("browser_navigate", &navigate);
+        let refused =
+            "browserBackend.callTool: net::ERR_NAME_NOT_RESOLVED at https://nope.invalid/";
+        assert!(failure_probe_needed("browser_navigate", &navigate, refused, bound));
+        assert!(
+            !failure_probe_needed(
+                "browser_navigate",
+                &navigate,
+                "no element matches \"e1\"",
+                bound
+            ),
+            "the same tool's ordinary failure is not worth a page read",
+        );
+        assert!(
+            !failure_probe_needed(RUN_CODE, &json!({}), refused, bound),
+            "a script that throws the driver's words asks for no page",
+        );
+        assert!(!failure_probe_needed(
+            "browser_press_key",
+            &json!({ "key": "Home" }),
+            "a key was refused",
+            bound,
+        ));
+    }
+
+    /// **The two verdicts are told apart by the failure's shape, and the
+    /// network note wins.** A navigation's network failure is named by the
+    /// page even when that page is hidden - on a navigating tool or on a
+    /// snippet; the hidden-page diagnosis is for the failures it explains.
+    #[test]
+    fn a_network_note_and_a_hidden_diagnosis_do_not_compete() {
+        let refused = "browserBackend.callTool: net::ERR_CONNECTION_REFUSED at https://x.test/";
+        let hidden_error = PageState {
+            hidden: true,
+            url: "chrome-error://chromewebdata/".to_owned(),
+            title: "yieldmo.com".to_owned(),
+        };
+        let network = failure_verdict_for(
+            "browser_navigate",
+            &json!({}),
+            refused,
+            driver::CALL_TIMEOUT,
+            Some(&hidden_error),
+        )
+        .expect("a network failure is named");
+        assert!(network.contains("yieldmo.com"), "{network}");
+        assert!(
+            !network.contains("document.visibilityState"),
+            "the page's name is the verdict, hidden page included: {network}",
+        );
+
+        // **A snippet can carry either shape**, and the network one wins:
+        // its navigation failure is a page fact, its own timeout is not.
+        let snippet = "Error: page.goto: net::ERR_CONNECTION_REFUSED at https://x.test/";
+        let from_snippet = failure_verdict_for(
+            RUN_CODE,
+            &json!({}),
+            snippet,
+            driver::CALL_TIMEOUT,
+            Some(&hidden_error),
+        )
+        .expect("a snippet's refused navigation is named");
+        assert!(from_snippet.contains("yieldmo.com"), "{from_snippet}");
+        assert!(
+            !from_snippet.contains("document.visibilityState"),
+            "the page's name is the verdict, hidden page included: {from_snippet}",
+        );
+
+        let diagnosed = failure_verdict_for(
+            CLICK,
+            &json!({ "target": "#b" }),
+            "some failure",
+            driver::CALL_TIMEOUT,
+            Some(&hidden()),
+        )
+        .expect("a hidden page is diagnosed on the calls it explains");
+        assert!(diagnosed.contains("document.visibilityState"), "{diagnosed}");
+    }
+
+    /// **The address a failure is logged with** is the call's own, else the
+    /// one the driver's reason names - a snippet has no `url` argument.
+    #[test]
+    fn a_failure_names_the_address_it_asked_for() {
+        let asked = json!({ "url": "https://asked.test/" });
+        assert_eq!(
+            asked_address(&asked, "page.goto: net::ERR_X at https://else.test/"),
+            "https://asked.test/"
+        );
+        assert_eq!(
+            asked_address(&json!({}), "Error: page.goto: net::ERR_X at https://else.test/"),
+            "https://else.test/",
+        );
+        assert_eq!(asked_address(&json!({}), "no address in this reason"), "no address");
+    }
+
+    /// **A lost note is a loss only when the page could not be read.** A page
+    /// that was read and had nothing to name is the deliberate suppression.
+    #[test]
+    fn a_dropped_note_is_the_unreadable_page_and_nothing_else() {
+        let refused = "browserBackend.callTool: net::ERR_CONNECTION_REFUSED at https://x.test/";
+        assert!(note_dropped("browser_navigate", refused, None));
+        let untitled = PageState {
+            hidden: false,
+            url: "chrome-error://chromewebdata/".to_owned(),
+            title: String::new(),
+        };
+        assert!(
+            !note_dropped("browser_navigate", refused, Some(&untitled)),
+            "a read page with no host is suppressed on purpose, not dropped",
+        );
+        assert!(!note_dropped("browser_navigate", "no element matches \"e1\"", None));
+    }
+
     /// **The wiring's two pure halves.** `pre_call` runs the watched gate and
     /// the decision; `needs_reprobe` says which failures are worth asking
     /// the page about. The driver round trips stay live-only.
@@ -755,25 +1155,29 @@ mod tests {
         );
     }
 
-    /// The probe fits inside the driver's own bound: the calls that re-probe
-    /// give up a probe's worth of their action, and everything else keeps it.
+    /// The whole call fits inside the driver's own bound for the calls
+    /// re-probed by their shape: those give up what every attempt of their
+    /// failure's probe can spend. A network failure is only known after the
+    /// fact, so `browser_navigate` - which is in no re-probe set - keeps its
+    /// whole bound and its probe runs past it.
     #[test]
     fn a_reprobed_call_leaves_the_probe_its_room() {
+        let probe_room = PROBE_TIMEOUT * PROBE_ATTEMPTS;
         let click = json!({ "target": "#b" });
-        assert_eq!(action_bound(CLICK, &click), driver::CALL_TIMEOUT - PROBE_TIMEOUT,);
+        assert_eq!(action_bound(CLICK, &click), driver::CALL_TIMEOUT - probe_room);
         assert_eq!(
             action_bound(CLICK, &json!({ "target": "#b", "force": true })),
             driver::CALL_TIMEOUT,
             "a forced click is not re-probed",
         );
-        assert_eq!(action_bound(RUN_CODE, &json!({})), driver::CALL_TIMEOUT - PROBE_TIMEOUT);
+        assert_eq!(action_bound(RUN_CODE, &json!({})), driver::CALL_TIMEOUT - probe_room);
         assert_eq!(
             action_bound(WAIT, &json!({ "text": "Ready" })),
-            driver::CALL_TIMEOUT - PROBE_TIMEOUT,
+            driver::CALL_TIMEOUT - probe_room,
         );
         assert_eq!(
             action_bound(SCREENSHOT, &json!({ "target": "e1" })),
-            driver::CALL_TIMEOUT - PROBE_TIMEOUT,
+            driver::CALL_TIMEOUT - probe_room,
         );
         assert_eq!(action_bound("browser_navigate", &json!({})), driver::CALL_TIMEOUT);
         assert_eq!(
