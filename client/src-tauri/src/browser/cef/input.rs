@@ -157,6 +157,10 @@ pub struct Sender {
 }
 
 impl Sender {
+    pub(crate) fn new(tx: mpsc::UnboundedSender<InputEvent>) -> Self {
+        Self { tx }
+    }
+
     pub fn send(&self, event: InputEvent) {
         // A closed channel is a surface closing: dropping the event is right.
         let _ = self.tx.send(event);
@@ -238,7 +242,7 @@ pub async fn start(
             }
         }
     });
-    Ok(Sender { tx })
+    Ok(Sender::new(tx))
 }
 
 /// Ask the client for the person's picker and answer the chosen paths.

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use objc2::rc::Allocated;
 use objc2::runtime::{AnyObject, NSObjectProtocol};
-use objc2::{DefinedClass as _, MainThreadMarker, define_class, extern_methods};
+use objc2::{DefinedClass as _, MainThreadMarker, define_class, extern_methods, msg_send};
 use objc2_app_kit::{NSResponder, NSTrackingArea, NSTrackingAreaOptions, NSView};
 use objc2_core_foundation::CFData;
 use objc2_core_graphics::{
@@ -26,6 +26,9 @@ use tauri::{Emitter as _, Manager as _};
 use super::input::{self, InputEvent, MouseKind, Sender};
 use super::osr::{MAX_HEIGHT, MAX_WIDTH, Ring};
 use super::spawn::ActiveHost;
+
+#[cfg(feature = "testing")]
+pub mod testing;
 
 /// Where the page says its takeover's page area is, in CSS pixels from the
 /// viewport's top-left, and the device pixel ratio it is drawn at.
@@ -84,6 +87,18 @@ define_class!(
     struct OverlayView;
 
     impl OverlayView {
+        /// **objc2 requires an ivars class's initializer to call
+        /// `set_ivars`.** Without it every slot read is uninitialized memory,
+        /// and the first Open drops whatever `set_app` reads there.
+        #[unsafe(method_id(initWithFrame:))]
+        unsafe fn init_with_frame(
+            this: Allocated<Self>,
+            frame: NSRect,
+        ) -> objc2::rc::Retained<Self> {
+            let this = this.set_ivars(OverlayIvars::default());
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool {
             // Top-down, the page's own coordinate system: a local point is a
@@ -230,7 +245,7 @@ impl OverlayView {
     extern_methods!(
         #[unsafe(method(initWithFrame:))]
         #[unsafe(method_family = init)]
-        fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> objc2::rc::Retained<Self>;
+        fn new_with_frame(this: Allocated<Self>, frame: NSRect) -> objc2::rc::Retained<Self>;
     );
 
     fn mouse(&self, kind: MouseKind, event: &objc2_app_kit::NSEvent) {
@@ -485,7 +500,7 @@ pub async fn attach(
             match (webview.as_ref(), MainThreadMarker::new()) {
                 (Some(webview), Some(mtm)) => match webview.superview() {
                     Some(superview) => {
-                        let overlay = OverlayView::init_with_frame(
+                        let overlay = OverlayView::new_with_frame(
                             mtm.alloc::<OverlayView>(),
                             frame_for(&superview, rect),
                         );
@@ -535,18 +550,20 @@ pub async fn attach(
         cancel.store(true, Ordering::Release);
         return Err(format!("the window's webview cannot be reached: {why}"));
     }
-    tauri_plugin_log::log::info!(
-        "surface placed (event_name cef_surface_placed, rect {:.0}x{:.0} at {:.0},{:.0}, scale {})",
-        rect.width,
-        rect.height,
-        rect.x,
-        rect.y,
-        rect.scale,
-    );
     // The placement runs on the main thread; a placement that never lands
     // must not hold the person's Open forever.
     match tokio::time::timeout(std::time::Duration::from_secs(3), placed_rx).await {
-        Ok(Ok(Ok(()))) => {}
+        // **Logged only once the closure has answered.** The line used to sit
+        // before this await, so a placement that timed out still claimed one.
+        Ok(Ok(Ok(()))) => tauri_plugin_log::log::info!(
+            "surface placed (event_name cef_surface_placed, rect {:.0}x{:.0} at {:.0},{:.0}, \
+             scale {})",
+            rect.width,
+            rect.height,
+            rect.x,
+            rect.y,
+            rect.scale,
+        ),
         Ok(Ok(Err(why))) => {
             cancel.store(true, Ordering::Release);
             return Err(why);
