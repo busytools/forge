@@ -5929,6 +5929,17 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
         2,
         "only the attachment the sender kept draws, beside the words: {message:?}",
     );
+    // **The order the echo documents**: the images first and the words last,
+    // the array the prompt was sent as - a text-first echo draws the same row
+    // but stops matching the transcript's own copy of the message.
+    assert!(
+        matches!(message.content.first(), Some(forge_primitives::ContentBlock::Image { .. })),
+        "the attachment leads the echo: {message:?}",
+    );
+    assert!(
+        matches!(message.content.last(), Some(forge_primitives::ContentBlock::Text { .. })),
+        "the words close it: {message:?}",
+    );
     update_until(
         &mut sender,
         "the prompt a client sent, drawn for the client that sent it with the attachment it carried",
