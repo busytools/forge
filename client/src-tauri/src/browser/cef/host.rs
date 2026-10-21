@@ -228,6 +228,23 @@ cef::wrap_load_handler! {
     struct HostLoadHandler {}
 
     impl LoadHandler {
+        /// **The page's own world.** CEF's renderer-side context is not the
+        /// world the page runs in here; the browser-side frame injects into
+        /// the document that is loading.
+        fn on_load_start(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            _transition_type: TransitionType,
+        ) {
+            let Some(frame) = frame else { return };
+            frame.execute_java_script(
+                Some(&CefString::from(super::PASSKEY_VETO)),
+                Some(&CefString::from("forge://passkey-veto")),
+                0,
+            );
+        }
+
         fn on_load_end(
             &self,
             browser: Option<&mut Browser>,
