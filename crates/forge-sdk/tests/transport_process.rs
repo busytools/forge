@@ -70,7 +70,7 @@ async fn close_kills_a_descendant_that_outlives_the_child() {
     };
 
     let mut sub = Subprocess::spawn(&opts).await.expect("spawn");
-    let pid = wait_for_descendant_pid(&marker).await;
+    let pid = wait_for_descendant_pid(&marker, &sub).await;
     // Whatever this test does from here, it owns this pid and gives it
     // back by pid alone.
     let _orphan = Orphan(pid);
@@ -81,9 +81,18 @@ async fn close_kills_a_descendant_that_outlives_the_child() {
 
     // close() reports the SIGKILL fallback as an error by design; the
     // property under test is what became of the descendant.
+    let started = tokio::time::Instant::now();
     let _outcome = tokio::time::timeout(WAIT_DEADLINE, sub.close())
         .await
         .expect("teardown must return within the deadline");
+    // The child ignores stdin EOF, so the graceful wait runs its whole
+    // budget before the group is signalled. A group kill ahead of that
+    // wait would return here in milliseconds and red this.
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= forge_sdk::CLOSE_WAIT_TIMEOUT,
+        "the group is signalled only after the close wait: close returned in {elapsed:?}"
+    );
 
     assert!(
         wait_until_gone(pid).await,
@@ -116,7 +125,7 @@ async fn close_kills_a_descendant_after_a_clean_child_exit() {
     .await
     .expect("initialize");
 
-    let pid = wait_for_descendant_pid(&marker).await;
+    let pid = wait_for_descendant_pid(&marker, &sub).await;
     let _orphan = Orphan(pid);
     assert!(is_running(pid), "the fixture's descendant must be running before teardown: pid {pid}");
 
@@ -141,7 +150,7 @@ impl Drop for Orphan {
     }
 }
 
-async fn wait_for_descendant_pid(marker: &Path) -> u32 {
+async fn wait_for_descendant_pid(marker: &Path, sub: &Subprocess) -> u32 {
     let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
     while tokio::time::Instant::now() < deadline {
         if let Ok(text) = std::fs::read_to_string(marker)
@@ -150,6 +159,13 @@ async fn wait_for_descendant_pid(marker: &Path) -> u32 {
             return pid;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // A sleeper the fixture spawned without writing its pid has no number
+    // to give back, so the group this test's own child leads is swept
+    // instead - a group, never a name.
+    if let Some(pgid) = sub.child_pid() {
+        let _ =
+            std::process::Command::new("kill").args(["-s", "KILL", &format!("-{pgid}")]).status();
     }
     panic!("the fixture never wrote its descendant's pid to {}", marker.display());
 }

@@ -21,8 +21,9 @@ printf '%s\n' "{\"type\":\"control_response\",\"response\":{\"subtype\":\"succes
 # Job control is off in a non-interactive shell, so this sleeper stays
 # in the script's own process group. Its stdio is redirected so a
 # surviving descendant reads as a live pid, not as a teardown parked on
-# a stderr that never reaches EOF.
-sleep 300 </dev/null >/dev/null 2>&1 &
+# a stderr that never reaches EOF. TERM is ignored, so only the hard
+# kill can end it - the signal teardown sends.
+( trap '' TERM; exec sleep 300 ) </dev/null >/dev/null 2>&1 &
 printf '%s\n' "$!" > "$FORGE_TEST_ORPHAN_MARKER"
 
 # Stdin EOF is the graceful exit a teardown asks for.

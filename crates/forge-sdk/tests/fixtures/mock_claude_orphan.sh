@@ -16,8 +16,9 @@ fi
 # in the script's own process group. Its stdio is redirected so the
 # test sees a surviving descendant as a live pid; inheriting the
 # child's pipes would instead park teardown on a stderr that never
-# reaches EOF, which is a second symptom of the same leak.
-sleep 300 </dev/null >/dev/null 2>&1 &
+# reaches EOF, which is a second symptom of the same leak. TERM is
+# ignored, so only the hard kill can end it - the signal teardown sends.
+( trap '' TERM; exec sleep 300 ) </dev/null >/dev/null 2>&1 &
 printf '%s\n' "$!" > "$FORGE_TEST_ORPHAN_MARKER"
 
 # Replace the shell so stdin EOF cannot end the child: only a signal can.
