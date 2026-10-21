@@ -780,8 +780,7 @@ fn kill_group(pgid: u32) -> Option<std::io::Error> {
         return None;
     };
     match kill_process_group(pgid, Signal::KILL) {
-        Ok(()) => None,
-        Err(Errno::SRCH) => None,
+        Ok(()) | Err(Errno::SRCH) => None,
         Err(error) => Some(std::io::Error::from_raw_os_error(error.raw_os_error())),
     }
 }

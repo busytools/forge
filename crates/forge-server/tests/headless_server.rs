@@ -253,9 +253,11 @@ async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
         {
             return pid;
         }
-        if std::time::Instant::now() > deadline {
-            panic!("the session's child never wrote its descendant's pid to {}", marker.display());
-        }
+        assert!(
+            std::time::Instant::now() <= deadline,
+            "the session's child never wrote its descendant's pid to {}",
+            marker.display()
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
