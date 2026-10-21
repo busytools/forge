@@ -301,8 +301,8 @@
   let accounted = 0;
   /** The dropped-ask count this component has already drained against. */
   let drained = 0;
-  /** The content height at the last scroll event, which tells a reader moving from a layout moving. */
-  let shaped = 0;
+  /** The sizes at the last scroll event, which tell a reader moving from a layout moving. */
+  let lastSeen = { content: 0, room: 0 };
   /** The offset the last pin wrote, so the event it comes back as is not read as the reader's. */
   let pinEcho: number | null = null;
   /** How many layout passes the observer has already put a parked reader back for. */
@@ -1343,32 +1343,32 @@
     // content had at the last event is what tells the two apart: an event whose
     // height has moved is the layout, and only an event at the height the
     // reader last saw can be them arriving at the end of it.
-    // **Only a SHRINK can be a clamp.** Content arriving grows the column and
-    // leaves the reader exactly where they are, so an event after one is the
-    // reader's own; content corrected shorter takes the room out from under
-    // them, and the event that follows is the browser moving them rather than
-    // them moving. The one test covers the disarm below as well as the arming,
-    // because a clamp that put the follow back on and a clamp that took it off
-    // are the same mistake pointing two ways.
+    // **Only a foot coming UP can be a clamp.** Content arriving moves the
+    // foot away and leaves the reader exactly where they are, so an event
+    // after one is the reader's own; the foot closing on them - content
+    // corrected shorter, or the column taking room as the composer below
+    // collapses - is the browser moving them rather than them moving.
     const height = viewport?.scrollHeight ?? 0;
-    const shrank = height < shaped;
-    shaped = height;
+    const room = viewport?.clientHeight ?? 0;
+    const shrank = height < lastSeen.content;
+    const rose = height - room < lastSeen.content - lastSeen.room;
+    lastSeen = { content: height, room };
     const foot = atFoot();
     const byReader = readerMoved();
     if (foot) {
-      // **A return that lands at the foot re-arms, whatever the height did.**
-      // The shrink skip exists for a clamp, and the reader's own down-scroll
-      // can carry one in the SAME event - a row settling from the estimate to
-      // its drawn height corrects the content shorter exactly as their scroll
-      // lands - so the re-arm was swallowed and, with nothing left to fire
-      // another event, the way-back arrow stuck at the foot until pressed
-      // (Ved, 2026-10-11, "even if there is nothing to scroll"). Two things
-      // make such an event theirs: an up-capable gesture heard just before it,
-      // or the event's own direction - the offset moving TOWARD the foot,
-      // which is his gesture ("scroll up and come back down", a down-scroll
-      // that arms no token). A shrink event that moved them nowhere or away
-      // stays the clamp's, and the away-from-foot branch below is untouched.
-      if (!shrank || byReader || towardFoot) {
+      // **A return that lands at the foot re-arms, whatever the size did.**
+      // The clamp skip exists for a foot that closed on the reader, and their
+      // down-scroll can carry one in the SAME event - a row settling from the
+      // estimate to its drawn height corrects the content shorter exactly as
+      // their scroll lands - so the re-arm was swallowed and, with nothing
+      // left to fire another event, the way-back arrow stuck at the foot until
+      // pressed (Ved, 2026-10-11, "even if there is nothing to scroll"). Two
+      // things make such an event theirs: an up-capable gesture heard just
+      // before it, or the event's own direction - the offset moving TOWARD the
+      // foot, which is his gesture ("scroll up and come back down", a
+      // down-scroll that arms no token). A clamp that moved them nowhere or
+      // away stays the layout's, and the away-from-foot branch is untouched.
+      if (!rose || byReader || towardFoot) {
         working?.following(true);
         // The foot is where a following reader wants to be, so the place they
         // held on the way there is done with.

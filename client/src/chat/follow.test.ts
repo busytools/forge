@@ -2004,6 +2004,36 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the event a clamp fires is not a reader arriving at the end').toEqual([]);
   });
 
+  it('leaves the follow off on a clamp the column height made', async () => {
+    // **The clamp with no content behind it.** The composer below collapses -
+    // a dictation row going, a panel closing - and the column takes the room,
+    // so the foot comes up under a reader parked just above it and the
+    // browser clamps them down to it. The content height never moved, so the
+    // shrink guard reads this as a reader arriving at the end, and the next
+    // frame pins them back to a foot they never asked for.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT - 60);
+    await settle();
+    clear();
+
+    const roomier = VIEWPORT + 100;
+    setElement(TOTAL, roomier);
+    list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+    await settle();
+    clear();
+
+    // The next frame lands a row below them, so a follow that re-armed has
+    // somewhere to carry them to.
+    setElement(TOTAL + 120, roomier);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a clamp the column height made is not a reader arriving at the end').toEqual(
+      [],
+    );
+  });
+
   it('keeps following when a clamp moves the reader with the content', async () => {
     // The mirror of the case above: a row corrected SHORTER leaves a following
     // reader above the foot, and a scroll event that reads as them scrolling
