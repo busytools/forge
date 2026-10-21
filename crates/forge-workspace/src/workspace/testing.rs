@@ -442,6 +442,7 @@ impl Workspace {
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             session_teardowns: Mutex::new(HashMap::new()),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
             live_workers: Mutex::new(HashMap::new()),
             worktree_claims: std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),

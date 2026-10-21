@@ -65,7 +65,7 @@ pub(crate) struct SessionTask {
     /// the session's own child is reaped. Held for every exit, early
     /// returns and panics included, so a waiter never hangs on a task that
     /// ended some other way.
-    pub(crate) teardown_done: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) teardown_done: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// The file a call's own output sits at, off what its conversation holds:
@@ -1553,7 +1553,7 @@ impl Drop for SessionTask {
         // every exit resolves it - a waiter (the despawn's worktree
         // removal) must not hang on a task that ended some other way.
         if let Some(done) = self.teardown_done.take() {
-            let _ = done.send(());
+            let _ = done.send_replace(true);
         }
         let caller = self.domain.lock().key.clone();
         self.drain_review_activity_for(&caller);

@@ -273,6 +273,12 @@ impl Workspace {
     /// advancing each past its missed slots (catch-up-once).
     pub fn fire_due_crons(self: &Arc<Self>, now: std::time::SystemTime) {
         use crate::spawn::CronFireOutcome;
+        // A tick can land inside a shutdown's drain; the session it would
+        // wake would register behind it and outlive forge. The schedule is
+        // untouched, so the next boot catches up.
+        if self.is_shutting_down() {
+            return;
+        }
         let snapshot = self.all_crons_snapshot();
         let due = crate::mcp::cron::schedule::due_crons(&snapshot, now);
         // What THIS pass finds unwakeable, committed at the end so the set

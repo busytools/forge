@@ -81,16 +81,19 @@ fn run() -> anyhow::Result<()> {
         let workspace = forge_server::boot::start_core(config_dir, cli.project.as_deref())?;
         // A headless server with no view serves nothing if the socket could
         // not bind: a supervisor watching the process would see a healthy
-        // zombie, so the failure is fatal.
-        if matches!(
-            forge_server::boot::serve_socket(&workspace).await?,
-            forge_server::boot::SocketServing::BindFailed
-        ) {
-            return Err(anyhow::anyhow!(
-                "forge: the socket could not bind; a headless server with no view serves nothing \
-                 (see the server_socket_bind_failed record)"
-            ));
-        }
+        // zombie, so the failure is fatal. The handle is kept: the stop path
+        // takes the socket down before it drains, so no command can start a
+        // session behind the drain.
+        let mut socket = match forge_server::boot::serve_socket(&workspace).await? {
+            forge_server::boot::SocketServing::Bound(handle) => Some(handle),
+            forge_server::boot::SocketServing::Disabled => None,
+            forge_server::boot::SocketServing::BindFailed => {
+                return Err(anyhow::anyhow!(
+                    "forge: the socket could not bind; a headless server with no view serves \
+                     nothing (see the server_socket_bind_failed record)"
+                ));
+            }
+        };
         // The boot spawn releases once its accounts settle: with no view to
         // hold it back, it goes out as a task.
         forge_server::boot::start_boot_wave(Arc::clone(&workspace), cli.project.clone(), cli.new);
@@ -102,9 +105,21 @@ fn run() -> anyhow::Result<()> {
             _ = sigterm.recv() => {}
             _ = sighup.recv() => {}
         }
+        // The socket stops accepting first, so no command can start a
+        // session behind the drain.
+        if let Some(handle) = socket.take() {
+            handle.abort();
+        }
         // Awaited, not fired and left: the runtime is about to drop, and a
-        // dropped runtime does not poll the session tasks' exit paths.
-        workspace.shutdown().await;
+        // dropped runtime does not poll the session tasks' exit paths. A
+        // teardown that ran out of budget exits non-zero, so a supervisor
+        // can tell a clean stop from one that left a tree.
+        if !workspace.shutdown().await {
+            return Err(anyhow::anyhow!(
+                "forge: a session's teardown did not finish before the wait ran out; its \
+                 process tree may outlive this exit"
+            ));
+        }
         Ok(())
     })
 }

@@ -435,12 +435,18 @@ pub struct Workspace {
     #[cfg(not(any(test, feature = "testing")))]
     command_senders: Mutex<HashMap<SessionSlot, mpsc::UnboundedSender<Command>>>,
     /// Per-session teardown-completion signals, minted beside the command
-    /// channel. The task fires its sender as it drops - after its exit path
-    /// has reaped the subprocess - and the despawn takes the receiver and
-    /// holds its worktree removal until it resolves, so the removal comes
-    /// after the worker's child is dead (#1767). Absent for a slot with no
-    /// task behind it (a stranded row).
-    session_teardowns: Mutex<HashMap<SessionSlot, tokio::sync::oneshot::Receiver<()>>>,
+    /// channel. The task marks its slot done as it drops - after its exit
+    /// path has reaped the subprocess - and every waiter subscribes rather
+    /// than taking the one receiver: the despawn holds its worktree removal
+    /// until then (#1767), and a shutdown holds its exit until every slot
+    /// answers. The entry stays after the task fires, so a waiter arriving
+    /// late still reads the answer, and is replaced when the slot respawns.
+    session_teardowns: Mutex<HashMap<SessionSlot, tokio::sync::watch::Sender<bool>>>,
+    /// Set before a shutdown tears anything down. From then on no session
+    /// may start - the boot wave, a cron tick and the socket all race the
+    /// drain - and the mint refuses under the same lock the drain takes,
+    /// which is what keeps a late spawn out of the awaited set.
+    shutting_down: std::sync::atomic::AtomicBool,
     /// Per-project list of live worker sessions. In-memory only -
     /// wiped on forge restart by design (workers are ephemeral at the
     /// forge UI level; their JSONLs persist on disk). Mutated via
@@ -1749,6 +1755,7 @@ impl Workspace {
             accounts,
             gateway,
             gateway_ready: std::sync::atomic::AtomicBool::new(false),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
             gateway_port,
             gateway_url: Mutex::new(None),
             gateway_bind_error: Mutex::new(None),
@@ -2147,6 +2154,15 @@ impl Workspace {
         // worker's own spawn writes that name when the flag calls for it,
         // and the merge below leaves it in place.
         crate::spawn::apply_blocked_tools(&mut settings, spawn_kind, true);
+        // A shutdown is tearing sessions down and starts none: a session
+        // that began behind its drain would sit outside the set the exit
+        // waits on, and its tree would outlive forge.
+        if self.is_shutting_down() {
+            return Err(forge_sdk::Error::Connection {
+                reason: "forge is shutting down; no new session can start".to_owned(),
+            }
+            .into());
+        }
         // The boot gate is a spawn precondition, not just a launchpad
         // decoration: a child stamped before the listener is bound
         // points at a base URL nothing answers.
@@ -2513,8 +2529,17 @@ impl Workspace {
             // Minted beside the command channel, on the same cold path:
             // the despawn waits on the receiver before it removes the
             // worker's worktree, so the removal comes after the child the
-            // task's exit path reaps (#1767).
-            let teardown_done = self.mint_session_teardown(&session_slot);
+            // task's exit path reaps (#1767). `None` means a shutdown began
+            // between the gate above and here: the child this spawn just
+            // started is released rather than left outside the awaited set.
+            let Some(teardown_done) = self.mint_session_teardown(&session_slot) else {
+                drop(cmd_rx);
+                self.release_session_if_current(&session_slot, &arc);
+                return Err(forge_sdk::Error::Connection {
+                    reason: "forge is shutting down; the session was not started".to_owned(),
+                }
+                .into());
+            };
             let task = SessionTask {
                 key: session_slot,
                 handle: Arc::clone(&arc),
@@ -6013,10 +6038,26 @@ impl Workspace {
     /// **The return waits for those exit paths**, because the runtime a
     /// caller is about to drop does not poll them: each child sits in its
     /// own process group and only its own close signals that group, so a
-    /// shutdown that returned early would leave the tree running. The
-    /// wait is bounded by the same `TEARDOWN_WAIT` the despawn's removal
-    /// holds to, and an expiry says so at warn.
-    pub async fn shutdown(&self) {
+    /// shutdown that returned early would leave the tree running. No
+    /// session may start once it begins - the gate goes up before the first
+    /// drain and the mint reads it under the same lock - and the drain is
+    /// repeated until nothing is registered. The wait is bounded by the
+    /// same `TEARDOWN_WAIT` the despawn's removal holds to.
+    ///
+    /// Returns whether every session answered. An expiry names the slots
+    /// that did not, and the caller turns that into a non-zero exit, so a
+    /// supervisor can tell a clean stop from one that left a tree.
+    pub async fn shutdown(&self) -> bool {
+        self.shutdown_within(crate::spawn::TEARDOWN_WAIT).await.is_empty()
+    }
+
+    /// [`Self::shutdown`] with the budget injected, so a case can drive the
+    /// expiry without sitting out the production wait. Returns the slots
+    /// that had not answered by the deadline; empty is a clean stop.
+    pub(crate) async fn shutdown_within(&self, wait: std::time::Duration) -> Vec<SessionSlot> {
+        // Up before anything is torn down: from here on a spawn refuses,
+        // and a mint cannot land behind the drain below.
+        self.shutting_down.store(true, std::sync::atomic::Ordering::Release);
         // Release any live dictation before the pools go: a recording
         // task outliving its session's teardown would otherwise hold
         // the microphone for a composer nobody can reach.
@@ -6025,30 +6066,43 @@ impl Workspace {
         // command channel close and exits cleanly; each task's exit
         // path then disconnects its subprocess (see the doc above).
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
-        // The receivers are kept rather than dropped: each is the task's
-        // word that its exit path finished.
-        let teardowns: Vec<_> = self.session_teardowns.lock().drain().collect();
         let _ = self.domain_handles.lock().drain().collect::<Vec<_>>();
         drop(self.pool.lock().drain().collect::<Vec<_>>());
 
-        // One budget for the lot: the tasks run concurrently, so a later
-        // one is usually already done when its turn comes. A task that
-        // never answers must not wedge the exit.
-        let started = tokio::time::Instant::now();
-        for (slot, done) in teardowns {
-            let budget = crate::spawn::TEARDOWN_WAIT.saturating_sub(started.elapsed());
-            if tokio::time::timeout(budget, done).await.is_err() {
-                tracing::warn!(
-                    target: "forge_workspace::workspace",
-                    event_name = "shutdown_teardown_wait_expired",
-                    org = slot.org(),
-                    project = slot.project(),
-                    label = slot.label(),
-                    wait = ?crate::spawn::TEARDOWN_WAIT,
-                    "shutdown: a session task did not finish its teardown in the wait; \
-                     its child may outlive forge"
-                );
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            // The senders are taken with the drain but not dropped: each
+            // subscription below reads the answer off the channel.
+            let batch: Vec<(SessionSlot, tokio::sync::watch::Sender<bool>)> =
+                self.session_teardowns.lock().drain().collect();
+            if batch.is_empty() {
+                return Vec::new();
             }
+            let mut receivers: Vec<(SessionSlot, tokio::sync::watch::Receiver<bool>)> =
+                batch.iter().map(|(slot, tx)| (slot.clone(), tx.subscribe())).collect();
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                let unready = unready_slots(&receivers);
+                warn_shutdown_expired(&unready, wait);
+                return unready;
+            }
+            // One budget for the batch: the tasks run concurrently, so a
+            // later one is usually already done by its turn.
+            let _ = tokio::time::timeout(remaining, async {
+                for (_, rx) in &mut receivers {
+                    wait_for_teardown(rx).await;
+                }
+            })
+            .await;
+            // Read the answers off the values, never off the order they
+            // were polled in: a session that fired at any point counts.
+            let unready = unready_slots(&receivers);
+            if !unready.is_empty() {
+                warn_shutdown_expired(&unready, wait);
+                return unready;
+            }
+            // Nothing is registered now, but a spawn that passed the gate
+            // just before it could still have minted: drain again.
         }
     }
 
@@ -6145,10 +6199,8 @@ impl Workspace {
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
         // The task this signal belonged to is exiting (its command channel
-        // just closed); a receiver nobody took goes with the release. A
-        // despawn takes it BEFORE releasing, so its wait already holds the
-        // receiver by now and this removes nothing of its.
-        let _ = self.session_teardowns.lock().remove(session_key);
+        // just closed). Its teardown entry stays: the task's drop is what
+        // answers it, and a shutdown may still be waiting on that answer.
     }
 
     /// Whether a session task still exists for `key`, which is what
@@ -6157,27 +6209,41 @@ impl Workspace {
         self.command_senders.lock().contains_key(key)
     }
 
-    /// Mint the slot's teardown signal: the receiver is kept here for the
-    /// despawn, the sender goes to the `SessionTask`, which fires it as it
-    /// drops. Called on `get_agent_handle`'s cold path, beside the command
-    /// channel it mirrors.
+    /// Whether a shutdown has begun: no new session may start.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mint the slot's teardown signal, or `None` when a shutdown is
+    /// already underway and no session may start. The refusal is read under
+    /// the same lock a shutdown drains with, so a spawn can never register
+    /// behind the drain.
     pub(crate) fn mint_session_teardown(
         &self,
         key: &SessionSlot,
-    ) -> tokio::sync::oneshot::Sender<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self.session_teardowns.lock().insert(key.clone(), rx);
-        tx
+    ) -> Option<tokio::sync::watch::Sender<bool>> {
+        let mut slots = self.session_teardowns.lock();
+        if self.shutting_down.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        let (tx, _rx) = tokio::sync::watch::channel(false);
+        let _ = slots.insert(key.clone(), tx.clone());
+        Some(tx)
     }
 
-    /// Take the slot's teardown signal, if a session task is registered
-    /// behind it. `None` for a slot with no task - a stranded row - so a
-    /// caller waiting on it waits on nothing and moves on.
-    pub(crate) fn take_session_teardown(
+    /// Subscribe to the slot's teardown signal, if a session task is
+    /// registered behind it. `None` for a slot with no task - a stranded
+    /// row - so a caller waiting on it waits on nothing and moves on.
+    ///
+    /// The entry stays where it is, unlike the one receiver it replaced:
+    /// more than one waiter may need the same answer (the despawn and a
+    /// shutdown), and a waiter that arrives after the task fired still
+    /// reads it.
+    pub(crate) fn session_teardown(
         &self,
         key: &SessionSlot,
-    ) -> Option<tokio::sync::oneshot::Receiver<()>> {
-        self.session_teardowns.lock().remove(key)
+    ) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.session_teardowns.lock().get(key).map(tokio::sync::watch::Sender::subscribe)
     }
 
     /// Supersession-safe release: drop `session_key`'s pool entry,
@@ -6203,10 +6269,10 @@ impl Workspace {
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
         let _ = self.domain_handles.lock().remove(session_key);
-        // This task IS the current owner (the pool identity matched), so
-        // its teardown signal goes with it. A superseded predecessor
-        // stopped above, leaving the successor's signal untouched.
-        let _ = self.session_teardowns.lock().remove(session_key);
+        // The teardown entry stays, as on the release path: this task's
+        // drop answers it, and a shutdown may still be waiting. A
+        // superseded predecessor stopped above, so the successor's entry
+        // is untouched.
     }
 
     // ---- Live workers (project-internal child-agent coordination) ----
@@ -9134,6 +9200,41 @@ mod account_stamp_tests {
         assert!(
             untouched.settings.is_none(),
             "a spawn that resolved to no project leaves fresh settings untouched"
+        );
+    }
+}
+
+/// Wait for one slot's teardown answer. `subscribe` marks the current value
+/// as seen, so the value is checked before waiting on a change.
+async fn wait_for_teardown(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    if *rx.borrow_and_update() {
+        return;
+    }
+    let _ = rx.changed().await;
+}
+
+/// The slots whose task has not answered yet, read off the channel values.
+fn unready_slots(
+    receivers: &[(SessionSlot, tokio::sync::watch::Receiver<bool>)],
+) -> Vec<SessionSlot> {
+    receivers.iter().filter(|(_, rx)| !*rx.borrow()).map(|(slot, _)| slot.clone()).collect()
+}
+
+/// Name each session that outlasted the shutdown's wait. One line per slot:
+/// the shared deadline says nothing about which task was slow, and the
+/// value is the only thing that does.
+fn warn_shutdown_expired(slots: &[SessionSlot], wait: std::time::Duration) {
+    for slot in slots {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "shutdown_teardown_wait_expired",
+            org = slot.org(),
+            project = slot.project(),
+            label = slot.label(),
+            wait = ?wait,
+            "shutdown: this session's task did not finish its teardown in the wait; the \
+             usual stall is the stderr join after the group kill, where a detached \
+             descendant still holds the child's stderr open, so its tree may outlive forge"
         );
     }
 }
@@ -12386,6 +12487,59 @@ provider = "anthropic"
             }
         }
         assert_eq!(Arc::strong_count(&handle), 1);
+    }
+
+    /// The wait reads every slot's own answer: one that fired counts as
+    /// done however late in the budget it did, and only the slot that
+    /// never answered is named - which is what makes a non-empty answer
+    /// mean "a tree may be left", never "this one was slow".
+    #[tokio::test]
+    async fn shutdown_names_only_the_sessions_that_did_not_answer() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let answered = SessionSlot::new("org", "proj", "answered");
+        let silent = SessionSlot::new("org", "proj", "silent");
+        let firing = workspace.mint_session_teardown(&answered).expect("a mint before shutdown");
+        let _held = workspace.mint_session_teardown(&silent).expect("a second mint");
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = firing.send_replace(true);
+        });
+
+        let unready = workspace.shutdown_within(std::time::Duration::from_millis(400)).await;
+
+        assert_eq!(unready, vec![silent], "only the slot that never answered is named");
+    }
+
+    /// A released session's entry survives the release: the task it
+    /// belongs to is still exiting, and a shutdown that started after the
+    /// gesture must still wait for that exit.
+    #[tokio::test]
+    async fn a_released_session_is_still_awaited_by_a_shutdown() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let slot = SessionSlot::new("org", "proj", "released");
+        let _held = workspace.mint_session_teardown(&slot).expect("a mint before shutdown");
+        workspace.release_session(&slot);
+
+        let unready = workspace.shutdown_within(std::time::Duration::from_millis(200)).await;
+
+        assert_eq!(unready, vec![slot], "the released slot is still one the exit waits on");
+    }
+
+    /// Once a shutdown has begun, no session can mint its teardown signal -
+    /// which is the door a spawn would have to get through to sit outside
+    /// the drain.
+    #[tokio::test]
+    async fn no_session_can_mint_once_a_shutdown_began() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        assert!(workspace.shutdown_within(std::time::Duration::from_millis(50)).await.is_empty());
+
+        let after = workspace.mint_session_teardown(&SessionSlot::new("org", "proj", "late"));
+
+        assert!(after.is_none(), "a mint after the gate went up is refused");
+        assert!(workspace.is_shutting_down(), "and the gate is what refuses it");
     }
 
     #[tokio::test]
