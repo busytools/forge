@@ -439,8 +439,10 @@ pub struct Workspace {
     /// path has reaped the subprocess - and every waiter subscribes rather
     /// than taking the one receiver: the despawn holds its worktree removal
     /// until then (#1767), and a shutdown holds its exit until every slot
-    /// answers. The entry stays after the task fires, so a waiter arriving
-    /// late still reads the answer, and is replaced when the slot respawns.
+    /// answers. An entry stays after its task fires and is replaced when
+    /// the slot respawns, so the map holds one small sender per slot this
+    /// process has ever spawned - the price of a late reader still finding
+    /// the answer.
     session_teardowns: Mutex<HashMap<SessionSlot, tokio::sync::watch::Sender<bool>>>,
     /// Set before a shutdown tears anything down. From then on no session
     /// may start - the boot wave, a cron tick and the socket all race the
@@ -2535,6 +2537,11 @@ impl Workspace {
             let Some(teardown_done) = self.mint_session_teardown(&session_slot) else {
                 drop(cmd_rx);
                 self.release_session_if_current(&session_slot, &arc);
+                // No task will run this session's exit path, so its group
+                // is taken down here: dropping the handle alone kills the
+                // direct child and leaves the tools the CLI already started
+                // behind.
+                arc.kill_process_group();
                 return Err(forge_sdk::Error::Connection {
                     reason: "forge is shutting down; the session was not started".to_owned(),
                 }
@@ -6232,18 +6239,29 @@ impl Workspace {
     }
 
     /// Subscribe to the slot's teardown signal, if a session task is
-    /// registered behind it. `None` for a slot with no task - a stranded
-    /// row - so a caller waiting on it waits on nothing and moves on.
+    /// registered behind it and has not answered yet. `None` for a slot
+    /// with no task - a stranded row - and for an entry a finished task
+    /// already answered: either way the caller has nothing to wait for,
+    /// and the despawn's mid-spawn guard reads `None` exactly that way.
     ///
-    /// The entry stays where it is, unlike the one receiver it replaced:
-    /// more than one waiter may need the same answer (the despawn and a
-    /// shutdown), and a waiter that arrives after the task fired still
-    /// reads it.
+    /// The entry itself stays in the map, unlike the one receiver it
+    /// replaced: more than one waiter may need the same answer, and a
+    /// shutdown's drain reads every entry's value rather than subscribing
+    /// blind.
     pub(crate) fn session_teardown(
         &self,
         key: &SessionSlot,
     ) -> Option<tokio::sync::watch::Receiver<bool>> {
-        self.session_teardowns.lock().get(key).map(tokio::sync::watch::Sender::subscribe)
+        let slots = self.session_teardowns.lock();
+        let tx = slots.get(key)?;
+        // An answered entry belongs to a task that is already gone: a
+        // re-spawn's own signal is not minted yet, and handing the previous
+        // answer back would wave a despawn's removal through over a child
+        // that is only starting (#1767's mid-spawn window).
+        if *tx.borrow() {
+            return None;
+        }
+        Some(tx.subscribe())
     }
 
     /// Supersession-safe release: drop `session_key`'s pool entry,

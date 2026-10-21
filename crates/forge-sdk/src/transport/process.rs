@@ -767,7 +767,7 @@ impl StderrTail {
 /// `None` covers the ordinary answers: the signal landed, or the group
 /// was already empty (`ESRCH`), which is what a clean exit leaves.
 #[cfg(unix)]
-fn kill_group(pgid: u32) -> Option<std::io::Error> {
+pub(crate) fn kill_group(pgid: u32) -> Option<std::io::Error> {
     use rustix::io::Errno;
     use rustix::process::{Pid, Signal, kill_process_group};
 

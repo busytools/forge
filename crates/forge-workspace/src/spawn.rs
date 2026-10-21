@@ -4737,6 +4737,32 @@ provider = "anthropic"
         );
     }
 
+    /// The same refusal after a re-spawn: the map still holds the previous
+    /// occupant's answered entry while the new child starts, and handing
+    /// that stale answer back would let the removal run over a child that
+    /// is only starting.
+    #[tokio::test]
+    async fn a_respawns_mid_spawn_window_is_refused_despite_the_previous_answer() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let mut entry = fake_git_worker_entry("mid-spawn", "worker-1");
+        let slot = entry.slot.clone();
+        // The previous occupant finished: its entry is still there, answered.
+        let previous = workspace.mint_session_teardown(&slot).expect("a mint before shutdown");
+        let _ = previous.send_replace(true);
+        entry.status = forge_primitives::WorkerLiveness::Spawning;
+        workspace.insert_live_worker(&project, entry);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "mid-spawn", false, tx);
+        let result = rx.await.expect("despawn result");
+
+        let crate::protocol::DespawnResult::Blocked { reason } = result else {
+            panic!("a stale answer must not wave the removal through: {result:?}");
+        };
+        assert!(reason.contains("still spawning"), "the reason says what to wait for: {reason}");
+    }
+
     /// A session teardown that never answers must not wedge the despawn:
     /// after the wait expires (injected small here) the removal goes ahead
     /// and the reply lands, rather than the label staying cleanup-pending
