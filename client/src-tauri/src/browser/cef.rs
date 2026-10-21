@@ -25,6 +25,8 @@ pub mod osr;
 pub mod spawn;
 #[cfg(target_os = "macos")]
 pub mod surface;
+#[cfg(target_os = "macos")]
+pub mod veto;
 
 use std::sync::OnceLock;
 
@@ -200,44 +202,5 @@ cef::wrap_app! {
             )));
         }
 
-    }
-}
-
-/// The page-side veto every context gets: WebAuthn's two request methods
-/// refuse instead of raising the engine's passkey dialog.
-///
-/// **A host is driven by an agent, not a person.** Nobody is at the machine to
-/// answer a passkey prompt, and the dialog's window lands on the person's
-/// desktop; the request fails with the error a page already handles. Only
-/// `get` and `create` are replaced, and a context without
-/// `navigator.credentials` (a non-secure page) is left alone.
-const PASSKEY_VETO: &str = r#"
-(function () {
-  try {
-    var container = navigator.credentials;
-    if (!container) return;
-    var deny = function () {
-      return Promise.reject(
-        new DOMException('WebAuthn is disabled in this browser', 'NotAllowedError'));
-    };
-    Object.defineProperty(container, 'get', { value: deny, configurable: false, writable: false });
-    Object.defineProperty(container, 'create', { value: deny, configurable: false, writable: false });
-  } catch (e) {}
-})();
-"#;
-
-#[cfg(test)]
-mod tests {
-    use super::PASSKEY_VETO;
-
-    /// **The veto rejects; it never resolves.** The live proof is a driven
-    /// host; this pins the script's shape so a reword cannot quietly turn the
-    /// refusal into something a page would misread.
-    #[test]
-    fn the_passkey_veto_rejects_with_not_allowed() {
-        assert!(PASSKEY_VETO.contains("Promise.reject"), "the veto rejects");
-        assert!(PASSKEY_VETO.contains("'NotAllowedError'"), "the error a page handles");
-        assert!(PASSKEY_VETO.contains("'get'"), "the assertion method");
-        assert!(PASSKEY_VETO.contains("'create'"), "the registration method");
     }
 }
