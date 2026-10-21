@@ -133,11 +133,16 @@ pub fn run(args: Args) -> ! {
         ring.set_state(STATE_FAILED);
         fail("the windowless browser was not created");
     };
-    if let Some(host) = browser.host() {
-        host.was_hidden(0);
-        host.set_focus(1);
-        host.set_windowless_frame_rate(60);
-    }
+    // **A browser with no host is not a live host**: the state and the log
+    // below are what the client reads to say this profile is up, so a
+    // browser that cannot be driven fails here rather than reporting live.
+    let Some(host) = browser.host() else {
+        ring.set_state(STATE_FAILED);
+        fail("the windowless browser has no host");
+    };
+    host.was_hidden(0);
+    host.set_focus(1);
+    host.set_windowless_frame_rate(60);
     ring.set_state(STATE_LIVE);
     ring.set_visible(true, true);
     // **stderr, which the client redirects into this profile's
