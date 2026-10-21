@@ -31,7 +31,7 @@ process is the desktop's.
 | The engine line | `the app's own Chromium` on the desktop, `the app's own WebView` on the phone | the page's own platform |
 | A named profile | its own host, its own cache root, its own logins; closed rows keep their files and can be deleted | the shell's profile list |
 | The states | `opening the browser…`, the shell's sentence when it failed, **the browser stopped answering** when a host dies under the surface, and the page's own error page when a load fails | the page's surface state, the shell's failure event, and a liveness check of the host and its endpoint |
-| A refusal | the shell's own words: the profile another seat holds, no free port, the framework missing, the host not answering | the command's rejection |
+| A refusal | the shell's own words: the profile another seat holds, no free port, the framework missing, the host not answering, or a page area that could not be placed | the command's rejection and the surface's failure event |
 
 ## The rules
 

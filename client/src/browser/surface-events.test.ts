@@ -27,8 +27,8 @@ function navHandler(): (event: { payload: Record<string, unknown> }) => void {
 describe('the shell listeners', () => {
   /**
    * **The second listener is the one that matters.** The load-time attempt
-   * registers the first and is refused by the second; an open must resume
-   * from there, registering the second and third and NEVER the first again.
+   * registers the first and is refused by the second (the remeasure); an open
+   * must resume from there, registering the rest and NEVER the first again.
    * A retry that starts from zero shows `lower` twice - which round 2 did.
    */
   it(
@@ -52,7 +52,8 @@ describe('the shell listeners', () => {
       });
       expect(registered(), 'no listener is registered twice').toEqual([
         'browser_surface_lower',
-        'browser_surface_failed',
+        'browser_surface_remeasure',
+        'browser_surface_remeasure',
         'browser_surface_failed',
         'browser_nav_state',
       ]);
@@ -63,6 +64,23 @@ describe('the shell listeners', () => {
         can_back: true,
         can_forward: false,
       });
+
+      // **The remeasure ask reaches the page.** The shell refuses a report and
+      // asks through this listener; deleting the relay leaves every refusal
+      // unanswerable and the surface dark.
+      const remeasure = listen.mock.calls
+        .filter((entry) => entry[0] === 'browser_surface_remeasure')
+        .at(-1)?.[1] as (() => void) | undefined;
+      let asked = 0;
+      window.addEventListener(
+        'forge-surface-remeasure',
+        () => {
+          asked += 1;
+        },
+        { once: true },
+      );
+      remeasure?.();
+      expect(asked, "the shell's remeasure is relayed to the page").toBe(1);
 
       await openSurface(null);
       expect(surface.nav, 'a fresh open starts disabled until the shell answers').toEqual({

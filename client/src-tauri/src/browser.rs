@@ -212,10 +212,23 @@ pub struct BrowserHost {
     /// `None` while nothing is drawn. The host keeps running under it.
     #[cfg(desktop)]
     surface: Mutex<Option<OpenSurface>>,
-    /// Where the page last said its takeover's page area is, and the scale it
-    /// is drawn at.
+    /// Where the page last said its takeover's page area is, the scale it is
+    /// drawn at, and which mount measured it.
     #[cfg(desktop)]
-    surface_rect: Mutex<Option<cef::surface::Rect>>,
+    surface_rect: Mutex<Option<ReportedRect>>,
+    /// The refused reports of one open: the distinct rects seen and how many
+    /// seen reports have repeated, so a page that can never place fails its
+    /// open instead of being asked forever.
+    #[cfg(desktop)]
+    refusals: Mutex<Refusals>,
+    /// The window's page area a test build stands in for, since a real
+    /// `AppHandle` cannot be built in this crate's tests.
+    #[cfg(all(desktop, any(test, feature = "testing")))]
+    window_override: Mutex<Option<(f64, f64)>>,
+    /// What the refusal path told the page, in a test or `testing` build: the
+    /// events are the page's only door back, and an unemitted one is silence.
+    #[cfg(all(desktop, any(test, feature = "testing")))]
+    emitted: std::sync::Mutex<Vec<SurfaceEvent>>,
     /// The host whose frames the native overlay is drawing, if one is.
     #[cfg(desktop)]
     attached: Mutex<Option<u16>>,
@@ -266,6 +279,12 @@ impl BrowserHost {
             #[cfg(desktop)]
             surface_rect: Mutex::new(None),
             #[cfg(desktop)]
+            refusals: Mutex::new(Refusals::default()),
+            #[cfg(all(desktop, any(test, feature = "testing")))]
+            window_override: Mutex::new(None),
+            #[cfg(all(desktop, any(test, feature = "testing")))]
+            emitted: std::sync::Mutex::new(Vec::new()),
+            #[cfg(desktop)]
             attached: Mutex::new(None),
             #[cfg(desktop)]
             app: Mutex::new(None),
@@ -311,6 +330,12 @@ impl BrowserHost {
             surface: Mutex::new(None),
             #[cfg(desktop)]
             surface_rect: Mutex::new(None),
+            #[cfg(desktop)]
+            refusals: Mutex::new(Refusals::default()),
+            #[cfg(all(desktop, any(test, feature = "testing")))]
+            window_override: Mutex::new(None),
+            #[cfg(all(desktop, any(test, feature = "testing")))]
+            emitted: std::sync::Mutex::new(Vec::new()),
             #[cfg(desktop)]
             attached: Mutex::new(None),
             #[cfg(desktop)]
@@ -729,8 +754,16 @@ impl BrowserHost {
     async fn end_host_locked(&self, cache: &Path) {
         {
             let mut surface = self.surface.lock().await;
-            if surface.as_ref().is_some_and(|open| open.dir == cache) {
+            let lowered = surface.as_ref().is_some_and(|open| open.dir == cache);
+            if lowered {
                 *surface = None;
+            }
+            drop(surface);
+            // **An ended host takes its open's geometry with it**, so the next
+            // open cannot be refused a rect measured for this one.
+            if lowered {
+                *self.surface_rect.lock().await = None;
+                *self.refusals.lock().await = Refusals::default();
             }
         }
         let host = self.hosts.lock().await.remove(cache);
@@ -1445,6 +1478,7 @@ impl BrowserHost {
         &self,
         profile: Option<&str>,
         seat: Option<&Seat>,
+        epoch: u64,
     ) -> Result<Arc<cef::spawn::ActiveHost>, String> {
         let paths = self.paths.clone()?;
         let (name, dir) = match profile {
@@ -1487,8 +1521,12 @@ impl BrowserHost {
             host.show().await;
             // One surface at a time: opening this profile's takes the window,
             // and a previous profile's host keeps running under it.
-            *self.surface.lock().await =
-                Some(OpenSurface { profile: name, dir: cache.clone(), host: Arc::clone(&host) });
+            *self.surface.lock().await = Some(OpenSurface {
+                profile: name,
+                dir: cache.clone(),
+                host: Arc::clone(&host),
+                epoch,
+            });
             // **A placement that never landed fails the Open**, so the page
             // draws the sentence instead of a live takeover with no picture.
             self.reconcile_surface().await?;
@@ -1554,9 +1592,55 @@ impl BrowserHost {
     /// The page said where its takeover's page area is: place the overlay
     /// there, and resize the host's view to match.
     #[cfg(desktop)]
-    pub async fn set_surface_rect(&self, rect: cef::surface::Rect) {
-        *self.surface_rect.lock().await = Some(rect);
+    pub async fn set_surface_rect(&self, rect: cef::surface::Rect, epoch: u64) {
+        let open = self.surface.lock().await.as_ref().map(|open| open.profile.clone());
+        let attached = *self.attached.lock().await;
+        tauri_plugin_log::log::debug!(
+            "the page reported the surface rect (event_name browser_surface_rect_reported, epoch \
+             {epoch}, rect {:.0}x{:.0} at {:.0},{:.0}, scale {}, open {open:?}, attached \
+             {attached:?})",
+            rect.width,
+            rect.height,
+            rect.x,
+            rect.y,
+            rect.scale,
+        );
+        *self.surface_rect.lock().await = Some(ReportedRect { rect, epoch });
         let _ = self.reconcile_surface().await;
+    }
+
+    /// The main window's page area in CSS pixels, when it is there. A test or
+    /// `testing` build can pin one: a real `AppHandle` cannot be built in this
+    /// crate's tests, and the geometry check is one of the things that must
+    /// still run there.
+    #[cfg(desktop)]
+    async fn window_size(&self) -> Option<(f64, f64)> {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(size) = *self.window_override.lock().await {
+            return Some(size);
+        }
+        let app = self.app.lock().await.clone();
+        app.as_ref().and_then(app_window_size)
+    }
+
+    /// Tell the page something. **A test or `testing` build records it**,
+    /// because a real `AppHandle` cannot be built in this crate's tests and
+    /// the two events the refusal path sends are the page's only door back.
+    #[cfg(desktop)]
+    fn surface_event(&self, app: Option<&tauri::AppHandle>, event: SurfaceEvent) {
+        #[cfg(any(test, feature = "testing"))]
+        if let Ok(mut emitted) = self.emitted.lock() {
+            emitted.push(event.clone());
+        }
+        let Some(app) = app else { return };
+        match event {
+            SurfaceEvent::Remeasure => {
+                let _ = app.emit("browser_surface_remeasure", ());
+            }
+            SurfaceEvent::Failed => {
+                let _ = app.emit("browser_surface_failed", FAILED_SENTENCE.to_owned());
+            }
+        }
     }
 
     /// Make the native half match the open surface: one overlay, drawing the
@@ -1566,17 +1650,96 @@ impl BrowserHost {
     #[cfg(desktop)]
     async fn reconcile_surface(&self) -> Result<(), String> {
         let open = self.surface.lock().await.clone();
-        let rect = *self.surface_rect.lock().await;
+        let reported = *self.surface_rect.lock().await;
         let app = self.app.lock().await.clone();
         let mut attached = self.attached.lock().await;
-        match (open, rect, app.as_ref()) {
-            (Some(open), Some(rect), Some(app)) => {
+        match (open, reported) {
+            (Some(open), Some(reported)) => {
+                let window = self.window_size().await;
+                // **A report that is not this open's, or not this window's page
+                // area, is never applied.** The area is always the window under
+                // the bar, and a measurement that is not (a transient viewport,
+                // a surface that is gone) would shrink the live page to a band
+                // and nothing re-reports it afterwards. A refusal leaves the
+                // stored rect alone - clearing it would race the report that
+                // supersedes it - and asks the page to measure again on its
+                // next frame.
+                if !report_accepted(&reported, open.epoch, window) {
+                    let why = if reported.epoch != open.epoch {
+                        "it was measured for another open"
+                    } else {
+                        "it is not the window's page area"
+                    };
+                    // **Every refusal asks the page to measure again, until a
+                    // bound.** A transient that moves the box without resizing
+                    // it fires no ResizeObserver, so a refused lone report
+                    // would otherwise be the last one; and a rect that keeps
+                    // coming back unchanged is a settled wrong layout, which
+                    // must reach the sentence rather than be asked forever.
+                    let mut seen = self.refusals.lock().await;
+                    let action = refusal(&mut seen, open.epoch, reported.rect);
+                    drop(seen);
+                    tauri_plugin_log::log::info!(
+                        "a reported surface rect is dropped because {why} (event_name \
+                         browser_surface_rect_refused, epoch {}, open_epoch {}, profile {:?}, \
+                         rect {:.0}x{:.0} at {:.0},{:.0}, scale {}, window {window:?})",
+                        reported.epoch,
+                        open.epoch,
+                        open.profile,
+                        reported.rect.width,
+                        reported.rect.height,
+                        reported.rect.x,
+                        reported.rect.y,
+                        reported.rect.scale,
+                    );
+                    if action == Refusal::Fail {
+                        // **A page area that can never be placed is said.** The
+                        // open fails the way a surface that could not start
+                        // does, so the bar keeps its try again and the hand-off
+                        // stays parked.
+                        *self.surface.lock().await = None;
+                        *self.surface_rect.lock().await = None;
+                        *self.refusals.lock().await = Refusals::default();
+                        self.surface_event(app.as_ref(), SurfaceEvent::Failed);
+                    } else {
+                        self.surface_event(app.as_ref(), SurfaceEvent::Remeasure);
+                    }
+                    return Ok(());
+                }
+                // This open placed: its refusals are behind it.
+                *self.refusals.lock().await = Refusals::default();
+                let ReportedRect { rect, epoch } = reported;
+                let Some(app) = app.as_ref() else { return Ok(()) };
                 if *attached == Some(open.host.port) {
+                    tauri_plugin_log::log::debug!(
+                        "the surface rect is applied to the attached surface (event_name \
+                         cef_surface_rect_applied, epoch {epoch}, profile {:?}, rect \
+                         {:.0}x{:.0} at {:.0},{:.0}, scale {}, window {:?})",
+                        open.profile,
+                        rect.width,
+                        rect.height,
+                        rect.x,
+                        rect.y,
+                        rect.scale,
+                        window,
+                    );
                     cef::surface::set_rect(app, &open.host, rect);
                 } else {
                     if attached.take().is_some() {
                         cef::surface::detach(app);
                     }
+                    tauri_plugin_log::log::debug!(
+                        "the surface is attached at the reported rect (event_name \
+                         cef_surface_attach_requested, epoch {epoch}, profile {:?}, rect \
+                         {:.0}x{:.0} at {:.0},{:.0}, scale {}, window {:?})",
+                        open.profile,
+                        rect.width,
+                        rect.height,
+                        rect.x,
+                        rect.y,
+                        rect.scale,
+                        window,
+                    );
                     match cef::surface::attach(app, Arc::clone(&open.host), rect).await {
                         Ok(()) => *attached = Some(open.host.port),
                         Err(why) => {
@@ -1589,6 +1752,7 @@ impl BrowserHost {
                             // surface that could not open draws its sentence
                             // and keeps the hand-off parked.
                             *self.surface.lock().await = None;
+                            *self.surface_rect.lock().await = None;
                             let _ = app.emit("browser_surface_failed", why.clone());
                             return Err(why);
                         }
@@ -1655,6 +1819,17 @@ impl BrowserHost {
         // A lower is the same use a raise is: the browser was just in front
         // of someone, and the clock restarts with it.
         self.touch(&cache).await;
+        let lowered = self.lower_surface(&cache).await;
+        let _ = self.reconcile_surface().await;
+        Ok(lowered)
+    }
+
+    /// Take the open surface down when the cache is its own, and forget where
+    /// its page said it was. **The next open starts with no geometry**: a rect
+    /// measured for the surface just lowered is not this window's page area
+    /// for the next one, and placing at it is the stale attach (#2470).
+    #[cfg(desktop)]
+    async fn lower_surface(&self, cache: &Path) -> bool {
         let mut surface = self.surface.lock().await;
         // **Whether this call actually lowered the page the person sees.**
         // A Done for another profile leaves that profile's surface up, and
@@ -1664,8 +1839,11 @@ impl BrowserHost {
             *surface = None;
         }
         drop(surface);
-        let _ = self.reconcile_surface().await;
-        Ok(lowered)
+        if lowered {
+            *self.surface_rect.lock().await = None;
+            *self.refusals.lock().await = Refusals::default();
+        }
+        lowered
     }
 
     /// The phone's Done / Not now / the bar's back: lower the takeover. The
@@ -2173,8 +2351,18 @@ pub async fn browser_show(
     host: tauri::State<'_, Arc<BrowserHost>>,
     profile: Option<String>,
     seat: Option<Seat>,
+    epoch: u64,
 ) -> Result<(), String> {
-    host.show(profile.as_deref(), seat.as_ref()).await.map(|_| ())
+    #[cfg(desktop)]
+    {
+        host.show(profile.as_deref(), seat.as_ref(), epoch).await.map(|_| ())
+    }
+    #[cfg(not(desktop))]
+    {
+        // The phone's takeover is the native one and its page reports no rect.
+        let _ = epoch;
+        host.show(profile.as_deref(), seat.as_ref()).await
+    }
 }
 
 /// Take the hand-off's window back out of sight; the browser keeps running
@@ -2232,8 +2420,10 @@ pub async fn browser_nav(direction: NavDirection) -> Result<(), String> {
 }
 
 /// Where the takeover's page area is, in CSS pixels from the viewport's
-/// top-left, and the device pixel ratio it is drawn at. The surface is placed
-/// and sized from this; it is reported on mount and on every resize.
+/// top-left, the device pixel ratio it is drawn at, and the open it belongs
+/// to. The surface is placed and sized from this; the page reports it on
+/// mount, on every open, on every resize, and when the shell asks for a
+/// remeasure after refusing one.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn browser_surface_rect(
@@ -2243,8 +2433,9 @@ pub async fn browser_surface_rect(
     width: f64,
     height: f64,
     scale: f64,
+    epoch: u64,
 ) -> Result<(), String> {
-    host.set_surface_rect(cef::surface::Rect { x, y, width, height, scale }).await;
+    host.set_surface_rect(cef::surface::Rect { x, y, width, height, scale }, epoch).await;
     Ok(())
 }
 
@@ -2262,6 +2453,126 @@ fn cef_opened(cache: &Path) -> bool {
     cache.join("Default").is_dir()
 }
 
+/// The page's last reported place for its takeover's page area, and the epoch
+/// of the mount that measured it.
+#[cfg(desktop)]
+#[derive(Clone, Copy)]
+struct ReportedRect {
+    rect: cef::surface::Rect,
+    epoch: u64,
+}
+
+/// How far a reported page area may sit from the window it claims to fill, in
+/// CSS pixels: fractional window sizes and the page's own rounding.
+#[cfg(desktop)]
+const RECT_SLACK: f64 = 4.0;
+
+/// The window's own chrome between its inner size and the page's viewport: a
+/// title bar insets the webview by its height (32 points on macOS). That is
+/// furniture, not layout - a page area short by it is still the window under
+/// the bar, where a band is hundreds of points short.
+#[cfg(desktop)]
+const WINDOW_CHROME_SLACK: f64 = 48.0;
+
+/// One open's refused reports: the distinct rects seen and how many refused
+/// reports have repeated an already-seen rect, reset by a fresh one. A
+/// transition produces a handful of distinct rects before its settled report;
+/// a layout that settles wrong keeps reporting rects already seen, and it
+/// fails the open rather than asking forever.
+#[cfg(desktop)]
+#[derive(Default)]
+struct Refusals {
+    epoch: u64,
+    seen: Vec<cef::surface::Rect>,
+    repeats: u32,
+}
+
+/// How many distinct refused rects one open takes before it fails.
+#[cfg(desktop)]
+const MAX_REFUSALS: usize = 5;
+
+/// How many times the same refused rect is asked to be measured again before
+/// the open fails: a stable wrong rect must reach the sentence, not loop.
+#[cfg(desktop)]
+const MAX_REPEATS: u32 = 5;
+
+/// What a refusal costs: the page is asked to measure again, until either the
+/// distinct-rect or the same-rect bound is reached, when the open fails.
+#[cfg(desktop)]
+#[derive(Debug, PartialEq)]
+enum Refusal {
+    Remeasure,
+    Fail,
+}
+
+/// What the shell tells the page about the surface.
+#[cfg(desktop)]
+#[derive(Clone, Debug, PartialEq)]
+enum SurfaceEvent {
+    Remeasure,
+    Failed,
+}
+
+/// The sentence a surface that can never be placed leaves on the bar.
+#[cfg(desktop)]
+const FAILED_SENTENCE: &str = "the browser page area could not be placed - try again";
+
+/// Record a refused report against its open and answer what to do about it.
+#[cfg(desktop)]
+fn refusal(seen: &mut Refusals, open_epoch: u64, rect: cef::surface::Rect) -> Refusal {
+    if seen.epoch != open_epoch {
+        *seen = Refusals { epoch: open_epoch, ..Refusals::default() };
+    }
+    if seen.seen.contains(&rect) {
+        seen.repeats = seen.repeats.saturating_add(1);
+    } else {
+        seen.seen.push(rect);
+        seen.repeats = 0;
+    }
+    if seen.seen.len() >= MAX_REFUSALS || seen.repeats >= MAX_REPEATS {
+        Refusal::Fail
+    } else {
+        Refusal::Remeasure
+    }
+}
+
+/// The main window's page area in CSS pixels, when the window is there.
+#[cfg(desktop)]
+fn app_window_size(app: &tauri::AppHandle) -> Option<(f64, f64)> {
+    let window = app.get_webview_window("main")?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    window
+        .inner_size()
+        .ok()
+        .map(|size| (f64::from(size.width) / scale, f64::from(size.height) / scale))
+}
+
+/// Whether a report may place the open surface: it must come from THIS open -
+/// a report measured for a surface that is gone belongs to another layout -
+/// and its rect must be the window under the bar.
+#[cfg(desktop)]
+fn report_accepted(report: &ReportedRect, open_epoch: u64, window: Option<(f64, f64)>) -> bool {
+    report.epoch == open_epoch && window.is_none_or(|size| rect_fits_window(&report.rect, size))
+}
+
+/// Whether a reported page area can be the open takeover's page: the area is
+/// the window under the bar, so it starts at the window's left edge, spans its
+/// width, and its foot is the window's foot. **A report that misses any of
+/// those is a measurement of another layout** - a transient viewport, or a
+/// mount that is no longer the one on screen - and applying it leaves the page
+/// as a sliver of itself (#2470).
+#[cfg(desktop)]
+fn rect_fits_window(rect: &cef::surface::Rect, window: (f64, f64)) -> bool {
+    let (width, height) = window;
+    let foot = rect.y + rect.height;
+    rect.x.abs() <= RECT_SLACK
+        && (rect.width - width).abs() <= RECT_SLACK
+        && rect.y >= 0.0
+        && rect.height > RECT_SLACK
+        && foot <= height + RECT_SLACK
+        && foot >= height - WINDOW_CHROME_SLACK
+}
+
 /// The surface the page's takeover is drawing: one profile's frames, from the
 /// host behind it. The host keeps running when the surface closes.
 #[cfg(desktop)]
@@ -2272,6 +2583,9 @@ pub struct OpenSurface {
     /// The host's cache root: one surface per profile at a time.
     pub dir: PathBuf,
     pub host: Arc<cef::spawn::ActiveHost>,
+    /// The open this surface is: only a report carrying this epoch may place
+    /// or resize it.
+    pub epoch: u64,
 }
 
 /// One named profile, as the client's own browser strip draws it.
@@ -2355,6 +2669,534 @@ mod tests {
 
     fn seat() -> Seat {
         Seat { org: "Busytools".to_owned(), project: "forge".to_owned(), label: "lead".to_owned() }
+    }
+
+    /// **A page area is the window under the bar, and a report that is not is
+    /// dropped, and a report from another open is refused whatever its
+    /// geometry.** #2470's band was a measurement from a transient, short
+    /// viewport: full width, foot far above the window's, drawn as a sliver.
+    #[test]
+    fn a_report_from_another_open_or_another_layout_is_refused() {
+        let window = (2048.0, 1152.0);
+        let reported = |epoch: u64, x: f64, y: f64, width: f64, height: f64| ReportedRect {
+            rect: cef::surface::Rect { x, y, width, height, scale: 2.0 },
+            epoch,
+        };
+        assert!(
+            report_accepted(&reported(7, 0.0, 40.0, 2048.0, 1112.0), 7, Some(window)),
+            "this open's page under the bar is the window",
+        );
+        assert!(
+            report_accepted(&reported(7, 0.0, 88.0, 2048.0, 1064.0), 7, Some(window)),
+            "a taller bar moves the page's top; its foot is still the window's",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, 40.0, 2048.0, 190.0), 7, Some(window)),
+            "a sliver of a viewport is not this window",
+        );
+        assert!(
+            !report_accepted(&reported(7, -5.0, 40.0, 2048.0, 1112.0), 7, Some(window)),
+            "a negative left edge is further from the window than the slack allows",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, 40.0, 1200.0, 901.0), 7, Some(window)),
+            "another window's measurement is refused",
+        );
+        assert!(
+            !report_accepted(&reported(7, 332.0, 912.0, 1706.0, 228.0), 7, Some(window)),
+            "a box that is not the page area is refused",
+        );
+        assert!(
+            !report_accepted(&reported(7, 5.0, 40.0, 2048.0, 1112.0), 7, Some(window)),
+            "a page area that does not start at the window's left edge is refused",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, 40.0, 2.0, 1112.0), 7, Some(window)),
+            "a zero-width page area is refused",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, 40.0, 0.0, 0.0), 7, Some(window)),
+            "a zero by zero page area is refused",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, -1.0, 2048.0, 1153.0), 7, Some(window)),
+            "a page area above the window's top is refused",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, 1150.0, 2048.0, 2.0), 7, Some(window)),
+            "a two-pixel-tall page area is refused",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, 40.0, 2053.0, 1112.0), 7, Some(window)),
+            "a width past the slack is refused",
+        );
+        assert!(
+            report_accepted(&reported(7, 0.0, 40.0, 2052.0, 1112.0), 7, Some(window)),
+            "a width inside the slack is the window's",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, 40.0, 2048.0, 1117.0), 7, Some(window)),
+            "a foot past the slack is refused",
+        );
+        assert!(
+            report_accepted(&reported(7, 0.0, 40.0, 2048.0, 1116.0), 7, Some(window)),
+            "a foot inside the slack is the window's",
+        );
+        assert!(
+            report_accepted(&reported(7, 0.0, 40.0, 2048.0, 1064.0), 7, Some(window)),
+            "a foot exactly at the chrome bound is the windowed page's",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, 40.0, 2048.0, 1063.0), 7, Some(window)),
+            "a foot past the chrome bound is refused",
+        );
+        assert!(
+            !report_accepted(&reported(6, 0.0, 40.0, 2048.0, 1112.0), 7, Some(window)),
+            "a report measured for another open is refused even though it fits",
+        );
+        assert!(
+            !report_accepted(&reported(6, 0.0, 80.0, 2048.0, 1072.0), 7, Some(window)),
+            "the previous open's feedback-row rect fits the window and is still refused",
+        );
+        assert!(
+            report_accepted(&reported(7, 0.0, 40.5, 2048.0, 1111.0), 7, Some(window)),
+            "fractional layout is not a mismatch",
+        );
+        assert!(
+            report_accepted(&reported(7, 0.0, 40.0, 2048.0, 1082.0), 7, Some(window)),
+            "a windowed page is short of the window by its title bar, not a mismatch",
+        );
+        assert!(
+            !report_accepted(&reported(7, 0.0, 40.0, 2048.0, 1000.0), 7, Some(window)),
+            "a foot well above the window's is the band",
+        );
+        assert!(
+            report_accepted(&reported(7, 0.0, 40.0, 1440.0, 828.0), 7, Some((1440.0, 900.0))),
+            "a 1440x900 window's page area is 828 tall under a 32-point title bar",
+        );
+        assert!(
+            report_accepted(&reported(7, 0.0, 40.0, 2048.0, 1112.0), 7, None),
+            "with no window to check against, the open's own report is taken",
+        );
+    }
+
+    /// **The refusal is the reconcile's, not only the predicate's.** A stored
+    /// report from another open is refused where it would have been placed:
+    /// nothing attaches, the refusal is counted, and the report is left for
+    /// the next one to supersede rather than clearing the store under it.
+    #[tokio::test]
+    async fn reconcile_refuses_a_report_from_another_open() {
+        let host =
+            BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
+        let ring =
+            Arc::new(cef::osr::Ring::create("/forge-test-refuse-rect", 4, 4).expect("a ring"));
+        let dir = PathBuf::from("/tmp/forge-test-refuse");
+        *host.surface.lock().await = Some(OpenSurface {
+            profile: None,
+            dir: dir.clone(),
+            host: Arc::new(cef::spawn::ActiveHost { pid: 0, port: 0, ring, profile: dir }),
+            epoch: 7,
+        });
+        let refused =
+            cef::surface::Rect { x: 0.0, y: 40.0, width: 2048.0, height: 1112.0, scale: 2.0 };
+        *host.surface_rect.lock().await = Some(ReportedRect { rect: refused, epoch: 6 });
+        host.reconcile_surface().await.expect("a refused report is not an error");
+        assert_eq!(*host.attached.lock().await, None, "nothing attaches on a refused report");
+        {
+            let refusals = host.refusals.lock().await;
+            assert_eq!(refusals.epoch, 7, "the refusal belongs to this open");
+            assert_eq!(refusals.seen, vec![refused], "the refused rect is remembered");
+        }
+        // The same measurement again is asked again, but adds no new rect.
+        host.reconcile_surface().await.expect("a repeat is not an error");
+        {
+            let refusals = host.refusals.lock().await;
+            assert_eq!(refusals.seen, vec![refused], "a repeat adds no new rect");
+            assert_eq!(refusals.repeats, 1, "and counts toward the repeat bound");
+        }
+        assert!(
+            host.surface_rect.lock().await.is_some(),
+            "the stored report is left for the next one to supersede",
+        );
+        // A report from this open places - the geometry check passes with no
+        // window to check against - and the refusal history is behind it.
+        *host.surface_rect.lock().await = Some(ReportedRect { rect: refused, epoch: 7 });
+        host.reconcile_surface().await.expect("an accepted report is not an error");
+        assert!(host.refusals.lock().await.seen.is_empty(), "acceptance clears the refusals",);
+        cef::osr::Ring::unlink("/forge-test-refuse-rect");
+    }
+
+    /// **An ended host forgets its open's geometry.** A profile closed, deleted
+    /// or idle-released while its surface is open must not leave a rect for the
+    /// next open to be refused.
+    #[tokio::test]
+    async fn an_ended_host_forgets_its_open_surface() {
+        let host =
+            BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
+        let ring = Arc::new(cef::osr::Ring::create("/forge-test-end-host", 4, 4).expect("a ring"));
+        let cache = PathBuf::from("/tmp/forge-test-end-host-cache");
+        *host.surface.lock().await = Some(OpenSurface {
+            profile: None,
+            dir: cache.clone(),
+            host: Arc::new(cef::spawn::ActiveHost {
+                pid: 0,
+                port: 0,
+                ring,
+                profile: cache.clone(),
+            }),
+            epoch: 7,
+        });
+        *host.surface_rect.lock().await = Some(ReportedRect {
+            rect: cef::surface::Rect { x: 0.0, y: 40.0, width: 2048.0, height: 1112.0, scale: 2.0 },
+            epoch: 7,
+        });
+        *host.refusals.lock().await = Refusals {
+            epoch: 7,
+            seen: vec![cef::surface::Rect {
+                x: 0.0,
+                y: 40.0,
+                width: 2048.0,
+                height: 190.0,
+                scale: 2.0,
+            }],
+            repeats: 2,
+        };
+        host.end_host_locked(&cache).await;
+        assert!(host.surface.lock().await.is_none(), "the ended host's surface is gone");
+        assert!(host.surface_rect.lock().await.is_none(), "and its geometry with it");
+        assert!(
+            host.refusals.lock().await.seen.is_empty(),
+            "and no refusal history to fail the next open early",
+        );
+        cef::osr::Ring::unlink("/forge-test-end-host");
+    }
+
+    /// **A page that never places fails its open.** Distinct refused rects are
+    /// counted; at the bound the open is failed, so the bar carries the
+    /// sentence and the hand-off stays parked instead of a dark page area.
+    #[tokio::test]
+    async fn a_page_that_never_places_fails_its_open() {
+        let host =
+            BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
+        let ring =
+            Arc::new(cef::osr::Ring::create("/forge-test-refuse-many", 4, 4).expect("a ring"));
+        let dir = PathBuf::from("/tmp/forge-test-refuse-many");
+        *host.surface.lock().await = Some(OpenSurface {
+            profile: None,
+            dir: dir.clone(),
+            host: Arc::new(cef::spawn::ActiveHost { pid: 0, port: 0, ring, profile: dir }),
+            epoch: 7,
+        });
+        // Four distinct refusals are a transition's worth; the fifth settles
+        // it. A bound that moved would leave the surface up one step early or
+        // late and fail here.
+        for step in 0..4 {
+            let rect = cef::surface::Rect {
+                x: 0.0,
+                y: 40.0 + step as f64,
+                width: 2048.0,
+                height: 1112.0,
+                scale: 2.0,
+            };
+            *host.surface_rect.lock().await = Some(ReportedRect { rect, epoch: 6 });
+            host.reconcile_surface().await.expect("a refusal is not an error");
+        }
+        assert!(host.surface.lock().await.is_some(), "four refusals do not fail the open");
+        let rect =
+            cef::surface::Rect { x: 0.0, y: 44.0, width: 2048.0, height: 1112.0, scale: 2.0 };
+        *host.surface_rect.lock().await = Some(ReportedRect { rect, epoch: 6 });
+        host.reconcile_surface().await.expect("a refusal is not an error");
+        assert!(host.surface.lock().await.is_none(), "the open fails at the bound");
+        assert!(host.surface_rect.lock().await.is_none(), "and its geometry goes with it");
+        cef::osr::Ring::unlink("/forge-test-refuse-many");
+    }
+
+    /// **Every refusal asks again, and either bound fails the open.** A fresh
+    /// rect counts toward the distinct bound; a rect already seen counts
+    /// toward the repeat bound, whether it repeats consecutively or not.
+    #[test]
+    fn a_refusal_asks_until_a_bound_and_a_stable_rect_fails() {
+        let rect =
+            |y: f64| cef::surface::Rect { x: 0.0, y, width: 2048.0, height: 1112.0, scale: 2.0 };
+        // A stable wrong rect: asked again once per repeat, then failed.
+        let mut seen = Refusals::default();
+        assert_eq!(refusal(&mut seen, 7, rect(40.0)), Refusal::Remeasure, "a fresh rect asks");
+        for _ in 1..MAX_REPEATS {
+            assert_eq!(
+                refusal(&mut seen, 7, rect(40.0)),
+                Refusal::Remeasure,
+                "a repeat asks again until the bound",
+            );
+        }
+        assert_eq!(
+            refusal(&mut seen, 7, rect(40.0)),
+            Refusal::Fail,
+            "a stable wrong rect fails the open",
+        );
+        // Distinct rects fail at their own, separate bound.
+        let mut seen = Refusals::default();
+        for step in 0..(MAX_REFUSALS - 1) {
+            assert_eq!(refusal(&mut seen, 7, rect(40.0 + step as f64)), Refusal::Remeasure,);
+        }
+        assert_eq!(
+            refusal(&mut seen, 7, rect(40.0 + (MAX_REFUSALS - 1) as f64)),
+            Refusal::Fail,
+            "the fifth distinct rect fails the open",
+        );
+        // An alternating pair is bounded too: a report of a rect already seen
+        // counts toward the repeat bound however often the pair changes.
+        let mut seen = Refusals::default();
+        assert_eq!(refusal(&mut seen, 7, rect(40.0)), Refusal::Remeasure, "A is fresh");
+        assert_eq!(refusal(&mut seen, 7, rect(41.0)), Refusal::Remeasure, "B is fresh");
+        let mut failed = false;
+        for step in 0..(MAX_REPEATS + 2) {
+            let y = if step % 2 == 0 { 40.0 } else { 41.0 };
+            if refusal(&mut seen, 7, rect(y)) == Refusal::Fail {
+                failed = true;
+                break;
+            }
+        }
+        assert!(failed, "an alternating pair reaches the bound instead of oscillating");
+        // A new open starts its own history.
+        assert_eq!(
+            refusal(&mut seen, 8, rect(40.0)),
+            Refusal::Remeasure,
+            "a new open's first refusal asks again",
+        );
+    }
+
+    /// **The report's epoch is the one the shell was told at Open.** The wire
+    /// path is the thing that matters: a report stored with another epoch is
+    /// refused, which is #2470 with no band to see.
+    #[tokio::test]
+    async fn a_report_carries_the_epoch_its_open_stored() {
+        let host =
+            BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
+        let ring =
+            Arc::new(cef::osr::Ring::create("/forge-test-epoch-wire", 4, 4).expect("a ring"));
+        let dir = PathBuf::from("/tmp/forge-test-epoch-wire");
+        *host.surface.lock().await = Some(OpenSurface {
+            profile: None,
+            dir: dir.clone(),
+            host: Arc::new(cef::spawn::ActiveHost { pid: 0, port: 0, ring, profile: dir }),
+            epoch: 7,
+        });
+        let rect =
+            cef::surface::Rect { x: 0.0, y: 40.0, width: 2048.0, height: 1112.0, scale: 2.0 };
+        host.set_surface_rect(rect, 7).await;
+        assert_eq!(
+            host.surface_rect.lock().await.map(|reported| reported.epoch),
+            Some(7),
+            "the epoch the page sent is the one stored",
+        );
+        assert!(host.refusals.lock().await.seen.is_empty(), "a report for this open is accepted",);
+        host.set_surface_rect(rect, 8).await;
+        {
+            let refusals = host.refusals.lock().await;
+            assert_eq!(refusals.epoch, 7, "the refusal still belongs to this open");
+            assert_eq!(refusals.seen, vec![rect], "another open's report is refused");
+        }
+        cef::osr::Ring::unlink("/forge-test-epoch-wire");
+    }
+
+    /// **The geometry check runs in the reconcile, not only in the predicate.**
+    /// A band-shaped report against a pinned window is refused (an epoch-only
+    /// check would accept it) and asked to be measured again; once the same
+    /// band repeats to the bound the open fails with the sentence. This is
+    /// #2470's own refusal, guarded where it is applied.
+    #[tokio::test]
+    async fn a_band_report_is_refused_and_a_stable_one_fails_the_open() {
+        let host =
+            BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
+        let ring =
+            Arc::new(cef::osr::Ring::create("/forge-test-band-reconcile", 4, 4).expect("a ring"));
+        let dir = PathBuf::from("/tmp/forge-test-band");
+        *host.surface.lock().await = Some(OpenSurface {
+            profile: None,
+            dir: dir.clone(),
+            host: Arc::new(cef::spawn::ActiveHost { pid: 0, port: 0, ring, profile: dir }),
+            epoch: 7,
+        });
+        *host.window_override.lock().await = Some((2048.0, 1152.0));
+        let band = cef::surface::Rect { x: 0.0, y: 40.0, width: 2048.0, height: 190.0, scale: 2.0 };
+        *host.surface_rect.lock().await = Some(ReportedRect { rect: band, epoch: 7 });
+        host.reconcile_surface().await.expect("a refusal is not an error");
+        {
+            let refusals = host.refusals.lock().await;
+            assert_eq!(refusals.seen, vec![band], "the band is refused by the geometry check");
+        }
+        assert_eq!(
+            *host.emitted.lock().expect("the emitted log"),
+            vec![SurfaceEvent::Remeasure],
+            "the page is asked to measure again",
+        );
+        // Four repeats are a slow settle; the fifth settles it wrong and the
+        // open fails. A bound that moved would leave the surface up a step
+        // early or late and fail the assertions below.
+        for _ in 0..4 {
+            host.reconcile_surface().await.expect("a refusal is not an error");
+        }
+        assert!(host.surface.lock().await.is_some(), "four repeats do not fail the open");
+        host.reconcile_surface().await.expect("a refusal is not an error");
+        assert!(host.surface.lock().await.is_none(), "a stable band fails the open");
+        assert_eq!(
+            host.emitted.lock().expect("the emitted log").last(),
+            Some(&SurfaceEvent::Failed),
+            "and the sentence is sent",
+        );
+        cef::osr::Ring::unlink("/forge-test-band-reconcile");
+    }
+
+    /// **The command hop carries the epoch too.** The Tauri command is the
+    /// seam between the page's payload and the host; a zero dropped here fails
+    /// every report exactly like a band.
+    #[tokio::test]
+    async fn the_rect_command_carries_its_epoch_into_the_host() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("the mock app builds");
+        app.manage(Arc::new(BrowserHost::unavailable(
+            "the app's data directory cannot be resolved".to_owned(),
+        )));
+        browser_surface_rect(app.state::<Arc<BrowserHost>>(), 0.0, 40.0, 2048.0, 1112.0, 2.0, 7)
+            .await
+            .expect("the report is stored");
+        assert_eq!(
+            app.state::<Arc<BrowserHost>>()
+                .surface_rect
+                .lock()
+                .await
+                .map(|reported| reported.epoch),
+            Some(7),
+            "the command stores the epoch the page sent",
+        );
+    }
+
+    /// **A raise stores the epoch the page sent.** The show hop is the one the
+    /// reviewers could zero without a test: a surface told 0 refuses every
+    /// report the page sends under its real epoch.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_raise_stores_the_epoch_the_page_sent() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        let cache = paths.cef_shared();
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        let stub_host = dir.path().join("stub-host.sh");
+        std::fs::write(&stub_host, "#!/bin/sh\nexec sleep 30\n").expect("the stub host");
+        std::fs::set_permissions(&stub_host, std::fs::Permissions::from_mode(0o755))
+            .expect("the stub host is executable");
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
+        let port = listener.local_addr().expect("the address").port();
+        listener.set_nonblocking(true).expect("non-blocking");
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            loop {
+                match listener.accept() {
+                    Ok((mut socket, _)) => {
+                        let mut buffer = [0_u8; 2048];
+                        let read = socket.read(&mut buffer).unwrap_or(0);
+                        let request = String::from_utf8_lossy(&buffer[..read]);
+                        let body = if request.starts_with("GET /json/list") {
+                            r#"[{"type":"page","url":"https://example.com/raise"}]"#
+                        } else {
+                            r#"{"Browser":"Chrome/154.0"}"#
+                        };
+                        let answer = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = socket.write_all(answer.as_bytes());
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+                }
+            }
+        });
+        let ring_name = "/forge-cef-show-epoch";
+        let ring = Arc::new(cef::osr::Ring::create(ring_name, 64, 64).expect("a ring"));
+        let pid = cef::spawn::spawn_with(&stub_host, &cache, port, ring_name, 800, 600)
+            .expect("the stub host starts");
+        cef::spawn::write_record(
+            &cache,
+            &cef::spawn::Record { pid, port, ring: ring_name.to_owned() },
+        )
+        .expect("the record");
+        host.hosts.lock().await.insert(
+            cache.clone(),
+            Arc::new(cef::spawn::ActiveHost { pid, port, ring, profile: cache.clone() }),
+        );
+
+        // **Through the command**, which is the page's own door: a zero
+        // dropped at this hop leaves every report refused with green tests.
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("the mock app builds");
+        app.manage(Arc::clone(&host));
+        browser_show(app.state::<Arc<BrowserHost>>(), None, None, 7)
+            .await
+            .expect("the raise opens");
+        assert_eq!(
+            host.surface.lock().await.as_ref().map(|open| open.epoch),
+            Some(7),
+            "the surface is told the epoch the page sent",
+        );
+
+        cef::spawn::end(pid).await;
+        cef::spawn::remove_record(&cache);
+        cef::osr::Ring::unlink(ring_name);
+    }
+
+    /// **A lower forgets its geometry.** The next open must wait for its own
+    /// mount's report rather than placing at the rect the lowered surface
+    /// measured - the stale attach that put a 2048x1064 page into a 1440x900
+    /// window.
+    #[tokio::test]
+    async fn a_lowered_surface_forgets_its_rect() {
+        let host =
+            BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
+        let ring =
+            Arc::new(cef::osr::Ring::create("/forge-test-lower-rect", 4, 4).expect("a ring"));
+        let dir = PathBuf::from("/tmp/forge-test-lower");
+        *host.surface.lock().await = Some(OpenSurface {
+            profile: None,
+            dir: dir.clone(),
+            host: Arc::new(cef::spawn::ActiveHost { pid: 0, port: 0, ring, profile: dir.clone() }),
+            epoch: 7,
+        });
+        *host.surface_rect.lock().await = Some(ReportedRect {
+            rect: cef::surface::Rect { x: 0.0, y: 40.0, width: 2048.0, height: 1112.0, scale: 2.0 },
+            epoch: 7,
+        });
+        *host.refusals.lock().await = Refusals {
+            epoch: 7,
+            seen: vec![cef::surface::Rect {
+                x: 0.0,
+                y: 40.0,
+                width: 2048.0,
+                height: 190.0,
+                scale: 2.0,
+            }],
+            repeats: 1,
+        };
+        assert!(host.lower_surface(&dir).await, "the open surface lowers");
+        assert!(
+            host.surface_rect.lock().await.is_none(),
+            "the next open starts with no geometry to place",
+        );
+        assert!(
+            host.refusals.lock().await.seen.is_empty(),
+            "and no refusal history to fail it early",
+        );
+        cef::osr::Ring::unlink("/forge-test-lower-rect");
     }
 
     /// A host whose directories did not resolve still starts, and every call
@@ -2815,7 +3657,7 @@ for line in sys.stdin:
     async fn a_raise_cues_the_page() {
         let stub = StubHost::start("/forge-cef-raise-cue-test", &json!({})).await;
 
-        let raised = stub.host.show(None, None).await;
+        let raised = stub.host.show(None, None, 1).await;
         assert!(raised.is_ok(), "the raise opened the surface: {raised:?}");
         assert!(stub.ring_value.shown(1), "the raise cued the page");
 
@@ -3752,6 +4594,7 @@ for line in sys.stdin:
                 ring: Arc::clone(&ring),
                 profile: cache.clone(),
             }),
+            epoch: 1,
         });
         assert!(host.idle_candidates().await.is_empty(), "a drawn surface is in use, not idle",);
         cef::osr::Ring::unlink("/forge-cef-idle-surface");
@@ -4106,7 +4949,7 @@ for line in sys.stdin:
         Named::open(mine.clone(), "hunt", &paths).expect("mine");
 
         let refused =
-            host.show(Some("scout"), Some(&mine)).await.expect_err("another seat's profile");
+            host.show(Some("scout"), Some(&mine), 1).await.expect_err("another seat's profile");
         assert!(refused.contains("belongs to Other/forge/lead"), "{refused}");
         assert!(refused.contains("raises only its own"), "{refused}");
     }

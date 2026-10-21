@@ -491,11 +491,7 @@ pub async fn attach(
     rect: Rect,
 ) -> Result<(), String> {
     let rect = rect.sane();
-    host.ring.request(
-        paint_px(rect.width * raster(rect)),
-        paint_px(rect.height * raster(rect)),
-        raster(rect),
-    );
+    request_rect(&host, rect);
     let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     let cancel = Arc::new(AtomicBool::new(false));
 
@@ -604,6 +600,7 @@ pub async fn attach(
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut last = 0_u64;
+        let mut last_size = (0_usize, 0_usize);
         let mut checked = std::time::Instant::now();
         let mut last_focus = 1_u32;
         loop {
@@ -662,6 +659,22 @@ pub async fn attach(
             if width == 0 || height == 0 {
                 continue;
             }
+            if (width, height) != last_size {
+                last_size = (width, height);
+                // SAFETY: the ring is mapped for the host's lifetime.
+                let (request_width, request_height, request_scale) = unsafe {
+                    (
+                        (*header).request_width.load(Ordering::Relaxed),
+                        (*header).request_height.load(Ordering::Relaxed),
+                        (*header).request_scale_milli.load(Ordering::Relaxed),
+                    )
+                };
+                tauri_plugin_log::log::debug!(
+                    "the host painted a new size (event_name cef_surface_paint_size, delivered \
+                     {width}x{height}, requested {request_width}x{request_height}, scale_milli \
+                     {request_scale})"
+                );
+            }
             let ring = Arc::clone(&host.ring);
             let _ = app.run_on_main_thread(move || {
                 let slot = OVERLAY.lock().expect("the overlay slot");
@@ -682,15 +695,29 @@ pub async fn attach(
     Ok(())
 }
 
+/// Ask the host's ring for a view size, logging the request so every applied
+/// rect is named by the log that asked for it.
+fn request_rect(host: &ActiveHost, rect: Rect) {
+    let width = paint_px(rect.width * raster(rect));
+    let height = paint_px(rect.height * raster(rect));
+    let scale = raster(rect);
+    tauri_plugin_log::log::debug!(
+        "the surface asks for a paint size (event_name cef_surface_rect_requested, port {}, rect \
+         {:.0}x{:.0} at {:.0},{:.0}, paint {width}x{height}, scale {scale:.2})",
+        host.port,
+        rect.width,
+        rect.height,
+        rect.x,
+        rect.y,
+    );
+    host.ring.request(width, height, scale);
+}
+
 /// Move and resize the surface; the host's view size follows.
 pub fn set_rect(app: &tauri::AppHandle, host: &ActiveHost, rect: Rect) {
     let rect = rect.sane();
     // The same raster the attach asks for; the view still moves in points.
-    host.ring.request(
-        paint_px(rect.width * raster(rect)),
-        paint_px(rect.height * raster(rect)),
-        raster(rect),
-    );
+    request_rect(host, rect);
     let Some(generation) = OVERLAY.lock().ok().and_then(|slot| slot.as_ref().map(|o| o.generation))
     else {
         return;
@@ -842,7 +869,10 @@ fn paint_px(value: f64) -> u32 {
 /// **A fixed 1.5 breaks input on a big display**: past 2560x1440 CSS the
 /// paint size clamps, the page is laid out wider than the frame it is drawn
 /// into, and clicks land off. Deriving the scale from the rect keeps the
-/// paint exact at any size; the layout stays the CSS size either way.
+/// paint exact at every size that fits the ring; a raster below 1 paints the
+/// view at 1:1 (the host's `view_rect`/`screen_info` read the request, not the
+/// paint), and a takeover past the ring's pixels cannot be drawn at all - its
+/// frames are dropped rather than copied past the mapping.
 fn raster(rect: Rect) -> f64 {
     let fit = (f64::from(MAX_WIDTH) / rect.width).min(f64::from(MAX_HEIGHT) / rect.height);
     // **Never above the display's own ratio** - a 1x screen gains nothing

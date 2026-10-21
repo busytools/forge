@@ -34,7 +34,21 @@ describe('the browser surface', () => {
     expect(await openSurface('hunt')).toBeNull();
     expect(surface.phase).toBe('live');
     expect(surface.profile).toBe('hunt');
-    expect(show).toHaveBeenCalledWith('hunt', null);
+    expect(show).toHaveBeenCalledWith('hunt', null, surface.epoch);
+  });
+
+  /// **Every open is its own surface identity.** The rect a page reports is
+  /// only allowed to place the open it was measured for, so each open mints a
+  /// fresh epoch and the shell is told which one it is opening.
+  it('mints an epoch per open and carries it to the shell', async () => {
+    show.mockResolvedValue(null);
+    await openSurface('hunt');
+    const first = surface.epoch;
+    hide.mockResolvedValue({ lowered: true });
+    await closeSurface();
+    await openSurface('hunt');
+    expect(surface.epoch, 'a second open is not the first').not.toBe(first);
+    expect(show).toHaveBeenLastCalledWith('hunt', null, surface.epoch);
   });
 
   it("carries the shell's own sentence when it could not open", async () => {
@@ -86,7 +100,7 @@ describe('the browser surface', () => {
     show.mockResolvedValue(null);
     expect(await openSurface('hunt')).toBeNull();
     expect(surface.phase, 'the page draws nothing on the phone').toBe('closed');
-    expect(show).toHaveBeenCalledWith('hunt', null);
+    expect(show).toHaveBeenCalledWith('hunt', null, surface.epoch);
   });
 
   it('outside the shell the failure belongs to the row, not a takeover', async () => {

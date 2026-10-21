@@ -52,6 +52,16 @@ interface Surface {
    * the page's rect down or the bar is drawn underneath the picture.
    */
   barHeight: number;
+  /**
+   * Which open this surface is: a fresh number per Open, carried with every
+   * page-area report so the shell can refuse one measured for another open.
+   *
+   * **A webview reload resets this page's counter** while the shell keeps the
+   * open it was told about; the page mounts no takeover after a reload until
+   * the next Open, which re-mints both sides, and the shell's geometry check
+   * bounds the mismatch in between.
+   */
+  epoch: number;
 }
 
 export const surface: Surface = $state({
@@ -61,6 +71,7 @@ export const surface: Surface = $state({
   hand_off: null,
   nav: { can_back: false, can_forward: false },
   barHeight: 38,
+  epoch: 0,
 });
 
 /** Mark the takeover live for this hand-off, on Open. */
@@ -88,6 +99,7 @@ export async function openSurface(
   // failure belongs to the strip's row, not to a full-screen error.
   if (!canHost()) return 'this page is not the client';
   const mine = ++generation;
+  surface.epoch = mine;
   const here = drawsSurface();
   if (here) {
     surface.phase = 'opening';
@@ -97,10 +109,11 @@ export async function openSurface(
     surface.nav = { can_back: false, can_forward: false };
     // The load-time install is the normal one; this retries it after an
     // import that failed then, so a rejected fetch cannot cost the page its
-    // subscriptions for life. Idempotent.
+    // subscriptions for life. Idempotent, and started before the show so the
+    // first open already has the listeners a refusal asks through.
     void installSurfaceEvents();
   }
-  const why = await showBrowser(profile, seat);
+  const why = await showBrowser(profile, seat, mine);
   // **The phone's takeover is the native one**: its shell raised it, and the
   // page's components are the desktop's.
   if (!here) return why;
@@ -149,14 +162,14 @@ export async function closeSurface(
   return null;
 }
 
-/** How many of the shell's listeners are registered; three is all of them. */
+/** How many of the shell's listeners are registered; four is all of them. */
 let installed = 0;
 /** The attempt in flight, so callers arriving mid-install wait for it. */
 let inFlight: Promise<void> | null = null;
 
 /**
  * The shell's own words while the surface is up: the failure state, the
- * keyboard's way out, and the page's history as it moves.
+ * keyboard's way out, the remeasure ask, and the page's history as it moves.
  *
  * **The counter is what makes it resumable**: a listener that failed is
  * retried on the next call, from where it stopped, never from the start. The
@@ -165,10 +178,10 @@ let inFlight: Promise<void> | null = null;
  * it up, rather than being dismissed by it.
  */
 export async function installSurfaceEvents(): Promise<void> {
-  if (installed === 3 || !canHost()) return;
+  if (installed === 4 || !canHost()) return;
   while (inFlight !== null) {
     await inFlight;
-    if (installed === 3) return;
+    if (installed === 4) return;
   }
   inFlight = installOnce();
   try {
@@ -192,6 +205,16 @@ async function installOnce(): Promise<void> {
       installed = 1;
     }
     if (installed < 2) {
+      // **A refused report is measured again on the next frame.** The shell
+      // refused it because it was not this window's page area; the page that
+      // measured a transient layout is the only one that can read the settled
+      // one, and no ResizeObserver fires when only the position changed.
+      await listen('browser_surface_remeasure', () => {
+        window.dispatchEvent(new Event('forge-surface-remeasure'));
+      });
+      installed = 2;
+    }
+    if (installed < 3) {
       await listen<string>('browser_surface_failed', (event) => {
         const why =
           typeof event.payload === 'string' && event.payload !== ''
@@ -205,9 +228,9 @@ async function installOnce(): Promise<void> {
         // sentence up until the person answers the hand-off.
         void hideBrowser(surface.profile);
       });
-      installed = 2;
+      installed = 3;
     }
-    if (installed < 3) {
+    if (installed < 4) {
       // **The arrows are the shell's reading of the page's history.** It is
       // pushed on every committed navigation, so the bar never guesses what
       // the page can do.
@@ -218,7 +241,7 @@ async function installOnce(): Promise<void> {
           can_forward: flags.can_forward === true,
         };
       });
-      installed = 3;
+      installed = 4;
     }
   } catch {
     // No event API (a plain page, a test harness), or one listener refused:
@@ -227,12 +250,14 @@ async function installOnce(): Promise<void> {
 }
 
 /** The takeover's page area, as the shell places the native layer: CSS pixels
- *  from the viewport's top-left, and the device pixel ratio drawn at. */
+ *  from the viewport's top-left, the device pixel ratio drawn at, and the
+ *  epoch of the mount that measured it. */
 export function setRegion(
   rect: { x: number; y: number; width: number; height: number },
   scale: number,
+  epoch: number,
 ): void {
-  void reportSurfaceRect(rect, scale);
+  void reportSurfaceRect(rect, scale, epoch);
 }
 
 // **Installed at page load, before any surface can open.** The shell pushes
