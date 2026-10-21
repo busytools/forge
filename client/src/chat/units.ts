@@ -740,6 +740,34 @@ function isCompletion(block: Block, words: string): boolean {
 }
 
 /**
+ * Whether a task-ending carrier is a row of the conversation rather than the
+ * server's own ending fact: a frame uuid owns a row.
+ *
+ * A page forges an id-less copy of a call's ending into the turn holding the
+ * call, so a per-turn fold still ends the call; the CLI's own row is the copy
+ * that draws, and both drawing is one ending told twice (#2496).
+ */
+function endingOwnsARow(frame: Frame): boolean {
+  return typeof frame.uuid === 'string' && frame.uuid !== '';
+}
+
+/**
+ * The whole envelope a task ending carries, or `null` - the only identity the
+ * id-less forged copy has, since `queuedWords` answers none for a completion.
+ * The envelope rather than the summary, because two tasks can end with the
+ * same words.
+ */
+export function completionText(message: unknown): string | null {
+  const content = (message as { message?: { content?: unknown } } | null)?.message?.content;
+  for (const block of blocksOf(content)) {
+    if (block.type !== 'queued_command') continue;
+    const words = queuedText(block.prompt);
+    if (isCompletion(block, words)) return words;
+  }
+  return null;
+}
+
+/**
  * What a frame says when it is a mid-turn prompt's carrier: the words the CLI
  * queued, or `null` when it carries no prompt - or carries the harness's own
  * completion notice, which nobody typed.
@@ -2287,6 +2315,10 @@ export function fold(
       if (block.type === 'queued_command') {
         const words = queuedText(block.prompt);
         if (isCompletion(block, words)) {
+          // **A copy the server forged draws nothing, whatever it says.** It
+          // is the ending fact that already ended its call in the pass above
+          // (`endingOwnsARow`); the CLI's own row is the copy that draws.
+          if (!endingOwnsARow(frame)) continue;
           // The completion's QUEUED carrier, drawing the same info line the
           // text envelope draws above (#1680): it wakes a turn on its own, so
           // a turn woken by one must not read as prompted by nothing. With no

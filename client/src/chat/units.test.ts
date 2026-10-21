@@ -2463,6 +2463,74 @@ describe('one turn folded into the units a view draws', () => {
     expect(odd[0]?.note?.tone, 'a word it does not know is not a failure').toBeNull();
   });
 
+  it('draws a task ending once, though a page carries it twice', () => {
+    // **The page's own two carriers of one ending.** A turn a page serves adds
+    // a forged copy of the ending to the turn holding the call it ends, so a
+    // fold that reads one turn at a time still sees the call finish; the copy
+    // carries no id, because the CLI's row owns one. Drawn too, one ending is
+    // two rows - and every later page repeating the turn appends the forged
+    // copy again (#2496).
+    const launch = said([
+      { type: 'tool_use', id: 'toolu_01TMh27', name: 'Agent', input: { description: 'Review' } },
+    ]);
+    const envelope =
+      '<task-notification>\n<tool-use-id>toolu_01TMh27</tool-use-id>\n<status>completed</status>\n' +
+      '<summary>Agent "Review" finished</summary>\n</task-notification>';
+    const forged = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'queued_command', commandMode: 'task-notification', prompt: envelope }],
+      },
+    };
+    const carrier = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'task-notification',
+        prompt: envelope,
+        source_uuid: 'source-1',
+      },
+    ]);
+
+    const page = fold([launch, forged, carrier]);
+    expect(
+      kinds(page).filter((kind) => kind === 'notice'),
+      'the one ending draws one row',
+    ).toEqual(['notice']);
+    const calls = callsOf(page[0]).map((call) => call.leaf);
+    expect(calls[0]?.status, 'and the forged copy still ends the call it belongs to').toBe(
+      'completed',
+    );
+
+    // The control: the CLI's own row, the copy with an id, draws the line.
+    expect(kinds(fold([carrier])), 'the row the CLI wrote draws').toEqual(['notice']);
+
+    // No summary parsed: the forged copy still draws nothing, of ANY shape,
+    // and the CLI's row keeps the rule-25 raw row beside it.
+    const bare =
+      '<task-notification>\n<tool-use-id>toolu_01TMh27</tool-use-id>\n<status>completed</status>\n' +
+      '</task-notification>';
+    const bareForged = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'queued_command', commandMode: 'task-notification', prompt: bare }],
+      },
+    };
+    const bareCarrier = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'task-notification',
+        prompt: bare,
+        source_uuid: 'source-2',
+      },
+    ]);
+    expect(
+      kinds(fold([launch, bareForged, bareCarrier])).filter((kind) => kind !== 'leaves'),
+      'the summary-less ending draws once',
+    ).toEqual(['user']);
+  });
+
   it('keeps the status a notice with no word for it does not state', () => {
     // The other arm of the same rule, and the only shape that reaches it: a
     // notice carrying a call id and no `<status>`. Every status-less notice on

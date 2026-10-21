@@ -32,7 +32,15 @@ import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
-import { carriedValue, fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
+import {
+  carriedValue,
+  completionText,
+  fold,
+  headingNameOf,
+  namesSkill,
+  queuedWords,
+  skillBody,
+} from './units';
 import { onRefusal } from '../refusals';
 import { callOutputOf } from '../wire/call-output';
 import { reportFrom } from '../wire/fleet';
@@ -480,12 +488,16 @@ function sameWords(one: string[], other: string[]): boolean {
  * rather than whether it says only them - the fold's own turns carry more than
  * one user row, and a comparison against the whole row finds neither of them.
  * A frame with neither an id nor words - a tool result, a thought - is never
- * found this way, which repeats it rather than dropping it.
+ * found this way, which repeats it rather than dropping it. **A task ending is
+ * the one exception read below**: it is a completion, whose words `wordsOf`
+ * leaves out because nobody typed them, so it is found by the whole envelope
+ * it carries instead.
  *
- * `prose` narrows the words arm at the one call site that says why: an id is
- * unique and needs no guard, while the words are what a delivery row shares
- * with the page's copy of it - and what a turn an id-bearing frame opened
- * must NOT be matched by.
+ * `prose` narrows the two arms a frame with no id has - its ending's envelope
+ * and its words - at the one call site that says why: an id is unique and
+ * needs no guard, while words and endings are what a delivery row shares with
+ * the page's copy of it, and a turn matched by a shared frame is an exchange -
+ * two turns that merely end the same task are not one.
  *
  * **`add` is what keeps a grown list honest.** Rows grow after an index is
  * built - the queued-prompt join pushes into a row's frames while asking the
@@ -503,6 +515,16 @@ export class Frames {
    */
   private readonly said = new Set<string>();
 
+  /**
+   * The task endings this list carries, keyed by their whole envelope.
+   *
+   * The id-less copy a page forges to end a call is a completion, so
+   * `wordsOf` leaves it out and the two faces above cannot find it: every
+   * landing appended it again (#2496). The envelope rather than the summary,
+   * because two tasks can end with the same words.
+   */
+  private readonly endings = new Set<string>();
+
   constructor(messages: unknown[]) {
     for (const message of messages) this.add(message);
   }
@@ -510,12 +532,14 @@ export class Frames {
   /**
    * Take one more frame into the index, for a list that has grown.
    *
-   * Both faces, id and words - an id-bearing frame still answers an id-less
-   * copy's words question.
+   * All three faces - id, ending and words - so an id-bearing frame still
+   * answers an id-less copy's ending or words question.
    */
   add(message: unknown): void {
     const id = uuidOf(message);
     if (id !== null) this.ids.add(id);
+    const ending = completionText(message);
+    if (ending !== null) this.endings.add(ending);
     const words = wordsOf(message);
     if (words.length > 0) this.said.add(JSON.stringify(words));
   }
@@ -525,6 +549,8 @@ export class Frames {
     const id = uuidOf(message);
     if (id !== null) return this.ids.has(id);
     if (!prose) return false;
+    const ending = completionText(message);
+    if (ending !== null) return this.endings.has(ending);
     const words = wordsOf(message);
     return words.length > 0 && this.said.has(JSON.stringify(words));
   }
@@ -1782,17 +1808,17 @@ export class Chat {
       // with an older one that merely says the same words, which drops the row
       // the reader just received.
       const shares = (held: Frames, turn: Turn, unsettled: boolean): boolean => {
-        // **The words arm is for the turn a frame with no id OPENED**, and for
-        // nothing else. A turn an id-bearing frame opened is reconciled by ids,
-        // and a words-only match hands it a row that is not its own: a repeat
+        // **The no-id arms are for the turn a frame with no id OPENED**, and
+        // for nothing else. A turn an id-bearing frame opened is reconciled by
+        // ids, and a prose match hands it a row that is not its own: a repeat
         // takes the exchange's row and gives it the repeat's opening frame,
         // which in the shorter shape leaves the exchange with no row at all.
-        const words = unsettled && uuidOf(turn.messages[0]) === null;
+        const prose = unsettled && uuidOf(turn.messages[0]) === null;
         // A frame the ride PLACED is already gone from these rows when the
         // page carries its own copy: `healedOf` took it back out before this
         // match runs, which is what keeps the parked copy from tying a live
         // row to a page row that ran before it.
-        return turn.messages.some((message) => held.carries(message, words));
+        return turn.messages.some((message) => held.carries(message, prose));
       };
       /**
        * Where a held turn's copy landed in `drawn`, by the turn.
