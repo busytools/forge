@@ -124,6 +124,20 @@ pub fn free_port() -> Option<u16> {
     (9411..9431_u16).find(|port| std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok())
 }
 
+/// The host binary a test launch runs in place of the client's own
+/// executable: `BrowserHost::launch` reaches the spawn only through
+/// [`spawn`], so this is the one seam that lets a test launch a host-shaped
+/// process.
+#[cfg(feature = "testing")]
+static TEST_HOST: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Point [`spawn`] at a stand-in host for the next launch; `None` restores
+/// the client binary.
+#[cfg(feature = "testing")]
+pub fn set_test_host_binary(exe: Option<PathBuf>) {
+    *TEST_HOST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = exe;
+}
+
 /// Spawn `--cef-host` for one profile, detached from this client's session
 /// and with its own log beside the profile. Answers the child's pid.
 pub fn spawn(
@@ -133,6 +147,10 @@ pub fn spawn(
     width: u32,
     height: u32,
 ) -> Result<u32, String> {
+    #[cfg(feature = "testing")]
+    if let Some(exe) = TEST_HOST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+        return spawn_with(&exe, profile, port, ring, width, height);
+    }
     let exe = std::env::current_exe()
         .map_err(|why| format!("the client's own executable cannot be found: {why}"))?;
     spawn_with(&exe, profile, port, ring, width, height)
@@ -283,6 +301,39 @@ pub async fn page_url(port: u16) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Every page target on a host's endpoint, as (target id, url) pairs, from
+/// `/json/list`. The browser tools diff this around a creation to learn the
+/// tab they just opened.
+pub async fn page_targets(port: u16) -> Vec<(String, String)> {
+    let url = format!("{}/json/list", super::endpoint(port));
+    let Some(answer) = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()
+    else {
+        return Vec::new();
+    };
+    let Some(body) = answer.split_once("\r\n\r\n").map(|(_, body)| body) else {
+        return Vec::new();
+    };
+    let Some(entries) = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|parsed| parsed.as_array().cloned())
+    else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("page"))
+        .filter_map(|entry| {
+            Some((entry.get("id")?.as_str()?.to_owned(), entry.get("url")?.as_str()?.to_owned()))
+        })
+        .collect()
+}
+
+/// Close one target through the endpoint's own close door.
+pub async fn close_target(port: u16, target: &str) -> bool {
+    let url = format!("{}/json/close/{target}", super::endpoint(port));
+    tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten().is_some()
+}
+
 /// The page target's own websocket URL on a host's endpoint, from
 /// `/json/list`. A host with no page is `None` - there is nothing to drive.
 pub async fn page_websocket(port: u16) -> Option<String> {
@@ -297,6 +348,18 @@ pub async fn page_websocket(port: u16) -> Option<String> {
         .and_then(|entry| entry.get("webSocketDebuggerUrl"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+}
+
+/// The browser's own DevTools endpoint, when it answers.
+///
+/// **The browser target, not a page target**: its sessions are what reach
+/// every page the profile creates.
+pub async fn browser_websocket(port: u16) -> Option<String> {
+    let url = format!("{}/json/version", super::endpoint(port));
+    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
+    let body = answer.split_once("\r\n\r\n")?.1;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    parsed.get("webSocketDebuggerUrl").and_then(serde_json::Value::as_str).map(str::to_owned)
 }
 
 /// The prefix every websocket URL on `port` starts with.

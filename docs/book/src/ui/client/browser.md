@@ -105,8 +105,16 @@ engine and nowhere else; the client never hands one to another browser.
 Open or the strip's show puts in front of the person is written beside the
 profile, and every browsing call that changes the page rewrites it, so a
 later launch - after a restart or an idle close - opens where the session
-left off instead of on a blank page. A blank page clears the marker, and
-only a web address is ever reopened.
+left off instead of on a blank page. Only a web address is ever reopened.
+
+**A carried page that has not been shown does not lose to a blank one.**
+The host opens on `about:blank` and the client navigates to the carried page
+once the passkey veto is registered, so a probe can meet the blank page
+before the navigation lands. A page written this way is held beside the
+profile until an Open or the next successful browsing call reads a real
+page; a blank read or the engine's own error page keeps both the marker and
+the hold, and the next launch opens the held page. The hold is on disk, so
+a client restart does not erase the page the marker exists for.
 
 **The catalogued engine's limits are named, not hidden.** The prebuilt CEF
 has no H.264 decoder (the job sites the probe exercised do not need it), it

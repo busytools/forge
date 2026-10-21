@@ -14,6 +14,8 @@
 //! it happens to have open chooses to expose.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::sync::PoisonError;
 use std::time::Duration;
 
 use rmcp::ServiceExt as _;
@@ -28,6 +30,21 @@ use serde_json::Value;
 /// may run after a failure has to fit inside this same bound, which is the
 /// segment the server's `ASK_TIMEOUT` already covers.
 pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(150);
+
+/// How long one discovered tab's arm is waited for.
+#[cfg(target_os = "macos")]
+const ARM_BOUND: Duration = Duration::from_secs(3);
+
+/// How long the created tab's target is looked for in `/json/list`.
+#[cfg(target_os = "macos")]
+const DISCOVER_BOUND: Duration = Duration::from_secs(1);
+
+/// What is left of a call's budget - at least enough to send the call, so a
+/// spent budget answers a timeout rather than a silent skip.
+#[cfg(target_os = "macos")]
+fn left(deadline: tokio::time::Instant) -> Duration {
+    deadline.saturating_duration_since(tokio::time::Instant::now()).max(Duration::from_millis(1))
+}
 
 /// **The longest a driver start is given before it is presumed wedged.**
 /// Measured live 2026-10-07: a named profile's driver child spawned and sat
@@ -81,6 +98,17 @@ pub struct Driver {
     /// leave the old one holding the browser.
     _service: RunningService<rmcp::RoleClient, ()>,
     client: rmcp::Peer<rmcp::RoleClient>,
+    /// The host's DevTools port and the profile it serves: the endpoint
+    /// names the port, and a blank tab is held from navigation until the
+    /// installer has armed that very target.
+    #[cfg(all(desktop, target_os = "macos"))]
+    port: Option<u16>,
+    #[cfg(all(desktop, target_os = "macos"))]
+    profile: Option<PathBuf>,
+    /// The target of the last tab opened blank. A navigation that follows
+    /// the creation in a separate call still waits for that tab's arm.
+    #[cfg(all(desktop, target_os = "macos"))]
+    opened_blank: std::sync::Mutex<Option<String>>,
     /// The phone's own page, by origin: the WebView's devtools lists every
     /// debuggable page in the app process, the client's UI among them, and
     /// the driver must be pinned off it (see [`Driver::start_inapp`]).
@@ -163,9 +191,22 @@ impl Driver {
         Ok(Self {
             _service: service,
             client,
+            #[cfg(all(desktop, target_os = "macos"))]
+            port: endpoint_port(cdp_endpoint),
+            #[cfg(all(desktop, target_os = "macos"))]
+            profile: None,
+            #[cfg(all(desktop, target_os = "macos"))]
+            opened_blank: std::sync::Mutex::new(None),
             #[cfg(target_os = "android")]
             ui_origin: String::new(),
         })
+    }
+
+    /// The profile this driver serves, named in its own warnings.
+    #[cfg(all(desktop, target_os = "macos"))]
+    pub fn serving(mut self, profile: &Path) -> Self {
+        self.profile = Some(profile.to_path_buf());
+        self
     }
 
     /// Start the driver on the phone: libnode runs in THIS process, so there
@@ -389,7 +430,143 @@ impl Driver {
     ) -> Result<Vec<ReplyPart>, String> {
         #[cfg(target_os = "android")]
         self.refuse_a_client_page(tool, &args).await?;
+        #[cfg(target_os = "macos")]
+        if let Some(port) = self.port {
+            // **The recorded blank belongs to the tab it was created for.** A
+            // select, a new tab or a close changes which tab a later
+            // navigation means, so the record goes before any of those is
+            // handled - a `new` that opens blank again records its own; a
+            // listing is a read and leaves the record alone.
+            let keeps_it = tool == "browser_tabs"
+                && args.get("action").and_then(Value::as_str) == Some("list");
+            if !keeps_it && (tool == "browser_tabs" || tool == "browser_close") {
+                *self.opened_blank.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            }
+            if let Some(url) = blank_first_url(tool, &args) {
+                return self.blank_then_navigate(port, tool, args, url, bound).await;
+            }
+            if is_blank_tab_open(tool, &args) {
+                return self.blank_and_remember(port, tool, args, bound).await;
+            }
+            if tool == "browser_navigate" {
+                // **A navigation that follows a blank creation still waits**
+                // for that tab's arm: the hole is one call wide, and this is
+                // the call.
+                if let Some(blank) = self.take_opened_blank() {
+                    wait_target_armed(port, &blank, self.profile.as_deref(), ARM_BOUND).await;
+                }
+            }
+        }
         self.call_raw(tool, args, bound).await
+    }
+
+    /// **A tab opened at a URL opens blank first.** The engine answers no
+    /// page-domain command while a tab is paused, so a document that starts
+    /// with the tab itself runs before the veto can register; opening it
+    /// blank, waiting for the installer to arm THAT target, and only then
+    /// navigating puts the veto in front of the first real document.
+    #[cfg(target_os = "macos")]
+    async fn blank_then_navigate(
+        &self,
+        port: u16,
+        tool: &str,
+        args: Value,
+        url: String,
+        bound: Duration,
+    ) -> Result<Vec<ReplyPart>, String> {
+        // **The whole rewrite keeps the one call's budget.** Its pieces share
+        // a deadline, so the pair cannot spend two call timeouts plus the
+        // waits inside a surface whose own ask budget is one call.
+        let deadline = tokio::time::Instant::now() + bound;
+        let before = blank_snapshot(port).await;
+        let mut blank = args;
+        if let Value::Object(fields) = &mut blank {
+            fields.remove("url");
+        }
+        let answer = self.call_raw(tool, blank, left(deadline)).await?;
+        let target = created_blank(port, &before, left(deadline).min(DISCOVER_BOUND)).await;
+        if let Some(target) = &target {
+            wait_target_armed(port, target, self.profile.as_deref(), left(deadline).min(ARM_BOUND))
+                .await;
+        } else {
+            self.unidentified(port);
+        }
+        if let Err(why) = self
+            .call_raw("browser_navigate", serde_json::json!({ "url": url }), left(deadline))
+            .await
+        {
+            // **The blank tab it made is closed again**, so a failed call
+            // leaves nothing behind and a retry does not open a second one.
+            if let Some(target) = &target {
+                super::cef::spawn::close_target(port, target).await;
+            }
+            return Err(why);
+        }
+        // **The reply is the tabs as they stand after the navigation**, not
+        // the blank creation's own listing.
+        match self
+            .call_raw("browser_tabs", serde_json::json!({ "action": "list" }), left(deadline))
+            .await
+        {
+            Ok(listing) => Ok(listing),
+            Err(why) => {
+                // **A failed refresh is said, not hidden behind the creation
+                // answer**: the tab exists, and the missing listing is the
+                // truth about this call.
+                tauri_plugin_log::log::warn!(
+                    "the tab list could not be refreshed after a navigation (event_name \
+                     cef_passkey_tab_list_failed, port {port}, profile {}): {why}",
+                    self.profile
+                        .as_deref()
+                        .map_or_else(|| "-".to_owned(), |profile| profile.display().to_string()),
+                );
+                let mut answer = answer;
+                answer.push(ReplyPart::Text {
+                    text: format!("the tab list could not be refreshed: {why}"),
+                });
+                Ok(answer)
+            }
+        }
+    }
+
+    /// A tab opened with no URL: record the target it created, so a later
+    /// `browser_navigate` can wait for that tab's arm.
+    #[cfg(target_os = "macos")]
+    async fn blank_and_remember(
+        &self,
+        port: u16,
+        tool: &str,
+        args: Value,
+        bound: Duration,
+    ) -> Result<Vec<ReplyPart>, String> {
+        let deadline = tokio::time::Instant::now() + bound;
+        let before = blank_snapshot(port).await;
+        let answer = self.call_raw(tool, args, left(deadline)).await?;
+        match created_blank(port, &before, left(deadline).min(DISCOVER_BOUND)).await {
+            Some(target) => {
+                *self.opened_blank.lock().unwrap_or_else(PoisonError::into_inner) = Some(target);
+            }
+            None => self.unidentified(port),
+        }
+        Ok(answer)
+    }
+
+    /// **A tab whose target never showed in `/json/list` is named**, not
+    /// navigated silently: the wait is skipped, and the skip is the record.
+    #[cfg(target_os = "macos")]
+    fn unidentified(&self, port: u16) {
+        tauri_plugin_log::log::warn!(
+            "a tab opened blank could not be identified before its navigation (event_name \
+             cef_passkey_tab_unidentified, port {port}, profile {})",
+            self.profile
+                .as_deref()
+                .map_or_else(|| "-".to_owned(), |profile| profile.display().to_string()),
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn take_opened_blank(&self) -> Option<String> {
+        self.opened_blank.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 
     /// The dispatch itself, unguarded: the guard's own tab list runs through
@@ -468,6 +645,81 @@ fn parts_of(result: &rmcp::model::CallToolResult) -> Result<Vec<ReplyPart>, Stri
         }
     }
     Ok(parts)
+}
+
+/// The URL a `browser_tabs new` call names, when it names one. **The tab is
+/// opened without it**, so the veto can be registered before the document
+/// the URL starts exists.
+#[cfg(target_os = "macos")]
+pub fn blank_first_url(tool: &str, args: &Value) -> Option<String> {
+    if tool != "browser_tabs" || args.get("action").and_then(Value::as_str) != Some("new") {
+        return None;
+    }
+    args.get("url").and_then(Value::as_str).filter(|url| !url.is_empty()).map(str::to_owned)
+}
+
+/// Whether the call opens a tab with no URL, which lands on the blank
+/// document the installer arms by itself.
+#[cfg(target_os = "macos")]
+pub fn is_blank_tab_open(tool: &str, args: &Value) -> bool {
+    tool == "browser_tabs"
+        && args.get("action").and_then(Value::as_str) == Some("new")
+        && args.get("url").and_then(Value::as_str).filter(|url| !url.is_empty()).is_none()
+}
+
+/// The port in a host endpoint like `http://127.0.0.1:9411`.
+#[cfg(desktop)]
+pub fn endpoint_port(endpoint: &str) -> Option<u16> {
+    endpoint.strip_prefix("http://127.0.0.1:")?.trim_end_matches('/').parse().ok()
+}
+
+/// The page targets on the host before a creation, so the one it made can be
+/// told from the ones that were already there.
+#[cfg(target_os = "macos")]
+async fn blank_snapshot(port: u16) -> std::collections::HashSet<String> {
+    super::cef::spawn::page_targets(port).await.into_iter().map(|(id, _)| id).collect()
+}
+
+/// The about:blank target a creation added, found by diffing the target list
+/// against the snapshot. Bounded: a creation that never shows a blank target
+/// answers `None`, and the call proceeds unwaited rather than hanging.
+#[cfg(target_os = "macos")]
+async fn created_blank(
+    port: u16,
+    before: &std::collections::HashSet<String>,
+    budget: Duration,
+) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        for (id, url) in super::cef::spawn::page_targets(port).await {
+            if url == "about:blank" && !before.contains(&id) {
+                return Some(id);
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Wait, bounded, for the installer to arm ONE target. **Bounded, not a
+/// guarantee**: a tab the installer could not arm still navigates, with the
+/// miss named by port and profile.
+#[cfg(target_os = "macos")]
+async fn wait_target_armed(port: u16, target: &str, profile: Option<&Path>, budget: Duration) {
+    let deadline = tokio::time::Instant::now() + budget;
+    while !super::cef::veto::target_armed(port, target) {
+        if tokio::time::Instant::now() >= deadline {
+            tauri_plugin_log::log::warn!(
+                "a tab opened blank was not armed before its navigation (event_name \
+                 cef_passkey_veto_unarmed_tab, port {port}, profile {})",
+                profile.map_or_else(|| "-".to_owned(), |profile| profile.display().to_string()),
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 /// The tabs a `browser_tabs` list answer names, as (index, url) pairs. The
@@ -697,6 +949,103 @@ mod tests {
         );
 
         assert!(browser_tabs_of("no tabs here").is_empty());
+    }
+
+    /// **Only a new-tab call with a URL is rewritten.** A list, a select, or
+    /// a new tab with no URL keeps its single call, and navigation is not a
+    /// tab call at all.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_a_new_tab_with_a_url_opens_blank_first() {
+        let with_url = json!({ "action": "new", "url": "https://example.com/job" });
+        assert_eq!(
+            blank_first_url("browser_tabs", &with_url),
+            Some("https://example.com/job".to_owned())
+        );
+        assert_eq!(blank_first_url("browser_tabs", &json!({ "action": "new" })), None);
+        assert_eq!(blank_first_url("browser_tabs", &json!({ "action": "new", "url": "" })), None,);
+        assert_eq!(blank_first_url("browser_tabs", &json!({ "action": "list" })), None);
+        assert_eq!(
+            blank_first_url("browser_navigate", &json!({ "url": "https://example.com" })),
+            None,
+        );
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn a_host_endpoint_names_its_port() {
+        assert_eq!(endpoint_port("http://127.0.0.1:9411"), Some(9411));
+        assert_eq!(endpoint_port("http://127.0.0.1:9411/"), Some(9411));
+        assert_eq!(endpoint_port("https://example.com"), None);
+        assert_eq!(endpoint_port("http://127.0.0.1:notaport"), None);
+    }
+
+    /// **The tab a call created is told from the pages already open**: the
+    /// driver diffs `/json/list` around the creation, so the wait names the
+    /// new blank target and not whatever page happened to be there.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_created_blank_tab_is_told_from_the_pages_before_it() {
+        let list =
+            super::super::cef::veto::testing::list_endpoint().await.expect("the list endpoint");
+        list.set(vec![("T1".to_owned(), "about:blank".to_owned())]);
+        let before = blank_snapshot(list.port).await;
+        assert!(before.contains("T1"), "the snapshot sees the page that was open");
+
+        list.set(vec![
+            ("T1".to_owned(), "about:blank".to_owned()),
+            ("T2".to_owned(), "about:blank".to_owned()),
+            ("T3".to_owned(), "https://example.com/".to_owned()),
+        ]);
+        let created = created_blank(list.port, &before, DISCOVER_BOUND).await;
+        assert_eq!(created.as_deref(), Some("T2"), "the creation is the new blank target");
+    }
+
+    /// **The wait is on that tab's own ack, and it is bounded.** One target's
+    /// arm does not release another's wait, and an unarmed tab ends at the
+    /// bound with the miss named - on a paused clock, so the bound is
+    /// measured, not raced against the machine.
+    #[cfg(target_os = "macos")]
+    #[tokio::test(start_paused = true)]
+    async fn the_tab_wait_is_per_target_and_bounded() {
+        static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        struct Capture;
+        impl tauri_plugin_log::log::Log for Capture {
+            fn enabled(&self, _metadata: &tauri_plugin_log::log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &tauri_plugin_log::log::Record<'_>) {
+                LOGGED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(record.args().to_string());
+            }
+            fn flush(&self) {}
+        }
+        static CAPTURE: Capture = Capture;
+        if tauri_plugin_log::log::set_logger(&CAPTURE).is_ok() {
+            tauri_plugin_log::log::set_max_level(tauri_plugin_log::log::LevelFilter::Trace);
+        }
+
+        let port = 9_999;
+        super::super::cef::veto::testing::mark_armed(port, "T1");
+        let began = tokio::time::Instant::now();
+        wait_target_armed(port, "T1", None, ARM_BOUND).await;
+        assert!(began.elapsed() < Duration::from_secs(1), "its own arm releases it at once");
+
+        let began = tokio::time::Instant::now();
+        wait_target_armed(port, "T2", None, ARM_BOUND).await;
+        assert!(
+            began.elapsed() >= Duration::from_secs(3),
+            "another target's arm must not release this wait: {:?}",
+            began.elapsed(),
+        );
+        assert!(began.elapsed() < Duration::from_secs(4), "and the bound ends the wait");
+        let logged = LOGGED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert!(
+            logged.iter().any(|line| line.contains("cef_passkey_veto_unarmed_tab")),
+            "the miss is named: {logged:?}",
+        );
     }
 
     /// The start's own empty-origin gate, pinned beside the tab refusals.

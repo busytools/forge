@@ -128,10 +128,16 @@ fn stop_on_termination() {
     }
 }
 
+/// **The host's first act, before CEF initializes.** The application check
+/// (`tests/app_ivars.rs`) runs this same function, so a setup removed here
+/// fails that check rather than only being missed at launch.
+pub fn begin() {
+    super::client_application::setup();
+}
+
 /// The host process's whole life.
 pub fn run(args: Args) -> ! {
-    // AppKit's application object, before CEF initializes.
-    super::client_application::setup();
+    begin();
     stop_on_termination();
 
     // **A background app is napped.** A host with no window of its own reads
@@ -171,15 +177,16 @@ pub fn run(args: Args) -> ! {
     // transparent, and the takeover's dark ground shows through it as a
     // blank surface; the app's own background is what the browser fills.
     let browser_settings = BrowserSettings { background_color: 0xFF04_050A, ..Default::default() };
-    // **The page a hand-off or strip show prepared comes back with the
-    // host.** The client writes it beside the profile on every raise; a
-    // launch after a client restart opens it rather than a blank page. Only
-    // a web address is honoured - anything else opens blank.
-    let carried = carried_page(&args.profile);
+    // **The host opens blank, and the client navigates the carried page.**
+    // The page a hand-off or strip prepared is written beside the profile;
+    // opening it here would race the veto, because this document starts
+    // before the installer exists. The client navigates to it once the veto
+    // is registered, and that navigation is the first document the page's
+    // own script runs in.
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
         Some(&mut client),
-        Some(&CefString::from(carried.as_str())),
+        Some(&CefString::from("about:blank")),
         Some(&browser_settings),
         None,
         None,

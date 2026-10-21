@@ -1219,6 +1219,24 @@ impl BrowserHost {
                             profile: cache.to_path_buf(),
                         });
                         self.hosts.lock().await.insert(cache.to_path_buf(), Arc::clone(&host));
+                        // **An adopted host keeps serving when its veto
+                        // cannot be armed**: its page is already open, and
+                        // the failure is named rather than taking the browser
+                        // away. It is tried twice, because a host that was
+                        // still starting when the client adopted it is the
+                        // one case a later use cannot recover from itself.
+                        #[cfg(target_os = "macos")]
+                        for attempt in 0..2 {
+                            match cef::veto::install(record.port, cache, None).await {
+                                Ok(_) => break,
+                                Err(failure) => tauri_plugin_log::log::warn!(
+                                    "the passkey veto could not be armed on an adopted host \
+                                     (event_name cef_passkey_veto_failed, profile {}, attempt \
+                                     {attempt}): {failure}",
+                                    cache.display(),
+                                ),
+                            }
+                        }
                         return Ok(host);
                     }
                     Err(why) => {
@@ -1272,6 +1290,10 @@ impl BrowserHost {
         // reason stops at the first attempt's words.
         let mut launched: Option<(u32, u16, String)> = None;
         let mut last = String::new();
+        #[cfg(target_os = "macos")]
+        let mut veto_retried = false;
+        #[cfg(target_os = "macos")]
+        let mut veto_why: Option<String> = None;
         for _ in 0..3 {
             let port = cef::spawn::free_port()
                 .ok_or_else(|| "no free port for a browser host's devtools endpoint".to_owned())?;
@@ -1298,6 +1320,68 @@ impl BrowserHost {
                         "browser launch: the endpoint answered (event_name cef_launch_stage, stage \
                          ready, pid {pid}, port {port})",
                     );
+                    // **A host that cannot pause its targets is replaced
+                    // once.** Nothing drives a profile whose pages cannot be
+                    // vetoed; a second failure ends the launch rather than
+                    // serving one unvetoed.
+                    #[cfg(target_os = "macos")]
+                    let carried = cef::host::carried_page(cache);
+                    #[cfg(target_os = "macos")]
+                    let carried = (carried != "about:blank").then_some(carried);
+                    #[cfg(target_os = "macos")]
+                    let carried_url = carried.clone();
+                    #[cfg(target_os = "macos")]
+                    match cef::veto::install(port, cache, carried).await {
+                        Ok(cef::veto::Carried::Failed(why)) => {
+                            // **A carried page that did not open is named and
+                            // held.** The marker and the hold both stay, so
+                            // the next LAUNCH opens it and a client restart
+                            // cannot erase it. Nothing retries it from the
+                            // Open path: a probe there cannot see a commit.
+                            tauri_plugin_log::log::warn!(
+                                "the carried page did not open (event_name \
+                                 cef_carried_page_failed, profile {}): {why}",
+                                cache.display(),
+                            );
+                            if let Some(url) = &carried_url {
+                                hold_carry(cache, url);
+                            }
+                        }
+                        Ok(cef::veto::Carried::Opened) => {
+                            // **Accepted is not landed.** The hold waits for a
+                            // raise to read a non-blank page.
+                            if let Some(url) = &carried_url {
+                                hold_carry(cache, url);
+                            }
+                        }
+                        Ok(cef::veto::Carried::None) => {}
+                        Err(failure) => {
+                            cef::spawn::end(pid).await;
+                            cef::osr::Ring::unlink(&ring_name);
+                            cef::spawn::remove_record(cache);
+                            if veto_retried {
+                                tauri_plugin_log::log::warn!(
+                                    "the passkey veto failed twice; the host is not served \
+                                     (event_name cef_passkey_veto_failed, profile {}, port \
+                                     {port}): {failure}",
+                                    cache.display(),
+                                );
+                                return Err(format!(
+                                    "the browser host could not be vetoed: {failure}"
+                                ));
+                            }
+                            tauri_plugin_log::log::warn!(
+                                "the passkey veto failed; the host is torn down and relaunched \
+                                 once (event_name cef_passkey_veto_failed, profile {}, port \
+                                 {port}): {failure}",
+                                cache.display(),
+                            );
+                            veto_why = Some(failure.to_string());
+                            last = format!("the browser host could not be vetoed: {failure}");
+                            veto_retried = true;
+                            continue;
+                        }
+                    }
                     launched = Some((pid, port, ring_name));
                     break;
                 }
@@ -1310,6 +1394,15 @@ impl BrowserHost {
             }
         }
         let Some((pid, port, ring_name)) = launched else {
+            // **The veto's own reason survives a later attempt's failure**:
+            // a relaunch that died at the endpoint must not read as if the
+            // veto had never been in question.
+            #[cfg(target_os = "macos")]
+            if let Some(veto) = veto_why
+                && !last.contains(&veto)
+            {
+                return Err(format!("{last}; {veto}"));
+            }
             return Err(last);
         };
         let ring = match cef::osr::Ring::open(&ring_name) {
@@ -1541,16 +1634,35 @@ impl BrowserHost {
         // before the surface comes up, and an already-attached host would
         // otherwise answer with a deduped silence until its history moved.
         cef::surface::refresh_history();
-        // **The page this raise shows is the page a restart reopens.** The
-        // probe is outside the lock (its 2 s bound must not hold every
-        // launch), and the write takes the short lock a call's refresh does.
-        // A probe that finds nothing keeps the previous carry rather than
-        // clearing it.
+        // **The page this raise shows is the page a restart reopens.** A
+        // held carry releases only to a real page read; the retry for a
+        // carry that never opened belongs to the next LAUNCH, which is the
+        // one place the navigation is cheap and honest to repeat.
         if let Some(url) = cef::spawn::page_url(host.port).await {
-            let _launching = self.launch.lock().await;
-            write_carried_page(&cache, Some(&url));
+            self.record_carry(&cache, &url).await;
         }
         Ok(host)
+    }
+
+    /// The raise's and the browsing call's write: a non-web read on a held
+    /// profile keeps both the marker and the hold; anything else writes the
+    /// marker and lifts the hold. **No retry here** - a retry belongs to the
+    /// next launch, which opens the held page.
+    #[cfg(desktop)]
+    async fn record_carry(&self, cache: &Path, url: &str) {
+        let _launching = self.launch.lock().await;
+        // **A held carry waits for a REAL page.** The engine's own error page
+        // (`chrome-error://chromewebdata/`) is what a failed launch leaves,
+        // and releasing on it would erase the page the hold exists for - so
+        // every non-web read keeps the hold.
+        if held_carry(cache).is_some() && !is_web_page(url) {
+            return;
+        }
+        // **The marker is written before the hold lifts**: a hold beside an
+        // old marker is a page the next launch retries; a lifted hold beside
+        // a failed write would leave nothing.
+        write_carried_page(cache, Some(url));
+        release_carry(cache);
     }
 
     /// Refresh the carried page from the host's own target.
@@ -1584,8 +1696,7 @@ impl BrowserHost {
         // or non-web one - may rewrite or clear it; a transient /json/list
         // fault must not wipe the page the next launch would open.
         if let Some(url) = cef::spawn::page_url(port).await {
-            let _launching = self.launch.lock().await;
-            write_carried_page(cache, Some(&url));
+            self.record_carry(cache, &url).await;
         }
     }
 
@@ -2196,6 +2307,53 @@ fn write_carried_page(cache: &Path, url: Option<&str>) {
         );
         let _ = std::fs::remove_file(&temp);
     }
+}
+
+/// The carried URL whose navigation has not been seen to land.
+///
+/// **On disk, not in memory**: a client restart adopts the host, probes the
+/// blank page it left, and would otherwise erase the marker - the one case
+/// the marker exists for. A non-blank page read releases it.
+#[cfg(desktop)]
+fn carry_hold_path(cache: &Path) -> std::path::PathBuf {
+    cache.join("page-unopened")
+}
+
+/// Written the way the marker is: temp file, then rename, so a reader never
+/// sees a half-written hold.
+#[cfg(target_os = "macos")]
+fn hold_carry(cache: &Path, url: &str) {
+    let temp = cache.join("page-unopened.tmp");
+    if let Err(why) =
+        std::fs::write(&temp, url).and_then(|()| std::fs::rename(&temp, carry_hold_path(cache)))
+    {
+        tauri_plugin_log::log::warn!(
+            "the carry hold could not be written (event_name cef_page_hold_failed, profile {}, \
+             {why})",
+            cache.display(),
+        );
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
+#[cfg(desktop)]
+fn held_carry(cache: &Path) -> Option<String> {
+    std::fs::read_to_string(carry_hold_path(cache))
+        .ok()
+        .map(|url| url.trim().to_owned())
+        .filter(|url| is_web_page(url))
+}
+
+/// Whether a read is a page the next launch could reopen: an origin the
+/// engine loads, not its blank state or its own error page.
+#[cfg(desktop)]
+fn is_web_page(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+#[cfg(desktop)]
+fn release_carry(cache: &Path) {
+    let _ = std::fs::remove_file(carry_hold_path(cache));
 }
 
 /// Why a named profile cannot be used on the phone yet. One sentence, and
@@ -3287,6 +3445,9 @@ mod tests {
         ring: String,
         ring_value: Arc<cef::osr::Ring>,
         named_ring: Option<Arc<cef::osr::Ring>>,
+        /// The host's `/json/list` and `/json/version`, which a test can
+        /// script read by read so a created tab appears when it should.
+        list: cef::veto::testing::ListStub,
     }
 
     #[cfg(target_os = "macos")]
@@ -3324,6 +3485,7 @@ mod tests {
             let body = r#"import sys, json, os, ctypes
 ANSWERS = json.load(open("__ANSWERS__"))
 CALLS = "__CALLS__"
+CALLS_ARGS = "__CALLS_ARGS__"
 CUE = "__CUE__"
 RING_FILE = "__RING_FILE__"
 ONCE = ANSWERS.get("__once__", {})
@@ -3383,6 +3545,8 @@ for line in sys.stdin:
         name = message.get("params", {}).get("name", "")
         with open(CALLS, "a") as log:
             log.write(name + "\n")
+        with open(CALLS_ARGS, "a") as log:
+            log.write(name + " " + json.dumps(message.get("params", {}).get("arguments", {})) + "\n")
         sent, applied = cue_state()
         with open(CUE, "a") as log:
             log.write("%s %d %d\n" % (name, sent, applied))
@@ -3402,6 +3566,10 @@ for line in sys.stdin:
 "#
             .replace("__ANSWERS__", &answers_path.display().to_string())
             .replace("__CALLS__", &dir.path().join("calls.log").display().to_string())
+            .replace(
+                "__CALLS_ARGS__",
+                &dir.path().join("calls-args.log").display().to_string(),
+            )
             .replace("__CUE__", &dir.path().join("cue.log").display().to_string())
             .replace("__RING_FILE__", &ring_file.display().to_string())
             .replace("__ONCE__", &dir.path().join("once.flag").display().to_string())
@@ -3424,31 +3592,9 @@ for line in sys.stdin:
                 .expect("the stub host is executable");
             let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a port");
             let port = listener.local_addr().expect("the address").port();
-            listener.set_nonblocking(true).expect("non-blocking");
-            std::thread::spawn(move || {
-                use std::io::{Read as _, Write as _};
-                loop {
-                    match listener.accept() {
-                        Ok((mut socket, _)) => {
-                            let mut buffer = [0_u8; 2048];
-                            let read = socket.read(&mut buffer).unwrap_or(0);
-                            let request = String::from_utf8_lossy(&buffer[..read]);
-                            let body = if request.starts_with("GET /json/list") {
-                                r#"[{"type":"page","url":"https://example.com/after-call"}]"#
-                            } else {
-                                r#"{"Browser":"Chrome/154.0"}"#
-                            };
-                            let answer = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                                body.len()
-                            );
-                            let _ = socket.write_all(answer.as_bytes());
-                        }
-                        Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
-                    }
-                }
-            });
+            drop(listener);
+            let list = cef::veto::testing::list_on(port).await.expect("the list endpoint");
+            list.set(vec![("T0".to_owned(), "https://example.com/after-call".to_owned())]);
             let ring_name = ring.to_owned();
             let ring_value = Arc::new(cef::osr::Ring::create(&ring_name, 64, 64).expect("a ring"));
             let pid = cef::spawn::spawn_with(&stub_host, &cache, port, &ring_name, 800, 600)
@@ -3470,7 +3616,17 @@ for line in sys.stdin:
             // **A host that applies every cue**, as the host loop does:
             // without it each call's bounded wait burns its full 100 ms.
             acknowledge_cues(Arc::clone(&ring_value));
-            Self { dir, host, cache, pid, port, ring: ring_name, ring_value, named_ring: None }
+            Self {
+                dir,
+                host,
+                cache,
+                pid,
+                port,
+                ring: ring_name,
+                ring_value,
+                named_ring: None,
+                list,
+            }
         }
 
         /// The same stub host behind a named profile's cache root, so the
@@ -3527,6 +3683,18 @@ for line in sys.stdin:
                 .unwrap_or_default()
                 .lines()
                 .count()
+        }
+
+        /// Each call's tool and the arguments it carried.
+        fn call_args(&self) -> Vec<(String, serde_json::Value)> {
+            std::fs::read_to_string(self.dir.path().join("calls-args.log"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| {
+                    let (tool, args) = line.split_once(' ')?;
+                    Some((tool.to_owned(), serde_json::from_str(args).ok()?))
+                })
+                .collect()
         }
 
         /// The tool names the stub was asked for, in order.
@@ -3610,6 +3778,264 @@ for line in sys.stdin:
             "the cue was sent and applied before the call reached the driver: {cues:?}"
         );
 
+        stub.shutdown().await;
+    }
+
+    /// **A tab opened at a URL is opened blank first, waits for THAT target's
+    /// arm, then navigates.** The stub's `/json/list` grows the created
+    /// target after the driver's snapshot, so the wait really runs: pre-armed
+    /// it releases at once, unarmed it spends its bound. Deleting either
+    /// wait leaves both calls in the same order but makes the unarmed case
+    /// fast, which is what this reds on.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_new_tab_with_a_url_opens_blank_first() {
+        let reads = vec![
+            vec![("T0".to_owned(), "https://example.com/after-call".to_owned())],
+            vec![
+                ("T0".to_owned(), "https://example.com/after-call".to_owned()),
+                ("T1".to_owned(), "about:blank".to_owned()),
+            ],
+        ];
+
+        // Pre-armed: the wait releases on that id at once, on a warm driver,
+        // so the bound here really separates "not waited out" from the 3 s
+        // wait; the unarmed case below is the other half.
+        let stub = StubHost::start(
+            "/forge-cef-blank-first-test",
+            &json!({
+                "browser_tabs": { "content": [{ "type": "text", "text": "listing" }] },
+                "__once__": {
+                    "browser_tabs": { "content": [{ "type": "text", "text": "creation" }] },
+                },
+            }),
+        )
+        .await;
+        stub.list.sequence(reads.clone());
+        cef::veto::testing::mark_armed(stub.port, "T1");
+        // **The driver starts before the clock**: a cold start is the app's
+        // cost, not the wait's, and timing it here would measure the wrong
+        // thing (measured cold on a loaded machine: 7.2 s).
+        stub.host.call(&seat(), "browser_snapshot", json!({})).await.expect("the driver is warm");
+        // **The warm call consumed the scripted list.** Its `refresh_carry`
+        // reads `/json/list`, so the sequence is set again for the timed
+        // call; without this the snapshot already holds the created target
+        // and the wait never runs.
+        stub.list.sequence(reads.clone());
+        let began = std::time::Instant::now();
+        let parts = stub
+            .host
+            .call(
+                &seat(),
+                "browser_tabs",
+                json!({ "action": "new", "url": "https://example.com/job" }),
+            )
+            .await
+            .expect("the tab opens");
+        let armed_elapsed = began.elapsed();
+        assert!(
+            armed_elapsed < std::time::Duration::from_secs(2),
+            "an already-armed tab is not waited out: {armed_elapsed:?}",
+        );
+
+        let calls = stub.call_args();
+        let (tab_index, tab) = calls
+            .iter()
+            .enumerate()
+            .find(|(_, (tool, _))| tool == "browser_tabs")
+            .expect("the tab creation reached the driver");
+        let (nav_index, nav) = calls
+            .iter()
+            .enumerate()
+            .find(|(_, (tool, _))| tool == "browser_navigate")
+            .expect("the navigation reached the driver");
+        assert!(tab_index < nav_index, "the tab opens before it is navigated: {calls:?}");
+        assert!(
+            tab.1.get("url").is_none(),
+            "the tab opens without a url, so the veto registers first: {calls:?}",
+        );
+        assert_eq!(
+            nav.1.get("url").and_then(serde_json::Value::as_str),
+            Some("https://example.com/job"),
+            "the navigation carries the url the call named",
+        );
+        // **The reply is the tabs after the navigation**, not the blank
+        // creation's own answer: the stub answers the first `browser_tabs`
+        // call "creation" and every later one "listing".
+        let (last_tool, last_args) = calls.last().expect("the rewrite sends a last call");
+        assert_eq!(last_tool, "browser_tabs", "the answer is a tab listing: {calls:?}");
+        assert_eq!(
+            last_args.get("action").and_then(serde_json::Value::as_str),
+            Some("list"),
+            "taken after the navigation: {calls:?}",
+        );
+        assert_eq!(
+            parts,
+            vec![driver::ReplyPart::Text { text: "listing".to_owned() }],
+            "the call answers with the listing, not the blank creation's reply",
+        );
+
+        stub.shutdown().await;
+
+        // Unarmed: the wait runs to its bound before the navigation.
+        let stub = StubHost::start("/forge-cef-blank-bound-test", &json!({})).await;
+        stub.list.sequence(reads);
+        let began = std::time::Instant::now();
+        stub.host
+            .call(
+                &seat(),
+                "browser_tabs",
+                json!({ "action": "new", "url": "https://example.com/job" }),
+            )
+            .await
+            .expect("the tab opens");
+        assert!(
+            began.elapsed() >= std::time::Duration::from_millis(2_500),
+            "the unarmed tab's wait runs to its bound: {:?}",
+            began.elapsed(),
+        );
+
+        stub.shutdown().await;
+    }
+
+    /// **A `new` clears the recorded blank it replaces.** A tab opened blank
+    /// records its target; the next `new` - here one with a URL - must drop
+    /// that record, or a later navigation waits on a stale, unarmed target.
+    /// That stale wait would run its 3 s bound, so the fast navigation is
+    /// the signal.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_new_tab_clears_the_blank_it_replaces() {
+        // One read per consumer: the blank call's snapshot, its created-target
+        // discovery, the refresh after that successful call, then the URL
+        // call's snapshot and its discovery - so T2 appears only after its
+        // snapshot, which is the branch this test's name claims.
+        let reads = vec![
+            vec![("T0".to_owned(), "https://example.com/after-call".to_owned())],
+            vec![
+                ("T0".to_owned(), "https://example.com/after-call".to_owned()),
+                ("T1".to_owned(), "about:blank".to_owned()),
+            ],
+            vec![
+                ("T0".to_owned(), "https://example.com/after-call".to_owned()),
+                ("T1".to_owned(), "about:blank".to_owned()),
+            ],
+            vec![
+                ("T0".to_owned(), "https://example.com/after-call".to_owned()),
+                ("T1".to_owned(), "about:blank".to_owned()),
+            ],
+            vec![
+                ("T0".to_owned(), "https://example.com/after-call".to_owned()),
+                ("T1".to_owned(), "about:blank".to_owned()),
+                ("T2".to_owned(), "about:blank".to_owned()),
+            ],
+        ];
+        let stub = StubHost::start("/forge-cef-new-clears-test", &json!({})).await;
+        stub.list.sequence(reads);
+        // T1, the blank the first call records, is deliberately unarmed; T2,
+        // the tab the second call creates, is armed so that call stays quick.
+        cef::veto::testing::mark_armed(stub.port, "T2");
+        stub.host
+            .call(&seat(), "browser_tabs", json!({ "action": "new" }))
+            .await
+            .expect("the blank tab opens");
+        stub.host
+            .call(
+                &seat(),
+                "browser_tabs",
+                json!({ "action": "new", "url": "https://example.com/job" }),
+            )
+            .await
+            .expect("the tab opens");
+
+        let began = std::time::Instant::now();
+        stub.host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://example.com/next" }))
+            .await
+            .expect("the navigation runs");
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(2),
+            "a stale blank record made the navigation wait: {:?}",
+            began.elapsed(),
+        );
+        stub.shutdown().await;
+    }
+
+    /// **A failed post-navigation listing is said, not hidden.** The stub
+    /// answers the creation, then refuses the listing; the call still
+    /// succeeds (the tab exists) but carries the refusal as its own text and
+    /// logs `cef_passkey_tab_list_failed`.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_failed_listing_after_a_navigation_is_named() {
+        static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        struct Capture;
+        impl tauri_plugin_log::log::Log for Capture {
+            fn enabled(&self, _metadata: &tauri_plugin_log::log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &tauri_plugin_log::log::Record<'_>) {
+                LOGGED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(record.args().to_string());
+            }
+            fn flush(&self) {}
+        }
+        static CAPTURE: Capture = Capture;
+        if tauri_plugin_log::log::set_logger(&CAPTURE).is_ok() {
+            tauri_plugin_log::log::set_max_level(tauri_plugin_log::log::LevelFilter::Trace);
+        }
+
+        let stub = StubHost::start(
+            "/forge-cef-list-refused-test",
+            &json!({
+                "browser_tabs": [
+                    { "content": [{ "type": "text", "text": "creation" }] },
+                    { "isError": true, "content": [{ "type": "text", "text": "list refused" }] },
+                ],
+            }),
+        )
+        .await;
+        stub.list.sequence(vec![
+            vec![("T0".to_owned(), "https://example.com/after-call".to_owned())],
+            vec![
+                ("T0".to_owned(), "https://example.com/after-call".to_owned()),
+                ("T1".to_owned(), "about:blank".to_owned()),
+            ],
+        ]);
+        cef::veto::testing::mark_armed(stub.port, "T1");
+
+        let parts = stub
+            .host
+            .call(
+                &seat(),
+                "browser_tabs",
+                json!({ "action": "new", "url": "https://example.com/job" }),
+            )
+            .await
+            .expect("the tab exists, so the call answers");
+        // **Appended, not replaced**: the creation's own answer is still
+        // there, with the refusal as the second part.
+        assert_eq!(parts.len(), 2, "the creation answer carries the refusal beside it: {parts:?}");
+        assert_eq!(
+            parts.first(),
+            Some(&driver::ReplyPart::Text { text: "creation".to_owned() }),
+            "the creation's answer stays: {parts:?}",
+        );
+        let last = parts.last().expect("the answer carries a part");
+        match last {
+            driver::ReplyPart::Text { text } => {
+                assert!(text.contains("could not be refreshed"), "the refusal is said: {text}");
+                assert!(text.contains("list refused"), "and names its reason: {text}");
+            }
+            driver::ReplyPart::Image { .. } => panic!("the appended part is text: {parts:?}"),
+        }
+        let logged = LOGGED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert!(
+            logged.iter().any(|line| line.contains("cef_passkey_tab_list_failed")),
+            "the refusal is logged: {logged:?}",
+        );
         stub.shutdown().await;
     }
 
@@ -5090,5 +5516,377 @@ for line in sys.stdin:
         );
         let scout = all.iter().find(|row| row.name == "scout").expect("the other seat's row");
         assert_eq!(scout.owner, "Other/forge/lead", "a closed profile keeps its record's owner");
+    }
+
+    /// **An adopted host is vetoed before it serves.** The record a previous
+    /// client left names a live endpoint; the adoption path must arm the
+    /// pause on it, and the stub is the proof the pause was asked for.
+    #[cfg(all(target_os = "macos", feature = "testing"))]
+    #[tokio::test]
+    async fn an_adopted_host_is_vetoed_before_it_serves() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let cache = paths.cef_shared();
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        let stub = cef::veto::testing::endpoint().await.expect("the stub endpoint");
+        let ring_name = "/forge-cef-adoption-test".to_owned();
+        let _ring = cef::osr::Ring::create(&ring_name, 8, 8).expect("a ring");
+        cef::spawn::write_record(
+            &cache,
+            &cef::spawn::Record {
+                pid: std::process::id(),
+                port: stub.port,
+                ring: ring_name.clone(),
+            },
+        )
+        .expect("the record");
+
+        let adopted = host.browser_for_locked(&cache).await.expect("the host is adopted");
+        assert_eq!(adopted.port, stub.port, "the record's live host is the one adopted");
+        let attach = stub.first("Target.setAutoAttach").expect("the adoption armed the veto");
+        assert_eq!(
+            attach["params"]["waitForDebuggerOnStart"], true,
+            "a target created after adoption stops before its document runs",
+        );
+
+        cef::osr::Ring::unlink(&ring_name);
+        cef::spawn::remove_record(&cache);
+    }
+
+    /// **An adopted host keeps serving when its veto cannot be armed.** The
+    /// endpoint answers `/json/version` but refuses every DevTools socket, so
+    /// both tries fail; the adoption still answers the host rather than
+    /// taking a browser the person may be looking at away.
+    #[cfg(all(target_os = "macos", feature = "testing"))]
+    #[tokio::test]
+    async fn an_adopted_host_serves_even_when_it_cannot_be_vetoed() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let cache = paths.cef_shared();
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        let stub =
+            cef::veto::testing::endpoint_without_websocket().await.expect("the stub endpoint");
+        let ring_name = "/forge-cef-adoption-unvetoed".to_owned();
+        let _ring = cef::osr::Ring::create(&ring_name, 8, 8).expect("a ring");
+        cef::spawn::write_record(
+            &cache,
+            &cef::spawn::Record {
+                pid: std::process::id(),
+                port: stub.port,
+                ring: ring_name.clone(),
+            },
+        )
+        .expect("the record");
+
+        let adopted = host
+            .browser_for_locked(&cache)
+            .await
+            .expect("the host is still served when its veto cannot be armed");
+        assert_eq!(adopted.port, stub.port, "the record's live host is the one adopted");
+        assert!(stub.calls.lock().expect("the record").is_empty(), "no DevTools call got through");
+
+        cef::osr::Ring::unlink(&ring_name);
+        cef::spawn::remove_record(&cache);
+    }
+
+    /// **A held carry survives a client restart and a blank read.** The hold
+    /// is a file beside the profile, so a NEW host process over the same
+    /// cache keeps the marker when the adopted page reads about:blank - the
+    /// restart the marker exists for. A real page read releases it.
+    #[cfg(all(target_os = "macos", feature = "testing"))]
+    #[tokio::test]
+    async fn a_held_carry_survives_a_blank_read_and_a_restart() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let cache = paths.cef_shared();
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        write_carried_page(&cache, Some("https://example.com/keep"));
+        hold_carry(&cache, "https://example.com/keep");
+
+        // A fresh host: nothing held in memory survives a restart.
+        let host = BrowserHost::new(paths.clone());
+        host.record_carry(&cache, "about:blank").await;
+        assert_eq!(
+            std::fs::read_to_string(cache.join("page")).expect("the marker"),
+            "https://example.com/keep",
+            "a blank read keeps a held carry",
+        );
+        assert!(held_carry(&cache).is_some(), "and the hold stays for the next launch");
+
+        // **The engine's own error page is not a page either.** A launch that
+        // was accepted and then failed leaves `chrome-error://`, and
+        // releasing on it would erase exactly what the hold is for.
+        host.record_carry(&cache, "chrome-error://chromewebdata/").await;
+        assert_eq!(
+            std::fs::read_to_string(cache.join("page")).expect("the marker"),
+            "https://example.com/keep",
+            "an error page keeps a held carry",
+        );
+        assert!(held_carry(&cache).is_some(), "and the hold too");
+
+        host.record_carry(&cache, "https://example.com/next").await;
+        assert_eq!(
+            std::fs::read_to_string(cache.join("page")).expect("the marker"),
+            "https://example.com/next",
+            "a real page read rewrites the marker",
+        );
+        assert!(held_carry(&cache).is_none(), "and releases the hold");
+    }
+
+    /// A stand-in host process, for the launch path: `/json/version`, one
+    /// DevTools socket, and a line per process and per call in its profile.
+    #[cfg(all(target_os = "macos", feature = "testing"))]
+    /// `--no-websocket` refuses the upgrade, which is a host whose veto
+    /// cannot be armed.
+    const STUB_HOST: &str = r#"
+const crypto = require('node:crypto');
+const http = require('node:http');
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const port = Number(args[args.indexOf('--port') + 1]);
+const profile = args[args.indexOf('--profile') + 1];
+const log = profile + '/stub-calls.jsonl';
+const silent = args.includes('--no-websocket');
+const refuseNavigate = args.includes('--refuse-navigate');
+fs.appendFileSync(log, JSON.stringify({ started: port }) + '\n');
+function frame(text) {
+  const body = Buffer.from(text);
+  const head = body.length < 126
+    ? Buffer.from([0x81, body.length])
+    : Buffer.from([0x81, 126, body.length >> 8, body.length & 0xff]);
+  return Buffer.concat([head, body]);
+}
+const server = http.createServer((request, response) => {
+  if (request.url === '/json/version') {
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({
+      Browser: 'stub',
+      webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/stub`,
+    }));
+    return;
+  }
+  response.statusCode = 404;
+  response.end();
+});
+server.on('upgrade', (request, socket) => {
+  if (silent) { socket.destroy(); return; }
+  const accept = crypto.createHash('sha1')
+    .update(request.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+    .digest('base64');
+  socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+    + `Sec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  let buffered = Buffer.alloc(0);
+  socket.on('data', (chunk) => {
+    buffered = Buffer.concat([buffered, chunk]);
+    for (;;) {
+      if (buffered.length < 2) return;
+      const opcode = buffered[0] & 0x0f;
+      const masked = (buffered[1] & 0x80) !== 0;
+      let length = buffered[1] & 0x7f;
+      let at = 2;
+      if (length === 126) {
+        if (buffered.length < 4) return;
+        length = buffered.readUInt16BE(2);
+        at = 4;
+      } else if (length === 127) {
+        if (buffered.length < 10) return;
+        length = Number(buffered.readBigUInt64BE(2));
+        at = 10;
+      }
+      const maskAt = at;
+      const bodyAt = at + (masked ? 4 : 0);
+      if (buffered.length < bodyAt + length) return;
+      const payload = Buffer.from(buffered.subarray(bodyAt, bodyAt + length));
+      if (masked) for (let i = 0; i < payload.length; i++) payload[i] ^= buffered[maskAt + (i % 4)];
+      buffered = buffered.subarray(bodyAt + length);
+      if (opcode === 8) { socket.end(); return; }
+      if (opcode !== 1) continue;
+      const call = JSON.parse(payload.toString());
+      fs.appendFileSync(log, JSON.stringify({ method: call.method, params: call.params }) + '\n');
+      if (refuseNavigate && call.method === 'Page.navigate') {
+        socket.write(frame(JSON.stringify({
+          id: call.id,
+          error: { code: -32601, message: 'the navigation is refused' },
+        })));
+        continue;
+      }
+      socket.write(frame(JSON.stringify({ id: call.id, result: {} })));
+      if (call.method === 'Target.setAutoAttach') {
+        socket.write(frame(JSON.stringify({
+          method: 'Target.attachedToTarget',
+          params: {
+            sessionId: 'S1',
+            targetInfo: { targetId: 'T1', type: 'page' },
+            waitingForDebugger: call.params.waitForDebuggerOnStart === true,
+          },
+        })));
+      }
+    }
+  });
+});
+server.listen(port, '127.0.0.1');
+"#;
+
+    /// Write the stand-in host and the wrapper `spawn_with` executes, and
+    /// point the launch's spawn at it.
+    #[cfg(all(target_os = "macos", feature = "testing"))]
+    fn stub_host_process(dir: &Path, extra: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        // `.cjs`: the stub is CommonJS, and a `.mjs` there has no `require`.
+        let script = dir.join("stub-host.cjs");
+        std::fs::write(&script, STUB_HOST).expect("the stand-in host");
+        let wrapper = dir.join("stub-host.sh");
+        std::fs::write(
+            &wrapper,
+            format!("#!/bin/sh\nexec /usr/bin/env node '{}' {extra} \"$@\"\n", script.display()),
+        )
+        .expect("the wrapper");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+            .expect("the wrapper is executable");
+        wrapper
+    }
+
+    /// **A launch runs the installer before it holds a host, and refuses one
+    /// it cannot arm.** One test, two launches: the two stand-ins fight over
+    /// the same free-port range when Nextest runs tests side by side, and a
+    /// launch that reached the other's endpoint would prove nothing.
+    ///
+    /// The launch spawns a real process through the test's stand-in binary,
+    /// so the pid-wait and the teardown run for real, and the stub's own log
+    /// is the proof. A stub creates no ring, so the first launch ends at the
+    /// ring map - past the veto, which is the claim; the adoption test
+    /// covers the held host.
+    #[cfg(all(target_os = "macos", feature = "testing"))]
+    #[tokio::test]
+    async fn a_launch_vetoes_its_host_or_serves_nothing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let cache = paths.cef_shared();
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        // **A carried page the launch accepts keeps its hold** until a real
+        // page read: `Opened` is the navigation accepted, not landed.
+        let carried = "https://example.com/carried";
+        write_carried_page(&cache, Some(carried));
+        cef::spawn::set_test_host_binary(Some(stub_host_process(dir.path(), "")));
+
+        let launched = host.browser_for_locked(&cache).await;
+        cef::spawn::set_test_host_binary(None);
+
+        let why = launched.expect_err("a stub creates no ring, so the launch ends there");
+        assert!(!why.contains("vetoed"), "the veto installed before the ring was mapped: {why}");
+        let calls =
+            std::fs::read_to_string(cache.join("stub-calls.jsonl")).expect("the stub's log");
+        assert!(calls.contains("\"Target.setAutoAttach\""), "the launch armed the pause: {calls}",);
+        assert_eq!(
+            held_carry(&cache).as_deref(),
+            Some(carried),
+            "the launch held the carried page it opened: {calls}",
+        );
+        assert_eq!(
+            std::fs::read_to_string(cache.join("page")).expect("the marker"),
+            carried,
+            "and left the marker alone",
+        );
+        assert!(
+            cef::spawn::read_record(&cache).is_none(),
+            "a launch that did not complete left no record behind",
+        );
+        host.hosts.lock().await.clear();
+
+        // **A host whose pause cannot be armed is not served.** The endpoint
+        // answers but accepts no DevTools socket; the launch tears the first
+        // host down, relaunches once, and refuses rather than driving an
+        // unvetoed profile.
+        let refused = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: refused.path().join("stack"),
+            user_data: refused.path().join("user-data"),
+            output: refused.path().join("output"),
+            profiles: refused.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let cache = paths.cef_shared();
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        cef::spawn::set_test_host_binary(Some(stub_host_process(refused.path(), "--no-websocket")));
+
+        let launched = host.browser_for_locked(&cache).await;
+        cef::spawn::set_test_host_binary(None);
+
+        let why = launched.expect_err("an unvetoed host is never served");
+        assert!(why.contains("could not be vetoed"), "{why}");
+        let calls =
+            std::fs::read_to_string(cache.join("stub-calls.jsonl")).expect("the stub's log");
+        let launched_count = calls
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|line| line.get("started").is_some())
+            .count();
+        assert_eq!(launched_count, 2, "one relaunch, then a refusal: {calls}");
+        assert!(
+            cef::spawn::read_record(&cache).is_none(),
+            "the refused launch left no record behind",
+        );
+        host.hosts.lock().await.clear();
+
+        // **A carried navigation the engine refuses keeps its hold too.** The
+        // stub accepts the socket and arms the page, then refuses the
+        // navigation; the launch names it and holds the page it could not
+        // open, so the next launch retries it.
+        let refused_carry = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: refused_carry.path().join("stack"),
+            user_data: refused_carry.path().join("user-data"),
+            output: refused_carry.path().join("output"),
+            profiles: refused_carry.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let cache = paths.cef_shared();
+        std::fs::create_dir_all(&cache).expect("the cache root");
+        let carried = "https://example.com/refused";
+        write_carried_page(&cache, Some(carried));
+        cef::spawn::set_test_host_binary(Some(stub_host_process(
+            refused_carry.path(),
+            "--refuse-navigate",
+        )));
+
+        let launched = host.browser_for_locked(&cache).await;
+        cef::spawn::set_test_host_binary(None);
+
+        let why = launched.expect_err("a stub creates no ring, so the launch ends there");
+        assert!(!why.contains("vetoed"), "the veto installed: {why}");
+        assert_eq!(
+            held_carry(&cache).as_deref(),
+            Some(carried),
+            "a refused carried navigation holds the page",
+        );
+        assert_eq!(
+            std::fs::read_to_string(cache.join("page")).expect("the marker"),
+            carried,
+            "and keeps the marker",
+        );
+        host.hosts.lock().await.clear();
     }
 }

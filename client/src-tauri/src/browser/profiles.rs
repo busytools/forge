@@ -94,6 +94,8 @@ impl DriverStart<'_> {
         #[cfg(desktop)]
         {
             let driver = Driver::start(self.node, self.cli, self.endpoint, self.output).await?;
+            #[cfg(target_os = "macos")]
+            let driver = driver.serving(self.profile);
             Ok(driver)
         }
         #[cfg(target_os = "android")]

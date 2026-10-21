@@ -25,6 +25,8 @@ pub mod osr;
 pub mod spawn;
 #[cfg(target_os = "macos")]
 pub mod surface;
+#[cfg(target_os = "macos")]
+pub mod veto;
 
 use std::sync::OnceLock;
 

@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>passkey-parse</title>
+<p>The live probe's page: its own script calls WebAuthn at parse time.</p>
+<script>
+  // The verdict the live probe reads. A vetoed world answers
+  // `rejected:NotAllowedError`; this engine's own origin check answers
+  // `rejected:SecurityError`, so the two are told apart.
+  window.__result = 'pending';
+  navigator.credentials
+    .get({
+      publicKey: {
+        challenge: new Uint8Array(32),
+        rp: { name: 'forge probe' },
+        user: { id: new Uint8Array(16), name: 'u', displayName: 'u' },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+      },
+    })
+    .then(
+      function () {
+        window.__result = 'resolved';
+      },
+      function (e) {
+        window.__result = 'rejected:' + e.name;
+      },
+    );
+</script>
