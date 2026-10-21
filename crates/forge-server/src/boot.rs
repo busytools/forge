@@ -306,10 +306,13 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
         return Ok(());
     }
     let named: Vec<String> = unready.iter().map(forge_primitives::SessionSlot::display).collect();
+    let (subject, tail) = if unready.len() == 1 {
+        ("1 session".to_owned(), "its process tree may outlive")
+    } else {
+        (format!("{} sessions", unready.len()), "their process trees may outlive")
+    };
     anyhow::bail!(
-        "forge: {} session(s) did not finish teardown before the wait ran out ({}); their \
-         process trees may outlive this exit",
-        unready.len(),
+        "forge: {subject} did not finish teardown before the wait ran out ({}); {tail} this exit",
         named.join(", "),
     );
 }
@@ -322,12 +325,6 @@ mod tests {
 
     use forge_workspace::Workspace;
 
-    /// A bare boot fixture: one project whose account is base-url'd at a dead
-    /// local port (its boot probe fails in milliseconds rather than reaching
-    /// an endpoint), dictation off and a gateway port the OS just handed out,
-    /// so the wave's other steps no-op or park. The port is picked free and
-    /// then handed on - a busy box can take it in between, and the listener's
-    /// failed bind is logged rather than read here.
     /// A stop whose teardown ran out of budget exits non-zero and names
     /// what was still running; a clean stop is a success.
     #[test]
@@ -338,8 +335,22 @@ mod tests {
         let error = stop_result(std::slice::from_ref(&slot)).expect_err("a left tree is a failure");
         let rendered = format!("{error}");
         assert!(rendered.contains("org/proj/slow"), "the failure names the session: {rendered}");
+        assert!(rendered.contains("its process tree"), "one session reads as one: {rendered}");
+
+        let second = forge_primitives::SessionSlot::new("org", "proj", "slower");
+        let both = [slot, second];
+        let error = stop_result(&both).expect_err("two left trees are a failure");
+        let rendered = format!("{error}");
+        assert!(rendered.contains("2 sessions"), "two sessions read as two: {rendered}");
+        assert!(rendered.contains("their process trees"), "and take the plural: {rendered}");
     }
 
+    /// A bare boot fixture: one project whose account is base-url'd at a dead
+    /// local port (its boot probe fails in milliseconds rather than reaching
+    /// an endpoint), dictation off and a gateway port the OS just handed out,
+    /// so the wave's other steps no-op or park. The port is picked free and
+    /// then handed on - a busy box can take it in between, and the listener's
+    /// failed bind is logged rather than read here.
     fn boot_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
