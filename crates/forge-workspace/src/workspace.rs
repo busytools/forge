@@ -252,11 +252,6 @@ struct SeatDeath {
     shown: bool,
 }
 
-/// spawned [`forge_agent::Agent`] handles, one per active session.
-///
-/// Construct via [`Workspace::new`]; consume via
-/// [`Workspace::get_agent_handle`]; drain on exit via
-/// [`Workspace::shutdown`].
 /// Which operation holds a composed path. Re-entrancy needs the same
 /// owner AND the same operation, so a despawn cannot slip into a resume's
 /// claim on one label and delete the tree that resume already ensured.
@@ -297,6 +292,11 @@ impl Drop for WorktreeClaimGuard {
     }
 }
 
+/// spawned [`forge_agent::Agent`] handles, one per active session.
+///
+/// Construct via [`Workspace::new`]; consume via
+/// [`Workspace::get_agent_handle`]; drain on exit via
+/// [`Workspace::shutdown`].
 pub struct Workspace {
     /// Retained so error messages can reference the `forge.toml`
     /// path the workspace was constructed from, and so the per-account
@@ -796,7 +796,13 @@ impl Drop for DespawnCleanupPending {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResumeTarget {
     /// A prior session for the label, named by id.
-    Found(String),
+    Found {
+        session_id: String,
+        /// The matched tag row predates the `project` field, so the
+        /// adopting project must stamp it: the migration window is one
+        /// adoption, not one per project forever.
+        restamp: bool,
+    },
     /// The label has no prior session to resume.
     None,
 }
@@ -5846,7 +5852,7 @@ impl Workspace {
         label: &str,
     ) -> Result<ResumeTarget, anyhow::Error> {
         if let Some(session_id) = self.stored_session_id(org, project, label)? {
-            return Ok(ResumeTarget::Found(session_id));
+            return Ok(ResumeTarget::Found { session_id, restamp: false });
         }
         // The tag scan is what the store's cache is for: without it every
         // candidate transcript is read end to end, and the directory a
@@ -5870,9 +5876,62 @@ impl Workspace {
             persist_session_tag_cache(db.as_ref(), &cache);
         }
         Ok(match found? {
-            Some(session_id) => ResumeTarget::Found(session_id),
+            Some((session_id, restamp)) => {
+                if restamp {
+                    // A tag row that predates the project field can be
+                    // adopted from a directory only one declared project
+                    // composes: with two, the row could be either
+                    // project's, and adopting would hand one project the
+                    // other's conversation. Fail closed.
+                    let composing = self.projects_composing(run_dir, label);
+                    anyhow::ensure!(
+                        composing <= 1,
+                        "the transcript for '{label}' at '{}' predates project tags and {composing} \
+                         declared projects compose that directory, so which project it belongs to \
+                         is ambiguous",
+                        run_dir.display(),
+                    );
+                }
+                ResumeTarget::Found { session_id, restamp }
+            }
             None => ResumeTarget::None,
         })
+    }
+
+    /// Stamp an adopted pre-field transcript with the adopting project,
+    /// so a second project can never adopt it.
+    pub(crate) fn stamp_adopted_worker_transcript(
+        &self,
+        project_key: &crate::ProjectKey,
+        label: &str,
+        session_id: &str,
+        run_dir: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        let Some((org, name)) = self.project_identity_for_key(project_key) else {
+            anyhow::bail!("no configured project for {}", project_key.as_str());
+        };
+        let tag = forge_primitives::worker_tag(label);
+        forge_agent::userdata::catalog::mutations::tag_session(
+            &self.config_dir,
+            session_id,
+            Some(&tag),
+            &format!("{org}/{name}"),
+            Some(&run_dir.to_string_lossy()),
+        )
+        .map_err(anyhow::Error::from)
+    }
+
+    /// How many declared projects compose `run_dir` for `label`: their
+    /// worker worktrees would name the same directory.
+    fn projects_composing(&self, run_dir: &std::path::Path, label: &str) -> usize {
+        let composed = std::fs::canonicalize(run_dir).unwrap_or_else(|_| run_dir.to_path_buf());
+        self.list_projects()
+            .into_iter()
+            .filter(|view| {
+                let dir = crate::mcp::workers::types::worker_tag_dir(&view.path, label, true);
+                std::fs::canonicalize(&dir).unwrap_or(dir) == composed
+            })
+            .count()
     }
 
     /// Release the per-project respawn in-flight guard. Paired with
@@ -6787,7 +6846,13 @@ impl Workspace {
         };
         let guard = self.db.lock();
         let Some(db) = guard.as_ref() else {
-            return Ok(Vec::new());
+            // A store that is not open is not a project without rows: a
+            // caller deciding whether a path is free must refuse on the
+            // unknown.
+            anyhow::bail!(
+                "the session store is unavailable, so project '{project}' has no readable \
+                 worker rows"
+            );
         };
         Ok(crate::store::sessions::list_for_project(db, &org, &project)?
             .into_iter()
@@ -8161,15 +8226,25 @@ impl Workspace {
             slot = %session_key.display(),
             label = %label,
         );
-        let project =
-            self.project_identity_for_key(&project_key).map(|(org, name)| format!("{org}/{name}"));
+        let Some((org, name)) = self.project_identity_for_key(&project_key) else {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "worker_tag_project_unknown",
+                project = %project_key.as_str(),
+                label = %label,
+                "the worker's project is no longer configured, so its transcript is not tagged; \
+                 an unscoped row would be another project's to adopt",
+            );
+            return;
+        };
+        let project = format!("{org}/{name}");
         tokio::spawn(async move {
             let tag = forge_primitives::worker_tag(&label);
             let result = tag_session_with_retry(
                 &config_dir,
                 &session_id,
                 &tag,
-                project.as_deref(),
+                &project,
                 &effective_cwd.to_string_lossy(),
                 budget.max_attempts,
                 budget.delay,
@@ -8325,15 +8400,25 @@ impl Workspace {
             slot = %session_key.display(),
             label = %label,
         );
-        let project =
-            self.project_identity_for_key(&project_key).map(|(org, name)| format!("{org}/{name}"));
+        let Some((org, name)) = self.project_identity_for_key(&project_key) else {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "worker_tag_project_unknown",
+                project = %project_key.as_str(),
+                label = %label,
+                "the worker's project is no longer configured, so its transcript is not tagged; \
+                 an unscoped row would be another project's to adopt",
+            );
+            return;
+        };
+        let project = format!("{org}/{name}");
         tokio::spawn(async move {
             let tag = forge_primitives::worker_tag(&label);
             let result = tag_session_with_retry(
                 &config_dir,
                 &session_id,
                 &tag,
-                project.as_deref(),
+                &project,
                 &effective_cwd.to_string_lossy(),
                 WORKER_TAG_RETRY_ATTEMPTS,
                 WORKER_TAG_RETRY_DELAY,
@@ -8818,7 +8903,7 @@ async fn tag_session_with_retry(
     config_dir: &std::path::Path,
     session_id: &str,
     tag: &str,
-    project: Option<&str>,
+    project: &str,
     directory: &str,
     max_attempts: u32,
     delay: Duration,
@@ -14072,6 +14157,30 @@ mod workers_state_tests {
         assert!(ws.list_live_workers(&project).is_empty());
     }
 
+    /// A store that is not open is not "no rows": the collision guard
+    /// refuses on the unknown rather than admitting another project's
+    /// path.
+    #[test]
+    fn a_collision_refuses_when_a_projects_rows_cannot_be_read() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("proj-a", "/tmp/proj-a-unreadable");
+        ws.seed_test_project("proj-b", "/tmp/proj-b-unreadable");
+        let own = ws.project_key_for_name("proj-a").expect("proj-a");
+
+        let collision = ws.worktree_collision(
+            std::path::Path::new("/tmp/proj-b-unreadable/.claude/worktrees/shared"),
+            &own,
+            "shared",
+            WorktreeOp::Spawn,
+        );
+
+        let reason = collision.expect("an unreadable store refuses the path");
+        assert!(
+            reason.contains("could not read the worker rows"),
+            "the refusal names the unknown it is refusing on: {reason}",
+        );
+    }
+
     /// The claim on a composed path is repository-wide and atomic: one
     /// owner at a time, re-entrant only for the same project and label.
     #[test]
@@ -15169,7 +15278,7 @@ mod tag_retry_tests {
             cfg.path(),
             session_id,
             "forge:worker:smoke",
-            None,
+            "Default/forge",
             &cwd.path().to_string_lossy(),
             5,
             Duration::from_millis(10),
@@ -15200,7 +15309,7 @@ mod tag_retry_tests {
             cfg.path(),
             session_id,
             "forge:worker:smoke",
-            None,
+            "Default/forge",
             &cwd.path().to_string_lossy(),
             30,
             Duration::from_millis(50),
@@ -15224,7 +15333,7 @@ mod tag_retry_tests {
             cfg.path(),
             session_id,
             "forge:worker:smoke",
-            None,
+            "Default/forge",
             &cwd.path().to_string_lossy(),
             3,
             Duration::from_millis(10),
@@ -15249,7 +15358,7 @@ mod tag_retry_tests {
             cfg.path(),
             "not-a-valid-uuid",
             "forge:worker:smoke",
-            None,
+            "Default/forge",
             &cwd.path().to_string_lossy(),
             30,
             Duration::from_millis(500),
@@ -15508,7 +15617,10 @@ mod tag_retry_tests {
     #[tokio::test]
     async fn jsonl_present_clears_needs_tag() {
         let (workspace, mut rx) = Workspace::testing_stub();
-        let project_key = ProjectKey::new("forge");
+        // The tag row names its project, so the fixture needs one
+        // configured.
+        workspace.seed_test_project("forge", "/tmp/forge");
+        let project_key = workspace.project_key_for_name("forge").expect("seeded project");
         let session_id = "550e8400-e29b-41d4-a716-446655440011";
         let session_key = SessionSlot::worker("TestOrg", "forge", "prompt-driven");
         workspace.insert_live_worker(
@@ -15561,7 +15673,10 @@ mod tag_retry_tests {
     #[tokio::test]
     async fn opportunistic_retry_clears_flag_when_jsonl_appears() {
         let (workspace, mut rx) = Workspace::testing_stub();
-        let project_key = ProjectKey::new("forge");
+        // The tag row names its project, so the fixture needs one
+        // configured.
+        workspace.seed_test_project("forge", "/tmp/forge");
+        let project_key = workspace.project_key_for_name("forge").expect("seeded project");
         let session_id = "550e8400-e29b-41d4-a716-446655440012";
         let session_key = SessionSlot::worker("TestOrg", "forge", "idle");
         // Pre-state: worker is Running but needs_tag=true (it landed
@@ -15620,7 +15735,10 @@ mod tag_retry_tests {
     #[tokio::test]
     async fn worker_tag_re_applied_after_new_session_rekey() {
         let (workspace, mut rx) = Workspace::testing_stub();
-        let project_key = ProjectKey::new("forge");
+        // The tag row names its project, so the fixture needs one
+        // configured.
+        workspace.seed_test_project("forge", "/tmp/forge");
+        let project_key = workspace.project_key_for_name("forge").expect("seeded project");
 
         // Two distinct session_ids: first Connected, then post-/new.
         let session_id_1 = "550e8400-e29b-41d4-a716-446655440021";
@@ -15742,7 +15860,10 @@ mod tag_retry_tests {
     #[tokio::test]
     async fn git_repo_worker_tag_lands_under_worktree_path() {
         let (workspace, mut rx) = Workspace::testing_stub();
-        let project_key = ProjectKey::new("repo");
+        // The tag row names its project, so the fixture needs one
+        // configured.
+        workspace.seed_test_project("repo", "/tmp/repo");
+        let project_key = workspace.project_key_for_name("repo").expect("seeded project");
         let session_id = "550e8400-e29b-41d4-a716-446655440099";
         let session_key = SessionSlot::worker("TestOrg", "repo", "debugger");
 
@@ -15809,7 +15930,10 @@ mod tag_retry_tests {
     #[tokio::test]
     async fn git_repo_worker_opportunistic_retry_uses_worktree_path() {
         let (workspace, mut rx) = Workspace::testing_stub();
-        let project_key = ProjectKey::new("repo");
+        // The tag row names its project, so the fixture needs one
+        // configured.
+        workspace.seed_test_project("repo", "/tmp/repo");
+        let project_key = workspace.project_key_for_name("repo").expect("seeded project");
         let session_id = "550e8400-e29b-41d4-a716-446655440100";
         let session_key = SessionSlot::worker("TestOrg", "repo", "debugger");
 
@@ -16914,8 +17038,9 @@ provider = "anthropic"
             .expect("lookup");
         assert_eq!(
             found,
-            ResumeTarget::Found("aaaa".to_owned()),
-            "the label resolves to its newest transcript, which is what a despawn leaves behind",
+            ResumeTarget::Found { session_id: "aaaa".to_owned(), restamp: true },
+            "the label resolves to its newest transcript, which is what a despawn leaves behind; \
+             a pre-field row is flagged for stamping",
         );
     }
 
@@ -16937,7 +17062,7 @@ provider = "anthropic"
             .expect("lookup");
         assert_eq!(
             found,
-            ResumeTarget::Found("bbbb".to_owned()),
+            ResumeTarget::Found { session_id: "bbbb".to_owned(), restamp: false },
             "the row the label is registered under is what it opens as",
         );
     }
@@ -17710,6 +17835,149 @@ provider = "anthropic"
             Some(mine),
             "proj-b's own tagged session is the one resumed",
         );
+    }
+
+    /// A pre-field tag row is adopted once and stamped by that adoption:
+    /// the second project's resume skips it, and a later unstamped row in
+    /// a directory two projects compose is refused as ambiguous instead
+    /// of being handed to either.
+    #[tokio::test]
+    async fn a_pre_field_transcript_is_adopted_once_and_stamped() {
+        let repo = tempfile::tempdir().expect("repo");
+        let main = repo.path().join("main");
+        std::fs::create_dir_all(&main).expect("main dir");
+        run_git_in(&main, &["init", "-q"]);
+        run_git_in(&main, &["config", "user.email", "t@example.com"]);
+        run_git_in(&main, &["config", "user.name", "Test"]);
+        run_git_in(&main, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.join("README.md"), "seed").expect("write seed");
+        run_git_in(&main, &["add", "."]);
+        run_git_in(&main, &["commit", "-q", "-m", "init"]);
+        let main = std::fs::canonicalize(&main).expect("canonical main");
+        let holder = tempfile::tempdir().expect("holder");
+        let linked_a = holder.path().join("proj-a");
+        let linked_b = holder.path().join("proj-b");
+        run_git_in(
+            &main,
+            &["worktree", "add", "-q", "-b", "proj-a", linked_a.to_str().expect("utf8")],
+        );
+        run_git_in(
+            &main,
+            &["worktree", "add", "-q", "-b", "proj-b", linked_b.to_str().expect("utf8")],
+        );
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n\
+                 [[orgs.projects]]\nname = \"proj-a\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                linked_a.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let store = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+
+        let shared = main.join(".claude").join("worktrees").join("shared");
+        std::fs::create_dir_all(shared.parent().expect("worktrees root")).expect("mkdir");
+        run_git_in(
+            &main,
+            &["worktree", "add", "-q", "-b", "worktree-shared", shared.to_str().expect("utf8")],
+        );
+        let shared_str = shared.to_string_lossy().replace('\\', "/");
+        let key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&shared_str));
+        let jsonl_dir = forge_sdk::projects_dir_for(cfg.path()).join(key);
+        std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
+        let theirs = "550e8400-e29b-41d4-a716-446655440082";
+        let unstamped = format!(
+            "{{\"type\":\"user\",\"cwd\":\"{shared_str}\"}}\n\
+             {{\"type\":\"tag\",\"tag\":\"forge:worker:shared\"}}\n"
+        );
+        std::fs::write(jsonl_dir.join(format!("{theirs}.jsonl")), &unstamped)
+            .expect("write the pre-field transcript");
+
+        let resume_as = |project: &'static str| {
+            let ws = Arc::clone(&ws);
+            async move {
+                ws.enable_test_dispatch_intercept();
+                let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+                let spawner = tokio::spawn(async move {
+                    facade
+                        .spawn_worker(
+                            &SessionSlot::lead("TestOrg", project),
+                            "shared".to_owned(),
+                            "charter".to_owned(),
+                            None,
+                            None,
+                            false,
+                            true,
+                            None,
+                            None,
+                        )
+                        .await
+                });
+                let resumed = poll_spawn_worker_field(&ws, |cmd| match cmd {
+                    Command::SpawnWorker { label, resume_existing, .. } if label == "shared" => {
+                        Some(resume_existing.clone())
+                    }
+                    _ => None,
+                })
+                .await;
+                let _ = spawner.await.expect("facade task joins");
+                resumed
+            }
+        };
+
+        // One project composes the directory, so the pre-field row is
+        // adopted - and stamped by that adoption.
+        let resumed = resume_as("proj-a").await.expect("dispatched");
+        assert_eq!(resumed.as_deref(), Some(theirs), "the pre-field row is adopted once");
+        let body = std::fs::read_to_string(jsonl_dir.join(format!("{theirs}.jsonl")))
+            .expect("read the stamped transcript");
+        assert!(
+            body.contains("\"project\":\"TestOrg/proj-a\""),
+            "the adoption stamped the row: {body:?}",
+        );
+
+        // A second project composing the same directory now sees the
+        // stamped row as proj-a's and starts fresh.
+        ws.seed_test_project("proj-b", &linked_b.to_string_lossy());
+        let resumed = resume_as("proj-b").await.expect("dispatched");
+        assert_eq!(resumed, None, "the stamped row is not the second project's to adopt");
+
+        // An unstamped row in the now-shared directory is ambiguous: the
+        // resume is refused rather than handed to either project.
+        let newer = "550e8400-e29b-41d4-a716-446655440083";
+        std::fs::write(jsonl_dir.join(format!("{newer}.jsonl")), &unstamped)
+            .expect("write another pre-field transcript");
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+        let err = facade
+            .spawn_worker(
+                &SessionSlot::lead("TestOrg", "proj-b"),
+                "shared".to_owned(),
+                "charter".to_owned(),
+                None,
+                None,
+                false,
+                true,
+                None,
+                None,
+            )
+            .await
+            .expect_err("an ambiguous pre-field row is refused");
+        let crate::mcp::workers::facade::WorkerSpawnError::ResumeLookupFailed { message, .. } = err
+        else {
+            panic!("the refusal is the lookup: {err:?}");
+        };
+        assert!(message.contains("ambiguous"), "the refusal says why: {message}");
     }
 
     /// The mirror of the recreation case: the row says the worker runs in

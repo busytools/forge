@@ -722,7 +722,28 @@ impl WorkerFacade for ProdWorkerFacade {
                 }
             }
             match ws.resolve_worker_resume_session(&view.org, &view.name, &run_dir, &label) {
-                Ok(ResumeTarget::Found(session_id)) => (Some(session_id), SessionChoice::Resumed),
+                Ok(ResumeTarget::Found { session_id, restamp }) => {
+                    if restamp {
+                        // A pre-upgrade tag row carries no project; stamp
+                        // it now, before the spawn, so the migration
+                        // window is this one adoption and not every
+                        // project's to reuse.
+                        ws.stamp_adopted_worker_transcript(
+                            &cp.project_key,
+                            &label,
+                            &session_id,
+                            &run_dir,
+                        )
+                        .map_err(|error| {
+                            WorkerSpawnError::DispatchFailed {
+                                message: format!(
+                                    "stamping the adopted transcript's project failed: {error}"
+                                ),
+                            }
+                        })?;
+                    }
+                    (Some(session_id), SessionChoice::Resumed)
+                }
                 // Best effort: a label with nothing to resume starts a
                 // new session and the reply says so. The worktree the
                 // ensure minted stays - it is where the new session runs.

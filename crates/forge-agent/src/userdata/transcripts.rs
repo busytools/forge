@@ -23,9 +23,10 @@ pub enum TranscriptError {
     Unreadable { path: PathBuf, source: std::io::Error },
 }
 
-/// The session id of the newest transcript in `run_dir`'s directory that
-/// carries `label`'s worker tag AND was tagged by `project`, or `None`
-/// when the directory holds none.
+/// The newest transcript in `run_dir`'s directory that carries `label`'s
+/// worker tag AND was tagged by `project`: its session id and whether its
+/// row predates the project field (`true` means the adopting project must
+/// stamp it). `None` when the directory holds no match.
 ///
 /// The tag is what says whose session a transcript is, not the
 /// directory: everything that ran with that cwd writes there, the
@@ -34,14 +35,15 @@ pub enum TranscriptError {
 /// field) is the second half: the composed worktree directory is shared
 /// across a repository's projects, so a label alone would let another
 /// project resume this session. A tag row written before the field
-/// existed carries no project and stays eligible.
+/// existed carries no project and stays eligible, flagged so the caller
+/// can bound the window to one adoption.
 pub fn newest_worker_session(
     config_dir: &Path,
     run_dir: &Path,
     label: &str,
     project: &str,
     tag_cache: Option<&SessionTagCache>,
-) -> Result<Option<String>, TranscriptError> {
+) -> Result<Option<(String, bool)>, TranscriptError> {
     let key = project_key_for_directory(Some(&run_dir.to_string_lossy()));
     let dir = projects_dir_for(config_dir).join(key);
     let entries = match std::fs::read_dir(&dir) {
@@ -50,7 +52,7 @@ pub fn newest_worker_session(
         Err(source) => return Err(TranscriptError::Unreadable { path: dir, source }),
     };
     let wanted = worker_tag(label);
-    let mut newest: Option<(SystemTime, String)> = None;
+    let mut newest: Option<(SystemTime, String, bool)> = None;
     for entry in entries {
         let entry =
             entry.map_err(|source| TranscriptError::Unreadable { path: dir.clone(), source })?;
@@ -75,7 +77,7 @@ pub fn newest_worker_session(
         // so the winner does not depend on the order the directory
         // happens to list.
         let candidate = (modified, session_id);
-        if newest.as_ref().is_some_and(|(best, id)| candidate <= (*best, id.as_str())) {
+        if newest.as_ref().is_some_and(|(best, id, _)| candidate <= (*best, id.as_str())) {
             continue;
         }
         let (tag, owner) = read_tag(&path, metadata.len(), tag_cache)?;
@@ -85,9 +87,9 @@ pub fn newest_worker_session(
         if owner.as_deref().is_some_and(|owner| owner != project) {
             continue;
         }
-        newest = Some((modified, session_id.to_owned()));
+        newest = Some((modified, session_id.to_owned(), owner.is_none()));
     }
-    Ok(newest.map(|(_, session_id)| session_id))
+    Ok(newest.map(|(_, session_id, restamp)| (session_id, restamp)))
 }
 
 /// The last tag the transcript at `path` carries, and the project its row
@@ -127,7 +129,12 @@ mod tests {
         write_session(&dir, &newest, "steward", 1_800_000_000);
         let found = newest_worker_session(root.path(), run_dir, "steward", "Default/forge", None)
             .expect("lookup");
-        assert_eq!(found, Some(newest), "the label's most recent session is the one to resume");
+        assert_eq!(
+            found,
+            Some((newest, true)),
+            "the label's most recent session is the one to resume, and its pre-field row needs \
+             stamping",
+        );
     }
 
     /// Everything that ran in this directory writes here, so the newest
@@ -144,7 +151,7 @@ mod tests {
         write_untagged_session(&dir, "untagged", 1_900_000_000);
         let found = newest_worker_session(root.path(), run_dir, "steward", "Default/forge", None)
             .expect("lookup");
-        assert_eq!(found, Some("mine".to_owned()));
+        assert_eq!(found, Some(("mine".to_owned(), true)));
     }
 
     /// The composed worktree directory is shared across a repository's
@@ -164,14 +171,18 @@ mod tests {
             .expect("lookup");
         assert_eq!(
             found,
-            Some("mine".to_owned()),
+            Some(("mine".to_owned(), false)),
             "proj-a's newer session is skipped in the directory both projects compose",
         );
 
         std::fs::remove_file(dir.join("mine.jsonl")).expect("remove mine");
         let found = newest_worker_session(root.path(), run_dir, "steward", "Default/proj-b", None)
             .expect("lookup");
-        assert_eq!(found, Some("old".to_owned()), "a tag row with no project field stays eligible");
+        assert_eq!(
+            found,
+            Some(("old".to_owned(), true)),
+            "a tag row with no project field stays eligible and is flagged for stamping",
+        );
     }
 
     /// Two sessions can carry the same timestamp: a restored or synced
@@ -189,7 +200,7 @@ mod tests {
         }
         let found = newest_worker_session(root.path(), run_dir, "steward", "Default/forge", None)
             .expect("lookup");
-        assert_eq!(found, Some("zzzz".to_owned()), "the greater id wins an mtime tie");
+        assert_eq!(found, Some(("zzzz".to_owned(), true)), "the greater id wins an mtime tie");
     }
 
     #[test]
@@ -206,7 +217,7 @@ mod tests {
         }
         let found = newest_worker_session(root.path(), run_dir, "steward", "Default/forge", None)
             .expect("lookup");
-        assert_eq!(found, Some("mine".to_owned()));
+        assert_eq!(found, Some(("mine".to_owned(), true)));
     }
 
     #[test]
