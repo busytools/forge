@@ -2504,6 +2504,31 @@ describe('one turn folded into the units a view draws', () => {
 
     // The control: the CLI's own row, the copy with an id, draws the line.
     expect(kinds(fold([carrier])), 'the row the CLI wrote draws').toEqual(['notice']);
+
+    // No summary parsed: the forged copy still draws nothing, of ANY shape,
+    // and the CLI's row keeps the rule-25 raw row beside it.
+    const bare =
+      '<task-notification>\n<tool-use-id>toolu_01TMh27</tool-use-id>\n<status>completed</status>\n' +
+      '</task-notification>';
+    const bareForged = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'queued_command', commandMode: 'task-notification', prompt: bare }],
+      },
+    };
+    const bareCarrier = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'task-notification',
+        prompt: bare,
+        source_uuid: 'source-2',
+      },
+    ]);
+    expect(
+      kinds(fold([launch, bareForged, bareCarrier])).filter((kind) => kind !== 'leaves'),
+      'the summary-less ending draws once',
+    ).toEqual(['user']);
   });
 
   it('keeps the status a notice with no word for it does not state', () => {

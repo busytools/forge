@@ -490,13 +490,14 @@ function sameWords(one: string[], other: string[]): boolean {
  * A frame with neither an id nor words - a tool result, a thought - is never
  * found this way, which repeats it rather than dropping it. **A task ending is
  * the one exception read below**: it is a completion, whose words `wordsOf`
- * leaves out because nobody typed them, so it is found by the notice it says
- * instead.
+ * leaves out because nobody typed them, so it is found by the whole envelope
+ * it carries instead.
  *
- * `prose` narrows the words arm at the one call site that says why: an id is
- * unique and needs no guard, while the words are what a delivery row shares
- * with the page's copy of it - and what a turn an id-bearing frame opened
- * must NOT be matched by.
+ * `prose` narrows the two arms a frame with no id has - its ending's envelope
+ * and its words - at the one call site that says why: an id is unique and
+ * needs no guard, while words and endings are what a delivery row shares with
+ * the page's copy of it, and a turn matched by a shared frame is an exchange -
+ * two turns that merely end the same task are not one.
  *
  * **`add` is what keeps a grown list honest.** Rows grow after an index is
  * built - the queued-prompt join pushes into a row's frames while asking the
@@ -515,11 +516,12 @@ export class Frames {
   private readonly said = new Set<string>();
 
   /**
-   * The task endings this list carries, keyed by the notice each says.
+   * The task endings this list carries, keyed by their whole envelope.
    *
    * The id-less copy a page forges to end a call is a completion, so
    * `wordsOf` leaves it out and the two faces above cannot find it: every
-   * landing appended it again (#2496).
+   * landing appended it again (#2496). The envelope rather than the summary,
+   * because two tasks can end with the same words.
    */
   private readonly endings = new Set<string>();
 
@@ -546,9 +548,9 @@ export class Frames {
   carries(message: unknown, prose = true): boolean {
     const id = uuidOf(message);
     if (id !== null) return this.ids.has(id);
+    if (!prose) return false;
     const ending = completionText(message);
     if (ending !== null) return this.endings.has(ending);
-    if (!prose) return false;
     const words = wordsOf(message);
     return words.length > 0 && this.said.has(JSON.stringify(words));
   }

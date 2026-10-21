@@ -741,22 +741,21 @@ function isCompletion(block: Block, words: string): boolean {
 
 /**
  * Whether a task-ending carrier is a row of the conversation rather than the
- * server's own ending fact.
+ * server's own ending fact: a frame uuid owns a row.
  *
  * A page forges an id-less copy of a call's ending into the turn holding the
  * call, so a per-turn fold still ends the call; the CLI's own row is the copy
  * that draws, and both drawing is one ending told twice (#2496).
  */
-function endingOwnsARow(frame: Frame, block: Block): boolean {
-  const id = typeof frame.uuid === 'string' ? frame.uuid : '';
-  if (id !== '') return true;
-  const source = str(block, 'source_uuid');
-  return source !== null && source !== '';
+function endingOwnsARow(frame: Frame): boolean {
+  return typeof frame.uuid === 'string' && frame.uuid !== '';
 }
 
 /**
- * The notice a task ending says, or `null` - the only identity the id-less
- * forged copy has, since `queuedWords` answers none for a completion (#2496).
+ * The whole envelope a task ending carries, or `null` - the only identity the
+ * id-less forged copy has, since `queuedWords` answers none for a completion.
+ * The envelope rather than the summary, because two tasks can end with the
+ * same words.
  */
 export function completionText(message: unknown): string | null {
   const content = (message as { message?: { content?: unknown } } | null)?.message?.content;
@@ -2316,6 +2315,10 @@ export function fold(
       if (block.type === 'queued_command') {
         const words = queuedText(block.prompt);
         if (isCompletion(block, words)) {
+          // **A copy the server forged draws nothing, whatever it says.** It
+          // is the ending fact that already ended its call in the pass above
+          // (`endingOwnsARow`); the CLI's own row is the copy that draws.
+          if (!endingOwnsARow(frame)) continue;
           // The completion's QUEUED carrier, drawing the same info line the
           // text envelope draws above (#1680): it wakes a turn on its own, so
           // a turn woken by one must not read as prompted by nothing. With no
@@ -2325,18 +2328,14 @@ export function fold(
           // rule 24's freeze clause.)
           // Escapes stripped, and an empty summary read as absent: both the
           // text carrier's own parse (#1680's `taskNotificationOf`), so the
-          // two carriers agree on what counts as a summary. A copy the server
-          // forged carries no id and draws no row - it has already ended its
-          // call in the pass above (`endingOwnsARow`).
+          // two carriers agree on what counts as a summary.
           const said = noticeFields(stripEscapes(words));
           if (said.summary !== null && said.summary !== '') {
-            if (endingOwnsARow(frame, block)) {
-              push({
-                kind: 'notice',
-                key: keyOf(at, frame, blockAt),
-                notice: { severity: 'info', text: said.summary },
-              });
-            }
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: { severity: 'info', text: said.summary },
+            });
             continue;
           }
         }

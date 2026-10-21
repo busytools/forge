@@ -110,14 +110,28 @@ const recut = {
 };
 
 /** How many ending rows the conversation draws, over every turn it holds. */
-function drawn(chat: Chat): number {
+function drawn(chat: Chat, text = ENDING): number {
   return get(chat.value).turns.reduce(
     (count, turn) =>
       count +
-      fold(turn.messages).filter((unit) => unit.kind === 'notice' && unit.notice.text === ENDING)
+      fold(turn.messages).filter((unit) => unit.kind === 'notice' && unit.notice.text === text)
         .length,
     0,
   );
+}
+
+/** Every call row's own status, in the order the conversation draws them. */
+function statuses(chat: Chat): string[] {
+  const out: string[] = [];
+  for (const turn of get(chat.value).turns) {
+    for (const unit of fold(turn.messages)) {
+      if (unit.kind !== 'leaves') continue;
+      for (const row of unit.rows) {
+        if (row.tag === 'call') out.push(row.leaf.status);
+      }
+    }
+  }
+  return out;
 }
 
 /** One frame as text. Everything here is JSON, which `ws` hands over as a Buffer. */
@@ -236,10 +250,10 @@ describe('a task ending over repeated reads', () => {
     chat.start();
     const hold = watchSession(connection, SEAT, true);
     hold.subscribe(() => undefined);
-    chat.showing();
 
     await waitFor('the load', () => pages(chat) >= 1);
     expect(drawn(chat), 'the ending draws once when the seat loads').toBe(1);
+    const loadedFrames = frames(chat);
 
     // The restart: the socket drops, the seat is asked again, and the page it
     // gets is the same conversation cut at different turns.
@@ -248,7 +262,7 @@ describe('a task ending over repeated reads', () => {
     await waitFor('the reconnect', () => forge.opened() >= 2);
     await waitFor('the reconnect page', () => pages(chat) >= 2);
     expect(drawn(chat), 'and still once over the page the reconnect lands').toBe(1);
-    const settled = frames(chat);
+    expect(frames(chat), 'the re-cut page adds no copy of the ending it holds').toBe(loadedFrames);
 
     // A return lands the window again, which is the other way a page repeats.
     forge.serve(loaded);
@@ -256,6 +270,122 @@ describe('a task ending over repeated reads', () => {
     await waitFor('the second reconnect', () => forge.opened() >= 3);
     await waitFor('the return page', () => pages(chat) >= 3);
     expect(drawn(chat), 'and once over a page that repeats what is held').toBe(1);
-    expect(frames(chat), 'the repeated page adds no copy of the ending it holds').toBe(settled);
+    expect(frames(chat), 'the repeated page adds no copy of the ending it holds').toBe(
+      loadedFrames,
+    );
+  });
+
+  it('keeps two endings that say the same words apart', async () => {
+    vi.stubGlobal('requestAnimationFrame', (fn: (at: number) => void) => setTimeout(fn, 0));
+    vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle));
+
+    // Two reviews described the same way: their notices say the same words and
+    // only the envelope tells them apart.
+    const says = 'Agent "Review" finished';
+    const envelope = (task: string, call: string): string =>
+      '<task-notification>\n<task-id>' +
+      task +
+      '</task-id>\n<tool-use-id>' +
+      call +
+      '</tool-use-id>\n<status>completed</status>\n<summary>' +
+      says +
+      '</summary>\n</task-notification>';
+    const reviewed = (uuid: string, call: string): unknown => ({
+      type: 'assistant',
+      uuid,
+      message: {
+        id: `msg-${call}`,
+        role: 'assistant',
+        model: 'claude-opus-5-5',
+        content: [
+          {
+            type: 'tool_use',
+            id: call,
+            name: 'Agent',
+            input: { description: 'Review', subagent_type: 'pensive:rust-auditor' },
+          },
+        ],
+      },
+    });
+    const ended = (prompt: string, source: string): unknown => ({
+      type: 'user',
+      uuid: `row-${source}`,
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'queued_command',
+            commandMode: 'task-notification',
+            prompt,
+            source_uuid: source,
+          },
+        ],
+      },
+    });
+    const callA = reviewed('call-a', 'toolu_a');
+    const callB = reviewed('call-b', 'toolu_b');
+    const forgedA = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'queued_command',
+            commandMode: 'task-notification',
+            prompt: envelope('task-a', 'toolu_a'),
+          },
+        ],
+      },
+    };
+    const forgedB = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'queued_command',
+            commandMode: 'task-notification',
+            prompt: envelope('task-b', 'toolu_b'),
+          },
+        ],
+      },
+    };
+    const carrierA = ended(envelope('task-a', 'toolu_a'), 'source-a');
+    const carrierB = ended(envelope('task-b', 'toolu_b'), 'source-b');
+
+    const forge = await stubForge();
+    forges.push(forge);
+    forge.serve({
+      cursor: '1',
+      turns: [
+        { key: 'call-a', messages: [callA, forgedA] },
+        { key: 'rows-a', messages: [carrierA] },
+      ],
+    });
+    const connection: Connection = connect(forge.url);
+    connections.push(connection);
+    const chat = new Chat(connection, SEAT);
+    chat.start();
+    const hold = watchSession(connection, SEAT, true);
+    hold.subscribe(() => undefined);
+
+    await waitFor('the load', () => pages(chat) >= 1);
+    expect(drawn(chat, says), 'the first ending draws once').toBe(1);
+
+    // The same turn, re-read after the transcript grew: it now holds the
+    // second call and its ending, which says the same words as the first, and
+    // the first ending's own row has moved out of it.
+    forge.serve({
+      cursor: '2',
+      turns: [
+        { key: 'call-a', messages: [callA, callB, forgedB] },
+        { key: 'rows', messages: [carrierA, carrierB] },
+      ],
+    });
+    forge.drop();
+    await waitFor('the reconnect', () => forge.opened() >= 2);
+    await waitFor('the page', () => pages(chat) >= 2);
+    expect(drawn(chat, says), 'both endings draw, one row each').toBe(2);
+    expect(statuses(chat), 'and both calls read finished').toEqual(['completed', 'completed']);
   });
 });
