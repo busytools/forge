@@ -11,13 +11,14 @@ fn main() -> std::process::ExitCode {
         // `--ignored` must list only ignored tests, and this one never is;
         // listing it there reads to nextest as an ignored test and skips it.
         if !std::env::args().any(|arg| arg == "--ignored") {
-            println!("the_application_ivars_hold: test");
+            println!("the_host_application_holds_its_ivars_and_policy: test");
         }
         return std::process::ExitCode::SUCCESS;
     }
-    match forge_client::browser::cef::client_application::testing::the_application_ivars_hold() {
+    match forge_client::browser::cef::client_application::testing::the_host_application_holds_its_ivars_and_policy()
+    {
         Ok(()) => {
-            println!("the application stores, reads back and clears its ivars");
+            println!("the host application stores its ivars and takes the accessory policy");
             std::process::ExitCode::SUCCESS
         }
         Err(why) => {

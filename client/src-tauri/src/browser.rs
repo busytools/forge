@@ -1280,8 +1280,6 @@ impl BrowserHost {
         let host =
             Arc::new(cef::spawn::ActiveHost { pid, port, ring, profile: cache.to_path_buf() });
         self.hosts.lock().await.insert(cache.to_path_buf(), Arc::clone(&host));
-        // The profile's page refuses passkeys for as long as this host serves
-        // it.
         #[cfg(target_os = "macos")]
         tauri::async_runtime::spawn(cef::veto::install(port));
         tauri_plugin_log::log::info!(

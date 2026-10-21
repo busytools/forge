@@ -279,6 +279,18 @@ pub async fn page_websocket(port: u16) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The browser's own DevTools endpoint, when it answers.
+///
+/// **The browser target, not a page target**: its sessions are what reach
+/// every page the profile creates.
+pub async fn browser_websocket(port: u16) -> Option<String> {
+    let url = format!("{}/json/version", super::endpoint(port));
+    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
+    let body = answer.split_once("\r\n\r\n")?.1;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    parsed.get("webSocketDebuggerUrl").and_then(serde_json::Value::as_str).map(str::to_owned)
+}
+
 /// The prefix every websocket URL on `port` starts with.
 pub fn ws_prefix(port: u16) -> String {
     format!("ws://127.0.0.1:{port}")

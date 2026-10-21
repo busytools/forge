@@ -22,7 +22,7 @@ const _: () = assert!(std::mem::needs_drop::<super::ClientApplicationIvars>());
 /// first flag read is the one an initializer that never called `set_ivars`
 /// fails on: in a `testing` build the ivars carry drop glue, so objc2's
 /// debug check panics on uninitialized memory instead of reading zeroes.
-pub fn the_application_ivars_hold() -> Result<(), String> {
+pub fn the_host_application_holds_its_ivars_and_policy() -> Result<(), String> {
     let _mtm = MainThreadMarker::new()
         .ok_or_else(|| "the application check must run on the process main thread".to_owned())?;
     super::setup();
