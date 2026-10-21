@@ -114,43 +114,131 @@ pub enum WorktreeError {
 /// Why a worktree is not safe to remove, or `None` when it is clean.
 ///
 /// "Dirty" means either uncommitted/untracked changes
-/// (`git status --porcelain` non-empty) OR local commits ahead of the
-/// branch's upstream (`git rev-list --count @{upstream}..HEAD` > 0).
-/// A branch with no upstream configured is treated as not-unpushed -
-/// there is nothing to compare against, and the porcelain check still
-/// guards real uncommitted work. The despawn path calls this BEFORE
-/// any teardown so a dirty worker is blocked without being killed.
+/// (`git status --porcelain` non-empty) OR commits reachable from HEAD
+/// and from no remote-tracking ref (`git rev-list --count HEAD --not
+/// --remotes` > 0) - reachability, not the branch's upstream, which a
+/// squash merge leaves permanently ahead. A branch whose configured
+/// upstream ref has been deleted was pushed and its remote branch is
+/// gone, which is how a squash land reads once the branch is pruned. A
+/// repo with no remote-tracking refs stays not-unpushed. The despawn
+/// path calls this BEFORE any teardown so a dirty worker is blocked
+/// without being killed.
 pub fn worktree_dirty_reason(path: &Path) -> Option<String> {
-    // Uncommitted or untracked changes.
+    if let Some(reason) = worktree_uncommitted_reason(path) {
+        return Some(reason);
+    }
+
+    if let Some(ahead) = unpushed_commit_count(path)
+        && ahead > 0
+    {
+        let plural = if ahead == 1 { "" } else { "s" };
+        return Some(format!("{ahead} unpushed commit{plural}"));
+    }
+
+    None
+}
+
+/// Uncommitted or untracked changes, or `None` when the tree is
+/// porcelain-clean.
+///
+/// The subagent reap gates on this alone: committed work is safe there
+/// because the branch outlives the tree and [`reap_worktree_branch`]
+/// keeps one holding unique commits. Uncommitted work exists only in
+/// the tree, so a status that cannot be read blocks.
+fn worktree_uncommitted_reason(path: &Path) -> Option<String> {
     match git_command::command("git").args(["status", "--porcelain"]).current_dir(path).output() {
         Ok(out) if out.status.success() => {
             if !out.stdout.is_empty() {
                 return Some("uncommitted or untracked changes".to_owned());
             }
+            None
         }
         // Couldn't read the status - block rather than risk discarding
         // work we failed to inspect.
-        _ => return Some("could not determine the worktree's git status".to_owned()),
+        _ => Some("could not determine the worktree's git status".to_owned()),
     }
+}
 
-    // Unpushed commits, only when an upstream is configured. No
-    // upstream -> `rev-list @{upstream}..HEAD` errors; treat as
-    // not-unpushed (the porcelain check above already guarded
-    // uncommitted work).
-    if let Ok(out) = git_command::command("git")
-        .args(["rev-list", "--count", "@{upstream}..HEAD"])
+/// Commits HEAD reaches that no remote-tracking ref does, with a branch
+/// whose remote branch was deleted counted as pushed. `None` when the
+/// repo holds no remote-tracking refs to compare against, or when the
+/// query fails - both leave the verdict clean.
+///
+/// A failed query does not block, unlike a failed status: commits live
+/// on the branch, which the despawn's own reap keeps when it holds
+/// unique commits, while uncommitted work would go with the tree.
+fn unpushed_commit_count(path: &Path) -> Option<u64> {
+    let has_remote_refs = git_command::command("git")
+        .args(["for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes/"])
         .current_dir(path)
         .output()
-        && out.status.success()
-    {
-        let ahead: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0);
-        if ahead > 0 {
-            let plural = if ahead == 1 { "" } else { "s" };
-            return Some(format!("{ahead} unpushed commit{plural}"));
-        }
+        .is_ok_and(|out| out.status.success() && !out.stdout.is_empty());
+    if !has_remote_refs {
+        return None;
     }
+    let out = git_command::command("git")
+        .args(["rev-list", "--count", "HEAD", "--not", "--remotes"])
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let count = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    if count == 0 || upstream_ref_deleted(path) { Some(0) } else { Some(count) }
+}
 
-    None
+/// Whether the branch's configured upstream names a remote ref that no
+/// longer exists.
+///
+/// `push -u` writes the upstream only after a successful push, so the
+/// branch was on that remote and its remote branch has since been
+/// deleted - the shape a squash-merged PR leaves once the branch is
+/// pruned. Neither reachability nor the upstream can see a squash by
+/// sha, and by then the remote branch is normally gone.
+///
+/// This trusts `-u`: an upstream configured by hand against a ref that
+/// was never fetched reads as deleted. Proceeding still loses nothing,
+/// because the despawn's branch reap keeps a local branch holding
+/// commits no other ref reaches, and reports it.
+fn upstream_ref_deleted(path: &Path) -> bool {
+    let Some(branch) = worktree_branch(path) else {
+        return false;
+    };
+    let Some(remote) = git_config_value(path, &format!("branch.{branch}.remote")) else {
+        return false;
+    };
+    // A `.` remote tracks a local branch, which is not a push.
+    if remote == "." {
+        return false;
+    }
+    let Some(tracked) = git_config_value(path, &format!("branch.{branch}.merge"))
+        .and_then(|merge| merge.strip_prefix("refs/heads/").map(str::to_owned))
+    else {
+        return false;
+    };
+    let refname = format!("refs/remotes/{remote}/{tracked}");
+    // `--quiet` exits 1 for a ref that is missing and 128 for a repo it
+    // cannot read, so only 1 counts as deleted.
+    git_command::command("git")
+        .args(["rev-parse", "--verify", "--quiet", &refname])
+        .current_dir(path)
+        .output()
+        .is_ok_and(|out| out.status.code() == Some(1))
+}
+
+/// One `git config --get` value, `None` when unset or unreadable.
+fn git_config_value(path: &Path, key: &str) -> Option<String> {
+    let out = git_command::command("git")
+        .args(["config", "--get", key])
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if value.is_empty() { None } else { Some(value) }
 }
 
 /// Remove the git worktree at `path` via `git worktree remove`. Run
@@ -1552,7 +1640,7 @@ pub fn reap_agent_worktree(agent_worktree: &AgentWorktree) -> AgentWorktreeReap 
     if !is_git_repo(path) {
         return AgentWorktreeReap::NotAWorktree;
     }
-    if let Some(reason) = worktree_dirty_reason(path) {
+    if let Some(reason) = worktree_uncommitted_reason(path) {
         return AgentWorktreeReap::KeptDirty { reason };
     }
     if let Some(tip) = detached_unique_tip(&agent_worktree.repo_root, path) {
@@ -1940,6 +2028,160 @@ mod tests {
         run_git(&wt, &["commit", "-q", "-m", "ahead of upstream"]);
         let reason = worktree_dirty_reason(&wt).expect("unpushed commit reports dirty");
         assert!(reason.contains("unpushed"), "reason names unpushed commits: {reason:?}");
+    }
+
+    /// The measured wind-down (#2486): a worker branch cut from main
+    /// tracks `origin/main`, its head is pushed to a remote branch, and
+    /// the content landed on main as a squash commit. The upstream
+    /// comparison reads ahead forever because the squash has a different
+    /// sha, and refused a clean despawn.
+    ///
+    /// The head goes to a second remote, `upstream`: reachability is
+    /// from ANY remote ref, not from `origin` alone.
+    #[test]
+    fn a_squash_merged_branch_head_reports_clean() {
+        let (dir, wt) = init_repo_with_worktree();
+        let remote = tempdir().expect("remote tempdir");
+        run_git(remote.path(), &["init", "-q", "--bare"]);
+        run_git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().expect("utf8 path")],
+        );
+        let fork = tempdir().expect("fork tempdir");
+        run_git(fork.path(), &["init", "-q", "--bare"]);
+        run_git(
+            dir.path(),
+            &["remote", "add", "upstream", fork.path().to_str().expect("utf8 path")],
+        );
+        let main = git_stdout(dir.path(), &["rev-parse", "--abbrev-ref", "HEAD"]);
+        run_git(dir.path(), &["push", "-q", "-u", "origin", "HEAD"]);
+
+        // The worker branch: cut from main, tracking it, head pushed to
+        // its own remote ref the way the PR's branch is.
+        run_git(&wt, &["branch", "--set-upstream-to", &format!("origin/{main}")]);
+        fs::write(wt.join("work.txt"), "the PR's content").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "the PR's commit"]);
+        run_git(&wt, &["push", "-q", "upstream", "HEAD:refs/heads/wt"]);
+
+        // The squash onto main: same content, a new sha.
+        run_git(dir.path(), &["merge", "-q", "--squash", "wt"]);
+        run_git(dir.path(), &["commit", "-q", "-m", "squash-merge wt"]);
+        run_git(dir.path(), &["push", "-q", "origin", "HEAD"]);
+
+        assert_eq!(
+            git_stdout(&wt, &["rev-list", "--count", "@{upstream}..HEAD"]),
+            "1",
+            "the fixture reproduces the trap: the upstream comparison still reads ahead",
+        );
+        let reaching = git_stdout(&wt, &["branch", "-r", "--contains", "HEAD"]);
+        assert!(
+            reaching.contains("upstream/wt"),
+            "the head is on a remote ref, and not origin's: {reaching:?}",
+        );
+        assert!(!reaching.contains("origin/wt"), "origin alone cannot see it: {reaching:?}");
+        assert_eq!(worktree_dirty_reason(&wt), None);
+    }
+
+    /// The landing after the remote branch is gone: the worker pushed
+    /// with `-u`, the PR squash-merged three commits (one of them
+    /// empty), the head branch was deleted on the remote and a prune
+    /// dropped its tracking ref. No remote ref reaches HEAD and no
+    /// patch-id matches a multi-commit squash, so only the deleted
+    /// upstream says the branch landed.
+    #[test]
+    fn a_squash_merged_branch_survives_its_remote_branch_being_pruned() {
+        let (dir, wt) = init_repo_with_worktree();
+        let remote = tempdir().expect("remote tempdir");
+        run_git(remote.path(), &["init", "-q", "--bare"]);
+        run_git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().expect("utf8 path")],
+        );
+        run_git(dir.path(), &["push", "-q", "-u", "origin", "HEAD"]);
+
+        // The worker pushes with `-u`, so its upstream is its own branch.
+        fs::write(wt.join("one.txt"), "first").expect("write one");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "first"]);
+        fs::write(wt.join("two.txt"), "second").expect("write two");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "second"]);
+        run_git(&wt, &["commit", "-q", "--allow-empty", "-m", "empty"]);
+        run_git(&wt, &["push", "-q", "-u", "origin", "HEAD:refs/heads/wt"]);
+
+        run_git(dir.path(), &["merge", "-q", "--squash", "wt"]);
+        run_git(dir.path(), &["commit", "-q", "-m", "squash-merge wt"]);
+        run_git(dir.path(), &["push", "-q", "origin", "HEAD"]);
+
+        run_git(dir.path(), &["push", "-q", "origin", "--delete", "wt"]);
+        run_git(dir.path(), &["fetch", "-q", "--prune", "origin"]);
+
+        assert_eq!(
+            git_stdout(&wt, &["rev-list", "--count", "HEAD", "--not", "--remotes"]),
+            "3",
+            "no remote ref reaches the branch's commits any more",
+        );
+        assert_eq!(worktree_dirty_reason(&wt), None);
+    }
+
+    /// Reachability is from ANY remote ref. The head sits on a fork
+    /// remote (`upstream`) and nothing has merged it yet, so only a
+    /// query that asks about every remote sees it as pushed.
+    #[test]
+    fn a_head_pushed_to_any_remote_counts_as_pushed() {
+        let (dir, wt) = init_repo_with_worktree();
+        let remote = tempdir().expect("remote tempdir");
+        run_git(remote.path(), &["init", "-q", "--bare"]);
+        run_git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().expect("utf8 path")],
+        );
+        let fork = tempdir().expect("fork tempdir");
+        run_git(fork.path(), &["init", "-q", "--bare"]);
+        run_git(
+            dir.path(),
+            &["remote", "add", "upstream", fork.path().to_str().expect("utf8 path")],
+        );
+        run_git(dir.path(), &["push", "-q", "-u", "origin", "HEAD"]);
+
+        fs::write(wt.join("work.txt"), "pushed to the fork").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "on the fork only"]);
+        run_git(&wt, &["push", "-q", "upstream", "HEAD:refs/heads/wt"]);
+
+        assert!(
+            !git_stdout(&wt, &["branch", "-r", "--contains", "HEAD"]).contains("origin/"),
+            "nothing on origin reaches the head",
+        );
+        assert_eq!(worktree_dirty_reason(&wt), None);
+    }
+
+    /// The other side: a commit no remote ref reaches is unpushed however
+    /// the branch is configured. A branch with no upstream used to be
+    /// skipped entirely, so the close went through without naming it.
+    #[test]
+    fn a_commit_no_remote_ref_reaches_reports_dirty() {
+        let (dir, wt) = init_repo_with_worktree();
+        let remote = tempdir().expect("remote tempdir");
+        run_git(remote.path(), &["init", "-q", "--bare"]);
+        run_git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().expect("utf8 path")],
+        );
+        run_git(dir.path(), &["push", "-q", "-u", "origin", "HEAD"]);
+
+        // No upstream on the worker branch, and the commit is pushed
+        // nowhere: reachability from a remote ref is the whole question.
+        fs::write(wt.join("work.txt"), "local only").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "never pushed"]);
+
+        assert_eq!(
+            worktree_dirty_reason(&wt),
+            Some("1 unpushed commit".to_owned()),
+            "the named reason counts the commits no remote ref reaches",
+        );
     }
 
     #[test]
@@ -3693,6 +3935,32 @@ mod tests {
         };
         assert!(!reason.is_empty());
         assert!(wt.exists(), "the directory survives");
+    }
+
+    /// The same committed-branch shape in a repo that HAS remote refs.
+    /// The subagent never pushes, so the despawn's unpushed check would
+    /// call this dirty; the reap gates on the uncommitted tree alone,
+    /// because the branch reap below is what protects committed work.
+    /// A tree kept here is re-listed by every sweep.
+    #[test]
+    fn removes_a_committed_agent_worktree_in_a_repo_with_remote_refs() {
+        let (dir, wt, branch) = init_repo_with_agent_worktree("abc123");
+        run_git(dir.path(), &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        fs::write(wt.join("work.txt"), "committed by the subagent").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "real work"]);
+        let agent_wt = agent_worktree_for(dir.path(), "abc123", &branch);
+
+        let outcome = reap_agent_worktree(&agent_wt);
+
+        let AgentWorktreeReap::Reaped { branch: branch_outcome } = outcome else {
+            panic!("a committed, unpushed branch does not keep the tree, got {outcome:?}");
+        };
+        assert!(!wt.exists(), "the directory is gone");
+        assert!(
+            matches!(branch_outcome, BranchReapOutcome::Kept { .. }),
+            "the branch keeps the commit no ref reaches, got {branch_outcome:?}"
+        );
     }
 
     /// A subagent that committed its work to the conventional branch leaves
