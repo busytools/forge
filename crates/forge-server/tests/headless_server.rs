@@ -116,6 +116,16 @@ async fn terminate(pid: u32) {
     send_signal(pid, "-TERM").await;
 }
 
+/// SIGTERM to the process group `pid` leads: what a terminal close does.
+async fn terminate_group(pid: u32) {
+    let status = tokio::process::Command::new("kill")
+        .args(["-s", "TERM", &format!("-{pid}")])
+        .status()
+        .await
+        .expect("kill runs");
+    assert!(status.success(), "kill -s TERM -{pid} lands: {status}");
+}
+
 /// Wait until the server answers on `port`, or fail with its stderr.
 async fn wait_for_port(port: u16, server: &mut tokio::process::Child) {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -187,6 +197,7 @@ fn write_session_fixture(
     server_port: u16,
     gateway_port: u16,
     marker: &std::path::Path,
+    child_term_marker: &std::path::Path,
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let home = root.join("home");
     let config = root.join("config");
@@ -210,6 +221,7 @@ fn write_session_fixture(
             r#"
 [env]
 FORGE_TEST_ORPHAN_MARKER = "{marker}"
+FORGE_TEST_CHILD_TERM_MARKER = "{child_marker}"
 
 [[orgs]]
 name = "Default"
@@ -237,6 +249,7 @@ port = {server_port}
 port = {gateway_port}
 "#,
             marker = marker.display(),
+            child_marker = child_term_marker.display(),
             project = project.display(),
         ),
     )
@@ -307,7 +320,9 @@ async fn assert_stop_leaves_no_descendant(signal: &str) {
     let dir = tempfile::tempdir().expect("tempdir");
     let (port, gateway) = two_free_ports();
     let marker = dir.path().join("session.pid");
-    let (home, config, bin) = write_session_fixture(dir.path(), port, gateway, &marker);
+    let child_marker = dir.path().join("child-term");
+    let (home, config, bin) =
+        write_session_fixture(dir.path(), port, gateway, &marker, &child_marker);
 
     let mut command = server_command(&home, &config);
     command
@@ -331,6 +346,52 @@ async fn assert_stop_leaves_no_descendant(signal: &str) {
     assert!(
         wait_until_gone(pid).await,
         "a descendant outlived the server's {signal} stop: pid {pid}"
+    );
+}
+
+/// A signal to forge's own process group no longer reaches a session's
+/// tools: the child sits in a group of its own, so only the teardown's
+/// group kill ends it. The child marks TERM, so one that took the signal
+/// directly would leave the marker even though the tree still dies.
+#[tokio::test]
+async fn a_group_stop_signal_does_not_reach_the_session_tools() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (port, gateway) = two_free_ports();
+    let marker = dir.path().join("session.pid");
+    let child_marker = dir.path().join("child-term");
+    let (home, config, bin) =
+        write_session_fixture(dir.path(), port, gateway, &marker, &child_marker);
+
+    let mut command = server_command(&home, &config);
+    command
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
+    // Its own group, so the signal below is aimed at forge's group alone
+    // and never at the test's.
+    command.process_group(0);
+    let mut server = command.spawn().expect("the server spawns");
+    wait_for_port(port, &mut server).await;
+
+    let pid = wait_for_marker_pid(&marker).await;
+    let _orphan = Orphan(pid);
+    assert!(is_running(pid), "the session's descendant must be running before the stop: pid {pid}");
+
+    let server_pid = server.id().expect("the server has a pid while it runs");
+    terminate_group(server_pid).await;
+    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+        .await
+        .expect("the server finishes its stop within the deadline")
+        .expect("the server is reaped");
+
+    assert!(exit.success(), "the group's stop exits clean: {exit}");
+    assert!(
+        !child_marker.exists(),
+        "the session child took forge's group signal directly: {} exists",
+        child_marker.display()
+    );
+    assert!(
+        wait_until_gone(pid).await,
+        "the descendant outlived the group's stop even though only the teardown should reach it: \
+         pid {pid}"
     );
 }
 

@@ -12,6 +12,13 @@ fi
 
 : "${FORGE_TEST_ORPHAN_MARKER:?the test must name its pid marker}"
 
+# A signal aimed at forge's own group reaches this child directly only if
+# the child shares that group; the marker says it did. The fixture goes on
+# serving, so a harness can read both answers.
+if [ -n "${FORGE_TEST_CHILD_TERM_MARKER:-}" ]; then
+    trap 'printf x > "$FORGE_TEST_CHILD_TERM_MARKER"' TERM
+fi
+
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"mock-session-001","cwd":"/tmp","tools":["Edit","Read"],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"ANTHROPIC_API_KEY"}'
 
 IFS= read -r init_req
