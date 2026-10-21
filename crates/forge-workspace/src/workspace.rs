@@ -5924,9 +5924,9 @@ impl Workspace {
         .map_err(anyhow::Error::from)
     }
 
-    /// The declared projects whose transcript lookup for `label` reads
-    /// `run_dir`: by worker tree, by own checkout (a non-git worker), or
-    /// by the sanitised key the lookup actually opens.
+    /// The declared projects whose transcript lookup for `label` opens
+    /// `run_dir`: the directory their worker runs in, or the sanitised
+    /// key that directory is stored under.
     fn projects_composing(&self, run_dir: &std::path::Path, label: &str) -> Vec<(String, String)> {
         let composed = std::fs::canonicalize(run_dir).unwrap_or_else(|_| run_dir.to_path_buf());
         let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -5940,11 +5940,13 @@ impl Workspace {
         self.list_projects()
             .into_iter()
             .filter(|view| {
+                let is_git = self
+                    .recorded_worker_is_git_repo(&view.key, label)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
                 let root = std::fs::canonicalize(&view.path).unwrap_or_else(|_| view.path.clone());
-                if root == composed || key_of(&root) == key {
-                    return true;
-                }
-                let dir = crate::mcp::workers::types::worker_tag_dir(&root, label, true);
+                let dir = crate::mcp::workers::types::worker_tag_dir(&root, label, is_git);
                 let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
                 dir == composed || key_of(&dir) == key
             })
@@ -18179,6 +18181,151 @@ provider = "anthropic"
                 "{project} refuses the ambiguous row: {message}",
             );
         }
+    }
+
+    /// Two git projects whose composed worker trees sanitise to one key
+    /// (`a-b` and `a/b`) read the same transcripts, so a pre-field tag
+    /// there is ambiguous and both refuse it.
+    #[tokio::test]
+    async fn colliding_worktree_keys_refuse_a_pre_field_adoption_in_both_git_projects() {
+        let holder = tempfile::tempdir().expect("holder");
+        let a_dir = holder.path().join("a-b");
+        let b_dir = holder.path().join("a").join("b");
+        for dir in [&a_dir, &b_dir] {
+            std::fs::create_dir_all(dir).expect("project dir");
+            run_git_in(dir, &["init", "-q"]);
+            run_git_in(dir, &["config", "user.email", "t@example.com"]);
+            run_git_in(dir, &["config", "user.name", "Test"]);
+            run_git_in(dir, &["config", "commit.gpgsign", "false"]);
+            std::fs::write(dir.join("README.md"), "seed").expect("write seed");
+            run_git_in(dir, &["add", "."]);
+            run_git_in(dir, &["commit", "-q", "-m", "init"]);
+        }
+        let a_dir = std::fs::canonicalize(&a_dir).expect("canonical a-b");
+        let b_dir = std::fs::canonicalize(&b_dir).expect("canonical a/b");
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n\
+                 [[orgs.projects]]\nname = \"proj-a\"\npath = \"{}\"\n\
+                 [[orgs.projects]]\nname = \"proj-b\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                a_dir.display(),
+                b_dir.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let store = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+
+        let a_run = a_dir.join(".claude").join("worktrees").join("shared");
+        let b_run = b_dir.join(".claude").join("worktrees").join("shared");
+        let a_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &a_run.to_string_lossy(),
+        ));
+        let b_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &b_run.to_string_lossy(),
+        ));
+        assert_eq!(a_key, b_key, "the composed worktrees sanitise to one transcript key");
+        let jsonl_dir = forge_sdk::projects_dir_for(cfg.path()).join(&a_key);
+        std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
+        let theirs = "550e8400-e29b-41d4-a716-446655440091";
+        std::fs::write(
+            jsonl_dir.join(format!("{theirs}.jsonl")),
+            "{\"type\":\"user\",\"cwd\":\"/somewhere\"}\n\
+             {\"type\":\"tag\",\"tag\":\"forge:worker:shared\"}\n",
+        )
+        .expect("write the pre-field transcript");
+
+        let resume = |project: &'static str| {
+            let ws = Arc::clone(&ws);
+            async move {
+                let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    facade.spawn_worker(
+                        &SessionSlot::lead("TestOrg", project),
+                        "shared".to_owned(),
+                        "charter".to_owned(),
+                        None,
+                        None,
+                        false,
+                        true,
+                        None,
+                        None,
+                    ),
+                )
+                .await
+                .expect("the spawn returns")
+            }
+        };
+
+        for project in ["proj-a", "proj-b"] {
+            let err = match resume(project).await {
+                Ok(reply) => panic!("{project} adopted the colliding transcript: {reply:?}"),
+                Err(err) => err,
+            };
+            let crate::mcp::workers::facade::WorkerSpawnError::ResumeLookupFailed {
+                message, ..
+            } = err
+            else {
+                panic!("{project}'s refusal is the lookup: {err:?}");
+            };
+            assert!(
+                message.contains("predates project tags"),
+                "{project} refuses the ambiguous row: {message}",
+            );
+        }
+    }
+
+    /// A git project whose checkout path collides with a non-git
+    /// project's root does not read that root's transcripts: its worker
+    /// runs under `.claude/worktrees`, so it is not counted as composing
+    /// the directory.
+    #[tokio::test]
+    async fn a_colliding_git_checkout_is_not_counted_as_composing() {
+        let holder = tempfile::tempdir().expect("holder");
+        let a_dir = holder.path().join("a-b");
+        let b_dir = holder.path().join("a").join("b");
+        std::fs::create_dir_all(&a_dir).expect("a-b dir");
+        std::fs::create_dir_all(&b_dir).expect("a/b dir");
+        run_git_in(&b_dir, &["init", "-q"]);
+        let a_dir = std::fs::canonicalize(&a_dir).expect("canonical a-b");
+        let b_dir = std::fs::canonicalize(&b_dir).expect("canonical a/b");
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n\
+                 [[orgs.projects]]\nname = \"proj-a\"\npath = \"{}\"\n\
+                 [[orgs.projects]]\nname = \"proj-b\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                a_dir.display(),
+                b_dir.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let store = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+
+        assert_eq!(
+            ws.projects_composing(&a_dir, "shared"),
+            vec![("TestOrg".to_owned(), "proj-a".to_owned())],
+            "the git checkout that only shares the sanitised key is not counted",
+        );
     }
 
     /// The mirror of the recreation case: the row says the worker runs in
