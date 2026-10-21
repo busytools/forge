@@ -11,7 +11,7 @@ use objc2::{
     rc::{Allocated, Retained},
     runtime::{Bool, NSObjectProtocol},
 };
-use objc2_app_kit::{NSApp, NSApplication, NSEvent};
+use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSEvent};
 use std::cell::Cell;
 
 #[cfg(feature = "testing")]
@@ -89,11 +89,18 @@ impl ClientApplication {
     );
 }
 
-/// Make NSApplication THIS class, before anything else asks for it.
+/// Make NSApplication THIS class and a background app, before anything else
+/// asks for it.
 ///
 /// **Called before CEF initializes.** If a prior caller already created
 /// NSApp, the class is fixed and CEF's protocol has nothing to hook - the
 /// caller gets told rather than left with a silently unpumped browser.
+///
+/// **A host is an engine, not an app.** Under the regular policy macOS
+/// registers every host as an app of its own and gives it a Dock tile beside
+/// the client's; an accessory one is a background process with no tile, while
+/// its windows still show. The bundle stays a regular app, because the
+/// client shares it.
 pub fn setup() {
     let _ = ClientApplication::shared_application();
     let Some(mtm) = MainThreadMarker::new() else {
@@ -103,5 +110,8 @@ pub fn setup() {
     let app = NSApp(mtm);
     if !app.isKindOfClass(ClientApplication::class()) {
         eprintln!("forge host: NSApplication was created before CEF claimed it");
+    }
+    if !app.setActivationPolicy(NSApplicationActivationPolicy::Accessory) {
+        eprintln!("forge host: the accessory activation policy was refused");
     }
 }
