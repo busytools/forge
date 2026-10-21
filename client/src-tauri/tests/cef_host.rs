@@ -124,7 +124,20 @@ async fn a_spawned_host_is_ended_by_its_pid() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let profile = dir.path().join("cef-profile");
     let stub = dir.path().join("stub-host.sh");
-    std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").expect("the stub");
+    let wrote = dir.path().join("stub-args.txt");
+    // **The stub speaks its own spawn line**, so the flag and the pid ride a
+    // real child's argv rather than only a builder the test could copy. The
+    // write lands under a temporary name and is renamed, so the test never
+    // reads a file the shell has created but not yet filled.
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{wrote}.tmp' && mv '{wrote}.tmp' '{wrote}'\n\
+             exec sleep 30\n",
+            wrote = wrote.display(),
+        ),
+    )
+    .expect("the stub");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -134,9 +147,47 @@ async fn a_spawned_host_is_ended_by_its_pid() {
     let pid = spawn::spawn_with(&stub, &profile, 9411, "/forge-cef-9411", 800, 600)
         .expect("the stub starts");
     assert!(spawn::running(pid), "the spawned stub is alive");
+    // **A failed assertion must not leave the sleeper behind.** The guard
+    // kills the stub on the way out while the test is still its owner; it is
+    // disarmed once `end` has reaped it, or the drop would signal a pid this
+    // process no longer owns.
+    struct Stops {
+        pid: u32,
+        armed: bool,
+    }
+    impl Drop for Stops {
+        fn drop(&mut self) {
+            if !self.armed {
+                return;
+            }
+            // SAFETY: a signal to the pid this test spawned.
+            unsafe {
+                libc::kill(self.pid as i32, libc::SIGKILL);
+            }
+        }
+    }
+    let mut stops = Stops { pid, armed: true };
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !wrote.is_file() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let args = std::fs::read_to_string(&wrote).expect("the stub wrote its arguments");
+    let lines: Vec<&str> = args.lines().collect();
+    let at = lines.iter().position(|arg| *arg == "--parent").expect("the parent flag");
+    let mine = std::process::id().to_string();
+    assert_eq!(
+        lines.get(at + 1).copied(),
+        Some(mine.as_str()),
+        "the client's own pid rides the spawn line: {args}",
+    );
+
     let record = spawn::Record { pid, port: 9411, ring: "/forge-cef-9411".to_owned() };
     spawn::write_record(&profile, &record).expect("the record");
     spawn::end(pid).await;
+    // **The end has reaped it**, so the pid is no longer this process's to
+    // signal: disarmed here rather than left to race a recycled number.
+    stops.armed = false;
     assert!(!spawn::running(pid), "the end takes the process down");
 }
 

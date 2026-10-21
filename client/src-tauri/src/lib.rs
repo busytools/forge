@@ -18,6 +18,77 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(desktop)]
 const EXIT_REAP_BOUND: Duration = Duration::from_secs(10);
 
+/// The signal that asked the client to stop, `0` while none has. A signal
+/// handler may only store an atomic; the thread below does the reaping.
+///
+/// Unix desktops only: the phone has no host processes to reap, and Windows
+/// has no `SIGTERM` to catch (`libc` is a unix dependency).
+#[cfg(all(desktop, unix))]
+static SHUTDOWN_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// How often the reaper thread looks at the flag.
+#[cfg(all(desktop, unix))]
+const SHUTDOWN_POLL: Duration = Duration::from_millis(25);
+
+#[cfg(all(desktop, unix))]
+extern "C" fn mark_shutdown(signal: i32) {
+    SHUTDOWN_SIGNAL.store(signal, std::sync::atomic::Ordering::Release);
+}
+
+/// A host this client can reap: the real browser host, or a test double whose
+/// reap is observed without a browser stack.
+#[cfg(all(desktop, unix))]
+trait Reaps {
+    fn reap_owned_blocking(&self) -> Vec<String>;
+}
+
+#[cfg(all(desktop, unix))]
+impl Reaps for browser::BrowserHost {
+    fn reap_owned_blocking(&self) -> Vec<String> {
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(EXIT_REAP_BOUND, self.reap_owned()).await.unwrap_or_default()
+        })
+    }
+}
+
+/// **A SIGTERM is a shutdown, not a death.** `RunEvent::Exit` runs no handler
+/// for a signal, so the browsers this client claimed would outlive it and hold
+/// the bundle the next install replaces. This is the same reap the exit event
+/// runs, from a thread the signal wakes; a SIGKILL runs neither, and the
+/// host's own parent watch is its backstop.
+#[cfg(all(desktop, unix))]
+fn install_shutdown_reaper<H: Reaps + Send + Sync + 'static>(host: std::sync::Arc<H>) {
+    // SAFETY: the handler stores an atomic and does nothing else.
+    unsafe {
+        libc::signal(libc::SIGTERM, mark_shutdown as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, mark_shutdown as *const () as libc::sighandler_t);
+    }
+    drop(watch_shutdown_signal(&SHUTDOWN_SIGNAL, move |signal| {
+        // **The exit is unconditional.** A panic in the reap would otherwise
+        // swallow the signal and leave the client running with no handler.
+        let reaping = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(host.reap_owned_blocking());
+        }));
+        drop(reaping);
+        std::process::exit(128 + signal);
+    }));
+}
+
+/// Wait for a shutdown signal and answer it. The answer is a seam, so a test
+/// can watch the bridge fire without ending the test process.
+#[cfg(all(desktop, unix))]
+fn watch_shutdown_signal<T: Send + 'static>(
+    signal: &'static std::sync::atomic::AtomicI32,
+    act: impl FnOnce(i32) -> T + Send + 'static,
+) -> std::thread::JoinHandle<Option<T>> {
+    std::thread::spawn(move || {
+        while signal.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            std::thread::sleep(SHUTDOWN_POLL);
+        }
+        Some(act(signal.load(std::sync::atomic::Ordering::Acquire)))
+    })
+}
+
 /// The stages that finish an install, named by the platform that needs them.
 /// The client's line draws its words per stage, so this is a fact rather than
 /// copy: the desktop restarts into the swapped bundle, the phone's install is
@@ -355,8 +426,13 @@ pub fn run() {
     // initializes CEF, and a helper's whole life is `execute_process`.
     #[cfg(target_os = "macos")]
     {
-        if let Some(args) = browser::cef::host_args(std::env::args().skip(1)) {
-            browser::cef::host_main(args);
+        match browser::cef::launch(std::env::args().skip(1)) {
+            browser::cef::Launch::Host(args) => browser::cef::host_main(args),
+            browser::cef::Launch::Refused(why) => {
+                eprintln!("{why}");
+                std::process::exit(2);
+            }
+            browser::cef::Launch::Client => {}
         }
         if browser::cef::is_subprocess() {
             browser::cef::run_subprocess();
@@ -490,6 +566,10 @@ pub fn run() {
                     browser::StackPaths::resolve(app.handle()),
                     Some(app.handle().clone()),
                 );
+                // **The signal path holds the same host the exit event does.**
+                // A quit runs `RunEvent::Exit`; a SIGTERM runs this instead.
+                #[cfg(unix)]
+                install_shutdown_reaper(std::sync::Arc::clone(&host));
                 app.manage(host);
             }
             // The bridge, over whatever host this target has: the desktop's
@@ -731,6 +811,119 @@ fn record(log_file: Option<&std::path::Path>, line: &str) {
         }
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+#[cfg(all(test, desktop, unix))]
+mod tests {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use super::watch_shutdown_signal;
+
+    /// **A raised flag reaches the watcher with the signal it carries.** The
+    /// answer is the seam: production's reaps the hosts and exits, this one
+    /// records the number it was handed, so the test process lives to assert.
+    #[test]
+    fn a_shutdown_flag_reaches_the_watcher_with_its_signal() {
+        static RAISED: AtomicI32 = AtomicI32::new(0);
+        let seen = Arc::new(Mutex::new(0));
+        let record = Arc::clone(&seen);
+        let watcher = watch_shutdown_signal(&RAISED, move |signal| {
+            *record.lock().expect("the recorder") = signal;
+        });
+        RAISED.store(libc::SIGTERM, Ordering::Release);
+        watcher.join().expect("the watcher thread");
+        assert_eq!(
+            *seen.lock().expect("the recorder"),
+            libc::SIGTERM,
+            "the watcher records the signal the flag carried",
+        );
+        RAISED.store(0, Ordering::Release);
+    }
+
+    /// **The path a signal takes through production.** A child process runs
+    /// the shipping installer over a double, raises a real signal, and is
+    /// ended by the installer's own exit; the parent asserts the reap and the
+    /// exit code. Both signals are driven, and a reap that panics must still
+    /// exit for its signal rather than swallowing it. Only the host behind
+    /// the reap is a double.
+    #[test]
+    fn a_signal_runs_the_production_reaper_and_exits_for_it() {
+        const CHILD: &str = "FORGE_TEST_REAPER_CHILD";
+        const SIGNAL: &str = "FORGE_TEST_REAPER_SIGNAL";
+        const PANIC: &str = "FORGE_TEST_REAPER_PANIC";
+        // The libtest filter is the bare test name, not the module path.
+        let name = "a_signal_runs_the_production_reaper_and_exits_for_it";
+
+        if let Some(record) = std::env::var_os(CHILD) {
+            struct Double(std::path::PathBuf, bool);
+            impl super::Reaps for Double {
+                fn reap_owned_blocking(&self) -> Vec<String> {
+                    std::fs::write(&self.0, b"reaped\n").expect("the reap record");
+                    assert!(!self.1, "the reap panicked");
+                    vec!["recorded".to_owned()]
+                }
+            }
+            let signal: i32 =
+                std::env::var(SIGNAL).expect("the signal").parse().expect("a signal number");
+            super::install_shutdown_reaper(Arc::new(Double(
+                std::path::PathBuf::from(record),
+                std::env::var_os(PANIC).is_some(),
+            )));
+            // SAFETY: raising `signal` at this process, which handles it now.
+            let raised = unsafe { libc::raise(signal) };
+            assert_eq!(raised, 0, "the signal was raised");
+            // **The installer ends this process from the watcher's thread**,
+            // so this thread waits for that rather than returning to the
+            // harness, whose own exit would hide the answer.
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+
+        // Both signals the installer answers, and a reap that panics: the
+        // exit must still name the signal, which is what the catch_unwind
+        // guard in the installer buys.
+        for (signal, panic) in
+            [(libc::SIGTERM, false), (libc::SIGINT, false), (libc::SIGTERM, true)]
+        {
+            let dir = tempfile::tempdir().expect("a temp dir");
+            let record = dir.path().join("reap.txt");
+            let mut child =
+                std::process::Command::new(std::env::current_exe().expect("the test binary"))
+                    .args([name, "--nocapture"])
+                    .env(CHILD, &record)
+                    .env(SIGNAL, signal.to_string())
+                    .envs(panic.then_some((PANIC, "1")))
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("the child runs the test");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let status = loop {
+                match child.try_wait().expect("the child is waited") {
+                    Some(status) => break status,
+                    None if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    None => {
+                        let _ = child.kill();
+                        panic!("the child never answered signal {signal}");
+                    }
+                }
+            };
+            assert_eq!(
+                status.code(),
+                Some(128 + signal),
+                "signal {signal} (panicking reap: {panic}) exits 128+signal, not by a signal death",
+            );
+            assert_eq!(
+                std::fs::read_to_string(&record).expect("the reap ran in the child"),
+                "reaped\n",
+                "the production installer's reap ran for signal {signal}",
+            );
         }
     }
 }

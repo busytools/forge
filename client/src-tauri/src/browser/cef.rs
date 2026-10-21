@@ -58,9 +58,33 @@ pub fn endpoint(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-/// The host's arguments, when this process was spawned in `--cef-host` mode.
-pub fn host_args<I: IntoIterator<Item = String>>(args: I) -> Option<host::Args> {
-    host::parse(args)
+/// What this process's own command line asks it to be.
+pub enum Launch {
+    /// A `--cef-host` line that parses: this process is a browser host.
+    Host(host::Args),
+    /// No host line: the client.
+    Client,
+    /// A line that NAMES the host mode but does not parse.
+    ///
+    /// **A refusal, never a client.** A spawn line that lost an argument
+    /// would otherwise start a second client window - not what the process
+    /// was spawned for, and not what its words say.
+    Refused(String),
+}
+
+/// Read the process's own mode from its arguments.
+pub fn launch<I: IntoIterator<Item = String>>(args: I) -> Launch {
+    let args: Vec<String> = args.into_iter().collect();
+    if let Some(parsed) = host::parse(args.clone()) {
+        return Launch::Host(parsed);
+    }
+    if args.iter().any(|arg| arg == "--cef-host") {
+        return Launch::Refused(format!(
+            "forge host: the --cef-host line did not parse: {}",
+            args.join(" ")
+        ));
+    }
+    Launch::Client
 }
 
 /// Become the browser host. The whole mode is one process's life.
@@ -200,6 +224,46 @@ cef::wrap_app! {
             cmd.append_switch(Some(&CefString::from(
                 "disable-backgrounding-occluded-windows",
             )));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Launch, launch};
+
+    /// A host line parses into the host; no host word is the client; and a
+    /// line that names the host mode but does not parse is REFUSED - never a
+    /// second client window.
+    #[test]
+    fn a_host_line_that_does_not_parse_is_refused() {
+        let host = |extra: &[&str]| {
+            let mut all: Vec<String> =
+                ["--cef-host", "--profile", "/p", "--port", "9411", "--ring", "/r"]
+                    .iter()
+                    .map(|arg| (*arg).to_owned())
+                    .collect();
+            all.extend(extra.iter().map(|arg| (*arg).to_owned()));
+            all
+        };
+
+        assert!(matches!(launch(host(&["--parent", "4242"])), Launch::Host(_)));
+        assert!(matches!(launch(["--client-flag".to_owned()]), Launch::Client));
+
+        for refused in [
+            host(&["--parent", "0"]),
+            host(&["--parent", "4294967296"]),
+            vec!["--cef-host".to_owned()],
+            vec!["--profile".to_owned(), "/p".to_owned(), "--cef-host".to_owned()],
+        ] {
+            match launch(refused) {
+                Launch::Refused(why) => {
+                    assert!(why.contains("the --cef-host line did not parse"), "{why}");
+                }
+                Launch::Host(_) | Launch::Client => {
+                    panic!("a malformed host line was not refused")
+                }
+            }
         }
     }
 }
