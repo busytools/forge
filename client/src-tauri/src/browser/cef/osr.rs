@@ -608,6 +608,9 @@ mod tests {
             "a full-size ring nobody wrote a header into is refused"
         );
         Ring::unlink(blank_name);
+        // The refused ring now keeps its name for its own host, so the test
+        // takes its own segment with it.
+        Ring::unlink(name);
     }
 
     /// **The offsets are the contract.** A field inserted anywhere before

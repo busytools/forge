@@ -1202,6 +1202,10 @@ impl BrowserHost {
                                 cache.display()
                             ));
                         }
+                        // **The ring goes only with a host this client ended.**
+                        // macOS does not release a dead host's segment, and a
+                        // respawn takes a fresh port, so this name would leak.
+                        cef::osr::Ring::unlink(&record.ring);
                         cef::spawn::remove_record(cache);
                     }
                 }
