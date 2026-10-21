@@ -2034,6 +2034,35 @@ describe('whether the column follows the newest end', () => {
     );
   });
 
+  it("re-arms when the reader's own down gesture meets a room-gain clamp", async () => {
+    // **The same clamp, with a hand behind it.** A down gesture arms no
+    // up-token - it cannot be the hand that took the reader away - and the
+    // foot rising past their target leaves the clamp's landing below the
+    // offset they came from, so the event's direction reads away. Unless the
+    // down gesture is heard as its own arm, the return is swallowed and the
+    // way-back arrow sticks until pressed: the 2026-10-11 symptom, one clamp
+    // over.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT - 100);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+    const roomier = VIEWPORT + 200;
+    setElement(TOTAL, roomier);
+    list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own down gesture re-armed the follow across the clamp').toEqual([
+      { asked: Math.floor(TOTAL), landed: Math.floor(TOTAL) - roomier },
+    ]);
+  });
+
   it('keeps following when a clamp moves the reader with the content', async () => {
     // The mirror of the case above: a row corrected SHORTER leaves a following
     // reader above the foot, and a scroll event that reads as them scrolling
