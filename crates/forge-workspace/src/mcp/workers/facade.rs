@@ -682,11 +682,15 @@ impl WorkerFacade for ProdWorkerFacade {
                 // the claim is the atomic half of the collision check, so
                 // a concurrent spawn in another project cannot pass
                 // between the check and this spawn's insert.
-                let claim =
-                    ws.claim_worktree(&run_dir, &cp.project_key, &label).map_err(|reason| {
-                        WorkerSpawnError::WorktreeCreationFailed {
-                            reason: format!("this worker's worktree cannot be shared: {reason}"),
-                        }
+                let claim = ws
+                    .claim_worktree(
+                        &run_dir,
+                        &cp.project_key,
+                        &label,
+                        crate::workspace::WorktreeOp::Spawn,
+                    )
+                    .map_err(|reason| WorkerSpawnError::WorktreeCreationFailed {
+                        reason: format!("this worker's worktree cannot be shared: {reason}"),
                     })?;
                 // Refuse before the ensure or the transcript lookup can
                 // touch a tree that belongs to another project (#2460):
@@ -695,7 +699,12 @@ impl WorkerFacade for ProdWorkerFacade {
                 // read-only - it clears a deregistered leftover and
                 // rewrites a stale link - and the lookup would read that
                 // project's conversation.
-                if let Some(collision) = ws.worktree_collision(&run_dir, &cp.project_key, &label) {
+                if let Some(collision) = ws.worktree_collision(
+                    &run_dir,
+                    &cp.project_key,
+                    &label,
+                    crate::workspace::WorktreeOp::Spawn,
+                ) {
                     return Err(WorkerSpawnError::WorktreeCreationFailed {
                         reason: format!("this worker's worktree cannot be shared: {collision}"),
                     });

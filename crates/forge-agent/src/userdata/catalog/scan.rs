@@ -1129,16 +1129,29 @@ pub(crate) fn tag_of(
     size: u64,
     cache: Option<&SessionTagCache>,
 ) -> std::io::Result<Option<String>> {
+    Ok(tag_and_project_of(path, file, size, cache)?.0)
+}
+
+/// The last tag AND the project its row names, with the same cache and
+/// read-error behaviour as [`tag_of`]. A worker resume uses the project
+/// to tell this project's session from another project's in a directory
+/// both compose to.
+pub(crate) fn tag_and_project_of(
+    path: &Path,
+    file: &mut fs::File,
+    size: u64,
+    cache: Option<&SessionTagCache>,
+) -> std::io::Result<(Option<String>, Option<String>)> {
     let carried = cache
         .and_then(|c| c.get(path))
         .filter(|prior| prior.scanned_len <= size)
         .unwrap_or_default();
     file.seek(SeekFrom::Start(carried.scanned_len))?;
-    let (tag, state) = scan_tag_from(BufReader::new(&mut *file), Some(carried));
+    let (tag, project, state) = scan_tag_from(BufReader::new(&mut *file), Some(carried));
     if let Some(cache) = cache {
         cache.put(path, state);
     }
-    Ok(tag)
+    Ok((tag, project))
 }
 
 /// What a tag scan learned about one transcript, and how far into it the
@@ -1154,6 +1167,11 @@ pub(crate) fn tag_of(
 pub struct SessionTagScan {
     /// The last tag among the complete lines below `scanned_len`.
     pub tag: Option<String>,
+    /// The project the last tag row names, when it carries one. Absent on
+    /// a row written before the field existed, and on a cache entry
+    /// persisted before it did.
+    #[serde(default)]
+    pub project: Option<String>,
     pub scanned_len: u64,
 }
 
@@ -1220,11 +1238,12 @@ impl SessionTagCache {
 fn scan_tag_from<R: BufRead>(
     mut reader: R,
     carried: Option<SessionTagScan>,
-) -> (Option<String>, SessionTagScan) {
+) -> (Option<String>, Option<String>, SessionTagScan) {
     let mut state = carried.unwrap_or_default();
     // Tracked apart from `state.tag` so a tag on a half-written line is
     // reported now but not cached: the line is re-read next time.
     let mut last_tag = state.tag.clone();
+    let mut last_project = state.project.clone();
     let mut line = Vec::new();
     loop {
         line.clear();
@@ -1263,15 +1282,17 @@ fn scan_tag_from<R: BufRead>(
             && !tag.is_empty()
         {
             last_tag = Some(tag);
+            last_project = extract_json_string_field(text, "project");
             if complete {
                 state.tag.clone_from(&last_tag);
+                state.project.clone_from(&last_project);
             }
         }
         if complete {
             state.scanned_len += raw_len;
         }
     }
-    (last_tag, state)
+    (last_tag, last_project, state)
 }
 
 /// Find the first byte offset where `needle` begins in `haystack`.
@@ -2306,7 +2327,8 @@ mod tests {
         let tag_row = "{\"type\":\"tag\",\"tag\":\"forge-worker-x\"}\n";
         // The first scan sees a whole line plus the front of the tag row.
         let torn = &tag_row[..20];
-        let (found, state) = scan_tag_from(std::io::Cursor::new(format!("{settled}{torn}")), None);
+        let (found, _project, state) =
+            scan_tag_from(std::io::Cursor::new(format!("{settled}{torn}")), None);
         assert_eq!(found, None, "half a tag row carries no closing quote to parse");
         assert_eq!(
             state.scanned_len,
@@ -2318,7 +2340,8 @@ mod tests {
         // recorded offset, exactly as the production path seeks.
         let whole = format!("{settled}{tag_row}");
         let resume_at = usize::try_from(state.scanned_len).unwrap();
-        let (resumed, _) = scan_tag_from(std::io::Cursor::new(&whole[resume_at..]), Some(state));
+        let (resumed, _project, _) =
+            scan_tag_from(std::io::Cursor::new(&whole[resume_at..]), Some(state));
         assert_eq!(
             resumed.as_deref(),
             Some("forge-worker-x"),

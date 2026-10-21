@@ -25,6 +25,7 @@ pub fn tag_session(
     config_dir: &Path,
     session_id: &str,
     tag: Option<&str>,
+    project: Option<&str>,
     directory: Option<&str>,
 ) -> Result<(), Error> {
     validate_uuid(session_id)?;
@@ -38,11 +39,19 @@ pub fn tag_session(
             stripped.to_string()
         }
     };
-    let payload = json!({
+    let mut payload = json!({
         "type": "tag",
         "tag": stored,
         "sessionId": session_id,
     });
+    // The project scopes a tag to the forge project that wrote it, so a
+    // resume in another project composing the same worktree directory
+    // cannot claim this session.
+    if let Some(project) = project
+        && let Some(map) = payload.as_object_mut()
+    {
+        map.insert("project".to_owned(), serde_json::Value::String(project.to_owned()));
+    }
     append_to_session(config_dir, session_id, directory, &payload)
 }
 
@@ -111,7 +120,7 @@ mod tests {
     #[test]
     fn empty_tag_is_rejected() {
         let session_id = "550e8400-e29b-41d4-a716-446655440001";
-        let r = tag_session(&fake_config_dir(), session_id, Some("   "), None);
+        let r = tag_session(&fake_config_dir(), session_id, Some("   "), None, None);
         assert!(matches!(r, Err(Error::MessageParse { .. })));
     }
 }

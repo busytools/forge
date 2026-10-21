@@ -1346,7 +1346,12 @@ pub(crate) fn handle_spawn_worker(
     // or by a despawn removing the tree this one is entering. Re-entrant
     // with a resume facade's pre-ensure claim.
     let _claim = match worktree_path.as_ref() {
-        Some(path) => match workspace.claim_worktree(path, &project_key, label) {
+        Some(path) => match workspace.claim_worktree(
+            path,
+            &project_key,
+            label,
+            crate::workspace::WorktreeOp::Spawn,
+        ) {
             Ok(claim) => Some(claim),
             Err(reason) => {
                 tracing::warn!(
@@ -1373,10 +1378,9 @@ pub(crate) fn handle_spawn_worker(
     // another project's worker's worktree. Reusing it would put two
     // sessions in one tree and hand the later despawn the power to delete
     // it; refuse before anything is minted.
-    if let Some(collision) = worktree_path
-        .as_ref()
-        .and_then(|dir| workspace.worktree_collision(dir, &project_key, label))
-    {
+    if let Some(collision) = worktree_path.as_ref().and_then(|dir| {
+        workspace.worktree_collision(dir, &project_key, label, crate::workspace::WorktreeOp::Spawn)
+    }) {
         tracing::warn!(
             target: "forge_workspace::spawn",
             event_name = "worker_spawn_refused_shared_worktree",
@@ -2022,7 +2026,12 @@ pub(crate) fn handle_despawn_worker_within(
     // or another project's worker's tree. Removing it would delete that,
     // so refuse before the probe; a force cannot override this.
     if let Some(path) = worktree_path.as_ref()
-        && let Some(collision) = workspace.worktree_collision(path, project_key, label)
+        && let Some(collision) = workspace.worktree_collision(
+            path,
+            project_key,
+            label,
+            crate::workspace::WorktreeOp::Despawn,
+        )
     {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -2047,7 +2056,12 @@ pub(crate) fn handle_despawn_worker_within(
     // would otherwise be admitted into a tree the cleanup is deleting.
     // Released when the cleanup ends.
     let claim = match worktree_path.as_ref() {
-        Some(path) => match workspace.claim_worktree(path, project_key, label) {
+        Some(path) => match workspace.claim_worktree(
+            path,
+            project_key,
+            label,
+            crate::workspace::WorktreeOp::Despawn,
+        ) {
             Ok(claim) => Some(claim),
             Err(reason) => {
                 let _ = respond.send(DespawnResult::Failed {
@@ -4300,7 +4314,14 @@ provider = "anthropic"
         // with no entry or row yet: the check and the insert are one step.
         let owner = ws.project_root_for_key(&key_of("proj-a")).expect("proj-a root");
         let claimed = crate::mcp::workers::types::worker_tag_dir(&owner, "held", true);
-        let claim = ws.claim_worktree(&claimed, &key_of("proj-a"), "held").expect("claim");
+        let claim = ws
+            .claim_worktree(
+                &claimed,
+                &key_of("proj-a"),
+                "held",
+                crate::workspace::WorktreeOp::Spawn,
+            )
+            .expect("claim");
         let err = spawn_reply(&ws, &key_of("proj-b"), "held", false)
             .await
             .expect("reply channel")
@@ -4377,7 +4398,12 @@ provider = "anthropic"
         let alias = holder.path().join("shared-alias");
         std::os::unix::fs::symlink(&shared, &alias).expect("symlink");
 
-        let collision = ws.worktree_collision(&alias, &key_of("proj-b"), "shared");
+        let collision = ws.worktree_collision(
+            &alias,
+            &key_of("proj-b"),
+            "shared",
+            crate::workspace::WorktreeOp::Spawn,
+        );
 
         assert!(
             collision.as_deref().is_some_and(|reason| reason.contains("worker 'shared'")),
@@ -4430,8 +4456,14 @@ provider = "anthropic"
             &["worktree", "add", "-q", "-b", "worktree-shared", shared.to_str().expect("utf8")],
         );
         ws.insert_live_worker(&key_of("proj-b"), fake_git_worker_entry("shared", "b-worker"));
-        let claim =
-            ws.claim_worktree(&shared, &key_of("proj-a"), "shared").expect("proj-a holds the path");
+        let claim = ws
+            .claim_worktree(
+                &shared,
+                &key_of("proj-a"),
+                "shared",
+                crate::workspace::WorktreeOp::Spawn,
+            )
+            .expect("proj-a holds the path");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&ws, &key_of("proj-b"), "shared", true, tx);

@@ -93,7 +93,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn scan(tag: Option<&str>, scanned_len: u64) -> SessionTagScan {
-        SessionTagScan { tag: tag.map(ToOwned::to_owned), scanned_len }
+        SessionTagScan { tag: tag.map(ToOwned::to_owned), project: None, scanned_len }
     }
 
     #[test]
