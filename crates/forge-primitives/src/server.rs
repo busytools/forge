@@ -31,6 +31,17 @@ pub struct ServerConfig {
     /// `0` serves the records whole, for a reader whose changes carry patches
     /// beyond the default.
     pub tool_record_cap_kb: u64,
+    /// How many bytes of conversation a session's first snapshot carries, in
+    /// KB.
+    ///
+    /// **The first snapshot is what a seat switch waits on**, and twenty
+    /// turns of a large conversation are megabytes: seconds over a network,
+    /// from a frame a client spends milliseconds on locally. The newest
+    /// turns are kept while they fit and the rest is paged through `more` as
+    /// it always was, so nothing is dropped and the order does not move.
+    /// `0` serves the page the turn count asks for, for a reader who would
+    /// rather have the whole window in one frame.
+    pub first_frame_cap_kb: u64,
 }
 
 /// The port the server binds when `[server] port` is absent. Distinct
@@ -41,6 +52,10 @@ pub const DEFAULT_SERVER_PORT: u16 = 8790;
 /// absent. See `ServerConfig::tool_record_cap_kb`.
 pub const DEFAULT_TOOL_RECORD_CAP_KB: u64 = 64;
 
+/// The first snapshot's conversation budget when `[server]
+/// first_frame_cap_kb` is absent. See `ServerConfig::first_frame_cap_kb`.
+pub const DEFAULT_FIRST_FRAME_CAP_KB: u64 = 512;
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -48,6 +63,7 @@ impl Default for ServerConfig {
             port: DEFAULT_SERVER_PORT,
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             tool_record_cap_kb: DEFAULT_TOOL_RECORD_CAP_KB,
+            first_frame_cap_kb: DEFAULT_FIRST_FRAME_CAP_KB,
         }
     }
 }
@@ -67,5 +83,17 @@ mod tests {
         let parsed: ServerConfig =
             serde_json::from_str(r#"{"tool_record_cap_kb": 0}"#).expect("the key parses");
         assert_eq!(parsed.tool_record_cap_kb, 0);
+    }
+
+    /// The shipped default, and the opt-out: absent means a 512 KB first
+    /// page, and `0` means the turn count alone decides it. Pinned as a
+    /// literal for the same reason as the record cap's.
+    #[test]
+    fn the_first_frame_cap_defaults_to_512_kb_and_zero_means_the_count() {
+        assert_eq!(ServerConfig::default().first_frame_cap_kb, 512, "the documented default");
+        assert_eq!(DEFAULT_FIRST_FRAME_CAP_KB, 512, "and the constant the default is built from");
+        let parsed: ServerConfig =
+            serde_json::from_str(r#"{"first_frame_cap_kb": 0}"#).expect("the key parses");
+        assert_eq!(parsed.first_frame_cap_kb, 0);
     }
 }

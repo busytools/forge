@@ -904,30 +904,43 @@ fn log_record_cap(seat: &SessionSlot, id: Option<&str>, cap: usize, report: &Rec
 /// the client draws where it would have read the record. `usize::MAX` (the
 /// `0` key) serves records whole.
 pub(crate) fn cap_tool_records(turns: &mut [TurnWire], cap: usize, seat: &SessionSlot) {
-    if cap == usize::MAX {
-        return;
-    }
     for turn in turns {
-        for frame in &mut turn.messages {
-            // The call's own id, read off the result block that answers it,
-            // so the line names the exact call a reader can find in the
-            // transcript.
-            let id = frame
-                .get("message")
-                .and_then(|message| message.get("content"))
-                .and_then(Value::as_array)
-                .and_then(|blocks| {
-                    blocks.iter().find_map(|block| {
-                        block.get("tool_use_id").and_then(Value::as_str).map(str::to_owned)
-                    })
-                });
-            if let Some(result) = frame.get_mut("tool_use_result")
-                && let Some(report) = cap_tool_record(result, cap)
-            {
-                log_record_cap(seat, id.as_deref(), cap, &report);
-            }
+        for (id, report) in cap_turn(turn, cap) {
+            log_record_cap(seat, id.as_deref(), cap, &report);
         }
     }
+}
+
+/// [`cap_tool_records`] for one turn, answering what it bounded and the call
+/// each belongs to rather than logging it here.
+///
+/// **A caller that may not serve the turn must be able to drop the report**:
+/// a first page cut to a byte budget bounds the records it MEASURES, and only
+/// the turns it keeps are served, so only those are logged.
+fn cap_turn(turn: &mut TurnWire, cap: usize) -> Vec<(Option<String>, RecordCap)> {
+    if cap == usize::MAX {
+        return Vec::new();
+    }
+    let mut reports = Vec::new();
+    for frame in &mut turn.messages {
+        // The call's own id, read off the result block that answers it, so
+        // the line names the exact call a reader can find in the transcript.
+        let id = frame
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|blocks| {
+                blocks.iter().find_map(|block| {
+                    block.get("tool_use_id").and_then(Value::as_str).map(str::to_owned)
+                })
+            });
+        if let Some(result) = frame.get_mut("tool_use_result")
+            && let Some(report) = cap_tool_record(result, cap)
+        {
+            reports.push((id, report));
+        }
+    }
+    reports
 }
 
 /// Hand the window's floor back as a page's cursor when the page opens on the
@@ -1091,6 +1104,36 @@ pub fn page(
     before: Option<&str>,
     turns: u32,
 ) -> Page {
+    page_within(messages, rendered, dropped, before, turns, usize::MAX, None)
+}
+
+/// [`page`], with the whole turns it carries held to `budget` bytes.
+///
+/// **A page of twenty turns is unbounded in bytes**, and the first page is
+/// what a seat switch waits on: a few large turns made one 5 MB, which is
+/// seconds over a network and milliseconds locally. So the newest page is cut
+/// where the budget runs out, at a turn boundary - a client draws turns, and
+/// a turn cut in half is one it cannot place. The handle it carries is the
+/// first kept turn's, so `more` walks the history above it as it always did.
+///
+/// **The bytes counted are the bytes SERVED**: each candidate is bounded by
+/// `cap` first, exactly as the page would have been after the cut. Measuring
+/// the raw records would make the page's size follow a payload the client
+/// never receives, and a seat with a few multi-MB records would keep one
+/// turn where the capped page fits many.
+///
+/// **The newest turn is served even when it alone is over the budget**: a
+/// budget that answered with no page would draw the seat empty, and one that
+/// split the turn would hand a client half of it. `usize::MAX` is no budget.
+pub fn page_within(
+    messages: &[Message],
+    rendered: &Rendered,
+    dropped: usize,
+    before: Option<&str>,
+    turns: u32,
+    budget: usize,
+    cap: Option<(usize, &SessionSlot)>,
+) -> Page {
     // A page of no turns ends where it began: its cursor would name the turn it
     // already opened at, so a client walking back would ask for the same page
     // forever.
@@ -1121,11 +1164,43 @@ pub fn page(
     // Only the window is rendered: building every turn to keep a few of them
     // would walk and encode the whole conversation on a path a reader hits
     // while scrolling.
-    let first = ends_at.saturating_sub(turns);
-    let page_turns: Vec<TurnWire> = ranges[first..ends_at]
-        .iter()
-        .map(|&(from, to, key)| turn_wire(messages, from, to, key, &rendered.endings))
-        .collect();
+    let window_first = ends_at.saturating_sub(turns);
+    let (first, page_turns) = if budget == usize::MAX {
+        let page_turns: Vec<TurnWire> = ranges[window_first..ends_at]
+            .iter()
+            .map(|&(from, to, key)| turn_wire(messages, from, to, key, &rendered.endings))
+            .collect();
+        (window_first, page_turns)
+    } else {
+        // From the newest turn back, while the page still fits. The newest
+        // turn is kept regardless, which is what makes a budget under one
+        // turn answer with one rather than with none.
+        let mut kept: Vec<TurnWire> = Vec::new();
+        let mut total = 0usize;
+        let mut first = ends_at;
+        while first > window_first {
+            let (from, to, key) = ranges[first - 1];
+            let mut turn = turn_wire(messages, from, to, key, &rendered.endings);
+            // The page is served bounded, so it is measured bounded: the cap
+            // is what the wire would carry, and the log below names only the
+            // turns the cut keeps.
+            let reports = cap.map_or_else(Vec::new, |(cap, _)| cap_turn(&mut turn, cap));
+            let bytes = serde_json::to_string(&turn).map_or(0, |text| text.len() + 1);
+            if !kept.is_empty() && total.saturating_add(bytes) > budget {
+                break;
+            }
+            if let Some((cap, seat)) = cap {
+                for (id, report) in reports {
+                    log_record_cap(seat, id.as_deref(), cap, &report);
+                }
+            }
+            total = total.saturating_add(bytes);
+            kept.push(turn);
+            first -= 1;
+        }
+        kept.reverse();
+        (first, kept)
+    };
 
     // `None` is the real "nothing above this page": a page already opening on
     // the conversation's first turn has nothing to walk back to, and that is
@@ -1295,6 +1370,10 @@ async fn seed_from_transcript(
 /// a subscribe carries and the newest page a client asks for are the same
 /// page: a client that asks anyway is handed what it already holds, which it
 /// drops by turn key.
+///
+/// **It is a ceiling, not the page.** `[server] first_frame_cap_kb` holds the
+/// same page to its bytes (see [`page_within`]), so a conversation whose
+/// turns are large carries fewer than this.
 pub const SUBSCRIBE_TURNS: u32 = 20;
 
 /// The slices of one session open, in milliseconds, gathered as its read
@@ -1745,6 +1824,7 @@ async fn session(
     // The served page's records are bounded here, off the lock like the page
     // itself: a mailbox seat's structured records made one page 70 MB (#2374).
     let cap = surface.tool_record_cap_bytes();
+    let first_frame = surface.first_frame_cap_bytes();
     let (turns, cursor, compaction_count, page_ms, covered) = match conversation {
         Some(held) => {
             let seat = slot.clone();
@@ -1756,17 +1836,25 @@ async fn session(
                 // instead of asking `more` for the same page, and the handle
                 // is what names the history above it.
                 let (mut page, count, covered) = held.read(|held| {
-                    let mut page = page(
+                    let mut page = page_within(
                         held.messages(),
                         held.rendered(),
                         held.dropped(),
                         None,
                         SUBSCRIBE_TURNS,
+                        first_frame,
+                        Some((cap, &capped)),
                     );
                     floor_cursor(&mut page, held.dropped());
                     (page, held.compaction_count(), held.watermark())
                 });
-                cap_tool_records(&mut page.turns, cap, &capped);
+                // **A page cut to a byte budget was capped as it was
+                // measured**, turn by turn, so this pass would walk every
+                // record of it for nothing. Only the uncut page still needs
+                // it.
+                if first_frame == usize::MAX {
+                    cap_tool_records(&mut page.turns, cap, &capped);
+                }
                 (page.turns, page.cursor, count, at.elapsed().as_secs_f64() * 1000.0, covered)
             })
             .await
@@ -1989,6 +2077,121 @@ mod tests {
     /// The words every turn of a conversation opened on, oldest first.
     fn every_turn(messages: &[Message], rendered: &Rendered) -> Vec<String> {
         page(messages, rendered, 0, None, u32::MAX).turns.iter().map(opened_on).collect()
+    }
+
+    /// The bytes a page's turns occupy on the wire, which is what a budget
+    /// counts.
+    fn wire_bytes(turns: &[TurnWire]) -> usize {
+        turns
+            .iter()
+            .map(|turn| serde_json::to_string(turn).expect("a turn serialises").len() + 1)
+            .sum()
+    }
+
+    /// **A first page held to a byte budget is the newest WHOLE turns that
+    /// fit, and it is cut nowhere else.** No turn is split, the order is the
+    /// conversation's, and the cursor still names the message the first kept
+    /// turn opened at - so the page above it is the page above that turn.
+    #[test]
+    fn a_page_over_the_budget_is_the_newest_whole_turns_that_fit() {
+        let rows = turns_of(8);
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, rendered) = a_conversation(&borrowed);
+        let every = page(&messages, &rendered, 0, None, u32::MAX);
+        let newest_two = &every.turns[every.turns.len() - 2..];
+        let budget = wire_bytes(newest_two);
+
+        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, None);
+
+        assert_eq!(
+            bounded.turns.iter().map(opened_on).collect::<Vec<_>>(),
+            newest_two.iter().map(opened_on).collect::<Vec<_>>(),
+            "the budget keeps the newest whole turns and nothing below them",
+        );
+        assert_eq!(
+            bounded.cursor,
+            page(&messages, &rendered, 0, None, 2).cursor,
+            "the handle above the page names the message the first kept turn opened at",
+        );
+    }
+
+    /// **A newest turn larger than the whole budget is still served.** A
+    /// budget that answered with no page would be a seat drawn empty, and one
+    /// that split the turn would hand a client the tail of a turn with no way
+    /// to tell that is what it has.
+    #[test]
+    fn a_page_keeps_the_newest_turn_when_it_alone_is_over_the_budget() {
+        let rows = turns_of(3);
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, rendered) = a_conversation(&borrowed);
+        let every = every_turn(&messages, &rendered);
+
+        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 1, None);
+
+        assert_eq!(bounded.turns.len(), 1, "a budget under one turn still answers with one");
+        assert_eq!(opened_on(&bounded.turns[0]), every[every.len() - 1], "and it is the newest");
+        assert!(bounded.cursor.is_some(), "with history above it to ask for");
+    }
+
+    /// **A budget larger than the page changes nothing.** The count is what a
+    /// client asked for, and the bytes only ever cut the page it fits in.
+    #[test]
+    fn a_page_under_the_budget_is_the_page_its_count_asks_for() {
+        let rows = turns_of(30);
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, rendered) = a_conversation(&borrowed);
+        let counted = page(&messages, &rendered, 0, None, SUBSCRIBE_TURNS);
+        let budget = wire_bytes(&counted.turns);
+
+        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, None);
+
+        assert_eq!(
+            bounded.turns.len(),
+            counted.turns.len(),
+            "a page that fits its budget is the page the count asked for",
+        );
+        assert_eq!(bounded.cursor, counted.cursor, "on the same handle");
+    }
+
+    /// A turn whose structured tool result is `pad` bytes of payload.
+    fn a_big_result_rows(turn: usize, pad: usize) -> String {
+        format!(
+            r#"{{"type":"user","uuid":"u{turn}","message":{{"role":"user","content":"turn {turn}"}}}}
+{{"type":"assistant","uuid":"a{turn}","message":{{"id":"m{turn}","role":"assistant","model":"claude-opus-5","content":[{{"type":"text","text":"reply {turn}"}}]}}}}
+{{"type":"user","uuid":"t{turn}","session_id":"s","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"call-{turn}","content":"ok"}}]}},"toolUseResult":{{"payload":"{}"}}}}
+{{"type":"result","uuid":"r{turn}","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}}"#,
+            "x".repeat(pad),
+        )
+    }
+
+    /// **The budget counts what the cap serves, not the raw record.** A
+    /// seat with a few multi-MB records would otherwise keep one turn where
+    /// the capped page fits several, and the first frame's size would follow
+    /// a payload the client never receives.
+    #[test]
+    fn the_budget_counts_the_capped_record_it_serves() {
+        let rows: Vec<String> = (0..4).map(|turn| a_big_result_rows(turn, 20_000)).collect();
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (messages, rendered) = a_conversation(&borrowed);
+        let seat = fixture_seat();
+
+        let raw = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 2_048, None);
+        assert_eq!(raw.turns.len(), 1, "a raw record of 20 KB leaves one turn in 2 KB");
+
+        let capped = page_within(
+            &messages,
+            &rendered,
+            0,
+            None,
+            SUBSCRIBE_TURNS,
+            2_048,
+            Some((1_024, &seat)),
+        );
+        assert!(
+            capped.turns.len() > 1,
+            "the capped records are small, so the same budget fits more: {} turns",
+            capped.turns.len(),
+        );
     }
 
     /// How many task endings the frames name `call` in.
