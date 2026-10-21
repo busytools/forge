@@ -32,7 +32,15 @@ import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
-import { carriedValue, fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
+import {
+  carriedValue,
+  completionText,
+  fold,
+  headingNameOf,
+  namesSkill,
+  queuedWords,
+  skillBody,
+} from './units';
 import { onRefusal } from '../refusals';
 import { callOutputOf } from '../wire/call-output';
 import { reportFrom } from '../wire/fleet';
@@ -480,7 +488,10 @@ function sameWords(one: string[], other: string[]): boolean {
  * rather than whether it says only them - the fold's own turns carry more than
  * one user row, and a comparison against the whole row finds neither of them.
  * A frame with neither an id nor words - a tool result, a thought - is never
- * found this way, which repeats it rather than dropping it.
+ * found this way, which repeats it rather than dropping it. **A task ending is
+ * the one exception read below**: it is a completion, whose words `wordsOf`
+ * leaves out because nobody typed them, so it is found by the notice it says
+ * instead.
  *
  * `prose` narrows the words arm at the one call site that says why: an id is
  * unique and needs no guard, while the words are what a delivery row shares
@@ -503,6 +514,15 @@ export class Frames {
    */
   private readonly said = new Set<string>();
 
+  /**
+   * The task endings this list carries, keyed by the notice each says.
+   *
+   * The id-less copy a page forges to end a call is a completion, so
+   * `wordsOf` leaves it out and the two faces above cannot find it: every
+   * landing appended it again (#2496).
+   */
+  private readonly endings = new Set<string>();
+
   constructor(messages: unknown[]) {
     for (const message of messages) this.add(message);
   }
@@ -516,6 +536,8 @@ export class Frames {
   add(message: unknown): void {
     const id = uuidOf(message);
     if (id !== null) this.ids.add(id);
+    const ending = completionText(message);
+    if (ending !== null) this.endings.add(ending);
     const words = wordsOf(message);
     if (words.length > 0) this.said.add(JSON.stringify(words));
   }
@@ -524,6 +546,8 @@ export class Frames {
   carries(message: unknown, prose = true): boolean {
     const id = uuidOf(message);
     if (id !== null) return this.ids.has(id);
+    const ending = completionText(message);
+    if (ending !== null) return this.endings.has(ending);
     if (!prose) return false;
     const words = wordsOf(message);
     return words.length > 0 && this.said.has(JSON.stringify(words));
