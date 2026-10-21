@@ -18,6 +18,60 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(desktop)]
 const EXIT_REAP_BOUND: Duration = Duration::from_secs(10);
 
+/// The signal that asked the client to stop, `0` while none has. A signal
+/// handler may only store an atomic; the thread below does the reaping.
+#[cfg(desktop)]
+static SHUTDOWN_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// How often the reaper thread looks at the flag.
+#[cfg(desktop)]
+const SHUTDOWN_POLL: Duration = Duration::from_millis(25);
+
+#[cfg(desktop)]
+extern "C" fn mark_shutdown(signal: i32) {
+    SHUTDOWN_SIGNAL.store(signal, std::sync::atomic::Ordering::Release);
+}
+
+/// **A SIGTERM is a shutdown, not a death.** `RunEvent::Exit` runs no handler
+/// for a signal, so the browsers this client claimed would outlive it and hold
+/// the bundle the next install replaces. This is the same reap the exit event
+/// runs, from a thread the signal wakes; a SIGKILL runs neither, and the
+/// host's own parent watch is its backstop.
+#[cfg(desktop)]
+fn install_shutdown_reaper(host: std::sync::Arc<browser::BrowserHost>) {
+    // SAFETY: the handler stores an atomic and does nothing else.
+    unsafe {
+        libc::signal(libc::SIGTERM, mark_shutdown as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, mark_shutdown as *const () as libc::sighandler_t);
+    }
+    drop(watch_shutdown_signal(&SHUTDOWN_SIGNAL, move |signal| {
+        // **The exit is unconditional.** A panic in the reap would otherwise
+        // swallow the signal and leave the client running with no handler.
+        let reaping = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tauri::async_runtime::block_on(async {
+                let _ = tokio::time::timeout(EXIT_REAP_BOUND, host.reap_owned()).await;
+            });
+        }));
+        drop(reaping);
+        std::process::exit(128 + signal);
+    }));
+}
+
+/// Wait for a shutdown signal and answer it. The answer is a seam, so a test
+/// can watch the bridge fire without ending the test process.
+#[cfg(desktop)]
+fn watch_shutdown_signal<T: Send + 'static>(
+    signal: &'static std::sync::atomic::AtomicI32,
+    act: impl FnOnce(i32) -> T + Send + 'static,
+) -> std::thread::JoinHandle<Option<T>> {
+    std::thread::spawn(move || {
+        while signal.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            std::thread::sleep(SHUTDOWN_POLL);
+        }
+        Some(act(signal.load(std::sync::atomic::Ordering::Acquire)))
+    })
+}
+
 /// The stages that finish an install, named by the platform that needs them.
 /// The client's line draws its words per stage, so this is a fact rather than
 /// copy: the desktop restarts into the swapped bundle, the phone's install is
@@ -490,6 +544,9 @@ pub fn run() {
                     browser::StackPaths::resolve(app.handle()),
                     Some(app.handle().clone()),
                 );
+                // **The signal path holds the same host the exit event does.**
+                // A quit runs `RunEvent::Exit`; a SIGTERM runs this instead.
+                install_shutdown_reaper(std::sync::Arc::clone(&host));
                 app.manage(host);
             }
             // The bridge, over whatever host this target has: the desktop's
@@ -731,6 +788,69 @@ fn record(log_file: Option<&std::path::Path>, line: &str) {
         }
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use super::watch_shutdown_signal;
+
+    /// **A raised flag reaches the reaper with its signal.** The answer is the
+    /// seam: production's reaps the hosts and exits, this one records it and
+    /// returns, so the test process lives to make the assertion.
+    #[test]
+    fn a_shutdown_signal_reaches_its_reaper() {
+        static RAISED: AtomicI32 = AtomicI32::new(0);
+        let seen = Arc::new(Mutex::new(0));
+        let record = Arc::clone(&seen);
+        let watcher = watch_shutdown_signal(&RAISED, move |signal| {
+            *record.lock().expect("the recorder") = signal;
+        });
+        RAISED.store(libc::SIGTERM, Ordering::Release);
+        watcher.join().expect("the watcher thread");
+        assert_eq!(
+            *seen.lock().expect("the recorder"),
+            libc::SIGTERM,
+            "the stored signal is the one the reaper answers",
+        );
+        RAISED.store(0, Ordering::Release);
+    }
+
+    /// **A real signal takes the handler's road.** The test raises SIGTERM at
+    /// itself; the handler stores it and the watcher answers. The action
+    /// records instead of exiting, and the default disposition goes back
+    /// before the test returns.
+    #[test]
+    fn a_real_sigterm_reaches_its_reaper() {
+        use super::{SHUTDOWN_SIGNAL, mark_shutdown};
+
+        let seen = Arc::new(Mutex::new(0));
+        let record = Arc::clone(&seen);
+        let watcher = watch_shutdown_signal(&SHUTDOWN_SIGNAL, move |signal| {
+            *record.lock().expect("the recorder") = signal;
+        });
+        // SAFETY: the handler stores an atomic and does nothing else.
+        unsafe {
+            libc::signal(libc::SIGTERM, mark_shutdown as *const () as libc::sighandler_t);
+        }
+        // SAFETY: a signal raised at this process, answered by the handler
+        // just installed.
+        let raised = unsafe { libc::raise(libc::SIGTERM) };
+        assert_eq!(raised, 0, "the signal was raised");
+        watcher.join().expect("the watcher thread");
+        assert_eq!(
+            *seen.lock().expect("the recorder"),
+            libc::SIGTERM,
+            "the handler stored the signal and the reaper answered it",
+        );
+        SHUTDOWN_SIGNAL.store(0, Ordering::Release);
+        // SAFETY: restoring SIGTERM's default disposition.
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
         }
     }
 }

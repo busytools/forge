@@ -1,11 +1,11 @@
 //! One profile's browser host: the process behind `--cef-host`.
 //!
-//! Arguments name the profile's cache root, the DevTools port and the frame
-//! ring. The host initializes CEF, creates one windowless browser, reports
-//! that it is live in the ring's header, and pumps CEF's work and a 60 Hz
-//! external begin-frame cadence until it is killed. The client owns the
-//! record on disk; this process writes nothing beside the profile beyond
-//! what Chromium itself does.
+//! Arguments name the profile's cache root, the DevTools port, the frame ring
+//! and the client that spawned it. The host initializes CEF, creates one
+//! windowless browser, reports that it is live in the ring's header, and pumps
+//! CEF's work and a 60 Hz external begin-frame cadence until it is signalled
+//! or its client goes. The client owns the record on disk; this process writes
+//! nothing beside the profile beyond what Chromium itself does.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,9 +25,14 @@ pub struct Args {
     pub ring: String,
     pub width: u32,
     pub height: u32,
+    /// The client that spawned this host, when one did: the process the loop
+    /// watches, so a client that died without its exit path takes the host
+    /// with it. `None` for a host a person or a test launched directly.
+    pub parent: Option<u32>,
 }
 
-/// Parse `--cef-host --profile DIR --port N --ring NAME --size WxH`.
+/// Parse `--cef-host --profile DIR --port N --ring NAME --size WxH
+/// [--parent PID]`.
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Option<Args> {
     let mut args = args.into_iter();
     if args.next().as_deref() != Some("--cef-host") {
@@ -36,12 +41,14 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Option<Args> {
     let mut profile = None;
     let mut port = None;
     let mut ring = None;
+    let mut parent = None;
     let mut size = (1100_u32, 620_u32);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--profile" => profile = args.next().map(PathBuf::from),
             "--port" => port = args.next().and_then(|value| value.parse::<u16>().ok()),
             "--ring" => ring = args.next(),
+            "--parent" => parent = args.next().and_then(|value| value.parse::<u32>().ok()),
             "--size" => {
                 size = args
                     .next()
@@ -54,11 +61,78 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Option<Args> {
             _ => return None,
         }
     }
-    Some(Args { profile: profile?, port: port?, ring: ring?, width: size.0, height: size.1 })
+    Some(Args {
+        profile: profile?,
+        port: port?,
+        ring: ring?,
+        width: size.0,
+        height: size.1,
+        parent,
+    })
+}
+
+/// How often the loop asks whether the client that spawned it is still there.
+///
+/// **A whole second, not every tick.** The watch is a backstop for a client
+/// that died without running its exit, so a second of lag is a second of a
+/// host nothing drives; a syscall per millisecond would be a cost every host
+/// pays for a case almost none meet.
+const PARENT_CHECK_EVERY_MS: u64 = 1000;
+
+/// Whether `pid` names a running process. `EPERM` means it exists but belongs
+/// to someone else, which is alive as far as this host is concerned.
+fn running(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    let checked = unsafe { libc::kill(pid as i32, 0) };
+    checked == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// The client recorded at spawn, and when the loop last asked after it.
+struct ParentWatch {
+    parent: Option<u32>,
+    last: u64,
+}
+
+impl ParentWatch {
+    fn new(parent: Option<u32>) -> Self {
+        Self { parent, last: 0 }
+    }
+
+    /// Whether the client is gone, asked at most once per interval.
+    ///
+    /// **The pid comes from the client's own spawn line, not `getppid`.** The
+    /// host is started in its own session, so its parent is launchd from the
+    /// first instant and says nothing about the client's life.
+    fn gone(&mut self, now: u64) -> bool {
+        let Some(pid) = self.parent else {
+            return false;
+        };
+        if now.saturating_sub(self.last) < PARENT_CHECK_EVERY_MS {
+            return false;
+        }
+        self.last = now;
+        !running(pid)
+    }
 }
 
 /// Set by SIGTERM/SIGINT, read by the pump loop.
 static STOP: AtomicBool = AtomicBool::new(false);
+
+/// Why the loop is stopping.
+#[derive(Debug, PartialEq, Eq)]
+enum Stop {
+    Signal,
+    ClientGone,
+}
+
+/// One decision for both shutdowns, so both take the same exit: the browser
+/// closes and CEF's store flushes, rather than a process that simply stops.
+fn stopping(stop: &AtomicBool, watch: &mut ParentWatch, now: u64) -> Option<Stop> {
+    if stop.load(Ordering::Acquire) {
+        return Some(Stop::Signal);
+    }
+    watch.gone(now).then_some(Stop::ClientGone)
+}
 
 /// The visibility calls one show cue makes, as a trait so the acknowledgment
 /// beside them is testable without a browser.
@@ -221,11 +295,26 @@ pub fn run(args: Args) -> ! {
 
     let mut last_begin = 0_u64;
     let mut cues = ShowCue::default();
+    let mut parent = ParentWatch::new(args.parent);
     // SAFETY: the header is mapped for this process's whole life.
     let mut last_request = unsafe { (*ring.header()).request_seq.load(Ordering::Acquire) };
     loop {
-        if STOP.load(Ordering::Acquire) {
-            break;
+        let now = elapsed_ms();
+        // **A client's death is a shutdown, like a signal.** The client reaps
+        // its hosts on its exit, but a killed client runs no exit path - and a
+        // host left behind holds the bundle the next install replaces.
+        match stopping(&STOP, &mut parent, now) {
+            Some(Stop::Signal) => break,
+            Some(Stop::ClientGone) => {
+                eprintln!(
+                    "cef host: the client that spawned this host is gone (event_name \
+                     cef_host_parent_gone, parent {:?}, pid {})",
+                    args.parent,
+                    std::process::id(),
+                );
+                break;
+            }
+            None => {}
         }
         let header = ring.header();
         // SAFETY: the header is mapped for this process's whole life.
@@ -262,7 +351,6 @@ pub fn run(args: Args) -> ! {
         // rate, but a click landing just after one waited out the whole
         // interval; asking more often lets the next frame start sooner and
         // the compositor still paints at its own rate.
-        let now = elapsed_ms();
         if now.saturating_sub(last_begin) >= 8 {
             last_begin = now;
             if let Some(host) = browser.host() {
@@ -536,5 +624,84 @@ mod tests {
         assert_eq!(cues.take(1), Some(1), "a cue already in the header is applied");
         assert_eq!(cues.take(1), None, "an unchanged cue is not applied twice");
         assert_eq!(cues.take(2), Some(2), "the next cue is applied");
+    }
+
+    /// **The spawn line names the client.** A host launched by a person or a
+    /// test carries no `--parent` and is not watched.
+    #[test]
+    fn the_client_pid_is_an_optional_argument() {
+        use super::parse;
+
+        let args = |extra: &[&str]| {
+            let mut all: Vec<String> =
+                ["--cef-host", "--profile", "/p", "--port", "9411", "--ring", "/r"]
+                    .iter()
+                    .map(|arg| (*arg).to_owned())
+                    .collect();
+            all.extend(extra.iter().map(|arg| (*arg).to_owned()));
+            parse(all)
+        };
+        assert_eq!(args(&["--parent", "4242"]).expect("parsed").parent, Some(4242));
+        assert_eq!(args(&[]).expect("parsed").parent, None, "no spawn line, no watch");
+    }
+
+    /// A pid that named a process which has exited and been reaped.
+    fn a_gone_pid() -> u32 {
+        let mut child =
+            std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().expect("a child");
+        let pid = child.id();
+        child.wait().expect("the child is reaped");
+        pid
+    }
+
+    /// **The watch is the client's pid, asked once a second.** The pid comes
+    /// from the spawn line, not `getppid`: the host is in its own session, so
+    /// its parent is launchd from the first instant.
+    #[test]
+    fn the_client_watch_reads_the_spawned_pid_once_a_second() {
+        use super::{PARENT_CHECK_EVERY_MS, ParentWatch, running};
+
+        let mut unwatched = ParentWatch::new(None);
+        assert!(!unwatched.gone(u64::MAX), "a host nobody spawned is not watched");
+
+        let mut alive = ParentWatch::new(Some(std::process::id()));
+        assert!(!alive.gone(PARENT_CHECK_EVERY_MS), "this test's own process is alive");
+        assert!(!alive.gone(PARENT_CHECK_EVERY_MS * 2), "and still alive a second later");
+
+        let pid = a_gone_pid();
+        assert!(!running(pid), "a reaped child is gone");
+
+        let mut dead = ParentWatch::new(Some(pid));
+        assert!(!dead.gone(PARENT_CHECK_EVERY_MS - 1), "nothing is asked before the interval");
+        assert!(dead.gone(PARENT_CHECK_EVERY_MS), "the interval is when the client is asked after");
+    }
+
+    /// **Both reasons take one exit.** A signal and a gone client land in the
+    /// same decision, so the loop cannot shut down one way for a signal and
+    /// another for the client.
+    #[test]
+    fn the_loop_stops_for_a_signal_or_a_gone_client() {
+        use std::sync::atomic::Ordering;
+
+        use super::{PARENT_CHECK_EVERY_MS, ParentWatch, STOP, Stop, stopping};
+
+        let mut unwatched = ParentWatch::new(None);
+        assert_eq!(
+            stopping(&STOP, &mut unwatched, PARENT_CHECK_EVERY_MS),
+            None,
+            "nothing stops it"
+        );
+
+        STOP.store(true, Ordering::Release);
+        let signalled = stopping(&STOP, &mut unwatched, PARENT_CHECK_EVERY_MS);
+        STOP.store(false, Ordering::Release);
+        assert_eq!(signalled, Some(Stop::Signal), "a signal stops it");
+
+        let mut gone = ParentWatch::new(Some(a_gone_pid()));
+        assert_eq!(
+            stopping(&STOP, &mut gone, PARENT_CHECK_EVERY_MS),
+            Some(Stop::ClientGone),
+            "a gone client stops it"
+        );
     }
 }

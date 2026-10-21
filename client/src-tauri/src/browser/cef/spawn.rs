@@ -156,6 +156,27 @@ pub fn spawn(
     spawn_with(&exe, profile, port, ring, width, height)
 }
 
+/// The command line one host is spawned with.
+///
+/// **`--parent` is the client's own pid, recorded here rather than read off
+/// the host's parent later**: the host starts in its own session, so `getppid`
+/// is launchd from the first instant and says nothing about the client's life.
+fn host_args(profile: &Path, port: u16, ring: &str, width: u32, height: u32) -> Vec<String> {
+    vec![
+        "--cef-host".to_owned(),
+        "--profile".to_owned(),
+        profile.display().to_string(),
+        "--port".to_owned(),
+        port.to_string(),
+        "--ring".to_owned(),
+        ring.to_owned(),
+        "--size".to_owned(),
+        format!("{width}x{height}"),
+        "--parent".to_owned(),
+        std::process::id().to_string(),
+    ]
+}
+
 /// The spawn itself, with the binary given: the client passes its own
 /// executable; a test passes a stub.
 pub fn spawn_with(
@@ -175,20 +196,13 @@ pub fn spawn_with(
         .map_err(|why| format!("the host's log cannot be opened: {why}"))?;
     let mut command = std::process::Command::new(exe);
     command
-        .arg("--cef-host")
-        .arg("--profile")
-        .arg(profile)
-        .arg("--port")
-        .arg(port.to_string())
-        .arg("--ring")
-        .arg(ring)
-        .arg("--size")
-        .arg(format!("{width}x{height}"))
+        .args(host_args(profile, port, ring, width, height))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(log));
-    // Detach from the client's session: a terminal hangup must reach neither,
-    // and the client reaps its host on its own exit.
+    // Detach from the client's session: a terminal hangup must reach neither.
+    // The client reaps its host on its own exit, and the host watches the
+    // client's pid for the death that runs no exit path.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -775,5 +789,21 @@ mod tests {
         drop(listener);
         end_verified(std::process::id(), port, Path::new("/tmp/forge-no-such-profile")).await;
         assert!(alive(std::process::id()), "the unrelated process is still running");
+    }
+
+    /// **The spawn tells the host which client it belongs to.** The pid is the
+    /// client's own, recorded at spawn, because `getppid` says launchd from
+    /// the first instant - the host is in its own session.
+    #[test]
+    fn a_host_is_told_which_client_spawned_it() {
+        let args = host_args(Path::new("/profiles/hunt/cef"), 9412, "/forge-cef-9412", 800, 600);
+        assert_eq!(args.first().map(String::as_str), Some("--cef-host"), "the host mode");
+        let at = args.iter().position(|arg| arg == "--parent").expect("the parent flag");
+        let mine = std::process::id().to_string();
+        assert_eq!(
+            args.get(at + 1).map(String::as_str),
+            Some(mine.as_str()),
+            "the client's own pid rides the spawn line: {args:?}",
+        );
     }
 }
