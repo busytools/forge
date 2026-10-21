@@ -5714,7 +5714,11 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await vi.waitFor(() =>
-      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith('job-hunt', SLOT),
+      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(
+        'job-hunt',
+        SLOT,
+        expect.any(Number),
+      ),
     );
   });
 

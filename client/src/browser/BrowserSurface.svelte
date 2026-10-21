@@ -18,17 +18,42 @@
     setRegion(
       { x: box.x, y: box.y, width: box.width, height: box.height },
       window.devicePixelRatio || 1,
+      surface.epoch,
     );
   }
 
-  onMount(() => {
+  /**
+   * **A new open is a new surface identity.** The shell refuses a page-area
+   * report from another open, so each open reports once even when the layout
+   * it measures is unchanged (a retry, or a reopen at the same size).
+   */
+  $effect(() => {
     measure();
+  });
+
+  /**
+   * **A refused measurement is taken again once the frame has settled.** The
+   * shell refused the last report as not this window's page area; the page is
+   * the only one that can read the settled layout, and a transient that moved
+   * the box without resizing it fires no ResizeObserver.
+   */
+  function remeasure(): void {
+    if (typeof requestAnimationFrame === 'undefined') {
+      measure();
+      return;
+    }
+    requestAnimationFrame(measure);
+  }
+
+  onMount(() => {
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
     observer?.observe(pageEl);
     window.addEventListener('resize', measure);
+    window.addEventListener('forge-surface-remeasure', remeasure);
     return () => {
       observer?.disconnect();
       window.removeEventListener('resize', measure);
+      window.removeEventListener('forge-surface-remeasure', remeasure);
     };
   });
 

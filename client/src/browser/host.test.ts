@@ -26,6 +26,7 @@ import {
   hostTheBrowser,
   installTakeoverHook,
   listProfiles,
+  reportSurfaceRect,
   showBrowser,
   type HostReply,
 } from './host';
@@ -101,25 +102,40 @@ describe('the shell command names', () => {
       name: 'hunt',
     });
 
-    await showBrowser();
+    await showBrowser(null, null, 7);
     expect(invoke, 'the raise').toHaveBeenLastCalledWith('browser_show', {
       profile: null,
       seat: null,
+      epoch: 7,
     });
 
-    await showBrowser('hunt');
+    await showBrowser('hunt', null, 7);
     expect(invoke, 'a named raise names its profile').toHaveBeenLastCalledWith('browser_show', {
       profile: 'hunt',
       seat: null,
+      epoch: 7,
     });
 
     // **The hand-off's raise carries the asking seat**: the shell refuses a
     // profile another seat owns, so a session cannot surface a browser
     // holding someone else's logins.
-    await showBrowser('hunt', seat);
+    await showBrowser('hunt', seat, 8);
     expect(invoke, "a hand-off's raise carries its seat").toHaveBeenLastCalledWith('browser_show', {
       profile: 'hunt',
       seat,
+      epoch: 8,
+    });
+
+    // **A report carries the open it belongs to.** A dropped argument here
+    // refuses every report at the shell, which is #2470 with no band to see.
+    await reportSurfaceRect({ x: 0, y: 40, width: 2048, height: 1112 }, 2, 7);
+    expect(invoke, 'a report carries its open').toHaveBeenLastCalledWith('browser_surface_rect', {
+      x: 0,
+      y: 40,
+      width: 2048,
+      height: 1112,
+      scale: 2,
+      epoch: 7,
     });
 
     await hideBrowser();

@@ -201,7 +201,7 @@ async fn a_live_record_is_adopted() {
 
     // **The raise writes the page it shows.** Delete the write and this goes
     // red: nothing else in the suite reads the marker.
-    host.show(None, None).await.expect("the raise places the page");
+    host.show(None, None, 1).await.expect("the raise places the page");
     assert_eq!(
         std::fs::read_to_string(cache.join("page")).expect("the raise wrote the page"),
         "https://example.com/prepared",
@@ -312,7 +312,7 @@ async fn a_raise_with_a_silent_page_probe_keeps_the_carried_page() {
         .expect("the record");
     std::fs::write(cache.join("page"), b"https://example.com/before").expect("the prior carry");
 
-    host.show(None, None).await.expect("the raise adopts the host");
+    host.show(None, None, 1).await.expect("the raise adopts the host");
 
     assert_eq!(
         std::fs::read_to_string(cache.join("page")).expect("the prior carry survives"),

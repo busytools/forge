@@ -18,8 +18,8 @@ use cef::{
 };
 
 /// The largest surface a host allocates room for: a 4K display's worth of
-/// device pixels. A bigger region is clamped rather than refused - the
-/// takeover never fills more than a 4K screen.
+/// device pixels. A frame past it is dropped rather than copied past the
+/// mapping - a takeover that needs more than this cannot be drawn.
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
 
@@ -43,8 +43,10 @@ pub struct Header {
     /// segment's size up to a page, so `st_size` cannot tell two header
     /// layouts apart; this field can, without a manual version bump.
     pub header_len: AtomicU32,
-    /// The live paint size, in device pixels: what `on_paint` writes. The
-    /// view's own rect is this divided by the device scale.
+    /// The adopted paint size, in device pixels: what `on_paint` writes and
+    /// the draw loop reads. **The view's rect is derived from `request_*`,
+    /// never from these** - below a raster of 1 the paint is larger than the
+    /// request, and dividing it by the request's scale inflates the page.
     pub width: AtomicU32,
     pub height: AtomicU32,
     /// The display's device pixel ratio, times 1000.
@@ -378,15 +380,20 @@ cef::wrap_render_handler! {
             let Some(rect) = rect else { return };
             // SAFETY: the header is mapped for this process's whole life.
             let header = unsafe { &*self.ring.header() };
-            let scale = header.scale_milli.load(Ordering::Relaxed) as f64 / 1000.0;
             rect.x = 0;
             rect.y = 0;
             // **The view rect is DIP; the paint buffer is device pixels.**
-            // CEF lays the page out at the DIP size and paints it at the
-            // scale `screen_info` reports, so the layer's contents land 1:1
-            // on the display.
-            rect.width = (header.width.load(Ordering::Relaxed) as f64 / scale).round() as i32;
-            rect.height = (header.height.load(Ordering::Relaxed) as f64 / scale).round() as i32;
+            // **It is derived from the REQUEST, never the adopted paint size**:
+            // below a raster of 1 the paint is larger than the request, and
+            // dividing that by the request's scale would inflate the page and
+            // stale every later frame.
+            let (width, height) = view_size(
+                header.request_width.load(Ordering::Relaxed),
+                header.request_height.load(Ordering::Relaxed),
+                header.request_scale_milli.load(Ordering::Relaxed),
+            );
+            rect.width = width;
+            rect.height = height;
         }
 
         fn screen_info(
@@ -397,17 +404,17 @@ cef::wrap_render_handler! {
             let Some(info) = info else { return 0 };
             // SAFETY: the header is mapped for this process's whole life.
             let header = unsafe { &*self.ring.header() };
-            let scale = header.scale_milli.load(Ordering::Relaxed) as f32 / 1000.0;
-            info.device_scale_factor = scale.max(1.0);
+            let scale_milli = header.request_scale_milli.load(Ordering::Relaxed);
+            info.device_scale_factor = screen_scale(scale_milli);
             info.depth = 24;
             info.depth_per_component = 8;
             info.is_monochrome = 0;
-            info.rect = Rect {
-                x: 0,
-                y: 0,
-                width: (header.width.load(Ordering::Relaxed) as f32 / scale).round() as i32,
-                height: (header.height.load(Ordering::Relaxed) as f32 / scale).round() as i32,
-            };
+            let (width, height) = view_size(
+                header.request_width.load(Ordering::Relaxed),
+                header.request_height.load(Ordering::Relaxed),
+                scale_milli,
+            );
+            info.rect = Rect { x: 0, y: 0, width, height };
             info.available_rect = info.rect.clone();
             1
         }
@@ -424,27 +431,124 @@ cef::wrap_render_handler! {
             if type_ != PaintElementType::VIEW {
                 return;
             }
-            let width = width.max(0) as u32;
-            let height = height.max(0) as u32;
-            // **The delivered size is the view's size.** The DIP round trip
-            // through `view_rect` and `screen_info` can land a pixel off the
-            // request, and a frame painted at a different size than the
-            // header names used to be dropped for ever. The host adopts what
-            // CEF actually painted, so the ring always describes its frame.
-            let header = unsafe { &*self.ring.header() };
-            header.width.store(width, Ordering::Relaxed);
-            header.height.store(height, Ordering::Relaxed);
-            // SAFETY: CEF hands a BGRA frame of exactly this size.
-            unsafe {
-                self.ring.write_frame(dirty_rects, buffer, width, height);
-            }
+            paint(&self.ring, dirty_rects, buffer, width.max(0) as u32, height.max(0) as u32);
         }
+    }
+}
+
+/// The last size each drop reason logged, so a frozen surface writes one line
+/// rather than one per frame.
+static LAST_STALE_PAINT: AtomicU64 = AtomicU64::new(u64::MAX);
+static LAST_OVER_BUDGET_PAINT: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Whether this drop is the first of its size since the last one logged.
+fn note_drop(last: &AtomicU64, width: u32, height: u32) -> bool {
+    let size = (u64::from(width) << 32) | u64::from(height);
+    last.swap(size, Ordering::Relaxed) != size
+}
+
+/// Whether a frame's pixels fit the ring's mapping. The bound is in pixels,
+/// not in either axis: a tall portrait frame within the budget is drawn, and
+/// one past it is dropped rather than copied past the mapping.
+fn within_budget(width: u32, height: u32) -> bool {
+    u64::from(width) * u64::from(height) <= u64::from(MAX_WIDTH) * u64::from(MAX_HEIGHT)
+}
+
+/// Copy one delivered frame into the ring, unless it is a frame from before
+/// the last resize or one the ring cannot hold.
+fn paint(ring: &Ring, dirty_rects: Option<&[Rect]>, buffer: *const u8, width: u32, height: u32) {
+    // SAFETY: the header is mapped for this process's whole life.
+    let header = unsafe { &*ring.header() };
+    let requested = (
+        header.request_width.load(Ordering::Relaxed),
+        header.request_height.load(Ordering::Relaxed),
+        header.request_scale_milli.load(Ordering::Relaxed),
+    );
+    let expected = painted_size(requested.0, requested.1, requested.2);
+    // **A paint at a size the client no longer asks for is a frame from before
+    // the resize, and it is dropped.** Adopting its size undid the newer
+    // request and left the page laid out at the old size under a fresh layer
+    // rect - the full page squashed into a band once the layer had shrunk
+    // (#2470). The next paint carries the requested size.
+    if !paint_matches_request((width, height), expected) {
+        if note_drop(&LAST_STALE_PAINT, width, height) {
+            eprintln!(
+                "cef host: dropped a paint for a stale size (event_name \
+                 cef_surface_paint_stale_dropped, delivered {width}x{height}, expected {}x{})",
+                expected.0, expected.1,
+            );
+        }
+        return;
+    }
+    // **The ring holds the pixels only while the frame fits its budget.** A
+    // view past the cap is not a frame this surface can draw; copying it would
+    // run past the mapping.
+    if !within_budget(width, height) {
+        if note_drop(&LAST_OVER_BUDGET_PAINT, width, height) {
+            eprintln!(
+                "cef host: dropped a paint past the ring's budget (event_name \
+                 cef_surface_paint_over_budget, delivered {width}x{height})"
+            );
+        }
+        return;
+    }
+    // **The delivered size is the view's size.** The host adopts what CEF
+    // actually painted, so the ring always describes its frame.
+    header.width.store(width, Ordering::Relaxed);
+    header.height.store(height, Ordering::Relaxed);
+    // SAFETY: CEF hands a BGRA frame of exactly this size, and the budget
+    // check above keeps the copy inside the mapping.
+    unsafe {
+        ring.write_frame(dirty_rects, buffer, width, height);
     }
 }
 
 /// The render handler: the view's size and the paint destination.
 pub fn handler(ring: Arc<Ring>) -> RenderHandler {
     OsrRenderHandler::new(ring)
+}
+
+/// Whether a paint is for the view size the client last asked for.
+///
+/// **The slack is the DIP round trip's own error**, not a tolerance for a
+/// different view: `view_rect` divides device pixels by the scale and
+/// `screen_info` multiplies back, so a fractional scale can land a pixel or two
+/// away from the request. A paint further off than that was handed to CEF
+/// before the resize reached it.
+fn paint_matches_request(delivered: (u32, u32), expected: (u32, u32)) -> bool {
+    const SLACK: u32 = 2;
+    delivered.0.abs_diff(expected.0) <= SLACK && delivered.1.abs_diff(expected.1) <= SLACK
+}
+
+/// The DIP view CEF lays the page out at: the request divided by its raster.
+/// **Derived from the request, never from an adopted paint size** - below a
+/// raster of 1 the paint is larger than the request, and treating that as the
+/// view would inflate the page and stale every later frame.
+fn view_size(request_width: u32, request_height: u32, scale_milli: u32) -> (i32, i32) {
+    let scale = (f64::from(scale_milli) / 1000.0).clamp(0.1, 8.0);
+    (
+        (f64::from(request_width) / scale).round() as i32,
+        (f64::from(request_height) / scale).round() as i32,
+    )
+}
+
+/// The device scale CEF paints the view at: the raster, never below 1.
+fn screen_scale(scale_milli: u32) -> f32 {
+    ((scale_milli as f32 / 1000.0).clamp(0.1, 8.0)).max(1.0)
+}
+
+/// The buffer size CEF paints for a requested view: the DIP view times the
+/// screen scale. **A raster below 1 therefore paints LARGER than requested**,
+/// and comparing the delivered frame to the raw request would drop every
+/// frame (a 1440x2520 takeover at 1x requests 1234x2160 and is painted at
+/// 1440x2520).
+fn painted_size(request_width: u32, request_height: u32, scale_milli: u32) -> (u32, u32) {
+    let (view_width, view_height) = view_size(request_width, request_height, scale_milli);
+    let factor = f64::from(screen_scale(scale_milli));
+    (
+        (f64::from(view_width) * factor).round() as u32,
+        (f64::from(view_height) * factor).round() as u32,
+    )
 }
 
 #[cfg(test)]
@@ -472,6 +576,189 @@ mod tests {
         // SAFETY: as above; this frame is the wrong size for the header.
         unsafe { ring.write_frame(None, pixels.as_ptr(), 3, 4) };
         assert_eq!(header.paints.load(Ordering::Relaxed), 1, "a mismatched frame is not written");
+        Ring::unlink(name);
+    }
+
+    /// **The handlers themselves read the request.** Setting the adopted
+    /// paint size, as `on_paint` does, must not move the view: below a raster
+    /// of 1 the paint is larger than the request, and dividing it by the
+    /// request's scale would inflate the page and stale every later frame.
+    #[test]
+    fn the_view_derives_from_the_request_not_the_adopted_paint() {
+        let name = "/forge-cef-test-view";
+        let ring = Arc::new(Ring::create(name, 4, 4).expect("a test ring"));
+        // A 1440x2520 view at 1x: request 1234x2160, raster 0.857.
+        ring.request(1234, 2160, 0.857);
+        // The host adopted the painted frame, as `on_paint` would.
+        // SAFETY: the ring is mapped for the test's use of it.
+        unsafe {
+            let header = &*ring.header();
+            header.width.store(1440, Ordering::Relaxed);
+            header.height.store(2520, Ordering::Relaxed);
+            header.scale_milli.store(857, Ordering::Relaxed);
+        }
+        // The handler's own impl, not the CEF wrapper: `new` returns a
+        // `RenderHandler` whose methods forward through a CEF object this test
+        // never wraps, so the body would never run.
+        let handler =
+            OsrRenderHandler { ring: Arc::clone(&ring), cef_object: std::ptr::null_mut() };
+        let mut rect = Rect { x: 0, y: 0, width: 0, height: 0 };
+        handler.view_rect(None, Some(&mut rect));
+        assert_eq!(
+            (rect.width, rect.height),
+            (1440, 2520),
+            "the view is the request's CSS size, not the adopted paint's",
+        );
+        let mut info = ScreenInfo::default();
+        handler.screen_info(None, Some(&mut info));
+        assert_eq!(info.device_scale_factor, 1.0, "the display paints at 1x");
+        assert_eq!(
+            (info.rect.width, info.rect.height),
+            (1440, 2520),
+            "and the screen is the same view",
+        );
+        Ring::unlink(name);
+    }
+
+    /// **`paint` compares against the painted size, not the raw request.** A
+    /// raster below 1 delivers a frame larger than the request; a raw-request
+    /// comparison would drop it and freeze the surface.
+    #[test]
+    fn a_raster_below_one_paint_is_accepted() {
+        let name = "/forge-cef-test-paint-raster";
+        let ring = Ring::create(name, 8, 8).expect("a test ring");
+        // Request 2x4 at 0.5x: the view is 4x8 and CEF paints it at 1x.
+        ring.request(2, 4, 0.5);
+        let buffer = [0_u8; 4 * 8 * 4];
+        paint(&ring, None, buffer.as_ptr(), 4, 8);
+        // SAFETY: the ring is mapped for the test's use of it.
+        let header = unsafe { &*ring.header() };
+        assert_eq!(
+            header.paints.load(Ordering::Relaxed),
+            1,
+            "the painted frame is the request's view, not its raw size",
+        );
+        Ring::unlink(name);
+    }
+
+    /// **A frozen surface writes one line, not one per frame.** The drop log
+    /// is keyed on the size, so a repeat of the same stale frame is silent.
+    #[test]
+    fn a_repeated_drop_logs_once() {
+        let last = AtomicU64::new(u64::MAX);
+        assert!(note_drop(&last, 100, 50), "the first drop of a size is logged");
+        assert!(!note_drop(&last, 100, 50), "the same size again is not");
+        assert!(note_drop(&last, 100, 51), "a new size is");
+    }
+
+    /// **A frame painted for an older view size is not this view's size.** The
+    /// request is device pixels, and a fractional scale can land the DIP round
+    /// trip a pixel off; that is the slack. A frame further off was painted
+    /// before the resize reached CEF, and adopting it undid the resize - the
+    /// full page then sits under a layer sized for the newer request.
+    #[test]
+    fn a_stale_paint_size_is_not_adopted() {
+        assert!(
+            paint_matches_request((3072, 1668), (3072, 1668)),
+            "the frame CEF paints at the request",
+        );
+        assert!(
+            paint_matches_request((3073, 1668), (3072, 1668)),
+            "the DIP round trip's one-pixel error",
+        );
+        assert!(
+            !paint_matches_request((2160, 1242), (3072, 1668)),
+            "a frame from before the resize",
+        );
+        assert!(!paint_matches_request((2160, 1668), (3072, 1668)), "one axis stale is stale",);
+        assert!(
+            !paint_matches_request((3072, 1596), (3072, 1668)),
+            "the other axis stale is stale",
+        );
+        assert!(
+            !paint_matches_request((3075, 1668), (3072, 1668)),
+            "one pixel past the slack is a different size",
+        );
+    }
+
+    /// **The painted size is the view CEF laid out, not the raw request.** A
+    /// takeover past the ring's budget gets a raster below 1, so CEF paints
+    /// the view at 1.0 - larger than the request. Comparing against the raw
+    /// request dropped every frame on such a display.
+    #[test]
+    fn a_raster_below_one_paints_the_view_at_one_to_one() {
+        // 1440x2520 at 1x: raster 0.857, request 1234x2160, painted 1440x2520.
+        let expected = painted_size(1234, 2160, 857);
+        assert_eq!(expected, (1440, 2520), "the view is painted at the display's 1x");
+        assert!(
+            paint_matches_request((1440, 2520), expected),
+            "a raster-below-1 frame is not stale",
+        );
+        // 5120x1440 at 1x: raster 0.75, request 3840x1080, painted 5120x1440.
+        assert_eq!(painted_size(3840, 1080, 750), (5120, 1440));
+        // A 1.5x raster is exact: 3072x1668 stays 3072x1668.
+        assert_eq!(painted_size(3072, 1668, 1500), (3072, 1668));
+    }
+
+    /// **Adopting a paint never becomes the next layout.** `view_rect` and
+    /// `screen_info` derive the DIP from the REQUEST, so the frame CEF stores
+    /// below a raster of 1 cannot inflate the page; the next paint is the same
+    /// size and is accepted. Dividing the adopted paint by the request's scale
+    /// would ask for 1680x2940 and drop every later frame.
+    #[test]
+    fn a_raster_below_one_does_not_inflate_the_view_after_adoption() {
+        let (view_width, view_height) = view_size(1234, 2160, 857);
+        assert_eq!((view_width, view_height), (1440, 2520), "the view is the request's CSS size");
+        assert_eq!(screen_scale(857), 1.0, "the display paints at 1x");
+        let expected = painted_size(1234, 2160, 857);
+        let inflated = (f64::from(expected.0) / 0.857).round() as i32;
+        assert_eq!(inflated, 1680, "what the adopted size would have asked for");
+        assert_ne!(view_width, inflated, "the paint size is not turned into the view again");
+        assert!(
+            paint_matches_request(expected, painted_size(1234, 2160, 857)),
+            "a later frame at the same size is still accepted",
+        );
+    }
+
+    /// **The drop and the adoption are the handler's own behaviour.** A stale
+    /// paint must not reach the ring; the paint at the requested size must,
+    /// and the pixels it leaves are the buffer's.
+    #[test]
+    fn a_stale_paint_never_reaches_the_ring() {
+        let name = "/forge-cef-test-stale-paint";
+        let ring = Ring::create(name, 8, 8).expect("a test ring");
+        let buffer: Vec<u8> = (0..8 * 8 * 4).map(|at| at as u8).collect();
+        paint(&ring, None, buffer.as_ptr(), 4, 4);
+        let header = unsafe { &*ring.header() };
+        assert_eq!(header.paints.load(Ordering::Relaxed), 0, "a stale frame is not adopted");
+        assert_eq!(header.width.load(Ordering::Relaxed), 8, "and does not overwrite the size");
+        paint(&ring, None, buffer.as_ptr(), 8, 8);
+        assert_eq!(header.paints.load(Ordering::Relaxed), 1, "the matching frame is written");
+        assert_eq!(header.width.load(Ordering::Relaxed), 8);
+        Ring::unlink(name);
+    }
+
+    /// **A frame past the ring's budget is dropped, not copied.** The budget is
+    /// in pixels: a size within the DIP slack of the request can still be past
+    /// it, and the copy would run past the mapping.
+    #[test]
+    fn a_paint_past_the_ring_budget_is_dropped() {
+        let name = "/forge-cef-test-paint-budget";
+        let ring = Ring::create(name, MAX_WIDTH, MAX_HEIGHT).expect("a test ring");
+        let buffer = [0_u8; 4 * 4 * 4];
+        // The request is clamped to the budget; one pixel past it is within the
+        // slack and still unrepresentable.
+        let header = unsafe { &*ring.header() };
+        header.request_width.store(MAX_WIDTH, Ordering::Relaxed);
+        header.request_height.store(MAX_HEIGHT, Ordering::Relaxed);
+        header.request_scale_milli.store(1_000, Ordering::Relaxed);
+        paint(&ring, None, buffer.as_ptr(), MAX_WIDTH, MAX_HEIGHT + 1);
+        assert_eq!(header.paints.load(Ordering::Relaxed), 0, "past the budget is dropped");
+        assert_eq!(header.width.load(Ordering::Relaxed), MAX_WIDTH, "and the size is not adopted");
+        assert!(within_budget(MAX_WIDTH, MAX_HEIGHT), "exactly the budget fits");
+        assert!(!within_budget(MAX_WIDTH, MAX_HEIGHT + 1), "one row past does not");
+        assert!(!within_budget(MAX_WIDTH + 1, MAX_HEIGHT), "one column past does not");
+        assert!(within_budget(1440, 2520), "a tall portrait frame within the budget fits");
         Ring::unlink(name);
     }
 

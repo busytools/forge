@@ -169,13 +169,14 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
  * would have the person press Done and tell the session they acted.
  */
 export async function showBrowser(
-  profile: string | null = null,
-  seat: SessionSlot | null = null,
+  profile: string | null,
+  seat: SessionSlot | null,
+  epoch: number,
 ): Promise<string | null> {
   if (!canHost()) return 'this page is not the client';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_show', { profile, seat });
+    await invoke('browser_show', { profile, seat, epoch });
     return null;
   } catch (why) {
     return whyText(why);
@@ -221,10 +222,11 @@ export type HideAnswer = { lowered: boolean } | string;
 export async function reportSurfaceRect(
   rect: { x: number; y: number; width: number; height: number },
   scale: number,
+  epoch: number,
 ): Promise<void> {
   if (!canHost()) return;
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('browser_surface_rect', { ...rect, scale });
+  await invoke('browser_surface_rect', { ...rect, scale, epoch });
 }
 
 /**
