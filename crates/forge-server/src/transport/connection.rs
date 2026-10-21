@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::{SinkExt as _, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -285,7 +285,13 @@ pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportStat
 /// than to whatever else holds the port, and it carries the settings the
 /// client draws with - so the client is configured before it draws anything
 /// rather than discovering a theme later.
-async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
+async fn greet<S>(mut socket: S, state: Arc<TransportState>)
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>>
+        + futures_util::Sink<Message, Error = axum::Error>
+        + Unpin
+        + Send,
+{
     let greeting = ServerMessage::Greeting {
         version: PROTOCOL_VERSION,
         forge_version: crate::FORGE_VERSION.to_owned(),
@@ -2802,6 +2808,51 @@ mod tests {
             Some((host, Release::Stalled)),
             "and the release names the write bound, not a close or a socket failure",
         );
+    }
+
+    /// **The ping's own write is bounded.** It is the site #2473 survives on:
+    /// a peer that stops reading while the next ping waits behind a full
+    /// buffer leaves no other write in the loop to bound, so an unbounded ping
+    /// holds the role for ever.
+    #[tokio::test(start_paused = true)]
+    async fn a_ping_that_cannot_be_written_ends_at_the_write_bound() {
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut sink = HeldSink { ready: std::sync::Arc::clone(&ready) };
+        let keepalive = Keepalive::default();
+
+        let outcome = tokio::time::timeout(WRITE_BOUND * 2, keepalive.ping(&mut sink))
+            .await
+            .expect("the ping ends at the write bound rather than never");
+        let error = outcome.expect_err("a ping the buffer cannot take is not sent");
+
+        assert!(
+            error.downcast_ref::<WriteStalled>().is_some(),
+            "the ping ends on the write bound rather than on a sink error: {error:?}",
+        );
+        assert_eq!(
+            keepalive.sent(),
+            None,
+            "and no deadline is stamped for a ping the peer never saw",
+        );
+    }
+
+    /// **The greeting's write is bounded too.** It is the first frame every
+    /// connection sends, and a peer that never reads it would otherwise hold
+    /// the connection's task until TCP gives up.
+    #[tokio::test(start_paused = true)]
+    async fn a_greeting_that_cannot_be_written_ends_at_the_write_bound() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        ));
+        let (_keep, inbound) = mpsc::unbounded_channel();
+        let mut peer = StoppedReading { inbound, writing: None };
+
+        tokio::time::timeout(WRITE_BOUND * 2, greet(&mut peer, state))
+            .await
+            .expect("the greeting ends at the write bound rather than never");
     }
 
     /// The oldest boundary a window names, as a walk below the floor starts

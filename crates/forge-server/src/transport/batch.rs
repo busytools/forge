@@ -435,12 +435,61 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_batch_whose_flush_never_completes_ends_at_the_write_bound() {
         let mut sink = NeverFlushes;
-        let error = flush(&mut sink, vec![frame(status("one"))])
-            .await
-            .expect_err("a flush that never completes must not hold the connection");
+        let outcome = tokio::time::timeout(
+            crate::transport::WRITE_BOUND * 2,
+            flush(&mut sink, vec![frame(status("one"))]),
+        )
+        .await
+        .expect("the batch ends at the write bound rather than never");
+        let error = outcome.expect_err("a flush that never completes must not hold the connection");
         assert!(
             error.downcast_ref::<crate::transport::WriteStalled>().is_some(),
             "the batch ends on the write bound rather than on a sink error: {error:?}",
+        );
+    }
+
+    /// A sink whose buffer is full: `feed` blocks in `poll_ready` before it
+    /// can take a frame, which is the stall a stopped reader leaves before any
+    /// flush is reached.
+    struct FullBuffer;
+
+    impl Sink<Message> for FullBuffer {
+        type Error = axum::Error;
+
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// **The feed is bounded, not only the flush.** A full buffer blocks at
+    /// `feed` before any flush is reached, so a bound on the flush alone
+    /// leaves the batch's first write holding the connection.
+    #[tokio::test(start_paused = true)]
+    async fn a_batch_whose_feed_cannot_take_a_frame_ends_at_the_write_bound() {
+        let mut sink = FullBuffer;
+        let outcome = tokio::time::timeout(
+            crate::transport::WRITE_BOUND * 2,
+            flush(&mut sink, vec![frame(status("one"))]),
+        )
+        .await
+        .expect("the feed ends at the write bound rather than never");
+        let error =
+            outcome.expect_err("a frame the buffer cannot take must not hold the connection");
+        assert!(
+            error.downcast_ref::<crate::transport::WriteStalled>().is_some(),
+            "the feed ends on the write bound rather than on a sink error: {error:?}",
         );
     }
 

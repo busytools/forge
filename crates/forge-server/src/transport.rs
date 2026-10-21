@@ -456,6 +456,10 @@ mod tests {
     /// the book tells a client author about a peer that stopped reading, so a
     /// drift must fail a test rather than quietly change it - and it must
     /// clear the slowest frame measured (31.6 s) with room.
+    ///
+    /// The three claims are ordered value, floor, pairing: a run reports the
+    /// first that fails and the next run reports the next, which is enough for
+    /// a constant this small.
     #[test]
     fn the_shipping_write_bound_is_the_documented_value() {
         assert_eq!(WRITE_BOUND, Duration::from_secs(60), "one frame, 60 s");

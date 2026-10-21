@@ -98,8 +98,9 @@ pub enum Notice {
 /// **The relay cannot see a client's process**, only its connection: so the
 /// side named here is the connection's. A client that died, slept or was quit
 /// reads as [`Release::Closed`] or [`Release::Failed`] depending on what its
-/// socket did, and as [`Release::Reaped`] when the transport's keepalive ended
-/// a socket that never closed at all.
+/// socket did, as [`Release::Reaped`] when the transport's keepalive ended a
+/// socket that never closed at all, and as [`Release::Stalled`] when a frame
+/// write outlived its bound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Release {
     /// The connection ended on its own: the client closed it, or its read
