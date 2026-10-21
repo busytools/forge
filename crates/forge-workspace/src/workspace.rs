@@ -6014,8 +6014,8 @@ impl Workspace {
     /// caller is about to drop does not poll them: each child sits in its
     /// own process group and only its own close signals that group, so a
     /// shutdown that returned early would leave the tree running. The
-    /// wait is bounded by [`TEARDOWN_WAIT`](crate::spawn::TEARDOWN_WAIT),
-    /// and an expiry says so at warn.
+    /// wait is bounded by the same `TEARDOWN_WAIT` the despawn's removal
+    /// holds to, and an expiry says so at warn.
     pub async fn shutdown(&self) {
         // Release any live dictation before the pools go: a recording
         // task outliving its session's teardown would otherwise hold
