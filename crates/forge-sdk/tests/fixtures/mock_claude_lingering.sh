@@ -33,5 +33,9 @@ printf '%s\n' "{\"type\":\"control_response\",\"response\":{\"subtype\":\"succes
 ( trap '' TERM; exec sleep 300 ) </dev/null >/dev/null 2>&1 &
 printf '%s\n' "$!" > "$FORGE_TEST_ORPHAN_MARKER"
 
-# Stdin EOF is the graceful exit a teardown asks for.
+# Stdin EOF is the graceful exit a teardown asks for. A test that needs a
+# session still closing while another has finished sets a delay.
 while IFS= read -r _line; do :; done
+if [ -n "${FORGE_TEST_CLOSE_DELAY:-}" ]; then
+    sleep "$FORGE_TEST_CLOSE_DELAY"
+fi

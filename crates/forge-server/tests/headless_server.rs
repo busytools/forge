@@ -9,6 +9,7 @@
 // not reach it: the denied lints fire on a file that is entirely test code.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use std::fmt::Write as _;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -186,9 +187,10 @@ async fn walk(script: &str, url: &str) -> Vec<Value> {
         .collect()
 }
 
-/// A scratch tree whose project starts at boot, over a mock `claude` on
-/// PATH: the boot wave spawns a live session, and that session's child
-/// leaves a sleeper whose pid lands in `marker`.
+/// A scratch tree whose declared projects start at boot, over a mock
+/// `claude` on PATH: the boot wave spawns a live session per project, and
+/// each session's child leaves a sleeper whose pid lands in that project's
+/// marker.
 ///
 /// The mock is the SDK's own lingering fixture under the name production
 /// spawns, so one script describes the shape for both layers.
@@ -196,16 +198,14 @@ fn write_session_fixture(
     root: &std::path::Path,
     server_port: u16,
     gateway_port: u16,
-    marker: &std::path::Path,
+    projects: &[(&str, &std::path::Path, Option<&str>)],
     child_term_marker: &std::path::Path,
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let home = root.join("home");
     let config = root.join("config");
-    let project = root.join("project");
     let bin = root.join("bin");
     std::fs::create_dir_all(config.join("forge")).expect("config dir");
     std::fs::create_dir_all(&home).expect("home dir");
-    std::fs::create_dir_all(&project).expect("project dir");
     std::fs::create_dir_all(&bin).expect("bin dir");
     std::fs::copy(
         concat!(
@@ -215,24 +215,32 @@ fn write_session_fixture(
         bin.join("claude"),
     )
     .expect("install the mock claude");
+    let mut blocks = String::new();
+    for (name, marker, close_delay) in projects {
+        let path = root.join(format!("project-{name}"));
+        std::fs::create_dir_all(&path).expect("project dir");
+        let mut env = format!("FORGE_TEST_ORPHAN_MARKER = \"{}\"", marker.display());
+        if let Some(delay) = close_delay {
+            let _ = write!(env, ", FORGE_TEST_CLOSE_DELAY = \"{delay}\"");
+        }
+        let _ = write!(
+            blocks,
+            "\n[[orgs.projects]]\nname = \"{name}\"\npath = \"{}\"\nauto_start = true\n\
+             model = \"claude-sonnet-5\"\nenv = {{ {env} }}\n",
+            path.display(),
+        );
+    }
     std::fs::write(
         config.join("forge/forge.toml"),
         format!(
             r#"
 [env]
-FORGE_TEST_ORPHAN_MARKER = "{marker}"
 FORGE_TEST_CHILD_TERM_MARKER = "{child_marker}"
 
 [[orgs]]
 name = "Default"
 accounts = ["Stub"]
-
-[[orgs.projects]]
-name = "forge"
-path = "{project}"
-auto_start = true
-model = "claude-sonnet-5"
-
+{blocks}
 [[accounts]]
 display_name = "Stub"
 token = "t"
@@ -248,9 +256,8 @@ port = {server_port}
 [gateway]
 port = {gateway_port}
 "#,
-            marker = marker.display(),
             child_marker = child_term_marker.display(),
-            project = project.display(),
+            blocks = blocks,
         ),
     )
     .expect("write forge.toml");
@@ -321,8 +328,13 @@ async fn assert_stop_leaves_no_descendant(signal: &str) {
     let (port, gateway) = two_free_ports();
     let marker = dir.path().join("session.pid");
     let child_marker = dir.path().join("child-term");
-    let (home, config, bin) =
-        write_session_fixture(dir.path(), port, gateway, &marker, &child_marker);
+    let (home, config, bin) = write_session_fixture(
+        dir.path(),
+        port,
+        gateway,
+        &[("forge", &marker, None)],
+        &child_marker,
+    );
 
     let mut command = server_command(&home, &config);
     command
@@ -359,8 +371,13 @@ async fn a_group_stop_signal_does_not_reach_the_session_tools() {
     let (port, gateway) = two_free_ports();
     let marker = dir.path().join("session.pid");
     let child_marker = dir.path().join("child-term");
-    let (home, config, bin) =
-        write_session_fixture(dir.path(), port, gateway, &marker, &child_marker);
+    let (home, config, bin) = write_session_fixture(
+        dir.path(),
+        port,
+        gateway,
+        &[("forge", &marker, None)],
+        &child_marker,
+    );
 
     let mut command = server_command(&home, &config);
     command
@@ -392,6 +409,57 @@ async fn a_group_stop_signal_does_not_reach_the_session_tools() {
         wait_until_gone(pid).await,
         "the descendant outlived the group's stop even though only the teardown should reach it: \
          pid {pid}"
+    );
+}
+
+/// Two live sessions, one stop: both trees go, and the stop fits a single
+/// teardown budget rather than one per session.
+#[tokio::test]
+async fn one_stop_takes_two_sessions_down() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (port, gateway) = two_free_ports();
+    let alpha = dir.path().join("alpha.pid");
+    let beta = dir.path().join("beta.pid");
+    let child_marker = dir.path().join("child-term");
+    // Beta closes slowly, so a drain that awaited only one session would
+    // exit with beta's tree still running.
+    let projects: [(&str, &std::path::Path, Option<&str>); 2] =
+        [("alpha", &alpha, None), ("beta", &beta, Some("3"))];
+    let (home, config, bin) =
+        write_session_fixture(dir.path(), port, gateway, &projects, &child_marker);
+
+    let mut command = server_command(&home, &config);
+    command
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
+    let mut server = command.spawn().expect("the server spawns");
+    wait_for_port(port, &mut server).await;
+
+    // The control: both sessions are live, each with its own descendant.
+    let alpha_pid = wait_for_marker_pid(&alpha).await;
+    let _alpha_orphan = Orphan(alpha_pid);
+    let beta_pid = wait_for_marker_pid(&beta).await;
+    let _beta_orphan = Orphan(beta_pid);
+    assert!(
+        is_running(alpha_pid) && is_running(beta_pid),
+        "both sessions' descendants must be running before the stop: {alpha_pid}, {beta_pid}"
+    );
+
+    let started = std::time::Instant::now();
+    terminate(server.id().expect("the server has a pid while it runs")).await;
+    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+        .await
+        .expect("the server finishes its stop within the deadline")
+        .expect("the server is reaped");
+    let elapsed = started.elapsed();
+    assert!(exit.success(), "the stop exits clean with two sessions live: {exit}");
+
+    assert!(
+        wait_until_gone(alpha_pid).await && wait_until_gone(beta_pid).await,
+        "both sessions' trees die with the stop: {alpha_pid}, {beta_pid}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "the stop fits one teardown budget rather than one per session: {elapsed:?}"
     );
 }
 

@@ -1106,6 +1106,32 @@ mod tests {
         }
     }
 
+    /// An empty group answers `ESRCH`, and that is not forge's problem:
+    /// mapping it to a report would warn on every clean exit.
+    #[cfg(unix)]
+    #[test]
+    fn kill_group_treats_an_empty_group_as_nothing_to_report() {
+        // Above any kernel's pid ceiling but inside `i32`, so the call
+        // reaches the kernel and fails there.
+        assert!(kill_group(2_000_000_000).is_none(), "an empty group is not a failure");
+    }
+
+    /// A signal that lands is no failure either, and it reaches the whole
+    /// group the child leads.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_group_signals_a_live_group_without_reporting() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30").process_group(0);
+        let mut child = command.spawn().expect("a child in its own group");
+        let pid = child.id().expect("a live child has a pid");
+
+        assert!(kill_group(pid).is_none(), "a landed group kill is not a failure");
+
+        let status = child.wait().await.expect("the child is reaped");
+        assert!(!status.success(), "the group signal killed the child: {status}");
+    }
+
     #[test]
     fn stderr_tail_keeps_the_last_lines_within_cap() {
         let mut tail = StderrTail::default();
