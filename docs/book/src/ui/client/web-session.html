@@ -260,6 +260,10 @@
   details.gfold > summary .arw { color: var(--dim); font-size: var(--fs-data); }
   details.gfold[open] > summary .arw { color: var(--accent); }
   .pr { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; }
+  /* The row's mark sits in a slot one size for every state, so a state that
+     draws a smaller dot cannot narrow the row and pull the name left. */
+  .pr .dot-slot { width: 11px; height: 11px; flex: 0 0 11px;
+    display: inline-flex; align-items: center; justify-content: center; }
   .pr .nm { font-size: var(--fs-base); font-weight: 600; flex: 0 1 auto; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pr .org { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
@@ -1444,19 +1448,19 @@
 
       <div class="state needs">needs you</div>
       <div class="pj">
-        <div class="pr"><span class="dot needs"></span><span class="nm">core-v1</span>
+        <div class="pr"><span class="dot-slot"><span class="dot needs"></span></span><span class="nm">core-v1</span>
           <span class="org">Granite</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why">a permission prompt is waiting</div>
       </div>
       <div class="pj">
-        <div class="pr"><span class="dot needs"></span><span class="nm">companies/steward</span>
+        <div class="pr"><span class="dot-slot"><span class="dot needs"></span></span><span class="nm">companies/steward</span>
           <span class="org">Personal</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why">asked you a question</div>
       </div>
       <div class="pj">
-        <div class="pr"><span class="dot failed"></span><span class="nm">trader-cc</span>
+        <div class="pr"><span class="dot-slot"><span class="dot failed"></span></span><span class="nm">trader-cc</span>
           <span class="org">Busytools</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why bad">spawn failed</div>
@@ -1467,7 +1471,7 @@
            recovers. No fade, and the line is the seat's own - a worker's
            draws under the worker, the way every failure is kept apart. -->
       <div class="pj">
-        <div class="pr"><span class="dot failed"></span><span class="nm">home-inverter</span>
+        <div class="pr"><span class="dot-slot"><span class="dot failed"></span></span><span class="nm">home-inverter</span>
           <span class="org">Personal</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why bad">a turn failed</div>
@@ -1478,13 +1482,13 @@
            be back up and counted live - so the row adds the death, not a
            claim that the seat is down. -->
       <div class="pj">
-        <div class="pr"><span class="dot failed"></span><span class="nm">payout-service</span>
+        <div class="pr"><span class="dot-slot"><span class="dot failed"></span></span><span class="nm">payout-service</span>
           <span class="org">Busytools</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why bad">the claude subprocess closed its output stream</div>
       </div>
       <div class="pj">
-        <div class="pr"><span class="dot live"></span><span class="nm">granite-core</span>
+        <div class="pr"><span class="dot-slot"><span class="dot live"></span></span><span class="nm">granite-core</span>
           <span class="org">Granite</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <!-- A failure is not shared: a worker's diagnostic draws under the
@@ -1497,7 +1501,7 @@
 
       <div class="state">working</div>
       <div class="pj">
-        <div class="pr"><span class="dot live"></span><span class="nm">forge</span>
+        <div class="pr"><span class="dot-slot"><span class="dot live"></span></span><span class="nm">forge</span>
           <span class="org">Busytools</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <!-- The seat the page is showing, marked on its own row. -->
@@ -1514,8 +1518,16 @@
             <span class="nm">rail-footer</span></div>
         </details>
       </div>
+      <!-- An idle lead: the 7px orange dot, the smallest mark the rail draws,
+           in the one-size slot - its name reads at the same x as the rings
+           and triangles above it. -->
       <div class="pj">
-        <div class="pr"><span class="dot unseen"></span><span class="nm">hub-modules</span>
+        <div class="pr"><span class="dot-slot"><span class="dot idle"></span></span><span class="nm">trader-cc</span>
+          <span class="org">Busytools</span>
+          <button class="x" type="button" title="close">&#10005;</button></div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot-slot"><span class="dot unseen"></span></span><span class="nm">hub-modules</span>
           <span class="org">Busytools</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
@@ -1541,19 +1553,19 @@
         </details>
       </div>
       <div class="pj">
-        <div class="pr"><span class="dot unseen"></span><span class="nm">busymail</span>
+        <div class="pr"><span class="dot-slot"><span class="dot unseen"></span></span><span class="nm">busymail</span>
           <span class="org">Busytools</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
       </div>
       <div class="pj">
-        <div class="pr"><span class="dot unseen"></span><span class="nm">granite-backend</span>
+        <div class="pr"><span class="dot-slot"><span class="dot unseen"></span></span><span class="nm">granite-backend</span>
           <span class="org">Granite</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
           <span class="nm">referral-signature-fix</span><button class="x" type="button" title="close">&#10005;</button></div>
       </div>
       <div class="pj">
-        <div class="pr"><span class="dot unseen"></span><span class="nm">companies</span>
+        <div class="pr"><span class="dot-slot"><span class="dot unseen"></span></span><span class="nm">companies</span>
           <span class="org">Personal</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
@@ -1572,21 +1584,21 @@
           <span class="dot off settling"></span>
           <span class="arw">&#9656;</span></summary>
         <div class="pj">
-          <div class="pr"><span class="dot off"></span><span class="nm">playground</span>
+          <div class="pr"><span class="dot-slot"><span class="dot off"></span></span><span class="nm">playground</span>
             <span class="org">Personal</span><span class="age">6h</span></div>
         </div>
         <div class="pj">
-          <div class="pr"><span class="dot off"></span><span class="nm">busyblocks</span>
+          <div class="pr"><span class="dot-slot"><span class="dot off"></span></span><span class="nm">busyblocks</span>
             <span class="org">Busytools</span><span class="age">16h</span></div>
         </div>
         <div class="pj">
-          <div class="pr"><span class="dot off settling"></span><span class="nm">subspace</span>
+          <div class="pr"><span class="dot-slot"><span class="dot off settling"></span></span><span class="nm">subspace</span>
             <span class="org">Subspace</span><span class="age">1d</span></div>
         </div>
         <!-- The longest name in the roster, drawn so the elide is visible: a
              name too long for the row gives way and keeps the age its edge. -->
         <div class="pj">
-          <div class="pr"><span class="dot off"></span><span class="nm">pure-black-github-intellij</span>
+          <div class="pr"><span class="dot-slot"><span class="dot off"></span></span><span class="nm">pure-black-github-intellij</span>
             <span class="org">Personal</span><span class="age">never</span></div>
         </div>
       </details>
