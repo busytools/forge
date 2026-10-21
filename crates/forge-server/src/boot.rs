@@ -293,9 +293,30 @@ pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force
     });
 }
 
+/// The stop's exit: a teardown that did not finish every session leaves a
+/// process tree behind, and a supervisor must be able to tell that from a
+/// clean stop.
+///
+/// # Errors
+///
+/// A non-empty `unready` is an error naming the sessions that outlasted
+/// the wait.
+pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<()> {
+    if unready.is_empty() {
+        return Ok(());
+    }
+    let named: Vec<String> = unready.iter().map(forge_primitives::SessionSlot::display).collect();
+    anyhow::bail!(
+        "forge: {} session(s) did not finish teardown before the wait ran out ({}); their \
+         process trees may outlive this exit",
+        unready.len(),
+        named.join(", "),
+    );
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BOOT_WAVE_WAIT, start_subsystems, wait_for_accounts};
+    use super::{BOOT_WAVE_WAIT, start_subsystems, stop_result, wait_for_accounts};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -307,6 +328,18 @@ mod tests {
     /// so the wave's other steps no-op or park. The port is picked free and
     /// then handed on - a busy box can take it in between, and the listener's
     /// failed bind is logged rather than read here.
+    /// A stop whose teardown ran out of budget exits non-zero and names
+    /// what was still running; a clean stop is a success.
+    #[test]
+    fn a_teardown_that_did_not_finish_stops_with_a_failure() {
+        assert!(stop_result(&[]).is_ok(), "a clean stop is a success");
+
+        let slot = forge_primitives::SessionSlot::new("org", "proj", "slow");
+        let error = stop_result(std::slice::from_ref(&slot)).expect_err("a left tree is a failure");
+        let rendered = format!("{error}");
+        assert!(rendered.contains("org/proj/slow"), "the failure names the session: {rendered}");
+    }
+
     fn boot_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");

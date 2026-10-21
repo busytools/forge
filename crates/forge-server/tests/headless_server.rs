@@ -429,8 +429,11 @@ async fn a_group_stop_signal_does_not_reach_the_session_tools() {
     );
 }
 
-/// Two live sessions, one stop: both trees go, and the stop fits a single
-/// teardown budget rather than one per session.
+/// Two live sessions, one stop: both trees go, and the stop finishes well
+/// inside one teardown budget. That the budget is SHARED rather than
+/// restarted per session is pinned where it can be felt - the workspace's
+/// `a_shutdown_spends_one_budget_across_every_session` times two silent
+/// sessions against one injected deadline.
 #[tokio::test]
 async fn one_stop_takes_two_sessions_down() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -476,7 +479,7 @@ async fn one_stop_takes_two_sessions_down() {
     );
     assert!(
         elapsed < Duration::from_secs(10),
-        "the stop fits one teardown budget rather than one per session: {elapsed:?}"
+        "the stop finishes well inside one teardown budget: {elapsed:?}"
     );
 }
 

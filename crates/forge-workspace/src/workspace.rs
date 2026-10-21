@@ -6051,11 +6051,11 @@ impl Workspace {
     /// repeated until nothing is registered. The wait is bounded by the
     /// same `TEARDOWN_WAIT` the despawn's removal holds to.
     ///
-    /// Returns whether every session answered. An expiry names the slots
-    /// that did not, and the caller turns that into a non-zero exit, so a
+    /// Returns the slots that had not answered; empty is a clean stop. The
+    /// caller turns a non-empty answer into a non-zero exit, so a
     /// supervisor can tell a clean stop from one that left a tree.
-    pub async fn shutdown(&self) -> bool {
-        self.shutdown_within(crate::spawn::TEARDOWN_WAIT).await.is_empty()
+    pub async fn shutdown(&self) -> Vec<SessionSlot> {
+        self.shutdown_within(crate::spawn::TEARDOWN_WAIT).await
     }
 
     /// [`Self::shutdown`] with the budget injected, so a case can drive the
@@ -12543,6 +12543,29 @@ provider = "anthropic"
         let unready = workspace.shutdown_within(std::time::Duration::from_millis(200)).await;
 
         assert_eq!(unready, vec![slot], "the released slot is still one the exit waits on");
+    }
+
+    /// One deadline for the whole drain, not one per session: two silent
+    /// sessions come back together inside a single budget. A fresh timeout
+    /// per receiver would spend the budget twice and red the elapsed bound.
+    #[tokio::test]
+    async fn a_shutdown_spends_one_budget_across_every_session() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let first = SessionSlot::new("org", "proj", "first");
+        let second = SessionSlot::new("org", "proj", "second");
+        let _first = workspace.mint_session_teardown(&first).expect("a mint before shutdown");
+        let _second = workspace.mint_session_teardown(&second).expect("a second mint");
+
+        let started = tokio::time::Instant::now();
+        let unready = workspace.shutdown_within(std::time::Duration::from_millis(300)).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(unready.len(), 2, "both silent sessions are named: {unready:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(450),
+            "one budget for the drain, not one per session: it took {elapsed:?}"
+        );
     }
 
     /// Once a shutdown has begun, no session can mint its teardown signal -

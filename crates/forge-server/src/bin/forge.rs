@@ -115,12 +115,8 @@ fn run() -> anyhow::Result<()> {
         // dropped runtime does not poll the session tasks' exit paths. A
         // teardown that ran out of budget exits non-zero, so a supervisor
         // can tell a clean stop from one that left a tree.
-        if !workspace.shutdown().await {
-            return Err(anyhow::anyhow!(
-                "forge: a session's teardown did not finish before the wait ran out; its \
-                 process tree may outlive this exit"
-            ));
-        }
+        let unready = workspace.shutdown().await;
+        forge_server::boot::stop_result(&unready)?;
         Ok(())
     })
 }
