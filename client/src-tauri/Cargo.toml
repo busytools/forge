@@ -104,6 +104,7 @@ objc2-app-kit = { version = "0.3", features = [
     "NSPanel",
     "NSPasteboard",
     "NSResponder",
+    "NSRunningApplication",
     "NSSavePanel",
     "NSTrackingArea",
     "NSView",

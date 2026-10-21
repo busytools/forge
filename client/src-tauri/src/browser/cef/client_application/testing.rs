@@ -7,6 +7,7 @@
 //! entry point there.
 
 use objc2::{ClassType as _, MainThreadMarker, runtime::NSObjectProtocol};
+use objc2_app_kit::NSApplicationActivationPolicy;
 
 use super::ClientApplication;
 
@@ -24,9 +25,16 @@ const _: () = assert!(std::mem::needs_drop::<super::ClientApplicationIvars>());
 pub fn the_application_ivars_hold() -> Result<(), String> {
     let _mtm = MainThreadMarker::new()
         .ok_or_else(|| "the application check must run on the process main thread".to_owned())?;
+    super::setup();
     let app = ClientApplication::shared_application();
     if !app.isKindOfClass(ClientApplication::class()) {
         return Err("+sharedApplication did not answer a ClientApplication".to_owned());
+    }
+    if app.activationPolicy() != NSApplicationActivationPolicy::Accessory {
+        return Err(format!(
+            "the host's activation policy is {:?}, not accessory",
+            app.activationPolicy()
+        ));
     }
     if app.is_handling_send_event() {
         return Err("the send-event flag did not start false".to_owned());
