@@ -354,7 +354,12 @@ describe("a project row's mark", () => {
    * running ring 11, so a row that took each mark's own width moved the name
    * - and every cell after it - on every state change. jsdom performs no
    * layout, so the wrapper is read off the rendered row and the size off the
-   * sheet; the by-width measurement against a browser is in the pull request.
+   * sheet; only a browser can measure the name's x across states.
+   *
+   * **The flex display is part of the centring.** `justify-content` is inert
+   * on a non-flex box, so dropping `display` would leave the marks at the
+   * slot's left edge with this test still green. The sizes are matched
+   * exactly rather than as substrings, which `min-width` would satisfy.
    */
   it('sits in one fixed, centred slot', () => {
     const drawn = render(Rail, {
@@ -364,8 +369,12 @@ describe("a project row's mark", () => {
       /<span class="dot-slot"><span class="dot [^"]+"><\/span><\/span>/,
     );
     const slot = rule('.pr .dot-slot');
-    expect(slot, 'the slot lost its one size').toContain('width: 11px');
+    expect(slot, 'the slot lost its exact width').toMatch(/[{;]\s*width: 11px;/);
+    expect(slot, 'the slot lost its exact height').toMatch(/[{;]\s*height: 11px;/);
     expect(slot, 'the slot lost its fixed basis').toContain('flex: 0 0 11px');
+    expect(slot, 'the slot is not a flex box, so its centring does nothing').toContain(
+      'display: inline-flex',
+    );
     expect(slot, 'the mark is not centred in the slot').toContain('justify-content: center');
   });
 });
