@@ -426,8 +426,13 @@ pub fn run() {
     // initializes CEF, and a helper's whole life is `execute_process`.
     #[cfg(target_os = "macos")]
     {
-        if let Some(args) = browser::cef::host_args(std::env::args().skip(1)) {
-            browser::cef::host_main(args);
+        match browser::cef::launch(std::env::args().skip(1)) {
+            browser::cef::Launch::Host(args) => browser::cef::host_main(args),
+            browser::cef::Launch::Refused(why) => {
+                eprintln!("{why}");
+                std::process::exit(2);
+            }
+            browser::cef::Launch::Client => {}
         }
         if browser::cef::is_subprocess() {
             browser::cef::run_subprocess();
@@ -839,26 +844,36 @@ mod tests {
     }
 
     /// **The path a signal takes through production.** A child process runs
-    /// the shipping installer over a double whose reap writes a file, raises
-    /// SIGTERM, and is ended by the installer's own exit; the parent asserts
-    /// the file and the exit code. Only the host behind the reap is a double.
+    /// the shipping installer over a double, raises a real signal, and is
+    /// ended by the installer's own exit; the parent asserts the reap and the
+    /// exit code. Both signals are driven, and a reap that panics must still
+    /// exit for its signal rather than swallowing it. Only the host behind
+    /// the reap is a double.
     #[test]
-    fn a_sigterm_runs_the_production_reaper_and_exits_for_it() {
+    fn a_signal_runs_the_production_reaper_and_exits_for_it() {
         const CHILD: &str = "FORGE_TEST_REAPER_CHILD";
+        const SIGNAL: &str = "FORGE_TEST_REAPER_SIGNAL";
+        const PANIC: &str = "FORGE_TEST_REAPER_PANIC";
         // The libtest filter is the bare test name, not the module path.
-        let name = "a_sigterm_runs_the_production_reaper_and_exits_for_it";
+        let name = "a_signal_runs_the_production_reaper_and_exits_for_it";
 
         if let Some(record) = std::env::var_os(CHILD) {
-            struct Double(std::path::PathBuf);
+            struct Double(std::path::PathBuf, bool);
             impl super::Reaps for Double {
                 fn reap_owned_blocking(&self) -> Vec<String> {
                     std::fs::write(&self.0, b"reaped\n").expect("the reap record");
+                    assert!(!self.1, "the reap panicked");
                     vec!["recorded".to_owned()]
                 }
             }
-            super::install_shutdown_reaper(Arc::new(Double(std::path::PathBuf::from(record))));
-            // SAFETY: raising SIGTERM at this process, which handles it now.
-            let raised = unsafe { libc::raise(libc::SIGTERM) };
+            let signal: i32 =
+                std::env::var(SIGNAL).expect("the signal").parse().expect("a signal number");
+            super::install_shutdown_reaper(Arc::new(Double(
+                std::path::PathBuf::from(record),
+                std::env::var_os(PANIC).is_some(),
+            )));
+            // SAFETY: raising `signal` at this process, which handles it now.
+            let raised = unsafe { libc::raise(signal) };
             assert_eq!(raised, 0, "the signal was raised");
             // **The installer ends this process from the watcher's thread**,
             // so this thread waits for that rather than returning to the
@@ -868,38 +883,47 @@ mod tests {
             }
         }
 
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let record = dir.path().join("reap.txt");
-        let mut child =
-            std::process::Command::new(std::env::current_exe().expect("the test binary"))
-                .args([name, "--nocapture"])
-                .env(CHILD, &record)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .expect("the child runs the test");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let status = loop {
-            match child.try_wait().expect("the child is waited") {
-                Some(status) => break status,
-                None if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+        // Both signals the installer answers, and a reap that panics: the
+        // exit must still name the signal, which is what the catch_unwind
+        // guard in the installer buys.
+        for (signal, panic) in
+            [(libc::SIGTERM, false), (libc::SIGINT, false), (libc::SIGTERM, true)]
+        {
+            let dir = tempfile::tempdir().expect("a temp dir");
+            let record = dir.path().join("reap.txt");
+            let mut child =
+                std::process::Command::new(std::env::current_exe().expect("the test binary"))
+                    .args([name, "--nocapture"])
+                    .env(CHILD, &record)
+                    .env(SIGNAL, signal.to_string())
+                    .envs(panic.then_some((PANIC, "1")))
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("the child runs the test");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let status = loop {
+                match child.try_wait().expect("the child is waited") {
+                    Some(status) => break status,
+                    None if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    None => {
+                        let _ = child.kill();
+                        panic!("the child never answered signal {signal}");
+                    }
                 }
-                None => {
-                    let _ = child.kill();
-                    panic!("the child never answered the signal");
-                }
-            }
-        };
-        assert_eq!(
-            status.code(),
-            Some(128 + libc::SIGTERM),
-            "the installer exits with the signal it answered, not by a signal death",
-        );
-        assert_eq!(
-            std::fs::read_to_string(&record).expect("the reaper ran in the child"),
-            "reaped\n",
-            "the production installer's reap ran before the exit",
-        );
+            };
+            assert_eq!(
+                status.code(),
+                Some(128 + signal),
+                "signal {signal} (panicking reap: {panic}) exits 128+signal, not by a signal death",
+            );
+            assert_eq!(
+                std::fs::read_to_string(&record).expect("the reap ran in the child"),
+                "reaped\n",
+                "the production installer's reap ran for signal {signal}",
+            );
+        }
     }
 }

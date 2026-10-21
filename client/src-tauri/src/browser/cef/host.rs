@@ -155,16 +155,56 @@ fn run_loop(
     args: &Args,
     stop: &AtomicBool,
     now: &mut impl FnMut() -> u64,
-    pass: &mut impl FnMut(u64),
+    pass: &mut impl FnMut(),
 ) -> Stop {
     let mut parent = ParentWatch::new(args.parent);
     loop {
-        let at = now();
-        if let Some(why) = stopping(stop, &mut parent, at) {
+        if let Some(why) = stopping(stop, &mut parent, now()) {
             return why;
         }
-        pass(at);
+        pass();
     }
+}
+
+/// The host's life after the browser is up: the loop, then the shutdown both
+/// of its reasons take.
+///
+/// **One exit, so neither reason can leave the browser unclosed** - a killed
+/// client is as much a shutdown as a signal. The pass, the clock and the
+/// shutdown are seams, so a test runs the composition without CEF.
+fn host_until_shutdown(
+    args: &Args,
+    stop: &AtomicBool,
+    now: &mut impl FnMut() -> u64,
+    pass: &mut impl FnMut(),
+    host: Option<&BrowserHost>,
+    mut pump: impl FnMut(),
+    shutdown: impl FnOnce(),
+) {
+    let why = run_loop(args, stop, now, pass);
+    // **A client's death is a shutdown, like a signal.** The client reaps its
+    // hosts on its exit, but a killed client runs no exit path - and a host
+    // left behind holds the bundle the next install replaces. The line is all
+    // that differs.
+    if let Stop::ClientGone = why {
+        eprintln!(
+            "cef host: the client that spawned this host is gone (event_name \
+             cef_host_parent_gone, parent {:?}, pid {})",
+            args.parent,
+            std::process::id(),
+        );
+    }
+    // **The profile's own writes go before the process does.** Closing the
+    // browser lets CEF's store flush; the bounded pump is what carries the
+    // close through the same message loop that painted it.
+    if let Some(host) = host {
+        host.close_browser(1);
+    }
+    for _ in 0..100 {
+        pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    shutdown();
 }
 
 /// The visibility calls one show cue makes, as a trait so the acknowledgment
@@ -331,7 +371,7 @@ pub fn run(args: Args) -> ! {
     // SAFETY: the header is mapped for this process's whole life.
     let mut last_request = unsafe { (*ring.header()).request_seq.load(Ordering::Acquire) };
     let mut clock = elapsed_ms;
-    let mut pass = |now: u64| {
+    let mut pass = || {
         let header = ring.header();
         // SAFETY: the header is mapped for this process's whole life.
         let header_ref = unsafe { &*header };
@@ -366,7 +406,10 @@ pub fn run(args: Args) -> ! {
         // **8 ms, not 16.** A BeginFrame every screen refresh is the paint
         // rate, but a click landing just after one waited out the whole
         // interval; asking more often lets the next frame start sooner and
-        // the compositor still paints at its own rate.
+        // the compositor still paints at its own rate. The clock is sampled
+        // here, after the adopt and cue work, as it was before the loop took
+        // its pass as a seam.
+        let now = elapsed_ms();
         if now.saturating_sub(last_begin) >= 8 {
             last_begin = now;
             if let Some(host) = browser.host() {
@@ -376,30 +419,8 @@ pub fn run(args: Args) -> ! {
         pump();
         std::thread::sleep(Duration::from_millis(1));
     };
-    let stop = run_loop(&args, &STOP, &mut clock, &mut pass);
-    // **A client's death is a shutdown, like a signal.** The client reaps its
-    // hosts on its exit, but a killed client runs no exit path - and a host
-    // left behind holds the bundle the next install replaces. The line is all
-    // that differs; the shutdown below is the signal's own.
-    if let Stop::ClientGone = stop {
-        eprintln!(
-            "cef host: the client that spawned this host is gone (event_name \
-             cef_host_parent_gone, parent {:?}, pid {})",
-            args.parent,
-            std::process::id(),
-        );
-    }
-    // **The profile's own writes go before the process does.** Closing the
-    // browser lets CEF's store flush; the bounded pump is what carries the
-    // close through the same message loop that painted it.
-    if let Some(host) = browser.host() {
-        host.close_browser(1);
-    }
-    for _ in 0..100 {
-        pump();
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    shutdown();
+    let closing = browser.host();
+    host_until_shutdown(&args, &STOP, &mut clock, &mut pass, closing.as_ref(), pump, shutdown);
     std::process::exit(0);
 }
 
@@ -776,7 +797,7 @@ mod tests {
                 at += PARENT_CHECK_EVERY_MS;
                 at
             },
-            &mut |_| {
+            &mut || {
                 passes += 1;
                 assert!(passes < 2, "the loop ran on past a gone client");
             },
@@ -811,8 +832,9 @@ mod tests {
                 at += 100;
                 at
             },
-            &mut |_| {
+            &mut || {
                 passes += 1;
+                assert!(passes < 5, "the loop ran past its signal");
                 if passes == 3 {
                     stop.store(true, Ordering::Release);
                 }
@@ -820,5 +842,46 @@ mod tests {
         );
         assert_eq!(passes, 3, "the work ran until the signal, and not after");
         assert_eq!(why, Stop::Signal, "the signal is why the loop stops");
+    }
+
+    /// **A gone client's shutdown is the signal's own.** The reason only picks
+    /// a line; the loop's exit always closes the browser, carries the close
+    /// through the pump, and shuts CEF down.
+    #[test]
+    fn a_gone_client_leaves_through_the_shutdown() {
+        use std::sync::atomic::AtomicBool;
+
+        use super::{Args, PARENT_CHECK_EVERY_MS, host_until_shutdown};
+
+        let args = Args {
+            profile: std::path::PathBuf::from("/nonexistent"),
+            port: 0,
+            ring: "/forge-cef-leave-gone".to_owned(),
+            width: 1,
+            height: 1,
+            parent: Some(a_gone_pid()),
+        };
+        let stop = AtomicBool::new(false);
+        let mut at = 0_u64;
+        let mut passes = 0_u32;
+        let mut pumped = 0_u32;
+        let mut shut = false;
+        host_until_shutdown(
+            &args,
+            &stop,
+            &mut || {
+                at += PARENT_CHECK_EVERY_MS;
+                at
+            },
+            &mut || {
+                passes += 1;
+                assert!(passes < 2, "the loop ran on past a gone client");
+            },
+            None,
+            || pumped += 1,
+            || shut = true,
+        );
+        assert!(pumped > 0, "the close was carried through the pump");
+        assert!(shut, "a gone client still takes the shutdown");
     }
 }

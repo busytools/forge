@@ -147,6 +147,19 @@ async fn a_spawned_host_is_ended_by_its_pid() {
     let pid = spawn::spawn_with(&stub, &profile, 9411, "/forge-cef-9411", 800, 600)
         .expect("the stub starts");
     assert!(spawn::running(pid), "the spawned stub is alive");
+    // **A failed assertion must not leave the sleeper behind.** The guard
+    // kills the stub on the way out, pass or fail; `end` below reaps it on
+    // the ordinary path, and the second signal lands on a pid already gone.
+    struct Stops(u32);
+    impl Drop for Stops {
+        fn drop(&mut self) {
+            // SAFETY: a signal to the pid this test spawned.
+            unsafe {
+                libc::kill(self.0 as i32, libc::SIGKILL);
+            }
+        }
+    }
+    let _stops = Stops(pid);
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !wrote.is_file() && std::time::Instant::now() < deadline {
