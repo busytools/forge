@@ -72,6 +72,11 @@ pub(super) struct DriverStart<'a> {
     /// reason until the app is restarted.
     pub identity: &'a str,
     pub output: &'a Path,
+    /// The profile's cache root (desktop), where the carried page sits: a
+    /// driver rebuilt after a dead page context logs that marker, which is
+    /// the page the profile last carried rather than the driver's tab.
+    #[cfg(desktop)]
+    pub profile: &'a Path,
     /// The unix socket the in-app driver dials (phone only).
     #[cfg(target_os = "android")]
     pub socket: &'a Path,
@@ -102,7 +107,18 @@ impl DriverStart<'_> {
 pub(super) struct Held {
     identity: String,
     driver: Option<Arc<Driver>>,
+    /// When this profile's last rebuild left it still dead, so a run of
+    /// calls against an unrecoverable browser does not pay a driver start
+    /// each. Cleared by any call that answers.
+    #[cfg(desktop)]
+    stale_since: Option<std::time::Instant>,
 }
+
+/// How long a profile that could not be recovered is left alone before
+/// another call tries a rebuild: long enough that a run of calls fails fast,
+/// short enough that a browser which recovers is picked up by the next fire.
+#[cfg(desktop)]
+const REBUILD_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// A profile and the driver that serves it.
 ///
@@ -114,7 +130,14 @@ pub struct Profile {
 
 impl Profile {
     pub(super) fn new() -> Self {
-        Self { held: Mutex::new(Held { identity: String::new(), driver: None }) }
+        Self {
+            held: Mutex::new(Held {
+                identity: String::new(),
+                driver: None,
+                #[cfg(desktop)]
+                stale_since: None,
+            }),
+        }
     }
 
     /// The lock a call holds for its whole round: a delete takes the same one
@@ -153,12 +176,104 @@ impl Profile {
         let driver = live_driver(&mut held, start).await?;
         #[cfg(desktop)]
         {
-            visibility::dispatch(&driver, tool, &args).await
+            let outcome = visibility::dispatch(&driver, tool, &args).await;
+            if outcome.is_ok() {
+                held.stale_since = None;
+            }
+            match outcome {
+                Ok(parts) => Ok(parts),
+                Err(why) if stale_page(&why) => {
+                    self.rebuild_after_dead_page(&mut held, start, tool, &args, why, driver).await
+                }
+                Err(why) => Err(why),
+            }
         }
         #[cfg(target_os = "android")]
         {
             routed_call(&driver, tool, &args, driver::CALL_TIMEOUT).await
         }
+    }
+
+    /// **A page context that died under a live driver is rebuilt, not
+    /// reported.** A renderer death leaves the host and its page target
+    /// alive, so the browser looks healthy from here and the driver's
+    /// identity never moves - but the driver's held page belongs to the dead
+    /// renderer and every call against it throws the driver's
+    /// `browserBackend.callTool: Cannot read properties of undefined
+    /// (reading '_page')`, for ever. A fresh driver re-reads the browser's
+    /// pages and works, which is what the seat's `browser_close` recovery was
+    /// doing by hand.
+    ///
+    /// The call itself is repeated only where repeating it cannot change the
+    /// page twice; anything else hands back the reason with the rebuild
+    /// named, so a click or a submit is never run twice.
+    ///
+    /// **`browser_close` answers "No open tabs. Navigate to a URL to create
+    /// one." for every call**, because that line is its fixed text rather
+    /// than a reading of the context - so it is not evidence a reset left no
+    /// page, and it was read as such once.
+    #[cfg(desktop)]
+    async fn rebuild_after_dead_page(
+        &self,
+        held: &mut Held,
+        start: &DriverStart<'_>,
+        tool: &str,
+        args: &Value,
+        why: String,
+        stale: Arc<Driver>,
+    ) -> Result<Vec<ReplyPart>, String> {
+        // **A browser that stayed dead is not started again on every call.**
+        // The retry below already showed one rebuild is not enough; paying a
+        // driver start per call against it helps nobody, so the next calls
+        // fail fast until the cooldown runs out or a call answers.
+        if held.stale_since.is_some_and(|at| at.elapsed() < REBUILD_COOLDOWN) {
+            log_rebuild(start.profile, tool, "not rebuilt again yet", &why);
+            return Err(format!(
+                "{why}\n\nThe browsing context died again after a rebuild and the driver has not \
+                 been rebuilt a second time yet; try again shortly."
+            ));
+        }
+        // **The stale driver is let go before the fresh one starts**: clearing
+        // the held slot alone leaves this call's own `Arc` holding the child
+        // and its CDP connection open while the new driver attaches beside it.
+        held.driver = None;
+        drop(stale);
+        let fresh = match live_driver(held, start).await {
+            Ok(fresh) => fresh,
+            Err(cannot) => {
+                held.stale_since = Some(std::time::Instant::now());
+                log_rebuild(start.profile, tool, "rebuild failed", &why);
+                return Err(format!(
+                    "{why}\n\nThe browsing context was dead and the driver could not be \
+                     rebuilt: {cannot}"
+                ));
+            }
+        };
+        if repeatable(tool, args) {
+            return match visibility::dispatch(&fresh, tool, args).await {
+                Ok(parts) => {
+                    held.stale_since = None;
+                    log_rebuild(start.profile, tool, "rebuilt, call retried and answered", &why);
+                    Ok(parts)
+                }
+                Err(retry_why) => {
+                    held.stale_since = Some(std::time::Instant::now());
+                    log_rebuild(start.profile, tool, "rebuilt, retried call failed", &why);
+                    // **No second rebuild in this call**: the repeated
+                    // failure is handed back with both reasons, not met with
+                    // another driver start.
+                    Err(format!(
+                        "{why}\n\nThe driver was rebuilt after the dead page context and the \
+                         repeated call failed too: {retry_why}"
+                    ))
+                }
+            };
+        }
+        log_rebuild(start.profile, tool, "rebuilt, call handed back", &why);
+        Err(format!(
+            "{why}\n\nThe browsing context was dead and has been rebuilt; this call was not \
+             repeated because {tool} is not safe to run twice. Repeat it."
+        ))
     }
 
     /// Forget the driver, so the next call builds a fresh one. Called when a
@@ -170,6 +285,67 @@ impl Profile {
     pub(super) async fn drop_driver(&self) {
         self.held.lock().await.driver = None;
     }
+}
+
+/// The driver's own words for a page whose renderer is gone: the wrapping
+/// prefix and the reading together, so a page script's own TypeError that
+/// carries the same reading is not mistaken for it.
+#[cfg(desktop)]
+const DEAD_PAGE: &str =
+    "browserBackend.callTool: Cannot read properties of undefined (reading '_page')";
+
+/// Whether a failure is the driver's held page outliving its renderer.
+#[cfg(desktop)]
+fn stale_page(why: &str) -> bool {
+    why.contains(DEAD_PAGE)
+}
+
+/// The line a rebuild logs. Pure, so the page it names is pinned by a test
+/// rather than only by the helper that reads it.
+#[cfg(desktop)]
+fn rebuild_warning(profile: &Path, page: &str, tool: &str, outcome: &str) -> String {
+    format!(
+        "the driver's page context was dead (event_name browser_page_context_rebuilt, profile {}, \
+         page {page}, tool {tool}, outcome {outcome})",
+        profile.display()
+    )
+}
+
+/// Log one rebuild, after its outcome is known: a rebuild that failed must
+/// not read as one that happened.
+#[cfg(desktop)]
+fn log_rebuild(profile: &Path, tool: &str, outcome: &str, why: &str) {
+    let warning = rebuild_warning(profile, &carried_page_of(profile), tool, outcome);
+    tauri_plugin_log::log::warn!("{warning}: {why}");
+}
+
+/// Whether a call can run again after its driver was rebuilt. A navigation to
+/// an explicit address, a snapshot and a tab list or select leave the browser
+/// where a repeat leaves it; a click, a key, arbitrary code or a history move
+/// can land twice.
+#[cfg(desktop)]
+fn repeatable(tool: &str, args: &Value) -> bool {
+    match tool {
+        "browser_navigate" => {
+            args.get("url").and_then(Value::as_str).is_some_and(|url| !url.is_empty())
+        }
+        "browser_snapshot" => true,
+        "browser_tabs" => {
+            matches!(args.get("action").and_then(Value::as_str), Some("list" | "select"))
+        }
+        _ => false,
+    }
+}
+
+/// The profile's carried page - the page a raise or a browsing call last put
+/// on the profile, not the driver's own selected tab.
+#[cfg(desktop)]
+fn carried_page_of(profile: &Path) -> String {
+    std::fs::read_to_string(profile.join("page"))
+        .map(|page| page.trim().to_owned())
+        .ok()
+        .filter(|page| !page.is_empty())
+        .unwrap_or_else(|| "no carried page".to_owned())
 }
 
 /// The driver to run with: rebuilt when there is none, when it died, or when
@@ -224,12 +400,71 @@ pub(super) async fn routed_call(
     args: &Value,
     bound: Duration,
 ) -> Result<Vec<ReplyPart>, String> {
-    match custom::route(tool, args)? {
+    let outcome = match custom::route(tool, args)? {
         custom::Routed::Upstream { tool, args } => driver.call_within(&tool, args, bound).await,
         custom::Routed::Snippet(code) => {
             driver.call_within("browser_run_code_unsafe", json!({ "code": code }), bound).await
         }
+    };
+    outcome.map_err(|why| {
+        if !driver_stat_missing(&why) {
+            return why;
+        }
+        format!("{why}\n\n{STAT_MISSING_NOTE}")
+    })
+}
+
+/// **The driver's own Node stat error**: `ENOENT: no such file or directory,
+/// stat '<path>'`. The CEF host's own CDP errors carry the OS words without
+/// Node's prefix, so this names the driver's process view and nothing else. It
+/// is deliberately not called "upload": any tool whose code stats a file can
+/// produce it.
+fn driver_stat_missing(why: &str) -> bool {
+    why.contains("ENOENT: no such file or directory, stat '")
+}
+
+/// The path the driver could not stat, as the error names it. **The closing
+/// quote is the message's last one**, because a path may carry an apostrophe
+/// (`Bob's resume.pdf`); the first quote would truncate it.
+fn stat_path(why: &str) -> Option<&str> {
+    let start = why.find("stat '")? + "stat '".len();
+    let rest = &why[start..];
+    let end = rest.rfind('\'')?;
+    Some(&rest[..end])
+}
+
+/// The paragraph a driver stat failure carries back to the agent. **It states
+/// the measured case as the measured case** - one file that was on disk and a
+/// retry of the call that succeeded after a brief pause - and it makes the
+/// retry conditional, because arbitrary `run_code_unsafe` code can carry
+/// steps a repeat would run twice.
+///
+/// The note names no path: the path is in the driver's own reason and in the
+/// `cef_driver_stat_missing` line, which is where a recurrence reads it.
+const STAT_MISSING_NOTE: &str = "The browser driver could not stat a file this call named. In \
+                                 one measured case the file was on disk and a retry of it \
+                                 succeeded after a brief pause. If this call is safe to repeat, \
+                                 retry it once after a brief pause; if it carries other steps, \
+                                 retry only the upload step.";
+
+/// The log line for one stat failure, with the path the driver named and the
+/// seat and profile that made the call - everything a recurrence needs to say
+/// WHICH view was wrong. Pure, so the line is pinned without a driver.
+pub(super) fn stat_missing_line(
+    seat: &Seat,
+    profile: Option<&str>,
+    tool: &str,
+    why: &str,
+) -> Option<String> {
+    if !driver_stat_missing(why) {
+        return None;
     }
+    let path = stat_path(why).unwrap_or("(the driver named no path)");
+    Some(format!(
+        "a driver call could not stat a file it named (event_name cef_driver_stat_missing, seat \
+         {seat}, profile {}, tool {tool}, path {path})",
+        profile.unwrap_or("shared"),
+    ))
 }
 
 #[cfg(desktop)]
@@ -701,6 +936,83 @@ mod tests {
         assert_eq!(seat("lead").to_string(), "Busytools/forge/lead");
     }
 
+    /// **The renderer-death failure is recognised by the driver's whole
+    /// line, not by the reading alone**: a page script's own TypeError, or a
+    /// malformed argument quoting the same text, must not make a live context
+    /// look dead and send a session to repeat a click that already landed.
+    #[test]
+    fn a_dead_page_context_is_the_drivers_own_line() {
+        assert!(stale_page(
+            "### Error TypeError: browserBackend.callTool: Cannot read properties of undefined \
+             (reading '_page')"
+        ));
+        assert!(
+            !stale_page(
+                "page.evaluate: TypeError: Cannot read properties of undefined \
+                         (reading '_page')"
+            ),
+            "a page script's own TypeError is not the driver's page",
+        );
+        assert!(
+            !stale_page("### Error invalid target argument: reading '_page' is not a selector"),
+            "nor is an argument echoing the words",
+        );
+        assert!(!stale_page("### Error no element matches \"e1\""));
+        assert!(!stale_page(
+            "browserBackend.callTool: net::ERR_CONNECTION_REFUSED at https://x.test/"
+        ));
+    }
+
+    /// The rebuild's log line names the profile, the carried page and its own
+    /// outcome.
+    #[test]
+    fn a_rebuild_log_line_names_the_page_and_the_outcome() {
+        let line = rebuild_warning(
+            Path::new("/profiles/hunt/cef"),
+            "https://example.com/apply",
+            "browser_navigate",
+            "rebuilt, call retried",
+        );
+        assert!(line.contains("/profiles/hunt/cef"), "{line}");
+        assert!(line.contains("page https://example.com/apply"), "{line}");
+        assert!(line.contains("outcome rebuilt, call retried"), "{line}");
+        assert!(line.contains("browser_page_context_rebuilt"), "{line}");
+    }
+
+    /// **Only calls a repeat cannot land twice are repeated after the
+    /// rebuild**: a click, a key, arbitrary code and a history move are not.
+    #[test]
+    fn only_a_repeatable_call_is_repeated() {
+        assert!(repeatable("browser_navigate", &json!({ "url": "https://x.test/" })));
+        assert!(!repeatable("browser_navigate", &json!({})));
+        assert!(repeatable("browser_snapshot", &json!({})));
+        assert!(repeatable("browser_tabs", &json!({ "action": "list" })));
+        assert!(repeatable("browser_tabs", &json!({ "action": "select", "index": 0 })));
+        assert!(!repeatable("browser_tabs", &json!({ "action": "new", "url": "https://x.test/" })));
+        for tool in [
+            "browser_click",
+            "browser_type",
+            "browser_press_key",
+            "browser_evaluate",
+            "browser_fill_form",
+            "browser_run_code_unsafe",
+            "browser_navigate_back",
+            "browser_close",
+        ] {
+            assert!(!repeatable(tool, &json!({})), "{tool} is never repeated");
+        }
+    }
+
+    /// The page a rebuilt driver logs is the profile's own marker, and a
+    /// profile without one says so rather than logging a blank.
+    #[test]
+    fn a_profiles_carried_page_is_named_or_said_missing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        assert_eq!(carried_page_of(dir.path()), "no carried page");
+        std::fs::write(dir.path().join("page"), b" https://example.com/ \n").expect("the marker");
+        assert_eq!(carried_page_of(dir.path()), "https://example.com/");
+    }
+
     /// A hand-off's raise is refused only for another seat's recorded
     /// profile: the owner's own, a legacy unowned directory and the
     /// unreadable-record reason each answer their own way.
@@ -729,5 +1041,223 @@ mod tests {
         std::fs::write(broken_dir.join(OWNER_FILE), b"not json").expect("a bad record");
         let why = raise_refusal("broken", &broken_dir, &mine).expect_err("unreadable");
         assert!(why.contains("cannot be read"), "{why}");
+    }
+
+    /// **The classifier and the note.** The strings are the measured forms -
+    /// the transcript's `### Error` line, then the driver's `Error: ENOENT:
+    /// ... stat '<path>'`. A CDP refusal reads "No such file or directory"
+    /// without Node's prefix; a Node `open` failure lacks the stat clause;
+    /// neither is this class.
+    #[test]
+    fn a_driver_stat_enoent_is_named_with_its_path() {
+        let measured = "### Error\nError: ENOENT: no such file or directory, stat \
+                        '/Users/vedhavyas/Madness/Personal/Ved/Resume (Speedcast).pdf'";
+        assert!(driver_stat_missing(measured), "the measured upload error is this class");
+        assert_eq!(
+            stat_path(measured),
+            Some("/Users/vedhavyas/Madness/Personal/Ved/Resume (Speedcast).pdf"),
+            "the path the driver named is what the log carries"
+        );
+        assert!(
+            driver_stat_missing(
+                "### Error\nError: ENOENT: no such file or directory, stat '/tmp/Bob's resume.pdf'"
+            ),
+            "a path with an apostrophe is still this class"
+        );
+        assert_eq!(
+            stat_path("Error: ENOENT: no such file or directory, stat '/tmp/Bob's resume.pdf'"),
+            Some("/tmp/Bob's resume.pdf"),
+            "and the path is parsed to the closing quote, not the apostrophe"
+        );
+        let older = "### Error\nError: ENOENT: no such file or directory, stat \
+                     '/Users/vedhavyas/Projects/companies/.playwright-mcp/Resume (Koottu).pdf'";
+        assert!(driver_stat_missing(older), "the same shape from an older attempt");
+        assert!(
+            !driver_stat_missing("DOM.setFileInputFiles: No such file or directory"),
+            "a CDP refusal is not the driver's Node error"
+        );
+        assert!(
+            !driver_stat_missing("Error: ENOENT: no such file or directory, open '/tmp/x.pdf'"),
+            "a Node OPEN failure lacks the stat clause and is not this class"
+        );
+        assert!(
+            !driver_stat_missing("TypeError: page is not defined"),
+            "an unrelated failure is not a stat error"
+        );
+
+        // The line names everything a recurrence needs: the seat, the
+        // profile, the tool and the path. The note states the measured case
+        // and makes the retry conditional on the call being safe to repeat.
+        let seat = seat("lead");
+        let line = stat_missing_line(&seat, None, "browser_run_code_unsafe", measured)
+            .expect("the stat failure has a line");
+        assert!(line.contains("event_name cef_driver_stat_missing"), "{line}");
+        assert!(line.contains("seat Busytools/forge/lead"), "{line}");
+        assert!(line.contains("profile shared"), "{line}");
+        assert!(line.contains("tool browser_run_code_unsafe"), "{line}");
+        assert!(line.contains("Resume (Speedcast).pdf"), "{line}");
+        // The note itself, as a reader sees it: not the constant the seam
+        // test also imports, so altered advice fails here.
+        assert!(
+            STAT_MISSING_NOTE
+                .contains("In one measured case the file was on disk and a retry of it succeeded"),
+            "the measured case is stated as measured: {STAT_MISSING_NOTE}"
+        );
+        assert!(
+            STAT_MISSING_NOTE.contains("If this call is safe to repeat"),
+            "the advice is conditional: {STAT_MISSING_NOTE}"
+        );
+        assert!(
+            STAT_MISSING_NOTE.contains("if it carries other steps, retry only the upload step."),
+            "the else-branch stops a repeat of side-effectful steps: {STAT_MISSING_NOTE}"
+        );
+        assert!(
+            !STAT_MISSING_NOTE.contains("identical") && !STAT_MISSING_NOTE.contains("immediate"),
+            "the measured case is not overstated: {STAT_MISSING_NOTE}"
+        );
+        assert!(
+            stat_missing_line(&seat, Some("job-hunt-3"), "browser_click", measured)
+                .is_some_and(|line| line.contains("profile job-hunt-3")),
+            "a named profile is named"
+        );
+        assert_eq!(
+            stat_missing_line(&seat, None, "browser_click", "TypeError: page is not defined"),
+            None,
+            "every other failure has no line, so the log stays quiet"
+        );
+    }
+
+    /// The stub child both seam tests drive: it answers the MCP handshake and
+    /// then a `tools/call` whose code names one of the measured failures.
+    #[cfg(all(desktop, unix))]
+    fn stub_driver(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let node = root.join("node");
+        std::fs::write(&node, "#!/bin/sh\nexec python3 \"$@\"\n").expect("the wrapper");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("the wrapper is executable");
+        let cli = root.join("cli.mjs");
+        std::fs::write(
+            &cli,
+            r#"import sys, json
+MISSING = "Error: ENOENT: no such file or directory, stat '/Users/vedhavyas/Madness/Personal/Ved/Resume (Speedcast).pdf'"
+PLAIN = "TypeError: page is not defined"
+for line in sys.stdin:
+    try:
+        message = json.loads(line)
+    except Exception:
+        continue
+    if message.get("id") is None:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        version = message.get("params", {}).get("protocolVersion", "2025-06-18")
+        result = {"protocolVersion": version, "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "stub", "version": "0"}}
+    elif method == "tools/list":
+        result = {"tools": []}
+    elif method == "tools/call":
+        code = json.dumps(message.get("params", {}).get("arguments", {}))
+        result = {"content": [{"type": "text", "text": PLAIN if "plaincall" in code else MISSING}],
+                  "isError": True}
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}) + "\n")
+    sys.stdout.flush()
+"#,
+        )
+        .expect("the stub driver");
+        (node, cli)
+    }
+
+    /// **The start budget is the caller's, honoured.** A 1 ms budget must time
+    /// out before the stub child answers; a seam that ignored its parameter
+    /// and used the production constant would let the handshake through.
+    #[cfg(all(desktop, unix))]
+    #[tokio::test]
+    async fn a_start_with_a_tiny_budget_names_its_timeout() {
+        use crate::browser::driver;
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path();
+        let (node, cli) = stub_driver(root);
+        let why = driver::Driver::start_within(
+            &node,
+            &cli,
+            "http://127.0.0.1:1",
+            &root.join("output"),
+            Duration::from_millis(1),
+        )
+        .await
+        .err()
+        .expect("a 1 ms budget times out");
+        assert!(
+            why.contains("did not answer its MCP handshake within 0 s"),
+            "the caller's budget is what the timeout names: {why}"
+        );
+    }
+
+    /// **At the driver seam, the measured error comes back with the note.**
+    /// The stub child answers the exact error shape, so the note is pinned
+    /// where a caller receives it rather than only in the classifier. A
+    /// blind retry is deliberately not what this does: arbitrary code can
+    /// carry side effects, so the agent is told to retry deliberately.
+    #[cfg(all(desktop, unix))]
+    #[tokio::test]
+    async fn an_upload_enoent_from_the_driver_carries_the_reason() {
+        use crate::browser::driver;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path();
+        let (node, cli) = stub_driver(root);
+
+        let output = root.join("output");
+        // **The test's own generous budget**, not the production constant:
+        // the child races other builds on a loaded machine, and that is not
+        // what this test is about.
+        let driver = driver::Driver::start_within(
+            &node,
+            &cli,
+            "http://127.0.0.1:1",
+            &output,
+            Duration::from_secs(120),
+        )
+        .await
+        .expect("the stub driver answers");
+        let why = routed_call(
+            &driver,
+            "browser_run_code_unsafe",
+            &json!({ "code": "async (page) => { await page.locator('#r').setInputFiles('/x.pdf'); }" }),
+            driver::CALL_TIMEOUT,
+        )
+        .await
+        .expect_err("the stub reports the file missing");
+        assert!(
+            why.contains("ENOENT: no such file or directory, stat"),
+            "the reason is kept: {why}"
+        );
+        // The note as a reader sees it, not the constant: altered advice
+        // fails here.
+        assert!(
+            why.contains(
+                "The browser driver could not stat a file this call named. In one measured \
+                 case the file was on disk and a retry of it succeeded after a brief pause."
+            ),
+            "the measured note is appended: {why}"
+        );
+        // **The guard.** A failure of another class comes back untouched -
+        // appending the note to every error fails here.
+        let plain = routed_call(
+            &driver,
+            "browser_run_code_unsafe",
+            &json!({ "code": "plaincall" }),
+            driver::CALL_TIMEOUT,
+        )
+        .await
+        .expect_err("the stub reports its own failure");
+        assert!(plain.contains("TypeError: page is not defined"), "{plain}");
+        assert!(
+            !plain.contains("could not stat a file"),
+            "only the stat class gets the note: {plain}"
+        );
     }
 }

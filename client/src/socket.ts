@@ -775,7 +775,10 @@ export function connect(
     // An error is always followed by a close, which is where the retry is
     // scheduled - this reports it, because a socket that keeps failing is
     // otherwise indistinguishable from one that is merely slow.
-    next.onerror = (event) => report(`the socket to ${url} failed`, event);
+    next.onerror = (event) => {
+      if (next !== socket) return;
+      report(`the socket to ${url} failed`, event);
+    };
   }
 
   function scheduleRetry(): void {

@@ -516,6 +516,7 @@ impl BrowserHost {
                     active.show().await;
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
                     let identity = active.identity();
+                    let cache = paths.cef_shared();
                     let shared = self.shared_profile().await;
                     let start = DriverStart {
                         node: &node,
@@ -523,6 +524,7 @@ impl BrowserHost {
                         endpoint: &endpoint,
                         identity: &identity,
                         output: &paths.output,
+                        profile: &cache,
                     };
                     let outcome = shared.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
@@ -543,7 +545,7 @@ impl BrowserHost {
                             self.refresh_carry(&paths.cef_shared()).await;
                             Ok(parts)
                         }
-                        Err(why) => Err(why),
+                        Err(why) => Err(note_stat_missing(seat, None, tool, why)),
                     }
                 }
                 Some(name) => {
@@ -572,6 +574,7 @@ impl BrowserHost {
                         endpoint: &endpoint,
                         identity: &identity,
                         output: &paths.output,
+                        profile: &cache,
                     };
                     let outcome = named.profile.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
@@ -586,7 +589,7 @@ impl BrowserHost {
                             self.refresh_carry(&cache).await;
                             Ok(parts)
                         }
-                        Err(why) => Err(why),
+                        Err(why) => Err(note_stat_missing(seat, Some(&name), tool, why)),
                     }
                 }
             }
@@ -641,7 +644,12 @@ impl BrowserHost {
             // relaunch within a run (its WebView is the app's own), so a
             // dead driver has nothing to rebuild against - its next call
             // fails with the reason, and a client restart is the repair.
-            shared.call(&start, tool, args).await
+            // The stat line is the same as the desktop's: the phone's
+            // setInputFiles can lose the driver's view of a file too.
+            shared
+                .call(&start, tool, args)
+                .await
+                .map_err(|why| note_stat_missing(seat, None, tool, why))
         }
     }
 
@@ -2041,6 +2049,95 @@ fn take_profile(mut args: Value) -> Result<(Option<String>, Value), String> {
     }
 }
 
+/// Log a driver stat failure with the seat and profile that made the call,
+/// and hand the reason back untouched - the note itself is appended where the
+/// call is routed. The seat lives here, not in the profile, which is why the
+/// line is built at this layer.
+///
+/// **`info!` for a session's tool failure is a rule-20 exception**: the client
+/// runs at the Info level, so a lower level would drop the line, and this is
+/// the line a recurrence of the measured transient is diagnosed by.
+fn note_stat_missing(seat: &Seat, profile: Option<&str>, tool: &str, why: String) -> String {
+    if let Some(line) = profiles::stat_missing_line(seat, profile, tool, &why) {
+        tauri_plugin_log::log::info!("{line}");
+    }
+    why
+}
+
+#[cfg(test)]
+mod stat_note_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A logger that keeps the lines the note's site writes. **The emission
+    /// itself is the other half of the cut**: a helper that builds the line
+    /// and drops it leaves this capture empty.
+    struct Capture;
+
+    static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    impl log::Log for Capture {
+        fn enabled(&self, _metadata: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            if let Ok(mut lines) = LINES.lock() {
+                lines.push(record.args().to_string());
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    fn seat() -> Seat {
+        Seat { org: "Busytools".to_owned(), project: "forge".to_owned(), label: "lead".to_owned() }
+    }
+
+    /// **The call's own reason is what the arm returns, and the line is
+    /// emitted.** The note is appended where the call is routed, so this
+    /// helper must hand the reason back untouched; the `info!` is the half a
+    /// recurrence reads, so it is captured here rather than assumed.
+    #[test]
+    fn the_stat_line_is_logged_and_the_reason_returns_untouched() {
+        let installed = log::set_logger(&Capture);
+        assert!(installed.is_ok(), "the capture logger installs: {installed:?}");
+        // **`set_logger` does not set the filter** - a fresh process starts
+        // at Off, and a logger alone would never see the record.
+        log::set_max_level(log::LevelFilter::Trace);
+        if let Ok(mut lines) = LINES.lock() {
+            lines.clear();
+        }
+        if let Ok(mut lines) = LINES.lock() {
+            lines.clear();
+        }
+        let why = "Error: ENOENT: no such file or directory, stat '/tmp/cv.pdf'".to_owned();
+        let returned = note_stat_missing(&seat(), None, "browser_run_code_unsafe", why.clone());
+        assert_eq!(returned, why, "the reason is the arm's answer");
+        let lines = LINES.lock().expect("the capture is not poisoned").clone();
+        assert!(
+            lines.iter().any(|line| line.contains("event_name cef_driver_stat_missing")),
+            "the stat line is emitted: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("seat Busytools/forge/lead")
+                && line.contains("tool browser_run_code_unsafe")
+                && line.contains("path /tmp/cv.pdf")),
+            "the line carries the seat, tool and path: {lines:?}"
+        );
+
+        if let Ok(mut lines) = LINES.lock() {
+            lines.clear();
+        }
+        let plain = "TypeError: page is not defined".to_owned();
+        assert_eq!(
+            note_stat_missing(&seat(), None, "browser_click", plain.clone()),
+            plain,
+            "a failure of another class returns untouched"
+        );
+        let lines = LINES.lock().expect("the capture is not poisoned").clone();
+        assert!(lines.is_empty(), "and emits nothing: {lines:?}");
+    }
+}
+
 /// One tool's answer, in the shape the frontend's ask handler returns.
 #[derive(Debug, serde::Serialize)]
 pub struct BrowserReply {
@@ -2373,11 +2470,22 @@ mod tests {
             // string literal would have its escapes read twice.
             let answers_path = dir.path().join("answers.json");
             std::fs::write(&answers_path, answers.to_string()).expect("the stub's answers");
-            let body = r#"import sys, json, ctypes
+            let body = r#"import sys, json, os, ctypes
 ANSWERS = json.load(open("__ANSWERS__"))
 CALLS = "__CALLS__"
 CUE = "__CUE__"
 RING = b"__RING__"
+ONCE = ANSWERS.get("__once__", {})
+ONCE_FLAG = "__ONCE__"
+STARTS = "__STARTS__"
+seen = []
+if os.path.exists(STARTS):
+    with open(STARTS) as earlier:
+        seen = [line.strip() for line in earlier if line.strip()]
+with open(STARTS, "a") as started:
+    started.write(str(os.getpid()) + "\n")
+if ANSWERS.get("__die_second__") and len(seen) + 1 >= 2:
+    sys.exit(1)
 
 def cue_state():
     try:
@@ -2426,6 +2534,9 @@ for line in sys.stdin:
         with open(CUE, "a") as log:
             log.write("%s %d %d\n" % (name, sent, applied))
         answer = ANSWERS.get(name)
+        if name in ONCE and not os.path.exists(ONCE_FLAG):
+            open(ONCE_FLAG, "w").close()
+            answer = ONCE[name]
         if isinstance(answer, list):
             at = min(asked.get(name, 0), len(answer) - 1)
             asked[name] = asked.get(name, 0) + 1
@@ -2439,7 +2550,9 @@ for line in sys.stdin:
             .replace("__ANSWERS__", &answers_path.display().to_string())
             .replace("__CALLS__", &dir.path().join("calls.log").display().to_string())
             .replace("__CUE__", &dir.path().join("cue.log").display().to_string())
-            .replace("__RING__", ring);
+            .replace("__RING__", ring)
+            .replace("__ONCE__", &dir.path().join("once.flag").display().to_string())
+            .replace("__STARTS__", &dir.path().join("starts.log").display().to_string());
             std::fs::write(&cli, body).expect("the stub driver");
             std::fs::create_dir_all(&paths.output).expect("the output dir");
 
@@ -2549,6 +2662,15 @@ for line in sys.stdin:
                     Some((tool, sent, applied))
                 })
                 .collect()
+        }
+
+        /// How many driver processes started against this stub, so a test can
+        /// tell a rebuilt driver from the stale one.
+        fn starts(&self) -> usize {
+            std::fs::read_to_string(self.dir.path().join("starts.log"))
+                .unwrap_or_default()
+                .lines()
+                .count()
         }
 
         /// The tool names the stub was asked for, in order.
@@ -2777,6 +2899,169 @@ for line in sys.stdin:
         );
         let evaluates = stub.calls().into_iter().filter(|tool| tool == "browser_evaluate").count();
         assert_eq!(evaluates, 2, "both attempts ran");
+
+        stub.shutdown().await;
+    }
+
+    /// **A dead page context is rebuilt on the call that meets it.** The
+    /// driver's first process answers the renderer-death TypeError; a
+    /// navigation to an explicit address is safe to repeat, so the call
+    /// comes back from the fresh driver rather than failing through.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_dead_page_context_rebuilds_and_repeats_a_navigation() {
+        let dead = "### Error TypeError: browserBackend.callTool: Cannot read properties of \
+                    undefined (reading '_page')";
+        let stub = StubHost::start(
+            "/forge-cef-stale-nav-test",
+            &json!({
+                "browser_navigate": { "content": [{ "type": "text", "text": "ok" }] },
+                "__once__": {
+                    "browser_navigate": {
+                        "content": [{ "type": "text", "text": dead }],
+                        "isError": true,
+                    },
+                },
+            }),
+        )
+        .await;
+
+        let parts = stub
+            .host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://example.com/after-call" }))
+            .await
+            .expect("the rebuilt driver answers");
+        assert_eq!(parts.len(), 1, "the fresh driver's part is the call's answer");
+        let navigates = stub.calls().into_iter().filter(|tool| tool == "browser_navigate").count();
+        assert_eq!(navigates, 2, "the call was repeated once, on the rebuilt driver");
+        assert_eq!(stub.starts(), 2, "a fresh driver process was started for it");
+        // The rebuilt driver is retained: the next call runs on it.
+        stub.host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://example.com/after-call" }))
+            .await
+            .expect("the rebuilt driver answers again");
+        assert_eq!(stub.starts(), 2, "and no third driver was started for the next call");
+
+        stub.shutdown().await;
+    }
+
+    /// **A click is never repeated after the rebuild.** It gets the reason
+    /// and a working driver, so the session's next call runs on a live
+    /// context instead of a stale page - and no input lands twice.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_dead_page_context_rebuilds_but_never_repeats_a_click() {
+        let dead = "### Error TypeError: browserBackend.callTool: Cannot read properties of \
+                    undefined (reading '_page')";
+        let stub = StubHost::start(
+            "/forge-cef-stale-click-test",
+            &json!({
+                "browser_click": { "content": [{ "type": "text", "text": "ok" }] },
+                "__once__": {
+                    "browser_click": {
+                        "content": [{ "type": "text", "text": dead }],
+                        "isError": true,
+                    },
+                },
+            }),
+        )
+        .await;
+
+        let why = stub
+            .host
+            .call(&seat(), "browser_click", json!({ "target": "#b" }))
+            .await
+            .expect_err("a click is not repeated");
+        assert!(why.contains("has been rebuilt"), "the rebuild is named: {why}");
+        assert!(why.contains("reading '_page'"), "and the dead context is still the reason: {why}");
+        let clicks = stub.calls().into_iter().filter(|tool| tool == "browser_click").count();
+        assert_eq!(clicks, 1, "the click ran once and was not repeated");
+        assert_eq!(stub.starts(), 2, "and the rebuild still started a fresh driver");
+
+        // The rebuild stands: the next call runs against a fresh driver.
+        let parts = stub
+            .host
+            .call(&seat(), "browser_click", json!({ "target": "#b" }))
+            .await
+            .expect("the fresh driver answers");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(stub.starts(), 2, "and no further driver was started for it");
+
+        stub.shutdown().await;
+    }
+
+    /// **A failed retry is named, and the next call does not pay another
+    /// driver start.** The browser stays dead, so the rebuild's own repeat
+    /// fails too; both reasons come back, and the cooldown keeps the next
+    /// call from starting a third driver against a browser that is not
+    /// recovering.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_dead_page_context_is_retried_once_and_then_left_alone() {
+        let dead = "### Error TypeError: browserBackend.callTool: Cannot read properties of \
+                    undefined (reading '_page')";
+        let stub = StubHost::start(
+            "/forge-cef-stale-loop-test",
+            &json!({
+                "browser_navigate": {
+                    "content": [{ "type": "text", "text": dead }],
+                    "isError": true,
+                },
+            }),
+        )
+        .await;
+
+        let first = stub
+            .host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://x.test/" }))
+            .await
+            .expect_err("the retried call fails too");
+        assert!(first.contains("reading '_page'"), "the original reason is kept: {first}");
+        assert!(first.contains("the repeated call failed too"), "{first}");
+        assert_eq!(stub.starts(), 2, "one rebuild was tried");
+
+        let second = stub
+            .host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://x.test/" }))
+            .await
+            .expect_err("the browser is still dead");
+        assert!(second.contains("not been rebuilt a second time yet"), "{second}");
+        assert_eq!(stub.starts(), 2, "the cooldown stopped another driver start");
+
+        stub.shutdown().await;
+    }
+
+    /// **A rebuild that cannot start keeps the original reason.** The fresh
+    /// driver's handshake fails, and the session still learns what the page
+    /// context did.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_rebuild_that_cannot_start_keeps_the_original_reason() {
+        let dead = "### Error TypeError: browserBackend.callTool: Cannot read properties of \
+                    undefined (reading '_page')";
+        let stub = StubHost::start(
+            "/forge-cef-rebuild-fail-test",
+            &json!({
+                "browser_navigate": { "content": [{ "type": "text", "text": "ok" }] },
+                "__once__": {
+                    "browser_navigate": {
+                        "content": [{ "type": "text", "text": dead }],
+                        "isError": true,
+                    },
+                },
+                "__die_second__": true,
+            }),
+        )
+        .await;
+
+        let why = stub
+            .host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://x.test/" }))
+            .await
+            .expect_err("the rebuild cannot start");
+        assert!(why.contains("reading '_page'"), "the original reason is kept: {why}");
+        assert!(why.contains("could not be rebuilt"), "{why}");
+        assert_eq!(stub.starts(), 2, "the second start was attempted");
 
         stub.shutdown().await;
     }
