@@ -79,13 +79,18 @@ forge-capture = { path = "../../crates/forge-capture" }
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
 
+# **Desktop signals, on the targets that have them.** The client reaps its
+# browser hosts on SIGTERM/SIGINT; the host's own parent watch and the macOS
+# CEF modules use the same crate.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # **The app's own Chromium, macOS first.** Only the host process initializes
 # CEF; the client's UI process never does (see `browser::cef`). The framework
 # and the five helper apps are staged for the bundler by
 # `scripts/stage-cef.sh`.
 [target.'cfg(target_os = "macos")'.dependencies]
 cef = { version = "=154.5.0", features = ["build-util"] }
-libc = "0.2"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
     "NSArray",

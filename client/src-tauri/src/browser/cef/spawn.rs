@@ -159,8 +159,9 @@ pub fn spawn(
 /// The command line one host is spawned with.
 ///
 /// **`--parent` is the client's own pid, recorded here rather than read off
-/// the host's parent later**: the host starts in its own session, so `getppid`
-/// is launchd from the first instant and says nothing about the client's life.
+/// the host's parent later**: `getppid` at host start races the client's
+/// death, and one that finds the host already reparented answers `1`, which
+/// `kill(1, 0)` reads as alive forever - a watch that never fires.
 fn host_args(profile: &Path, port: u16, ring: &str, width: u32, height: u32) -> Vec<String> {
     vec![
         "--cef-host".to_owned(),
@@ -791,11 +792,11 @@ mod tests {
         assert!(alive(std::process::id()), "the unrelated process is still running");
     }
 
-    /// **The spawn tells the host which client it belongs to.** The pid is the
-    /// client's own, recorded at spawn, because `getppid` says launchd from
-    /// the first instant - the host is in its own session.
+    /// **The spawn line names the client that owns the host.** The pid is the
+    /// client's own, recorded at spawn: `getppid` at host start races the
+    /// client's death and can answer `1`, which reads as alive forever.
     #[test]
-    fn a_host_is_told_which_client_spawned_it() {
+    fn the_spawn_args_name_the_client_that_owns_the_host() {
         let args = host_args(Path::new("/profiles/hunt/cef"), 9412, "/forge-cef-9412", 800, 600);
         assert_eq!(args.first().map(String::as_str), Some("--cef-host"), "the host mode");
         let at = args.iter().position(|arg| arg == "--parent").expect("the parent flag");
