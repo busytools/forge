@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
 
   import Sprite from '../components/Sprite.svelte';
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
@@ -81,6 +81,10 @@
     // check that is not made.
     void watchUpdate();
   });
+
+  // The connection is the shell's: left open past it, it reconnects to a forge
+  // nothing is drawing, for as long as the process lives.
+  onDestroy(() => connection?.close());
 
   /**
    * Open on the remembered address: the home when something answers there,
