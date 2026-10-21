@@ -2063,6 +2063,60 @@ describe('whether the column follows the newest end', () => {
     ]);
   });
 
+  it('re-arms from a down key meeting a room-gain clamp', async () => {
+    // **The key half of the aimed arm.** A down key is the same gesture as a
+    // wheel-down through a different listener, and the branch is shared: this
+    // is the sibling that dies if the keydown aim goes.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT - 100);
+    await settle();
+    clear();
+
+    document
+      .querySelector('.conv')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown' }));
+    const roomier = VIEWPORT + 200;
+    setElement(TOTAL, roomier);
+    list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own down key re-armed the follow across the clamp').toEqual([
+      { asked: Math.floor(TOTAL), landed: Math.floor(TOTAL) - roomier },
+    ]);
+  });
+
+  it('lets an aimed gesture expire before the clamp lands', async () => {
+    // **A sticky aim is the round-one bug wearing the hand's badge.** The
+    // token is a 250ms window like the disarm's, and a hand heard long before
+    // a clamp cannot make that clamp the reader's: without the expiry every
+    // later room-gain clamp for the life of the seat re-arms.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT - 100);
+    await settle();
+    clear();
+
+    vi.useFakeTimers();
+    try {
+      document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+      vi.advanceTimersByTime(300);
+
+      const roomier = VIEWPORT + 200;
+      setElement(TOTAL, roomier);
+      list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+      flushSync();
+
+      expect(pinned(), 'an expired aim is not a hand on this clamp').toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps following when a clamp moves the reader with the content', async () => {
     // The mirror of the case above: a row corrected SHORTER leaves a following
     // reader above the foot, and a scroll event that reads as them scrolling
