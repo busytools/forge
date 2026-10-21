@@ -257,6 +257,39 @@ struct SeatDeath {
 /// Construct via [`Workspace::new`]; consume via
 /// [`Workspace::get_agent_handle`]; drain on exit via
 /// [`Workspace::shutdown`].
+#[derive(Debug, Clone)]
+struct WorktreeClaim {
+    project_key: ProjectKey,
+    label: String,
+    count: usize,
+}
+
+/// A held claim on a composed worker-worktree path. Released on drop, so
+/// every early return lets the next spawn or despawn through.
+#[derive(Debug)]
+pub(crate) struct WorktreeClaimGuard {
+    claims: Arc<parking_lot::Mutex<HashMap<std::path::PathBuf, WorktreeClaim>>>,
+    path: std::path::PathBuf,
+    owner: (ProjectKey, String),
+}
+
+impl Drop for WorktreeClaimGuard {
+    fn drop(&mut self) {
+        let mut claims = self.claims.lock();
+        let Some(claim) = claims.get_mut(&self.path) else {
+            return;
+        };
+        // A claim that changed hands is not ours to release.
+        if claim.project_key != self.owner.0 || claim.label != self.owner.1 {
+            return;
+        }
+        claim.count = claim.count.saturating_sub(1);
+        if claim.count == 0 {
+            claims.remove(&self.path);
+        }
+    }
+}
+
 pub struct Workspace {
     /// Retained so error messages can reference the `forge.toml`
     /// path the workspace was constructed from, and so the per-account
@@ -406,6 +439,11 @@ pub struct Workspace {
     /// forge UI level; their JSONLs persist on disk). Mutated via
     /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
     live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
+    /// One claim per composed worker-worktree path, held while a spawn's
+    /// ensure/insert or a despawn's removal is in flight. The live
+    /// registry is per project; this is the repository-wide one, so two
+    /// projects composing the same path cannot both act on it.
+    worktree_claims: Arc<parking_lot::Mutex<HashMap<PathBuf, WorktreeClaim>>>,
     /// The `(project, label)` pairs whose despawn cleanup is still running.
     /// The label's worktree is being torn down for that whole window, so a
     /// spawn taking the label now would enter a directory the removal is
@@ -1727,6 +1765,7 @@ impl Workspace {
             command_senders: Mutex::new(HashMap::new()),
             session_teardowns: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
+            worktree_claims: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
             deaths: Mutex::new(HashMap::new()),
@@ -7335,8 +7374,12 @@ impl Workspace {
         &self,
         path: &std::path::Path,
         own: &ProjectKey,
+        own_label: &str,
     ) -> Option<String> {
         let composed = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if let Some(reason) = self.claim_conflict(&composed, own, own_label) {
+            return Some(reason);
+        }
         for view in self.list_projects() {
             let declared = std::fs::canonicalize(&view.path).unwrap_or_else(|_| view.path.clone());
             if declared == composed {
@@ -7395,14 +7438,17 @@ impl Workspace {
                 continue;
             }
             for row in self.worker_rows_for_project(&view.key) {
-                let Some(is_git) = row.is_git_repo else {
-                    // A row from before the field cannot say whether it
-                    // owns a worktree; refusing on a guess is not safe.
+                if row.is_git_repo == Some(false) {
+                    // A non-git worker's tree is its project root, never
+                    // the composed worktree.
                     continue;
-                };
+                }
+                // A row from before the field existed still names the
+                // path by base+label; refusing on that name is the safe
+                // direction.
                 let root =
                     row.cwd.as_deref().map_or_else(|| view.path.clone(), std::path::PathBuf::from);
-                let other = crate::mcp::workers::types::worker_tag_dir(&root, &row.label, is_git);
+                let other = crate::mcp::workers::types::worker_tag_dir(&root, &row.label, true);
                 let other = std::fs::canonicalize(&other).unwrap_or(other);
                 if other == composed {
                     return Some(format!(
@@ -7412,6 +7458,129 @@ impl Workspace {
                         path.display()
                     ));
                 }
+            }
+        }
+        None
+    }
+
+    /// Claim the composed worktree path for this (project, label) while a
+    /// spawn's ensure/insert or a despawn's removal acts on it.
+    ///
+    /// Re-entrant for the same owner: a resume's pre-ensure claim and the
+    /// core handler's claim are one spawn. Refused when another project
+    /// or label holds it, which is the repository-wide half of the
+    /// one-live rule - the live registry is per project, and two projects
+    /// of one repository compose the same path.
+    pub(crate) fn claim_worktree(
+        &self,
+        path: &std::path::Path,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> Result<WorktreeClaimGuard, String> {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        {
+            let mut claims = self.worktree_claims.lock();
+            match claims.get_mut(&path) {
+                Some(claim) if claim.project_key == *project_key && claim.label == label => {
+                    claim.count += 1;
+                }
+                Some(claim) => {
+                    return Err(self.claim_message(claim, &path));
+                }
+                None => {
+                    claims.insert(
+                        path.clone(),
+                        WorktreeClaim {
+                            project_key: project_key.clone(),
+                            label: label.to_owned(),
+                            count: 1,
+                        },
+                    );
+                }
+            }
+        }
+        Ok(WorktreeClaimGuard {
+            claims: Arc::clone(&self.worktree_claims),
+            path,
+            owner: (project_key.clone(), label.to_owned()),
+        })
+    }
+
+    /// What a composed path is claimed by, when a seat other than
+    /// `own`/`own_label` holds it.
+    fn claim_conflict(
+        &self,
+        composed: &std::path::Path,
+        own: &ProjectKey,
+        own_label: &str,
+    ) -> Option<String> {
+        let claims = self.worktree_claims.lock();
+        let claim = claims.get(composed)?;
+        if claim.project_key == *own && claim.label == own_label {
+            return None;
+        }
+        Some(self.claim_message(claim, composed))
+    }
+
+    fn claim_message(&self, claim: &WorktreeClaim, path: &std::path::Path) -> String {
+        let project = self
+            .project_identity_for_key(&claim.project_key)
+            .map_or_else(|| claim.project_key.as_str().to_owned(), |(_, name)| name);
+        format!(
+            "the worktree '{}' is in use by the worker '{}' of project '{project}'",
+            path.display(),
+            claim.label
+        )
+    }
+
+    /// What a composed path is held by, when it is held by anything other
+    /// than `own`/`own_label`: an in-flight claim, or a live seat of ANY
+    /// project (a same-project winner of a spawn race included). Used by
+    /// a rollback deciding whether a tree it minted is still its own.
+    pub(crate) fn worktree_held_elsewhere(
+        &self,
+        path: &std::path::Path,
+        own: &ProjectKey,
+        own_label: &str,
+    ) -> Option<String> {
+        let composed = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if let Some(reason) = self.claim_conflict(&composed, own, own_label) {
+            return Some(reason);
+        }
+        let seats: Vec<(ProjectKey, String, bool, Option<std::path::PathBuf>)> = {
+            let workers = self.live_workers.lock();
+            workers
+                .iter()
+                .flat_map(|(key, entries)| {
+                    entries
+                        .iter()
+                        .filter(|entry| entry.is_live())
+                        .map(|entry| {
+                            (
+                                key.clone(),
+                                entry.label.clone(),
+                                entry.is_git_repo_at_spawn,
+                                entry.cwd.clone(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        for (key, label, is_git, cwd) in seats {
+            let Some(root) = self.live_worker_root(&key, cwd.as_deref()) else {
+                continue;
+            };
+            let other = crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git);
+            let other = std::fs::canonicalize(&other).unwrap_or(other);
+            if other == composed {
+                let project = self
+                    .project_identity_for_key(&key)
+                    .map_or_else(|| key.as_str().to_owned(), |(_, name)| name);
+                return Some(format!(
+                    "the worktree '{}' is in use by the worker '{label}' of project '{project}'",
+                    path.display()
+                ));
             }
         }
         None
@@ -7869,10 +8038,10 @@ impl Workspace {
     /// resolved, which is the project's `forge.toml` path for a worker
     /// that stated none. For git-repo workers
     /// (`is_git_repo_at_spawn = true`) the tag-write is routed to
-    /// `<cwd>/.claude/worktrees/<label>` via
-    /// [`crate::mcp::workers::types::worker_tag_dir`] so the lookup
-    /// matches where claude's `--worktree <label>` actually wrote
-    /// the JSONL.
+    /// `<base>/.claude/worktrees/<label>` via
+    /// [`crate::mcp::workers::types::worker_tag_dir`], `base` the CLI's
+    /// main working tree, so the lookup matches where claude's
+    /// `--worktree <label>` actually wrote the JSONL.
     ///
     /// `needs_tag` and `minted_row` together decide whether a rollback
     /// takes the worker's durable row with it; see the arm below.
@@ -13839,6 +14008,31 @@ mod workers_state_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
         assert!(ws.list_live_workers(&project).is_empty());
+    }
+
+    /// The claim on a composed path is repository-wide and atomic: one
+    /// owner at a time, re-entrant only for the same project and label.
+    #[test]
+    fn a_worktree_claim_admits_one_owner_across_projects() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let path = std::path::Path::new("/tmp/claimed-worktree");
+        let proj_a = ProjectKey::new("proj-a");
+        let proj_b = ProjectKey::new("proj-b");
+
+        let first = ws.claim_worktree(path, &proj_a, "shared").expect("the first claim");
+        let reentrant = ws
+            .claim_worktree(path, &proj_a, "shared")
+            .expect("the same owner may claim twice: a resume's ensure and the core's insert");
+        let refused = ws
+            .claim_worktree(path, &proj_b, "shared")
+            .expect_err("another project cannot claim the same path");
+        assert!(refused.contains("worker 'shared'"), "the refusal names the holder: {refused}");
+        assert!(refused.contains("proj-a"), "and its project: {refused}");
+
+        drop(reentrant);
+        ws.claim_worktree(path, &proj_b, "shared").expect_err("the first claim is still held");
+        drop(first);
+        ws.claim_worktree(path, &proj_b, "shared").expect("free once every claim is released");
     }
 
     #[test]

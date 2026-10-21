@@ -54,13 +54,17 @@ pub fn worker_root(cwd: &Path) -> Result<std::path::PathBuf, String> {
 /// The checkout root the `claude` CLI forks a worker's `--worktree` under:
 /// the repository's main working tree, resolved from the first entry of
 /// `git worktree list --porcelain` - the main checkout when the project is
-/// itself a linked worktree, the checkout itself when its git dir lives
-/// elsewhere, the repo root for a subdirectory. Measured on 2.1.280: the
-/// CLI resolves its cwd to that root before composing
+/// itself a linked worktree, the repo root for a subdirectory. Measured on
+/// 2.1.280: the CLI resolves its cwd to that root before composing
 /// `<root>/.claude/worktrees/<label>`, so a project rooted in a linked
 /// worktree (or in a repo subdirectory) otherwise names a directory the
 /// CLI never creates (#2460). A path that is not a repository is its own
 /// base.
+///
+/// A repository kept in a separate git dir is NOT a supported worker
+/// layout: git names its admin dir (not a checkout) as the first worktree
+/// entry, and the CLI's own base for that shape is unverified, so forge
+/// follows git's answer rather than guessing a checkout it cannot derive.
 ///
 /// Memoised per root: callers include render paths that ask per row per
 /// frame, and a checkout's canonical root does not move under a live
@@ -84,14 +88,7 @@ pub fn worktree_base(root: &Path) -> PathBuf {
         // is not. Only the second is worth reporting, and neither is
         // cached: the next call re-asks.
         if is_git_repo(root) && first_unresolved(root) {
-            tracing::warn!(
-                target: "forge_agent::env::worktree",
-                event_name = "worktree_base_unresolved",
-                repo = %root.display(),
-                "git would not name this checkout's root, so worker paths compose from the \
-                 project path until it can; a linked-worktree project records the wrong \
-                 directory meanwhile",
-            );
+            report_unresolved_root(root);
         }
         return root.to_path_buf();
     };
@@ -107,13 +104,25 @@ fn first_unresolved(root: &Path) -> bool {
     UNRESOLVED.get_or_init(Default::default).lock().insert(root.to_path_buf())
 }
 
+/// The one-line report for a root git would not name, so a log grep for
+/// `worktree_base_unresolved` finds the path that composed the wrong way.
+fn report_unresolved_root(root: &Path) {
+    tracing::warn!(
+        target: "forge_agent::env::worktree",
+        event_name = "worktree_base_unresolved",
+        repo = %root.display(),
+        "git would not name this checkout's root, so worker paths compose from the project path \
+         until it can; a linked-worktree project records the wrong directory meanwhile",
+    );
+}
+
 /// [`worktree_base`] without the memo; `None` when git could not answer.
 ///
 /// The first entry of `git worktree list --porcelain` is the main working
-/// tree: the main checkout for a linked worktree, the checkout for a repo
-/// whose git dir lives elsewhere, the repo root from a subdirectory. That
-/// is the root the CLI composes from in every one of those layouts, which
-/// the common dir alone cannot name (a separate git dir is not a checkout).
+/// tree: the main checkout for a linked worktree, the repo root from a
+/// subdirectory. A repo kept in a separate git dir is not a supported
+/// layout - git names its admin dir there, and the CLI's base for it is
+/// unverified - so forge follows git rather than guessing.
 fn resolve_worktree_base(root: &Path) -> Option<PathBuf> {
     let listing = git_in_repo(root, &["worktree", "list", "--porcelain"])?;
     let first = listing.lines().find_map(|line| line.strip_prefix("worktree "))?;
@@ -1785,10 +1794,8 @@ mod tests {
         std::os::unix::fs::symlink(&main, &alias).expect("symlink");
         assert_eq!(worktree_base(&alias), main, "a symlinked spelling resolves to the same root");
 
-        // A linked worktree of a repo kept in a separate git dir: the
-        // base is the CHECKOUT, not the git admin dir - `git worktree
-        // list` names the working tree first, and that is the root the
-        // CLI composes from.
+        // A linked worktree of a repo kept in a separate git dir. This is
+        // the unsupported layout: see the assertion below.
         let separate = tempdir().expect("separate holder");
         let checkout = separate.path().join("checkout");
         let store = separate.path().join("store.git");
@@ -1849,6 +1856,12 @@ mod tests {
             outside.path(),
             "a path outside any repo is its own base",
         );
+        let missing = outside.path().join("not-there");
+        assert_eq!(
+            worktree_base(&missing),
+            missing,
+            "a path that is not there answers without a git call and is its own base",
+        );
     }
 
     /// The unresolved-root warning is once per root, not once per call:
@@ -1862,6 +1875,42 @@ mod tests {
         assert!(first_unresolved(&first), "the first report of a root goes through");
         assert!(!first_unresolved(&first), "a repeat for the same root is suppressed");
         assert!(first_unresolved(&second), "a different root reports on its own");
+    }
+
+    /// The warning line carries the event name a log grep uses and the
+    /// root it is about.
+    #[test]
+    fn the_unresolved_root_warning_names_the_event_and_the_root() {
+        #[derive(Clone)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("capture lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+            type Writer = Capture;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(Capture(std::sync::Arc::clone(&buffer)))
+            .finish();
+        let root = std::path::Path::new("/nowhere/at/all");
+        tracing::subscriber::with_default(subscriber, || report_unresolved_root(root));
+
+        let text =
+            String::from_utf8(buffer.lock().expect("capture lock").clone()).expect("utf8 log");
+        assert!(text.contains("worktree_base_unresolved"), "the event name is logged: {text}");
+        assert!(text.contains("/nowhere/at/all"), "and the root it is about: {text}");
     }
 
     /// A directory that is not there is a refusal, not a silent pass: the

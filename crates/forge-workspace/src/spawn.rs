@@ -1341,13 +1341,41 @@ pub(crate) fn handle_spawn_worker(
     let worktree_path =
         is_git.then(|| crate::mcp::workers::types::worker_tag_dir(&root, label, true));
 
+    // Hold the composed path for the whole spawn, so the claim taken and
+    // the registry insert cannot be separated by another project's spawn
+    // or by a despawn removing the tree this one is entering. Re-entrant
+    // with a resume facade's pre-ensure claim.
+    let _claim = match worktree_path.as_ref() {
+        Some(path) => match workspace.claim_worktree(path, &project_key, label) {
+            Ok(claim) => Some(claim),
+            Err(reason) => {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    event_name = "worker_spawn_refused_worktree_claimed",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    tree = %root.display(),
+                    reason = %reason,
+                    "the worker's worktree is in use, so the spawn is refused",
+                );
+                let _ = return_to.send(Err(format!(
+                    "this worker's worktree cannot be shared: {reason}; spawn under a different \
+                     label"
+                )));
+                return;
+            }
+        },
+        None => None,
+    };
+
     // The composed worktree is repository-global, so a label can name a
     // tree that already belongs to another project - its own checkout, or
     // another project's worker's worktree. Reusing it would put two
     // sessions in one tree and hand the later despawn the power to delete
     // it; refuse before anything is minted.
-    if let Some(collision) =
-        worktree_path.as_ref().and_then(|dir| workspace.worktree_collision(dir, &project_key))
+    if let Some(collision) = worktree_path
+        .as_ref()
+        .and_then(|dir| workspace.worktree_collision(dir, &project_key, label))
     {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -1994,7 +2022,7 @@ pub(crate) fn handle_despawn_worker_within(
     // or another project's worker's tree. Removing it would delete that,
     // so refuse before the probe; a force cannot override this.
     if let Some(path) = worktree_path.as_ref()
-        && let Some(collision) = workspace.worktree_collision(path, project_key)
+        && let Some(collision) = workspace.worktree_collision(path, project_key, label)
     {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -2013,6 +2041,23 @@ pub(crate) fn handle_despawn_worker_within(
         });
         return;
     }
+
+    // Hold the path through the teardown and the removal: teardown drops
+    // the durable row before the removal runs, so another project's spawn
+    // would otherwise be admitted into a tree the cleanup is deleting.
+    // Released when the cleanup ends.
+    let claim = match worktree_path.as_ref() {
+        Some(path) => match workspace.claim_worktree(path, project_key, label) {
+            Ok(claim) => Some(claim),
+            Err(reason) => {
+                let _ = respond.send(DespawnResult::Failed {
+                    reason: format!("refusing to despawn '{label}': {reason}"),
+                });
+                return;
+            }
+        },
+        None => None,
+    };
 
     // A worker's worktree carries its own build tree, so the removal
     // below deletes hundreds of thousands of files and can run for
@@ -2179,6 +2224,7 @@ pub(crate) fn handle_despawn_worker_within(
         worktree_path,
         worktree_display,
         worktree_already_gone,
+        claim,
         worktree_root,
         project_view,
         live,
@@ -2284,12 +2330,14 @@ struct DespawnCleanup {
     worktree_path: Option<std::path::PathBuf>,
     worktree_display: String,
     worktree_already_gone: bool,
+    /// The path's claim, held until the cleanup ends so no spawn in
+    /// another project can enter the tree while it is removed.
+    claim: Option<crate::workspace::WorktreeClaimGuard>,
     /// The checkout whose `.claude/worktrees` holds the worker's tree -
     /// the repo every `git` call in the cleanup anchors on. The main
-    /// checkout for a worker the CLI forked under it, the project path
-    /// itself for a worker still running where it was spawned before
-    /// #2460. `None` when the project is no longer loaded and the row
-    /// recorded no tree of its own.
+    /// checkout for a worker the CLI forked under it. `None` when the
+    /// project is no longer loaded and the row recorded no tree of its
+    /// own.
     worktree_root: Option<std::path::PathBuf>,
     project_view: Option<crate::views::ProjectView>,
     live: Option<crate::mcp::workers::types::WorkerEntry>,
@@ -2313,6 +2361,8 @@ impl DespawnCleanup {
             worktree_path,
             worktree_display,
             worktree_already_gone,
+            // Held for the cleanup's whole span; released on drop.
+            claim: _claim,
             worktree_root,
             project_view,
             live,
@@ -4246,6 +4296,52 @@ provider = "anthropic"
             "the durable row names its project: {err}",
         );
 
+        // An in-flight claim in another project refuses the spawn even
+        // with no entry or row yet: the check and the insert are one step.
+        let owner = ws.project_root_for_key(&key_of("proj-a")).expect("proj-a root");
+        let claimed = crate::mcp::workers::types::worker_tag_dir(&owner, "held", true);
+        let claim = ws.claim_worktree(&claimed, &key_of("proj-a"), "held").expect("claim");
+        let err = spawn_reply(&ws, &key_of("proj-b"), "held", false)
+            .await
+            .expect("reply channel")
+            .expect_err("another project's claim refuses the spawn");
+        assert!(
+            err.contains("in use by the worker 'held'") && err.contains("proj-a"),
+            "the refusal names the claim holder: {err}",
+        );
+        drop(claim);
+
+        // A row from before `is_git_repo` existed still claims its
+        // base+label path: refusing on that name is the safe direction.
+        let store = tempdir().expect("store dir");
+        let db = crate::store::Db::open(&store.path().join("db.redb")).expect("open db");
+        crate::store::sessions::put(
+            &db,
+            &crate::store::sessions::SessionRecord {
+                org: "Default".to_owned(),
+                project: "proj-b".to_owned(),
+                label: "old".to_owned(),
+                session_id: None,
+                charter: None,
+                kick: None,
+                resume_kick: None,
+                interactive: None,
+                is_git_repo: None,
+                mcp_families: None,
+                cwd: None,
+            },
+        )
+        .expect("write a row with no recorded gitness");
+        ws.install_db_for_test(db);
+        let err = spawn_reply(&ws, &key_of("proj-a"), "old", false)
+            .await
+            .expect("reply channel")
+            .expect_err("a gitness-less row still claims the composed path");
+        assert!(
+            err.contains("worker 'old'") && err.contains("proj-b"),
+            "the old row names its project: {err}",
+        );
+
         // A project declared at the path a worker label would compose is
         // its own checkout, not a worktree anyone may reuse or remove.
         let checkout = main.join(".claude").join("worktrees").join("dev");
@@ -4281,7 +4377,7 @@ provider = "anthropic"
         let alias = holder.path().join("shared-alias");
         std::os::unix::fs::symlink(&shared, &alias).expect("symlink");
 
-        let collision = ws.worktree_collision(&alias, &key_of("proj-b"));
+        let collision = ws.worktree_collision(&alias, &key_of("proj-b"), "shared");
 
         assert!(
             collision.as_deref().is_some_and(|reason| reason.contains("worker 'shared'")),
@@ -4317,6 +4413,38 @@ provider = "anthropic"
         assert!(reason.contains("proj-b"), "and its project: {reason}");
         assert!(shared.exists(), "the shared tree was not removed");
         assert_eq!(ws.list_live_workers(&key_of("proj-a")).len(), 1, "and the worker stays live");
+    }
+
+    /// A despawn consults the same repository-wide claims: while another
+    /// project's spawn or cleanup holds the path, it refuses.
+    #[tokio::test]
+    async fn a_despawn_refuses_a_worktree_another_project_claims() {
+        let (ws, main, _keep) = linked_projects_fixture(&["proj-a", "proj-b"]);
+        let key_of = |name: &str| {
+            ws.list_projects().into_iter().find(|v| v.name == name).expect("declared project").key
+        };
+        let shared = main.join(".claude").join("worktrees").join("shared");
+        fs::create_dir_all(shared.parent().expect("worktrees root")).expect("mkdir worktrees");
+        run_git(
+            &main,
+            &["worktree", "add", "-q", "-b", "worktree-shared", shared.to_str().expect("utf8")],
+        );
+        ws.insert_live_worker(&key_of("proj-b"), fake_git_worker_entry("shared", "b-worker"));
+        let claim =
+            ws.claim_worktree(&shared, &key_of("proj-a"), "shared").expect("proj-a holds the path");
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&ws, &key_of("proj-b"), "shared", true, tx);
+        let result = rx.await.expect("despawn result");
+        let crate::protocol::DespawnResult::Failed { reason } = result else {
+            panic!("a claimed worktree refuses the despawn: {result:?}");
+        };
+        assert!(
+            reason.contains("in use by the worker 'shared'") && reason.contains("proj-a"),
+            "the reason names the claim holder: {reason}",
+        );
+        assert!(shared.exists(), "the claimed tree was not removed");
+        drop(claim);
     }
 
     /// A linked project's worktree sits under the MAIN checkout, and the

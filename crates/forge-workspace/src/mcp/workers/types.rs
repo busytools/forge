@@ -173,7 +173,7 @@ pub struct WorkerEntry {
     /// Drives the Inspector pane's WORKTREE section render and
     /// the "in worktree" status-string suffix. `true` means the
     /// worker was spawned with `--worktree=<label>` and is operating
-    /// in claude's auto-created `<project>/.claude/worktrees/<label>/`;
+    /// in claude's auto-created `<base>/.claude/worktrees/<label>/`;
     /// `false` means non-git-repo project (no worktree, plain cwd).
     pub is_git_repo_at_spawn: bool,
     /// Cached at spawn time: the tree this worker runs in when the spawn
