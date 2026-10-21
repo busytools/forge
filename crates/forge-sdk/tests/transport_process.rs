@@ -164,8 +164,11 @@ async fn wait_for_descendant_pid(marker: &Path, sub: &Subprocess) -> u32 {
     // to give back, so the group this test's own child leads is swept
     // instead - a group, never a name.
     if let Some(pgid) = sub.child_pid() {
-        let _ =
-            std::process::Command::new("kill").args(["-s", "KILL", &format!("-{pgid}")]).status();
+        // `--` ends the options: without it a `kill` that parses differently
+        // from BSD's (procps does) can read the group operand as a pid.
+        let _ = std::process::Command::new("kill")
+            .args(["-s", "KILL", "--", &format!("-{pgid}")])
+            .status();
     }
     panic!("the fixture never wrote its descendant's pid to {}", marker.display());
 }

@@ -118,13 +118,17 @@ async fn terminate(pid: u32) {
 }
 
 /// SIGTERM to the process group `pid` leads: what a terminal close does.
+///
+/// `--` ends the options, so the group operand cannot be read as a signal or
+/// a pid by a `kill` that parses differently from BSD's (procps on the Linux
+/// runner does; ambiguous there means the signal goes somewhere else).
 async fn terminate_group(pid: u32) {
     let status = tokio::process::Command::new("kill")
-        .args(["-s", "TERM", &format!("-{pid}")])
+        .args(["-s", "TERM", "--", &format!("-{pid}")])
         .status()
         .await
         .expect("kill runs");
-    assert!(status.success(), "kill -s TERM -{pid} lands: {status}");
+    assert!(status.success(), "kill -s TERM -- -{pid} lands: {status}");
 }
 
 /// Wait until the server answers on `port`, or fail with its stderr.
