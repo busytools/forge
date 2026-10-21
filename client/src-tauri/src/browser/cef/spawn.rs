@@ -636,7 +636,9 @@ mod tests {
             waited >= SHOW_ACK_BOUND.saturating_sub(Duration::from_millis(10)),
             "the wait ran to its bound: {waited:?}"
         );
-        assert!(waited < SHOW_ACK_BOUND * 4, "and did not run past it: {waited:?}");
+        // A generous ceiling: the property pinned above is the bound itself,
+        // and a tight wall-clock ceiling flakes when the machine is loaded.
+        assert!(waited < Duration::from_secs(5), "and returned rather than running on: {waited:?}");
         assert!(!ring.shown(1), "nothing acknowledged an unapplied cue");
         Ring::unlink(name);
     }

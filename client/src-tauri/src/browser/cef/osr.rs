@@ -40,8 +40,8 @@ pub struct Header {
     pub magic: AtomicU32,
     pub version: AtomicU32,
     /// **The layout's own length, written by the host.** macOS rounds a
-    /// segment's size up to a page, so `st_size` cannot tell a 72-byte header
-    /// from an 88-byte one; this field can, without a manual version bump.
+    /// segment's size up to a page, so `st_size` cannot tell two header
+    /// layouts apart; this field can, without a manual version bump.
     pub header_len: AtomicU32,
     /// The live paint size, in device pixels: what `on_paint` writes. The
     /// view's own rect is this divided by the device scale.
@@ -513,7 +513,10 @@ mod tests {
         // SAFETY: the ring is mapped and holds a header.
         unsafe { (*ring.header()).version.store(1, Ordering::Release) };
         assert!(Ring::open(name).is_err(), "an older version is refused");
-        Ring::unlink(name);
+        // The refused segment's name goes with the refusal, so a replacement
+        // host starts fresh instead of finding the same stale ring.
+        let gone = Ring::open(name).err().expect("the refused ring's name is unlinked");
+        assert!(gone.contains("is not there"), "the refused segment was unlinked: {gone}");
 
         // A segment shorter than this header, carrying a valid magic,
         // version and length field: the LENGTH clause must be what refuses
@@ -550,6 +553,43 @@ mod tests {
         );
         Ring::unlink(short_name);
 
+        // A full-size segment whose header names another length, with this
+        // build's magic and version: the HEADER_LEN clause must be what
+        // refuses it. The short segment above is already refused by length,
+        // so without this case a header grown while VERSION stayed put would
+        // map with every scanline shifted and all tests green.
+        let header_name = "/forge-cef-test-header";
+        unsafe {
+            let cname = CString::new(header_name).expect("a c string");
+            libc::shm_unlink(cname.as_ptr());
+            let fd = libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600);
+            assert!(fd >= 0, "the wrong-header ring exists");
+            assert_eq!(libc::ftruncate(fd, RING_LEN as i64), 0, "a full-size mapping");
+            let ptr = libc::mmap(
+                std::ptr::null_mut(),
+                RING_LEN,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            );
+            assert!(ptr != libc::MAP_FAILED, "the wrong-header ring maps for the header write");
+            // SAFETY: the mapping holds the three leading u32s the check
+            // reads, written before the unmap.
+            let words = ptr.cast::<u32>();
+            words.write(MAGIC);
+            words.add(1).write(VERSION);
+            words.add(2).write(HEADER_LEN as u32 + 8);
+            libc::munmap(ptr, RING_LEN);
+            libc::close(fd);
+        }
+        assert!(
+            Ring::open(header_name).is_err(),
+            "a ring whose header names another length is refused at this build's magic and \
+             version"
+        );
+        Ring::unlink(header_name);
+
         // A full-size segment nobody wrote a header into.
         let blank_name = "/forge-cef-test-blank";
         unsafe {
@@ -560,7 +600,10 @@ mod tests {
             assert_eq!(libc::ftruncate(fd, RING_LEN as i64), 0, "a full-size mapping");
             libc::close(fd);
         }
-        assert!(Ring::open(blank_name).is_err(), "a ring with no magic is refused");
+        assert!(
+            Ring::open(blank_name).is_err(),
+            "a full-size ring nobody wrote a header into is refused"
+        );
         Ring::unlink(blank_name);
     }
 

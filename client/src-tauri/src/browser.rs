@@ -2340,6 +2340,7 @@ mod tests {
         host: Arc<BrowserHost>,
         cache: std::path::PathBuf,
         pid: u32,
+        port: u16,
         ring: String,
         ring_value: Arc<cef::osr::Ring>,
     }
@@ -2372,9 +2373,36 @@ mod tests {
             // string literal would have its escapes read twice.
             let answers_path = dir.path().join("answers.json");
             std::fs::write(&answers_path, answers.to_string()).expect("the stub's answers");
-            let body = r#"import sys, json
+            let body = r#"import sys, json, ctypes
 ANSWERS = json.load(open("__ANSWERS__"))
 CALLS = "__CALLS__"
+CUE = "__CUE__"
+RING = b"__RING__"
+
+def cue_state():
+    try:
+        libc = ctypes.CDLL(None)
+        libc.shm_open.restype = ctypes.c_int
+        libc.shm_open.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        fd = libc.shm_open(RING, 0, 0)
+        if fd < 0:
+            return (0, 0)
+        libc.mmap.restype = ctypes.c_void_p
+        libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_int, ctypes.c_long]
+        addr = libc.mmap(None, 96, 1, 1, fd, 0)
+        if not addr or addr == ctypes.c_void_p(-1).value:
+            libc.close(fd)
+            return (0, 0)
+        sent = ctypes.c_uint64.from_address(addr + 80).value
+        applied = ctypes.c_uint64.from_address(addr + 88).value
+        libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        libc.munmap(ctypes.c_void_p(addr), 96)
+        libc.close(fd)
+        return (sent, applied)
+    except Exception:
+        return (0, 0)
+
 asked = {}
 for line in sys.stdin:
     try:
@@ -2394,6 +2422,9 @@ for line in sys.stdin:
         name = message.get("params", {}).get("name", "")
         with open(CALLS, "a") as log:
             log.write(name + "\n")
+        sent, applied = cue_state()
+        with open(CUE, "a") as log:
+            log.write("%s %d %d\n" % (name, sent, applied))
         answer = ANSWERS.get(name)
         if isinstance(answer, list):
             at = min(asked.get(name, 0), len(answer) - 1)
@@ -2406,7 +2437,9 @@ for line in sys.stdin:
     sys.stdout.flush()
 "#
             .replace("__ANSWERS__", &answers_path.display().to_string())
-            .replace("__CALLS__", &dir.path().join("calls.log").display().to_string());
+            .replace("__CALLS__", &dir.path().join("calls.log").display().to_string())
+            .replace("__CUE__", &dir.path().join("cue.log").display().to_string())
+            .replace("__RING__", ring);
             std::fs::write(&cli, body).expect("the stub driver");
             std::fs::create_dir_all(&paths.output).expect("the output dir");
 
@@ -2483,15 +2516,39 @@ for line in sys.stdin:
                     tokio::task::yield_now().await;
                 }
             });
-            Self { dir, host, cache, pid, ring: ring_name, ring_value }
+            Self { dir, host, cache, pid, port, ring: ring_name, ring_value }
         }
 
-        /// The host's show sequence, as the ring carries it.
-        fn show_cues(&self) -> u64 {
-            // SAFETY: the ring is mapped for this fixture's lifetime.
-            unsafe {
-                (*self.ring_value.header()).show_seq.load(std::sync::atomic::Ordering::Acquire)
-            }
+        /// The same stub host behind a named profile's cache root, so the
+        /// named arm of `call` runs the same path as the shared one.
+        async fn adopt_named(&self, name: &str) {
+            let cache = profiles::cef_cache(&self.dir.path().join("profiles").join(name));
+            std::fs::create_dir_all(&cache).expect("the named cache root");
+            self.host.hosts.lock().await.insert(
+                cache.clone(),
+                Arc::new(cef::spawn::ActiveHost {
+                    pid: self.pid,
+                    port: self.port,
+                    ring: Arc::clone(&self.ring_value),
+                    profile: cache,
+                }),
+            );
+        }
+
+        /// Each tool call's name and the ring's cue state at the moment the
+        /// driver received it: `(tool, show_seq, show_applied)`.
+        fn call_cues(&self) -> Vec<(String, u64, u64)> {
+            std::fs::read_to_string(self.dir.path().join("cue.log"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.rsplitn(3, ' ');
+                    let applied = parts.next()?.parse().ok()?;
+                    let sent = parts.next()?.parse().ok()?;
+                    let tool = parts.next()?.to_owned();
+                    Some((tool, sent, applied))
+                })
+                .collect()
         }
 
         /// The tool names the stub was asked for, in order.
@@ -2535,10 +2592,68 @@ for line in sys.stdin:
             "https://example.com/after-call",
             "a successful call rewrites the carry"
         );
-        // **The call cued the host before driving it.** The fixture's host
-        // applies the cue; the sequence is the proof it was sent.
-        let cues = stub.show_cues();
-        assert!(cues >= 1, "the call asked the host to show the page first: {cues}");
+        // **The cue was applied before the call drove the page.** The stub
+        // reads the ring when the driver receives the tool, so a `show` moved
+        // after `Profile::call` reads as no cue here and this goes red.
+        let cues = stub.call_cues();
+        let (tool, sent, applied) =
+            cues.first().expect("the driver asked for the tool it was given");
+        assert_eq!(tool, "browser_navigate", "the stub saw the call it answered");
+        assert!(
+            *sent >= 1 && *applied >= *sent,
+            "the cue was sent and applied before the call reached the driver: {cues:?}"
+        );
+
+        stub.shutdown().await;
+    }
+
+    /// **A named profile's call cues its page too.** The shared arm's cue is
+    /// pinned above; the `Some(name)` arm carries its own copy, and the ring
+    /// is read when the driver receives the tool.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_named_profile_call_cues_the_page_before_driving_it() {
+        let stub = StubHost::start(
+            "/forge-cef-named-call-test",
+            &json!({ "browser_navigate": { "content": [{ "type": "text", "text": "ok" }] } }),
+        )
+        .await;
+        stub.adopt_named("work").await;
+
+        let parts = stub
+            .host
+            .call(
+                &seat(),
+                "browser_navigate",
+                json!({ "url": "https://example.com/after-call", "profile": "work" }),
+            )
+            .await
+            .expect("the stub driver answers");
+        assert_eq!(parts.len(), 1, "the stub's one part is the call's answer");
+        let cues = stub.call_cues();
+        let (tool, sent, applied) =
+            cues.first().expect("the driver asked for the tool it was given");
+        assert_eq!(tool, "browser_navigate", "the stub saw the call it answered");
+        assert!(
+            *sent >= 1 && *applied >= *sent,
+            "the named arm cued its page before the call reached the driver: {cues:?}"
+        );
+
+        stub.shutdown().await;
+    }
+
+    /// **A raise cues the page before the surface is drawn over it.** Open on
+    /// a page that went hidden while nothing drove it would otherwise draw a
+    /// frozen picture under the bar; the fixture's host applies the cue, so
+    /// the ring proves it was sent.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_raise_cues_the_page_before_it_is_shown() {
+        let stub = StubHost::start("/forge-cef-raise-cue-test", &json!({})).await;
+
+        let raised = stub.host.show(None, None).await;
+        assert!(raised.is_ok(), "the raise opened the surface: {raised:?}");
+        assert!(stub.ring_value.shown(1), "the raise cued the page before drawing it");
 
         stub.shutdown().await;
     }
