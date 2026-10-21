@@ -119,7 +119,7 @@
            seconds the shutdown takes (#1712). -->
       <div class="pj">
         <div class="pr" class:on={project.shown === 'lead'}>
-          <span class="dot {leadDot}"></span>
+          <span class="dot-slot"><span class="dot {leadDot}"></span></span>
           <span class="nm"
             ><a class="rail-go" href={hrefForSlot(project.row.slot)}>{project.name}</a></span
           >

@@ -1429,6 +1429,10 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 .pj { border-radius: 10px; margin: 1px 0; }
 .pj:hover { background: rgba(27,33,48,.5); }
 .pr { display: flex; align-items: center; gap: 9px; padding: 7px 10px; cursor: pointer; }
+/* The row's mark sits in a slot one size for every state, so a state that
+   draws a smaller dot cannot narrow the row and pull the name left. */
+.pr .dot-slot { width: 11px; height: 11px; flex: 0 0 11px;
+  display: inline-flex; align-items: center; justify-content: center; }
 .pr .nm { font-size: var(--fs-base); font-weight: 600; flex: 0 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pr .org { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);

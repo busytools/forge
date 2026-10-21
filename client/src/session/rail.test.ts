@@ -348,6 +348,28 @@ describe('the sheet carries the settling pulse and the waking sweep', () => {
   });
 });
 
+describe("a project row's mark", () => {
+  /**
+   * **One slot, whatever state the mark draws.** The idle dot is 7px and a
+   * running ring 11, so a row that took each mark's own width moved the name
+   * - and every cell after it - on every state change. jsdom performs no
+   * layout, so the wrapper is read off the rendered row and the size off the
+   * sheet; the by-width measurement against a browser is in the pull request.
+   */
+  it('sits in one fixed, centred slot', () => {
+    const drawn = render(Rail, {
+      props: { home: homeWire, current: LEAD, now: Date.now(), connection: untouched() },
+    }).body;
+    expect(drawn, 'the project row lost its fixed mark slot').toMatch(
+      /<span class="dot-slot"><span class="dot [^"]+"><\/span><\/span>/,
+    );
+    const slot = rule('.pr .dot-slot');
+    expect(slot, 'the slot lost its one size').toContain('width: 11px');
+    expect(slot, 'the slot lost its fixed basis').toContain('flex: 0 0 11px');
+    expect(slot, 'the mark is not centred in the slot').toContain('justify-content: center');
+  });
+});
+
 describe("a worker's failure", () => {
   /**
    * **The diagnostic draws under the worker's own row**, the way the view this
