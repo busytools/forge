@@ -105,8 +105,9 @@ fn run() -> anyhow::Result<()> {
             _ = sigterm.recv() => {}
             _ = sighup.recv() => {}
         }
-        // The socket stops accepting first, so no command can start a
-        // session behind the drain.
+        // The serve loop is dropped before the drain. Live connections
+        // outlive the abort, so it is not what refuses a spawn: the
+        // shutting-down gate is, and it is already up.
         if let Some(handle) = socket.take() {
             handle.abort();
         }

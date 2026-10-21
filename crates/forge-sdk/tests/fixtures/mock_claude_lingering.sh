@@ -18,6 +18,9 @@ fi
 if [ -n "${FORGE_TEST_CHILD_TERM_MARKER:-}" ]; then
     trap 'printf x > "$FORGE_TEST_CHILD_TERM_MARKER"' TERM
 fi
+if [ -n "${FORGE_TEST_CHILD_PID_MARKER:-}" ]; then
+    printf '%s\n' "$$" > "$FORGE_TEST_CHILD_PID_MARKER"
+fi
 
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"mock-session-001","cwd":"/tmp","tools":["Edit","Read"],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"ANTHROPIC_API_KEY"}'
 

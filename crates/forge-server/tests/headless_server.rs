@@ -240,6 +240,7 @@ fn write_session_fixture(
             r#"
 [env]
 FORGE_TEST_CHILD_TERM_MARKER = "{child_marker}"
+FORGE_TEST_CHILD_PID_MARKER = "{child_marker}.pid"
 
 [[orgs]]
 name = "Default"
@@ -284,6 +285,18 @@ async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Wait for a file to appear, or answer false once the deadline passes.
+async fn wait_for_file(path: &std::path::Path) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    path.exists()
 }
 
 /// Read the pid's own state; a zombie is gone, not surviving.
@@ -465,6 +478,56 @@ async fn one_stop_takes_two_sessions_down() {
         elapsed < Duration::from_secs(10),
         "the stop fits one teardown budget rather than one per session: {elapsed:?}"
     );
+}
+
+/// The positive control for the marker: SIGTERM sent straight at the
+/// session's child must leave it. It is what makes the group test's "no
+/// marker" a reading of the trap rather than of a script that never writes
+/// one.
+#[tokio::test]
+async fn a_termination_sent_straight_at_the_child_marks_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (port, gateway) = two_free_ports();
+    let marker = dir.path().join("session.pid");
+    let child_marker = dir.path().join("child-term");
+    let (home, config, bin) = write_session_fixture(
+        dir.path(),
+        port,
+        gateway,
+        &[("forge", &marker, None)],
+        &child_marker,
+    );
+
+    let mut command = server_command(&home, &config);
+    command
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
+    let mut server = command.spawn().expect("the server spawns");
+    wait_for_port(port, &mut server).await;
+
+    let descendant = wait_for_marker_pid(&marker).await;
+    let _orphan = Orphan(descendant);
+    let pid_marker = dir.path().join("child-term.pid");
+    assert!(wait_for_file(&pid_marker).await, "the fixture never wrote its own pid");
+    let child_pid: u32 = std::fs::read_to_string(&pid_marker)
+        .expect("read the child's pid")
+        .trim()
+        .parse()
+        .expect("the child wrote a pid");
+
+    send_signal(child_pid, "-TERM").await;
+
+    assert!(
+        wait_for_file(&child_marker).await,
+        "the child's TERM trap did not fire on a signal sent straight at it, so the group \
+         test's absent marker would prove nothing"
+    );
+
+    terminate(server.id().expect("the server has a pid while it runs")).await;
+    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+        .await
+        .expect("the server finishes its stop within the deadline")
+        .expect("the server is reaped");
+    assert!(exit.success(), "the stop exits clean after the direct signal: {exit}");
 }
 
 /// The boot stands alone: the binary binds the socket, greets a client and
