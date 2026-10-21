@@ -191,12 +191,11 @@ impl Ring {
             // **A ring this build did not write is refused, not read.** The
             // pixel base is the header's length, so another build's ring would
             // draw shifted rows; refusing it sends the caller down the
-            // existing replace-the-host path. The mapping is Drop's to unmap,
-            // and the dead segment's name goes so a replacement host starts
-            // fresh.
+            // existing replace-the-host path. The mapping is Drop's to unmap;
+            // the name stays, because a foreign host's ring is not ours to
+            // unlink - the replacement's own create replaces it.
             if !ring.current() {
                 drop(ring);
-                Ring::unlink(name);
                 return Err(format!("the frame ring {name} was written by another build"));
             }
             Ok(ring)
@@ -513,10 +512,14 @@ mod tests {
         // SAFETY: the ring is mapped and holds a header.
         unsafe { (*ring.header()).version.store(1, Ordering::Release) };
         assert!(Ring::open(name).is_err(), "an older version is refused");
-        // The refused segment's name goes with the refusal, so a replacement
-        // host starts fresh instead of finding the same stale ring.
-        let gone = Ring::open(name).err().expect("the refused ring's name is unlinked");
-        assert!(gone.contains("is not there"), "the refused segment was unlinked: {gone}");
+        // **The refused segment is left for its own host.** Unlinking another
+        // host's ring would take the picture out from under a client driving
+        // it; the replacement's own create is what replaces the name.
+        let kept = Ring::open(name).err().expect("the refused ring's host still holds it");
+        assert!(
+            kept.contains("written by another build"),
+            "a foreign ring is refused without being unlinked: {kept}"
+        );
 
         // A segment shorter than this header, carrying a valid magic,
         // version and length field: the LENGTH clause must be what refuses

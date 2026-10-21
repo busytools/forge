@@ -471,13 +471,21 @@ mod tests {
     #[test]
     fn a_show_cue_is_acknowledged_only_with_a_host() {
         use super::super::osr::Ring;
-        use super::{ShowTarget, apply_show};
+        use super::{Header, ShowTarget, apply_show};
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        struct Recorder(AtomicBool);
-        impl ShowTarget for Recorder {
+        struct Recorder<'a> {
+            header: &'a Header,
+            called: AtomicBool,
+            ack_seen: AtomicBool,
+        }
+        impl ShowTarget for Recorder<'_> {
             fn show_page(&self) {
-                self.0.store(true, Ordering::Release);
+                self.called.store(true, Ordering::Release);
+                self.ack_seen.store(
+                    self.header.show_applied.load(Ordering::Acquire) != 0,
+                    Ordering::Release,
+                );
             }
         }
 
@@ -485,7 +493,8 @@ mod tests {
         let ring = Ring::create(name, 4, 4).expect("a test ring");
         // SAFETY: the ring is mapped and holds a header.
         let header = unsafe { &*ring.header() };
-        let recorder = Recorder(AtomicBool::new(false));
+        let recorder =
+            Recorder { header, called: AtomicBool::new(false), ack_seen: AtomicBool::new(false) };
 
         apply_show(header, 3, None);
         assert_eq!(
@@ -493,10 +502,14 @@ mod tests {
             0,
             "a cue with no host is not acknowledged as applied"
         );
-        assert!(!recorder.0.load(Ordering::Acquire), "no host, no visibility calls");
+        assert!(!recorder.called.load(Ordering::Acquire), "no host, no visibility calls");
 
         apply_show(header, 3, Some(&recorder));
-        assert!(recorder.0.load(Ordering::Acquire), "the host took the visibility calls");
+        assert!(recorder.called.load(Ordering::Acquire), "the host took the visibility calls");
+        assert!(
+            !recorder.ack_seen.load(Ordering::Acquire),
+            "the acknowledgment follows the visibility calls, never precedes them"
+        );
         assert_eq!(
             header.show_applied.load(Ordering::Acquire),
             3,
