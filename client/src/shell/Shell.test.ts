@@ -535,6 +535,78 @@ describe('the shell at launch', () => {
   });
 });
 
+describe('a shell that is torn down', () => {
+  /**
+   * **The connection is the shell's, so it goes when the shell does.** A
+   * connection left behind keeps reconnecting to the forge it lost - and every
+   * failed attempt reports to the console, which is a worker still writing
+   * while the run is closing it.
+   */
+  it('leaves no socket behind', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1);
+    expect(forge.live(), 'the launch did not hold a connection').toBe(1);
+
+    const warned: string[] = [];
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
+      warned.push(String(args[0]));
+    });
+    try {
+      if (app === null) throw new Error('the shell was never mounted');
+      await unmount(app);
+      app = null;
+      await until(() => forge.live() === 0);
+      expect(forge.live(), 'the shell left its socket open').toBe(0);
+
+      // The forge going away is what the run's own teardown does to a shell.
+      await forge.close();
+      forges.length = 0;
+      // A leak would reconnect on the connection's own 50 ms backoff, so drive
+      // that clock rather than waiting it out.
+      vi.useFakeTimers();
+      try {
+        await vi.advanceTimersByTimeAsync(150);
+      } finally {
+        vi.useRealTimers();
+      }
+      // The retry socket's failure is real I/O, which lands on the event loop.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(
+      warned.filter((line) => line.includes('the socket to')),
+      'a torn-down shell kept reconnecting',
+    ).toEqual([]);
+  });
+
+  /**
+   * **A launch still in flight resolves into a shell that has gone.** `take`
+   * would store a connection nothing draws through, and it would reconnect
+   * forever - the same console noise, from the one path the destroy-time
+   * close cannot see.
+   */
+  it('closes a connection that lands after the shell is gone', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'held');
+    forges.push(forge);
+    await openAt('/connect', forge.address);
+    await forge.attached;
+    expect(forge.live(), 'the held launch never took a socket').toBe(1);
+
+    if (app === null) throw new Error('the shell was never mounted');
+    await unmount(app);
+    app = null;
+    // The launch lands now, into the destroyed shell.
+    forge.greet();
+    await until(() => forge.live() === 0);
+
+    expect(forge.live(), 'a connection taken after the shell was destroyed survived').toBe(0);
+  });
+});
+
 describe('a forge that is not the protocol this client speaks', () => {
   /**
    * A version difference is never silent and never a gate: which build is
