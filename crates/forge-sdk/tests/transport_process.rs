@@ -19,6 +19,10 @@ fn orphan_mock_path() -> String {
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_claude_orphan.sh").into()
 }
 
+fn lingering_mock_path() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_claude_lingering.sh").into()
+}
+
 /// Ceiling on every wait below. A condition that never holds fails the
 /// test; it never turns into a longer sleep.
 const WAIT_DEADLINE: Duration = Duration::from_secs(15);
@@ -84,6 +88,46 @@ async fn close_kills_a_descendant_that_outlives_the_child() {
     assert!(
         wait_until_gone(pid).await,
         "a descendant spawned by the session child outlived the teardown: pid {pid}"
+    );
+}
+
+/// The child exits on its own and a descendant stays behind: teardown
+/// still takes the descendant. This is the graceful arm, where the group
+/// signal follows a clean wait rather than the kill fallback.
+#[tokio::test]
+async fn close_kills_a_descendant_after_a_clean_child_exit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("lingering.pid");
+    let opts = Options {
+        binary: lingering_mock_path(),
+        env: [("FORGE_TEST_ORPHAN_MARKER".to_owned(), marker.to_string_lossy().into_owned())]
+            .into(),
+        ..Options::default()
+    };
+
+    let mut sub = Subprocess::spawn(&opts).await.expect("spawn");
+    drop(sub.read_line().await.expect("read").expect("init line"));
+    // The fixture writes its descendant's pid once the handshake is
+    // answered, so the marker doubles as proof the session got that far.
+    sub.write_line(
+        "{\"type\":\"control_request\",\"request_id\":\"init-1\",\
+         \"request\":{\"subtype\":\"initialize\",\"protocolVersion\":\"1.0\"}}\n",
+    )
+    .await
+    .expect("initialize");
+
+    let pid = wait_for_descendant_pid(&marker).await;
+    let _orphan = Orphan(pid);
+    assert!(is_running(pid), "the fixture's descendant must be running before teardown: pid {pid}");
+
+    let outcome = tokio::time::timeout(WAIT_DEADLINE, sub.close())
+        .await
+        .expect("teardown must return within the deadline");
+    assert!(outcome.is_ok(), "a child that exits on stdin EOF closes clean: {outcome:?}");
+
+    assert!(
+        wait_until_gone(pid).await,
+        "a descendant outlived a clean teardown of its session: pid {pid}"
     );
 }
 
