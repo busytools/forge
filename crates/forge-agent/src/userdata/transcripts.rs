@@ -2,7 +2,9 @@
 //! dir's `projects/` tree, each directory named for the path the
 //! session ran in.
 
-use crate::userdata::catalog::scan::{SessionTagCache, project_key_for_directory, tag_of};
+use crate::userdata::catalog::scan::{
+    SessionTagCache, project_key_for_directory, tag_and_project_of,
+};
 use forge_primitives::worker_tag;
 use forge_sdk::projects_dir_for;
 use std::path::{Path, PathBuf};
@@ -21,19 +23,27 @@ pub enum TranscriptError {
     Unreadable { path: PathBuf, source: std::io::Error },
 }
 
-/// The session id of the newest transcript in `run_dir`'s directory that
-/// carries `label`'s worker tag, or `None` when the directory holds none.
+/// The newest transcript in `run_dir`'s directory that carries `label`'s
+/// worker tag AND was tagged by `project`: its session id and whether its
+/// row predates the project field (`true` means the adopting project must
+/// stamp it). `None` when the directory holds no match.
 ///
 /// The tag is what says whose session a transcript is, not the
 /// directory: everything that ran with that cwd writes there, the
 /// worker's own subagents included, so the newest file in the directory
-/// is often not the worker's.
+/// is often not the worker's. The project (the tag row's `project`
+/// field) is the second half: the composed worktree directory is shared
+/// across a repository's projects, so a label alone would let another
+/// project resume this session. A tag row written before the field
+/// existed carries no project and stays eligible, flagged so the caller
+/// can bound the window to one adoption.
 pub fn newest_worker_session(
     config_dir: &Path,
     run_dir: &Path,
     label: &str,
+    project: &str,
     tag_cache: Option<&SessionTagCache>,
-) -> Result<Option<String>, TranscriptError> {
+) -> Result<Option<(String, bool)>, TranscriptError> {
     let key = project_key_for_directory(Some(&run_dir.to_string_lossy()));
     let dir = projects_dir_for(config_dir).join(key);
     let entries = match std::fs::read_dir(&dir) {
@@ -42,7 +52,7 @@ pub fn newest_worker_session(
         Err(source) => return Err(TranscriptError::Unreadable { path: dir, source }),
     };
     let wanted = worker_tag(label);
-    let mut newest: Option<(SystemTime, String)> = None;
+    let mut newest: Option<(SystemTime, String, bool)> = None;
     for entry in entries {
         let entry =
             entry.map_err(|source| TranscriptError::Unreadable { path: dir.clone(), source })?;
@@ -67,26 +77,31 @@ pub fn newest_worker_session(
         // so the winner does not depend on the order the directory
         // happens to list.
         let candidate = (modified, session_id);
-        if newest.as_ref().is_some_and(|(best, id)| candidate <= (*best, id.as_str())) {
+        if newest.as_ref().is_some_and(|(best, id, _)| candidate <= (*best, id.as_str())) {
             continue;
         }
-        if read_tag(&path, metadata.len(), tag_cache)?.as_deref() != Some(wanted.as_str()) {
+        let (tag, owner) = read_tag(&path, metadata.len(), tag_cache)?;
+        if tag.as_deref() != Some(wanted.as_str()) {
             continue;
         }
-        newest = Some((modified, session_id.to_owned()));
+        if owner.as_deref().is_some_and(|owner| owner != project) {
+            continue;
+        }
+        newest = Some((modified, session_id.to_owned(), owner.is_none()));
     }
-    Ok(newest.map(|(_, session_id)| session_id))
+    Ok(newest.map(|(_, session_id, restamp)| (session_id, restamp)))
 }
 
-/// The last tag the transcript at `path` carries.
+/// The last tag the transcript at `path` carries, and the project its row
+/// names when it carries one.
 fn read_tag(
     path: &Path,
     size: u64,
     tag_cache: Option<&SessionTagCache>,
-) -> Result<Option<String>, TranscriptError> {
+) -> Result<(Option<String>, Option<String>), TranscriptError> {
     let unreadable = |source| TranscriptError::Unreadable { path: path.to_path_buf(), source };
     let mut file = std::fs::File::open(path).map_err(unreadable)?;
-    tag_of(path, &mut file, size, tag_cache).map_err(unreadable)
+    tag_and_project_of(path, &mut file, size, tag_cache).map_err(unreadable)
 }
 
 #[cfg(test)]
@@ -112,8 +127,14 @@ mod tests {
         let listed = session_ids(&dir);
         let newest = listed[1].clone();
         write_session(&dir, &newest, "steward", 1_800_000_000);
-        let found = newest_worker_session(root.path(), run_dir, "steward", None).expect("lookup");
-        assert_eq!(found, Some(newest), "the label's most recent session is the one to resume");
+        let found = newest_worker_session(root.path(), run_dir, "steward", "Default/forge", None)
+            .expect("lookup");
+        assert_eq!(
+            found,
+            Some((newest, true)),
+            "the label's most recent session is the one to resume, and its pre-field row needs \
+             stamping",
+        );
     }
 
     /// Everything that ran in this directory writes here, so the newest
@@ -128,8 +149,40 @@ mod tests {
         write_session(&dir, "mine", "steward", 1_700_000_000);
         write_session(&dir, "other-worker", "reviewer", 1_800_000_000);
         write_untagged_session(&dir, "untagged", 1_900_000_000);
-        let found = newest_worker_session(root.path(), run_dir, "steward", None).expect("lookup");
-        assert_eq!(found, Some("mine".to_owned()));
+        let found = newest_worker_session(root.path(), run_dir, "steward", "Default/forge", None)
+            .expect("lookup");
+        assert_eq!(found, Some(("mine".to_owned(), true)));
+    }
+
+    /// The composed worktree directory is shared across a repository's
+    /// projects, so the label alone is not enough: another project's
+    /// tagged session must not be resumed. A tag row written before the
+    /// project field existed carries none and stays eligible.
+    #[test]
+    fn another_projects_session_in_the_shared_directory_is_not_resumed() {
+        let root = tempfile::tempdir().expect("config dir");
+        let run_dir = Path::new("/p/.claude/worktrees/w");
+        let dir = transcript_dir(root.path(), run_dir);
+        write_project_session(&dir, "theirs", "steward", "Default/proj-a", 1_800_000_000);
+        write_project_session(&dir, "mine", "steward", "Default/proj-b", 1_700_000_000);
+        write_session(&dir, "old", "steward", 1_600_000_000);
+
+        let found = newest_worker_session(root.path(), run_dir, "steward", "Default/proj-b", None)
+            .expect("lookup");
+        assert_eq!(
+            found,
+            Some(("mine".to_owned(), false)),
+            "proj-a's newer session is skipped in the directory both projects compose",
+        );
+
+        std::fs::remove_file(dir.join("mine.jsonl")).expect("remove mine");
+        let found = newest_worker_session(root.path(), run_dir, "steward", "Default/proj-b", None)
+            .expect("lookup");
+        assert_eq!(
+            found,
+            Some(("old".to_owned(), true)),
+            "a tag row with no project field stays eligible and is flagged for stamping",
+        );
     }
 
     /// Two sessions can carry the same timestamp: a restored or synced
@@ -145,8 +198,9 @@ mod tests {
         for session_id in ["aaaa", "mmmm", "zzzz"] {
             write_session(&dir, session_id, "steward", 1_700_000_000);
         }
-        let found = newest_worker_session(root.path(), run_dir, "steward", None).expect("lookup");
-        assert_eq!(found, Some("zzzz".to_owned()), "the greater id wins an mtime tie");
+        let found = newest_worker_session(root.path(), run_dir, "steward", "Default/forge", None)
+            .expect("lookup");
+        assert_eq!(found, Some(("zzzz".to_owned(), true)), "the greater id wins an mtime tie");
     }
 
     #[test]
@@ -161,8 +215,9 @@ mod tests {
         for sibling in ["other.jsonl.partial", "other.jsonl.bak"] {
             write_file(&dir.join(sibling), tagged, 1_900_000_000);
         }
-        let found = newest_worker_session(root.path(), run_dir, "steward", None).expect("lookup");
-        assert_eq!(found, Some("mine".to_owned()));
+        let found = newest_worker_session(root.path(), run_dir, "steward", "Default/forge", None)
+            .expect("lookup");
+        assert_eq!(found, Some(("mine".to_owned(), true)));
     }
 
     #[test]
@@ -172,6 +227,7 @@ mod tests {
             root.path(),
             Path::new("/p/.claude/worktrees/never"),
             "steward",
+            "Default/forge",
             None,
         );
         assert_eq!(found.expect("a missing directory is not a failure"), None);
@@ -202,6 +258,20 @@ mod tests {
     /// `modified` (unix seconds).
     fn write_session(dir: &Path, session_id: &str, label: &str, modified: u64) {
         let tag = format!("{{\"type\":\"tag\",\"tag\":\"forge:worker:{label}\"}}\n");
+        write_file(&dir.join(format!("{session_id}.jsonl")), &tag, modified);
+    }
+
+    /// A session tagged for `label` AND the project that tagged it.
+    fn write_project_session(
+        dir: &Path,
+        session_id: &str,
+        label: &str,
+        project: &str,
+        modified: u64,
+    ) {
+        let tag = format!(
+            "{{\"type\":\"tag\",\"tag\":\"forge:worker:{label}\",\"project\":\"{project}\"}}\n"
+        );
         write_file(&dir.join(format!("{session_id}.jsonl")), &tag, modified);
     }
 

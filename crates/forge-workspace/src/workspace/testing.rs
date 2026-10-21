@@ -443,6 +443,7 @@ impl Workspace {
             command_senders: Mutex::new(HashMap::new()),
             session_teardowns: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
+            worktree_claims: std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
             deaths: Mutex::new(HashMap::new()),

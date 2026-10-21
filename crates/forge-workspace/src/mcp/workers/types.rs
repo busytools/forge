@@ -12,7 +12,7 @@ use crate::SessionSlot;
 
 /// Cwd a worker's tag-write should land at. For git-repo workers,
 /// claude's `--worktree <label>` flag forks the subprocess into
-/// `<root>/.claude/worktrees/<label>/` and writes the session JSONL under
+/// `<base>/.claude/worktrees/<label>/` and writes the session JSONL under
 /// THAT sanitised path, not the tree's root. The tag-write must follow.
 ///
 /// `root` is the tree the worker's spawn resolved: its own when the spawn
@@ -21,12 +21,16 @@ use crate::SessionSlot;
 /// `label` is the worker's charter label; `is_git_repo_at_spawn` is the
 /// cached flag on `WorkerEntry`. Non-git workers run in that root
 /// unmodified.
+///
+/// The base is the CLI's canonical root, not `root` itself:
+/// [`forge_agent::env::worktree::worktree_base`] resolves a project that
+/// is a linked worktree to the main checkout, which is where the CLI
+/// creates the worker's worktree (#2460).
 pub fn worker_tag_dir(root: &Path, label: &str, is_git_repo_at_spawn: bool) -> PathBuf {
-    if is_git_repo_at_spawn {
-        root.join(".claude/worktrees").join(label)
-    } else {
-        root.to_path_buf()
+    if !is_git_repo_at_spawn {
+        return root.to_path_buf();
     }
+    forge_agent::env::worktree::worktree_base(root).join(".claude/worktrees").join(label)
 }
 
 /// Whether a persisted worker row can still start a session. The boot
@@ -53,7 +57,9 @@ pub fn worker_tag_dir(root: &Path, label: &str, is_git_repo_at_spawn: bool) -> P
 /// `is_git_repo` is `None` on a row written before the field existed. That
 /// answers "yes, it can start": the spawn probes and records the flag, and
 /// a row whose directory forge cannot compose is never hidden on a guess.
-/// The launchpad calls this per row per frame, so it must not probe.
+/// The launchpad calls this per row per frame: the first call per root
+/// resolves the canonical base once (memoised), and every later call is a
+/// stat.
 pub fn worker_row_can_start(
     project_root: &Path,
     label: &str,
@@ -167,7 +173,7 @@ pub struct WorkerEntry {
     /// Drives the Inspector pane's WORKTREE section render and
     /// the "in worktree" status-string suffix. `true` means the
     /// worker was spawned with `--worktree=<label>` and is operating
-    /// in claude's auto-created `<project>/.claude/worktrees/<label>/`;
+    /// in claude's auto-created `<base>/.claude/worktrees/<label>/`;
     /// `false` means non-git-repo project (no worktree, plain cwd).
     pub is_git_repo_at_spawn: bool,
     /// Cached at spawn time: the tree this worker runs in when the spawn
@@ -279,6 +285,49 @@ mod is_git_repo_at_spawn_tests {
     fn worker_entry_carries_is_git_repo_at_spawn_false() {
         let entry = fake_entry(false);
         assert!(!entry.is_git_repo_at_spawn);
+    }
+}
+
+#[cfg(test)]
+mod worker_tag_dir_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status =
+            std::process::Command::new("git").arg("-C").arg(dir).args(args).status().expect("git");
+        assert!(status.success(), "git {args:?} in {}", dir.display());
+    }
+
+    /// A project that is a linked worktree composes its workers' tag
+    /// directory under the MAIN checkout; a non-git worker runs in its
+    /// tree itself.
+    #[test]
+    fn worker_tag_dir_composes_the_cli_location() {
+        let holder = tempdir().expect("holder");
+        let main = holder.path().join("main");
+        std::fs::create_dir_all(&main).expect("main dir");
+        run_git(&main, &["init", "-q"]);
+        run_git(&main, &["config", "user.email", "t@example.com"]);
+        run_git(&main, &["config", "user.name", "Test"]);
+        run_git(&main, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.join("README.md"), "seed").expect("write seed");
+        run_git(&main, &["add", "."]);
+        run_git(&main, &["commit", "-q", "-m", "init"]);
+        let main = std::fs::canonicalize(&main).expect("canonical main");
+        let linked = holder.path().join("linked");
+        run_git(&main, &["worktree", "add", "-q", "-b", "linked", linked.to_str().expect("utf8")]);
+
+        assert_eq!(
+            worker_tag_dir(&linked, "old", true),
+            main.join(".claude").join("worktrees").join("old"),
+            "a linked-worktree project composes under the main checkout",
+        );
+        assert_eq!(
+            worker_tag_dir(&linked, "old", false),
+            linked,
+            "a non-git worker runs in the tree itself",
+        );
     }
 }
 

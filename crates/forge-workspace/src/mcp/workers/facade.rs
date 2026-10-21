@@ -89,11 +89,11 @@ pub enum WorkerSpawnError {
     /// Spawn was dispatched but the workspace returned an error
     /// (e.g. tag-write failed). Forwarded as-is to the LLM.
     DispatchFailed { message: String },
-    /// claude failed to create the git worktree for `--worktree <label>`.
-    /// Reason text comes from claude's error output, passed through
-    /// verbatim so the lead's LLM can decide whether to retry (e.g.
-    /// pick a different label, or `git commit --allow-empty` first
-    /// in the empty-repo case).
+    /// The worker's git worktree is missing or unusable, so nothing was
+    /// spawned: claude could not create `--worktree <label>` (its reason
+    /// passed through verbatim), or the composed path belongs to another
+    /// project's checkout or worker and was refused before anything
+    /// could touch it.
     WorktreeCreationFailed { reason: String },
     /// `resume_session` was set and the label's prior session could not
     /// be looked up: the transcript directory, or a transcript in it, is
@@ -463,12 +463,28 @@ pub(super) fn validate_worker_spawn(
 /// Undo the worktree a refused spawn's `ensure_worker_worktree` step
 /// created, so a refusal strands neither worktree nor branch. `ensured`
 /// is `None` when this spawn never touched a worktree.
+///
+/// A concurrent spawn anywhere in the repository that won this tree holds
+/// it now - a claim, or a live seat, in ANY project - so the rollback
+/// leaves it alone.
 fn discard_refused_worktree(
+    ws: &Workspace,
+    project_key: &crate::target::ProjectKey,
     repo: &std::path::Path,
     label: &str,
     ensured: Option<(std::path::PathBuf, forge_agent::env::worktree::WorktreeEnsure)>,
 ) {
     let Some((worktree, outcome)) = ensured else { return };
+    if let Some(holder) = ws.worktree_held_elsewhere(&worktree, project_key, label) {
+        tracing::debug!(
+            target: "forge_workspace::mcp::workers",
+            %label,
+            worktree = %worktree.display(),
+            %holder,
+            "a refused spawn's worktree is held by another seat; the rollback leaves it",
+        );
+        return;
+    }
     if let Some(warning) =
         forge_agent::env::worktree::discard_worker_worktree(repo, label, &worktree, outcome)
     {
@@ -643,6 +659,15 @@ impl WorkerFacade for ProdWorkerFacade {
         // ensure did is kept so a refusal can undo exactly that work -
         // and, on the fallback below, so the fresh session inherits it.
         let mut ensured = None;
+        // The checkout the worker's worktree belongs to: the CLI's
+        // canonical root, which is the main checkout when the project is
+        // itself a linked worktree (#2460). Every worktree operation here
+        // - the ensure, the leftover clear under it, and a refusal's
+        // discard - aims at it, not at the project path.
+        let base = forge_agent::env::worktree::worktree_base(&root);
+        // Held until this function returns, after the core has inserted
+        // the worker or refused it.
+        let mut _worktree_claim: Option<crate::workspace::WorktreeClaimGuard> = None;
         let (resume_existing, session_choice) = if resume_session {
             // The directory the label's sessions ran in: its worktree, or
             // the project root for a worker spawned without one. The
@@ -652,7 +677,42 @@ impl WorkerFacade for ProdWorkerFacade {
             let run_dir =
                 crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git_repo_at_spawn);
             if is_git_repo_at_spawn {
-                match forge_agent::env::worktree::ensure_worker_worktree(&root, &label, &run_dir) {
+                // Claim the path before the ensure or the transcript
+                // lookup can touch it, and hold it through the dispatch:
+                // the claim is the atomic half of the collision check, so
+                // a concurrent spawn in another project cannot pass
+                // between the check and this spawn's insert.
+                let claim = ws
+                    .claim_worktree(
+                        &run_dir,
+                        &cp.project_key,
+                        &label,
+                        crate::workspace::WorktreeOp::Spawn,
+                    )
+                    .map_err(|reason| WorkerSpawnError::WorktreeCreationFailed {
+                        reason: format!("this worker's worktree cannot be shared: {reason}"),
+                    })?;
+                // Refuse before the ensure or the transcript lookup can
+                // touch a tree that belongs to another project (#2460):
+                // the base is repository-global, so the label alone does
+                // not identify this project's worktree. The ensure is not
+                // read-only - it clears a deregistered leftover and
+                // rewrites a stale link - and the lookup would read that
+                // project's conversation.
+                if let Some(collision) = ws.worktree_collision(
+                    &run_dir,
+                    &cp.project_key,
+                    &label,
+                    crate::workspace::WorktreeOp::Spawn,
+                ) {
+                    return Err(WorkerSpawnError::WorktreeCreationFailed {
+                        reason: format!("this worker's worktree cannot be shared: {collision}"),
+                    });
+                }
+                // Released when this function returns, after the core has
+                // inserted the worker or refused it.
+                _worktree_claim = Some(claim);
+                match forge_agent::env::worktree::ensure_worker_worktree(&base, &label, &run_dir) {
                     Ok(outcome) => ensured = Some((run_dir.clone(), outcome)),
                     Err(err) => {
                         return Err(WorkerSpawnError::WorktreeCreationFailed {
@@ -662,7 +722,36 @@ impl WorkerFacade for ProdWorkerFacade {
                 }
             }
             match ws.resolve_worker_resume_session(&view.org, &view.name, &run_dir, &label) {
-                Ok(ResumeTarget::Found(session_id)) => (Some(session_id), SessionChoice::Resumed),
+                Ok(ResumeTarget::Found { session_id, restamp }) => {
+                    if restamp {
+                        // A pre-upgrade tag row carries no project; stamp
+                        // it now, before the spawn, so the migration
+                        // window is this one adoption and not every
+                        // project's to reuse.
+                        if let Err(error) = ws.stamp_adopted_worker_transcript(
+                            &cp.project_key,
+                            &label,
+                            &session_id,
+                            &run_dir,
+                        ) {
+                            // Like every other failure after the ensure:
+                            // undo the worktree it minted.
+                            discard_refused_worktree(
+                                &ws,
+                                &cp.project_key,
+                                &base,
+                                &label,
+                                ensured.take(),
+                            );
+                            return Err(WorkerSpawnError::DispatchFailed {
+                                message: format!(
+                                    "stamping the adopted transcript's project failed: {error}"
+                                ),
+                            });
+                        }
+                    }
+                    (Some(session_id), SessionChoice::Resumed)
+                }
                 // Best effort: a label with nothing to resume starts a
                 // new session and the reply says so. The worktree the
                 // ensure minted stays - it is where the new session runs.
@@ -672,7 +761,7 @@ impl WorkerFacade for ProdWorkerFacade {
                 // answered, leaving the caller holding context it does
                 // not have.
                 Err(error) => {
-                    discard_refused_worktree(&root, &label, ensured.take());
+                    discard_refused_worktree(&ws, &cp.project_key, &base, &label, ensured.take());
                     return Err(WorkerSpawnError::ResumeLookupFailed {
                         label,
                         message: error.to_string(),
@@ -708,7 +797,7 @@ impl WorkerFacade for ProdWorkerFacade {
             return_to: Some(tx),
         };
         if let Err(err) = ws.dispatch(cmd) {
-            discard_refused_worktree(&root, &spawn_label, ensured.take());
+            discard_refused_worktree(&ws, &cp.project_key, &base, &spawn_label, ensured.take());
             return Err(WorkerSpawnError::DispatchFailed {
                 message: format!("dispatch failed: {err:?}"),
             });
@@ -729,7 +818,7 @@ impl WorkerFacade for ProdWorkerFacade {
                 Ok(reply)
             }
             Ok(Err(message)) => {
-                discard_refused_worktree(&root, &spawn_label, ensured.take());
+                discard_refused_worktree(&ws, &cp.project_key, &base, &spawn_label, ensured.take());
                 // The sync path's reply is a string the spawn handler
                 // built, not an SDK error, so there is no variant to
                 // name and the heuristics answer.
@@ -2158,5 +2247,153 @@ mod worktree_creation_failed_tests {
             WorkerSpawnError::DispatchFailed { message: message.to_owned() },
             "the cleanup refusal stays DispatchFailed however its label reads",
         );
+    }
+}
+
+#[cfg(test)]
+mod discard_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let status =
+            std::process::Command::new("git").arg("-C").arg(dir).args(args).status().expect("git");
+        assert!(status.success(), "git {args:?} in {}", dir.display());
+    }
+
+    /// A main checkout with proj-a and proj-b linked worktrees declared,
+    /// plus an account.
+    fn linked_projects() -> (Arc<Workspace>, std::path::PathBuf, Vec<tempfile::TempDir>) {
+        let repo = tempfile::tempdir().expect("repo");
+        let main = repo.path().join("main");
+        std::fs::create_dir_all(&main).expect("main dir");
+        run_git(&main, &["init", "-q"]);
+        run_git(&main, &["config", "user.email", "t@example.com"]);
+        run_git(&main, &["config", "user.name", "Test"]);
+        run_git(&main, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.join("README.md"), "seed").expect("write seed");
+        run_git(&main, &["add", "."]);
+        run_git(&main, &["commit", "-q", "-m", "init"]);
+        let main = std::fs::canonicalize(&main).expect("canonical main");
+        let holder = tempfile::tempdir().expect("holder");
+        let linked_a = holder.path().join("proj-a");
+        let linked_b = holder.path().join("proj-b");
+        run_git(
+            &main,
+            &["worktree", "add", "-q", "-b", "proj-a", linked_a.to_str().expect("utf8")],
+        );
+        run_git(
+            &main,
+            &["worktree", "add", "-q", "-b", "proj-b", linked_b.to_str().expect("utf8")],
+        );
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"a\"]\n\
+                 [[orgs.projects]]\nname = \"proj-a\"\npath = \"{}\"\n\
+                 [[orgs.projects]]\nname = \"proj-b\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                linked_a.display(),
+                linked_b.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        (ws, main, vec![repo, holder, cfg])
+    }
+
+    fn key_of(ws: &Arc<Workspace>, name: &str) -> crate::ProjectKey {
+        ws.list_projects().into_iter().find(|v| v.name == name).expect("project").key
+    }
+
+    fn winner_entry(project: &str, label: &str) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: "test".to_owned(),
+            slot: SessionSlot::worker("Default", project, label),
+            session_id: None,
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::lead("Default", project),
+            needs_tag: false,
+            is_git_repo_at_spawn: true,
+            cwd: None,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    fn shared_worktree(main: &std::path::Path) -> std::path::PathBuf {
+        let shared = main.join(".claude").join("worktrees").join("shared");
+        std::fs::create_dir_all(shared.parent().expect("worktrees root")).expect("mkdir");
+        run_git(
+            main,
+            &["worktree", "add", "-q", "-b", "worktree-shared", shared.to_str().expect("utf8")],
+        );
+        shared
+    }
+
+    fn branch_stands(main: &std::path::Path) -> bool {
+        let branches = std::process::Command::new("git")
+            .args(["branch", "--list", "worktree-shared"])
+            .current_dir(main)
+            .output()
+            .expect("git branch");
+        !String::from_utf8_lossy(&branches.stdout).trim().is_empty()
+    }
+
+    /// A rollback never discards a tree another project's live worker
+    /// holds: a scan of the refused caller's own project misses the
+    /// cross-project winner and deletes its tree and branch.
+    #[test]
+    fn a_rollback_keeps_a_tree_another_project_holds() {
+        let (ws, main, _keep) = linked_projects();
+        let shared = shared_worktree(&main);
+        ws.insert_live_worker(&key_of(&ws, "proj-a"), winner_entry("proj-a", "shared"));
+
+        discard_refused_worktree(
+            &ws,
+            &key_of(&ws, "proj-b"),
+            &main,
+            "shared",
+            Some((
+                shared.clone(),
+                forge_agent::env::worktree::WorktreeEnsure::CreatedWithNewBranch,
+            )),
+        );
+
+        assert!(shared.exists(), "another project's live worker's tree must survive the rollback");
+        assert!(branch_stands(&main), "and its branch is not reaped");
+    }
+
+    /// Two resumes of one label: the loser mints the tree, the winner takes
+    /// the registry under the same project and label, and the loser's
+    /// rollback must leave the winner's tree and branch alone. The sibling
+    /// test's holder is another project; this is the same-project winner
+    /// the skip exists for (a non-git holder's tree is the project root and
+    /// never matches).
+    #[test]
+    fn a_losing_resume_leaves_the_winners_worktree_alone() {
+        let (ws, main, _keep) = linked_projects();
+        let shared = shared_worktree(&main);
+        ws.insert_live_worker(&key_of(&ws, "proj-a"), winner_entry("proj-a", "shared"));
+
+        discard_refused_worktree(
+            &ws,
+            &key_of(&ws, "proj-a"),
+            &main,
+            "shared",
+            Some((
+                shared.clone(),
+                forge_agent::env::worktree::WorktreeEnsure::CreatedWithNewBranch,
+            )),
+        );
+
+        assert!(shared.exists(), "the winner's tree survives the losing resume's rollback");
+        assert!(branch_stands(&main), "and the branch the loser minted is not reaped");
     }
 }

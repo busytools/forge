@@ -13,18 +13,26 @@ use forge_sdk::{Error, projects_dir_for};
 use crate::userdata::catalog::scan::is_valid_uuid;
 
 /// Tag a session. Pass `None` to clear the tag (appends an empty-string
-/// entry which `list_sessions` interprets as cleared).
+/// entry which `list_sessions` interprets as cleared). `project` is
+/// required: a tag row that names no project cannot be told from another
+/// project's.
+///
+/// The append is not fsynced, so a crash mid-write can lose the row; the
+/// scanner ignores an unterminated line and the next tag write restores
+/// it. The CLI names transcripts by session UUID, so a non-UUID stem is
+/// refused here rather than matched elsewhere.
 ///
 /// # Errors
 ///
-/// - [`Error::MessageParse`] when `session_id` is not a valid UUID or a
-///   non-None `tag` is empty after trimming.
+/// - [`Error::MessageParse`] when `session_id` is not a valid UUID, a
+///   non-None `tag` is empty after trimming, or `project` is empty.
 /// - [`Error::Io`] when the session file can't be found or the append
 ///   fails.
 pub fn tag_session(
     config_dir: &Path,
     session_id: &str,
     tag: Option<&str>,
+    project: &str,
     directory: Option<&str>,
 ) -> Result<(), Error> {
     validate_uuid(session_id)?;
@@ -38,9 +46,20 @@ pub fn tag_session(
             stripped.to_string()
         }
     };
+    if project.trim().is_empty() {
+        return Err(Error::message_parse(
+            "project must be non-empty: an unscoped tag row cannot be told from another \
+             project's",
+        ));
+    }
     let payload = json!({
         "type": "tag",
         "tag": stored,
+        // Scopes the tag to the forge project that wrote it, so a resume
+        // in another project composing the same worktree directory cannot
+        // claim this session. Required: a tag write that cannot name its
+        // project refuses rather than writing an unscoped row.
+        "project": project.trim(),
         "sessionId": session_id,
     });
     append_to_session(config_dir, session_id, directory, &payload)
@@ -111,7 +130,7 @@ mod tests {
     #[test]
     fn empty_tag_is_rejected() {
         let session_id = "550e8400-e29b-41d4-a716-446655440001";
-        let r = tag_session(&fake_config_dir(), session_id, Some("   "), None);
+        let r = tag_session(&fake_config_dir(), session_id, Some("   "), "Default/forge", None);
         assert!(matches!(r, Err(Error::MessageParse { .. })));
     }
 }
