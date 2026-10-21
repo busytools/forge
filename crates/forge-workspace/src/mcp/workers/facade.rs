@@ -728,19 +728,27 @@ impl WorkerFacade for ProdWorkerFacade {
                         // it now, before the spawn, so the migration
                         // window is this one adoption and not every
                         // project's to reuse.
-                        ws.stamp_adopted_worker_transcript(
+                        if let Err(error) = ws.stamp_adopted_worker_transcript(
                             &cp.project_key,
                             &label,
                             &session_id,
                             &run_dir,
-                        )
-                        .map_err(|error| {
-                            WorkerSpawnError::DispatchFailed {
+                        ) {
+                            // Like every other failure after the ensure:
+                            // undo the worktree it minted.
+                            discard_refused_worktree(
+                                &ws,
+                                &cp.project_key,
+                                &base,
+                                &label,
+                                ensured.take(),
+                            );
+                            return Err(WorkerSpawnError::DispatchFailed {
                                 message: format!(
                                     "stamping the adopted transcript's project failed: {error}"
                                 ),
-                            }
-                        })?;
+                            });
+                        }
                     }
                     (Some(session_id), SessionChoice::Resumed)
                 }

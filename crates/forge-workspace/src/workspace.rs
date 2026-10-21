@@ -5878,19 +5878,22 @@ impl Workspace {
         Ok(match found? {
             Some((session_id, restamp)) => {
                 if restamp {
-                    // A tag row that predates the project field can be
-                    // adopted from a directory only one declared project
-                    // composes: with two, the row could be either
-                    // project's, and adopting would hand one project the
-                    // other's conversation. Fail closed.
+                    // A tag row that predates the project field is adopted
+                    // only from a directory no OTHER declared project
+                    // reads; the check counts the sanitised key the lookup
+                    // opens, so a key collision counts even when the paths
+                    // differ.
                     let composing = self.projects_composing(run_dir, label);
-                    anyhow::ensure!(
-                        composing <= 1,
-                        "the transcript for '{label}' at '{}' predates project tags and {composing} \
-                         declared projects compose that directory, so which project it belongs to \
-                         is ambiguous",
-                        run_dir.display(),
-                    );
+                    if let Some((_, other)) =
+                        composing.iter().find(|(owner, name)| owner != org || name != project)
+                    {
+                        anyhow::bail!(
+                            "the transcript for '{label}' at '{}' predates project tags and is \
+                             in a directory project '{other}' composes, so it cannot be known to \
+                             be this project's",
+                            run_dir.display(),
+                        );
+                    }
                 }
                 ResumeTarget::Found { session_id, restamp }
             }
@@ -5921,17 +5924,32 @@ impl Workspace {
         .map_err(anyhow::Error::from)
     }
 
-    /// How many declared projects compose `run_dir` for `label`: their
-    /// worker worktrees would name the same directory.
-    fn projects_composing(&self, run_dir: &std::path::Path, label: &str) -> usize {
+    /// The declared projects whose transcript lookup for `label` reads
+    /// `run_dir`: by worker tree, by own checkout (a non-git worker), or
+    /// by the sanitised key the lookup actually opens.
+    fn projects_composing(&self, run_dir: &std::path::Path, label: &str) -> Vec<(String, String)> {
         let composed = std::fs::canonicalize(run_dir).unwrap_or_else(|_| run_dir.to_path_buf());
+        let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &run_dir.to_string_lossy(),
+        ));
+        let key_of = |dir: &std::path::Path| {
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &dir.to_string_lossy(),
+            ))
+        };
         self.list_projects()
             .into_iter()
             .filter(|view| {
-                let dir = crate::mcp::workers::types::worker_tag_dir(&view.path, label, true);
-                std::fs::canonicalize(&dir).unwrap_or(dir) == composed
+                let root = std::fs::canonicalize(&view.path).unwrap_or_else(|_| view.path.clone());
+                if root == composed || key_of(&root) == key {
+                    return true;
+                }
+                let dir = crate::mcp::workers::types::worker_tag_dir(&root, label, true);
+                let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+                dir == composed || key_of(&dir) == key
             })
-            .count()
+            .map(|view| (view.org, view.name))
+            .collect()
     }
 
     /// Release the per-project respawn in-flight guard. Paired with
@@ -17959,9 +17977,95 @@ provider = "anthropic"
         std::fs::write(jsonl_dir.join(format!("{newer}.jsonl")), &unstamped)
             .expect("write another pre-field transcript");
         let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
-        let err = facade
-            .spawn_worker(
-                &SessionSlot::lead("TestOrg", "proj-b"),
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &SessionSlot::lead("TestOrg", "proj-b"),
+                    "shared".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                    None,
+                    None,
+                )
+                .await
+        });
+        // A refusal returns without dispatching; a dispatch would block
+        // on the intercept, so the timeout is the fail-fast guard.
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), spawner)
+            .await
+            .expect("the refusal returns without dispatching")
+            .expect("facade task joins")
+            .expect_err("an ambiguous pre-field row is refused");
+        let crate::mcp::workers::facade::WorkerSpawnError::ResumeLookupFailed { message, .. } = err
+        else {
+            panic!("the refusal is the lookup: {err:?}");
+        };
+        assert!(message.contains("predates project tags"), "the refusal says why: {message}");
+    }
+
+    /// A stamp that fails after the ensure undoes the worktree it minted,
+    /// so a refused adoption strands neither worktree nor branch.
+    #[tokio::test]
+    async fn a_failed_stamp_discards_the_worktree_the_resume_minted() {
+        let repo = tempfile::tempdir().expect("repo");
+        let main = repo.path().join("main");
+        std::fs::create_dir_all(&main).expect("main dir");
+        run_git_in(&main, &["init", "-q"]);
+        run_git_in(&main, &["config", "user.email", "t@example.com"]);
+        run_git_in(&main, &["config", "user.name", "Test"]);
+        run_git_in(&main, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.join("README.md"), "seed").expect("write seed");
+        run_git_in(&main, &["add", "."]);
+        run_git_in(&main, &["commit", "-q", "-m", "init"]);
+        let main = std::fs::canonicalize(&main).expect("canonical main");
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n\
+                 [[orgs.projects]]\nname = \"demo\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                main.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let store = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+
+        let shared = main.join(".claude").join("worktrees").join("shared");
+        let shared_str = shared.to_string_lossy().replace('\\', "/");
+        let key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&shared_str));
+        let jsonl_dir = forge_sdk::projects_dir_for(cfg.path()).join(key);
+        std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
+        let theirs = "550e8400-e29b-41d4-a716-446655440084";
+        let transcript = jsonl_dir.join(format!("{theirs}.jsonl"));
+        std::fs::write(
+            &transcript,
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{shared_str}\"}}\n\
+                 {{\"type\":\"tag\",\"tag\":\"forge:worker:shared\"}}\n"
+            ),
+        )
+        .expect("write the pre-field transcript");
+        let mut perms = std::fs::metadata(&transcript).expect("stat").permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&transcript, perms).expect("make the transcript read-only");
+
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            facade.spawn_worker(
+                &SessionSlot::lead("TestOrg", "demo"),
                 "shared".to_owned(),
                 "charter".to_owned(),
                 None,
@@ -17970,14 +18074,111 @@ provider = "anthropic"
                 true,
                 None,
                 None,
-            )
-            .await
-            .expect_err("an ambiguous pre-field row is refused");
-        let crate::mcp::workers::facade::WorkerSpawnError::ResumeLookupFailed { message, .. } = err
-        else {
-            panic!("the refusal is the lookup: {err:?}");
+            ),
+        )
+        .await
+        .expect("the refused spawn returns")
+        .expect_err("a transcript that cannot be stamped refuses the resume");
+        let crate::mcp::workers::facade::WorkerSpawnError::DispatchFailed { message } = err else {
+            panic!("the refusal is the stamp: {err:?}");
         };
-        assert!(message.contains("ambiguous"), "the refusal says why: {message}");
+        assert!(
+            message.contains("stamping the adopted transcript's project failed"),
+            "the refusal names the stamp: {message}",
+        );
+        assert!(!shared.exists(), "the ensure's worktree was discarded with the refusal");
+    }
+
+    /// The transcript lookup keys a directory by its sanitised path, so
+    /// two non-git projects at `a-b` and `a/b` read the same transcripts.
+    /// A pre-field tag there is not known to be either project's, so both
+    /// refuse it instead of the first adopter taking the other's
+    /// conversation.
+    #[tokio::test]
+    async fn colliding_transcript_keys_refuse_a_pre_field_adoption_in_both_projects() {
+        let holder = tempfile::tempdir().expect("holder");
+        let a_dir = holder.path().join("a-b");
+        let b_dir = holder.path().join("a").join("b");
+        std::fs::create_dir_all(&a_dir).expect("a-b dir");
+        std::fs::create_dir_all(&b_dir).expect("a/b dir");
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n\
+                 [[orgs.projects]]\nname = \"proj-a\"\npath = \"{}\"\n\
+                 [[orgs.projects]]\nname = \"proj-b\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                a_dir.display(),
+                b_dir.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let store = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+
+        let a_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &a_dir.to_string_lossy(),
+        ));
+        let b_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &b_dir.to_string_lossy(),
+        ));
+        assert_eq!(a_key, b_key, "the fixture's two roots sanitise to one transcript key");
+        let jsonl_dir = forge_sdk::projects_dir_for(cfg.path()).join(&a_key);
+        std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
+        let theirs = "550e8400-e29b-41d4-a716-446655440090";
+        std::fs::write(
+            jsonl_dir.join(format!("{theirs}.jsonl")),
+            "{\"type\":\"user\",\"cwd\":\"/somewhere\"}\n\
+             {\"type\":\"tag\",\"tag\":\"forge:worker:shared\"}\n",
+        )
+        .expect("write the pre-field transcript");
+
+        let resume = |project: &'static str| {
+            let ws = Arc::clone(&ws);
+            async move {
+                let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    facade.spawn_worker(
+                        &SessionSlot::lead("TestOrg", project),
+                        "shared".to_owned(),
+                        "charter".to_owned(),
+                        None,
+                        None,
+                        false,
+                        true,
+                        None,
+                        None,
+                    ),
+                )
+                .await
+                .expect("the spawn returns")
+            }
+        };
+
+        for project in ["proj-a", "proj-b"] {
+            let err = match resume(project).await {
+                Ok(reply) => panic!("{project} adopted the colliding transcript: {reply:?}"),
+                Err(err) => err,
+            };
+            let crate::mcp::workers::facade::WorkerSpawnError::ResumeLookupFailed {
+                message, ..
+            } = err
+            else {
+                panic!("{project}'s refusal is the lookup: {err:?}");
+            };
+            assert!(
+                message.contains("predates project tags"),
+                "{project} refuses the ambiguous row: {message}",
+            );
+        }
     }
 
     /// The mirror of the recreation case: the row says the worker runs in

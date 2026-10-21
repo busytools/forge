@@ -13,12 +13,19 @@ use forge_sdk::{Error, projects_dir_for};
 use crate::userdata::catalog::scan::is_valid_uuid;
 
 /// Tag a session. Pass `None` to clear the tag (appends an empty-string
-/// entry which `list_sessions` interprets as cleared).
+/// entry which `list_sessions` interprets as cleared). `project` is
+/// required: a tag row that names no project cannot be told from another
+/// project's.
+///
+/// The append is not fsynced, so a crash mid-write can lose the row; the
+/// scanner ignores an unterminated line and the next tag write restores
+/// it. The CLI names transcripts by session UUID, so a non-UUID stem is
+/// refused here rather than matched elsewhere.
 ///
 /// # Errors
 ///
-/// - [`Error::MessageParse`] when `session_id` is not a valid UUID or a
-///   non-None `tag` is empty after trimming.
+/// - [`Error::MessageParse`] when `session_id` is not a valid UUID, a
+///   non-None `tag` is empty after trimming, or `project` is empty.
 /// - [`Error::Io`] when the session file can't be found or the append
 ///   fails.
 pub fn tag_session(
