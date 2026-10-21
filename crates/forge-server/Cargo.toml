@@ -96,3 +96,7 @@ uuid = { workspace = true }
 # A test reads back the records a site emitted, which needs a subscriber to
 # catch them with.
 tracing-subscriber = { workspace = true }
+# `test-util` enables `#[tokio::test(start_paused = true)]`. The write bound's
+# tests reach its 60 s without waiting it: the fake peer's write never
+# completes, and the paused clock advances to the bound the connection armed.
+tokio = { workspace = true, features = ["test-util"] }

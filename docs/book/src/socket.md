@@ -30,6 +30,14 @@ ask's own bound is longer. Every WebSocket client answers a ping itself, so a
 client needs no code for this; one that stops answering is disconnected,
 and its reconnect declares its subscriptions again like any other.
 
+**One frame write is bounded too.** The server ends a connection when a
+single write takes longer than 60 seconds: a peer that stopped reading
+holds that write open while answering no ping, and TCP can take minutes to
+report the socket gone. A frame that was partly written cannot be resumed,
+so the connection is torn down rather than the frame retried. The bound
+sits above the slowest frame measured - a 3.5 MB snapshot to a slow
+client, 31.6 s - and matches the ping's dead bound.
+
 ## The greeting
 
 The first message a client receives is the greeting, before it has asked

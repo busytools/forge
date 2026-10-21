@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::response::Response;
-use futures_util::StreamExt;
+use futures_util::{SinkExt as _, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 
 use base64::Engine as _;
@@ -18,14 +18,13 @@ use forge_primitives::browser::BrowserPart;
 use forge_primitives::document::DocumentRead;
 use forge_workspace::browser::{BrowserRelay, BrowserRequest, Notice, Release};
 
-use super::PROTOCOL_VERSION;
-use super::TransportState;
 use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
 use super::wire::{
     FileContentWire, OpenTimings, cap_message_record, cap_tool_records, conversation_for,
     encode_subject, encode_subject_timed, floor_cursor, page,
 };
+use super::{PROTOCOL_VERSION, TransportState, WRITE_BOUND, WriteStalled, write_within};
 use crate::live::Live;
 use crate::surface::{DictateOutcome, ViewSurface};
 use crate::{Command, DispatchError, SeatUpdate, SessionUpdate};
@@ -156,8 +155,12 @@ impl Keepalive {
     where
         S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
     {
-        use futures_util::SinkExt as _;
-        sink.send(Message::Ping(tokio_tungstenite::tungstenite::Bytes::new())).await?;
+        write_within(WRITE_BOUND, async {
+            sink.send(Message::Ping(tokio_tungstenite::tungstenite::Bytes::new()))
+                .await
+                .map_err(anyhow::Error::from)
+        })
+        .await?;
         *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
         Ok(())
     }
@@ -282,7 +285,13 @@ pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportStat
 /// than to whatever else holds the port, and it carries the settings the
 /// client draws with - so the client is configured before it draws anything
 /// rather than discovering a theme later.
-async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
+async fn greet<S>(mut socket: S, state: Arc<TransportState>)
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>>
+        + futures_util::Sink<Message, Error = axum::Error>
+        + Unpin
+        + Send,
+{
     let greeting = ServerMessage::Greeting {
         version: PROTOCOL_VERSION,
         forge_version: crate::FORGE_VERSION.to_owned(),
@@ -297,7 +306,12 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
         );
         return;
     };
-    if socket.send(Message::Text(text.into())).await.is_err() {
+    if write_within(WRITE_BOUND, async {
+        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
+    })
+    .await
+    .is_err()
+    {
         return;
     }
     if let Err(error) = drive(&mut socket, &state).await {
@@ -315,7 +329,13 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
 /// Every client message is answered: a client is never left waiting on a
 /// message this server chose to drop, which is the failure that reads as a
 /// hang rather than as an error.
-async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::Result<()> {
+async fn drive<S>(socket: &mut S, state: &Arc<TransportState>) -> anyhow::Result<()>
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>>
+        + futures_util::Sink<Message, Error = axum::Error>
+        + Unpin
+        + Send,
+{
     // This connection's own number: the stamp that names which take is
     // this connection's, on the commands that start and stop one and on
     // the updates that come back. Minted here so the teardown closes the
@@ -372,11 +392,26 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // vanished on a socket error is not indistinguishable from one the client
     // closed on purpose.
     if let Some(hosting) = hosting.as_mut() {
-        hosting.role.ending.get_or_insert(if outcome.is_ok() {
-            Release::Closed
-        } else {
-            Release::Failed
+        hosting.role.ending.get_or_insert_with(|| match &outcome {
+            Ok(()) => Release::Closed,
+            // **The write bound is its own ending**: the peer never closed and
+            // its socket never failed - it stopped reading, which is what
+            // ended the connection (#2473).
+            Err(error) if error.downcast_ref::<WriteStalled>().is_some() => Release::Stalled,
+            Err(_) => Release::Failed,
         });
+    }
+    if let Err(error) = &outcome
+        && let Some(stalled) = error.downcast_ref::<WriteStalled>()
+    {
+        tracing::debug!(
+            target: "forge_server::transport",
+            event_name = "connection_write_stalled",
+            client = me,
+            bound_seconds = stalled.bound.as_secs(),
+            "a frame write outlived its bound, so the connection is ended: the peer stopped \
+             reading",
+        );
     }
 
     // Every take this connection started ends with it: each is DROPPED
@@ -490,8 +525,8 @@ impl Streaming {
 
 /// The connection's own loop, so that every way out of it runs the detach
 /// above rather than only the clean one.
-async fn run_connection(
-    socket: &mut WebSocket,
+async fn run_connection<S>(
+    socket: &mut S,
     state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
@@ -501,7 +536,13 @@ async fn run_connection(
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     answers: &mut mpsc::UnboundedReceiver<ServerMessage>,
     me: u64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>>
+        + futures_util::Sink<Message, Error = axum::Error>
+        + Unpin
+        + Send,
+{
     let mut held = Batch::default();
     // The served-record bound every frame to a client takes (#2374), read once
     // rather than per frame.
@@ -825,8 +866,8 @@ async fn next_hosting_event(hosting: &mut Option<Hosting>) -> HostingEvent {
 }
 
 /// Answer one client message.
-async fn handle_client(
-    socket: &mut WebSocket,
+async fn handle_client<S>(
+    socket: &mut S,
     state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
@@ -836,7 +877,10 @@ async fn handle_client(
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     me: u64,
     msg: Message,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
     // The served-record bound every frame to a client takes (#2374), read once
     // rather than per frame.
     let cap = state.surface.tool_record_cap_bytes();
@@ -1948,7 +1992,10 @@ fn fail_awaiting_images(hosting: &mut Option<Hosting>, why: &str) {
     }
 }
 
-async fn send(socket: &mut WebSocket, message: ServerMessage) -> anyhow::Result<()> {
+async fn send<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
     send_frame(socket, message).await.map(|_| ())
 }
 
@@ -1957,10 +2004,16 @@ async fn send(socket: &mut WebSocket, message: ServerMessage) -> anyhow::Result<
 /// **Only the open path reports a size** (#2374), and a return every other
 /// caller would drop is noise in thirty of them - so the size is answered
 /// here and the plain write wraps it.
-async fn send_frame(socket: &mut WebSocket, message: ServerMessage) -> anyhow::Result<usize> {
+async fn send_frame<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<usize>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
     let text = serde_json::to_string(&message)?;
     let bytes = text.len();
-    socket.send(Message::Text(text.into())).await?;
+    write_within(WRITE_BOUND, async {
+        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
+    })
+    .await?;
     Ok(bytes)
 }
 
@@ -2581,6 +2634,57 @@ mod tests {
         }
     }
 
+    /// A peer that stopped reading: its stream hands over whatever the test
+    /// sends and then parks, and its writes take frames into a buffer whose
+    /// flush never completes - the socket a peer that vanished mid-frame
+    /// leaves behind.
+    struct StoppedReading {
+        inbound: mpsc::UnboundedReceiver<Message>,
+        /// Signalled the first time a flush hangs, which is the moment the
+        /// connection is stuck in a write with the role already held.
+        writing: Option<oneshot::Sender<()>>,
+    }
+
+    impl futures_util::Stream for StoppedReading {
+        type Item = Result<Message, axum::Error>;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            self.inbound.poll_recv(cx).map(|said| said.map(Ok))
+        }
+    }
+
+    impl futures_util::Sink<Message> for StoppedReading {
+        type Error = axum::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            if let Some(writing) = self.writing.take() {
+                let _ = writing.send(());
+            }
+            std::task::Poll::Pending
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
     /// **The stamp is taken after the send returns**, which is the caller's
     /// ordering and not the state machine's: a ping held in a full buffer
     /// must owe nothing until it is on the wire. The held sink is the stall,
@@ -2624,6 +2728,131 @@ mod tests {
             Beat::Ping,
             "the answer retired the ping, so the next beat asks again",
         );
+    }
+
+    /// **A peer that stops reading is cut at the write bound, its role passes
+    /// to the waiter, and the release names the write.**
+    ///
+    /// The mirror of the keepalive's case (#2473): a peer that vanishes with a
+    /// frame IN FLIGHT leaves no ping outstanding, so no beat can see it - the
+    /// write is the only thing that can. **The connection ends rather than the
+    /// write being retried**: half a frame cannot be resumed, so keeping the
+    /// socket would deliver garbage to a client still parsing the frame it
+    /// began.
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_stops_reading_is_cut_at_the_write_bound() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        ));
+
+        let (inbound, peer_in) = mpsc::unbounded_channel();
+        let (writing, stuck) = oneshot::channel();
+        let mut peer = StoppedReading { inbound: peer_in, writing: Some(writing) };
+        let driven = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move { drive(&mut peer, &state).await }
+        });
+
+        // This connection declaring itself capable is what takes the role; the
+        // snapshot answering the subscribe is the frame whose write stops.
+        inbound
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Usage,
+                    answering: false,
+                    browser: true,
+                    declare: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the peer's one message goes");
+        stuck.await.expect("the subscribe's answer reaches the socket");
+        let host = state
+            .browser
+            .testing_host()
+            .expect("the connection holds the role before its write blocks");
+
+        // A second capable connection is already in line behind it.
+        let waiter = host + 1_000;
+        let (waiter_host, _waiter_asks) = mpsc::unbounded_channel();
+        let (waiter_notices, mut notices) = mpsc::unbounded_channel();
+        assert!(
+            !state.browser.register(waiter, waiter_host, waiter_notices),
+            "the second capable connection waits in line",
+        );
+
+        // **The bound, reached on the test's own clock**: a drive that never
+        // ends fails by name here rather than hanging the run.
+        let outcome = tokio::time::timeout(WRITE_BOUND * 2, driven)
+            .await
+            .expect("the connection ends at the write bound rather than never")
+            .expect("the connection task joins");
+        let error = outcome.expect_err("a peer that stopped reading must not end cleanly");
+        assert!(
+            error.downcast_ref::<WriteStalled>().is_some(),
+            "the connection ends on the write bound rather than on a socket error: {error:?}",
+        );
+
+        assert_eq!(
+            state.browser.testing_host(),
+            Some(waiter),
+            "the role passed to the client already in line",
+        );
+        assert_eq!(notices.try_recv(), Ok(Notice::Granted), "which is told it holds it");
+        assert_eq!(
+            state.browser.testing_departed(),
+            Some((host, Release::Stalled)),
+            "and the release names the write bound, not a close or a socket failure",
+        );
+    }
+
+    /// **The ping's own write is bounded.** It is the site #2473 survives on:
+    /// a peer that stops reading while the next ping waits behind a full
+    /// buffer leaves no other write in the loop to bound, so an unbounded ping
+    /// holds the role for ever.
+    #[tokio::test(start_paused = true)]
+    async fn a_ping_that_cannot_be_written_ends_at_the_write_bound() {
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut sink = HeldSink { ready: std::sync::Arc::clone(&ready) };
+        let keepalive = Keepalive::default();
+
+        let outcome = tokio::time::timeout(WRITE_BOUND * 2, keepalive.ping(&mut sink))
+            .await
+            .expect("the ping ends at the write bound rather than never");
+        let error = outcome.expect_err("a ping the buffer cannot take is not sent");
+
+        assert!(
+            error.downcast_ref::<WriteStalled>().is_some(),
+            "the ping ends on the write bound rather than on a sink error: {error:?}",
+        );
+        assert_eq!(
+            keepalive.sent(),
+            None,
+            "and no deadline is stamped for a ping the peer never saw",
+        );
+    }
+
+    /// **The greeting's write is bounded too.** It is the first frame every
+    /// connection sends, and a peer that never reads it would otherwise hold
+    /// the connection's task until TCP gives up.
+    #[tokio::test(start_paused = true)]
+    async fn a_greeting_that_cannot_be_written_ends_at_the_write_bound() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        ));
+        let (_keep, inbound) = mpsc::unbounded_channel();
+        let mut peer = StoppedReading { inbound, writing: None };
+
+        tokio::time::timeout(WRITE_BOUND * 2, greet(&mut peer, state))
+            .await
+            .expect("the greeting ends at the write bound rather than never");
     }
 
     /// The oldest boundary a window names, as a walk below the floor starts

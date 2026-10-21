@@ -98,8 +98,9 @@ pub enum Notice {
 /// **The relay cannot see a client's process**, only its connection: so the
 /// side named here is the connection's. A client that died, slept or was quit
 /// reads as [`Release::Closed`] or [`Release::Failed`] depending on what its
-/// socket did, and as [`Release::Reaped`] when the transport's keepalive ended
-/// a socket that never closed at all.
+/// socket did, as [`Release::Reaped`] when the transport's keepalive ended a
+/// socket that never closed at all, and as [`Release::Stalled`] when a frame
+/// write outlived its bound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Release {
     /// The connection ended on its own: the client closed it, or its read
@@ -112,6 +113,11 @@ pub enum Release {
     /// reports its own error, where this is a peer that is alive enough to
     /// hold a socket and too wedged to answer one.
     Reaped,
+    /// A frame write outlived the transport's bound: the peer stopped reading
+    /// while a frame was in flight, so no ping was outstanding for the
+    /// keepalive to see. **Not [`Release::Reaped`]**: nothing was asked of the
+    /// peer and left unanswered - it was being sent a frame it never took.
+    Stalled,
     /// Another capable connection took the role by force.
     Taken,
 }
@@ -122,6 +128,7 @@ impl Release {
             Self::Closed => "closed",
             Self::Failed => "failed",
             Self::Reaped => "reaped",
+            Self::Stalled => "stalled",
             Self::Taken => "taken",
         }
     }
@@ -447,6 +454,13 @@ impl BrowserRelay {
     #[cfg(feature = "testing")]
     pub fn testing_waiting_ids(&self) -> Vec<u64> {
         self.lock().waiting.iter().map(|client| client.id).collect()
+    }
+
+    /// The last connection to give the role up and the side that ended it,
+    /// so a test reads the release rather than parsing the log for it.
+    #[cfg(feature = "testing")]
+    pub fn testing_departed(&self) -> Option<(u64, Release)> {
+        self.lock().departed.map(|gone| (gone.client, gone.reason))
     }
 
     /// Forget a host whose channel has no receiver left - and a waiter whose
@@ -841,6 +855,7 @@ mod tests {
         assert_eq!(Release::Closed.as_str(), "closed");
         assert_eq!(Release::Failed.as_str(), "failed");
         assert_eq!(Release::Reaped.as_str(), "reaped");
+        assert_eq!(Release::Stalled.as_str(), "stalled");
         assert_eq!(Release::Taken.as_str(), "taken");
     }
 
