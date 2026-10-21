@@ -6009,7 +6009,14 @@ impl Workspace {
     /// shutdown, so Workspace is the sole owner of every pool entry.
     /// Callers that hold cloned handles across shutdown keep the
     /// AgentHandle's task alive until they release them.
-    pub fn shutdown(&self) {
+    ///
+    /// **The return waits for those exit paths**, because the runtime a
+    /// caller is about to drop does not poll them: each child sits in its
+    /// own process group and only its own close signals that group, so a
+    /// shutdown that returned early would leave the tree running. The
+    /// wait is bounded by [`TEARDOWN_WAIT`](crate::spawn::TEARDOWN_WAIT),
+    /// and an expiry says so at warn.
+    pub async fn shutdown(&self) {
         // Release any live dictation before the pools go: a recording
         // task outliving its session's teardown would otherwise hold
         // the microphone for a composer nobody can reach.
@@ -6018,9 +6025,31 @@ impl Workspace {
         // command channel close and exits cleanly; each task's exit
         // path then disconnects its subprocess (see the doc above).
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
-        let _ = self.session_teardowns.lock().drain().collect::<Vec<_>>();
+        // The receivers are kept rather than dropped: each is the task's
+        // word that its exit path finished.
+        let teardowns: Vec<_> = self.session_teardowns.lock().drain().collect();
         let _ = self.domain_handles.lock().drain().collect::<Vec<_>>();
         drop(self.pool.lock().drain().collect::<Vec<_>>());
+
+        // One budget for the lot: the tasks run concurrently, so a later
+        // one is usually already done when its turn comes. A task that
+        // never answers must not wedge the exit.
+        let started = tokio::time::Instant::now();
+        for (slot, done) in teardowns {
+            let budget = crate::spawn::TEARDOWN_WAIT.saturating_sub(started.elapsed());
+            if tokio::time::timeout(budget, done).await.is_err() {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    event_name = "shutdown_teardown_wait_expired",
+                    org = slot.org(),
+                    project = slot.project(),
+                    label = slot.label(),
+                    wait = ?crate::spawn::TEARDOWN_WAIT,
+                    "shutdown: a session task did not finish its teardown in the wait; \
+                     its child may outlive forge"
+                );
+            }
+        }
     }
 
     /// Release a single session's pool entry: drops the workspace's
@@ -12345,7 +12374,7 @@ provider = "anthropic"
         // Shutdown consumes self and must return. Drops `command_senders`,
         // which closes each `SessionTask`'s command channel; the spawned
         // task then exits and drops its `handle` clone.
-        workspace.shutdown();
+        workspace.shutdown().await;
 
         // The spawned `SessionTask` exits asynchronously after its
         // command channel closes; yield to let it run to completion

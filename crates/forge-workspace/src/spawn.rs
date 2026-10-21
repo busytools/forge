@@ -1931,7 +1931,7 @@ pub(crate) fn handle_despawn_worker(
 /// close-wait budget (the child's reap) plus a margin for the task to
 /// observe its closed channel, disconnect and drop. An expiry is logged -
 /// it is the one shape where the removal goes ahead unprotected.
-const TEARDOWN_WAIT: std::time::Duration =
+pub(crate) const TEARDOWN_WAIT: std::time::Duration =
     forge_sdk::CLOSE_WAIT_TIMEOUT.saturating_add(std::time::Duration::from_secs(5));
 
 /// [`handle_despawn_worker`] with the teardown wait injected, so a case

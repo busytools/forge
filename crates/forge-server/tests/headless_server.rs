@@ -99,16 +99,21 @@ fn server_command(home: &std::path::Path, config: &std::path::Path) -> tokio::pr
     command
 }
 
-/// Send SIGTERM the way a system does, without linking a signal crate: the
+/// Send a signal the way a system does, without linking a signal crate: the
 /// `kill` the PATH resolves is the instrument.
-async fn terminate(pid: u32) {
+async fn send_signal(pid: u32, signal: &str) {
     let status = tokio::process::Command::new("kill")
-        .arg("-TERM")
+        .arg(signal)
         .arg(pid.to_string())
         .status()
         .await
         .expect("kill runs");
-    assert!(status.success(), "kill -TERM {pid} lands: {status}");
+    assert!(status.success(), "kill {signal} {pid} lands: {status}");
+}
+
+/// SIGTERM, the stop a supervisor sends.
+async fn terminate(pid: u32) {
+    send_signal(pid, "-TERM").await;
 }
 
 /// Wait until the server answers on `port`, or fail with its stderr.
@@ -169,6 +174,162 @@ async fn walk(script: &str, url: &str) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).expect("one message per line"))
         .collect()
+}
+
+/// A scratch tree whose project starts at boot, over a mock `claude` on
+/// PATH: the boot wave spawns a live session, and that session's child
+/// leaves a sleeper whose pid lands in `marker`.
+///
+/// The mock is the SDK's own lingering fixture under the name production
+/// spawns, so one script describes the shape for both layers.
+fn write_session_fixture(
+    root: &std::path::Path,
+    server_port: u16,
+    gateway_port: u16,
+    marker: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let home = root.join("home");
+    let config = root.join("config");
+    let project = root.join("project");
+    let bin = root.join("bin");
+    std::fs::create_dir_all(config.join("forge")).expect("config dir");
+    std::fs::create_dir_all(&home).expect("home dir");
+    std::fs::create_dir_all(&project).expect("project dir");
+    std::fs::create_dir_all(&bin).expect("bin dir");
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../forge-sdk/tests/fixtures/mock_claude_lingering.sh"
+        ),
+        bin.join("claude"),
+    )
+    .expect("install the mock claude");
+    std::fs::write(
+        config.join("forge/forge.toml"),
+        format!(
+            r#"
+[env]
+FORGE_TEST_ORPHAN_MARKER = "{marker}"
+
+[[orgs]]
+name = "Default"
+accounts = ["Stub"]
+
+[[orgs.projects]]
+name = "forge"
+path = "{project}"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stub"
+token = "t"
+provider = "openrouter"
+base_url = "http://127.0.0.1:9/api"
+models = ["claude-sonnet-5"]
+
+[server]
+enabled = true
+bind = "127.0.0.1"
+port = {server_port}
+
+[gateway]
+port = {gateway_port}
+"#,
+            marker = marker.display(),
+            project = project.display(),
+        ),
+    )
+    .expect("write forge.toml");
+    (home, config, bin)
+}
+
+/// The pid the session's mock child wrote, or a failure naming the tree.
+async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(marker)
+            && let Ok(pid) = text.trim().parse()
+        {
+            return pid;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("the session's child never wrote its descendant's pid to {}", marker.display());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Read the pid's own state; a zombie is gone, not surviving.
+fn is_running(pid: u32) -> bool {
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
+        .output()
+        .expect("ps runs");
+    let stat = String::from_utf8_lossy(&out.stdout);
+    let stat = stat.trim();
+    !stat.is_empty() && !stat.starts_with('Z')
+}
+
+async fn wait_until_gone(pid: u32) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        if !is_running(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    !is_running(pid)
+}
+
+/// A pid this test owns, killed by number when it ends however it ends.
+struct Orphan(u32);
+
+impl Drop for Orphan {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill").args(["-KILL", &self.0.to_string()]).status();
+    }
+}
+
+/// A stop signal takes the session's descendants with it. SIGTERM is the
+/// supervisor's stop; SIGHUP is a terminal closing, whose default
+/// disposition kills forge with no unwinding at all.
+#[tokio::test]
+async fn a_stop_signal_takes_the_sessions_descendants_with_it() {
+    for signal in ["-TERM", "-HUP"] {
+        assert_stop_leaves_no_descendant(signal).await;
+    }
+}
+
+async fn assert_stop_leaves_no_descendant(signal: &str) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (port, gateway) = two_free_ports();
+    let marker = dir.path().join("session.pid");
+    let (home, config, bin) = write_session_fixture(dir.path(), port, gateway, &marker);
+
+    let mut command = server_command(&home, &config);
+    command
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
+    let mut server = command.spawn().expect("the server spawns");
+    wait_for_port(port, &mut server).await;
+
+    // The control: a session is live and its descendant is running before
+    // the stop, so a pass below cannot come from a session that never was.
+    let pid = wait_for_marker_pid(&marker).await;
+    let _orphan = Orphan(pid);
+    assert!(is_running(pid), "the session's descendant must be running before {signal}: pid {pid}");
+
+    send_signal(server.id().expect("the server has a pid while it runs"), signal).await;
+    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+        .await
+        .expect("the server finishes its stop within the deadline")
+        .expect("the server is reaped");
+    assert!(exit.success(), "the {signal} stop exits clean: {exit}");
+
+    assert!(
+        wait_until_gone(pid).await,
+        "a descendant outlived the server's {signal} stop: pid {pid}"
+    );
 }
 
 /// The boot stands alone: the binary binds the socket, greets a client and

@@ -61,15 +61,18 @@ fn run() -> anyhow::Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        // Both stop signals a system sends a long-lived server are registered
+        // Every stop signal a system sends a long-lived server is registered
         // BEFORE anything binds: a SIGTERM racing the socket's bind would
         // otherwise meet the default disposition and kill the process
-        // mid-boot. Ctrl-C (SIGINT) and SIGTERM then take the same path, so a
-        // supervisor's stop releases the single-instance lock and the store
-        // exactly as an interactive Ctrl-C does.
+        // mid-boot. Ctrl-C (SIGINT), SIGTERM and SIGHUP then take the same
+        // path, so a supervisor's stop and a terminal closing both release
+        // the single-instance lock and the store exactly as an interactive
+        // Ctrl-C does - and each waits for the sessions' teardown, which is
+        // where the session children and their groups are killed.
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
 
         let config_dir = match forge_server::boot::resolve_config_dir() {
             Ok(p) => p,
@@ -92,12 +95,16 @@ fn run() -> anyhow::Result<()> {
         // hold it back, it goes out as a task.
         forge_server::boot::start_boot_wave(Arc::clone(&workspace), cli.project.clone(), cli.new);
 
-        // Park until interrupted; the subsystems own everything else.
+        // Park until one of the stop signals lands; the subsystems own
+        // everything else.
         tokio::select! {
             _ = sigint.recv() => {}
             _ = sigterm.recv() => {}
+            _ = sighup.recv() => {}
         }
-        workspace.shutdown();
+        // Awaited, not fired and left: the runtime is about to drop, and a
+        // dropped runtime does not poll the session tasks' exit paths.
+        workspace.shutdown().await;
         Ok(())
     })
 }
