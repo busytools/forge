@@ -1848,7 +1848,13 @@ async fn session(
                     floor_cursor(&mut page, held.dropped());
                     (page, held.compaction_count(), held.watermark())
                 });
-                cap_tool_records(&mut page.turns, cap, &capped);
+                // **A page cut to a byte budget was capped as it was
+                // measured**, turn by turn, so this pass would walk every
+                // record of it for nothing. Only the uncut page still needs
+                // it.
+                if first_frame == usize::MAX {
+                    cap_tool_records(&mut page.turns, cap, &capped);
+                }
                 (page.turns, page.cursor, count, at.elapsed().as_secs_f64() * 1000.0, covered)
             })
             .await

@@ -3203,6 +3203,64 @@ fn a_turns_rows_padded(turn: usize, pad: usize) -> String {
     )
 }
 
+/// A turn whose structured tool result is `pad` bytes of payload, so a turn
+/// can be made to carry a record the cap must bound.
+fn a_big_result_rows(turn: usize, pad: usize) -> String {
+    format!(
+        r#"{{"type":"user","uuid":"u{turn}","message":{{"role":"user","content":"turn {turn}"}}}}
+{{"type":"assistant","uuid":"a{turn}","message":{{"id":"m{turn}","role":"assistant","model":"claude-opus-5","content":[{{"type":"text","text":"reply {turn}"}}]}}}}
+{{"type":"user","uuid":"t{turn}","session_id":"s","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"call-{turn}","content":"ok"}}]}},"toolUseResult":{{"payload":"{}"}}}}
+{{"type":"result","uuid":"r{turn}","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}}"#,
+        "x".repeat(pad),
+    )
+}
+
+/// **Only the turns the cut keeps are logged as capped.** A candidate the
+/// budget drops was capped so it could be measured, and a line for it would
+/// name a record the client never received.
+#[tokio::test]
+async fn a_dropped_turn_is_not_logged_as_capped() {
+    install_capture();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir_with_server(
+        dir.path(),
+        &[("TestOrg", &["capped"])],
+        "[server]\nfirst_frame_cap_kb = 1\ntool_record_cap_kb = 1\n",
+    )
+    .expect("the fleet builds");
+    let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let rows: Vec<String> = (0..4).map(|turn| a_big_result_rows(turn, 20_000)).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "capped", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "capped", "lead")
+        .expect("the seat's conversation is held");
+    let seat = SessionSlot::lead("TestOrg", "capped");
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat),
+            answering: false,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
+        panic!("a snapshot is the answer to a subscribe")
+    };
+    let kept = data["conversation"]["turns"].as_array().map_or(0, Vec::len);
+    assert!(kept > 0 && kept < 4, "a 1 KB budget keeps some turns and not all: {kept}");
+
+    let logged = captured()
+        .lines()
+        .filter(|line| line.contains("tool_record_capped") && line.contains("TestOrg/capped/lead"))
+        .count();
+    assert_eq!(logged, kept, "one line per served turn, none for a turn the cut dropped");
+}
+
 /// A client asking for history is handed whole turns over the socket: a page
 /// opens on a turn the user wrote, and it carries the handle that asks for
 /// the ones above it.

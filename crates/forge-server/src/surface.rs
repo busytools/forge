@@ -70,8 +70,9 @@ pub fn is_success_result(is_error: bool, subtype: &str) -> bool {
     !is_error && subtype == "success"
 }
 
-/// `[server] tool_record_cap_kb` as bytes (#2374): `0` means the records
-/// cross whole, and a value too large for this machine is clamped rather than
+/// A `[server]` size key in KB as bytes: `0` means no bound (`tool_record_cap_kb`
+/// serves the records whole, `first_frame_cap_kb` the page the turn count asks
+/// for), and a value too large for this machine is clamped rather than
 /// truncated to zero.
 fn cap_bytes(kb: u64) -> usize {
     if kb == 0 {
