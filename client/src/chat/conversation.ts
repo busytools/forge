@@ -532,8 +532,8 @@ export class Frames {
   /**
    * Take one more frame into the index, for a list that has grown.
    *
-   * Both faces, id and words - an id-bearing frame still answers an id-less
-   * copy's words question.
+   * All three faces - id, ending and words - so an id-bearing frame still
+   * answers an id-less copy's ending or words question.
    */
   add(message: unknown): void {
     const id = uuidOf(message);
@@ -1808,17 +1808,17 @@ export class Chat {
       // with an older one that merely says the same words, which drops the row
       // the reader just received.
       const shares = (held: Frames, turn: Turn, unsettled: boolean): boolean => {
-        // **The words arm is for the turn a frame with no id OPENED**, and for
-        // nothing else. A turn an id-bearing frame opened is reconciled by ids,
-        // and a words-only match hands it a row that is not its own: a repeat
+        // **The no-id arms are for the turn a frame with no id OPENED**, and
+        // for nothing else. A turn an id-bearing frame opened is reconciled by
+        // ids, and a prose match hands it a row that is not its own: a repeat
         // takes the exchange's row and gives it the repeat's opening frame,
         // which in the shorter shape leaves the exchange with no row at all.
-        const words = unsettled && uuidOf(turn.messages[0]) === null;
+        const prose = unsettled && uuidOf(turn.messages[0]) === null;
         // A frame the ride PLACED is already gone from these rows when the
         // page carries its own copy: `healedOf` took it back out before this
         // match runs, which is what keeps the parked copy from tying a live
         // row to a page row that ran before it.
-        return turn.messages.some((message) => held.carries(message, words));
+        return turn.messages.some((message) => held.carries(message, prose));
       };
       /**
        * Where a held turn's copy landed in `drawn`, by the turn.
