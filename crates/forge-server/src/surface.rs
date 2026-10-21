@@ -96,6 +96,13 @@ impl ViewSurface {
         cap_bytes(self.workspace.server_config().tool_record_cap_kb)
     }
 
+    /// The conversation bytes a session's first snapshot may carry:
+    /// `[server] first_frame_cap_kb`, with `0` meaning the turn count alone
+    /// decides the page.
+    pub fn first_frame_cap_bytes(&self) -> usize {
+        cap_bytes(self.workspace.server_config().first_frame_cap_kb)
+    }
+
     /// Every seat that exists, for a browser-capable connection's profile
     /// sweep. `None` when the store could not be read: **no set is sent in
     /// that case**, because a client reading "no seats" would delete every
