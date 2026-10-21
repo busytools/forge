@@ -510,6 +510,10 @@ impl BrowserHost {
                     // client's is used. Set after the profile is resolved, so a
                     // refused call never lights the mark.
                     self.used.store(true, std::sync::atomic::Ordering::Release);
+                    // **The page is shown before it is driven.** A hidden page
+                    // is the first-call-of-a-fire failure #2455 names; the
+                    // host owns the only lever, and this is the cue.
+                    active.show().await;
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
                     let identity = active.identity();
                     let cache = paths.cef_shared();
@@ -558,6 +562,10 @@ impl BrowserHost {
                         launched
                     };
                     self.used.store(true, std::sync::atomic::Ordering::Release);
+                    // The same cue before a named profile's call: the page a
+                    // fire drives is never left hidden by the gap since the
+                    // last one.
+                    active.show().await;
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
                     let identity = active.identity();
                     let start = DriverStart {
@@ -1194,6 +1202,10 @@ impl BrowserHost {
                                 cache.display()
                             ));
                         }
+                        // **The ring goes only with a host this client ended.**
+                        // macOS does not release a dead host's segment, and a
+                        // respawn takes a fresh port, so this name would leak.
+                        cef::osr::Ring::unlink(&record.ring);
                         cef::spawn::remove_record(cache);
                     }
                 }
@@ -1467,6 +1479,12 @@ impl BrowserHost {
         let claimed = tokio::time::timeout(LAUNCH_WAIT, async {
             let _launching = self.launch.lock().await;
             self.touch(&cache).await;
+            // **The raised page is shown too, inside the claim.** A takeover
+            // opened onto a page that went hidden while nothing drove it
+            // would be a frozen picture under the bar; the cue waits under
+            // the same lock, so the idle sweep cannot take the free mutex
+            // during its ack window and end the host under the claim.
+            host.show().await;
             // One surface at a time: opening this profile's takes the window,
             // and a previous profile's host keeps running under it.
             *self.surface.lock().await =
@@ -2423,7 +2441,10 @@ mod tests {
         host: Arc<BrowserHost>,
         cache: std::path::PathBuf,
         pid: u32,
+        port: u16,
         ring: String,
+        ring_value: Arc<cef::osr::Ring>,
+        named_ring: Option<Arc<cef::osr::Ring>>,
     }
 
     #[cfg(target_os = "macos")]
@@ -2454,9 +2475,15 @@ mod tests {
             // string literal would have its escapes read twice.
             let answers_path = dir.path().join("answers.json");
             std::fs::write(&answers_path, answers.to_string()).expect("the stub's answers");
-            let body = r#"import sys, json, os
+            // The ring the stub reads the cue from, named per test: a named
+            // profile's call is served by its own ring.
+            let ring_file = dir.path().join("ring");
+            std::fs::write(&ring_file, ring).expect("the stub's ring name");
+            let body = r#"import sys, json, os, ctypes
 ANSWERS = json.load(open("__ANSWERS__"))
 CALLS = "__CALLS__"
+CUE = "__CUE__"
+RING_FILE = "__RING_FILE__"
 ONCE = ANSWERS.get("__once__", {})
 ONCE_FLAG = "__ONCE__"
 STARTS = "__STARTS__"
@@ -2468,6 +2495,33 @@ with open(STARTS, "a") as started:
     started.write(str(os.getpid()) + "\n")
 if ANSWERS.get("__die_second__") and len(seen) + 1 >= 2:
     sys.exit(1)
+
+def cue_state():
+    try:
+        with open(RING_FILE) as source:
+            ring = source.read().strip().encode()
+        libc = ctypes.CDLL(None)
+        libc.shm_open.restype = ctypes.c_int
+        libc.shm_open.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        fd = libc.shm_open(ring, 0, 0)
+        if fd < 0:
+            return (0, 0)
+        libc.mmap.restype = ctypes.c_void_p
+        libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_int, ctypes.c_long]
+        addr = libc.mmap(None, __HEADER_LEN__, 1, 1, fd, 0)
+        if not addr or addr == ctypes.c_void_p(-1).value:
+            libc.close(fd)
+            return (0, 0)
+        sent = ctypes.c_uint64.from_address(addr + __SHOW_SEQ__).value
+        applied = ctypes.c_uint64.from_address(addr + __SHOW_APPLIED__).value
+        libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        libc.munmap(ctypes.c_void_p(addr), __HEADER_LEN__)
+        libc.close(fd)
+        return (sent, applied)
+    except Exception:
+        return (0, 0)
+
 asked = {}
 for line in sys.stdin:
     try:
@@ -2487,6 +2541,9 @@ for line in sys.stdin:
         name = message.get("params", {}).get("name", "")
         with open(CALLS, "a") as log:
             log.write(name + "\n")
+        sent, applied = cue_state()
+        with open(CUE, "a") as log:
+            log.write("%s %d %d\n" % (name, sent, applied))
         answer = ANSWERS.get(name)
         if name in ONCE and not os.path.exists(ONCE_FLAG):
             open(ONCE_FLAG, "w").close()
@@ -2503,8 +2560,16 @@ for line in sys.stdin:
 "#
             .replace("__ANSWERS__", &answers_path.display().to_string())
             .replace("__CALLS__", &dir.path().join("calls.log").display().to_string())
+            .replace("__CUE__", &dir.path().join("cue.log").display().to_string())
+            .replace("__RING_FILE__", &ring_file.display().to_string())
             .replace("__ONCE__", &dir.path().join("once.flag").display().to_string())
-            .replace("__STARTS__", &dir.path().join("starts.log").display().to_string());
+            .replace("__STARTS__", &dir.path().join("starts.log").display().to_string())
+            .replace("__HEADER_LEN__", &std::mem::size_of::<cef::osr::Header>().to_string())
+            .replace("__SHOW_SEQ__", &std::mem::offset_of!(cef::osr::Header, show_seq).to_string())
+            .replace(
+                "__SHOW_APPLIED__",
+                &std::mem::offset_of!(cef::osr::Header, show_applied).to_string(),
+            );
             std::fs::write(&cli, body).expect("the stub driver");
             std::fs::create_dir_all(&paths.output).expect("the output dir");
 
@@ -2556,11 +2621,61 @@ for line in sys.stdin:
                 Arc::new(cef::spawn::ActiveHost {
                     pid,
                     port,
-                    ring: ring_value,
+                    ring: Arc::clone(&ring_value),
                     profile: cache.clone(),
                 }),
             );
-            Self { dir, host, cache, pid, ring: ring_name }
+            // **A host that applies every cue**, as the host loop does:
+            // without it each call's bounded wait burns its full 100 ms.
+            acknowledge_cues(Arc::clone(&ring_value));
+            Self { dir, host, cache, pid, port, ring: ring_name, ring_value, named_ring: None }
+        }
+
+        /// The same stub host behind a named profile's cache root, so the
+        /// named arm of `call` runs the same path as the shared one.
+        ///
+        /// **A ring of its own**, as a separate host would have: the cue the
+        /// named test observes is that profile's, not the shared browser's.
+        async fn adopt_named(&mut self, name: &str) {
+            let cache = profiles::cef_cache(&self.dir.path().join("profiles").join(name));
+            std::fs::create_dir_all(&cache).expect("the named cache root");
+            let ring = Arc::new(
+                cef::osr::Ring::create("/forge-cef-named-profile-ring", 64, 64).expect("a ring"),
+            );
+            acknowledge_cues(Arc::clone(&ring));
+            std::fs::write(self.dir.path().join("ring"), &ring.name)
+                .expect("the named ring name for the stub");
+            self.named_ring = Some(Arc::clone(&ring));
+            self.host.hosts.lock().await.insert(
+                cache.clone(),
+                Arc::new(cef::spawn::ActiveHost {
+                    pid: self.pid,
+                    port: self.port,
+                    ring,
+                    profile: cache,
+                }),
+            );
+        }
+
+        /// Whether the named profile's own ring acknowledged `seq`.
+        fn named_shown(&self, seq: u64) -> bool {
+            self.named_ring.as_ref().is_some_and(|ring| ring.shown(seq))
+        }
+
+        /// Each tool call's name and the ring's cue state at the moment the
+        /// driver received it: `(tool, show_seq, show_applied)`.
+        fn call_cues(&self) -> Vec<(String, u64, u64)> {
+            std::fs::read_to_string(self.dir.path().join("cue.log"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.rsplitn(3, ' ');
+                    let applied = parts.next()?.parse().ok()?;
+                    let sent = parts.next()?.parse().ok()?;
+                    let tool = parts.next()?.to_owned();
+                    Some((tool, sent, applied))
+                })
+                .collect()
         }
 
         /// How many driver processes started against this stub, so a test can
@@ -2584,8 +2699,36 @@ for line in sys.stdin:
         async fn shutdown(self) {
             cef::spawn::end(self.pid).await;
             cef::spawn::remove_record(&self.cache);
+            if let Some(ring) = &self.named_ring {
+                cef::osr::Ring::unlink(&ring.name);
+            }
             cef::osr::Ring::unlink(&self.ring);
         }
+    }
+
+    /// The host loop's cue acknowledgment, as a task the fixture runs: every
+    /// cue the client writes is applied, not only the first, so a later call
+    /// in one test does not wait out the 100 ms bound.
+    #[cfg(target_os = "macos")]
+    fn acknowledge_cues(ring: Arc<cef::osr::Ring>) {
+        tokio::spawn(async move {
+            let mut applied = 0_u64;
+            loop {
+                // SAFETY: the ring outlives this task and holds a header.
+                let seq =
+                    unsafe { (*ring.header()).show_seq.load(std::sync::atomic::Ordering::Acquire) };
+                if seq != applied {
+                    applied = seq;
+                    // SAFETY: as above.
+                    unsafe {
+                        (*ring.header())
+                            .show_applied
+                            .store(seq, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        });
     }
 
     /// **A successful browsing call rewrites the carried page.** The driver is
@@ -2613,6 +2756,68 @@ for line in sys.stdin:
             "https://example.com/after-call",
             "a successful call rewrites the carry"
         );
+        // **The cue was applied before the call drove the page.** The stub
+        // reads the ring when the driver receives the tool, so a `show` moved
+        // after `Profile::call` reads as no cue here and this goes red.
+        let cues = stub.call_cues();
+        let (tool, sent, applied) =
+            cues.first().expect("the driver asked for the tool it was given");
+        assert_eq!(tool, "browser_navigate", "the stub saw the call it answered");
+        assert!(
+            *sent >= 1 && *applied >= *sent,
+            "the cue was sent and applied before the call reached the driver: {cues:?}"
+        );
+
+        stub.shutdown().await;
+    }
+
+    /// **A named profile's call cues its page too.** The shared arm's cue is
+    /// pinned above; the `Some(name)` arm carries its own copy, and the
+    /// named profile's own ring is read when the driver receives the tool.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_named_profile_call_cues_the_page_before_driving_it() {
+        let mut stub = StubHost::start(
+            "/forge-cef-named-call-test",
+            &json!({ "browser_navigate": { "content": [{ "type": "text", "text": "ok" }] } }),
+        )
+        .await;
+        stub.adopt_named("work").await;
+
+        let parts = stub
+            .host
+            .call(
+                &seat(),
+                "browser_navigate",
+                json!({ "url": "https://example.com/after-call", "profile": "work" }),
+            )
+            .await
+            .expect("the stub driver answers");
+        assert_eq!(parts.len(), 1, "the stub's one part is the call's answer");
+        let cues = stub.call_cues();
+        let (tool, sent, applied) =
+            cues.first().expect("the driver asked for the tool it was given");
+        assert_eq!(tool, "browser_navigate", "the stub saw the call it answered");
+        assert!(
+            *sent >= 1 && *applied >= *sent,
+            "the named arm cued its page before the call reached the driver: {cues:?}"
+        );
+        assert!(stub.named_shown(1), "the named profile's own ring took the cue");
+
+        stub.shutdown().await;
+    }
+
+    /// **A raise cues the page.** Open would otherwise draw a takeover over a
+    /// page that went hidden while nothing drove it; the fixture's host
+    /// applies the cue, so the ring proves it was sent.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_raise_cues_the_page() {
+        let stub = StubHost::start("/forge-cef-raise-cue-test", &json!({})).await;
+
+        let raised = stub.host.show(None, None).await;
+        assert!(raised.is_ok(), "the raise opened the surface: {raised:?}");
+        assert!(stub.ring_value.shown(1), "the raise cued the page");
 
         stub.shutdown().await;
     }

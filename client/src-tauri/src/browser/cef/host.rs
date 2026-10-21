@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use cef::*;
 
-use super::osr::{MAX_HEIGHT, MAX_WIDTH, Ring, STATE_FAILED, STATE_LIVE};
+use super::osr::{Header, MAX_HEIGHT, MAX_WIDTH, Ring, STATE_FAILED, STATE_LIVE};
 use super::{HostApp, elapsed_ms, pump};
 
 /// The launch arguments, as the client passes them.
@@ -60,6 +60,57 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Option<Args> {
 /// Set by SIGTERM/SIGINT, read by the pump loop.
 static STOP: AtomicBool = AtomicBool::new(false);
 
+/// The visibility calls one show cue makes, as a trait so the acknowledgment
+/// beside them is testable without a browser.
+trait ShowTarget {
+    fn show_page(&self);
+}
+
+impl ShowTarget for BrowserHost {
+    fn show_page(&self) {
+        self.was_hidden(0);
+        self.set_focus(1);
+    }
+}
+
+/// Which show cue the loop has applied. Zero, not the header's current value:
+/// a client's cue written while the loop was still starting is acted on by
+/// the first pass rather than mistaken for the state it started in.
+#[derive(Default)]
+struct ShowCue {
+    last: u64,
+}
+
+impl ShowCue {
+    /// The cue to apply, when this loop has not handled it yet.
+    fn take(&mut self, show: u64) -> Option<u64> {
+        if show == self.last {
+            return None;
+        }
+        self.last = show;
+        Some(show)
+    }
+}
+
+/// Apply one cue: the visibility calls, then the acknowledgment, only with a
+/// host to make them. A browser with no host cannot be shown, so its cue is
+/// left unacknowledged for the caller's bound.
+fn apply_show(header: &Header, show: u64, target: Option<&dyn ShowTarget>) {
+    let Some(target) = target else {
+        return;
+    };
+    target.show_page();
+    header.show_applied.store(show, Ordering::Release);
+    eprintln!("cef host: page shown before a call (event_name cef_page_shown, seq {show})");
+}
+
+/// **The test build's hidden page.** Set from a marker file in the profile,
+/// so the visibility proof can start from a page that really is hidden:
+/// `was_hidden(1)` is otherwise never called and no test can produce the
+/// state #2455 reports. Compiled out of every shipping build.
+#[cfg(feature = "testing")]
+static TEST_HIDE: AtomicBool = AtomicBool::new(false);
+
 extern "C" fn stop_on_signal(_signal: i32) {
     STOP.store(true, Ordering::Release);
 }
@@ -91,6 +142,10 @@ pub fn run(args: Args) -> ! {
     if let Err(why) = std::fs::create_dir_all(&args.profile) {
         fail(&why.to_string());
     }
+    // The test build's marker, read once: a page hidden from the start, for
+    // the visibility proof only.
+    #[cfg(feature = "testing")]
+    TEST_HIDE.store(args.profile.join("test-hide").exists(), Ordering::Relaxed);
     let ring = match Ring::create(&args.ring, args.width, args.height) {
         Ok(ring) => Arc::new(ring),
         Err(why) => fail(&why),
@@ -158,6 +213,7 @@ pub fn run(args: Args) -> ! {
     );
 
     let mut last_begin = 0_u64;
+    let mut cues = ShowCue::default();
     // SAFETY: the header is mapped for this process's whole life.
     let mut last_request = unsafe { (*ring.header()).request_seq.load(Ordering::Acquire) };
     loop {
@@ -183,6 +239,17 @@ pub fn run(args: Args) -> ! {
                 host.notify_screen_info_changed();
                 host.was_resized();
             }
+        }
+        // **Every call the client drives with re-asserts the page visible.**
+        // A windowless browser's only visibility lever is this call; a page
+        // that went hidden while nothing drove it (the reported
+        // `document.visibilityState` "hidden" on the first call of a fire)
+        // must not stay hidden under a click that needs its frames. The
+        // applied sequence is published so the caller can wait for it, and
+        // the line names the cue a real fire can be read by.
+        if let Some(show) = cues.take(header_ref.show_seq.load(Ordering::Acquire)) {
+            let host = browser.host();
+            apply_show(header_ref, show, host.as_ref().map(|host| host as &dyn ShowTarget));
         }
         // **8 ms, not 16.** A BeginFrame every screen refresh is the paint
         // rate, but a click landing just after one waited out the whole
@@ -242,11 +309,29 @@ cef::wrap_load_handler! {
             // CEF's visibility and focus calls are re-asserted once a page is
             // there: the windowless surface has no window to inherit them
             // from.
-            let Some(host) = browser.and_then(|browser| browser.host()) else { return };
+            let Some(browser) = browser else { return };
+            let Some(host) = browser.host() else { return };
             host.was_hidden(0);
             host.set_focus(1);
             host.set_windowless_frame_rate(60);
             host.was_resized();
+            // **The test build hides the page here, after the re-assert.**
+            // The page records that it saw the hidden state, so one later
+            // call can prove the cue flipped it back to visible.
+            #[cfg(feature = "testing")]
+            if TEST_HIDE.load(Ordering::Relaxed) {
+                let code = CefString::from(
+                    "window.__sawHidden = document.visibilityState === 'hidden'; \
+                     document.addEventListener('visibilitychange', function () { \
+                       if (document.visibilityState === 'hidden') window.__sawHidden = true; \
+                     });",
+                );
+                if let Some(frame) = browser.main_frame() {
+                    frame.execute_java_script(Some(&code), None, 0);
+                }
+                host.was_hidden(1);
+                eprintln!("cef host: test hook hid the page (event_name cef_test_hidden)");
+            }
         }
     }
 }
@@ -377,5 +462,72 @@ mod tests {
         assert_eq!(carried_page(dir.path()), "about:blank", "not a page to resurrect");
         std::fs::write(dir.path().join("page"), b"").expect("the marker");
         assert_eq!(carried_page(dir.path()), "about:blank", "blank carries nothing");
+    }
+
+    /// **A cue is acknowledged only when there is a host to show.** The
+    /// visibility calls and the published sequence follow each other, so a
+    /// cue no host answered stays unacknowledged and the caller's bound is
+    /// what ends its wait.
+    #[test]
+    fn a_show_cue_is_acknowledged_only_with_a_host() {
+        use super::super::osr::Ring;
+        use super::{Header, ShowTarget, apply_show};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct Recorder<'a> {
+            header: &'a Header,
+            called: AtomicBool,
+            ack_seen: AtomicBool,
+        }
+        impl ShowTarget for Recorder<'_> {
+            fn show_page(&self) {
+                self.called.store(true, Ordering::Release);
+                self.ack_seen.store(
+                    self.header.show_applied.load(Ordering::Acquire) != 0,
+                    Ordering::Release,
+                );
+            }
+        }
+
+        let name = "/forge-cef-test-cue-ack";
+        let ring = Ring::create(name, 4, 4).expect("a test ring");
+        // SAFETY: the ring is mapped and holds a header.
+        let header = unsafe { &*ring.header() };
+        let recorder =
+            Recorder { header, called: AtomicBool::new(false), ack_seen: AtomicBool::new(false) };
+
+        apply_show(header, 3, None);
+        assert_eq!(
+            header.show_applied.load(Ordering::Acquire),
+            0,
+            "a cue with no host is not acknowledged as applied"
+        );
+        assert!(!recorder.called.load(Ordering::Acquire), "no host, no visibility calls");
+
+        apply_show(header, 3, Some(&recorder));
+        assert!(recorder.called.load(Ordering::Acquire), "the host took the visibility calls");
+        assert!(
+            !recorder.ack_seen.load(Ordering::Acquire),
+            "the acknowledgment follows the visibility calls, never precedes them"
+        );
+        assert_eq!(
+            header.show_applied.load(Ordering::Acquire),
+            3,
+            "the applied sequence follows the visibility calls"
+        );
+        Ring::unlink(name);
+    }
+
+    /// **A cue already in the header when the loop starts is acted on.** The
+    /// applied marker starts at zero, not at the header's value, or a client
+    /// that cued while the process was coming up would wait out its bound
+    /// against a cue this loop considered already handled.
+    #[test]
+    fn a_cue_written_before_the_loop_starts_is_acted_on() {
+        use super::ShowCue;
+        let mut cues = ShowCue::default();
+        assert_eq!(cues.take(1), Some(1), "a cue already in the header is applied");
+        assert_eq!(cues.take(1), None, "an unchanged cue is not applied twice");
+        assert_eq!(cues.take(2), Some(2), "the next cue is applied");
     }
 }

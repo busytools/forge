@@ -24,7 +24,11 @@ pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
 
 const MAGIC: u32 = 0x4345_4652;
-const VERSION: u32 = 1;
+/// **Bumped whenever the header grows or its fields move.** The pixel base is
+/// `HEADER_LEN`, so a client drawing an older host's ring would shift every
+/// scanline; `Ring::open` refuses a version or length it does not own and the
+/// host is replaced instead.
+const VERSION: u32 = 2;
 
 /// What the host is doing, for the client's state line.
 pub const STATE_STARTING: u32 = 0;
@@ -35,6 +39,10 @@ pub const STATE_FAILED: u32 = 2;
 pub struct Header {
     pub magic: AtomicU32,
     pub version: AtomicU32,
+    /// **The layout's own length, written by the host.** macOS rounds a
+    /// segment's size up to a page, so `st_size` cannot tell two header
+    /// layouts apart; this field can, without a manual version bump.
+    pub header_len: AtomicU32,
     /// The live paint size, in device pixels: what `on_paint` writes. The
     /// view's own rect is this divided by the device scale.
     pub width: AtomicU32,
@@ -53,9 +61,19 @@ pub struct Header {
     /// Odd while a frame is being written, even when it is readable.
     pub frame: AtomicU64,
     pub paints: AtomicU64,
+    /// The client's cue that a call is about to drive the page: the host
+    /// re-asserts the page visible when it changes.
+    pub show_seq: AtomicU64,
+    /// The cue the host has applied, so the client can wait (bounded) before
+    /// it drives the call - a pump already in flight must not serve the call
+    /// against the page the cue is about to show.
+    pub show_applied: AtomicU64,
 }
 
 pub const HEADER_LEN: usize = std::mem::size_of::<Header>();
+
+/// A ring this build created or can safely cue: the header and its pixels.
+pub const RING_LEN: usize = HEADER_LEN + MAX_WIDTH as usize * MAX_HEIGHT as usize * 4;
 
 /// The ring, as the host owns it and the client maps it.
 pub struct Ring {
@@ -73,7 +91,7 @@ impl Ring {
     pub fn create(name: &str, width: u32, height: u32) -> Result<Self, String> {
         let width = width.clamp(1, MAX_WIDTH);
         let height = height.clamp(1, MAX_HEIGHT);
-        let len = HEADER_LEN + MAX_WIDTH as usize * MAX_HEIGHT as usize * 4;
+        let len = RING_LEN;
         let cname =
             CString::new(name).map_err(|why| format!("the ring name is not a C string: {why}"))?;
         // SAFETY: POSIX shm calls with a valid name and length.
@@ -117,6 +135,7 @@ impl Ring {
                 Header {
                     magic: AtomicU32::new(MAGIC),
                     version: AtomicU32::new(VERSION),
+                    header_len: AtomicU32::new(HEADER_LEN as u32),
                     width: AtomicU32::new(width),
                     height: AtomicU32::new(height),
                     scale_milli: AtomicU32::new(1_000),
@@ -129,6 +148,8 @@ impl Ring {
                     focused: AtomicU32::new(0),
                     frame: AtomicU64::new(0),
                     paints: AtomicU64::new(0),
+                    show_seq: AtomicU64::new(0),
+                    show_applied: AtomicU64::new(0),
                 },
             );
             Ok(ring)
@@ -166,8 +187,38 @@ impl Ring {
             if ptr == libc::MAP_FAILED {
                 return Err(format!("the frame ring {name} cannot be mapped"));
             }
-            Ok(Ring { name: name.to_owned(), ptr: ptr.cast(), len })
+            let ring = Ring { name: name.to_owned(), ptr: ptr.cast(), len };
+            // **A ring this build did not write is refused, not read.** The
+            // pixel base is the header's length, so another build's ring would
+            // draw shifted rows; refusing it sends the caller down the
+            // existing replace-the-host path. The mapping is Drop's to unmap;
+            // the name stays, because a foreign host's ring is not ours to
+            // unlink - the replacement's own create replaces it.
+            if !ring.current() {
+                drop(ring);
+                return Err(format!("the frame ring {name} was written by another build"));
+            }
+            Ok(ring)
         }
+    }
+
+    /// Whether this mapping is one this build wrote: a long-enough mapping,
+    /// the magic, the self-described header length and the version. Checked
+    /// before any field is read through [`Self::header`].
+    fn current(&self) -> bool {
+        // **`>=`, not `==`**: macOS rounds a POSIX segment up to a 16 KiB
+        // page, so a live ring's size is the requested one rounded. A ring
+        // smaller than this header is refused here; the length field is what
+        // separates another build's header when the requested sizes round to
+        // the same page.
+        if self.len < RING_LEN {
+            return false;
+        }
+        // SAFETY: the length check above proves the mapping holds a header.
+        let header = unsafe { &*self.header() };
+        header.magic.load(Ordering::Acquire) == MAGIC
+            && header.header_len.load(Ordering::Acquire) as usize == HEADER_LEN
+            && header.version.load(Ordering::Acquire) == VERSION
     }
 
     /// Remove the segment's name. The bytes stay alive for anyone still
@@ -215,6 +266,23 @@ impl Ring {
                 .store((scale * 1000.0).round().clamp(100.0, 8_000.0) as u32, Ordering::Relaxed);
             header.request_seq.fetch_add(1, Ordering::AcqRel);
         }
+    }
+
+    /// Cue the host to re-assert the page visible before a call drives it,
+    /// answering this cue's sequence for [`Self::shown`].
+    ///
+    /// Only a ring that passed `create` or [`Self::open`]'s checks reaches
+    /// here, so the header is always this build's layout.
+    pub fn show(&self) -> u64 {
+        // SAFETY: as above; `open` refuses any other layout.
+        unsafe { (*self.header()).show_seq.fetch_add(1, Ordering::AcqRel) + 1 }
+    }
+
+    /// Whether the host has applied `seq` - the wait before a call drives
+    /// the page, so a pump already in flight cannot serve it hidden.
+    pub fn shown(&self, seq: u64) -> bool {
+        // SAFETY: as above.
+        unsafe { (*self.header()).show_applied.load(Ordering::Acquire) >= seq }
     }
 
     /// The whole view's pixels, one byte per channel.
@@ -405,6 +473,166 @@ mod tests {
         unsafe { ring.write_frame(None, pixels.as_ptr(), 3, 4) };
         assert_eq!(header.paints.load(Ordering::Relaxed), 1, "a mismatched frame is not written");
         Ring::unlink(name);
+    }
+
+    /// **The show cue is a sequence the host reads and acknowledges.** The
+    /// wait is what stops a pump already in flight from serving a call
+    /// against the hidden page.
+    #[test]
+    fn the_show_cue_advances_a_sequence_the_host_acknowledges() {
+        let name = "/forge-cef-test-show";
+        let ring = Ring::create(name, 4, 4).expect("a test ring");
+        // SAFETY: the ring is mapped for this process and holds a header.
+        let header = unsafe { &*ring.header() };
+        assert_eq!(header.show_seq.load(Ordering::Acquire), 0, "a fresh host has shown nothing");
+        assert_eq!(ring.show(), 1, "the first cue is sequence one");
+        assert!(!ring.shown(1), "nothing is applied before the host runs");
+        header.show_applied.store(1, Ordering::Release);
+        assert!(ring.shown(1), "the applied cue is acknowledged");
+        assert!(!ring.shown(2), "a later cue is not");
+        // **`>=`, not `==`**: a later cue's application keeps the earlier
+        // one acknowledged, which is what a client waiting on its own
+        // sequence relies on.
+        header.show_applied.store(2, Ordering::Release);
+        assert!(ring.shown(1), "an earlier cue stays applied once a later one is");
+        assert!(ring.shown(2), "the current cue is applied");
+        assert_eq!(ring.show(), 2, "each call asks once");
+        Ring::unlink(name);
+    }
+
+    /// **Another build's ring is refused, not drawn.** The pixel base is
+    /// `HEADER_LEN`, so an older header would shift every scanline; the
+    /// caller ends the host instead. The control is this build's own ring,
+    /// which opens.
+    #[test]
+    fn open_refuses_a_ring_from_another_build() {
+        let name = "/forge-cef-test-current";
+        let ring = Ring::create(name, 4, 4).expect("a test ring");
+        assert!(Ring::open(name).is_ok(), "control: this build's own ring opens");
+        // SAFETY: the ring is mapped and holds a header.
+        unsafe { (*ring.header()).version.store(1, Ordering::Release) };
+        assert!(Ring::open(name).is_err(), "an older version is refused");
+        // **The refused segment is left for its own host.** Unlinking another
+        // host's ring would take the picture out from under a client driving
+        // it; the replacement's own create is what replaces the name.
+        let kept = Ring::open(name).err().expect("the refused ring's host still holds it");
+        assert!(
+            kept.contains("written by another build"),
+            "a foreign ring is refused without being unlinked: {kept}"
+        );
+
+        // A segment shorter than this header, carrying a valid magic,
+        // version and length field: the LENGTH clause must be what refuses
+        // it, not the magic read first.
+        let short_name = "/forge-cef-test-short";
+        let short_len = HEADER_LEN - 8;
+        unsafe {
+            let cname = CString::new(short_name).expect("a c string");
+            libc::shm_unlink(cname.as_ptr());
+            let fd = libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600);
+            assert!(fd >= 0, "the short ring exists");
+            assert_eq!(libc::ftruncate(fd, short_len as i64), 0, "one field short");
+            let ptr = libc::mmap(
+                std::ptr::null_mut(),
+                short_len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            );
+            assert!(ptr != libc::MAP_FAILED, "the short ring maps for the header write");
+            // SAFETY: the mapping holds the three leading u32s the check
+            // reads first, and they are written before the unmap.
+            let words = ptr.cast::<u32>();
+            words.write(MAGIC);
+            words.add(1).write(VERSION);
+            words.add(2).write(HEADER_LEN as u32);
+            libc::munmap(ptr, short_len);
+            libc::close(fd);
+        }
+        assert!(
+            Ring::open(short_name).is_err(),
+            "a ring shorter than this header is refused even with its magic and version"
+        );
+        Ring::unlink(short_name);
+
+        // A full-size segment whose header names another length, with this
+        // build's magic and version: the HEADER_LEN clause must be what
+        // refuses it. The short segment above is already refused by length,
+        // so without this case a header grown while VERSION stayed put would
+        // map with every scanline shifted and all tests green.
+        let header_name = "/forge-cef-test-header";
+        unsafe {
+            let cname = CString::new(header_name).expect("a c string");
+            libc::shm_unlink(cname.as_ptr());
+            let fd = libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600);
+            assert!(fd >= 0, "the wrong-header ring exists");
+            assert_eq!(libc::ftruncate(fd, RING_LEN as i64), 0, "a full-size mapping");
+            let ptr = libc::mmap(
+                std::ptr::null_mut(),
+                RING_LEN,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            );
+            assert!(ptr != libc::MAP_FAILED, "the wrong-header ring maps for the header write");
+            // SAFETY: the mapping holds the three leading u32s the check
+            // reads, written before the unmap.
+            let words = ptr.cast::<u32>();
+            words.write(MAGIC);
+            words.add(1).write(VERSION);
+            words.add(2).write(HEADER_LEN as u32 + 8);
+            libc::munmap(ptr, RING_LEN);
+            libc::close(fd);
+        }
+        assert!(
+            Ring::open(header_name).is_err(),
+            "a ring whose header names another length is refused at this build's magic and \
+             version"
+        );
+        Ring::unlink(header_name);
+
+        // A full-size segment nobody wrote a header into.
+        let blank_name = "/forge-cef-test-blank";
+        unsafe {
+            let cname = CString::new(blank_name).expect("a c string");
+            libc::shm_unlink(cname.as_ptr());
+            let fd = libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600);
+            assert!(fd >= 0, "the blank ring exists");
+            assert_eq!(libc::ftruncate(fd, RING_LEN as i64), 0, "a full-size mapping");
+            libc::close(fd);
+        }
+        assert!(
+            Ring::open(blank_name).is_err(),
+            "a full-size ring nobody wrote a header into is refused"
+        );
+        Ring::unlink(blank_name);
+        // The refused ring now keeps its name for its own host, so the test
+        // takes its own segment with it.
+        Ring::unlink(name);
+    }
+
+    /// **The offsets are the contract.** A field inserted anywhere before
+    /// the end moves the ones after it and changes the pixel base; these
+    /// numbers and the version are what `Ring::open` is protecting, so a
+    /// silent reorder or a forgotten bump fails here first.
+    #[test]
+    fn the_header_offsets_are_pinned() {
+        assert_eq!(std::mem::offset_of!(Header, magic), 0);
+        assert_eq!(std::mem::offset_of!(Header, version), 4);
+        assert_eq!(std::mem::offset_of!(Header, header_len), 8);
+        assert_eq!(std::mem::offset_of!(Header, width), 12);
+        assert_eq!(std::mem::offset_of!(Header, height), 16);
+        assert_eq!(std::mem::offset_of!(Header, request_seq), 40);
+        assert_eq!(std::mem::offset_of!(Header, state), 48);
+        assert_eq!(std::mem::offset_of!(Header, focused), 56);
+        assert_eq!(std::mem::offset_of!(Header, frame), 64);
+        assert_eq!(std::mem::offset_of!(Header, paints), 72);
+        assert_eq!(std::mem::offset_of!(Header, show_seq), 80);
+        assert_eq!(std::mem::offset_of!(Header, show_applied), 88);
+        assert_eq!(HEADER_LEN, 96, "the header this version's pixel base is built on");
+        assert_eq!(VERSION, 2, "the version identifies this layout; bump it with any move");
     }
 
     /// **A dirty-rect write lands exactly what a whole-frame write would.**

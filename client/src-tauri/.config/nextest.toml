@@ -5,7 +5,7 @@
 # each of them reserves every thread and runs alone. The rebuild tests start
 # two children in one test and are the most exposed of the set.
 [[profile.default.overrides]]
-filter = 'test(/^(a_successful_call_rewrites_the_carried_page|a_refused_navigation_names_the_page_the_browser_is_on|a_page_that_cannot_be_read_keeps_the_reason_and_the_probe_is_retried|the_second_probe_reads_the_page_the_first_one_lost|a_dead_page_context_rebuilds_and_repeats_a_navigation|a_dead_page_context_rebuilds_but_never_repeats_a_click|a_dead_page_context_is_retried_once_and_then_left_alone|a_rebuild_that_cannot_start_keeps_the_original_reason)$/)'
+filter = 'test(/^browser::tests::(a_successful_call_rewrites_the_carried_page|a_named_profile_call_cues_the_page_before_driving_it|a_refused_navigation_names_the_page_the_browser_is_on|a_page_that_cannot_be_read_keeps_the_reason_and_the_probe_is_retried|the_second_probe_reads_the_page_the_first_one_lost|a_dead_page_context_rebuilds_and_repeats_a_navigation|a_dead_page_context_rebuilds_but_never_repeats_a_click|a_dead_page_context_is_retried_once_and_then_left_alone|a_rebuild_that_cannot_start_keeps_the_original_reason)$/)'
 threads-required = "num-test-threads"
 
 # The stat-reason test spawns the same kind of child but passes its own
