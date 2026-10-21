@@ -83,8 +83,13 @@
   });
 
   // The connection is the shell's: left open past it, it reconnects to a forge
-  // nothing is drawing, for as long as the process lives.
-  onDestroy(() => connection?.close());
+  // nothing is drawing, for as long as the process lives. `destroyed` is what
+  // a launch still in flight checks, since it resolves after this has run.
+  let destroyed = false;
+  onDestroy(() => {
+    destroyed = true;
+    connection?.close();
+  });
 
   /**
    * Open on the remembered address: the home when something answers there,
@@ -100,6 +105,12 @@
     // The parameter first, then the memory: both are this launch's target.
     const launched = await boot(opened, named ?? remembered);
     booting = false;
+    if (destroyed) {
+      // The shell went while the launch was in flight, so nothing would draw
+      // through this connection.
+      launched.connected?.connection.close();
+      return;
+    }
     if (connection !== held) {
       // A submit is a person acting on what is in front of them and a launch is
       // the app guessing, so theirs is the one to keep. The launch's socket
@@ -250,8 +261,17 @@
     goTo(next);
   }
 
-  /** The connection the pages read through, and what it came with. */
-  function take(connected: Extract<Attempt, { ok: true }>) {
+  /**
+   * The connection the pages read through, and what it came with.
+   *
+   * Answers whether it was taken: a shell that has gone closes it instead, so
+   * a submit that resolves after the unmount leaves no socket behind.
+   */
+  function take(connected: Extract<Attempt, { ok: true }>): boolean {
+    if (destroyed) {
+      connected.connection.close();
+      return false;
+    }
     // A second connect would otherwise leave the first socket open, still
     // subscribed to the home and still re-reading it, for the rest of the
     // session - and nothing would be drawing what it was keeping current.
@@ -275,10 +295,11 @@
     // The reason belonged to the launch that produced it. Left standing, the
     // door a Back lands on accuses a forge that has just answered.
     failure = null;
+    return true;
   }
 
   function connect(connected: Extract<Attempt, { ok: true }>) {
-    take(connected);
+    if (!take(connected)) return;
     go({ name: 'home' });
   }
 

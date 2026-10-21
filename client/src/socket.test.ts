@@ -586,6 +586,35 @@ describe('the connection', () => {
   });
 
   /**
+   * **A socket the connection has let go of reports nothing.** `close()` on a
+   * socket still connecting aborts it, and `ws` answers that abort with an
+   * error; without the guard it would be reported against a connection the
+   * reader already closed, and it is the socket a retry lands on when a shell
+   * is torn down between attempts.
+   */
+  it('reports nothing from a socket the connection dropped before it opened', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const warned: string[] = [];
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
+      warned.push(String(args[0]));
+    });
+    try {
+      const conn = connect(server.url);
+      opened.push(conn);
+      conn.close();
+      await settle();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(
+      warned.filter((line) => line.includes('the socket to')),
+      'a socket the connection let go of still reported',
+    ).toEqual([]);
+  });
+
+  /**
    * **A reply the server never sends is not a caller parked forever.** An
    * older server answers a command it does not know with an `error` frame
    * that names no reply, so nothing resolves the pending entry; the dispatch
