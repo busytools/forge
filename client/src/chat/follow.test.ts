@@ -2004,6 +2004,119 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the event a clamp fires is not a reader arriving at the end').toEqual([]);
   });
 
+  it('leaves the follow off on a clamp the column height made', async () => {
+    // **The clamp with no content behind it.** The composer below collapses -
+    // a dictation row going, a panel closing - and the column takes the room,
+    // so the foot comes up under a reader parked just above it and the
+    // browser clamps them down to it. The content height never moved, so the
+    // shrink guard reads this as a reader arriving at the end, and the next
+    // frame pins them back to a foot they never asked for.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT - 60);
+    await settle();
+    clear();
+
+    const roomier = VIEWPORT + 100;
+    setElement(TOTAL, roomier);
+    list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+    await settle();
+    clear();
+
+    // The next frame lands a row below them, so a follow that re-armed has
+    // somewhere to carry them to.
+    setElement(TOTAL + 120, roomier);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a clamp the column height made is not a reader arriving at the end').toEqual(
+      [],
+    );
+  });
+
+  it("re-arms when the reader's own down gesture meets a room-gain clamp", async () => {
+    // **The same clamp, with a hand behind it.** A down gesture arms no
+    // up-token - it cannot be the hand that took the reader away - and the
+    // foot rising past their target leaves the clamp's landing below the
+    // offset they came from, so the event's direction reads away. Unless the
+    // down gesture is heard as its own arm, the return is swallowed and the
+    // way-back arrow sticks until pressed: the 2026-10-11 symptom, one clamp
+    // over.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT - 100);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+    const roomier = VIEWPORT + 200;
+    setElement(TOTAL, roomier);
+    list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own down gesture re-armed the follow across the clamp').toEqual([
+      { asked: Math.floor(TOTAL), landed: Math.floor(TOTAL) - roomier },
+    ]);
+  });
+
+  it('re-arms from a down key meeting a room-gain clamp', async () => {
+    // **The key half of the aimed arm.** A down key is the same gesture as a
+    // wheel-down through a different listener, and the branch is shared: this
+    // is the sibling that dies if the keydown aim goes.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT - 100);
+    await settle();
+    clear();
+
+    document
+      .querySelector('.conv')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown' }));
+    const roomier = VIEWPORT + 200;
+    setElement(TOTAL, roomier);
+    list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own down key re-armed the follow across the clamp').toEqual([
+      { asked: Math.floor(TOTAL), landed: Math.floor(TOTAL) - roomier },
+    ]);
+  });
+
+  it('lets an aimed gesture expire before the clamp lands', async () => {
+    // **A sticky aim is the round-one bug wearing the hand's badge.** The
+    // token is a 250ms window like the disarm's, and a hand heard long before
+    // a clamp cannot make that clamp the reader's: without the expiry every
+    // later room-gain clamp for the life of the seat re-arms.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT - 100);
+    await settle();
+    clear();
+
+    vi.useFakeTimers();
+    try {
+      document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+      vi.advanceTimersByTime(300);
+
+      const roomier = VIEWPORT + 200;
+      setElement(TOTAL, roomier);
+      list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+      flushSync();
+
+      expect(pinned(), 'an expired aim is not a hand on this clamp').toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps following when a clamp moves the reader with the content', async () => {
     // The mirror of the case above: a row corrected SHORTER leaves a following
     // reader above the foot, and a scroll event that reads as them scrolling

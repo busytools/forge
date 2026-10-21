@@ -85,6 +85,8 @@
   const READER_WINDOW_MS = 250;
   /** The keys a focused row scrolls the column UP with, which are the ones that may disarm. */
   const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
+  /** The keys that scroll the column DOWN, which aim the reader at the foot. */
+  const SCROLL_DOWN_KEYS = new Set(['ArrowDown', 'PageDown', 'End']);
 
   /**
    * The conversation, held as a VALUE: a frame replaces the record rather than
@@ -112,6 +114,8 @@
   let placedFor: string | null = null;
   /** When the reader's own input was last seen; null until a hand touches the column. */
   let readerAt: number | null = null;
+  /** When the reader's own input was last seen heading toward the foot; null until a hand aims there. */
+  let aimedAt: number | null = null;
   /**
    * The row the reader's own eye is on, held while they are away from the foot.
    *
@@ -301,8 +305,8 @@
   let accounted = 0;
   /** The dropped-ask count this component has already drained against. */
   let drained = 0;
-  /** The content height at the last scroll event, which tells a reader moving from a layout moving. */
-  let shaped = 0;
+  /** The sizes at the last scroll event, which tell a reader moving from a layout moving. */
+  let lastSeen = { content: 0, room: 0 };
   /** The offset the last pin wrote, so the event it comes back as is not read as the reader's. */
   let pinEcho: number | null = null;
   /** How many layout passes the observer has already put a parked reader back for. */
@@ -349,6 +353,12 @@
     return seen !== null && performance.now() - seen < READER_WINDOW_MS;
   }
 
+  /** Whether the reader's own input, moments ago, was heading toward the foot. */
+  function aimedAtFoot(): boolean {
+    const seen = aimedAt;
+    return seen !== null && performance.now() - seen < READER_WINDOW_MS;
+  }
+
   /**
    * The list's viewport, taken as an attachment.
    *
@@ -391,20 +401,30 @@
     viewport = node;
     // A token armed against a previous viewport must not eat this one's first event.
     pinEcho = null;
+    // The sizes and the last event belong to the element a previous conversation scrolled.
+    lastSeen = { content: 0, room: 0 };
+    movedFrom = 0;
     // The reader's own input, and the only evidence of a hand the column has:
-    // scroll events carry no source, so the gesture has to be heard separately
-    // - and only the UP-capable kinds, because a gesture that cannot move the
+    // scroll events carry no source, so the gesture has to be heard separately.
+    // The UP-capable kinds are the disarm's - a gesture that cannot move the
     // reader up cannot have moved them up (the view this client replaced
-    // disarmed on an up-scroll alone). A touch and a press on the scrollbar
-    // arm whole: neither carries a direction.
+    // disarmed on an up-scroll alone). The DOWN-capable kinds are the arm's:
+    // a reader heading for the foot lands there through a clamp whose offset
+    // never rose. A touch and a press on the scrollbar arm whole: neither
+    // carries a direction.
     const arm = () => {
       readerAt = performance.now();
     };
+    const aim = () => {
+      aimedAt = performance.now();
+    };
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) arm();
+      else if (event.deltaY > 0) aim();
     };
     const onKey = (event: KeyboardEvent) => {
       if (SCROLL_UP_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)) arm();
+      else if (SCROLL_DOWN_KEYS.has(event.key) || event.key === ' ') aim();
     };
     /**
      * **The press that starts a scrollbar drag, which has no wheel to hear.**
@@ -643,6 +663,9 @@
       placed = null;
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
+      // And so were the sizes and the last event, which read that element.
+      lastSeen = { content: 0, room: 0 };
+      movedFrom = 0;
       // **And so is the follow, which is why the entry re-arms it** (#1673):
       // a seat's conversation is kept, and its follow flag was kept with it -
       // so a seat left scrolled up came back with the pass returning early
@@ -660,6 +683,7 @@
       // stuck in is invisible on screen, and the time-token it replaced
       // self-healed in 250ms where this does not.
       readerHeld = false;
+      aimedAt = null;
     }
     placedFor = which;
     // The seat coming on screen is put there from what was kept, not from a
@@ -1339,36 +1363,38 @@
     // column, the browser clamps the reader down with the content, and THAT
     // fires a scroll event landing at the foot - so a resize that re-armed the
     // follow through the observer re-armed it here as well, and a reader who
-    // scrolled away was carried back by whatever arrived. The height the
-    // content had at the last event is what tells the two apart: an event whose
-    // height has moved is the layout, and only an event at the height the
-    // reader last saw can be them arriving at the end of it.
-    // **Only a SHRINK can be a clamp.** Content arriving grows the column and
-    // leaves the reader exactly where they are, so an event after one is the
-    // reader's own; content corrected shorter takes the room out from under
-    // them, and the event that follows is the browser moving them rather than
-    // them moving. The one test covers the disarm below as well as the arming,
-    // because a clamp that put the follow back on and a clamp that took it off
-    // are the same mistake pointing two ways.
+    // scrolled away was carried back by whatever arrived. The foot at the last
+    // event is what tells the two apart, and the rule is the next paragraph's.
+    //
+    // **Only a foot coming UP can be a clamp.** Content arriving moves the
+    // foot away and leaves the reader exactly where they are, so an event
+    // after one is the reader's own; the foot closing on them - content
+    // corrected shorter, or the column taking room as the composer below
+    // collapses - is the browser moving them rather than them moving.
     const height = viewport?.scrollHeight ?? 0;
-    const shrank = height < shaped;
-    shaped = height;
+    const room = viewport?.clientHeight ?? 0;
+    const shrank = height < lastSeen.content;
+    const rose = height - room < lastSeen.content - lastSeen.room;
+    lastSeen = { content: height, room };
     const foot = atFoot();
     const byReader = readerMoved();
+    const aimed = aimedAtFoot();
     if (foot) {
-      // **A return that lands at the foot re-arms, whatever the height did.**
-      // The shrink skip exists for a clamp, and the reader's own down-scroll
-      // can carry one in the SAME event - a row settling from the estimate to
-      // its drawn height corrects the content shorter exactly as their scroll
-      // lands - so the re-arm was swallowed and, with nothing left to fire
-      // another event, the way-back arrow stuck at the foot until pressed
-      // (Ved, 2026-10-11, "even if there is nothing to scroll"). Two things
-      // make such an event theirs: an up-capable gesture heard just before it,
-      // or the event's own direction - the offset moving TOWARD the foot,
-      // which is his gesture ("scroll up and come back down", a down-scroll
-      // that arms no token). A shrink event that moved them nowhere or away
-      // stays the clamp's, and the away-from-foot branch below is untouched.
-      if (!shrank || byReader || towardFoot) {
+      // **A return that lands at the foot re-arms, whatever the size did.**
+      // The clamp skip exists for a foot that closed on the reader, and their
+      // down-scroll can carry one in the SAME event - a row settling from the
+      // estimate to its drawn height corrects the content shorter exactly as
+      // their scroll lands - so the re-arm was swallowed and, with nothing
+      // left to fire another event, the way-back arrow stuck at the foot until
+      // pressed (Ved, 2026-10-11, "even if there is nothing to scroll"). Three
+      // things make such an event theirs: a hand heard just before it either
+      // way - an up gesture, a touch or a bar press, or a down gesture, which
+      // aims at the foot and arms no up-token - or the event's own direction,
+      // the offset moving TOWARD the foot, which is his gesture ("scroll up
+      // and come back down", a down-scroll that can fire after the window has
+      // closed). A clamp that moved them nowhere or away stays the layout's,
+      // and the away-from-foot branch is untouched.
+      if (!rose || byReader || aimed || towardFoot) {
         working?.following(true);
         // The foot is where a following reader wants to be, so the place they
         // held on the way there is done with.
