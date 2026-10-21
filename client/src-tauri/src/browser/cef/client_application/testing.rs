@@ -10,6 +10,7 @@ use objc2::{ClassType as _, MainThreadMarker, runtime::NSObjectProtocol};
 use objc2_app_kit::NSApplicationActivationPolicy;
 
 use super::ClientApplication;
+use crate::browser::cef::host;
 
 /// **The check's teeth are the probe's drop glue**: without it objc2 keeps no
 /// drop flag, an uninitialized read is zeroed memory, and the old shape would
@@ -22,10 +23,13 @@ const _: () = assert!(std::mem::needs_drop::<super::ClientApplicationIvars>());
 /// first flag read is the one an initializer that never called `set_ivars`
 /// fails on: in a `testing` build the ivars carry drop glue, so objc2's
 /// debug check panics on uninitialized memory instead of reading zeroes.
-pub fn the_application_ivars_hold() -> Result<(), String> {
+///
+/// **The setup is the host's own entry call**, so this checks the function
+/// `run` invokes rather than a copy of it.
+pub fn the_host_application_holds_its_ivars_and_policy() -> Result<(), String> {
     let _mtm = MainThreadMarker::new()
         .ok_or_else(|| "the application check must run on the process main thread".to_owned())?;
-    super::setup();
+    host::begin();
     let app = ClientApplication::shared_application();
     if !app.isKindOfClass(ClientApplication::class()) {
         return Err("+sharedApplication did not answer a ClientApplication".to_owned());
