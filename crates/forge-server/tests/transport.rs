@@ -9108,13 +9108,14 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         write["peer"], parsed["peer"],
         "the write and the open name the same client: {write} beside {parsed}",
     );
-    // **The write is a slice of the open, not the whole of it.** A
-    // whole-open value would equal `open_ms`; a draining client's write is a
-    // millisecond against tens.
+    // **The write's number is the smaller one.** A whole-open value would
+    // equal `open_ms`; this reds that substitution, and says nothing about
+    // where the clock was read inside the open.
     assert!(
         write["write_ms"].as_f64().expect("write_ms is a number")
             < parsed["open_ms"].as_f64().expect("open_ms is a number"),
-        "the write's time is inside the open's: {write} beside {parsed}",
+        "the write's number is smaller than the open's, which a whole-open value would not be: \
+         {write} beside {parsed}",
     );
 
     // The attach's own record, beside them, for the clients that never open

@@ -2082,9 +2082,9 @@ struct FrameWrite {
 
 /// The clock a measured write reads.
 ///
-/// **The start takes the frame on purpose**: the seam cannot be read before
-/// the message exists, so a measurement wrapped around the serialisation
-/// cannot use it (#2506).
+/// **The start is handed the frame it measures**: the shipping clock ignores
+/// it, and the test's fake records its length - which is what proves the read
+/// happens after the message is serialised (#2506).
 trait WriteClock {
     fn start(&self, frame: &str) -> Instant;
 
