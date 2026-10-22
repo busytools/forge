@@ -780,10 +780,9 @@
   /* The figures the marks follow, which are the line's own words rather than a
      mark. Bare for the same reason `.patchmark` is. */
   /* The line under a mutation's diff: the change's own figures as a caption
-     rather than as output. It carries no rule - a left rule is what marks a
-     command's output, and a caption wearing one read as a block belonging to
-     something else - and it sits at the label size, the one the marks beside it
-     already take. */
+     rather than as output. It carries no frame of its own - the diff above is
+     the panel, and this is its caption - and it sits at the label size, the
+     one the marks beside it already take. */
   .patchline { display: flex; align-items: center; padding: 4px 0 0;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .patchsize { margin-right: 8px; }
@@ -838,9 +837,11 @@
   .dif .ln.d .w { background: var(--del-word); border-radius: 2px; }
   /* A rendered markdown diff: the removal keeps its words where they were,
      struck and dimmed; the addition draws normal on its own tint. */
-  .prose .mdadd { background: rgba(46,160,67,.16); border-radius: 3px; padding: 0 2px; }
-  .prose .mddel { background: rgba(248,81,73,.13); border-radius: 3px; padding: 0 2px;
-    color: var(--dim); text-decoration: line-through; }
+  .prose .mdadd { background: color-mix(in srgb, #2ea043 16%, var(--s2));
+    border-radius: 3px; padding: 0 2px; }
+  .prose .mddel { background: color-mix(in srgb, #f85149 13%, var(--s2));
+    border-radius: 3px; padding: 0 2px; color: var(--muted);
+    text-decoration: line-through; }
   /* The caption under a panel whose file has no grammar. */
   .code-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     padding: 4px 2px 0; }
@@ -1861,7 +1862,7 @@ Set `service_key` per environment in the bot's own config.</pre>
             <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/families.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="code">
-                <div class="lang">ts</div>
+                <div class="lang">typescript</div>
                 <pre><span class="c2">/** The group a call's row is summarised under. */</span>
 <span class="k">export type</span> <span class="f">Family</span> =
   | <span class="f">'read'</span> | <span class="f">'search'</span> | <span class="f">'bash'</span> | <span class="f">'web'</span> | <span class="f">'lsp'</span>
@@ -1876,7 +1877,7 @@ Set `service_key` per environment in the bot's own config.</pre>
             <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/units.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="code">
-                <div class="lang">ts</div>
+                <div class="lang">typescript</div>
                 <pre><span class="k">export function</span> <span class="f">fold</span>(
   messages: <span class="k">readonly unknown</span>[],
   self: <span class="f">Self</span> | <span class="k">null</span> = <span class="k">null</span>,
@@ -1890,7 +1891,7 @@ Set `service_key` per environment in the bot's own config.</pre>
             <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/leaves.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="code">
-                <div class="lang">ts</div>
+                <div class="lang">typescript</div>
                 <pre><span class="k">export function</span> <span class="f">leafOf</span>(
   id: <span class="k">string</span>,
   name: <span class="k">string</span>,
@@ -2027,11 +2028,14 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code">
+                <div class="lang">typescript</div>
               <div class="dif added">
                 <div class="h">@@ -0,0 +1,3 @@</div>
                 <div class="ln a"><span class="on"></span><span class="nn">1</span><span class="n">+</span><span class="l">/**</span></div>
                 <div class="ln a"><span class="on"></span><span class="nn">2</span><span class="n">+</span><span class="l"> * The palettes and typefaces forge ships, by the names `[client] theme` and</span></div>
                 <div class="ln a"><span class="on"></span><span class="nn">3</span><span class="n">+</span><span class="l"> * `[client] font` take.</span></div>
+              </div>
               </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
             </div>
@@ -2042,9 +2046,12 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf" open>
             <summary><svg class="ic gl err"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/assets/web.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code">
+                <div class="lang">css</div>
               <div class="dif bare">
                 <div class="ln d"><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
                 <div class="ln a"><span class="n">+</span><span class="l">  flex: 0 1 auto;</span></div>
+              </div>
               </div>
               <div class="errhint">
                 <div class="m">String to replace not found in file.</div>
@@ -2061,9 +2068,12 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code">
+                <div class="lang">typescript</div>
               <div class="dif bare">
                 <div class="ln d"><span class="n">&#8722;</span><span class="l">  --fs-prose: 13.5px;</span></div>
                 <div class="ln a"><span class="n">+</span><span class="l">  --fs-prose: 14px;</span></div>
+              </div>
               </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +1 &#8722;1</span><span class="patchmark">changed outside this edit</span><span class="patchmark">omitted, 5.0 MB</span></div>
             </div>
@@ -2678,7 +2688,7 @@ branch main, nothing to commit</div>
           <p>Here is the mock I am working from - the rail covers the composer in it.</p>
           <p>A prompt is a document too: run <code>just client-preview</code> and read the rail.</p>
           <div class="code">
-            <div class="lang">sh</div>
+            <div class="lang">shellscript</div>
             <pre>just client-preview --port 8790</pre>
           </div>
         </div>
@@ -2725,7 +2735,7 @@ branch main, nothing to commit</div>
                 <summary><svg class="ic gl"><use href="#i-read"/></svg><span class="st" id="lv-a-st"><span class="ring"></span></span>
                   <span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/families.ts</span>
                   <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-                <div class="body"><div class="code"><div class="lang">ts</div>
+                <div class="body"><div class="code"><div class="lang">typescript</div>
                   <pre><span class="k">export type</span> <span class="f">Family</span> = <span class="f">'read'</span> | <span class="f">'search'</span> | <span class="f">'bash'</span> | <span class="f">'web'</span> | <span class="f">'lsp'</span></pre></div></div>
               </details>
             </div>

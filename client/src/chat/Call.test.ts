@@ -203,6 +203,13 @@ describe('the row one call draws', () => {
     const panel = /(?:^|\n)\.panel \{([^}]*)\}/.exec(sheet)?.[1] ?? '';
     expect(panel, 'the panel radius').toContain('border-radius: 9px');
     expect(panel, 'the panel ground').toContain('background: var(--s2)');
+    // **The hook row's own box does not compose that chrome.** A call body
+    // wears `.panel`; `.term` stays the hook inset, so the two are told apart
+    // by their declarations rather than by a restated copy of them.
+    const term = /(?:^|\n)\.term \{([^}]*)\}/.exec(sheet)?.[1] ?? '';
+    expect(term, 'the hook inset keeps its rule').toContain('border-left');
+    expect(term, 'and takes none of the panel radius').not.toContain('border-radius');
+    expect(term, 'and none of the panel ground').not.toContain('background');
   });
 
   it('draws the picture a call read only while the row is open', () => {

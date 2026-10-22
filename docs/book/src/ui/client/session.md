@@ -88,8 +88,8 @@ read as one system.
   instead**: the hunk draws as markdown, in that same panel, with removed
   words kept inline, struck and dimmed, and added words drawn normal; the
   source diff is not shown under it. **A plain row** - a command's output, a
-  text result - draws in that same panel too, rather than as a bare rule
-  beside it.
+  text result - takes the same panel's border and ground, with no format strip;
+  a hook run's output keeps the sheet's own inset rule.
   **An edit or a question whose structured record the page could not
   carry** says so on its marks line: an `omitted` figure with its size,
   scaled to the unit the size belongs to (`omitted, 5.0 MB`). On an edit it

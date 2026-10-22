@@ -76,8 +76,13 @@ const OPAQUE = /^#[0-9a-f]{6}$/i;
 /** The sheet's spelling of a token, which is what a pair's entry names. */
 const TOKEN = /^--[a-z0-9-]+$/;
 
-/** And its spelling of a two-token lift: `color-mix(in srgb, var(--a) p%, var(--b))`. */
-const MIX = /^color-mix\(in srgb, var\((--[a-z0-9-]+)\) (\d+)%, var\((--[a-z0-9-]+)\)\)$/;
+/**
+ * And its spelling of a two-part lift: `color-mix(in srgb, var(--a) p%,
+ * var(--b))`, with a literal `#rrggbb` allowed where the sheet names a tint
+ * over a token ground (the markdown diff grounds).
+ */
+const MIX =
+  /^color-mix\(in srgb, (var\((--[a-z0-9-]+)\)|#[0-9a-f]{6}) (\d+)%, (var\((--[a-z0-9-]+)\)|#[0-9a-f]{6})\)$/i;
 
 /** An entry resolved to a `#rrggbb` value, or the reason it could not be. */
 type Resolved = { ink: string } | { why: string };
@@ -99,9 +104,13 @@ function inkOf(entry: string, palette: Readonly<Record<string, string>>): Resolv
   }
   const mix = MIX.exec(entry);
   if (mix === null) return { why: 'not a pair of #rrggbb values' };
-  const [, left = '', percent = '0', right = ''] = mix;
-  const a = palette[left];
-  const b = palette[right];
+  const [, left = '', , percent = '0', right = ''] = mix;
+  const named = (part: string): string | undefined => {
+    if (OPAQUE.test(part)) return part;
+    return palette[/^var\((--[a-z0-9-]+)\)$/i.exec(part)?.[1] ?? ''] ?? undefined;
+  };
+  const a = named(left);
+  const b = named(right);
   if (a === undefined || b === undefined) return { why: 'the palette resolves no such token' };
   const mixed = blend(a, b, Number(percent));
   return mixed === null ? { why: 'not a pair of #rrggbb values' } : { ink: mixed };
@@ -299,6 +308,11 @@ const DRAWN: readonly Pair[] = [
   [DIMMED('--text'), '--s2', 6.6],
   // Bare `\e[2m`: the box's own tone, `.bodytext { color: var(--muted) }`.
   [DIMMED('--muted'), '--s2', 3.8],
+  // A rendered markdown diff's words on their own tinted grounds: the
+  // removal is struck but it is still content, so it takes the text floor
+  // rather than the dim rows' minima.
+  ['--muted', 'color-mix(in srgb, #f85149 13%, var(--s2))', TEXT],
+  ['--muted', 'color-mix(in srgb, #2ea043 16%, var(--s2))', TEXT],
 ];
 
 /**

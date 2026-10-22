@@ -82,7 +82,45 @@ describe('a Read of markdown', () => {
       expect(prose?.querySelector('h1')?.textContent, 'the heading renders').toBe('Placement');
       expect(prose?.querySelectorAll('li').length, 'the list renders').toBe(2);
       expect(prose?.textContent, 'no raw markdown marker in the DOM').not.toContain('# Placement');
-      expect(document.querySelector('.code pre'), 'and not the source panel').toBeNull();
+      expect(document.querySelector('.code > pre'), 'and not the source panel').toBeNull();
+    } finally {
+      void unmount(app);
+    }
+  });
+});
+
+describe('an Edit of a text file', () => {
+  /**
+   * **No grammar means no format strip.** The strip names a format the page
+   * knows; a text file must not be labelled `text` as if that were one, the
+   * same rule Code.svelte follows for a Read.
+   */
+  it('draws the panel with no format strip', () => {
+    const edit = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'notes.weird',
+      body: [
+        {
+          kind: 'hunk',
+          header: '@@ -1,1 +1,2 @@',
+          lines: [
+            line('ctx', 'nothing here matches a grammar', 1, 1),
+            line('add', 'and this line does not either', null, 2),
+          ],
+        },
+      ],
+      mutation: { hunks: 1, added: 1, removed: 0, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: edit, open: true } });
+    try {
+      flushSync();
+      expect(document.querySelector('.code.panel'), 'the panel still draws').not.toBeNull();
+      expect(
+        document.querySelector('.code > .lang'),
+        'a file with no grammar gets no format strip',
+      ).toBeNull();
     } finally {
       void unmount(app);
     }
@@ -282,6 +320,23 @@ describe('an Edit of code', () => {
         document.querySelector('.dif .ln.a span[style*="color"]'),
         'added tokens coloured',
       ).not.toBeNull();
+      // **The panel is a container; the diff's own grounds and word tints are
+      // unchanged inside it.** Pinned on the sheet, because jsdom performs no
+      // layout and the tint is a background rather than a drawn box.
+      const sheet = readFileSync('src/assets/web.css', 'utf8');
+      expect(sheet, 'the row grounds').toMatch(/\.dif \{[^}]*--add-bg[^}]*--del-bg/);
+      expect(sheet, 'the added row ground').toContain(
+        '.dif .ln.a .l { background: var(--add-bg); }',
+      );
+      expect(sheet, 'the removed row ground').toContain(
+        '.dif .ln.d .l { background: var(--del-bg); }',
+      );
+      expect(sheet, 'the added word tint').toContain(
+        '.dif .ln.a .w { background: var(--add-word);',
+      );
+      expect(sheet, 'the removed word tint').toContain(
+        '.dif .ln.d .w { background: var(--del-word);',
+      );
     } finally {
       close();
     }

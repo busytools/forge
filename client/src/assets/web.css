@@ -1613,9 +1613,13 @@ details.sfold div.wk:hover { background: none; }
 /* A rendered markdown diff: the removal keeps its words where they were,
    struck and dimmed; the addition draws normal on its own tint. The grounds
    are the diff's own tokens, not a second palette. */
-.prose .mdadd { background: rgba(46,160,67,.16); border-radius: 3px; padding: 0 2px; }
-.prose .mddel { background: rgba(248,81,73,.13); border-radius: 3px; padding: 0 2px;
-  color: var(--dim); text-decoration: line-through; }
+/* The grounds are the tint over the panel's `--s2`, written as the mix so the
+   contrast check measures the ground the words actually sit on. */
+.prose .mdadd { background: color-mix(in srgb, #2ea043 16%, var(--s2));
+  border-radius: 3px; padding: 0 2px; }
+.prose .mddel { background: color-mix(in srgb, #f85149 13%, var(--s2));
+  border-radius: 3px; padding: 0 2px; color: var(--muted);
+  text-decoration: line-through; }
 /* One blank line between blocks, which is the terminal's whole spacing policy:
    a live reply is cut at paragraph boundaries and each block carries one
    trailing break, so every gap it draws is one line box. Ten pixels was 0.59em
@@ -1941,9 +1945,10 @@ details.leaf[open] > summary .arw { color: var(--accent); }
 details.leaf.running > summary { color: var(--text); }
 
 .body { margin: 3px 0 6px 27px; }
-/* The one chrome a drawn body wears: a code panel and a call's plain body
-   compose it, so its border, ground and radius are declared once. A hook
-   row's `.term` does NOT compose it - hook output keeps its own inset rule. */
+/* The chrome a code panel and a call's plain body share, declared once. Other
+   result shapes - MCP prose, search hits, a dispatch's output, a Skill body -
+   keep their own. A hook row's `.term` does NOT compose this: hook output
+   keeps its inset rule. */
 .panel { border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
   overflow: hidden; }
 /* A call body's plain text inside that panel. `.term` is the hook row's own
