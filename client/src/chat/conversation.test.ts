@@ -9,7 +9,8 @@ import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import * as fleet from '../wire/fleet';
-import { Chat, Frames, type PageTurn } from './conversation';
+import { Chat, Frames, beingWritten, type PageTurn } from './conversation';
+import { PRE_RESUME, RESUME, RESUME_KEY } from './testing/resume-2503';
 import type { ToolLeaf } from './leaves';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
@@ -3414,6 +3415,45 @@ describe('the conversation the chat draws', () => {
     expect(
       held.some((messages) => messages.includes('answer-1')),
       'a page that does not share a frame with the turn does not drop it',
+    ).toBe(true);
+  });
+
+  /**
+   * **A turn a newer page has run past is settled, and it is not the newest
+   * row** (#2503).
+   *
+   * A resume hands the client a page whose turn is days ahead of the live turn
+   * the frames built, and that turn carries no result frame - the transcript
+   * holds none - so the only thing that settles it is a newer turn following
+   * it. Kept in the live tail it became the newest row, and the pin drew its
+   * clock counting the downtime.
+   */
+  it('settles a live turn a newer page has run past, and lands it above', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    for (const message of PRE_RESUME) {
+      server.update({ chat_appended: { key: LEAD, msg: message } });
+    }
+    server.send(page([{ key: RESUME_KEY, messages: RESUME }], 'c1'));
+    // The core's own answer for the resumed turn, which its page has no result
+    // frame to say.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+
+    const turns = get(chat.value).turns;
+    expect(
+      turns.map((turn) => turn.key),
+      'the resumed turn is the newest row, and the turn the page ran past is above it',
+    ).toEqual(['live:forge_prompt_206_c6a7205c', RESUME_KEY]);
+    expect(turns[0]?.live, 'the turn the page ran past is settled').toBe(false);
+    const newest = turns[turns.length - 1];
+    expect(
+      newest !== undefined && beingWritten(newest),
+      'and the turn being written is the resumed one',
     ).toBe(true);
   });
 

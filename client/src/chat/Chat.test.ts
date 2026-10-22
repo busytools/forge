@@ -13,7 +13,9 @@ import { Stores } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import Chat from './Chat.svelte';
 import { pinnedRow } from './pinnedRow.svelte';
+import { runningMs } from './report';
 import { subagents } from './subagents.svelte';
+import { PRE_RESUME, RESUME, RESUME_END, RESUME_KEY } from './testing/resume-2503';
 import SeatSwitch from './testing/seat-switch.svelte';
 import { installResizeObserver, resized } from './testing/viewport';
 
@@ -897,6 +899,34 @@ describe('the chat column as it draws', () => {
     expect(pinnedRow.of(PIN), 'the row is pinned').not.toBeNull();
     expect(pinnedRow.of(PIN)?.running, 'with the running mark').toBe(true);
     expect(document.querySelectorAll('details.turninfo'), 'and out of the turn').toHaveLength(0);
+  });
+
+  it('pins the turn the resume wrote, not the one the downtime left (#2503)', async () => {
+    // A resume hands a page whose turn is four days ahead of the live turn the
+    // frames built, and the page carries no result frame - the transcript holds
+    // none - so the only thing settling the older turn is a newer turn
+    // following it. Left in the live tail it became the newest row, and the pin
+    // drew a clock counting the downtime.
+    const server = stub();
+    draw({}, server);
+    for (const message of PRE_RESUME) server.send(appended(message));
+    await painted();
+    // The core's own answer for the resumed turn, which its row has no result
+    // frame to say.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+    server.answer([{ key: RESUME_KEY, messages: RESUME }], 'c1');
+
+    const row = pinnedRow.of(PIN);
+    expect(row, 'the resumed turn is pinned').not.toBeNull();
+    expect(row?.ended_at_utc, 'and it is the newest turn, not the Oct 18 one').toBe(RESUME_END);
+    expect(
+      row === null ? null : runningMs(row, Date.parse(RESUME_END) + 60_000),
+      'the clock reads the resume span plus the minute since, never the downtime',
+    ).toBe(592_349);
   });
 
   it('moves the finished row into the pin for its beat, and into the turn when the beat ends', async () => {

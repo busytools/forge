@@ -386,6 +386,25 @@ function messagesOf(turn: PageTurn): unknown[] {
   return Array.isArray(turn.messages) ? turn.messages : [];
 }
 
+/**
+ * The newest stamp a run of frames carries, in ms, or `null` when none parses.
+ *
+ * A turn's END, for asking whether a newer one follows it: the stamps are the
+ * CLI's own, on every frame, so two slices of one conversation order
+ * themselves without sharing a frame or a name.
+ */
+function newestStampMs(messages: readonly unknown[]): number | null {
+  let newest: number | null = null;
+  for (const message of messages as Array<{ timestamp?: unknown }>) {
+    const stamp = message.timestamp;
+    if (typeof stamp !== 'string' || stamp === '') continue;
+    const at = Date.parse(stamp);
+    if (!Number.isFinite(at)) continue;
+    if (newest === null || at > newest) newest = at;
+  }
+  return newest;
+}
+
 /** A frame's own id, or `null` when it carries none. */
 function uuidOf(message: unknown): string | null {
   // **A delivered mid-turn prompt is carried by its attachment, and the id on
@@ -2032,11 +2051,25 @@ export class Chat {
         if (grown.length > 0) drawn[index] = { ...row, messages: [...row.messages, ...grown] };
         return true;
       };
+      // **A newest page that runs past a turn the frames built settles it**
+      // (#2503). The page is the conversation as the CLI has it now, so a turn
+      // whose last row is older than the page's is one a newer turn follows -
+      // a resume's page is exactly that, and no result frame settles it. It
+      // lands above the page's rows and stops being written; a page genuinely
+      // older than the live turn (a read serialized before its frames) does not.
+      const pageNewest =
+        direction === 'newest' ? newestStampMs(pageRows.flatMap((row) => messagesOf(row))) : null;
       const loose: Turn[] = [];
+      const overtaken: Turn[] = [];
       for (const turn of healed.turns) {
         if (!(turn.live || turn.running === true) || inPage.has(turn.key)) continue;
         if (absorbed(turn)) continue;
-        loose.push(turn);
+        const end = newestStampMs(turn.messages);
+        if (pageNewest !== null && end !== null && end < pageNewest) {
+          overtaken.push({ ...turn, live: false, running: false });
+        } else {
+          loose.push(turn);
+        }
       }
       return this.answered({
         ...healed,
@@ -2092,7 +2125,7 @@ export class Chat {
                   ...loose,
                 ]
               : [...drawn, ...rest, ...loose]
-            : [...rest, ...drawn, ...loose],
+            : [...rest, ...overtaken, ...drawn, ...loose],
       });
     });
     // The walk's own step, after the fold: the held tail is never dropped,
