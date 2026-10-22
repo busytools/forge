@@ -4035,6 +4035,13 @@ impl Workspace {
         self.update_tx.unringed_between(key, from, to)
     }
 
+    /// How many numbers in `from..=to` on `key`'s stream a replay was minted
+    /// under: history the ring cannot serve, so a fill that spans one must
+    /// refuse rather than mark past it.
+    pub fn seat_replays_between(&self, key: &SessionSlot, from: u64, to: u64) -> u64 {
+        self.update_tx.replays_between(key, from, to)
+    }
+
     /// Whether `key`'s latest epoch-opening seal carried rows, which no ring
     /// holds: what tells a copy filled from the window that it cannot reach
     /// the rows the epoch began with.

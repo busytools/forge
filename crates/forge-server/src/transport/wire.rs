@@ -1657,13 +1657,15 @@ const CATCH_UP_WAIT: std::time::Duration = std::time::Duration::from_millis(250)
 const SEAL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Why a read could not bring its copy current, which the refusal's text says
-/// apart: the two are different losses and only one is about a number.
+/// apart: they are different losses and only one is about a number.
 #[derive(Debug)]
 enum NotReady {
     /// The seat's window no longer reaches back to the copy's front.
     Behind,
     /// The epoch's seal rows are unapplied, so its history cannot be reached.
     AwaitsSeal,
+    /// A replay's window is unapplied, and the ring never holds one.
+    AwaitsReplay,
 }
 
 /// Bring `slot`'s held conversation up to `want`, or report that it cannot.
@@ -1707,6 +1709,22 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
         return Ok(());
     }
     let from = state.conversations.consumed_for(slot).saturating_add(1);
+    // **A replay in the stretch is history the fill cannot apply.** Its window
+    // is not ringed, so no window serves it, and marking the copy past its
+    // number would have the fold skip the replay when it lands - the rows
+    // gone with nothing failing. Refused instead, for the fold to apply;
+    // counted apart from a frame that merely closes an epoch.
+    if state.surface.seat_replays_between(slot, from, want) > 0 {
+        tracing::error!(
+            event_name = "seat_copy_awaits_replay",
+            slot = %slot.display(),
+            want,
+            "the seat's copy is behind a replay the fold has not applied, and the ring cannot \
+             carry the window it hands over; the read is refused rather than answered with a \
+             hole",
+        );
+        return Err(NotReady::AwaitsReplay);
+    }
     let frames = state.surface.seat_frames_between(slot, from, want);
     // **A stretch holding only a seal is not a stretch the copy is behind on.**
     // The frames that close an epoch are numbered but never ringed, so no
@@ -1809,6 +1827,9 @@ async fn session(
             NotReady::AwaitsSeal => {
                 "the fold has not applied its epoch's seal, whose history an answer would be \
                  missing"
+            }
+            NotReady::AwaitsReplay => {
+                "the fold has not applied its replay, whose window an answer would be missing"
             }
         };
         anyhow::bail!("the seat's stream has not settled for {}; {why}", slot.display());
@@ -1936,10 +1957,9 @@ async fn session(
     let file_index = surface.file_index_for_record(slot).await;
     // **The reads the watch seeds from are all taken, so the mark fires here**
     // - after the tree's scan, the index and the process walk, and before the
-    // rest of the record. The watch's first pass starts from these stores
-    // without waiting on the transcript, the fold or the frame's
-    // serialisation; `processes` is read here so the record carries the same
-    // walk the pass seeds from.
+    // record's remaining reads and its serialisation. The first pass starts
+    // from these stores while this frame is still being built; `processes` is
+    // read here so the record carries the same walk the pass seeds from.
     let processes = surface.processes(slot);
     surface.note_record_read(slot);
 

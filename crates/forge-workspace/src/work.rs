@@ -251,19 +251,11 @@ impl HeldSeats {
     /// the sender that stops the seat's loop when this is the first hold.
     fn acquire(&self, slot: &SessionSlot) -> Taken {
         let mut held = self.lock();
+        // An entry lives only while a hold counts: the last release removes
+        // it, so an existing one is a second viewer and owes no loop.
         if let Some(entry) = held.get_mut(slot) {
             entry.count += 1;
-            if entry.count > 1 {
-                return Taken { first_read: Arc::clone(&entry.first_read), stopped: None };
-            }
-            // **A fresh mark per hold.** A gate a read still holds may carry a
-            // permit its previous record's read left, and that must not
-            // release this hold's watch before its own read.
-            entry.first_read = Arc::default();
-            let first_read = Arc::clone(&entry.first_read);
-            let (stop, stopped) = tokio::sync::oneshot::channel();
-            entry.stop = Some(stop);
-            return Taken { first_read, stopped: Some(stopped) };
+            return Taken { first_read: Arc::clone(&entry.first_read), stopped: None };
         }
         let scanning = self.gate_arc(slot);
         let first_read = Arc::new(tokio::sync::Notify::new());
@@ -306,6 +298,8 @@ impl HeldSeats {
         };
         entry.count = entry.count.saturating_sub(1);
         if entry.count == 0 {
+            // The sender's drop is what stops the watch; taking it says so.
+            drop(entry.stop.take());
             held.remove(slot);
         }
     }

@@ -85,6 +85,11 @@ fn frame_bytes(update: &SessionUpdate) -> usize {
                 card.name.len()
                     + card.dispatch_id.len()
                     + card.agent_type.as_deref().map_or(0, str::len)
+                    + card
+                        .tail
+                        .iter()
+                        .map(|call| call.name.len() + call.title.len() + ENTRY)
+                        .sum::<usize>()
                     + ENTRY
             })
             .sum(),
@@ -101,6 +106,15 @@ fn frame_bytes(update: &SessionUpdate) -> usize {
 struct Kept {
     frame: SeatUpdate,
     bytes: usize,
+}
+
+/// Keep one unringed number, bounded to a ring's frame count - the stretch
+/// beyond which no window a fill could serve reaches.
+fn remember(numbers: &mut VecDeque<u64>, seq: u64, cap: usize) {
+    numbers.push_back(seq);
+    while numbers.len() > cap {
+        numbers.pop_front();
+    }
 }
 
 /// What a subscriber can do with what it is sent.
@@ -155,8 +169,18 @@ struct Shared {
     ///
     /// **Per epoch, not per seat.** An occupant change mints from 1 again, so
     /// the numbers a seal's epoch carried are re-minted by the run after it -
-    /// and the record of them goes with the ring.
-    unringed: HashMap<SessionSlot, Vec<u64>>,
+    /// and the record of them goes with the ring. Bounded to a ring's frame
+    /// count: a number older than that lies beyond any window a fill could
+    /// serve, where the count it underwrites is a refusal rather than a hole.
+    unringed: HashMap<SessionSlot, VecDeque<u64>>,
+    /// The numbers each seat has minted for a `HistoryReplayed`.
+    ///
+    /// **Not ringed, and not folded into [`Self::unringed`].** A replay's
+    /// window is history the ring cannot serve, so a fill that spans one is
+    /// refused for the fold to land - where a frame that merely closes an
+    /// epoch is a number the copy loses nothing by skipping. Bounded like
+    /// `unringed`, and for the same reason.
+    replays: HashMap<SessionSlot, VecDeque<u64>>,
     /// The seats whose latest epoch-opening seal carried rows.
     ///
     /// **A seal's history is not in the ring**, so a reader filling a copy
@@ -185,6 +209,7 @@ impl Default for Shared {
             rings: HashMap::new(),
             ring_bytes: HashMap::new(),
             unringed: HashMap::new(),
+            replays: HashMap::new(),
             sealed_with_rows: HashSet::new(),
             ring_cap: SEAT_RING,
             ring_cap_bytes: SEAT_RING_BYTES,
@@ -240,6 +265,7 @@ impl Shared {
             self.rings.remove(&slot);
             self.ring_bytes.remove(&slot);
             self.unringed.remove(&slot);
+            self.replays.remove(&slot);
             // **The mark describes the LATEST seal, so each mint replaces
             // it.** Only a seal that carried rows leaves a gap the ring cannot
             // fill, and a later blank epoch must not inherit the previous
@@ -268,13 +294,14 @@ impl Shared {
             // it with a hole no window could fill. It is shed at the next
             // occupant's seal, which is where the numbers start over.
             self.sequences.insert(slot.clone(), seq);
-            self.unringed.entry(slot.clone()).or_default().push(seq);
+            remember(self.unringed.entry(slot.clone()).or_default(), seq, self.ring_cap);
         } else if matches!(update, SessionUpdate::HistoryReplayed { .. }) {
-            // **Not ringed, and recorded as a number no window can serve.** A
-            // reader behind it must not be refused for a frame the ring could
-            // never hold; a re-open reads a fresh window instead.
+            // **Not ringed, and recorded where a fill can find it.** A reader
+            // whose stretch holds one must know the window it carries is not
+            // in the ring: treating it as merely unringed would let a fill
+            // mark past it, losing rows only the fold can apply.
             self.sequences.insert(slot.clone(), seq);
-            self.unringed.entry(slot.clone()).or_default().push(seq);
+            remember(self.replays.entry(slot.clone()).or_default(), seq, self.ring_cap);
         } else {
             self.sequences.insert(slot.clone(), seq);
         }
@@ -322,6 +349,16 @@ impl Shared {
     /// holds no frame for.
     fn unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
         let Some(numbers) = self.unringed.get(slot) else {
+            return 0;
+        };
+        u64::try_from(numbers.iter().filter(|number| (from..=to).contains(number)).count())
+            .unwrap_or(u64::MAX)
+    }
+
+    /// How many of the numbers in `from..=to` on `slot`'s stream a
+    /// `HistoryReplayed` was minted under.
+    fn replays_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
+        let Some(numbers) = self.replays.get(slot) else {
             return 0;
         };
         u64::try_from(numbers.iter().filter(|number| (from..=to).contains(number)).count())
@@ -425,6 +462,12 @@ impl UpdateFanout {
     /// How many numbers in `from..=to` on `slot`'s stream no window can hold.
     pub(crate) fn unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
         self.shared.lock().unringed_between(slot, from, to)
+    }
+
+    /// How many numbers in `from..=to` on `slot`'s stream a replay was minted
+    /// under, whose window the ring cannot serve.
+    pub(crate) fn replays_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
+        self.shared.lock().replays_between(slot, from, to)
     }
 
     /// Whether `slot`'s latest epoch-opening seal carried rows, which no ring
@@ -1127,11 +1170,80 @@ mod tests {
         assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the replay");
         assert!(fanout.frames_between(&seat, 1, 1).is_empty(), "the ring holds no replay");
         assert_eq!(
-            fanout.unringed_between(&seat, 1, 1),
+            fanout.replays_between(&seat, 1, 1),
             1,
-            "and its number is one no window serves",
+            "and its number is recorded as a replay a fill must not mark past",
+        );
+        assert_eq!(
+            fanout.unringed_between(&seat, 1, 1),
+            0,
+            "a replay is not a frame that merely closes an epoch",
         );
         assert_eq!(fanout.ring_bytes(&seat), 0, "so it is charged nothing");
+    }
+
+    /// **A call output and a card tail are charged by their payload.** Both
+    /// grow with what a person reads - a command's tail, an instance's calls -
+    /// and a ceiling that counted them as a frame's fixed weight would let a
+    /// heavy seat pin its whole window.
+    #[test]
+    fn a_call_output_and_a_card_tail_are_charged_by_their_payload() {
+        use forge_primitives::runtime::{SubagentCall, SubagentCallStatus, SubagentCard};
+
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+        let line = "x".repeat(4_000);
+
+        assert!(
+            fanout.send(SessionUpdate::CallOutput {
+                key: seat.clone(),
+                call_id: "tu-1".to_owned(),
+                output: forge_primitives::CallOutput::Lines(vec![
+                    line.clone(),
+                    line.clone(),
+                    line.clone(),
+                ]),
+            }),
+            "a subscribed fan-out delivers",
+        );
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the call output");
+        let output_bytes = fanout.ring_bytes(&seat);
+        assert!(
+            output_bytes > 12_000,
+            "three 4 KB lines are charged against the ceiling: {output_bytes} bytes",
+        );
+
+        let card = SubagentCard {
+            name: "an instance".to_owned(),
+            dispatch_id: "tu-2".to_owned(),
+            agent_type: None,
+            running: true,
+            failed: false,
+            backgrounded: false,
+            ended_at_ms: None,
+            calls: 3,
+            tail: (0..3)
+                .map(|_| SubagentCall {
+                    name: "Bash".to_owned(),
+                    title: line.clone(),
+                    status: SubagentCallStatus::Completed,
+                })
+                .collect(),
+            usage: None,
+        };
+        assert!(
+            fanout
+                .send(SessionUpdate::SubagentCardsChanged { key: seat.clone(), cards: vec![card] }),
+            "a subscribed fan-out delivers",
+        );
+        assert_eq!(next_seq(&mut rx, "seat"), Some(2), "and the cards after it");
+        let both = fanout.ring_bytes(&seat);
+        assert!(
+            both > output_bytes + 12_000,
+            "the card tail's calls are charged too: {both} bytes over the {output_bytes} before \
+             it",
+        );
     }
 
     /// The boot backlog keeps the numbers its frames were minted with, so a

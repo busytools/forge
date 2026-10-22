@@ -4059,6 +4059,81 @@ async fn a_reconnect_answer_covers_every_frame_below_its_number() {
     );
 }
 
+/// **A fill that spans a replay is refused, never marked past.**
+///
+/// A `HistoryReplayed`'s window is never ringed, so a fill that rescues a read
+/// from a lagging fold has nothing to apply for its number. Marking the copy
+/// past it anyway would have the fold skip the replay when it lands - as a
+/// frame the copy already holds - and the window's rows would be gone with
+/// nothing failing. The fold is held here so the window is deterministic
+/// rather than raced; the second read proves the rows arrive once it lands.
+#[tokio::test]
+async fn a_fill_that_spans_a_replay_is_refused_rather_than_marked_past() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::HistoryReplayed {
+        key: seat.clone(),
+        history: vec![a_said_frame("the replayed window row")],
+        compaction_count: 0,
+    });
+    let replay = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
+
+    // **The FIRST answer, not a poll.** The next subscribe would find the fold
+    // caught up whatever this one did.
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    match next_server(&mut socket).await {
+        ServerMessage::Error { what, why, .. } => {
+            assert_eq!(what, "subscribe", "the refusal is the subscribe's own read");
+            assert!(
+                why.contains("replay"),
+                "and names the replay the copy is behind rather than a number: {why}",
+            );
+        }
+        other => panic!(
+            "a fill over a replay must refuse rather than mark the copy past its window, and \
+             this answered {other:?}"
+        ),
+    }
+
+    state.conversations.hold_the_fold(false);
+    assert!(
+        state.conversations.await_consumed(&seat, replay, SEED_WAIT).await,
+        "the fold never applied the replay the refusal left for it: the watermark is {}",
+        state.conversations.consumed_for(&seat),
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, after, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        says_times(&after, "the replayed window row"),
+        1,
+        "the replay's row crosses once the fold has landed, and once only",
+    );
+}
+
 /// **A caught-up copy is never refused.** A seat that has emitted more than a
 /// window's worth of frames has a ring that shed its oldest, so the fallback's
 /// coverage guard cannot reach back - and a watermark that never advanced
