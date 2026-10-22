@@ -1087,7 +1087,10 @@ interface RailFooter {
    * declared one while no chip resolves.
    */
   account: { name: string; tone: string };
-  /** The figures a spend-billed account reports; empty for a window-billed one. */
+  /**
+   * The figures a spend-billed account reports; the one `usage / not reported`
+   * row while no chip resolves; empty for a window-billed one.
+   */
   figures: FooterFigure[];
   /** The two plan windows, with a placeholder for one the snapshot lacks. */
   windows: FooterWindow[];
@@ -1142,6 +1145,11 @@ function footerWindows(windows: AccountWindow[]): FooterWindow[] {
  * balance and cap, and a window-billed one gets its 5h and 7d windows in the
  * same block. Drawn from one snapshot either way, so the footer states what
  * the poller reported rather than a shape the account cannot fill.
+ *
+ * **A third shape has no billing kind at all**: while no chip resolves, the
+ * account is named from the project's own declaration and one
+ * `usage / not reported` row stands in, rather than a window shape nothing
+ * has established.
  *
  * The account is read from the project's chip rather than from the seat's own
  * binding, which the client has no read for: the chip is the roster's answer
