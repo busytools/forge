@@ -142,9 +142,11 @@ pub struct LspCheckWire {
 
 /// One project row: the project, and the per-row reads the home draws it from.
 ///
-/// The three beside the project are what the row's cells state, and each is
-/// reached from the ROW rather than from a seat: a home row is a project, and
-/// a project is a row whether or not anything has started it.
+/// The cells beside the project are what the row states, and each is reached
+/// from the ROW rather than from a seat: a home row is a project, and a
+/// project is a row whether or not anything has started it. The board's own
+/// detail - rows, schedules and connector sets - is [`ProjectBoardWire`]'s
+/// (#2517).
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectWire {
@@ -162,6 +164,37 @@ pub struct ProjectWire {
     /// subscribing do not multiply git invocations: the cache is what makes
     /// the per-row cost one scan's rather than N times it.
     pub work: WorkState,
+    /// Whether a spawn in this project would find an account. Read beside
+    /// `project.has_model`, which is what tells the two reasons a spawn cannot
+    /// run apart.
+    pub would_bind: bool,
+    /// The account this project's row chips, and its state.
+    ///
+    /// A view draws the chip from `Roster::chip_for`, which derives the
+    /// state from the project's model and the account pool. `has_model` is not
+    /// enough to derive it from, so a client could draw the row and not the
+    /// chip it carries.
+    pub chip: Option<forge_workspace::SessionChipInfo>,
+}
+
+/// The board's own read: every project's live detail, for the page and the
+/// rail that draw it (#2517).
+///
+/// **Its own subject and its own snapshot.** The rows, schedules and
+/// connector sets are 97.6% of what the home used to carry, and a home read
+/// happens on every update that covers the fleet; a page that draws none of
+/// them should not pay for them.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct BoardWire {
+    pub projects: Vec<ProjectBoardWire>,
+}
+
+/// One project's board detail.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectBoardWire {
+    pub project: ProjectView,
     /// The project's live rows, with what the board derives on each:
     /// worked time, ages, and the marks. Computed once, in the workspace's
     /// board module, and passed through - the client never re-derives a
@@ -180,17 +213,6 @@ pub struct ProjectWire {
     /// [`ConnectorsWire`] - which carries the liveness facts, which belong to
     /// the server and the workspace rather than to a project.
     pub connectors: ProjectConnectorsWire,
-    /// Whether a spawn in this project would find an account. Read beside
-    /// `project.has_model`, which is what tells the two reasons a spawn cannot
-    /// run apart.
-    pub would_bind: bool,
-    /// The account this project's row chips, and its state.
-    ///
-    /// A view draws the chip from `Roster::chip_for`, which derives the
-    /// state from the project's model and the account pool. `has_model` is not
-    /// enough to derive it from, so a client could draw the row and not the
-    /// chip it carries.
-    pub chip: Option<forge_workspace::SessionChipInfo>,
 }
 
 /// One seat's row: the surface's own [`AgentRow`], plus the read that is per
@@ -1429,6 +1451,7 @@ pub(crate) async fn encode_subject_timed(
     let mut timings = OpenTimings::default();
     match subject {
         Subject::Home => Ok((serde_json::to_value(home(state, surface).await)?, timings)),
+        Subject::Board => Ok((serde_json::to_value(board(surface))?, timings)),
         Subject::Session(slot) => {
             let roster = surface.roster();
             let Some(cwd) = roster.cwd_for(slot) else {
@@ -1553,15 +1576,8 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     let mut projects = Vec::with_capacity(roster.projects.len());
     for project in &roster.projects {
         let seat = SessionSlot::lead(project.org.clone(), project.name.clone());
-        let subscribed = surface.connectors(Some(&project.name));
         projects.push(ProjectWire {
             work: state.work.snapshot(&seat, &project.path).await,
-            rows: surface.board_rows(&project.name),
-            crons: roster.crons_for_project(&project.name),
-            connectors: ProjectConnectorsWire {
-                gotify: subscribed.gotify.subscriptions,
-                slack: subscribed.slack.subscriptions,
-            },
             would_bind: roster.would_bind(&project.key),
             chip: roster.chip_for(&project.key),
             project: project.clone(),
@@ -1636,6 +1652,29 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
             .collect(),
         projects,
     }
+}
+
+/// The board's record, from the reads a board-scoped view makes.
+///
+/// No filesystem read and no seat hold: the rows, schedules and connector
+/// sets are the workspace's own state, which is what makes a board read
+/// cheap next to the home read it left (#2517).
+fn board(surface: &ViewSurface) -> BoardWire {
+    let roster = surface.roster();
+    let mut projects = Vec::with_capacity(roster.projects.len());
+    for project in &roster.projects {
+        let subscribed = surface.connectors(Some(&project.name));
+        projects.push(ProjectBoardWire {
+            project: project.clone(),
+            rows: surface.board_rows(&project.name),
+            crons: roster.crons_for_project(&project.name),
+            connectors: ProjectConnectorsWire {
+                gotify: subscribed.gotify.subscriptions,
+                slack: subscribed.slack.subscriptions,
+            },
+        });
+    }
+    BoardWire { projects }
 }
 
 /// How long an encode waits for the fold loop to catch up before filling the
@@ -2844,6 +2883,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wire_fixtures");
         vec![
             (Subject::Home, dir.join("home.json")),
+            (Subject::Board, dir.join("board.json")),
             (Subject::Session(fixture_seat()), dir.join("session.json")),
             (Subject::Usage, dir.join("usage.json")),
         ]
@@ -2904,6 +2944,44 @@ mod tests {
             row.get("work").is_some(),
             "the seat's own tree crosses on the row, not the project's read: {row}"
         );
+    }
+
+    /// **The home carries the fleet glance and the board carries the board**
+    /// (#2517): the three fields that were 97.6% of the home's payload moved
+    /// to their own subject, and the board's answer carries every one.
+    #[tokio::test]
+    async fn the_home_carries_no_board_and_the_board_carries_all_of_it() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
+        };
+
+        let home = encode_subject(&state, &Subject::Home).await.expect("the home encodes");
+        let home_project = &home["projects"][0];
+        for field in ["rows", "crons", "connectors"] {
+            assert!(
+                home_project.get(field).is_none(),
+                "the home still carries the board's `{field}`: {home_project}",
+            );
+        }
+
+        let board = encode_subject(&state, &Subject::Board).await.expect("the board encodes");
+        let board_project = &board["projects"][0];
+        for field in ["rows", "crons", "connectors"] {
+            assert!(
+                board_project.get(field).is_some(),
+                "the board's snapshot does not carry `{field}`, which its updates move: \
+                 {board_project}",
+            );
+        }
     }
 
     /// The home's fatal carries the words the server prints, not the serde
@@ -4219,7 +4297,7 @@ mode = \"toggle\"
     /// A view draws a project's SCHEDULES section from a read the wire
     /// never carried, so a client could create a cron and never see it again.
     #[tokio::test]
-    async fn a_projects_schedules_ride_its_row() {
+    async fn a_projects_schedules_ride_its_board_row() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.add_cron("proj", "a nightly sweep").expect("the cron is added");
@@ -4233,8 +4311,8 @@ mode = \"toggle\"
             heartbeat: Heartbeat::default(),
         };
 
-        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
-        let rows = encoded["projects"].as_array().expect("the home carries project rows");
+        let encoded = encode_subject(&state, &Subject::Board).await.expect("encode");
+        let rows = encoded["projects"].as_array().expect("the board carries project rows");
         let crons = rows[0]["crons"].as_array().expect("and each row carries its schedules");
 
         assert_eq!(crons.len(), 1, "the project's own cron reached the wire: {crons:?}");
@@ -4250,7 +4328,7 @@ mode = \"toggle\"
     /// section empty however long it waited, and would have flip-flopped
     /// against the next re-read once a frame patched it.
     #[tokio::test]
-    async fn a_projects_connector_subscriptions_ride_its_row() {
+    async fn a_projects_connector_subscriptions_ride_its_board_row() {
         let (workspace, _dir) = crate::surface::testing::workspace_with_connector_subs();
         let state = TransportState {
             surface: Arc::new(crate::surface::ViewSurface::new(Arc::clone(&workspace))),
@@ -4262,8 +4340,8 @@ mode = \"toggle\"
             heartbeat: Heartbeat::default(),
         };
 
-        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
-        let rows = encoded["projects"].as_array().expect("the home carries project rows");
+        let encoded = encode_subject(&state, &Subject::Board).await.expect("encode");
+        let rows = encoded["projects"].as_array().expect("the board carries project rows");
         let row = rows
             .iter()
             .find(|row| row["project"]["name"] == "forge")
@@ -4287,17 +4365,18 @@ mode = \"toggle\"
         // The home-level `connectors` is the liveness facts and nothing else:
         // a subscription field a stale reader still looks for is a section
         // that draws empty forever.
+        let home = encode_subject(&state, &Subject::Home).await.expect("encode");
         assert!(
-            encoded["connectors"]["gotify"].get("subscriptions").is_none(),
-            "the home's own connectors carries no subscription list: {encoded}",
+            home["connectors"]["gotify"].get("subscriptions").is_none(),
+            "the home's own connectors carries no subscription list: {home}",
         );
         assert!(
-            encoded["connectors"]["slack"].get("subscriptions").is_none(),
-            "for either connector: {encoded}",
+            home["connectors"]["slack"].get("subscriptions").is_none(),
+            "for either connector: {home}",
         );
         assert!(
-            encoded["connectors"]["slack"]["connected_workspaces"].is_array(),
-            "the facts it does carry are still there: {encoded}",
+            home["connectors"]["slack"]["connected_workspaces"].is_array(),
+            "the facts it does carry are still there: {home}",
         );
     }
 

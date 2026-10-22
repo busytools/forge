@@ -257,7 +257,8 @@ census!(ServerMessage,
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
 census!(Subject,
-    [Home struct, Session tuple, Usage struct, DictateModels struct, Extensions struct],
+    [Home struct, Board struct, Session tuple, Usage struct, DictateModels struct,
+     Extensions struct],
     subject_census, SUBJECT_VARIANTS);
 
 census!(SessionUpdate,

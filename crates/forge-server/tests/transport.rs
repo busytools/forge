@@ -329,6 +329,64 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
     assert!(data.get("projects").is_some(), "the home snapshot carries its projects: {data}");
 }
 
+/// **The board's own subject, and the split it made in the home's hears**
+/// (#2517): a cron set moves the board and not the home, while a task write
+/// moves both - the home's fleet counts are derived from the same tasks.
+#[tokio::test]
+async fn a_board_subscriber_hears_what_the_home_no_longer_carries() {
+    let (url, fleet) = a_server().await;
+    let mut board = connect(&url).await;
+    let mut home = connect(&url).await;
+    for (socket, subject) in [(&mut board, Subject::Board), (&mut home, Subject::Home)] {
+        send(
+            socket,
+            ClientMessage::Subscribe {
+                what: subject.clone(),
+                answering: true,
+                browser: false,
+                declare: false,
+            },
+        )
+        .await;
+        let (answered, ..) = snapshot_answering(socket).await;
+        assert_eq!(answered, subject, "the subscription's own answer");
+    }
+
+    // A schedule set moves: the board hears it, and the home is not sent it
+    // at all - its snapshot carries no crons.
+    fleet.emit(SessionUpdate::CronSchedulesChanged { key: lead_seat(), crons: Vec::new() });
+    match next_server_within(&mut board, 5_000).await {
+        Some(ServerMessage::Update { update, .. }) => assert!(
+            matches!(*update, SessionUpdate::CronSchedulesChanged { .. }),
+            "the board was sent something else: {update:?}",
+        ),
+        other => panic!("a schedule set did not reach the board: {other:?}"),
+    }
+    // The marker orders the home's read: everything above was emitted before
+    // it, so a cron update that was going to arrive would have.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+    match next_server_within(&mut home, 5_000).await {
+        Some(ServerMessage::Update { update, .. }) => assert!(
+            matches!(*update, SessionUpdate::TurnCancelled { .. }),
+            "the home was sent an update its snapshot cannot carry: {update:?}",
+        ),
+        other => panic!("the home heard nothing where the marker was due: {other:?}"),
+    }
+
+    // A task write moves the fleet's counts with the board's rows, so both
+    // subjects hear it.
+    fleet.emit(SessionUpdate::TasksChanged { key: lead_seat(), tasks: Vec::new() });
+    for (socket, name) in [(&mut board, "board"), (&mut home, "home")] {
+        match next_server_within(socket, 5_000).await {
+            Some(ServerMessage::Update { update, .. }) => assert!(
+                matches!(*update, SessionUpdate::TasksChanged { .. }),
+                "the {name} was sent something else: {update:?}",
+            ),
+            other => panic!("a task write did not reach the {name}: {other:?}"),
+        }
+    }
+}
+
 /// Showing a seat spends the marks the home carries for it - the diamond
 /// and the failure mark both clear by showing the seat - so the home is
 /// re-sent as part of the attach. Without it the row keeps a spent mark

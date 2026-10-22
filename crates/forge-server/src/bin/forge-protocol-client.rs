@@ -195,6 +195,9 @@ fn subject(rest: &str) -> anyhow::Result<Subject> {
     if rest == "home" {
         return Ok(Subject::Home);
     }
+    if rest == "board" {
+        return Ok(Subject::Board);
+    }
     if rest == "usage" {
         return Ok(Subject::Usage);
     }
@@ -206,8 +209,8 @@ fn subject(rest: &str) -> anyhow::Result<Subject> {
     }
     let Some(seat) = rest.strip_prefix("session ") else {
         anyhow::bail!(
-            "a subject is `home`, `usage`, `dictate_models`, `extensions` or `session \
-             <org>/<project>/<label>`, not `{rest}`"
+            "a subject is `home`, `board`, `usage`, `dictate_models`, `extensions` or \
+             `session <org>/<project>/<label>`, not `{rest}`"
         );
     };
     let mut parts = seat.split('/');

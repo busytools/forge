@@ -113,6 +113,8 @@ pub struct FleetRow {
     pub queue: usize,
     /// Rows waiting on the user's decision.
     pub waiting_on_user: usize,
+    /// Every row the project holds, which the home's header totals.
+    pub rows: usize,
     pub misses: Vec<Miss>,
 }
 
@@ -273,6 +275,7 @@ impl Workspace {
                     slots: Some(slots),
                     queue,
                     waiting_on_user,
+                    rows: tasks.len(),
                     misses,
                 }
             })

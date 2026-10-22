@@ -100,9 +100,9 @@ normalized by.
 
 ## Subjects
 
-Everything a client reads is addressed by a subject, and there are five:
-`home`, `session <org>/<project>/<label>`, `usage`, `dictate_models` and
-`extensions`.
+Everything a client reads is addressed by a subject, and there are six:
+`home`, `board`, `session <org>/<project>/<label>`, `usage`, `dictate_models`
+and `extensions`.
 
 A seat nobody has started is an answer rather than a silence. Subscribing
 to one that is not there comes back as an `error` saying so, so a client
@@ -564,17 +564,32 @@ facts a row is drawn from.
 
 | Field                                  | What it is                                                                                                                                                                                                                                                                                                                                                                                                   |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `projects`                             | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, `connectors` (this project's own gotify and slack subscription sets), `would_bind`, and `chip` - the account the row binds and its state. |
-| `fleet`                                | One glance per project, for the home's own fleet row: how many seats are live against the project's cap, the queue (ready and unowned), the rows waiting on the user, and the project's own misses by name.                                                                                                                                                                                                  |
+| `projects`                             | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `would_bind`, and `chip` - the account the row binds and its state. The board's own detail - rows, schedules and connector sets - is the `board` subject's (#2517). |
+| `fleet`                                | One glance per project, for the home's own fleet row: how many seats are live against the project's cap, the queue (ready and unowned), the rows waiting on the user, the project's total row count, and the project's own misses by name.                                                                                                                                                                   |
 | `agents`                               | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, `tree` (the seat's own directory, home-shortened, only when the worker runs somewhere other than its project's), and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project.                                                                                                                             |
 | `unseen`                               | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it.                                                                                                                                                                                                                                                                            |
 | `accounts`                             | Loading state per account, whether all of them settled, the gateway listener's ready state and port, and each account's cached usage snapshot.                                                                                                                                                                                                                                                              |
-| `connectors`                           | The connector liveness: Gotify's connection, Slack's workspaces and whether the stored subscription set failed to load. **What a project is subscribed to is not here** - those sets are per project and ride the project's own row.                                                                                                                                                                         |
+| `connectors`                           | The connector liveness: Gotify's connection, Slack's workspaces and whether the stored subscription set failed to load. **What a project is subscribed to is not here** - those sets are per project and ride the `board` subject's project row.                                                                                                                                                            |
 | `dictate`                              | Whether dictation is on, the per-model fetch and load state, and where the models land.                                                                                                                                                                                                                                                                                                                      |
 | `cli_version`                          | The installed and latest `claude` versions.                                                                                                                                                                                                                                                                                                                                                                  |
 | `forge_version`, `forge_version_short` | Which forge build is serving the socket. A client draws it as the `server` build beside its own `client` build.                                                                                                                                                                                                                                                                                              |
 | `service_status`                       | The statuspage's last answer, `null` for healthy or unreachable.                                                                                                                                                                                                                                                                                                                                             |
 | `fatal_error`                          | The last fatal error the core held, `null` when there has been none.                                                                                                                                                                                                                                                                                                                                         |
+
+**`board`** is every project's board: the rows, schedules and connector sets
+the board page and the session rail draw. It is a subject of its own because a
+home read happens on every update that covers the fleet, and these three
+fields were 97.6% of it for a page that draws none of them (#2517).
+
+| Field      | What it is                                                                                                                                                                                                                                                               |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `projects` | One entry per project: `project` (name, org, path, sessions, `has_model`), `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
+
+**`board` hears the variants that move it**: `tasks_changed`,
+`cron_schedules_changed` and `connector_subscriptions_changed`. The home
+hears `tasks_changed` too, because its fleet row's counts are derived from
+the same tasks; it hears neither of the other two, because its snapshot no
+longer carries them.
 
 **`session <org>/<project>/<label>`** is one seat: its record, its
 conversation, and what the composer is doing.

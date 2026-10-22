@@ -22,6 +22,14 @@ use crate::{Command, SessionUpdate};
 #[serde(rename_all = "snake_case")]
 pub enum Subject {
     Home,
+    /// Every project's board detail: its rows, its schedules and its
+    /// connector subscriptions.
+    ///
+    /// A subject of its own rather than fields of [`Subject::Home`] because
+    /// the board is its own page's data: the home is a glance at the fleet,
+    /// and carrying every project's rows made a home read 708 KB, 97.6% of it
+    /// board data a home page draws none of (#2517).
+    Board,
     Session(SessionSlot),
     /// The token/cost pool, scanned on the ask.
     ///
@@ -73,7 +81,21 @@ impl Subject {
     /// `client/src/wire/fleet.ts`'s `coversHome`.
     pub fn covers(&self, update: &SessionUpdate) -> bool {
         match self {
-            Self::Home => fleet_news(update).any() || update.slot().is_none(),
+            // **The board's own variants are not the home's.** A cron or a
+            // connector set left the home's payload with the rows, so a home
+            // subscriber that heard one would be asked to re-read for news its
+            // snapshot cannot carry (rule 25). `TasksChanged` stays: the
+            // fleet's counts are derived from the same tasks, so the home's
+            // answer does carry its effect.
+            Self::Home => {
+                (fleet_news(update).any() || update.slot().is_none()) && !board_detail(update)
+            }
+            // The board snapshot carries every project's rows, crons and
+            // connector sets, so exactly the variants that move them belong
+            // here - and nothing else.
+            Self::Board => {
+                board_detail(update) || matches!(update, SessionUpdate::TasksChanged { .. })
+            }
             Self::Session(seat) => update.slot() == Some(seat),
             // Nothing carries the pool: its snapshot is a scan, and a
             // transcript's tokens moving is not an update any variant
@@ -106,6 +128,18 @@ impl Subject {
             ),
         }
     }
+}
+
+/// The updates whose whole effect is the board's own snapshot.
+///
+/// Crons and connector sets moved out of the home's payload with the rows
+/// (#2517), so the home must not hear them; the board carries both.
+fn board_detail(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::CronSchedulesChanged { .. }
+            | SessionUpdate::ConnectorSubscriptionsChanged { .. }
+    )
 }
 
 /// What a client sends.
@@ -954,20 +988,31 @@ mod tests {
         }
     }
 
-    /// A section push reaches the subscribers the section belongs to: home,
-    /// which draws the project row, and the seat the update routes on.
+    /// The section pushes reach the BOARD, and the task push reaches the home
+    /// too (#2517).
     ///
-    /// Every one of these carries a key, so the slot-less arm is not what
-    /// admits it - dropping it from `fleet_news`'s redraw arm is a section
-    /// that stops popping, which is what this test exists to make fail by
-    /// name.
+    /// **The home keeps `TasksChanged` because its snapshot still carries it**:
+    /// the fleet row's queue and waiting counts are derived from the same
+    /// tasks. Crons and connector sets left the home's payload with the rows,
+    /// so the home must not hear them (rule 25); the board snapshot carries
+    /// all three.
     #[test]
-    fn the_section_pushes_are_home_news() {
+    fn the_section_pushes_reach_the_board_and_tasks_also_home() {
+        let tasks = SessionUpdate::TasksChanged {
+            key: SessionSlot::lead("TestOrg", "proj"),
+            tasks: Vec::new(),
+        };
+        assert!(
+            fleet_news(&tasks).any(),
+            "admitted by the redraw arm, not by the wildcard: {tasks:?}",
+        );
+        assert!(Subject::Board.covers(&tasks), "the board draws every row: {tasks:?}");
+        assert!(
+            Subject::Home.covers(&tasks),
+            "and the home's fleet counts are derived from the same tasks: {tasks:?}",
+        );
+
         for update in [
-            SessionUpdate::TasksChanged {
-                key: SessionSlot::lead("TestOrg", "proj"),
-                tasks: Vec::new(),
-            },
             SessionUpdate::CronSchedulesChanged {
                 key: SessionSlot::lead("TestOrg", "proj"),
                 crons: Vec::new(),
@@ -978,20 +1023,18 @@ mod tests {
                 slack: Vec::new(),
             },
         ] {
+            assert!(Subject::Board.covers(&update), "the board draws both: {update:?}");
             assert!(
-                fleet_news(&update).any(),
-                "admitted by the redraw arm, not by the wildcard: {update:?}",
-            );
-            assert!(Subject::Home.covers(&update), "so the home is sent it: {update:?}");
-            assert!(
-                Subject::Session(SessionSlot::lead("TestOrg", "proj")).covers(&update),
-                "and the project's own seat is sent it too: {update:?}",
-            );
-            assert!(
-                !Subject::Session(SessionSlot::lead("TestOrg", "other")).covers(&update),
-                "while another seat's page is not: {update:?}",
+                !Subject::Home.covers(&update),
+                "the home's snapshot carries neither, so it must not be asked to \
+                 re-read for it: {update:?}",
             );
         }
+
+        assert!(
+            !Subject::Board.covers(&SessionUpdate::AccountsChanged),
+            "and nothing outside the board's own three reaches it",
+        );
     }
 
     /// The client's settings come off the server's own config, so the

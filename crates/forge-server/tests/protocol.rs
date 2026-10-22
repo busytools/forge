@@ -178,7 +178,7 @@ async fn the_models_subject_answers_the_pages_read() {
 /// place a real value can appear. A key that exists and is null would satisfy
 /// a presence check and leave a client drawing a blank cell.
 #[tokio::test]
-async fn the_homes_five_reads_arrive_with_real_values() {
+async fn the_homes_glance_and_the_boards_rows_arrive_with_real_values() {
     let (url, _fleet) = a_server().await;
     let transcript = walk("subscribe home\n", &url).await;
     let home = of_kind(&transcript, "snapshot")
@@ -191,21 +191,6 @@ async fn the_homes_five_reads_arrive_with_real_values() {
         row["work"]["gate"].is_string(),
         "the row's working tree says something about itself: {}",
         row["work"],
-    );
-    assert!(
-        row["rows"].as_array().is_some_and(|rows| !rows.is_empty()),
-        "the row's board rows are a populated list, not an empty one: {}",
-        row["rows"],
-    );
-    assert!(
-        row["rows"][0]["worked_secs"].is_u64(),
-        "and each row carries its worked time, so the client never derives it: {}",
-        row["rows"][0],
-    );
-    assert!(
-        row["rows"][0]["marks"]["ready"].is_boolean(),
-        "and its marks, one boolean per fact: {}",
-        row["rows"][0]["marks"],
     );
     assert!(
         home["data"]["fleet"].as_array().is_some_and(|fleet| !fleet.is_empty()),
@@ -222,6 +207,29 @@ async fn the_homes_five_reads_arrive_with_real_values() {
         home["data"]["dictate"]["enabled"].is_boolean(),
         "and dictate says whether it is on, rather than leaving it to be inferred: {}",
         home["data"]["dictate"],
+    );
+
+    // The board's own read (#2517): the rows the home used to carry.
+    let board_transcript = walk("subscribe board\n", &url).await;
+    let board = of_kind(&board_transcript, "snapshot")
+        .into_iter()
+        .find(|message| message["subject"] == Value::String("board".to_owned()))
+        .expect("the board snapshot");
+    let board_row = &board["data"]["projects"][0];
+    assert!(
+        board_row["rows"].as_array().is_some_and(|rows| !rows.is_empty()),
+        "the board's rows are a populated list, not an empty one: {}",
+        board_row["rows"],
+    );
+    assert!(
+        board_row["rows"][0]["worked_secs"].is_u64(),
+        "and each row carries its worked time, so the client never derives it: {}",
+        board_row["rows"][0],
+    );
+    assert!(
+        board_row["rows"][0]["marks"]["ready"].is_boolean(),
+        "and its marks, one boolean per fact: {}",
+        board_row["rows"][0]["marks"],
     );
 }
 
