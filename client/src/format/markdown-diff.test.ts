@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import { renderProse } from '../chat/prose';
 import type { SourceLine } from './diff';
-import { markdownDiffHtml } from './markdown-diff';
+import { hasDefinitionChange, markdownDiffHtml, plain } from './markdown-diff';
 
 const html = (lines: SourceLine[]): HTMLElement => {
   const host = document.createElement('div');
@@ -46,6 +46,49 @@ describe('a markdown change across block markers', () => {
     ).not.toContain('```');
   });
 
+  /**
+   * **A fence later in a removed run still opens its block.** The marker is
+   * a boundary; wrapping it as a removed line would leave the body parsed as
+   * markdown and the sentinels crossing `<code>`.
+   */
+  it('opens a fence that is not the first line of a removed run', () => {
+    const drawn = html([
+      { kind: 'del', text: 'an intro line' },
+      { kind: 'del', text: '```rust' },
+      { kind: 'del', text: 'fn main() {}' },
+      { kind: 'del', text: '```' },
+    ]);
+
+    expect(drawn.querySelector('.code'), 'the block opens').not.toBeNull();
+    const struck = [...drawn.querySelectorAll('.mddel')].map((span) => span.textContent);
+    expect(struck, 'the intro and the code body are struck separately').toEqual([
+      'an intro line',
+      'fn main() {}',
+    ]);
+  });
+
+  /**
+   * **A whole-fence replacement is a close and an open**, not a del closing
+   * marker paired with the add opening marker: the new language must act as
+   * a new block, and no literal marker may land inside the old one.
+   */
+  it('draws a rust fence replaced by a python fence as two blocks', () => {
+    const drawn = html([
+      { kind: 'del', text: '```rust' },
+      { kind: 'del', text: 'fn main() {}' },
+      { kind: 'del', text: '```' },
+      { kind: 'add', text: '```python' },
+      { kind: 'add', text: 'print(1)' },
+      { kind: 'add', text: '```' },
+    ]);
+
+    const languages = [...drawn.querySelectorAll('.code .lang')].map((node) => node.textContent);
+    expect(languages, 'the old block and the new one, in that order').toEqual(['rust', 'python']);
+    const struck = [...drawn.querySelectorAll('.code .mddel')].map((span) => span.textContent);
+    expect(struck, 'the removed body stays struck in its own block').toEqual(['fn main() {}']);
+    expect(drawn.textContent ?? '', 'no literal marker leaked').not.toContain('```');
+  });
+
   it('keeps a changed table a table, each changed cell wrapped on its own', () => {
     const drawn = html([
       { kind: 'ctx', text: '| a | b |' },
@@ -59,6 +102,39 @@ describe('a markdown change across block markers', () => {
     const added = [...drawn.querySelectorAll('.mdadd')].map((cell) => cell.textContent?.trim());
     expect(struck).toEqual(['old', 'keep']);
     expect(added).toEqual(['new', 'keep']);
+  });
+});
+
+describe('a reference-style link definition', () => {
+  /**
+   * **A definition change goes to the source diff.** A rendered view cannot
+   * show a definition, and a sentinel inside one breaks the definition and
+   * every reference to it.
+   */
+  it('is detected as a change the rendered diff cannot draw', () => {
+    expect(
+      hasDefinitionChange([
+        { kind: 'del', text: '[docs]: https://example.com/old' },
+        { kind: 'add', text: '[docs]: https://example.com/new' },
+      ]),
+    ).toBe(true);
+    expect(
+      hasDefinitionChange([{ kind: 'ctx', text: '[docs]: https://example.com/old' }]),
+      'an unchanged definition draws no change',
+    ).toBe(false);
+  });
+});
+
+describe('the sentinel-clearing pass', () => {
+  /**
+   * **Every spelling of a sentinel is cleared.** A renderer percent-encodes
+   * a sentinel that reaches an attribute; an identity pass would leak it
+   * into an href.
+   */
+  it('clears literal, encoded and lowercase-encoded sentinels', () => {
+    expect(plain('a\u{E000}b')).toBe('ab');
+    expect(plain('a%EE%80%80b')).toBe('ab');
+    expect(plain('a%ee%80%80b')).toBe('ab');
   });
 });
 

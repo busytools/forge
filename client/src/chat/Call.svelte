@@ -13,6 +13,7 @@
   import { iconOf, isBrowserTool, isEdit, mcpParts } from './families';
   import { omittedText, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
   import { formatOf } from '../format/policy';
+  import { hasDefinitionChange, patchLines } from '../format/markdown-diff';
   import { duration, tokens } from './numbers';
   import { outputs } from './outputs.svelte';
   import Prose from './Prose.svelte';
@@ -204,8 +205,17 @@
     call.body.filter((piece) => piece.kind === 'diff' || piece.kind === 'hunk'),
   );
 
-  /** Whether a mutation's patch is a markdown change, which renders as a diff. */
-  const markdownPatch = $derived(isEdit(call.name) && formatOf(call.title).kind === 'markdown');
+  /**
+   * Whether a mutation's patch is a markdown change drawn as a rendered
+   * diff. A changed reference-style definition falls back to the source
+   * diff: a rendered view cannot show a definition, and a sentinel in one
+   * breaks the definition and every reference to it.
+   */
+  const markdownPatch = $derived(
+    isEdit(call.name) &&
+      formatOf(call.title).kind === 'markdown' &&
+      !hasDefinitionChange(patchLines(patches)),
+  );
   const tail = $derived(rest.map((piece) => piece.kind).lastIndexOf('text'));
 
   /**

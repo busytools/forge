@@ -316,6 +316,47 @@ describe('an Edit of markdown', () => {
     }
   });
 
+  /**
+   * **A changed reference definition falls back to the source diff.** A
+   * rendered view hides definitions, and a sentinel inside one invalidates
+   * the definition and every reference to it - so the hunk draws as source.
+   */
+  it('draws the source diff when a reference definition changes', () => {
+    const definitions = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'docs/refs.md',
+      body: [
+        {
+          kind: 'hunk',
+          header: '@@ -1,2 +1,2 @@',
+          lines: [
+            line('del', '[docs]: https://example.com/old', 1, null),
+            line('add', '[docs]: https://example.com/new', null, 1),
+            line('ctx', 'see [the docs][docs]', 2, 2),
+          ],
+        },
+      ],
+      mutation: { hunks: 1, added: 1, removed: 1, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, {
+      target: document.body,
+      props: { k: 'f1', call: definitions, open: true },
+    });
+    try {
+      flushSync();
+      expect(document.querySelector('.dif'), 'the source diff draws').not.toBeNull();
+      expect(
+        document.querySelector('.dif .ln.d .l')?.textContent,
+        'the old definition is shown as source',
+      ).toContain('https://example.com/old');
+      expect(document.querySelector('.pbody .prose'), 'no rendered diff').toBeNull();
+    } finally {
+      void unmount(app);
+    }
+  });
+
   /** A Write's markdown body is the call's own two sides, not a hunk. */
   it('renders a markdown Write from its two sides', () => {
     const write = leaf({

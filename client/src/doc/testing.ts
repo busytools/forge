@@ -36,13 +36,55 @@ interface FakeDoc {
 }
 
 /**
+ * The server's commentable set, mirrored from
+ * `crates/forge-agent/src/env/documents.rs` (`TEXT_EXTENSIONS`): the double
+ * has to answer what the server answers, or a test proves a hand-off
+ * behaviour the binary does not have.
+ */
+const TEXT_EXTENSIONS = new Set([
+  'rs',
+  'ts',
+  'mts',
+  'cts',
+  'tsx',
+  'js',
+  'mjs',
+  'cjs',
+  'jsx',
+  'svelte',
+  'py',
+  'go',
+  'json',
+  'toml',
+  'yaml',
+  'yml',
+  'sh',
+  'bash',
+  'zsh',
+  'css',
+  'html',
+  'htm',
+  'xml',
+  'svg',
+  'sql',
+  'kt',
+  'kts',
+  'md',
+  'markdown',
+  'ini',
+  'txt',
+]);
+
+/**
  * Whether the server would call this kind reviewable - the read's own
  * answer, so the double says what the server says and not what the caller
  * asked for. A markdown or text document is reviewable whoever opened it;
- * a PDF or any other kind opens read-only.
+ * a kind in the extension set is reviewable; a PDF, an image or an
+ * extensionless file opens read-only.
  */
 function reviewableKind(kind: DocumentKind): boolean {
-  return kind === 'markdown' || kind === 'text';
+  if (kind === 'markdown' || kind === 'text') return true;
+  return typeof kind === 'object' && TEXT_EXTENSIONS.has(kind.other);
 }
 
 /**

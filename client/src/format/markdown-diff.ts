@@ -164,14 +164,13 @@ export function markdownDiffSource(lines: readonly SourceLine[]): string {
     if (line === undefined) break;
 
     if (isFence(line.text)) {
-      // A fence marker is never wrapped: the block has to keep parsing. A
-      // marker whose line changed is drawn as the NEW marker, once.
-      const next = lines[i + 1];
-      const changedMarker =
-        line.kind !== 'ctx' && next !== undefined && next.kind !== line.kind && isFence(next.text);
-      out.push(changedMarker && next !== undefined ? next.text : line.text);
+      // **Every** fence marker is literal and toggles the block, wherever it
+      // sits in a run: a marker is a boundary, never wrapped and never
+      // word-paired. A whole-fence replacement is therefore a close and an
+      // open, which draws the old block and the new one separately.
+      out.push(line.text);
       insideFence = !insideFence;
-      i += changedMarker ? 2 : 1;
+      i += 1;
       continue;
     }
 
@@ -189,11 +188,25 @@ export function markdownDiffSource(lines: readonly SourceLine[]): string {
       continue;
     }
 
-    // A run of removed lines and the added lines right after it.
+    // A run of removed lines and the added lines right after it, both
+    // BOUNDED BY a fence marker: the marker is handled as a block, so a
+    // fence later in a run still opens its block instead of being wrapped.
     let removed = i;
-    while (removed < lines.length && lines[removed]?.kind === 'del') removed += 1;
+    while (
+      removed < lines.length &&
+      lines[removed]?.kind === 'del' &&
+      !isFence(lines[removed]?.text ?? '')
+    ) {
+      removed += 1;
+    }
     let added = removed;
-    while (added < lines.length && lines[added]?.kind === 'add') added += 1;
+    while (
+      added < lines.length &&
+      lines[added]?.kind === 'add' &&
+      !isFence(lines[added]?.text ?? '')
+    ) {
+      added += 1;
+    }
     const pairs = Math.min(removed - i, added - removed);
     for (let k = 0; k < pairs; k += 1) {
       const oldLine = lines[i + k];
@@ -220,10 +233,24 @@ export function markdownDiffSource(lines: readonly SourceLine[]): string {
 }
 
 /** `value` with every spelling of a sentinel removed. */
-function plain(value: string): string {
+export function plain(value: string): string {
   let out = value;
   for (const encoded of ENCODED) out = out.replaceAll(encoded, '');
   return out;
+}
+
+/** A reference-style link definition: `[name]: https://...`. */
+const DEFINITION = /^\s*\[[^\]]+\]:\s*\S/;
+
+/**
+ * Whether a hunk changes a reference-style link definition.
+ *
+ * **A rendered diff cannot draw one honestly**: a definition produces no
+ * output, and a sentinel inside it makes both the definition and every
+ * reference draw literally. Such a hunk falls back to the source diff.
+ */
+export function hasDefinitionChange(lines: readonly SourceLine[]): boolean {
+  return lines.some((line) => line.kind !== 'ctx' && DEFINITION.test(line.text));
 }
 
 /** The rendered hunk, with the sentinels standing as the strike and add spans. */
