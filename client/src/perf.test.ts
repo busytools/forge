@@ -982,6 +982,62 @@ describe('the switch gap marks (#2513)', () => {
     expect(subscribe?.write_waited_ms).toBe(12.5);
   });
 
+  it('spends a click on the first subscribe it causes', () => {
+    const h = harness();
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(1_000);
+    h.probe.noteSubscribe('forge/lead', false);
+    h.advance(2_000);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const [first, second] = h.records.flat().filter((record) => record.kind === 'subscribe');
+    expect(first?.since_click_ms).toBe(1_000);
+    expect(second?.since_click_ms).toBeUndefined();
+  });
+
+  it('is not unprompted when the click came after the snapshot', () => {
+    const h = harness();
+    h.probe.noteSnapshot('forge/lead', 708_018, 12);
+    h.advance(10);
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(10);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const subscribe = h.records.flat().find((record) => record.kind === 'subscribe');
+    expect(subscribe?.auto).toBe(false);
+    expect(subscribe?.since_click_ms).toBe(10);
+  });
+
+  it('starts a fresh connection window and writes nothing for a quiet one', () => {
+    const h = harness();
+    h.probe.noteSubscribe('forge/lead', false);
+    h.frame(1_000);
+    h.frame(1_000);
+    h.probe.noteSubscribe('forge/lead', false);
+    h.frame(1_000);
+
+    const windows = h.records.flat().filter((record) => record.kind === 'connection');
+    expect(windows).toHaveLength(2);
+    expect(windows[0]?.subscribes).toBe(1);
+    expect(windows[1]?.window_ms).toBe(1_000);
+    expect(windows[1]?.subscribes).toBe(1);
+  });
+
+  it('names the page the connection window opened on', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/lead');
+    // Boot's own window rolls quiet, so the counted one opens on forge/lead.
+    h.frame(1_000);
+    h.probe.noteSubscribe('forge/lead', false);
+    h.probe.setSurface('session', 'forge/busymail');
+    h.probe.noteSubscribe('forge/busymail', false);
+    h.frame(1_000);
+
+    const connection = h.records.flat().find((record) => record.kind === 'connection');
+    expect(connection?.session).toBe('forge/lead');
+    expect(connection?.subscribes).toBe(2);
+  });
+
   it('counts subscribes and snapshot chars per second of connection', () => {
     const h = harness();
     h.probe.setSurface('session', 'forge/lead');

@@ -110,7 +110,10 @@ pub struct ClientPerfRecord {
 /// The page sends records as it finishes them (a slow frame, a summary, a
 /// long task), so a batch is usually one line; the batch shape is what
 /// keeps the boundary one call rather than one per kind.
-#[tauri::command]
+///
+/// **`async`, though the body is sync**: a sync command runs on the main
+/// thread, and these appends are file IO on the path the log measures.
+#[tauri::command(async)]
 pub fn client_perf(app: tauri::AppHandle, records: Vec<ClientPerfRecord>) -> Result<(), String> {
     let dir = app.path().app_log_dir().map_err(|err| err.to_string())?;
     append(&dir, &records, MAX_BYTES).map_err(|err| {

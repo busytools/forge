@@ -42,7 +42,7 @@ import {
   type Skew,
   type Subject,
 } from '../protocol';
-import { noteSnapshot, noteSubscribeWritten } from '../perf';
+import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
 import { READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
 import { StreamGate } from '../session/stream';
@@ -127,7 +127,7 @@ function seatOfKey(key: string): string | null {
   if (seat === null) return null;
   const [org, project, label] = seat.split('\u0000');
   if (org === undefined || project === undefined || label === undefined) return null;
-  return `${org}/${project}/${label}`;
+  return seatLabel({ org, project, label });
 }
 
 class RustConnection implements Connection {

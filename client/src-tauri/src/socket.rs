@@ -555,9 +555,11 @@ async fn run(
         // **The declaration is re-asked, once per OPEN subscription** - the
         // server counts, so a subject two callers hold is asked for twice -
         // with the flags it carried: this is how the role survives a drop.
-        let reasking = tokio::time::Instant::now();
         for h in &held {
             for _ in 0..h.count {
+                // Each frame's own wait, so the first one's send is not
+                // reported again as every later frame's (#2513).
+                let queued = tokio::time::Instant::now();
                 if writer.send(h.subscribe_frame()).await.is_err() {
                     break;
                 }
@@ -571,7 +573,7 @@ async fn run(
                     SocketEvent::Written {
                         key: h.key.clone(),
                         declared: false,
-                        waited_ms: reasking.elapsed().as_secs_f64() * 1000.0,
+                        waited_ms: queued.elapsed().as_secs_f64() * 1000.0,
                     },
                 );
             }
@@ -1075,6 +1077,23 @@ pub(crate) mod tests {
         let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(first["what"], json!("home"));
         assert_eq!(first["browser"], true);
+    }
+
+    /// **The desktop's only subscribe mark is this event (#2513).** A
+    /// subscribe crosses as a command; the frame's own write is what says it
+    /// left, and the page's perf log reads that as the subscribe mark.
+    #[tokio::test]
+    async fn a_subscribe_write_is_reported_to_the_page() {
+        let stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true, true);
+        let SocketEvent::Written { key, declared, waited_ms } = event_of(&mut rx, "written").await
+        else {
+            unreachable!("filtered to written");
+        };
+        assert_eq!(key, "home", "the mark names the subject the frame asked for");
+        assert!(!declared, "a held subscription is not the role's declare");
+        assert!(waited_ms.is_finite(), "the wait is measured, not a placeholder");
     }
 
     /// A document read crosses as its own frame, with the seat, the path

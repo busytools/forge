@@ -912,9 +912,14 @@ describe('the switch gap marks (#2513)', () => {
     const href = seat?.getAttribute('href') ?? '';
     const [, , org, project, label] = href.split('/');
     mockSeatClick.mockClear();
+    let markedAt: string | null = null;
+    mockSeatClick.mockImplementationOnce(() => {
+      markedAt = location.pathname;
+    });
     seat?.click();
 
     expect(mockSeatClick).toHaveBeenCalledTimes(1);
     expect(mockSeatClick).toHaveBeenCalledWith({ org, project, label });
+    expect(markedAt, 'the mark is taken before the route moves').toBe('/');
   });
 });

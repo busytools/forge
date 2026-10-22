@@ -328,11 +328,31 @@ function observeHeartbeat(
   };
 }
 
-/** The shell's write: one invoke, fire-and-forget. */
+/**
+ * Records waiting for this turn's one invoke, and whether one is queued.
+ *
+ * **One write per turn, not one per record.** The shell command behind this
+ * opens, appends and closes a file, and a burst of marks (the home loop's
+ * subscribe and snapshot, a window's summary beside a slow frame) would
+ * otherwise put that IO on the main thread once per mark - on the path this
+ * probe measures (#2513).
+ */
+let pendingWrites: PerfRecord[] = [];
+let writeQueued = false;
+
+/** The shell's write: one invoke per turn, fire-and-forget. */
 function sinkToShell(records: PerfRecord[]): void {
-  void invoke('client_perf', { records }).catch(() => {
-    // A refused write is a lost record, not a broken page: the shell may be
-    // gone, and a perf sink that threw would take a render path with it.
+  pendingWrites.push(...records);
+  if (writeQueued) return;
+  writeQueued = true;
+  queueMicrotask(() => {
+    writeQueued = false;
+    const batch = pendingWrites;
+    pendingWrites = [];
+    void invoke('client_perf', { records: batch }).catch(() => {
+      // A refused write is a lost record, not a broken page: the shell may be
+      // gone, and a perf sink that threw would take a render path with it.
+    });
   });
 }
 
@@ -455,6 +475,10 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let connStart = 0;
   let connSubscribes = 0;
   let connSnapshotChars = 0;
+  /** Where the CONNECTION window began, so a window spanning a switch names
+   *  the page the counts happened on rather than the one it ended on. */
+  let connSurface: string | null = null;
+  let connSession: string | null = null;
 
   function emit(record: PerfRecord): void {
     sink([record]);
@@ -543,6 +567,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     const windowMs = at - connStart;
     if (connSubscribes === 0 && connSnapshotChars === 0) {
       connStart = at;
+      connSurface = surface;
+      connSession = session;
       return;
     }
     const seconds = windowMs / 1000;
@@ -556,12 +582,14 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       snapshot_chars: connSnapshotChars,
       subscribe_rate: seconds > 0 ? connSubscribes / seconds : 0,
       snapshot_chars_per_s: seconds > 0 ? connSnapshotChars / seconds : 0,
-      surface,
-      session,
+      surface: connSurface,
+      session: connSession,
     });
     connSubscribes = 0;
     connSnapshotChars = 0;
     connStart = at;
+    connSurface = surface;
+    connSession = session;
   }
 
   function tick(): void {
@@ -662,6 +690,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       // so null here is the honest answer rather than a gap.
       windowSurface = surface;
       windowSession = session;
+      connSurface = surface;
+      connSession = session;
       cancelObserver = observe((ms, name) => {
         emit({
           schema: SCHEMA,
@@ -807,6 +837,11 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       // repeated re-subscribe shape a switch's delay can hide in (#2513).
       const auto = lastSnapshotAt !== null && lastSnapshotAt > (lastUserActionAt ?? -Infinity);
       connSubscribes += 1;
+      // **A click is spent by the first subscribe it causes.** Left armed,
+      // every later subscribe - the automatic home loop included - would
+      // report its gap since some old click as its own (#2513).
+      const sinceClick = clickAt === null ? undefined : at - clickAt;
+      clickAt = null;
       emit({
         schema: SCHEMA,
         kind: 'subscribe',
@@ -815,7 +850,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         declare,
         auto,
         ...(writeWaitedMs === undefined ? {} : { write_waited_ms: writeWaitedMs }),
-        ...(clickAt === null ? {} : { since_click_ms: at - clickAt }),
+        ...(sinceClick === undefined ? {} : { since_click_ms: sinceClick }),
         ...(seat === null ? {} : { session: seat }),
         surface,
       });

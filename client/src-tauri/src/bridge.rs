@@ -505,11 +505,17 @@ impl Bridge {
                 continue;
             };
             let Some(Ok(record)) = state.records.read(key) else { continue };
-            self.emit(ClientEvent::Inbound(json!({
+            let snapshot = json!({
                 "kind": "snapshot",
                 "subject": watch.what,
                 "data": record,
-            })));
+            });
+            // The catch-up snapshot's frame facts (#2513): the page's byte
+            // counters and `auto` rule read every snapshot; nothing re-parses
+            // this one, so its parse is zero.
+            let bytes = serde_json::to_vec(&snapshot).map_or(0, |raw| raw.len());
+            self.emit(ClientEvent::Inbound(snapshot));
+            self.emit(ClientEvent::Framed { subject: watch.what.clone(), bytes, parse_ms: 0.0 });
             let Some(turns) = record.get("conversation").and_then(|c| c.get("turns")) else {
                 continue;
             };
@@ -944,6 +950,20 @@ mod tests {
             json!(0.5),
             "the record folded the frame the page missed"
         );
+        // **The catch-up carries its frame facts too (#2513).** Without them
+        // the page's byte counters miss the read and its last-snapshot time
+        // stays behind, which can mark the next subscribe as prompted.
+        let ClientEvent::Framed {
+            subject: caught_subject,
+            bytes: caught_bytes,
+            parse_ms: caught_parse,
+        } = event(&mut rx, |event| matches!(event, ClientEvent::Framed { .. })).await
+        else {
+            unreachable!("filtered to framed");
+        };
+        assert_eq!(caught_subject, seat(), "the facts belong to the catch-up's subject");
+        assert!(caught_bytes > 0, "its bytes are measured");
+        assert_eq!(caught_parse, 0.0, "nothing parsed the record for it");
         let ClientEvent::Inbound(page) = event(&mut rx, is_inbound_kind("page")).await else {
             unreachable!("filtered to inbound");
         };
