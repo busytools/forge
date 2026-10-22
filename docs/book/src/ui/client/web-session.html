@@ -1607,8 +1607,9 @@
     <!-- The rail's own footer: the account, what it is costing and the two
          builds. Below the list, so the projects scroll behind it. Drawn here
          for a spend-billed key; a window-billed account draws its 5h/7d bars
-         in the same block, and one nothing has probed keeps both labels with
-         `-` rather than a vanished footer. -->
+         in the same block with `-` for a window it has no reading for, and an
+         account whose billing kind nothing has resolved reads `usage not
+         reported` rather than a guessed window shape. -->
     <div class="rfoot">
       <div class="who"><span class="led"></span><span class="an">OpenRouter</span></div>
       <div class="frs">

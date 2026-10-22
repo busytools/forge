@@ -160,7 +160,9 @@ function undeclared(): HomeWire {
 describe('the footer when no account resolves', () => {
   /**
    * A footer that draws nothing for an absent account reads as "forge has no
-   * account", which is not a state the page may claim.
+   * account", which is not a state the page may claim. The billing kind is
+   * unknown here too, so the footer states the missing usage rather than a
+   * window shape it has no billing kind to choose.
    */
   it('draws the project account it knows, or the bare word, never nothing', () => {
     const drawn = render(Rail, {
@@ -169,12 +171,18 @@ describe('the footer when no account resolves', () => {
     expect(drawn, 'a project chipping no account lost the footer account line').toContain(
       '<span class="an">Acct</span>',
     );
-    expect(drawn, 'the unprobed 5h row went missing').toContain('<span class="lb">5h</span>');
-    expect(drawn, 'the unprobed 7d row went missing').toContain('<span class="lb">7d</span>');
-    expect(
-      drawn.match(/<span class="pc none">-<\/span>/g)?.length,
-      'the two windows do not read as unprobed',
-    ).toBe(2);
+    expect(drawn, 'the unresolved account lost its wait mark').toContain(
+      '<span class="led wait"></span>',
+    );
+    expect(drawn, 'the unreported usage row is not stated').toContain(
+      '<span class="k">usage</span>',
+    );
+    expect(drawn, 'the unreported usage did not read as a placeholder').toContain(
+      '<span class="v none">not reported</span>',
+    );
+    expect(drawn, 'a billing kind nobody resolved drew plan windows').not.toContain(
+      '<span class="lb">5h</span>',
+    );
 
     const bare = render(Rail, {
       props: { home: undeclared(), current: LEAD, now: 0, connection: untouched() },

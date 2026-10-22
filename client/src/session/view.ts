@@ -1118,8 +1118,8 @@ interface RailFooter {
 const UNPROBED = '$-';
 
 /**
- * What a window nobody has reported reads: a dash rather than `0%`, the mark
- * the view this client replaced drew, because a zero is a reading.
+ * What a window nobody has reported reads: a dash rather than `0%`, because a
+ * zero is a reading and an absent one is not.
  */
 const UNPROBED_WINDOW = '-';
 
@@ -1169,14 +1169,14 @@ export function railFooter(
   };
   const account = accountChip(home, slot);
   if (account === null) {
-    // The chip has not resolved: the project's declared account is still
-    // named, and both windows read as unprobed rather than the block vanishing.
+    // The billing kind is unknown while no chip resolves, so the account is
+    // named with one row stating the usage rather than a guessed window shape.
     const project = projectOf(home, slot)?.project;
     const name = project?.accounts[0] ?? project?.fallback_accounts[0] ?? 'account';
     return {
       account: { name, tone: 'wait' },
-      figures: [],
-      windows: footerWindows([]),
+      figures: [{ label: 'usage', value: 'not reported', dim: true }],
+      windows: [],
       versions,
     };
   }
