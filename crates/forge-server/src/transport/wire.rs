@@ -1387,8 +1387,10 @@ pub const SUBSCRIBE_TURNS: u32 = 20;
 /// **The four slices are disjoint.** The seed is the transcript read only a
 /// cold seat pays, and the conversation total excludes it, so their sum is
 /// time the open spent and the remainder between it and the transport's
-/// `session_open` line - the queued flush, the copy's catch-up and the
-/// record's own reads - is never short.
+/// `session_open` line - the queued flush, the copy's catch-up, the record's
+/// own reads and the frame's serialisation - is never short. The line also
+/// carries `write_ms`, the snapshot's socket write, which is inside `open_ms`
+/// and split out of that remainder.
 #[derive(Debug, Default)]
 pub struct OpenTimings {
     pub seed_ms: f64,

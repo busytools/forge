@@ -134,6 +134,10 @@ pub(crate) const WRITE_BOUND: Duration = Duration::from_secs(60);
 #[derive(Debug)]
 pub(crate) struct WriteStalled {
     pub(crate) bound: Duration,
+    /// How long the write had run when the bound cut it, which is the only
+    /// timing a stalled write ever gets: it never reaches the writer's own
+    /// record.
+    pub(crate) waited: Duration,
 }
 
 impl std::fmt::Display for WriteStalled {
@@ -154,9 +158,10 @@ async fn write_within<T, F>(bound: Duration, write: F) -> anyhow::Result<T>
 where
     F: std::future::Future<Output = anyhow::Result<T>>,
 {
+    let at = tokio::time::Instant::now();
     match tokio::time::timeout(bound, write).await {
         Ok(answered) => answered,
-        Err(_) => Err(anyhow::Error::new(WriteStalled { bound })),
+        Err(_) => Err(anyhow::Error::new(WriteStalled { bound, waited: at.elapsed() })),
     }
 }
 
@@ -243,7 +248,10 @@ pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow:
     tokio::spawn(fold_the_stream(Arc::clone(&state)));
 
     let router = Router::new().route("/socket", get(connection::upgrade)).with_state(state);
-    axum::serve(listener, router).await?;
+    // Each connection carries the peer it was accepted from: the log names
+    // which attached client an open served (#2506).
+    axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .await?;
     Ok(())
 }
 

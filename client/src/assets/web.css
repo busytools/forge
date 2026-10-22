@@ -1545,6 +1545,9 @@ details.sfold div.wk:hover { background: none; }
 .bar .tk { flex: 1; height: 5px; border-radius: 99px; background: var(--s3); overflow: hidden; }
 .bar .pc { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); width: 34px;
   text-align: right; }
+/* A window the snapshot did not carry: the placeholder is not a reading, so
+   it takes the dim the figures' own placeholders wear. */
+.bar .pc.none { color: var(--dim); }
 .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px;
   text-align: right; }
 
