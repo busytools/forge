@@ -80,9 +80,18 @@ describe('a filename with no useful extension', () => {
     expect(formatOf('.env.local', bytes('TOKEN=x'))).toEqual({ kind: 'code', language: 'dotenv' });
   });
 
-  it('draws a dotfile with no grammar as plain text', () => {
+  /**
+   * **Shiki ships no `ignore` grammar.** The plan named one, and it does not
+   * exist, so these two draw as text with the header note. Pinned by name so
+   * nobody closes the gap by inventing a grammar id the highlighter cannot
+   * load: `formatOf` resolves against shiki's own metadata, and a name that
+   * is not there is text.
+   */
+  it('draws a dotfile with no grammar as plain text, because no ignore grammar exists', () => {
     expect(formatOf('.gitignore', bytes('target/'))).toEqual({ kind: 'text' });
     expect(formatOf('.dockerignore', bytes('target/'))).toEqual({ kind: 'text' });
+    expect(languageOfPath('.gitignore')).toBe(null);
+    expect(languageOfPath('.dockerignore')).toBe(null);
   });
 });
 
