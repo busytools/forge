@@ -190,6 +190,29 @@ describe('an Edit of an extensionless script', () => {
     }
   });
 
+  /** The NEW side decides on the `diff` fallback too, not only in a hunk. */
+  it('draws no strip when a diff fallback empties the shebang', () => {
+    const edit = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'bin/run',
+      body: [{ kind: 'diff', old: '#!/usr/bin/env bash\nset -e', new: '' }],
+      mutation: { hunks: 1, added: 0, removed: 2, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: edit, open: true } });
+    try {
+      flushSync();
+      expect(document.querySelector('.code.panel'), 'the panel still draws').not.toBeNull();
+      expect(
+        document.querySelector('.code > .lang'),
+        'the emptied new side names nothing',
+      ).toBeNull();
+    } finally {
+      void unmount(app);
+    }
+  });
+
   /** The NEW side decides: a removed shebang does not name the panel. */
   it('draws no strip when the change removes the shebang', () => {
     const edit = leaf({

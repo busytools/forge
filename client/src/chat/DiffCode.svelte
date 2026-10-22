@@ -99,19 +99,20 @@
    * The byte probe the format is read from.
    *
    * **The NEW side only, and only when it can be known.** A `diff` piece is
-   * the call's own two sides: a Write is the file from line 1, and an Edit's
-   * new side is the replacement the panel draws, so a shebang replacement
-   * names the new grammar rather than the removed one. A hunk carries only
-   * its own slice; its first lines are the file's only when the slice starts
-   * at line 1, and a shebang cannot be guessed from a slice that begins
-   * later - that answers `null`, which leaves the path's own extension and
-   * filename table to decide.
+   * the fallback an Edit or MultiEdit builds from its own two sides when the
+   * result carries no hunk (a Write's fallback is a hunk from line zero), so
+   * its new side is the replacement the panel draws: a shebang replacement
+   * names the new grammar, and an emptied new side names nothing. A hunk
+   * carries only its own slice; its first lines are the file's only when the
+   * slice starts at line 1, and a shebang cannot be guessed from a slice
+   * that begins later - that answers `null`, which leaves the path's own
+   * extension and filename table to decide.
    */
   const probe = $derived.by((): Uint8Array | null => {
     const piece = pieces[0];
     if (piece === undefined) return null;
     if (piece.kind === 'diff') {
-      return new TextEncoder().encode(piece.new === '' ? piece.old : piece.new);
+      return piece.new === '' ? null : new TextEncoder().encode(piece.new);
     }
     const first = piece.lines[0];
     if (first === undefined || (first.old !== 1 && first.new !== 1)) return null;
