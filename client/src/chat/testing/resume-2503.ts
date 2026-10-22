@@ -12,11 +12,14 @@
  * frame and nothing reconciles them.
  */
 
+/** The frame that opened the pre-resume turn, which is what a held row is found by. */
+export const PRE_RESUME_OPEN = 'forge_prompt_206_c6a7205c';
+
 /** The turn as the frames built it before the resume: no result, so still live. */
 export const PRE_RESUME: unknown[] = [
   {
     type: 'user',
-    uuid: 'forge_prompt_206_c6a7205c',
+    uuid: PRE_RESUME_OPEN,
     timestamp: '2026-10-18T04:36:37.303Z',
     message: {
       role: 'user',

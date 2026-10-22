@@ -10,7 +10,7 @@ import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import * as fleet from '../wire/fleet';
 import { Chat, Frames, beingWritten, type PageTurn } from './conversation';
-import { PRE_RESUME, RESUME, RESUME_KEY } from './testing/resume-2503';
+import { PRE_RESUME, PRE_RESUME_OPEN, RESUME, RESUME_KEY } from './testing/resume-2503';
 import type { ToolLeaf } from './leaves';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
@@ -3456,10 +3456,12 @@ describe('the conversation the chat draws', () => {
     });
 
     const turns = get(chat.value).turns;
+    expect(turns.length, 'the page and the turn it ran past are two rows').toBe(2);
+    expect(turns.at(-1)?.key, 'the resumed turn is the newest row').toBe(RESUME_KEY);
     expect(
-      turns.map((turn) => turn.key),
-      'the resumed turn is the newest row, and the turn the page ran past is above it',
-    ).toEqual(['live:forge_prompt_206_c6a7205c', RESUME_KEY]);
+      turns[0]?.messages.some((message) => (message as { uuid?: string }).uuid === PRE_RESUME_OPEN),
+      'and the turn the page ran past sits above it',
+    ).toBe(true);
     expect(turns[0]?.live, 'the turn the page ran past is settled').toBe(false);
     const newest = turns[turns.length - 1];
     expect(
