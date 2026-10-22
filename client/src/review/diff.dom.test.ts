@@ -207,23 +207,20 @@ describe('the viewer shapes the page reads back', () => {
   });
 
   it('shapes an inserted row after its anchor: the half in split, the lane in unified', () => {
-    const card = (): HTMLElement => {
-      const el = document.createElement('div');
-      el.textContent = 'card';
-      return el;
-    };
     // Each half is two of the table's four columns, whichever cells the
     // row's own side is made of.
-    const fromContext = insertRow(splitContextRow(6, 9), 'new', 'split', card());
+    const contextRow = splitTable(splitContextRow(6, 9)).querySelector('tr') as HTMLTableRowElement;
+    const fromContext = insertRow(contextRow, 'new', 'split', card());
     expect([...fromContext.children].map((c) => c.getAttribute('colspan'))).toEqual(['2', '2']);
     expect(fromContext.children[0]?.textContent, 'the left half stays empty').toBe('');
     expect(fromContext.children[1]?.textContent).toBe('card');
 
-    const oldSide = insertRow(splitContextRow(6, 9), 'old', 'split', card());
+    const oldSide = insertRow(contextRow, 'old', 'split', card());
     expect(oldSide.children[0]?.textContent, 'an old-side card holds the left half').toBe('card');
     expect(oldSide.children[1]?.textContent).toBe('');
 
-    const fromAdded = insertRow(splitAddedRow(9), 'new', 'split', card());
+    const addedRow = splitTable(splitAddedRow(9)).querySelector('tr') as HTMLTableRowElement;
+    const fromAdded = insertRow(addedRow, 'new', 'split', card());
     expect(
       [...fromAdded.children].map((c) => c.getAttribute('colspan')),
       'the placeholder half spans what the placeholder spans',

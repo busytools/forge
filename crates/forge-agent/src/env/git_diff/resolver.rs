@@ -222,7 +222,8 @@ pub fn place_anchor_in_lines(anchor: &ReviewAnchor, lines: &[String]) -> AnchorP
 /// is earned by content and neighbours alone.
 ///
 /// The caller hands the file at the revision the anchor's side is numbered
-/// in - the branch tip for a new-side line, the base for an old-side one.
+/// in - the branch tip for a new-side line, the merge-base for an old-side
+/// one, because the branch-ahead diff is cut against the merge-base.
 /// A comment written on a revealed context line is outside the diff's hunks
 /// by construction, and this is where its line is found.
 pub fn place_anchor_in_lines_with(

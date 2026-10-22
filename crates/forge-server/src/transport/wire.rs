@@ -728,7 +728,10 @@ async fn whole_files_for(
     };
     let mut whole = WholeFiles::new();
     // Resolved once per encode, and only if an old-side anchor asks for it.
-    let mut old_rev: Option<String> = None;
+    // **The ATTEMPT is remembered, not only its success**: a base whose
+    // merge-base cannot be resolved must not cost one resolve per anchor,
+    // and the read bound below never sees those attempts.
+    let mut old_rev: Option<Option<String>> = None;
     let mut reads = 0_usize;
     for thread in threads {
         let anchor = &thread.anchor;
@@ -752,12 +755,12 @@ async fn whole_files_for(
                     continue;
                 };
                 if old_rev.is_none() {
-                    old_rev = merge_base(cwd, base).await;
+                    old_rev = Some(merge_base(cwd, base).await);
                 }
-                let Some(found) = old_rev.clone() else {
+                let Some(found) = old_rev.as_ref().and_then(|held| held.as_deref()) else {
                     continue;
                 };
-                (found, file.old_path.clone().unwrap_or_else(|| file.path.clone()))
+                (found.to_owned(), file.old_path.clone().unwrap_or_else(|| file.path.clone()))
             }
         };
         reads += 1;

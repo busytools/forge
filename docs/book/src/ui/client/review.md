@@ -83,14 +83,18 @@ the horizontal arrows are the scope and comment stepper's here, so folding
 stays a press on this page.
 
 The commit list is the record's own, drawn oldest first, each row carrying
-its subject, its short sha and how long ago it was committed - the board's
-own `wrote 2h ago` wording, from one shared helper, with a stamp under two
-days old reading in hours (`26h ago`) and an older one in days. A commit's
-diff is fetched when its scope is first shown, and not carried on the
-record - a branch can hold dozens of commits, and every reader of a record
-would pay their content on every read for a scope only this page draws. An
-ask the socket did not take is asked again, so a scope opened while the
-connection was down recovers rather than reading for ever.
+its subject, its short sha and how long ago it was committed - worded as
+the board words it, with the review reading days from two days old
+(`26h ago` under that, `2d ago` past it). **The walk carries at most twenty
+commits**: a longer chain numbers each carried row by its true ordinal - the
+oldest carried one is not commit 1 - and the picker says how many oldest
+ones it did not carry; a chain whose list could not be read says that
+instead of drawing an empty list. A commit's diff is fetched when its scope
+is first shown, and not carried on the record - a branch can hold dozens of
+commits, and every reader of a record would pay their content on every read
+for a scope only this page draws. An ask the socket did not take is asked
+again, so a scope opened while the connection was down recovers rather than
+reading for ever.
 
 **The tree draws the scope as its own structure**, not a flat list of paths:
 one row per directory and per file, folders before files at every level,
@@ -147,12 +151,17 @@ from the file read rather than a hunk. The record places such an anchor in
 the whole file - the branch tip for a new-side line, the merge-base for an
 old-side one - because the line is outside the bounded hunks by
 construction; a line the hunks do carry is placed there, and text the file
-no longer carries still parks as outdated. **A revealed-line comment
+no longer carries still parks as outdated. **The record reads at most eight
+such files per encode**: past that an anchor outside its hunks keeps the
+bounded content's answer and parks, rather than costing an unbounded pile
+of git reads on every seat encode. **A revealed-line comment
 written inside a commit scope is the one exception**: its line counts in
 that commit's numbering, so the all-changes view parks it - its own
 commit's view still draws it at its recorded line. A line no press has
-revealed, or one the read did not carry, takes no door. **A placed comment reopens the
-gap holding it when the page loads**, from the gap's nearer end, so a reload
+revealed, or one the read did not carry, takes no door. **A placed comment
+reopens the gap holding it when the page loads**, from the end its synthesis
+draws - a gap above the first hunk opens from its bottom, one below the last
+from its top, and only a gap between two hunks takes the nearer end - so a reload
 does not leave the card with no row to draw on.
 
 ## A thread

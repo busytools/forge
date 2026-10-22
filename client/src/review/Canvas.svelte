@@ -45,6 +45,7 @@
     GAP_SMALL,
     GAP_STEP,
     gapRemaining,
+    gapHolding,
     gapsOf,
     insertRow,
     lineCounts,
@@ -952,6 +953,37 @@
     for (const path of rebuilt) void rebuild(path);
   });
 
+  /**
+   * **A placed comment must be somewhere.** Its line can sit outside the
+   * hunks with no read to reveal it - a failed or cut content read - and
+   * then neither the table nor a gap can draw it. It is drawn as a parked
+   * line in the file's own section instead, so the header's tally and the
+   * comment stepper never name a comment with nothing on screen.
+   */
+  function parkedAt(path: string): { held: ReviewThreadRecord; line: number }[] {
+    const file = built.find((entry) => entry.path === path)?.file;
+    if (file === undefined) return [];
+    const content = contentFor(path);
+    const gaps = gapsOf(file, content);
+    const parked: { held: ReviewThreadRecord; line: number }[] = [];
+    for (const held of scoped) {
+      if (held.anchor.path !== path) continue;
+      const placed = canvasLine(held, scopeCommit);
+      if (placed === null) continue;
+      const side = held.anchor.side === 'old' ? 'old' : 'new';
+      if (findLine(file, side, placed.line) !== null) continue;
+      const located = gapHolding(file, gaps, side, placed.line);
+      const reachable =
+        content !== null &&
+        located !== null &&
+        located.index >= 1 &&
+        located.index <= content.lines.length;
+      if (reachable) continue;
+      parked.push({ held, line: placed.line });
+    }
+    return parked;
+  }
+
   // The canvas going away - the other tab, the page - takes its rows' roots
   // with it: an effect of its own, because the pass above cleans up between
   // every pair of runs and must leave the rows it is keeping alone.
@@ -1636,6 +1668,15 @@
         </span>
       </div>
       {#if !closedFiles.has(file.path)}
+        {#each parkedAt(file.path) as entry (entry.held.id)}
+          <p class="rv-parked">
+            <span class="rv-parked-st">{statusName(entry.held.status)}</span>
+            <span class="rv-parked-where"
+              >{entry.held.anchor.path.split('/').pop() ?? ''} &#183; line {entry.line}</span
+            >
+            <span class="rv-parked-note">not drawn: the file read could not reach its line</span>
+          </p>
+        {/each}
         <div class="rv-diff" data-rv-path={file.path} bind:this={canvases[file.path]}>
           <DiffView
             diffFile={file.diffFile}

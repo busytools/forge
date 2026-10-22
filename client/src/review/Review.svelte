@@ -760,14 +760,29 @@
   const DAYS_FROM = 2 * 86_400;
 
   /**
+   * A scope's TRUE ordinal in the chain, which is not its index in the
+   * capped list. The wire walks the chain newest first and caps it, so the
+   * oldest carried commit is `total - carried + 1`, and only an uncapped
+   * chain numbers a row the same as its position.
+   */
+  function ordinalOf(at: number): number {
+    if (at === 0) return 0;
+    return commitTotal - (commits.length - at);
+  }
+
+  /** The oldest commits the walk did not carry, 0 when it carried them all. */
+  const missing = $derived(Math.max(0, commitTotal - commits.length));
+
+  /**
    * The scope picker's rows, all changes first and then the commits oldest
-   * first, each naming its own sha and how long ago it was committed.
+   * first, each naming its own sha and how long ago it was committed - and
+   * its true ordinal, so a capped list never prints a false one.
    */
   const choices = $derived([
     { idx: 0, index: 'A', label: 'All changes', sha: '', age: `${commitTotal} commits` },
     ...commits.map((commit, i) => ({
       idx: i + 1,
-      index: String(i + 1),
+      index: String(ordinalOf(i + 1)),
       label: commit.subject,
       sha: commit.sha.slice(0, 8),
       age: commit.time > 0 ? `${ago(commit.time, nowSecs, DAYS_FROM)} ago` : 'time unknown',
@@ -990,15 +1005,21 @@
             }}
           >
             <span class="rv-scope-now">
-              {scopeCommit === null ? 'All changes' : (commits[scopeIdx - 1]?.subject ?? '')}
+              {scopeCommit === null
+                ? 'All changes'
+                : commits[scopeIdx - 1]?.subject || (scopeCommit.slice(0, 8) ?? '')}
             </span>
             <span class="rv-scope-sub">
               {scopeCommit === null
-                ? `${commitTotal} commits`
-                : `commit ${scopeIdx} of ${commitTotal}`}
+                ? `${commitTotal} commits${missing === commitTotal ? ' · list not read' : ''}`
+                : `commit ${ordinalOf(scopeIdx)} of ${commitTotal}`}
             </span>
           </button>
-          <span class="rv-scope-place">scope {scopeIdx + 1} of {commitTotal + 1}</span>
+          <span class="rv-scope-place"
+            >scope {scopeIdx === 0 ? 1 : ordinalOf(scopeIdx) + 1} of {commits.length === 0
+              ? 1
+              : commitTotal + 1}</span
+          >
           <button
             type="button"
             class="rv-step-btn"
@@ -1008,6 +1029,14 @@
           >
           {#if pickerOpen}
             <div class="rv-menu" role="listbox" aria-label="diff scope">
+              {#if missing > 0 && commits.length === 0}
+                <p class="rv-menu-note">the commit list could not be read</p>
+              {:else if missing > 0}
+                <p class="rv-menu-note">
+                  the oldest {missing}
+                  {missing === 1 ? 'commit is' : 'commits are'} not carried
+                </p>
+              {/if}
               {#each choices as choice (choice.idx)}
                 <button
                   type="button"
@@ -1367,6 +1396,14 @@
     padding: 6px 9px;
     cursor: pointer;
     font: inherit;
+  }
+  .rv-menu-note {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--muted);
+    padding: 6px 9px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 3px;
   }
   .rv-menu-i {
     font-family: var(--mono);

@@ -3869,9 +3869,19 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review-page tr.diff-line:hover .rv-add { opacity: 1; }
 .review-page .rv-add:focus-visible { opacity: 1; outline: 1px solid var(--accent); }
 
-/* Our own row: one cell across the table, the card inside it. */
+/* Our own row: in split a cell per half with the card in its own side's, and
+   in unified one cell across the table with the card inside it. */
 .review-page .rv-insert-cell { padding: 0 !important; background: var(--s1); }
 .review-page .rv-inline { padding: 3px 10px 6px; }
+
+/* A placed comment the file read cannot reach: its line is outside the hunks
+   and no read can reveal it, so the file's section says where it is instead
+   of leaving the tally counting a card that is nowhere on screen. */
+.review-page .rv-parked { display: flex; align-items: baseline; gap: 8px;
+  padding: 6px 10px; margin-bottom: 8px; background: var(--s1);
+  border: 1px solid var(--line); border-radius: 9px; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--muted); }
+.review-page .rv-parked-note { margin-left: auto; color: var(--dim); }
 
 /* The gap control, shaped the way GitHub shapes it (Ved, 2026-10-16, from
    the look): a strip across the hunk header's own gutter cell - the column

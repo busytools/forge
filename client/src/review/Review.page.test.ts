@@ -1356,6 +1356,14 @@ describe('the steppers', () => {
     );
   });
 
+  /** A commit the record gives no subject falls back to its short sha, so
+   *  the bar is never blank. */
+  it('falls back to the short sha for a commit with no subject', async () => {
+    await draw([], [], true, DIFF, [{ sha: 'abcdef1234', subject: '' }]);
+    press('next scope');
+    expect(scope(), 'the bar names the commit by what it has').toBe('abcdef12');
+  });
+
   /** A branch with no commits has one scope, and `a` stays on it. */
   it('keeps to the one scope a commitless branch has', async () => {
     await draw([], [], true, DIFF, []);
@@ -1423,9 +1431,13 @@ describe('the steppers', () => {
     ).toContain('time unknown');
   });
 
-  /** The chain the record counts is longer than the list it carries; the bar
-   *  names the whole chain rather than the capped list. */
-  it('names the chain by the record count, not the capped list', async () => {
+  /**
+   * **The chain the record counts is longer than the list it carries.** The
+   * carried commits keep their TRUE ordinals - the oldest carried one is
+   * `total - carried + 1`, never 1 - and the list says which span it did
+   * not carry, so a capped walk never prints a false number.
+   */
+  it('names the chain by the record count, with the true ordinals', async () => {
     await draw([], [], true, DIFF, [FIRST_COMMIT], 40);
 
     expect(document.querySelector('.rv-scope-sub')?.textContent?.trim(), 'the whole chain').toBe(
@@ -1433,7 +1445,38 @@ describe('the steppers', () => {
     );
     expect(place()).toBe('scope 1 of 41');
     press('next scope');
-    expect(document.querySelector('.rv-scope-sub')?.textContent?.trim()).toBe('commit 1 of 40');
+    expect(
+      document.querySelector('.rv-scope-sub')?.textContent?.trim(),
+      'the one carried commit is the fortieth',
+    ).toBe('commit 40 of 40');
+    expect(place()).toBe('scope 41 of 41');
+
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+    expect(
+      document.querySelector('.rv-menu-note')?.textContent?.replace(/\s+/g, ' ').trim(),
+      'the missing span is named',
+    ).toContain('the oldest 39 commits are not carried');
+    expect(document.querySelectorAll('.rv-menu-it')[1]?.textContent, 'a true ordinal').toContain(
+      '40',
+    );
+  });
+
+  /** A chain whose walk failed still has its count: the page says so rather
+   *  than drawing 40 commits with an empty list and a dead arrow. */
+  it('says the commit list could not be read', async () => {
+    await draw([], [], true, DIFF, [], 40);
+
+    expect(document.querySelector('.rv-scope-sub')?.textContent?.trim()).toBe(
+      '40 commits · list not read',
+    );
+    expect(place()).toBe('scope 1 of 1');
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+    expect(
+      document.querySelector('.rv-menu-note')?.textContent,
+      'the picker says why it is empty',
+    ).toContain('the commit list could not be read');
   });
 });
 
@@ -1813,6 +1856,31 @@ describe('the lines a diff left out', () => {
       viewer.built.at(-1),
       'and the revealed line reached the viewer, so the row is drawn',
     ).toContain('three');
+  });
+
+  /**
+   * **A comment the read cannot reach is still somewhere.** A placed thread
+   * whose line sits outside the hunks and whose file read failed cannot be
+   * drawn in the table or revealed by a gap; the file's section says where
+   * it is, so the tally and the comment stepper never count nothing.
+   */
+  it('draws a comment the file read cannot reach as a parked line', async () => {
+    await draw([], [], true, TWO_HUNKS);
+    const placed = {
+      ...THREAD,
+      id: 't9',
+      anchor: { ...THREAD.anchor, line: 9 },
+      resolution: { state: 'placed', line: 9, moved_from: null },
+    };
+    push({ wire: record(IDLE, [placed], [], TWO_HUNKS, []), refused: null });
+    await settle(() => document.querySelector('.rv-parked') !== null);
+
+    expect(document.querySelector('.rv-parked')?.textContent, 'it names its line').toContain(
+      'line 9',
+    );
+    expect(document.querySelector('.rv-parked')?.textContent, 'and why it is parked').toContain(
+      'could not reach its line',
+    );
   });
 
   /**

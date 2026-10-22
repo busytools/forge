@@ -395,6 +395,48 @@ describe('the reveal a placed comment needs', () => {
     });
   });
 
+  /**
+   * **The shift at a gap is its hunk's net change, not its first line's.**
+   * One deleted line above the gap moves every old-side number after it; a
+   * reveal computed from the first line's delta opens the wrong stretch (or
+   * none at all), and the card the stepper counted is never drawn.
+   */
+  it('shifts an old-side line by the hunk net change', () => {
+    const net = file({
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 2,
+          newStart: 1,
+          newCount: 3,
+          lines: [
+            { kind: 'context', text: 'one', oldLine: 1, newLine: 1 },
+            { kind: 'removed', text: 'two', oldLine: 2, newLine: null },
+            { kind: 'added', text: 'two a', oldLine: null, newLine: 2 },
+            { kind: 'added', text: 'two b', oldLine: null, newLine: 3 },
+          ],
+        },
+        {
+          oldStart: 10,
+          oldCount: 1,
+          newStart: 11,
+          newCount: 1,
+          lines: [{ kind: 'context', text: 'ten', oldLine: 10, newLine: 11 }],
+        },
+      ],
+    });
+    const held = gapsOf(net, content);
+    // Old 5 is new 6; old 3 is new 4, the gap's first line.
+    expect(revealFor(net, content, held, 'old', 5, undefined)).toEqual({
+      after: 0,
+      reveal: { down: 3, up: 0 },
+    });
+    expect(revealFor(net, content, held, 'old', 3, undefined)).toEqual({
+      after: 0,
+      reveal: { down: 1, up: 0 },
+    });
+  });
+
   it('asks for nothing when the line is drawn, revealed, or unreachable', () => {
     expect(revealFor(gapped, content, gaps, 'new', 5, undefined), 'a hunk line').toBeNull();
     expect(

@@ -145,7 +145,7 @@ export function revealFor(
   opened: ReadonlyMap<number, GapReveal> | undefined,
 ): NeededReveal | null {
   if (findLine(file, side, line) !== null) return null;
-  const located = gapFor(file, gaps, side, line);
+  const located = gapHolding(file, gaps, side, line);
   if (located === null) return null;
   const { gap, index } = located;
   if (index < 1 || index > content.lines.length) return null;
@@ -172,7 +172,7 @@ export function revealFor(
  * line counts itself; an old-side one is shifted by the block's delta, taken
  * from the nearest line carrying both numbers.
  */
-function gapFor(
+export function gapHolding(
   file: DiffFileRecord,
   gaps: readonly Gap[],
   side: 'old' | 'new',
@@ -187,22 +187,21 @@ function gapFor(
   return null;
 }
 
-/** An old-side line's new-side number, by the delta at its block. */
+/**
+ * An old-side line's new-side number, by the delta at its block's end.
+ *
+ * **The delta at the END, not the start**: a gap sits after its hunk, so a
+ * hunk with a net line change - one deleted or added line is enough - has
+ * shifted every number after it by that much. Reading the first line's delta
+ * opens the wrong stretch of the gap.
+ */
 function shifted(file: DiffFileRecord, gap: Gap, oldLine: number): number | null {
   // Lines above the first hunk are the same lines on both sides.
   if (gap.after === -1) return oldLine;
-  const dual = (hunk: DiffFileRecord['hunks'][number] | undefined): number | null => {
-    if (hunk === undefined) return null;
-    for (const line of hunk.lines) {
-      if (line.oldLine !== null && line.newLine !== null) return line.oldLine - line.newLine;
-    }
-    return null;
-  };
-  // The gap sits between two hunks (or below the last): the delta is the
-  // same on either side of it.
-  const before = dual(file.hunks[gap.after]);
-  const delta = before ?? dual(file.hunks[gap.after + 1]);
-  return delta === null ? null : oldLine - delta;
+  const hunk = file.hunks[gap.after];
+  if (hunk === undefined) return null;
+  const delta = hunk.oldStart + hunk.oldCount - (hunk.newStart + hunk.newCount);
+  return oldLine - delta;
 }
 
 /**
@@ -535,13 +534,13 @@ export function insertRow(
 ): HTMLTableRowElement {
   const row = document.createElement('tr');
   row.className = 'rv-insert';
-  const cells = [...at.children].map((cell) => {
-    const el = cell as HTMLElement;
-    const own =
-      el.dataset['side'] ??
-      (el.className.includes('old') ? 'old' : el.className.includes('new') ? 'new' : null);
-    return { side: own, colspan: Number(el.getAttribute('colspan') ?? 1) };
-  });
+  const cells = [...at.children].map((cell) => ({
+    // **A side comes from `data-side`, never from a class substring**: a
+    // removed line's blank half is a `diff-line-new-placeholder`, and
+    // "placeholder" contains "old".
+    side: (cell as HTMLElement).dataset['side'] ?? null,
+    colspan: Number(cell.getAttribute('colspan') ?? 1),
+  }));
   const card = (colspan: number): HTMLTableCellElement => {
     const cell = document.createElement('td');
     cell.className = 'rv-insert-cell';
