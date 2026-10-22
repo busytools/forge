@@ -5641,22 +5641,17 @@ async fn a_snapshot_carries_the_stored_row_and_the_first_pass_corrects_it() {
     }
 }
 
-/// **A warm open announces nothing its snapshot already carried** (#2506
-/// review). The first pass seeds from the stores the record read, so a still
-/// tree sends no second copy of the work row or the file index - the two the
-/// open's own frame carries - while a value that moves still announces.
+/// **An open announces nothing its snapshot already carried** (#2506 review).
+/// The record's read is the first pass's baseline, so a still tree sends no
+/// second copy of the work row or the file index - the two the open's own
+/// frame carries - while a value that moves still announces.
 #[tokio::test]
-async fn a_warm_open_announces_no_value_its_snapshot_carried() {
+async fn an_open_announces_no_value_its_snapshot_carried() {
     let (url, _fleet, state, _root) = a_repo_server().await;
     let repo =
         state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
-    // Both stores as a warm page leaves them: fresh enough that the first
-    // pass's own rules read neither.
-    state.surface.store_work_snapshot(
-        &lead_seat(),
-        a_scan(std::path::Path::new(&repo), std::time::Instant::now(), "work", 0, None),
-    );
-    state.surface.file_index_for_record(&lead_seat()).await;
+    // Nothing is seeded: the record's own first read takes both stores under
+    // the seat's gate, and the first pass starts from what it left.
 
     let mut socket = connect(&url).await;
     send(
@@ -5670,10 +5665,10 @@ async fn a_warm_open_announces_no_value_its_snapshot_carried() {
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
-    assert_eq!(data["work"]["branch"], "work", "the snapshot carries the stored row: {data}");
+    assert_eq!(data["work"]["branch"], "work", "the snapshot carries the read row: {data}");
 
-    // The first pass runs and finds both stores fresh, so nothing it read is
-    // news: the window is the pass plus a beat.
+    // The first pass starts from the stores that read left, so nothing it
+    // reads is news: the window is the pass plus a beat.
     let quiet = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
     while tokio::time::Instant::now() < quiet {
         let Some(ServerMessage::Update { update, .. }) = next_server_within(&mut socket, 500).await
@@ -5681,8 +5676,8 @@ async fn a_warm_open_announces_no_value_its_snapshot_carried() {
             continue;
         };
         match *update {
-            SessionUpdate::WorkChanged { .. } => panic!("a warm open re-sent its work row"),
-            SessionUpdate::FileIndexChanged { .. } => panic!("a warm open re-sent its file index"),
+            SessionUpdate::WorkChanged { .. } => panic!("an open re-sent its work row"),
+            SessionUpdate::FileIndexChanged { .. } => panic!("an open re-sent its file index"),
             _ => {}
         }
     }
