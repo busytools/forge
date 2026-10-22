@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatOf, languageOfPath } from './policy';
+import { formatOf } from './policy';
 
 /** `text` as the bytes a read or a call body would carry. */
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -90,8 +90,6 @@ describe('a filename with no useful extension', () => {
   it('draws a dotfile with no grammar as plain text, because no ignore grammar exists', () => {
     expect(formatOf('.gitignore', bytes('target/'))).toEqual({ kind: 'text' });
     expect(formatOf('.dockerignore', bytes('target/'))).toEqual({ kind: 'text' });
-    expect(languageOfPath('.gitignore')).toBe(null);
-    expect(languageOfPath('.dockerignore')).toBe(null);
   });
 });
 
@@ -164,15 +162,5 @@ describe('everything else', () => {
       kind: 'binary',
       mime: 'text/plain',
     });
-  });
-});
-
-describe('the language alone', () => {
-  it('answers the shiki id a path names, or null', () => {
-    expect(languageOfPath('crates/x/src/lib.rs')).toBe('rust');
-    expect(languageOfPath('Justfile')).toBe('just');
-    expect(languageOfPath('docs/placement.md'), 'markdown is not code').toBe(null);
-    expect(languageOfPath('assets/logo.png')).toBe(null);
-    expect(languageOfPath('notes.zzz', bytes('plain'))).toBe(null);
   });
 });

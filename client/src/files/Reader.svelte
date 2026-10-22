@@ -44,11 +44,14 @@
   let mount = $state<HTMLElement | null>(null);
   let width = $state(0);
   let height = $state(0);
+  /** Why the reader could not be built, when the chunk or a grammar failed. */
+  let buildError = $state<string | null>(null);
 
   $effect(() => {
     read = null;
     width = 0;
     height = 0;
+    buildError = null;
     return watchDocument(connection, slot, path, false).subscribe(($next) => {
       read = $next;
     });
@@ -75,6 +78,22 @@
           ? 'markdown'
           : null,
   );
+  /**
+   * The grammar the editor draws with.
+   *
+   * Handed to `buildReader` rather than re-derived there: only this
+   * component holds the bytes, and an extensionless shebang script's
+   * language is only readable from them.
+   */
+  const grammar = $derived(
+    format === null
+      ? 'text'
+      : format.kind === 'code'
+        ? format.language
+        : format.kind === 'markdown'
+          ? 'markdown'
+          : 'text',
+  );
   /** The image's bytes as a URL the browser can draw, released with the page. */
   const picture = $derived.by(() => {
     if (format?.kind !== 'image' || read?.bytes == null) return null;
@@ -99,6 +118,14 @@
       return `${format.mime} \u{b7} ${dims}`;
     }
     if (format.kind === 'pdf') return `application/pdf \u{b7} ${size(read?.bytes?.length ?? 0)}`;
+    if (format.kind === 'binary') {
+      // The mock's own word for an archive, and the mime for everything else.
+      const name =
+        format.mime.includes('zip') || format.mime.includes('tar') || format.mime.includes('gzip')
+          ? 'archive'
+          : format.mime;
+      return `${name} \u{b7} ${size(read?.bytes?.length ?? 0)}`;
+    }
     return null;
   });
 
@@ -110,15 +137,20 @@
     if (!drawable || body === null || el === null) return;
     let live = true;
     let built: ReaderHandle | null = null;
-    void import('./reader').then(async ({ buildReader }) => {
-      if (!live) return;
-      built = await buildReader(el, body, path, oncomment);
-      if (!live) {
-        built.destroy();
-        return;
-      }
-      handle = built;
-    });
+    void import('./reader')
+      .then(async ({ buildReader }) => {
+        if (!live) return;
+        built = await buildReader(el, body, grammar, oncomment);
+        if (!live) {
+          built.destroy();
+          return;
+        }
+        handle = built;
+      })
+      // A failed chunk or grammar is drawn, never left as an empty editor.
+      .catch((why: unknown) => {
+        if (live) buildError = why instanceof Error ? why.message : String(why);
+      });
     return () => {
       live = false;
       built?.destroy();
@@ -140,6 +172,9 @@
     <p class="files-quiet">{read.refused}</p>
   {:else if format === null}
     <p class="files-quiet">The read answered no bytes for this file.</p>
+  {:else if drawable && buildError !== null}
+    <!-- A chunk or grammar that failed is a state, not an empty editor. -->
+    <p class="files-quiet">the reader could not be built: {buildError}</p>
   {:else if drawable}
     <!-- The door has to be VISIBLE before it is used (Ved, 2026-10-17): a
          line takes a comment, and nothing said so until a press. -->

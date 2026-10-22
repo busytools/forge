@@ -1,18 +1,17 @@
 // @vitest-environment jsdom
 /**
- * The chat's code panel over the per-format policy: a filename carries its
- * grammar (`Justfile` is `just`, `Makefile` is `make`), an unknown text file
- * draws plain with the header note, and the colouring is shiki's, loaded for
- * the file that needs it.
+ * The chat's code panel: the grammar is handed to it by the row, it colours
+ * with the fenced blocks' highlight.js palette, and a file with no grammar
+ * draws plain with the header note.
  */
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import Code from './Code.svelte';
 
-/** Mount `path`'s panel and wait for the highlighter's async pass to land. */
-async function panel(path: string, text: string): Promise<HTMLElement> {
-  const app = mount(Code, { target: document.body, props: { path, text } });
+/** Mount the panel with `language` and wait for the async highlighter. */
+async function panel(language: string | null, text: string): Promise<HTMLElement> {
+  const app = mount(Code, { target: document.body, props: { language, text } });
   try {
     await vi.waitFor(() => {
       flushSync();
@@ -35,7 +34,7 @@ afterEach(() => {
 
 describe('a read the policy calls code', () => {
   it('colours a Justfile with the just grammar and names it in the header', async () => {
-    const drawn = await panel('Justfile', 'set shell := ["bash", "-cu"]\n\ncheck:\n  cargo fmt');
+    const drawn = await panel('just', 'set shell := ["bash", "-cu"]\n\ncheck:\n  cargo fmt');
 
     expect(drawn.querySelector('.lang')?.textContent, 'the grammar id names the panel').toBe(
       'just',
@@ -48,9 +47,9 @@ describe('a read the policy calls code', () => {
   });
 
   it('colours a Makefile with the make grammar', async () => {
-    const drawn = await panel('Makefile', 'check:\n\tcargo fmt --check');
+    const drawn = await panel('make', 'check:\n\tcargo fmt --check');
 
-    expect(drawn.querySelector('.lang')?.textContent, 'make, from the filename').toBe('make');
+    expect(drawn.querySelector('.lang')?.textContent, 'the grammar names the panel').toBe('make');
     expect(drawn.innerHTML).toMatch(/color:\s*#/);
   });
 });
@@ -59,7 +58,7 @@ describe('a read the policy calls text', () => {
   it('draws plain, with no language in the header and the note in the caption', () => {
     const app = mount(Code, {
       target: document.body,
-      props: { path: 'notes.weird', text: 'nothing here matches a grammar' },
+      props: { language: null, text: 'nothing here matches a grammar' },
     });
     try {
       flushSync();

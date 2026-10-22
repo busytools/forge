@@ -30,10 +30,11 @@ import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 
 /**
- * The languages this page has, by the name `languageOf` answers.
+ * The languages the prose renderer's fences colour, by the name a fence's
+ * info string carries.
  *
  * A curated set rather than `highlight.js/lib/common`: the common bundle
- * carries thirty-odd languages, and a session reads a handful of them.
+ * carries thirty-odd languages, and a session writes a handful of them.
  */
 const LANGUAGES = {
   bash,

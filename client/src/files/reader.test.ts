@@ -33,10 +33,15 @@ vi.mock('../doc/live', () => ({
  * pin is which grammar a path asks for and that the rest of the reader
  * builds; the painting itself is the bridge's, verified in the browser.
  */
-const bridge = vi.hoisted(() => ({ langs: [] as string[] }));
+const bridge = vi.hoisted(() => ({
+  langs: [] as string[],
+  /** Set to make the bridge fail, the way a rejected grammar chunk does. */
+  fail: null as Error | null,
+}));
 vi.mock('@cmshiki/shiki', () => ({
   shikiToCodeMirror: (options: { lang: string }): Promise<{ shiki: unknown[] }> => {
     bridge.langs.push(options.lang);
+    if (bridge.fail !== null) return Promise.reject(bridge.fail);
     return Promise.resolve({ shiki: [] });
   },
 }));
@@ -66,6 +71,7 @@ function answer(overrides: Partial<DocRead>): DocRead {
 beforeEach(() => {
   reads.held = answer({});
   bridge.langs = [];
+  bridge.fail = null;
   // jsdom has no object-URL implementation, and the picture and the PDF both
   // draw from the read's bytes through one.
   URL.createObjectURL = vi.fn(() => 'blob:picture');
@@ -73,15 +79,15 @@ beforeEach(() => {
 });
 
 describe('the reader built over a file', () => {
-  it('asks the bridge for the language its path names, and for text when none does', async () => {
+  it('asks the bridge for the language it is handed, and for text when handed text', async () => {
     const rust = document.createElement('div');
     document.body.append(rust);
-    const built = await buildReader(rust, 'fn main() {}', 'crates/a.rs');
+    const built = await buildReader(rust, 'fn main() {}', 'rust');
     built.destroy();
 
     const plain = document.createElement('div');
     document.body.append(plain);
-    const other = await buildReader(plain, 'fn main() {}', 'notes.zzz');
+    const other = await buildReader(plain, 'fn main() {}', 'text');
     other.destroy();
 
     expect(bridge.langs, 'the policy reaches the reader, per path').toEqual(['rust', 'text']);
@@ -93,7 +99,7 @@ describe('the reader built over a file', () => {
   it('draws the target line with its door, and mounts a block under one', async () => {
     const host = document.createElement('div');
     document.body.append(host);
-    const reader = await buildReader(host, 'one\ntwo\nthree', 'a.rs');
+    const reader = await buildReader(host, 'one\ntwo\nthree', 'rust');
 
     reader.targetLine(2);
     expect(host.querySelector('.cm-line.files-target')?.textContent, 'the line is tinted').toBe(
@@ -106,7 +112,7 @@ describe('the reader built over a file', () => {
 
     const second = document.createElement('div');
     document.body.append(second);
-    const withComment = await buildReader(second, 'one\ntwo', 'a.rs', (line) => pressed.push(line));
+    const withComment = await buildReader(second, 'one\ntwo', 'rust', (line) => pressed.push(line));
     const line = second.querySelector('.cm-line');
     line?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(pressed, 'a press on a line reports it').toEqual([1]);
@@ -116,7 +122,7 @@ describe('the reader built over a file', () => {
   it('mounts a thread block into its row', async () => {
     const host = document.createElement('div');
     document.body.append(host);
-    const reader = await buildReader(host, 'one\ntwo', 'a.rs');
+    const reader = await buildReader(host, 'one\ntwo', 'rust');
 
     reader.setBlocks([
       {
@@ -199,6 +205,46 @@ describe('the reader component around it', () => {
     expect(document.querySelector('.files-fact')?.textContent).toContain('just');
   });
 
+  /**
+   * **The head and the body read the same bytes.** An extensionless script
+   * names its language only by its shebang, and a body handed a path alone
+   * would draw it plain while the head said `shellscript`.
+   */
+  it('reads an extensionless script shebang into the head and the editor', async () => {
+    draw(
+      answer({
+        path: '/proj/run',
+        kind: 'text',
+        bytes: new TextEncoder().encode('#!/usr/bin/env bash\necho hi\n'),
+      }),
+      '/proj/run',
+    );
+
+    expect(document.querySelector('.files-fact')?.textContent).toContain('shellscript');
+    await vi.waitFor(() => {
+      flushSync();
+      expect(bridge.langs, 'the editor is built with the shebang grammar').toContain('shellscript');
+    });
+  });
+
+  /**
+   * **A reader that could not be built is a state, not an empty editor.**
+   * A failed chunk fetch or a rejected grammar used to leave the box blank
+   * with nothing saying why.
+   */
+  it('draws a failed reader build instead of an empty editor', async () => {
+    bridge.fail = new Error('the grammar chunk did not arrive');
+    draw(answer({}));
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector('.files-quiet')?.textContent ?? '').toContain(
+        'could not be built',
+      );
+    });
+    expect(document.querySelector('.files-quiet')?.textContent).toContain('did not arrive');
+  });
+
   it('draws a picture inline with its mime in the header', () => {
     draw(
       answer({
@@ -246,5 +292,8 @@ describe('the reader component around it', () => {
     expect(notice).toContain('application/gzip');
     expect(notice).toContain('not text');
     expect(notice).toContain('still in the tree');
+    expect(document.querySelector('.files-fact')?.textContent, 'the head names it too').toContain(
+      'archive',
+    );
   });
 });

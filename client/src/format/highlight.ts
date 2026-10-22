@@ -13,6 +13,8 @@ import type { LanguageRegistration, ThemedToken } from 'shiki';
 import { bundledLanguages } from 'shiki/langs';
 import githubDark from '@shikijs/themes/github-dark';
 
+import { HLJS_GITHUB_DARK, HLJS_THEME } from './theme';
+
 let shared: Promise<HighlighterCore> | null = null;
 
 /** The in-flight load per grammar, so two rows asking for one grammar share it. */
@@ -20,7 +22,9 @@ const loading = new Map<string, Promise<void>>();
 
 function base(): Promise<HighlighterCore> {
   shared ??= createHighlighterCore({
-    themes: [githubDark],
+    // Both palettes: the chat's matches the highlight.js fences, and the
+    // Files reader keeps the shiki theme it has drawn with.
+    themes: [githubDark, HLJS_GITHUB_DARK],
     langs: [],
     engine: createJavaScriptRegexEngine(),
   });
@@ -58,9 +62,16 @@ export async function highlighterFor(language: string): Promise<HighlighterCore>
   if (load === undefined) return highlighter;
   let pending = loading.get(language);
   if (pending === undefined) {
-    pending = load().then(async (module) => {
-      await highlighter.loadLanguage((module as { default: never }).default);
-    });
+    pending = load()
+      .then(async (module) => {
+        await highlighter.loadLanguage((module as { default: never }).default);
+      })
+      // A rejected promise left in the map would fail every later open of
+      // that language forever; a retry is owed the next chunk fetch.
+      .catch((why: unknown) => {
+        loading.delete(language);
+        throw why;
+      });
     loading.set(language, pending);
   }
   await pending;
@@ -93,15 +104,20 @@ function tokenFontStyle(bits: number): string {
   return styles.join(';');
 }
 
-/** `text` as the coloured body of a code panel, one span run per line. */
+/**
+ * `text` as the coloured body of a code panel, one span run per line.
+ *
+ * The chat's theme is the highlight.js palette, so a Read panel and a fenced
+ * block are the same colours hex for hex.
+ */
 export async function highlightedBody(language: string, text: string): Promise<string> {
   const highlighter = await highlighterFor(language);
-  const lines = highlighter.codeToTokensBase(text, { lang: language, theme: 'github-dark' });
+  const lines = highlighter.codeToTokensBase(text, { lang: language, theme: HLJS_THEME });
   return lines.map((line) => line.map(tokenSpan).join('')).join('\n');
 }
 
 /** The same tokenisation, line by line, for a surface that decorates itself. */
 export async function tokenisedLines(language: string, text: string): Promise<ThemedToken[][]> {
   const highlighter = await highlighterFor(language);
-  return highlighter.codeToTokensBase(text, { lang: language, theme: 'github-dark' });
+  return highlighter.codeToTokensBase(text, { lang: language, theme: HLJS_THEME });
 }

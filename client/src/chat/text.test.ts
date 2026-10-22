@@ -163,8 +163,12 @@ describe('the text a command produced, as a page draws it', () => {
    * half is the control: a text file that happens to open `1<TAB>` is not
    * numbered, and must lose nothing.
    */
-  it("takes the CLI's line-number gutter off a Read's text, and only when every line has one", () => {
+  it("takes the CLI's line-number gutter off a Read's text, and only when the body is numbered", () => {
     expect(withoutLineNumbers('1\t# Placement\n2\t\n3\t- one\n')).toBe('# Placement\n\n- one\n');
+    // A SINGLE line is the file, not a numbered body: `1<TAB>hello` is a
+    // genuine line and must keep its words.
+    expect(withoutLineNumbers('1\thello')).toBe('1\thello');
+    expect(withoutLineNumbers('1\thello\n')).toBe('1\thello\n');
     expect(withoutLineNumbers('1\tthis file is not numbered\nthe rest is prose\n')).toBe(
       '1\tthis file is not numbered\nthe rest is prose\n',
     );

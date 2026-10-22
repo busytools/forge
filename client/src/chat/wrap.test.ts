@@ -79,7 +79,7 @@ const CALL = inPage(
 
 /** A source file in a message's prose, which is how a fence draws one. */
 const PANEL = inPage(
-  `<div class="prose">${render(Code, { props: { path: 'src/lib.rs', text: 'let a = 1;' } }).body}</div>`,
+  `<div class="prose">${render(Code, { props: { language: 'rust', text: 'let a = 1;' } }).body}</div>`,
 );
 
 /** A message's prose, with a table in it, as the markdown renderer draws both. */

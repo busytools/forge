@@ -1,21 +1,21 @@
 <script lang="ts">
-  import { formatOf } from '../format/policy';
   import { panelHtml } from './code';
 
   /**
    * A source file a call read, as a panel with its grammar on the header and
    * the file under it, coloured by shiki.
    *
+   * **The grammar is handed in, never re-detected.** The row reads the
+   * format from the file with the CLI's line-number gutter off, because a
+   * shebang has to be read from the file's first line; re-detecting here on
+   * the gutter-numbered text would read no shebang and draw it plain.
+   *
    * **Plain first, coloured when the grammar lands.** The escaped text draws
    * synchronously, so a row or a server render never waits on a grammar; the
-   * shiki pass replaces it a moment later. A path the policy calls text draws
-   * with no language in the header and a caption saying why.
+   * shiki pass replaces it a moment later. `language` of `null` draws with no
+   * language in the header and a caption saying why.
    */
-  let { path, text }: { path: string; text: string } = $props();
-
-  const format = $derived(formatOf(path, new TextEncoder().encode(text)));
-  /** The grammar, or `null` for a file with no language: text. */
-  const language = $derived(format.kind === 'code' ? format.language : null);
+  let { language, text }: { language: string | null; text: string } = $props();
 
   /** The highlighted panel, once the grammar has loaded; `null` is the plain one. */
   let html = $state<string | null>(null);

@@ -40,27 +40,27 @@ pub enum DocumentHandOffEnding {
     Abandoned,
 }
 
-/// What a document is, as the read answers it: a PDF and markdown keep
-/// their own kinds, any file whose bytes are valid UTF-8 is text, and a
-/// binary keeps its extension so a notice can name what it is.
+/// What a document is, as far as the read can tell - by extension, not by
+/// sniffing the bytes.
 ///
 /// `Other` is kept as itself rather than bucketed: a viewer draws the kind
 /// it was handed, and folding every unknown into one variant would leave it
-/// with nothing to say about what the document is.
+/// with nothing to say about what the document is. The Files reader's wider
+/// UTF-8 drawing classification is the client's policy, not this kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentKind {
     Markdown,
     Pdf,
     Text,
-    /// A binary's extension, lowercased and bare (`"png"`), or empty when
-    /// the name carries none.
+    /// An extension the list does not know, lowercased and bare (`"rs"`),
+    /// or empty when the name carries none.
     Other(String),
 }
 
 /// One document, as the read answered: the path it resolved to, the bytes,
-/// the detected kind, and whether the DOCUMENT is reviewable - markdown and
-/// text are, a PDF or a binary is not.
+/// the detected kind, and whether the DOCUMENT can carry a review - the
+/// hand-off's commentable set, by extension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentRead {
     /// The resolved absolute path - what a viewer deep-links by, and what

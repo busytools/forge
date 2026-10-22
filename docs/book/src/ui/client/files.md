@@ -74,9 +74,19 @@ carries the whole catalogue without downloading it up front, and the chunk -
 CodeMirror, the bridge - is pulled only when the reader first draws a text
 file. A picture draws itself, bounded, with its mime and dimensions; a PDF
 draws its pages; anything else draws a notice naming its type and size, and
-saying it is still in the tree and reviewable as a file. The document read
-answers the same rule from the server's side: a UTF-8 extensionless file is
-reviewable text, and bytes that do not decode are a binary read.
+saying it is still in the tree and reviewable as a file. A reader that could
+not be built - a chunk or a grammar failed - draws that reason rather than an
+empty editor.
+
+**The reader draws by one policy; the document hand-off does not, by
+design.** The read answers the hand-off's extension kind and its
+commentable set; it does not widen. The reader's UTF-8 drawing
+classification is the client policy above. So an SVG is a picture here and
+a `.svg` document in a hand-off, and an extensionless Justfile opens as
+`just` here and read-only in a hand-off - the hand-off's set is what a
+reader may comment on, not what this page can draw. A file whose commentable
+extension is not UTF-8 is refused with the read's own sentence; bytes
+outside that set are a binary read.
 
 **A press on any line is a comment**: the line takes the tint and the
 gutter `+`, and the box opens under it with the caret in. Doors are press

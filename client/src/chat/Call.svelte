@@ -143,6 +143,14 @@
     return piece.kind === 'text' && readFormat !== null && readFormat.kind !== 'markdown';
   }
 
+  /**
+   * The grammar the panel draws with, from the format the row detected.
+   *
+   * Handed down rather than re-derived: the panel's text still carries the
+   * CLI's `N<TAB>` gutter, and a shebang cannot be read through it.
+   */
+  const readLanguage = $derived(readFormat?.kind === 'code' ? readFormat.language : null);
+
   /** A piece the patch box does not draw: a run of text, or a picture. */
   type RunPiece = Exclude<CallBody, { kind: 'diff' } | { kind: 'hunk' }>;
 
@@ -766,7 +774,7 @@
         <Prose text={withoutLineNumbers(stripEscapes(textOf(piece)))} />
       </div>
     {:else if asCode(piece)}
-      <Code path={call.title} text={stripEscapes(textOf(piece))} />
+      <Code language={readLanguage} text={stripEscapes(textOf(piece))} />
     {:else}
       <!-- The command a call ran leads its own output: a call given a
            description shows that as its title, and the command would

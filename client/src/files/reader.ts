@@ -39,7 +39,6 @@ import {
   WidgetType,
 } from '@codemirror/view';
 import { highlighterFor } from '../format/highlight';
-import { formatOf } from '../format/policy';
 
 /** One block the page wants drawn under a line: the reader makes the host
  *  element, the page mounts what goes inside it (its own components), and
@@ -101,16 +100,6 @@ const CM: Record<string, () => Promise<Extension>> = {
   sql: cmSql,
   markdown: cmMarkdown,
 };
-
-/** The grammar a path draws with, markdown included: this surface shows source. */
-function grammarOf(path: string): string {
-  const format = formatOf(path);
-  return format.kind === 'code'
-    ? format.language
-    : format.kind === 'markdown'
-      ? 'markdown'
-      : 'text';
-}
 
 /** The reader's target line, as an effect the page's own controls dispatch. */
 const setTarget = StateEffect.define<number | null>();
@@ -248,10 +237,9 @@ function lineOfEvent(view: EditorView, event: MouseEvent): number | null {
 export async function buildReader(
   parent: HTMLElement,
   text: string,
-  path: string,
+  language: string,
   oncomment?: (line: number) => void,
 ): Promise<ReaderHandle> {
-  const language = grammarOf(path);
   const cm = CM[language];
   const structure = cm === undefined ? null : await cm();
   const { shiki } = await shikiToCodeMirror({

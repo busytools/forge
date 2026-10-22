@@ -56,7 +56,12 @@ const BINARY_MIME: Readonly<Record<string, string>> = {
   markdown: 'text/markdown',
 };
 
-/** A filename that names its grammar, checked before the UTF-8 fallback. */
+/**
+ * A filename that names its grammar, checked before the UTF-8 fallback.
+ *
+ * `.gitignore` and `.dockerignore` are deliberately absent: shiki ships no
+ * `ignore` grammar, so they fall through to text with the header note.
+ */
 const FILENAMES: Readonly<Record<string, string>> = {
   justfile: 'just',
   makefile: 'make',
@@ -177,10 +182,4 @@ export function formatOf(path: string, bytes?: Uint8Array | null): Format {
     return shebang === null ? { kind: 'text' } : { kind: 'code', language: shebang };
   }
   return { kind: 'binary', mime: binaryMime(extension) };
-}
-
-/** The shiki grammar `path` names, or `null` for a path drawn as text or media. */
-export function languageOfPath(path: string, bytes?: Uint8Array | null): string | null {
-  const format = formatOf(path, bytes);
-  return format.kind === 'code' ? format.language : null;
 }

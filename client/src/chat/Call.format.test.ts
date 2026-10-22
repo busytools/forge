@@ -82,6 +82,49 @@ describe('a Read of markdown', () => {
   });
 });
 
+describe('a Read of an extensionless script', () => {
+  /**
+   * **The shebang must survive the CLI's gutter.** The row reads the format
+   * from the file with the `N<TAB>` numbers off, and hands the grammar to the
+   * panel; re-detecting on the numbered text reads no shebang and draws it
+   * plain while the file is a script.
+   */
+  it('reads its shebang through the gutter and colours the panel', async () => {
+    const close = await opened(
+      leaf({
+        title: 'bin/run',
+        body: [{ kind: 'text', text: '1\t#!/usr/bin/env bash\n2\techo hi\n' }],
+      }),
+    );
+    try {
+      expect(document.querySelector('.code .lang')?.textContent, 'the shebang names it').toBe(
+        'shellscript',
+      );
+      expect(
+        document.querySelector('.code pre span[style*="color"]'),
+        'and the panel is coloured',
+      ).not.toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  /** A filename with no extension still carries its grammar. */
+  it('names a Justfile grammar from its filename', async () => {
+    const close = await opened(
+      leaf({
+        title: 'Justfile',
+        body: [{ kind: 'text', text: '1\tset shell := ["bash", "-cu"]\n' }],
+      }),
+    );
+    try {
+      expect(document.querySelector('.code .lang')?.textContent).toBe('just');
+    } finally {
+      close();
+    }
+  });
+});
+
 describe('a Read of code', () => {
   it('keeps the coloured panel and its grammar', async () => {
     const close = await opened(

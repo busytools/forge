@@ -7,9 +7,9 @@
 //! `..` walk, an absolute path and a symlink pointing out are all refused
 //! the same way, and a spell the filesystem will not resolve is refused
 //! rather than read through its lexical collapse. The read is bounded by
-//! a ceiling, and the bytes decide whether the file is text at all. Every
-//! refusal is a sentence naming its reason, because the reason is what a
-//! viewer draws and what a hand-off returns.
+//! a ceiling and detects the kind by extension. Every refusal is a
+//! sentence naming its reason, because the reason is what a viewer draws
+//! and what a hand-off returns.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -38,9 +38,12 @@ pub enum DocumentRefusal {
 /// Read one document out of `cwd`'s tree, or under one of `vault_roots`.
 ///
 /// `path` resolves against `cwd`. The read answers whether the DOCUMENT is
-/// reviewable - any file whose bytes are valid UTF-8 is text and is, while a
-/// PDF and a binary open read-only - so a viewer's door does not depend on
-/// how the page was reached. The request's
+/// reviewable - the commentable set the hand-off has always offered, by
+/// extension, while a PDF and a binary open read-only - so a viewer's door
+/// does not depend on how the page was reached. The Files reader's wider
+/// UTF-8 drawing classification is the CLIENT's policy, not this read's:
+/// the wire keeps the hand-off's extension kind, so the hand-off viewer and
+/// its documented behaviour are unchanged. The request's
 /// `reviewable` flag asks the hand-off's own question and is refused for a
 /// PDF, whose kind can never carry a review. The read is bounded by
 /// `ceiling_bytes`, and a refusal names its reason.
@@ -110,38 +113,39 @@ pub fn read(
     if bytes.len() as u64 > ceiling_bytes {
         return Err(DocumentRefusal::OverCeiling { size_bytes: bytes.len() as u64, ceiling_bytes });
     }
-    if reviewable && std::str::from_utf8(&bytes).is_err() {
+    // A file the hand-off has always treated as text must still decode: a
+    // corrupt markdown or code file is refused, not handed on.
+    if reviewable_kind(&kind) && std::str::from_utf8(&bytes).is_err() {
         return Err(DocumentRefusal::NotUtf8 { path: path.to_owned() });
     }
-    let kind = classify(kind, &bytes);
+    let can_review = reviewable_kind(&kind);
     let content_hash = crate::env::git_diff::resolver::content_hash_bytes(&bytes);
-    let can_review = matches!(kind, DocumentKind::Markdown | DocumentKind::Text);
     Ok(DocumentRead { path: resolved, kind, bytes, reviewable: can_review, content_hash })
 }
 
-/// What the read answers, once the bytes are in hand.
+/// The extensions whose files the hand-off can carry a review on.
 ///
-/// **UTF-8 is what makes a file text**, not its extension: a `Justfile` or a
-/// shebang script is as readable as a `.rs`, and the client's per-format
-/// policy names the grammar. A PDF keeps its kind (its bytes are not text and
-/// its viewer is not a text one), and anything that does not decode keeps its
-/// extension as a binary kind so a notice can name what it is.
-fn classify(kind: DocumentKind, bytes: &[u8]) -> DocumentKind {
-    if matches!(kind, DocumentKind::Pdf) {
-        return kind;
-    }
-    if std::str::from_utf8(bytes).is_ok() {
-        return if matches!(kind, DocumentKind::Markdown) {
-            DocumentKind::Markdown
-        } else {
-            DocumentKind::Text
-        };
-    }
+/// **This is the hand-off's set, not the drawing policy.** The Files reader
+/// draws by the client's per-format policy - any UTF-8 file is text, an SVG
+/// is a picture - while a hand-off keeps its commentable set exactly as it
+/// was, so a `.rs` document still draws as it did and an extensionless
+/// Justfile opens read-only. A language added here is one the hand-off
+/// should comment, which is a different question from whether the reader can
+/// draw it.
+const TEXT_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "svelte", "py", "go", "json",
+    "toml", "yaml", "yml", "sh", "bash", "zsh", "css", "html", "htm", "xml", "svg", "sql", "kt",
+    "kts", "md", "markdown", "ini", "txt",
+];
+
+/// Whether a kind can carry a review at all: markdown, text and the code
+/// kinds draw as comment targets (the hand-off's comments ride a document
+/// read), and a PDF or an unrecognised kind opens read-only.
+fn reviewable_kind(kind: &DocumentKind) -> bool {
     match kind {
-        DocumentKind::Other(ext) => DocumentKind::Other(ext),
-        DocumentKind::Text => DocumentKind::Other("txt".to_owned()),
-        DocumentKind::Markdown => DocumentKind::Other("md".to_owned()),
-        DocumentKind::Pdf => DocumentKind::Pdf,
+        DocumentKind::Markdown | DocumentKind::Text => true,
+        DocumentKind::Other(ext) => TEXT_EXTENSIONS.contains(&ext.as_str()),
+        DocumentKind::Pdf => false,
     }
 }
 
@@ -290,34 +294,34 @@ mod tests {
         );
     }
 
-    /// The kinds are decided by the BYTES: a PDF keeps its kind, markdown
-    /// keeps its own, and every other UTF-8 file is text - a code extension
-    /// included - because a viewer draws it as text.
+    /// The kinds the list starts with, by extension, case-insensitive; an
+    /// extension the list does not know is kept as itself, and no extension
+    /// is kept as none. **The kind is the hand-off's**, not the Files
+    /// reader's drawing: the reader classifies UTF-8 by the client policy.
     #[test]
-    fn the_bytes_decide_the_kind_not_the_extension_alone() {
+    fn each_extension_maps_to_its_kind_and_other_is_kept_as_itself() {
         let dir = fixture();
         write(dir.path(), "notes.md", b"# hi\n");
         write(dir.path(), "paper.PDF", b"%PDF-1.4 fake");
         write(dir.path(), "notes.txt", b"x");
-        write(dir.path(), "sketch.rs", b"fn main() {}");
-        write(dir.path(), "Justfile", b"check:\n  cargo fmt\n");
-        write(dir.path(), "LICENSE", b"MIT");
+        write(dir.path(), "sketch.rs", b"x");
+        write(dir.path(), "LICENSE", b"x");
 
         let kind = |rel: &str| read(dir.path(), &[], rel, false, CEILING).expect("reads").kind;
         assert_eq!(kind("notes.md"), DocumentKind::Markdown);
         assert_eq!(kind("paper.PDF"), DocumentKind::Pdf, "the extension's case does not matter");
         assert_eq!(kind("notes.txt"), DocumentKind::Text);
-        assert_eq!(kind("sketch.rs"), DocumentKind::Text, "a UTF-8 file reads as text");
-        assert_eq!(kind("Justfile"), DocumentKind::Text, "no extension, still text");
-        assert_eq!(kind("LICENSE"), DocumentKind::Text);
+        assert_eq!(kind("sketch.rs"), DocumentKind::Other("rs".to_owned()));
+        assert_eq!(kind("LICENSE"), DocumentKind::Other(String::new()), "no extension, none kept");
     }
 
     /// **The read answers whether the DOCUMENT is reviewable, not what the
-    /// caller asked.** Any valid UTF-8 document a viewer opened cold - the
-    /// request flag false - is reviewable all the same, an extensionless
-    /// file included, so the files page draws its comments however the
-    /// reader reached it; a PDF and a binary are not, whatever the caller
-    /// asked for.
+    /// caller asked.** A markdown, text or code document a viewer opened
+    /// cold - the request flag false - is reviewable all the same, so the
+    /// hand-off draws its comments however the reader reached it; an
+    /// extensionless file, a PDF and a binary are not, whatever the caller
+    /// asked for. The Files reader still OPENS the extensionless text file:
+    /// its drawing policy does not consult this flag.
     #[test]
     fn the_read_answers_the_documents_own_reviewability_not_the_callers_flag() {
         let dir = fixture();
@@ -326,11 +330,20 @@ mod tests {
         write(dir.path(), "paper.pdf", b"%PDF-1.4 fake");
         write(dir.path(), "sketch.rs", b"fn main() {}");
         write(dir.path(), "Justfile", b"check:\n");
+        write(dir.path(), "notes.weird", b"plain words\n");
+        write(dir.path(), "mark.svg", b"<svg/>");
         write(dir.path(), "blob.png", b"\x89PNG fake");
 
-        for probe in ["plan.md", "notes.txt", "sketch.rs", "Justfile"] {
+        // The hand-off's commentable set, by extension, as it always was.
+        for probe in ["plan.md", "notes.txt", "sketch.rs", "mark.svg"] {
             let cold = read(dir.path(), &[], probe, false, CEILING).expect("reads");
             assert!(cold.reviewable, "{probe}: reviewable however the reader got there");
+        }
+        // An extensionless or unknown extension is not in the hand-off's
+        // commentable set - the Files reader draws it, a hand-off does not.
+        for probe in ["Justfile", "notes.weird"] {
+            let text = read(dir.path(), &[], probe, false, CEILING).expect("reads");
+            assert!(!text.reviewable, "{probe}: not in the hand-off's commentable set");
         }
         for probe in ["paper.pdf", "blob.png"] {
             let read_only = read(dir.path(), &[], probe, false, CEILING).expect("reads");
@@ -633,12 +646,13 @@ mod tests {
         assert!(document.bytes.is_empty());
     }
 
-    /// **A file that does not decode is a BINARY READ, not a refused one.**
-    /// A viewer draws it as the notice its extension names - never as text
-    /// with replacement characters - and a hand-off that asked for it
-    /// reviewable is still refused, because a binary can carry no comment.
+    /// **A commentable extension that does not decode is still REFUSED**,
+    /// as it always was: the hand-off cannot carry comments on bytes it
+    /// cannot read, and a corrupt markdown file must not silently become a
+    /// binary. A kind outside that set - an image, an unknown extension -
+    /// is a binary read, which the Files reader draws as its notice.
     #[test]
-    fn a_non_utf8_document_reads_as_binary_and_a_reviewable_ask_is_refused() {
+    fn a_non_utf8_document_is_refused_when_commentable_and_binary_otherwise() {
         let dir = fixture();
         let bytes = [0xff, 0xfe, 0x00, 0x01];
         write(dir.path(), "broken.md", &bytes);
@@ -647,22 +661,18 @@ mod tests {
         write(dir.path(), "blob.png", &bytes);
         write(dir.path(), "noext", &bytes);
 
-        for (probe, ext) in [
-            ("broken.md", "md"),
-            ("broken.txt", "txt"),
-            ("broken.rs", "rs"),
-            ("blob.png", "png"),
-            ("noext", ""),
-        ] {
+        for probe in ["broken.md", "broken.txt", "broken.rs"] {
+            let refusal = read(dir.path(), &[], probe, false, CEILING)
+                .expect_err("a commentable extension must decode");
+            assert!(matches!(refusal, DocumentRefusal::NotUtf8 { .. }), "{probe}: {refusal:?}");
+            assert!(refusal.to_string().contains("UTF-8"), "{probe}: names the reason: {refusal}");
+        }
+
+        for (probe, ext) in [("blob.png", "png"), ("noext", "")] {
             let binary =
                 read(dir.path(), &[], probe, false, CEILING).expect("a binary read is a read");
             assert!(!binary.reviewable, "{probe}: binary is not reviewable");
             assert_eq!(binary.kind, DocumentKind::Other(ext.to_owned()), "{probe}: its extension");
-
-            let refusal =
-                read(dir.path(), &[], probe, true, CEILING).expect_err("binary is not reviewable");
-            assert!(matches!(refusal, DocumentRefusal::NotUtf8 { .. }), "{probe}: {refusal:?}");
-            assert!(refusal.to_string().contains("UTF-8"), "{probe}: names the reason: {refusal}");
         }
     }
 }
