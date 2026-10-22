@@ -1937,10 +1937,25 @@ async fn session(
     } else {
         let walker = std::sync::Arc::clone(&state.surface);
         let root = cwd.to_owned();
-        tokio::task::spawn_blocking(move || walker.walk_file_index(&root))
-            .await
-            .map(std::sync::Arc::new)
-            .unwrap_or_default()
+        match tokio::task::spawn_blocking(move || walker.walk_file_index(&root)).await {
+            Ok(walked) => {
+                let index = std::sync::Arc::new(walked);
+                // The fallback's walk IS the seat's first read: storing it
+                // keeps the loop from walking the same tree again and
+                // announcing an index the snapshot already carries.
+                surface.store_file_index(slot, std::sync::Arc::clone(&index));
+                index
+            }
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "file_index_walk_failed",
+                    %error,
+                    slot = %slot.display(),
+                    "the record's cold-seat file walk did not finish; the page draws no files",
+                );
+                std::sync::Arc::default()
+            }
+        }
     };
 
     // One read for both halves of the record: the front is the first of the

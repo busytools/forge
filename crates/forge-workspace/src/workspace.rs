@@ -737,6 +737,11 @@ pub struct Workspace {
     /// no entry reads the pid off its own handle, as production does.
     #[cfg(any(test, feature = "testing"))]
     test_claude_pid: Mutex<std::collections::HashMap<SessionSlot, u32>>,
+    /// Test-only gate every stale read waits on before it scans, so a fixture
+    /// can hold a read in flight and see what a hold answers first. `None`
+    /// means reads run as they do in production.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_scan_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>`, the account key
@@ -1840,6 +1845,8 @@ impl Workspace {
             test_user_preferences: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_claude_pid: Mutex::new(std::collections::HashMap::new()),
+            #[cfg(any(test, feature = "testing"))]
+            test_scan_gate: Mutex::new(None),
         };
         if let Some(prober) = cli_version_prober {
             workspace.start_cli_version_probe(prober);

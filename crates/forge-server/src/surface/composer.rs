@@ -95,6 +95,16 @@ impl ViewSurface {
         self.workspace.file_index(slot).map(|held| held.index)
     }
 
+    /// Store a walked index for `slot`, which is the write half of
+    /// [`Self::file_index`].
+    ///
+    /// The record's cold-seat fallback walks the tree itself; storing that
+    /// walk keeps the seat's loop from walking the same tree again and
+    /// announcing an index the page already has.
+    pub fn store_file_index(&self, slot: &SessionSlot, index: std::sync::Arc<FileIndex>) {
+        self.workspace.store_file_index(slot, index);
+    }
+
     /// One working tree's files, walked on demand. `root` is the session's
     /// own scan cwd, which a git worker's worktree overrides.
     ///

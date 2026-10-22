@@ -3856,26 +3856,61 @@ async fn a_seats_answer_carries_its_epoch_and_the_number_the_next_frame_will_bea
     fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
 
     let mut socket = connect(&url).await;
-    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
-        data["header"]["session_id"] == "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"
-            && data["header"]["seq"] == 2
-    })
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
     .await;
-    assert!(
-        held,
-        "a client attaching after one frame reads the epoch and the number its next frame will bear",
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        data["header"]["session_id"], "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        "a client attaching after one frame reads the epoch its sequence belongs to",
     );
+    // The hold starts the seat's watch (#2506), whose first pass announces on
+    // this subscription; drain it so the baseline below is the counter's state
+    // rather than a race with the walk.
+    while next_server_within(&mut socket, 500).await.is_some() {}
+    let baseline = next_frame_number(&mut socket, &seat).await;
 
     // Another seat's traffic must not move this one's number, and this one's
     // own frame must: the counter is the seat's.
     let other = SessionSlot::worker("TestOrg", "proj", "reviewer");
     fleet.emit(SessionUpdate::TurnComplete { key: other.clone(), terminal_reason: None });
+    assert_eq!(
+        next_frame_number(&mut socket, &seat).await,
+        baseline,
+        "another seat's traffic does not move this one's number",
+    );
     fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
-    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
-        data["header"]["seq"] == 3
-    })
+    assert_eq!(
+        next_frame_number(&mut socket, &seat).await,
+        baseline + 1,
+        "the seat's own frame is what moves its number",
+    );
+}
+
+/// The number a seat's next frame will bear, read off a fresh subscribe's
+/// answer.
+async fn next_frame_number(socket: &mut Client, seat: &SessionSlot) -> u64 {
+    send(
+        socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
     .await;
-    assert!(held, "the seat's own frame is what moves its number");
+    let (_, data, _) = snapshot_answering(socket).await;
+    data["header"]["seq"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the answer carries the number its next frame will bear: {data}"))
 }
 
 /// **A seat nobody has attached to yet is still at a number a client can
@@ -5314,7 +5349,11 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
                 continue;
             };
             assert_eq!(key, lead_seat(), "the row goes to the seat that was held");
-            assert_eq!(work.changed, Some(1), "and carries the count the edit made");
+            // The watch's first pass announces the stored row before any edit;
+            // the row under test is the one the edit made.
+            if work.changed != Some(1) {
+                continue;
+            }
             moved = Some((work, git, pr, closes));
             break;
         }
@@ -5531,20 +5570,18 @@ fn a_scan(
     }
 }
 
-/// A seat's snapshot is the row of the tree as the hold read it, however
-/// stale what the store held was.
-///
-/// The hold is taken BEFORE the snapshot is encoded, and it is what reads the
-/// tree: a read taken first would hand a page a row from before this
-/// subscription, and nothing would correct it, because the loop announces
-/// only what moves after the hold.
+/// **The snapshot carries what the store holds, and the watch's first pass is
+/// what corrects it** (#2506). The open no longer waits for the tree's read,
+/// so the row a page opens on is the stored one - and the read's answer
+/// arrives as an update, which is the one that reaches a page that just
+/// opened.
 #[tokio::test]
-async fn a_snapshot_carries_the_row_the_hold_read() {
-    let (url, _fleet, state, _root) = a_repo_server().await;
+async fn a_snapshot_carries_the_stored_row_and_the_first_pass_corrects_it() {
+    let (url, fleet, state, _root) = a_repo_server().await;
     let repo =
         state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
-    // Stale, and saying what the tree cannot: a row the encode can only
-    // answer from the store, which the hold's own read then replaces.
+    // Stale, and saying what the tree cannot: a row the encode answers from
+    // the store, which the watch's first read then replaces.
     let long_ago = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(60))
         .expect("an instant a minute ago");
@@ -5552,6 +5589,10 @@ async fn a_snapshot_carries_the_row_the_hold_read() {
         &lead_seat(),
         a_scan(std::path::Path::new(&repo), long_ago, "not-this-tree", 99, None),
     );
+    // The watch's first pass is held, so whatever the snapshot carries below
+    // came from the encode itself rather than from a read that already ran.
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    fleet.workspace().seed_test_scan_gate(Arc::clone(&gate));
 
     let mut socket = connect(&url).await;
     send(
@@ -5567,10 +5608,34 @@ async fn a_snapshot_carries_the_row_the_hold_read() {
     let (_, data, _) = snapshot_answering(&mut socket).await;
 
     assert_eq!(
-        data["work"]["branch"], "work",
-        "the snapshot carries the branch the hold read, not the one the store held: {data}",
+        data["work"]["branch"], "not-this-tree",
+        "the snapshot carries the branch the store held, not one read here: {data}",
     );
-    assert_eq!(data["work"]["changed"], 0, "and the count the hold read: {data}");
+    assert_eq!(data["work"]["changed"], 99, "and the count the store held: {data}");
+    assert!(
+        state.surface.file_index(&lead_seat()).is_some(),
+        "a cold seat's fallback walk is stored, so the first pass does not walk the tree again",
+    );
+
+    gate.add_permits(8);
+    // The watch's first pass reads the tree and announces the row it found.
+    loop {
+        let Some(ServerMessage::Update { update, .. }) =
+            next_server_within(&mut socket, 10_000).await
+        else {
+            panic!("the first pass's read was never announced");
+        };
+        let SessionUpdate::WorkChanged { work, .. } = *update else {
+            continue;
+        };
+        assert_eq!(
+            work.branch.as_deref(),
+            Some("work"),
+            "the update carries the branch the read answered",
+        );
+        assert_eq!(work.changed, Some(0), "and the count it answered");
+        return;
+    }
 }
 
 /// A repository with one commit, for a test that needs a tree git can read.

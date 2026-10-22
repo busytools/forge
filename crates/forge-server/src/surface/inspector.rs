@@ -248,6 +248,7 @@ impl ViewSurface {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use forge_primitives::runtime::{AvailableModel, RuntimeSessionState};
     use forge_primitives::{
@@ -259,6 +260,25 @@ mod tests {
 
     fn seat(label: &str) -> SessionSlot {
         SessionSlot::lead("TestOrg", label)
+    }
+
+    /// **The inspector's hold is served at once** (#2506): opening a seat must
+    /// not wait for the tree's scan, the process walk or the file index - the
+    /// watch the hold starts answers those as updates.
+    #[tokio::test]
+    async fn the_hold_is_served_before_the_seats_scans_complete() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = Arc::new(ViewSurface::new(Arc::clone(&workspace)));
+        let seat = seat("forge");
+        workspace.register_domain_session(seat.clone(), None);
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        workspace.seed_test_scan_gate(Arc::clone(&gate));
+
+        tokio::time::timeout(Duration::from_secs(1), surface.hold_seat(&seat))
+            .await
+            .expect("the inspector's hold does not wait for the seat's scans");
+
+        assert!(workspace.work_snapshot(&seat).is_none(), "the tree is not read on the hold path",);
     }
 
     /// The output read is an ask routed by the slot like every other

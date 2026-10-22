@@ -206,8 +206,9 @@ struct Held {
     count: usize,
     /// Dropped to stop the seat's loop, which also drops its watch.
     stop: Option<tokio::sync::oneshot::Sender<()>>,
-    /// One scan at a time for this seat: the hold's read and the loop's read
-    /// are the same read, and a second one for the same tree is waste.
+    /// One scan at a time for this seat: the loop's read and any read a
+    /// fixture drives are serialised, so a second one for the same tree is
+    /// waste.
     scanning: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -252,16 +253,20 @@ impl HeldSeats {
 }
 
 impl Workspace {
-    /// Show `slot`, which is what starts its working tree being scanned.
+    /// Show `slot`, which is what starts its working tree being watched.
     ///
     /// **A hold is what "somebody is looking" means**, and it is what keeps
-    /// an idle seat from being scanned at all. The first hold also reads the
-    /// tree when what is stored is missing or stale, so a page never opens on
-    /// an arbitrarily old row; what that read answered becomes the row its
-    /// viewers are already holding, so the loop announces only a change.
+    /// an idle seat from being scanned at all.
+    ///
+    /// **The hold does not wait for its reads.** The watch's first pass takes
+    /// them - the tree's scan, the process walk and the file index - and
+    /// announces each through the channel its viewers read, so an open is
+    /// served from whatever the stores hold and the updates fill the page in.
+    /// Those three reads ran before the hold answered until #2506, so a warm
+    /// open waited on every one of them.
     ///
     /// **A held seat waits for its session.** A seat with no session has no
-    /// store for a scan, so the watch's own loop goes quiet on it and wakes
+    /// store for a read, so the watch's own loop goes quiet on it and wakes
     /// when the session appears - the same rule that covers a session ending
     /// under a running loop.
     ///
@@ -274,10 +279,6 @@ impl Workspace {
     /// re-subscribe had no watch for as long as it showed the seat, and its
     /// pushed rows stood still; the hold is unconditional now, so the FIRST
     /// subscribe is the one that counts (#1706).
-    ///
-    /// The first read, walk and index run only when a session is there to
-    /// store them under: a sessionless seat's stores drop what they are
-    /// given, so the work would be a whole-tree walk with nowhere to land.
     pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
         // A hold is somebody looking: it ends the current failure episode,
         // so a later failure is a new one.
@@ -288,52 +289,19 @@ impl Workspace {
         let Some(stopped) = stopped else {
             return;
         };
-        let live = self.domain_session_for(slot).is_some();
-        let announced = if live {
-            match self.scan_work_if_stale(slot, &scanning, false).await {
-                Ok(held) => Some(Announced::of(&held)),
-                Err(refusal) => {
-                    tracing::debug!(
-                        target: "forge_workspace::work",
-                        event_name = "work_scan_skipped",
-                        slot = %slot.display(),
-                        %refusal,
-                        "a held seat's working tree was not read at the hold",
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        // The walk is the hold's too, for the same reason the tree's scan is:
-        // the snapshot a page opens on is this seat's, and a walk left to the
-        // loop would leave the first one as old as the last time anybody
-        // looked.
-        let walked = if live {
-            self.walk_processes_if_stale(slot, self.claude_pid(slot)).await;
-            self.process_snapshot(slot).map(|held| held.processes)
-        } else {
-            None
-        };
-        // The file index is the same bargain: a page that opens on the seat
-        // reads the list its composer's `@` trigger offers, so the hold walks
-        // it once rather than leaving the composer empty until the first poke.
-        let indexed = if live {
-            self.walk_files_if_stale(slot, false).await;
-            self.file_index(slot).map(|held| held.index)
-        } else {
-            None
-        };
-        spawn_work_watch(
-            Arc::clone(self),
-            slot.clone(),
-            scanning,
-            stopped,
-            announced,
-            walked,
-            indexed,
-        );
+        spawn_work_watch(Arc::clone(self), slot.clone(), scanning, stopped);
+    }
+
+    /// Wait at the fixture's gate when one is seeded. Test-only: production
+    /// reads run as they always do.
+    #[cfg(any(test, feature = "testing"))]
+    async fn pass_test_scan_gate(&self) {
+        let gate = self.test_scan_gate.lock().clone();
+        if let Some(gate) = gate {
+            // Held for the read's length: one permit is one read. A closed
+            // gate means the fixture let it go, and the read runs.
+            let _permit = gate.acquire().await;
+        }
     }
 
     /// Stop showing `slot`. The last hold stops its loop and its watch.
@@ -372,6 +340,8 @@ impl Workspace {
         if !stale {
             return false;
         }
+        #[cfg(any(test, feature = "testing"))]
+        self.pass_test_scan_gate().await;
         let commands = local_bash_commands(
             &self
                 .domain_session_for(slot)
@@ -418,6 +388,8 @@ impl Workspace {
         if !stale {
             return false;
         }
+        #[cfg(any(test, feature = "testing"))]
+        self.pass_test_scan_gate().await;
         let Some(cwd) = self.cwd_for_session(slot) else {
             return false;
         };
@@ -468,8 +440,8 @@ impl Workspace {
 
     /// Answer the seat's scan, reading the tree first when the rule says to.
     ///
-    /// **The rule is checked under the seat's own gate**, so the hold's read
-    /// and the loop's read cannot both decide a stale tree needs two scans:
+    /// **The rule is checked under the seat's own gate**, so the loop's read
+    /// and a fixture's read cannot both decide a stale tree needs two scans:
     /// the second one finds what the first stored.
     ///
     /// # Errors
@@ -487,14 +459,16 @@ impl Workspace {
         // A seat with no session has nowhere to store a scan, so the rule
         // would read "nothing has scanned this" on every poke. The loop's own
         // guard skips the call while sessionless, and this refusal is the
-        // second layer behind it: the hold's first read is already gated on
-        // `live`, but a session can END under a held seat between the two, and
-        // then the next poke must refuse here rather than scan into nothing.
+        // second layer behind it: a session can END under a held seat between
+        // that check and this read, and then it must refuse here rather than
+        // scan into nothing.
         if self.domain_session_for(slot).is_none() {
             return Err(format!("{} has no session to store a scan on", slot.display()));
         }
         let held = self.work_snapshot(slot);
         if should_scan(held.as_ref(), dirty, Instant::now()) {
+            #[cfg(any(test, feature = "testing"))]
+            self.pass_test_scan_gate().await;
             let Some(cwd) = self.cwd_for_session(slot) else {
                 return Err(format!("{} has no directory to read", slot.display()));
             };
@@ -567,14 +541,21 @@ fn local_bash_commands(tasks: &[crate::BackgroundTask]) -> Vec<String> {
 /// One seat's scan loop: the tree is watched, the poke reads it and walks the
 /// seat's process tree and its files, and whatever moved goes to whoever is
 /// showing the seat.
+///
+/// **A warm seat's first pass runs at once, and it is the hold's own read**:
+/// the open answered from the stores before this task ran, so each of the
+/// three reads announces the page's first real answer rather than a change
+/// from it.
+///
+/// **A cold seat's first pass waits one poke.** Its snapshot takes the
+/// fallback read itself - a work scan and a whole-tree walk - so running now
+/// would read the same tree twice; by the next poke those stores are fresh
+/// and this pass announces nothing.
 fn spawn_work_watch(
     workspace: Arc<Workspace>,
     slot: SessionSlot,
     scanning: Arc<tokio::sync::Mutex<()>>,
     mut stopped: tokio::sync::oneshot::Receiver<()>,
-    announced: Option<Announced>,
-    walked: Option<Vec<forge_agent::env::processes::ProcessEntry>>,
-    indexed: Option<Arc<crate::file_index::FileIndex>>,
 ) {
     tokio::spawn(async move {
         let Some(cwd) = workspace.cwd_for_session(&slot) else {
@@ -591,14 +572,23 @@ fn spawn_work_watch(
         // says: git's view of a tree never includes an ignored path, so one
         // of those moving cannot change the row this loop watches for.
         let (changes, _watch) = start_change_watch(PathBuf::from(cwd), true);
-        let mut announced = announced;
-        let mut walked = walked;
-        let mut indexed = indexed;
+        // Nothing has been announced to this seat's viewers yet, whatever the
+        // stores hold: the open answered from them, and this pass is what
+        // turns each into an update.
+        let mut announced = None;
+        let mut walked = None;
+        let mut indexed = None;
         // Whether the last poke found the seat's session gone, so the quiet
         // spell is reported once rather than once a second.
         let mut quiet = false;
         let mut poke = tokio::time::interval(POKE_INTERVAL);
         poke.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        if workspace.work_snapshot(&slot).is_none() || workspace.file_index(&slot).is_none() {
+            tokio::select! {
+                _ = &mut stopped => return,
+                () = tokio::time::sleep(POKE_INTERVAL) => {}
+            }
+        }
         loop {
             tokio::select! {
                 _ = &mut stopped => return,
@@ -834,25 +824,91 @@ provider = "anthropic"
         );
     }
 
-    /// A seat's tree is read because somebody is showing it, and a row that
-    /// moved reaches them - while the hold's own read is what they already
-    /// hold, so a still tree says nothing at all.
+    /// **A hold answers before its scans do** (#2506). The open used to pay
+    /// three sequential stale reads before it could answer; the watch the hold
+    /// starts takes them, so a slow read cannot hold a page.
     #[tokio::test]
-    async fn a_held_seat_announces_a_moved_row_and_says_nothing_while_it_is_still() {
+    async fn a_hold_is_served_before_its_scans_complete() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        workspace.seed_test_scan_gate(Arc::clone(&gate));
+
+        tokio::time::timeout(Duration::from_secs(1), workspace.hold_seat(&seat))
+            .await
+            .expect("the hold is served while its scans are still in flight");
+
+        assert!(workspace.work_snapshot(&seat).is_none(), "the tree's scan has not answered");
+        assert!(workspace.process_snapshot(&seat).is_none(), "nor has the process walk");
+        assert!(workspace.file_index(&seat).is_none(), "nor has the file index");
+
+        gate.add_permits(8);
+    }
+
+    /// **The reads the hold gave up still run and their answers reach the
+    /// seat's viewers** (rule 25): the first pass of the watch reads the tree,
+    /// walks the processes and the files, and announces each of them.
+    #[tokio::test]
+    async fn the_first_pass_announces_the_tree_the_processes_and_the_files() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        // The process walk needs a seat pid; this test's own tree is one that
+        // exists and needs no CLI behind it.
+        workspace.seed_test_claude_pid(&seat, std::process::id());
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        workspace.seed_test_scan_gate(Arc::clone(&gate));
+
+        tokio::time::timeout(Duration::from_secs(1), workspace.hold_seat(&seat))
+            .await
+            .expect("the hold is served while its scans are still in flight");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), updates.recv()).await.is_err(),
+            "nothing is announced while the scans are still held",
+        );
+        gate.add_permits(8);
+
+        let (mut work, mut processes, mut files) = (false, false, false);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !(work && processes && files) {
+            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!(
+                    "the first pass's answers never all arrived: tree {work}, processes {processes}, files {files}"
+                );
+            };
+            match moved.update {
+                SessionUpdate::WorkChanged { key, .. } => {
+                    assert_eq!(key, seat, "the tree's row is addressed to the held seat");
+                    work = true;
+                }
+                SessionUpdate::ProcessesChanged { key, .. } => {
+                    assert_eq!(key, seat, "the walk is addressed to the held seat");
+                    processes = true;
+                }
+                SessionUpdate::FileIndexChanged { key, .. } => {
+                    assert_eq!(key, seat, "the index is addressed to the held seat");
+                    files = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// **The hold's scan answers as an update, and every row the tree moves to
+    /// after it does too.** The open no longer waits for the read (#2506), so
+    /// the first pass is what tells the page what the tree holds.
+    #[tokio::test]
+    async fn a_held_seat_announces_its_row_and_every_row_it_moves_to() {
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
 
         workspace.hold_seat(&seat).await;
 
-        let held = workspace.work_snapshot(&seat).expect("the hold reads the tree");
-        let row = work_from_scan(&held.diff, &held.cwd);
+        let row = announced_work(&mut updates).await;
         assert_eq!(row.gate, Gate::InRepo, "a checkout is read as a repository");
         assert_eq!(row.changed, Some(0), "and a clean one as nothing changed");
-        assert!(
-            updates.try_recv().is_err(),
-            "the hold's read is what the seat's viewers already hold, so nothing is announced",
-        );
 
         // Edited in a loop, and read for less than the staleness window: the
         // watch arms on its own thread, so the first edit can land before
@@ -866,7 +922,7 @@ provider = "anthropic"
                 continue;
             };
             let SessionUpdate::WorkChanged { key, work, .. } = moved.update else {
-                panic!("a moved tree announces the row, got {moved:?}");
+                continue;
             };
             assert_eq!(key, seat, "and it is addressed to the seat that was held");
             assert_eq!(work.changed, Some(1), "with the count the edit gives");
@@ -1119,19 +1175,22 @@ provider = "anthropic"
         let moved_walk = walk_of(vec![entry_at(4242)]);
         workspace.store_process_snapshot(&seat, Some(moved_walk));
 
-        let Ok(Some(moved)) = tokio::time::timeout(Duration::from_secs(3), updates.recv()).await
-        else {
-            panic!("a walk the terminal moved never reached the seat's viewers");
-        };
-        let SessionUpdate::ProcessesChanged { key, snapshot } = moved.update else {
-            panic!("a moved walk announces the walk, got {moved:?}");
-        };
-        assert_eq!(key, seat, "and it is addressed to the seat that was held");
-        assert_eq!(
-            snapshot.processes,
-            vec![entry_at(4242)],
-            "with the walk the store holds, not one this loop took",
-        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("a walk the terminal moved never reached the seat's viewers");
+            };
+            let SessionUpdate::ProcessesChanged { key, snapshot } = moved.update else {
+                continue;
+            };
+            assert_eq!(key, seat, "and it is addressed to the seat that was held");
+            assert_eq!(
+                snapshot.processes,
+                vec![entry_at(4242)],
+                "with the walk the store holds, not one this loop took",
+            );
+            return;
+        }
     }
 
     /// **The seat's own tree reaches its viewers.** The walk is the loop's, so
@@ -1173,38 +1232,36 @@ provider = "anthropic"
         drop(child);
     }
 
-    /// **The hold's walk is what the seat's viewers were already handed.** The
-    /// subscription snapshot answers from the store the hold just wrote, so a
-    /// baseline read taken before that write would re-announce the tree the
-    /// page already holds at the loop's first compare.
-    ///
-    /// The pid is a `sleep` the test owns, not the test process itself: what
-    /// is walked is that process's DESCENDANTS, and a `sleep` has none - so
-    /// the tree is empty and stays empty, which is what makes "nothing is
-    /// announced" a property of the code rather than of the machine's load.
-    /// The test process's own tree drifts as the suite runs, and drift is news.
-    #[tokio::test]
-    async fn the_holds_walk_is_not_announced_again() {
-        let dir = a_repo();
-        let (workspace, mut updates, _config) = a_workspace(dir.path());
-        let seat = seat();
-        let walked =
-            Child(std::process::Command::new("sleep").arg("30").spawn().expect("a child to walk"));
-        workspace.seed_test_claude_pid(&seat, walked.0.id());
-        // A walk from before the hold, past the window so the hold's own walk
-        // replaces it - which is the baseline the loop must be seeded with.
-        let mut stale = walk_of(vec![entry_at(4242)]);
-        stale.scanned_at = std::time::SystemTime::now()
-            .checked_sub(Duration::from_secs(60))
-            .expect("a minute ago");
-        workspace.store_process_snapshot(&seat, Some(stale));
+    /// The watch's first walk, as the update that carries the hold's index
+    /// now that the open no longer waits for it (#2506).
+    async fn announced_index(
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
+    ) -> Arc<crate::file_index::FileIndex> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("the watch's first walk was never announced");
+            };
+            if let SessionUpdate::FileIndexChanged { index, .. } = moved.update {
+                return index;
+            }
+        }
+    }
 
-        workspace.hold_seat(&seat).await;
-
-        assert!(
-            tokio::time::timeout(Duration::from_secs(2), updates.recv()).await.is_err(),
-            "the hold's walk is what the seat's viewers already hold, so nothing is announced",
-        );
+    /// The watch's first row, as the update that carries the hold's scan now
+    /// that the open no longer waits for it (#2506).
+    async fn announced_work(
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
+    ) -> WorkState {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("the watch's first scan was never announced");
+            };
+            if let SessionUpdate::WorkChanged { work, .. } = moved.update {
+                return work;
+            }
+        }
     }
 
     /// **The mark the watch sets is what makes the walk run inside the
@@ -1215,10 +1272,11 @@ provider = "anthropic"
     #[tokio::test]
     async fn the_watchs_mark_walks_inside_the_window() {
         let dir = a_repo();
-        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
         workspace.hold_seat(&seat).await;
-        let held = workspace.file_index(&seat).expect("the hold walks the index");
+        announced_index(&mut updates).await;
+        let held_at = workspace.file_index(&seat).expect("the first pass stores it").read_at;
 
         assert!(
             !workspace.walk_files_if_stale(&seat, false).await,
@@ -1230,7 +1288,7 @@ provider = "anthropic"
 
         let walked = workspace.file_index(&seat).expect("the walk stored an index");
         assert!(walked.index.entries.contains_key("new.rs"), "with what the walk found");
-        assert!(walked.read_at > held.read_at, "and the answer is the newer one");
+        assert!(walked.read_at > held_at, "and the answer is the newer one");
     }
 
     /// **A file written into a held seat's tree reaches its viewers.** The walk
@@ -1269,11 +1327,18 @@ provider = "anthropic"
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
-        workspace.hold_seat(&seat).await;
+        // The first pass is held so the writes land before the walk it takes,
+        // making the writes' own frame the only index frame there is.
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        workspace.seed_test_scan_gate(Arc::clone(&gate));
+        tokio::time::timeout(Duration::from_secs(1), workspace.hold_seat(&seat))
+            .await
+            .expect("the hold is served while its scans are still in flight");
 
         for name in ["a.rs", "b.rs", "c.rs"] {
             std::fs::write(dir.path().join(name), "").expect("write");
         }
+        gate.add_permits(8);
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let first = loop {
@@ -1314,9 +1379,15 @@ provider = "anthropic"
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
         workspace.hold_seat(&seat).await;
-        // The index the hold left, so an announce names what moved rather than
-        // counting it - triage is a read, not a re-derivation.
-        let held = workspace.file_index(&seat).expect("the hold walks the index");
+        // The first pass's own answer, drained so the window below opens after
+        // it: the index is announced before the row in the same pass, so the
+        // row's arrival says the pass is done.
+        let walked = announced_index(&mut updates).await;
+        announced_work(&mut updates).await;
+        // The index the first pass left, so an announce names what moved rather
+        // than counting it - triage is a read, not a re-derivation.
+        let held = workspace.file_index(&seat).expect("the first pass stores the index");
+        assert_eq!(held.index.entries.len(), walked.entries.len(), "and it is that index");
         let held_at = held.read_at;
 
         // The wait is for the seat's own second walk, not for a clock: the
@@ -1421,14 +1492,14 @@ provider = "anthropic"
         let dir = a_repo();
         std::fs::write(dir.path().join(".gitignore"), "ignored.rs\n").expect("write");
         std::fs::write(dir.path().join("ignored.rs"), "").expect("write");
-        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
         workspace.seed_test_user_preferences(serde_json::json!({}));
         workspace.hold_seat(&seat).await;
 
-        let held = workspace.file_index(&seat).expect("the hold walks the index");
+        let held = announced_index(&mut updates).await;
         assert!(
-            !held.index.entries.contains_key("ignored.rs"),
+            !held.entries.contains_key("ignored.rs"),
             "the walk respects the file while the preference says so",
         );
 
@@ -1490,6 +1561,10 @@ provider = "anthropic"
         let seat = seat();
         workspace.hold_seat(&seat).await;
         assert!(!workspace.held_work_seats.lock().is_empty(), "the hold is taken");
+        // The watch's first pass settles before the session goes, so the
+        // release's own frame is the next one and the window after it is the
+        // quiet the loop's guard owes.
+        announced_work(&mut updates).await;
 
         workspace.release_session_with_cascade(&seat);
 
@@ -1552,8 +1627,12 @@ provider = "anthropic"
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_declared_project(dir.path());
         let seat = seat();
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        workspace.seed_test_scan_gate(Arc::clone(&gate));
 
-        workspace.hold_seat(&seat).await;
+        tokio::time::timeout(Duration::from_secs(1), workspace.hold_seat(&seat))
+            .await
+            .expect("a sessionless seat's hold is served without waiting for any read");
 
         assert!(workspace.work_snapshot(&seat).is_none(), "nothing was read for it");
         assert!(
@@ -1576,12 +1655,13 @@ provider = "anthropic"
     #[tokio::test]
     async fn the_last_release_lets_the_seat_go() {
         let dir = a_repo();
-        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
 
         workspace.hold_seat(&seat).await;
         workspace.hold_seat(&seat).await;
-        assert!(workspace.work_snapshot(&seat).is_some(), "the hold reads the seat's tree");
+        announced_work(&mut updates).await;
+        assert!(workspace.work_snapshot(&seat).is_some(), "the watch reads the seat's tree");
 
         workspace.release_seat(&seat);
         assert!(

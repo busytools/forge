@@ -969,12 +969,13 @@ where
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
             let queued = forward_queued(state, open_stream(state, updates, answering), watched, me);
-            // **A seat is held BEFORE its snapshot is encoded.** The hold is
-            // what has its working tree read, and the encode answers that
-            // store - so a read taken first would hand a page the tree as it
-            // was before this subscription, and nothing would correct it: the
-            // seat's viewers are seeded with the row the hold read, so the
-            // loop announces only what moves after it.
+            // **A seat is held BEFORE its snapshot is encoded.** The hold
+            // starts the seat's watch, whose first pass reads the tree, the
+            // processes and the file index and announces each; the encode
+            // answers whatever the stores hold, and the updates fill the rest
+            // in. The open no longer waits on those reads (#2506); a seat
+            // nothing has ever read still takes the record's own fallback, so
+            // its cost is the cold open's and nothing more.
             //
             // **A declare holds nothing**, like the watch entry and the
             // attachment below: it re-states the browser capability against a
