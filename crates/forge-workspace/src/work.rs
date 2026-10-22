@@ -465,6 +465,7 @@ impl Workspace {
         let cwd = self.cwd_for_session(slot)?;
         let respect = crate::file_index::respect_gitignore(self.user_preferences().as_ref());
         let root = PathBuf::from(cwd);
+        let walked = root.clone();
         // The walk is a whole tree, so it runs on the blocking pool rather
         // than on the reactor.
         match tokio::task::spawn_blocking(move || {
@@ -483,6 +484,7 @@ impl Workspace {
                     event_name = "file_index_walk_failed",
                     %error,
                     slot = %slot.display(),
+                    path = %walked.display(),
                     "the file-index walk did not finish; the seat keeps the index it had",
                 );
                 None
@@ -902,8 +904,8 @@ provider = "anthropic"
         }
     }
 
-    /// The rule the hold and the loop both read: nothing read yet, a tree
-    /// that moved, or a read that has gone stale.
+    /// The rule the record's read and the loop both read: nothing read yet, a
+    /// tree that moved, or a read that has gone stale.
     #[test]
     fn a_scan_happens_for_nothing_read_a_dirty_tree_or_a_stale_read() {
         let now = Instant::now();
@@ -1022,11 +1024,16 @@ provider = "anthropic"
         workspace.seed_test_scan_gate(Arc::clone(&gate));
 
         // The hold returns with the watch spawned; the reads are at the gate.
+        let started = tokio::time::Instant::now();
         hold_for_a_page(&workspace, &seat);
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), updates.recv()).await.is_err(),
+            tokio::time::timeout(Duration::from_millis(400), updates.recv()).await.is_err(),
             "nothing is announced while the scans are still held",
         );
+        // **The stores say the reads are at the gate, not merely slow**: with
+        // the seam removed, both would have landed inside the window above.
+        assert!(workspace.work_snapshot(&seat).is_none(), "the tree's scan is held at the gate");
+        assert!(workspace.file_index(&seat).is_none(), "and the walk with it");
         gate.add_permits(8);
 
         let (mut work, mut processes, mut files) = (false, false, false);
@@ -1061,6 +1068,13 @@ provider = "anthropic"
             order.first(),
             Some(&"work"),
             "the row a reader watches is announced before the walks behind it",
+        );
+        // **The pass runs on the record's mark, not after a poke.** A pass
+        // that waited the loop's interval would land past this bound.
+        assert!(
+            started.elapsed() < Duration::from_millis(950),
+            "the first pass ran within one poke: {:?}",
+            started.elapsed(),
         );
     }
 

@@ -116,18 +116,21 @@ impl ViewSurface {
         self.workspace.process_snapshot(slot)
     }
 
-    /// The seat's working tree, as the scan that owns it last answered, or as
-    /// the record's own read when nothing has scanned it yet.
+    /// The seat's working tree, read on the loop's own rule: the stored scan
+    /// while it is inside the snapshot window, a new one past it.
     ///
     /// **The record's read is the seat's first read, and the loop's too.** A
     /// held seat's snapshot takes the tree under the same gate the watch's
     /// first pass uses, so the two are one scan: whichever gets there first
     /// stores, and the other answers that store rather than reading the tree
     /// again. A seat nobody holds has no loop to race and reads unguarded.
+    ///
+    /// **The window is what keeps the record self-consistent.** The record
+    /// carries the scan's hunks beside its branch and count; serving an
+    /// arbitrarily old scan would put its hunks beside a row the first pass
+    /// has since moved, so a store past the window is re-read here rather
+    /// than carried.
     pub async fn work(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
-        if let Some(held) = self.workspace.work_snapshot(slot) {
-            return held;
-        }
         if let Ok(held) = self.workspace.scan_work_if_stale(slot, false).await {
             return held;
         }

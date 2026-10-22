@@ -3871,12 +3871,12 @@ async fn a_seats_answer_carries_its_epoch_and_the_number_the_next_frame_will_bea
         data["header"]["session_id"], "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
         "a client attaching after one frame reads the epoch its sequence belongs to",
     );
-    // The hold starts the seat's watch (#2506) and the record's read marks it;
-    // drain the first pass's frames so the baseline below is the counter's
-    // state rather than a race with it. The window is wide enough for a cold
-    // pass, which walks the tree.
-    while next_server_within(&mut socket, 2_000).await.is_some() {}
+    // The hold starts the seat's watch (#2506) and the record's read marks it.
+    // A still tree's first pass is seeded from that read and adds no frame, so
+    // the count is the seat's one frame and nothing else - pinned absolutely
+    // rather than waited out, so a pass that announces on open reds here.
     let baseline = next_frame_number(&mut socket, &seat).await;
+    assert_eq!(baseline, 2, "the open adds no frame to the seat's one");
 
     // Another seat's traffic must not move this one's number, and this one's
     // own frame must: the counter is the seat's.
@@ -5496,6 +5496,95 @@ async fn a_refused_subscribe_leaves_another_connections_hold_alone() {
     panic!("A's hold did not survive B's visit: its seat stopped being scanned");
 }
 
+/// **A seat re-opened after its release is filled from the ring, not
+/// refused.** The frames a seat minted before its release stay reachable, so a
+/// page switching back to a seat whose session has ended reads the
+/// conversation it missed rather than an error about a copy that cannot be
+/// filled.
+#[tokio::test]
+async fn a_seat_reopened_after_a_release_is_filled_from_its_ring() {
+    let (url, fleet, state, _root) = a_repo_server().await;
+    let seat = lead_seat();
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts {
+            session_id: Some(SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45")),
+            ..Default::default()
+        },
+    );
+
+    // A page opens the seat and hears one prompt row.
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    snapshot_answering(&mut first).await;
+    let prompt: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": "before the release" },
+        "session_id": "s",
+    }))
+    .expect("parse a user message");
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        msg: prompt,
+        origin: None,
+        source: None,
+    });
+    loop {
+        let Some(ServerMessage::Update { update, .. }) =
+            next_server_within(&mut first, 5_000).await
+        else {
+            panic!("the prompt row never reached the page");
+        };
+        if matches!(*update, SessionUpdate::ChatAppended { .. }) {
+            break;
+        }
+    }
+    drop(first);
+
+    // The session ends under the seat.
+    state
+        .surface
+        .dispatch(Command::CloseSession { session_key: seat.clone() })
+        .expect("the seat's session closes");
+    for _ in 0..200 {
+        if state.surface.header(&seat).session_id.is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(state.surface.header(&seat).session_id.is_none(), "the seat's session is gone");
+
+    // A page switching back reads the seat: the copy is filled from the frames
+    // the release kept, so the snapshot carries the prompt rather than the
+    // refusal a shed ring would leave.
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut second).await;
+    let conversation = serde_json::to_string(&data["conversation"]).expect("json");
+    assert!(
+        conversation.contains("before the release"),
+        "the re-opened seat's copy carries the frame the ring kept: {conversation}",
+    );
+}
+
 /// A seat whose tree is a real repository, with its session started - the
 /// store rides the seat's own record, so a seat nothing runs behind is not
 /// held at all.
@@ -5571,18 +5660,18 @@ fn a_scan(
     }
 }
 
-/// **The snapshot carries what the store holds, and the watch's first pass is
-/// what corrects it** (#2506). The open no longer waits for the tree's read,
-/// so the row a page opens on is the stored one - and the read's answer
-/// arrives as an update, which is the one that reaches a page that just
-/// opened.
+/// **A stored scan past its window is re-read by the record, not carried.**
+/// The record's hunks ride the same scan as its row, so serving an
+/// arbitrarily old store would put its hunks beside a row the first pass has
+/// since moved; the record takes the scan itself and the snapshot carries
+/// what git answers now.
 #[tokio::test]
-async fn a_snapshot_carries_the_stored_row_and_the_first_pass_corrects_it() {
-    let (url, fleet, state, _root) = a_repo_server().await;
+async fn a_stale_store_is_re_read_by_the_record() {
+    let (url, _fleet, state, _root) = a_repo_server().await;
     let repo =
         state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
-    // Stale, and saying what the tree cannot: a row the encode answers from
-    // the store, which the watch's first read then replaces.
+    // A row the tree cannot answer, old enough that the record must not
+    // serve it.
     let long_ago = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(60))
         .expect("an instant a minute ago");
@@ -5590,12 +5679,8 @@ async fn a_snapshot_carries_the_stored_row_and_the_first_pass_corrects_it() {
         &lead_seat(),
         a_scan(std::path::Path::new(&repo), long_ago, "not-this-tree", 99, None),
     );
-    // The seat's index is already walked, so the record below answers both
-    // stores; the gate then holds the watch's first pass, which is what the
-    // stale work row in the snapshot waits for.
+    // The index is pre-walked so the record's only read here is the tree's.
     state.surface.file_index_for_record(&lead_seat()).await;
-    let gate = Arc::new(tokio::sync::Semaphore::new(0));
-    fleet.workspace().seed_test_scan_gate(Arc::clone(&gate));
 
     let mut socket = connect(&url).await;
     send(
@@ -5611,34 +5696,10 @@ async fn a_snapshot_carries_the_stored_row_and_the_first_pass_corrects_it() {
     let (_, data, _) = snapshot_answering(&mut socket).await;
 
     assert_eq!(
-        data["work"]["branch"], "not-this-tree",
-        "the snapshot carries the branch the store held, not one read here: {data}",
+        data["work"]["branch"], "work",
+        "the record re-read the stale store rather than carrying it: {data}",
     );
-    assert_eq!(data["work"]["changed"], 99, "and the count the store held: {data}");
-    assert!(
-        state.surface.file_index(&lead_seat()).is_some(),
-        "a cold seat's fallback walk is stored, so the first pass does not walk the tree again",
-    );
-
-    gate.add_permits(8);
-    // The watch's first pass reads the tree and announces the row it found.
-    loop {
-        let Some(ServerMessage::Update { update, .. }) =
-            next_server_within(&mut socket, 10_000).await
-        else {
-            panic!("the first pass's read was never announced");
-        };
-        let SessionUpdate::WorkChanged { work, .. } = *update else {
-            continue;
-        };
-        assert_eq!(
-            work.branch.as_deref(),
-            Some("work"),
-            "the update carries the branch the read answered",
-        );
-        assert_eq!(work.changed, Some(0), "and the count it answered");
-        return;
-    }
+    assert_eq!(data["work"]["changed"], 0, "with the count the read answered: {data}");
 }
 
 /// **An open announces nothing its snapshot already carried** (#2506 review).
