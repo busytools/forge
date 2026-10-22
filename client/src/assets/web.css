@@ -1610,6 +1610,12 @@ details.sfold div.wk:hover { background: none; }
    URL in a sentence would take the conversation sideways on its own. This
    inherits, which is what reaches a list item, a quote and a heading too. */
 .prose { overflow-wrap: anywhere; }
+/* A rendered markdown diff: the removal keeps its words where they were,
+   struck and dimmed; the addition draws normal on its own tint. The grounds
+   are the diff's own tokens, not a second palette. */
+.prose .mdadd { background: rgba(46,160,67,.16); border-radius: 3px; padding: 0 2px; }
+.prose .mddel { background: rgba(248,81,73,.13); border-radius: 3px; padding: 0 2px;
+  color: var(--dim); text-decoration: line-through; }
 /* One blank line between blocks, which is the terminal's whole spacing policy:
    a live reply is cut at paragraph boundaries and each block carries one
    trailing break, so every gap it draws is one line box. Ten pixels was 0.59em
@@ -2065,6 +2071,10 @@ details.leaf.running > summary { color: var(--text); }
    1.89x the one row the terminal draws for the same fence. */
 .code pre { font-family: var(--mono); font-size: var(--fs-prose); padding: 6px 10px;
   white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
+/* The caption under a panel whose file has no grammar: the header carries no
+   language, and this says why rather than leaving the absence unexplained. */
+.code-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  padding: 4px 2px 0; }
 /* A search result, one row per hit: where it is, then what matched. */
 .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
   margin: 4px 0; border-left: 1px solid var(--line); }
@@ -2139,6 +2149,16 @@ details.leaf.running > summary { color: var(--text); }
 .dif .ln.d .l { background: var(--del-bg); }
 .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
 .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
+/* GitHub's row tint covers the number columns too: with `.ln` as `display:
+   contents`, tinting only the body and the mark left two bare gaps at the
+   row's left and broke the band. */
+.dif .ln.a .on, .dif .ln.a .nn { background: var(--add-bg); }
+.dif .ln.d .on, .dif .ln.d .nn { background: var(--del-bg); }
+/* The changed WORDS of a paired removal and addition: a darker band on the
+   same ground, wrapping a slice inside the grammar's own token span so the
+   colours stay and the tint sits on top. */
+.dif .ln.a .w { background: var(--add-word); border-radius: 2px; }
+.dif .ln.d .w { background: var(--del-word); border-radius: 2px; }
 
 /* The picture a call read: the row opens onto it, with the harness's own
    dimension line under it as the caption. */
@@ -3215,7 +3235,8 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    tokens on purpose, and a page adding them back would be a second entry in a
    list another page is already changing. The values are `theme.rs`'s, so the
    diff draws the ground forge drew. */
-.dif { --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5); }
+.dif { --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5);
+  --add-word: rgba(46,160,67,.38); --del-word: rgba(248,81,73,.34); }
 /* The path above a diff is one unbroken token and often longer than a phone. It
    is a location rather than code, so it wraps rather than scrolling. */
 .dif .h { overflow-wrap: anywhere; }
@@ -3778,6 +3799,22 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-reader .files-target { background: rgba(27,33,48,.5);
   box-shadow: inset 2px 0 0 var(--accent); }
 .files-reader .files-door { color: var(--accent); }
+/* A picture and a PDF draw in the reader's own box, bounded so a large image
+   cannot push the page sideways and a page is not clipped. */
+.files-media { flex: 1; min-height: 0; display: flex; align-items: center;
+  justify-content: center; padding: 16px; overflow: hidden; background: var(--s2);
+  border: 1px solid var(--line); border-top: 0; border-radius: 0 0 9px 9px; }
+.files-media img { max-width: 100%; max-height: 100%; object-fit: contain;
+  border: 1px solid var(--line); border-radius: 6px; }
+.files-media .doc-pdf { width: 100%; height: 100%; min-height: 420px; border: 0; }
+.files-media .doc-pdf-js { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+.files-media .doc-pdf-js canvas { max-width: 100%; border: 1px solid var(--line);
+  border-radius: 4px; }
+/* The notice for a file this page has no viewer for: named type and size,
+   and the one fact a reader acts on - it is still in the tree. */
+.files-notice { margin: 13px; padding: 11px 13px; border: 1px solid var(--line);
+  border-radius: 9px; color: var(--dim); font-size: var(--fs-base); }
+.files-notice b { color: var(--text); font-weight: 600; }
 /* The resolved marker is a press target in the reader, and it takes the row's
    whole width AND the expanded card's own ground (Ved, 2026-10-17), so a
    folded thread and an open one are one surface. */

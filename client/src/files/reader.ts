@@ -4,11 +4,10 @@
  * the JS regex engine (no wasm).
  *
  * **This module is dynamically imported by the page** (`Reader.svelte`), so
- * everything statically imported here - CodeMirror, shiki, the grammars -
- * lands in one lazy chunk and the main bundle keeps them off its back. The
- * grammars are all static for the same reason made useful: shiki's lazy
- * per-language load made a language's first paint cost ~0.7s in the spike,
- * so the seat's own language set is warmed with the chunk instead.
+ * CodeMirror and the bridge land in one lazy chunk and the main bundle keeps
+ * them off its back. **Grammars load one file at a time** from shiki's own
+ * lazy set (`format/highlight.ts`), so the reader carries the whole language
+ * catalogue without downloading any of it up front.
  *
  * **Two layers per language, neither guessed.** Structure (folding) comes
  * from the CodeMirror org's own language package where one exists, loaded
@@ -39,31 +38,8 @@ import {
   lineNumbers,
   WidgetType,
 } from '@codemirror/view';
-import { createHighlighterCore } from 'shiki/core';
-import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
-
-import bash from '@shikijs/langs/shellscript';
-import css from '@shikijs/langs/css';
-import go from '@shikijs/langs/go';
-import html from '@shikijs/langs/html';
-import ini from '@shikijs/langs/ini';
-import javascript from '@shikijs/langs/javascript';
-import json from '@shikijs/langs/json';
-import jsx from '@shikijs/langs/jsx';
-import kotlin from '@shikijs/langs/kotlin';
-import markdown from '@shikijs/langs/markdown';
-import python from '@shikijs/langs/python';
-import rust from '@shikijs/langs/rust';
-import sql from '@shikijs/langs/sql';
-import svelte from '@shikijs/langs/svelte';
-import toml from '@shikijs/langs/toml';
-import tsx from '@shikijs/langs/tsx';
-import typescript from '@shikijs/langs/typescript';
-import xml from '@shikijs/langs/xml';
-import yaml from '@shikijs/langs/yaml';
-import githubDark from '@shikijs/themes/github-dark';
-
-import { languageForPath } from './languages';
+import { highlighterFor } from '../format/highlight';
+import { formatOf } from '../format/policy';
 
 /** One block the page wants drawn under a line: the reader makes the host
  *  element, the page mounts what goes inside it (its own components), and
@@ -107,62 +83,33 @@ const cmMarkdown = async (): Promise<Extension> =>
   (await import('@codemirror/lang-markdown')).markdown();
 const cmSql = async (): Promise<Extension> => (await import('@codemirror/lang-sql')).sql();
 
-/** The CodeMirror structure loaders, by extension - the folding layer,
- *  where the org ships a package (`languages.ts` says which do). */
+/** The CodeMirror structure loaders, by canonical shiki grammar id - the
+ *  folding layer, where the org ships a package. The rest colour only. */
 const CM: Record<string, () => Promise<Extension>> = {
-  rs: cmRust,
-  ts: cmTs,
-  mts: cmTs,
-  cts: cmTs,
+  rust: cmRust,
+  typescript: cmTs,
   tsx: cmTsx,
-  js: cmJs,
-  mjs: cmJs,
-  cjs: cmJs,
+  javascript: cmJs,
   jsx: cmJsx,
-  py: cmPython,
+  python: cmPython,
   go: cmGo,
   json: cmJson,
   yaml: cmYaml,
-  yml: cmYaml,
   css: cmCss,
   html: cmHtml,
-  htm: cmHtml,
   xml: cmHtml,
   sql: cmSql,
-  md: cmMarkdown,
   markdown: cmMarkdown,
 };
 
-let shared: Promise<Awaited<ReturnType<typeof createHighlighterCore>>> | null = null;
-
-/** The one highlighter, built on first use with every grammar warmed. */
-function sharedHighlighter(): Promise<Awaited<ReturnType<typeof createHighlighterCore>>> {
-  shared ??= createHighlighterCore({
-    themes: [githubDark],
-    langs: [
-      rust,
-      typescript,
-      tsx,
-      javascript,
-      jsx,
-      python,
-      go,
-      json,
-      yaml,
-      css,
-      html,
-      xml,
-      sql,
-      markdown,
-      svelte,
-      toml,
-      ini,
-      bash,
-      kotlin,
-    ],
-    engine: createJavaScriptRegexEngine(),
-  });
-  return shared;
+/** The grammar a path draws with, markdown included: this surface shows source. */
+function grammarOf(path: string): string {
+  const format = formatOf(path);
+  return format.kind === 'code'
+    ? format.language
+    : format.kind === 'markdown'
+      ? 'markdown'
+      : 'text';
 }
 
 /** The reader's target line, as an effect the page's own controls dispatch. */
@@ -304,18 +251,16 @@ export async function buildReader(
   path: string,
   oncomment?: (line: number) => void,
 ): Promise<ReaderHandle> {
-  const lang = languageForPath(path);
-  const cut = path.lastIndexOf('.');
-  const ext = cut === -1 ? '' : path.slice(cut + 1).toLowerCase();
-  const cm = lang?.cm === true ? CM[ext] : undefined;
+  const language = grammarOf(path);
+  const cm = CM[language];
   const structure = cm === undefined ? null : await cm();
   const { shiki } = await shikiToCodeMirror({
-    lang: lang?.shiki ?? 'text',
+    lang: language,
     themes: { dark: 'github-dark' },
     defaultColor: 'dark',
     themeStyle: 'cm',
     engine: 'javascript',
-    highlighter: await sharedHighlighter(),
+    highlighter: await highlighterFor(language),
   });
 
   const view = new EditorView({

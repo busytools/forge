@@ -66,6 +66,10 @@ function answer(overrides: Partial<DocRead>): DocRead {
 beforeEach(() => {
   reads.held = answer({});
   bridge.langs = [];
+  // jsdom has no object-URL implementation, and the picture and the PDF both
+  // draw from the read's bytes through one.
+  URL.createObjectURL = vi.fn(() => 'blob:picture');
+  URL.revokeObjectURL = vi.fn();
 });
 
 describe('the reader built over a file', () => {
@@ -80,7 +84,7 @@ describe('the reader built over a file', () => {
     const other = await buildReader(plain, 'fn main() {}', 'notes.zzz');
     other.destroy();
 
-    expect(bridge.langs, 'languageForPath reaches the reader, per path').toEqual(['rust', 'text']);
+    expect(bridge.langs, 'the policy reaches the reader, per path').toEqual(['rust', 'text']);
     expect(built.lines(), 'and the handle carries the file\u{27}s own lines').toEqual([
       'fn main() {}',
     ]);
@@ -137,14 +141,14 @@ describe('the reader component around it', () => {
     document.body.innerHTML = '';
   });
 
-  function draw(value: DocRead): void {
+  function draw(value: DocRead, path = '/proj/a.rs'): void {
     reads.held = value;
     app = mount(Reader, {
       target: document.body,
       props: {
         connection: {} as never,
         slot: SLOT,
-        path: '/proj/a.rs',
+        path,
         handle: null,
       },
     });
@@ -165,9 +169,82 @@ describe('the reader component around it', () => {
     expect(document.querySelector('.files-quiet')?.textContent).toContain('over the ceiling');
   });
 
-  it('draws a kind it has no text for as its own line', () => {
-    draw(answer({ kind: 'pdf', bytes: new Uint8Array([1, 2, 3]), reviewable: false }));
+  it('opens an extensionless text file, with the header saying why it is plain', () => {
+    draw(
+      answer({
+        path: '/proj/notes.weird',
+        kind: 'text',
+        bytes: new TextEncoder().encode('nothing here matches a grammar'),
+      }),
+      '/proj/notes.weird',
+    );
 
-    expect(document.querySelector('.files-quiet')?.textContent).toContain('draws no text');
+    expect(document.querySelector('.files-fact')?.textContent).toBe(
+      'plain text - no syntax for this file',
+    );
+    expect(document.querySelector('.files-hint'), 'and it opens in the editor').not.toBeNull();
+    expect(document.querySelector('.files-quiet'), 'not a refusal').toBeNull();
+  });
+
+  it('opens a Justfile coloured with its own grammar', () => {
+    draw(
+      answer({
+        path: '/proj/Justfile',
+        kind: 'text',
+        bytes: new TextEncoder().encode('check:\n  cargo fmt'),
+      }),
+      '/proj/Justfile',
+    );
+
+    expect(document.querySelector('.files-fact')?.textContent).toContain('just');
+  });
+
+  it('draws a picture inline with its mime in the header', () => {
+    draw(
+      answer({
+        path: '/proj/mark.png',
+        kind: { other: 'png' },
+        bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+        reviewable: false,
+      }),
+      '/proj/mark.png',
+    );
+
+    const picture = document.querySelector<HTMLImageElement>('.files-media img');
+    expect(picture, 'the picture itself').not.toBeNull();
+    expect(picture?.src, 'drawn from the read bytes').toBe('blob:picture');
+    expect(document.querySelector('.files-fact')?.textContent).toContain('image/png');
+  });
+
+  it('draws a PDF as its pages', () => {
+    draw(
+      answer({
+        path: '/proj/retro.pdf',
+        kind: 'pdf',
+        bytes: new TextEncoder().encode('%PDF-1.4 fake'),
+        reviewable: false,
+      }),
+      '/proj/retro.pdf',
+    );
+
+    expect(document.querySelector('embed.doc-pdf'), 'the page viewer').not.toBeNull();
+    expect(document.querySelector('.files-fact')?.textContent).toContain('application/pdf');
+  });
+
+  it('draws a notice naming the type and size when there is no viewer', () => {
+    draw(
+      answer({
+        path: '/proj/forge.tar.gz',
+        kind: { other: 'gz' },
+        bytes: new Uint8Array([0xff, 0xfe, 0x00, 0x01]),
+        reviewable: false,
+      }),
+      '/proj/forge.tar.gz',
+    );
+
+    const notice = document.querySelector('.files-notice')?.textContent ?? '';
+    expect(notice).toContain('application/gzip');
+    expect(notice).toContain('not text');
+    expect(notice).toContain('still in the tree');
   });
 });

@@ -752,6 +752,7 @@
   .dif { display: grid; grid-template-columns: 38px 38px 22px 1fr;
     border: 1px solid var(--line); border-radius: 9px;
     overflow: hidden;
+    --add-word: rgba(46,160,67,.38); --del-word: rgba(248,81,73,.34);
     font-family: var(--mono); font-size: var(--fs-prose); }
   .dif .ln { display: contents; }
   /* The range a hunk covers, which is the one thing the two sides of an edit
@@ -811,6 +812,23 @@
   .dif .ln.d .l { background: var(--del-bg); }
   .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
   .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
+  /* GitHub's row tint covers the number columns too: with `.ln` as
+     `display: contents`, tinting only the body and the mark left two bare
+     gaps at the row's left and broke the band. */
+  .dif .ln.a .on, .dif .ln.a .nn { background: var(--add-bg); }
+  .dif .ln.d .on, .dif .ln.d .nn { background: var(--del-bg); }
+  /* The changed WORDS of a paired removal and addition: a darker band on the
+     same ground, wrapping a slice inside the grammar's own token span. */
+  .dif .ln.a .w { background: var(--add-word); border-radius: 2px; }
+  .dif .ln.d .w { background: var(--del-word); border-radius: 2px; }
+  /* A rendered markdown diff: the removal keeps its words where they were,
+     struck and dimmed; the addition draws normal on its own tint. */
+  .prose .mdadd { background: rgba(46,160,67,.16); border-radius: 3px; padding: 0 2px; }
+  .prose .mddel { background: rgba(248,81,73,.13); border-radius: 3px; padding: 0 2px;
+    color: var(--dim); text-decoration: line-through; }
+  /* The caption under a panel whose file has no grammar. */
+  .code-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    padding: 4px 2px 0; }
 
   /* peer traffic, drawn as tool rows: the mark says which way it went, the words
      say it first, and the label names the seat the row is about */
@@ -1866,14 +1884,27 @@ Set `service_key` per environment in the bot's own config.</pre>
               </div>
             </div>
           </details>
-          <details class="leaf">
+          <!-- A read of markdown RENDERS: the file is prose the page already
+               knows how to draw, and its source is not what a reader wants. -->
+          <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/ui/client/session.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="prose">
+              <h2>The run of rows</h2>
+              <p>Every call, message and thought draws on its own row, in the order it arrived.</p>
+              <ul>
+                <li>a call opens onto what it came back with</li>
+                <li>an edit opens onto its patch</li>
+              </ul>
+            </div></div>
+          </details>
+          <!-- A read of a file no grammar names draws plain, and says so. -->
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/ops/release-notes</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="code">
-                <div class="lang">markdown</div>
-                <pre><span class="c">1</span>  ## The run of rows
-<span class="c">2</span>  Every call, message and thought draws on its own row, in the order it arrived.</pre>
+                <pre>the release is cut from the tag, and the notes are its own file</pre>
               </div>
+              <div class="code-note">plain text - no syntax for this file</div>
             </div>
           </details>
 
@@ -1900,9 +1931,9 @@ Set `service_key` per environment in the bot's own config.</pre>
               <div class="dif">
                 <div class="h">@@ -30,4 +30,5 @@</div>
                 <div class="ln ctx"><span class="on">30</span><span class="nn">30</span><span class="n"></span><span class="l">  display: flex;</span></div>
-                <div class="ln d"><span class="on">31</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">  text-decoration: none; flex: none;</span></div>
+                <div class="ln d"><span class="on">31</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">  <span class="f">text-decoration</span>: <span class="s">none</span>; <span class="f">flex</span>: <span class="s"><span class="w">none</span></span><span class="w">;</span></span></div>
                 <div class="ln ctx"><span class="on">32</span><span class="nn">31</span><span class="n"></span><span class="l">  }</span></div>
-                <div class="ln a"><span class="on"></span><span class="nn">32</span><span class="n">+</span><span class="l">  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">32</span><span class="n">+</span><span class="l">  <span class="f">text-decoration</span>: <span class="s">none</span>; <span class="f">flex</span>: <span class="s"><span class="w">0 1 auto</span></span><span class="w">;</span> <span class="f">min-width</span>: <span class="s"><span class="w">0</span></span><span class="w">;</span></span></div>
                 <div class="ln a"><span class="on"></span><span class="nn">33</span><span class="n">+</span><span class="l">  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
                 <div class="ln ctx"><span class="on">33</span><span class="nn">34</span><span class="n"></span><span class="l">  }</span></div>
                 <div class="h">@@ -72,2 +73,3 @@</div>
@@ -1938,6 +1969,19 @@ Set `service_key` per environment in the bot's own config.</pre>
                 <div class="ln ctx"><span class="on">75</span><span class="nn">78</span><span class="n"></span><span class="l">    }</span></div>
               </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+            </div>
+          </details>
+          <!-- A markdown edit RENDERS: removals kept inline, struck and dimmed,
+               additions normal, and the source diff not shown under it. -->
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/index.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="prose">
+                <h2><span class="mddel">Forge</span><span class="mdadd">forge - the agent</span></h2>
+                <p><span class="mdadd">A server that runs many sessions and the clients that draw them.</span></p>
+                <p>What it is: <span class="mddel">a terminal</span><span class="mdadd">a server and its clients</span>, one trusted person, one machine.</p>
+              </div>
+              <div class="patchline"><span class="patchsize">1 hunk &#183; +2 &#8722;1</span></div>
             </div>
           </details>
           <!-- A file the call created carries no patch on the wire at all, so

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { fenceLanguage, languageOf, renderCode } from './code';
+import { fenceLanguage, renderCode } from './code';
 import { renderInlineProse, renderProse } from './prose';
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
@@ -284,19 +284,6 @@ describe('the language a fence names', () => {
 });
 
 describe('a source file, as the maintained highlighter draws it', () => {
-  it('takes the language from the path a call named', () => {
-    expect(languageOf('crates/forge-server/src/family.rs')).toBe('rust');
-    // The two most-read file types the chat left uncoloured: markdown is the
-    // most-read of any type, a component tree the next uncoloured one.
-    expect(languageOf('README.md')).toBe('markdown');
-    expect(languageOf('docs/notes.markdown')).toBe('markdown');
-    expect(languageOf('client/src/chat/Chat.svelte')).toBe('xml');
-    expect(languageOf('a/file.py')).toBe('python');
-    expect(languageOf('no-extension')).toBeNull();
-    // A path whose extension names an object member rather than a language.
-    expect(languageOf('a/x.constructor')).toBeNull();
-  });
-
   it('marks the tokens up in the classes the highlighter emits', () => {
     const html = renderCode('rust', 'pub fn main() { let x = "one"; }');
 
