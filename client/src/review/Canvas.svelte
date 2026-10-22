@@ -37,6 +37,7 @@
   import type { SessionSlot } from '../wire/types';
   import {
     anchorRow,
+    commentAnchor,
     currentFileAt,
     doorSpot,
     filesOf,
@@ -47,15 +48,22 @@
     gapsOf,
     insertRow,
     lineCounts,
+    revealedLines,
     rowSide,
     synthesizeFileDiff,
     treeRows,
+    type CommentAnchor,
     type FileLines,
     type Gap,
     type GapReveal,
   } from './diff';
   import { canvasLine, statusName, threadsInScope } from './view';
-  import { captureContext, type ComposedComment, type ReviewSpot } from './write';
+  import {
+    captureContext,
+    captureLineContext,
+    type ComposedComment,
+    type ReviewSpot,
+  } from './write';
   import { Mounts } from './mounts';
   import ResolvedMarker from './ResolvedMarker.svelte';
   import ThreadDelete from './ThreadDelete.svelte';
@@ -625,6 +633,28 @@
   }
 
   /**
+   * Where a comment on one drawn line anchors: a line the hunks carry, or a
+   * gap line the reader's own expansion revealed from the file read. The
+   * revealed set is read here, at the ask, so a press after an expansion is
+   * never judged by a stale capture.
+   */
+  function anchorAt(
+    path: string,
+    row: Element,
+    side: 'old' | 'new',
+    line: number,
+  ): CommentAnchor | null {
+    const file = built.find((held) => held.path === path)?.file;
+    if (file === undefined) return null;
+    const content = contentFor(path);
+    // Read, never create: this runs inside the drawing pass, and a write to
+    // the reactive map here would re-arm the pass that called it.
+    const reveals = opened.get(contentKeyOf(path));
+    const revealed = revealedLines(gapsOf(file, content), reveals);
+    return commentAnchor(file, content, revealed, row, side, line, mode);
+  }
+
+  /**
    * A real button on every line's number, revealed under the pointer or on
    * focus - the composer's door, and one a keyboard and a finger both reach.
    *
@@ -640,16 +670,21 @@
   function injectDoors(el: HTMLDivElement, path: string): void {
     const file = built.find((held) => held.path === path)?.file;
     if (file === undefined) return;
+    // Once per pass, not per row: a walk over every line must not repeat the
+    // file lookup and the gap derivation for each of them.
+    const content = contentFor(path);
+    const revealed = revealedLines(gapsOf(file, content), opened.get(contentKeyOf(path)));
     for (const tr of el.querySelectorAll('tr.diff-line')) {
       if (mode === 'split') {
         for (const side of ['new', 'old'] as const) {
           const spot = doorSpot(tr, side, mode);
-          // **A line the hunks do not carry takes no door.** An expanded
-          // gap's lines are drawn here but the record does not hold them,
-          // and a thread's anchor is resolved against what the server
-          // ships: a comment written on one would park outdated the moment
-          // it was filed.
-          if (spot !== null && findLine(file, side, spot.line) !== null) {
+          // **A revealed gap line takes a door like any other** (Ved,
+          // 2026-10-22): its text and neighbours come from the file read,
+          // so the anchor is captured where the line is drawn.
+          if (
+            spot !== null &&
+            commentAnchor(file, content, revealed, tr, side, spot.line, mode) !== null
+          ) {
             placeDoor(spot.cell, path, side, spot.line);
           }
         }
@@ -658,7 +693,7 @@
       const hit = rowSide(tr, null, mode);
       const cell = tr.querySelector('td');
       if (hit === null || !(cell instanceof HTMLElement)) continue;
-      if (findLine(file, hit.side, hit.line) === null) continue;
+      if (commentAnchor(file, content, revealed, tr, hit.side, hit.line, mode) === null) continue;
       placeDoor(cell, path, hit.side, hit.line);
     }
   }
@@ -904,10 +939,9 @@
       if (row === null) return;
       const hit = rowSide(row, target, mode);
       if (hit === null) return;
-      // The rule the doors keep: a line the hunks do not carry - an expanded
-      // gap's own line - opens nothing.
-      const file = built.find((held) => held.path === path)?.file;
-      if (file === undefined || findLine(file, hit.side, hit.line) === null) return;
+      // The rule the doors keep: a line with no anchor - one no press
+      // revealed, or one the read did not carry - opens nothing.
+      if (anchorAt(path, row, hit.side, hit.line) === null) return;
       openBox({ path, side: hit.side, line: hit.line });
     });
   }
@@ -1353,24 +1387,32 @@
   function fileComment(text: string): void {
     const at = commentSpot();
     if (at === null) return;
+    const el = canvases[at.path];
+    const row = el === undefined ? null : anchorRow(el, at.side, at.line, mode);
+    const anchor = row === null ? null : anchorAt(at.path, row, at.side, at.line);
+    if (anchor === null) return;
+    // As with a reply: the composer stays open, holding the words, until the
+    // write lands.
+    const filed = (context: string[], lineText: string): Promise<boolean> =>
+      oncomment({ path: at.path, side: at.side, line: at.line, text, context, lineText }).then(
+        (went) => {
+          if (went) closeBox();
+          return went;
+        },
+      );
+    if (anchor.contentIndex !== null) {
+      const content = contentFor(at.path);
+      if (content === null) return;
+      const lineText = content.lines[anchor.contentIndex] ?? '';
+      void filed(captureLineContext(content.lines, anchor.contentIndex), lineText);
+      return;
+    }
     const file = scopeFiles.find((held) => held.path === at.path);
     const found = file === undefined ? null : findLine(file, at.side, at.line);
     if (found === null) return;
     const line = found.hunk.lines[found.index];
     if (line === undefined) return;
-    // As with a reply: the composer stays open, holding the words, until the
-    // write lands.
-    void oncomment({
-      path: at.path,
-      side: at.side,
-      line: at.line,
-      text,
-      context: captureContext(found.hunk.lines, found.index),
-      lineText: line.text,
-    }).then((filed) => {
-      if (!filed) return;
-      closeBox();
-    });
+    void filed(captureContext(found.hunk.lines, found.index), line.text);
   }
 
   /**

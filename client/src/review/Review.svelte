@@ -14,6 +14,7 @@
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from '../composer/dictation';
   import { Landing } from '../composer/landing';
   import { noticeLine, joined } from '../composer/view';
+  import { ago } from '../components/age';
   import { hrefForSlot } from '../routes';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
@@ -113,7 +114,9 @@
   let mode = $state<'unified' | 'split'>('split');
 
   const branch = $derived(record?.work.branch ?? '');
-  const commits = $derived(record?.git.ahead?.commits ?? []);
+  /** The chain the wire walks newest first, read here oldest first - the
+   *  order the scopes are numbered in. */
+  const commits = $derived(record?.git.ahead?.commits.toReversed() ?? []);
   const scopeCommit = $derived(scopeIdx === 0 ? null : (commits[scopeIdx - 1]?.sha ?? null));
   const diffLayer = $derived(record?.diff.branchAhead ?? { state: 'clean' as const });
 
@@ -739,13 +742,26 @@
     }
   }
 
-  /** The scope picker's rows, all changes first. */
+  /** The clock the picker's ages read against; ticking keeps a sitting page honest. */
+  let now = $state(Date.now());
+  const nowSecs = $derived(Math.floor(now / 1_000));
+  $effect(() => {
+    const tick = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(tick);
+  });
+
+  /**
+   * The scope picker's rows, all changes first and then the commits oldest
+   * first, each naming its own sha and how long ago it was committed.
+   */
   const choices = $derived([
-    { idx: 0, label: 'All changes', sub: `${commits.length} commits` },
+    { idx: 0, index: 'A', label: 'All changes', sha: '', age: `${commits.length} commits` },
     ...commits.map((commit, i) => ({
       idx: i + 1,
+      index: String(i + 1),
       label: commit.subject,
-      sub: commit.sha.slice(0, 8),
+      sha: commit.sha.slice(0, 8),
+      age: `${ago(commit.time, nowSecs)} ago`,
     })),
   ]);
 
@@ -758,15 +774,14 @@
   }
 
   /**
-   * One scope along, CYCLING: the last commit steps on to all changes, and
-   * all changes back to the last commit, so a reader holding an arrow walks
-   * the branch round rather than hitting a wall.
+   * One scope along a LINE, not a ring: All changes sits at position 0 and
+   * the commits 1..N follow it, so each end simply stops - which is what
+   * makes "the first commit" unambiguous.
    */
   function stepScope(delta: number): void {
     const next = scopeIdx + delta;
-    if (next < 0) choose(choices.length - 1);
-    else if (next >= choices.length) choose(0);
-    else choose(next);
+    if (next < 0 || next >= choices.length) return;
+    choose(next);
   }
 
   /** The comments this scope draws, in the order the canvas draws them. */
@@ -813,9 +828,9 @@
 
   /**
    * The diff half's keys, live only while it is on screen: the arrows (and
-   * `[` / `]`) step one scope, cycling, shift+arrows step one comment,
-   * cycling, `a` flips between all changes and the commit you were on, `j`
-   * opens the picker. A keypress in a text field is the field's.
+   * `[` / `]`) step one scope, stopping at both ends, shift+arrows step one
+   * comment, cycling, `a` flips between all changes and the commit you were
+   * on, `j` opens the picker. A keypress in a text field is the field's.
    */
   function onKey(event: KeyboardEvent): void {
     if (tab !== 'files') return;
@@ -851,13 +866,6 @@
   $effect(() => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  });
-
-  /** The clock the ages read against; ticking keeps a sitting page honest. */
-  let now = $state(Date.now());
-  $effect(() => {
-    const tick = setInterval(() => (now = Date.now()), 30_000);
-    return () => clearInterval(tick);
   });
 </script>
 
@@ -949,6 +957,13 @@
         <span class="rv-scope">
           <button
             type="button"
+            class="rv-step-btn"
+            aria-label="previous scope"
+            disabled={scopeIdx === 0}
+            onclick={() => stepScope(-1)}>&#8249;</button
+          >
+          <button
+            type="button"
             class="rv-scope-btn"
             aria-haspopup="listbox"
             aria-expanded={pickerOpen}
@@ -957,32 +972,23 @@
               pickerOpen = !pickerOpen;
             }}
           >
-            <span class="rv-scope-lb">Scope</span>
             <span class="rv-scope-now">
               {scopeCommit === null ? 'All changes' : (scopeCommit.slice(0, 8) ?? '')}
             </span>
             <span class="rv-scope-sub">
               {scopeCommit === null
                 ? `${commits.length} commits`
-                : (commits[scopeIdx - 1]?.subject ?? '')}
+                : `commit ${scopeIdx} of ${commits.length}`}
             </span>
           </button>
-          <span class="rv-step">
-            <button
-              type="button"
-              class="rv-step-btn"
-              aria-label="previous scope"
-              disabled={choices.length <= 1}
-              onclick={() => stepScope(-1)}>&#8249;</button
-            >
-            <button
-              type="button"
-              class="rv-step-btn"
-              aria-label="next scope"
-              disabled={choices.length <= 1}
-              onclick={() => stepScope(1)}>&#8250;</button
-            >
-          </span>
+          <span class="rv-scope-place">scope {scopeIdx + 1} of {choices.length}</span>
+          <button
+            type="button"
+            class="rv-step-btn"
+            aria-label="next scope"
+            disabled={scopeIdx === choices.length - 1}
+            onclick={() => stepScope(1)}>&#8250;</button
+          >
           {#if pickerOpen}
             <div class="rv-menu" role="listbox" aria-label="diff scope">
               {#each choices as choice (choice.idx)}
@@ -995,8 +1001,10 @@
                   aria-selected={choice.idx === scopeIdx}
                   onclick={() => choose(choice.idx)}
                 >
+                  <span class="rv-menu-i">{choice.index}</span>
                   <span class="rv-menu-label">{choice.label}</span>
-                  <span class="rv-menu-sub">{choice.sub}</span>
+                  <span class="rv-menu-sha">{choice.sha}</span>
+                  <span class="rv-menu-age">{choice.age}</span>
                 </button>
               {/each}
             </div>
@@ -1013,7 +1021,7 @@
         <!-- The comments' own stepper, beside the scope's: the two things a
              reader walks in a diff, each with a button a finger can press -
              a key alone is no door on a touch screen (rule 22). -->
-        <span class="rv-step rv-cstep">
+        <span class="rv-cstep">
           <button
             type="button"
             class="rv-step-btn"
@@ -1187,14 +1195,6 @@
   .rv-scope-btn:hover {
     border-color: var(--ctl);
   }
-  .rv-scope-lb {
-    font-size: var(--fs-label);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--dim);
-    flex: none;
-  }
   .rv-scope-now {
     font-family: var(--mono);
     font-size: var(--fs-data);
@@ -1210,8 +1210,11 @@
     white-space: nowrap;
     min-width: 0;
   }
-  .rv-step {
-    display: flex;
+  .rv-scope-place {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--muted);
+    white-space: nowrap;
   }
   .rv-step-btn {
     font-family: var(--mono);
@@ -1219,13 +1222,16 @@
     color: var(--muted);
     background: none;
     border: 1px solid var(--line);
+    border-radius: 8px;
     padding: 3px 9px;
     cursor: pointer;
   }
-  .rv-step-btn:first-child {
+  /* The comment stepper's pair shares one border, the scope's arrows stand
+     alone on either side of the bar. */
+  .rv-cstep .rv-step-btn:first-child {
     border-radius: 8px 0 0 8px;
   }
-  .rv-step-btn:last-child {
+  .rv-cstep .rv-step-btn:last-child {
     border-radius: 0 8px 8px 0;
     border-left: 0;
   }
@@ -1328,7 +1334,7 @@
   }
   .rv-menu-it {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 62px;
+    grid-template-columns: 18px minmax(0, 1fr) 76px 62px;
     gap: 8px;
     align-items: baseline;
     width: 100%;
@@ -1339,6 +1345,24 @@
     padding: 6px 9px;
     cursor: pointer;
     font: inherit;
+  }
+  .rv-menu-i {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--muted);
+  }
+  .rv-menu-sha {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--muted);
+    text-align: right;
+  }
+  .rv-menu-age {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--dim);
+    text-align: right;
+    white-space: nowrap;
   }
   .rv-menu-it.hi {
     background: var(--s3);
@@ -1353,12 +1377,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .rv-menu-sub {
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--dim);
-    text-align: right;
   }
   .rv-mode {
     display: flex;

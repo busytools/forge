@@ -275,7 +275,7 @@ function record(
   threads: unknown[] = [],
   reviews: unknown[] = [],
   diff: unknown = DIFF,
-  commits: { sha: string; subject: string }[] = [],
+  commits: { sha: string; subject: string; time?: number }[] = [],
 ): SessionRecord {
   return {
     slot: SLOT,
@@ -409,7 +409,7 @@ async function draw(
   reviews: unknown[] = [],
   dictation = true,
   diff: unknown = DIFF,
-  commits: { sha: string; subject: string }[] = [],
+  commits: { sha: string; subject: string; time?: number }[] = [],
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -468,7 +468,7 @@ async function openReply(): Promise<void> {
 }
 
 /** Press one of the diff half's own buttons, and let the press settle. */
-function press(where: 'previous comment' | 'next comment' | 'next scope'): void {
+function press(where: 'previous comment' | 'next comment' | 'previous scope' | 'next scope'): void {
   const button = document.querySelector<HTMLButtonElement>(`.rv-step-btn[aria-label="${where}"]`);
   if (button === null) throw new Error(`the page drew no ${where} button`);
   button.click();
@@ -1114,7 +1114,33 @@ describe('a comment box opens', () => {
 });
 
 describe('the steppers', () => {
+  const FIRST_COMMIT = { sha: 'abc123', subject: 'the first commit' };
   const SECOND_COMMIT = { sha: 'def456', subject: 'the second commit' };
+
+  /** The scope the bar names on screen. */
+  function scope(): string | null {
+    return document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
+  }
+
+  /** The place the bar states for the scope on screen. */
+  function place(): string | null {
+    return document.querySelector('.rv-scope-place')?.textContent?.trim() ?? null;
+  }
+
+  /** One of the scope stepper's own buttons. */
+  function step(where: 'previous scope' | 'next scope'): HTMLButtonElement {
+    const button = document.querySelector<HTMLButtonElement>(`.rv-step-btn[aria-label="${where}"]`);
+    if (button === null) throw new Error(`the page drew no ${where} button`);
+    return button;
+  }
+
+  /** A key on the page, the way the reader presses it. */
+  function key(init: KeyboardEventInit): void {
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }),
+    );
+    flushSync();
+  }
 
   /** The readout the comment stepper draws, or null when it drew none. */
   function readout(): string | null {
@@ -1122,10 +1148,10 @@ describe('the steppers', () => {
   }
 
   /**
-   * **Both steppers cycle, with buttons a finger can press** (Ved,
-   * 2026-10-16): the comments of the scope, and the scopes themselves - the
-   * last steps round to the first rather than stopping at a wall, and the
-   * pair is on screen so a touch reader has a door the keys are not.
+   * **The comments' stepper cycles, with buttons a finger can press** (Ved,
+   * 2026-10-16): the last comment steps round to the first rather than
+   * stopping at a wall, and the pair is on screen so a touch reader has a
+   * door the keys are not. The scope stepper's ends stop (Ved, 2026-10-22).
    */
   it('walks the scope comments with wrap-around, from its own buttons', async () => {
     await draw([
@@ -1250,31 +1276,45 @@ describe('the steppers', () => {
     ).toBe(landed);
   });
 
-  it('steps the scopes with wrap-around, from its own buttons', async () => {
-    await draw([], [], true, DIFF, [{ sha: 'abc123', subject: 'the first commit' }, SECOND_COMMIT]);
+  /**
+   * **The scopes are a line, not a ring** (Ved, 2026-10-22): All changes at
+   * position 0, the commits 1..N oldest to newest, right walks into commit 1
+   * and stops at N, left walks back to All changes and stops there. Neither
+   * end wraps, so which commit is first is never ambiguous.
+   */
+  it('steps the scopes linearly and stops at both ends', async () => {
+    // The wire walks the chain newest first; commit 1 is its oldest.
+    await draw([], [], true, DIFF, [SECOND_COMMIT, FIRST_COMMIT]);
 
-    const scope = (): string | null =>
-      document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
-    expect(scope()).toBe('All changes');
+    expect(scope(), 'the first position is all changes').toBe('All changes');
+    expect(place(), 'and the bar states its place').toBe('scope 1 of 3');
+    expect(step('previous scope').disabled, 'nothing is before all changes').toBe(true);
+    press('previous scope');
+    expect(scope(), 'and a press there steps nowhere').toBe('All changes');
+
     press('next scope');
-    expect(scope()).toBe('abc123');
+    expect(scope(), 'right from all changes lands on the first commit').toBe('abc123');
+    expect(place()).toBe('scope 2 of 3');
     press('next scope');
     expect(scope()).toBe('def456');
+    expect(place(), 'the last commit is the last place').toBe('scope 3 of 3');
+    expect(step('next scope').disabled, 'nothing is past the last commit').toBe(true);
     press('next scope');
-    expect(scope(), 'the last commit steps round to all changes').toBe('All changes');
+    expect(scope(), 'and a press there steps nowhere').toBe('def456');
+
+    press('previous scope');
+    expect(scope()).toBe('abc123');
+    press('previous scope');
+    expect(scope(), 'left from the first commit returns to all changes').toBe('All changes');
+    expect(step('previous scope').disabled).toBe(true);
   });
 
   /**
    * **The keys are the pair the hint names**: arrows step commits, and
-   * shift+arrows step comments - the same walks the buttons make.
+   * shift+arrows step comments - the same walks the buttons make, and the
+   * arrows stop at the same two ends.
    */
   it('steps comments on shift+arrows and commits on the arrows', async () => {
-    const key = (init: KeyboardEventInit): void => {
-      document.body.dispatchEvent(
-        new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }),
-      );
-      flushSync();
-    };
     await draw([THREAD], [], true, DIFF, [SECOND_COMMIT]);
 
     key({ key: 'ArrowRight', shiftKey: true });
@@ -1282,13 +1322,74 @@ describe('the steppers', () => {
     key({ key: 'ArrowLeft', shiftKey: true });
     expect(readout(), 'and shift+left steps back round').toBe('1/1');
 
-    const scope = (): string | null =>
-      document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
+    key({ key: 'ArrowLeft' });
+    expect(scope(), 'a bare left at all changes steps nowhere').toBe('All changes');
     key({ key: 'ArrowRight' });
     expect(scope(), 'a bare right still steps the scope').toBe('def456');
+    key({ key: 'ArrowRight' });
+    expect(scope(), 'and stops at the last commit').toBe('def456');
 
     expect(document.querySelector('.rv-hint')?.textContent, 'and the hint row says both').toContain(
       'shift',
+    );
+  });
+
+  /** `a` flips between all changes and the commit the reader was on. */
+  it('flips between all changes and the commit on a', async () => {
+    await draw([], [], true, DIFF, [SECOND_COMMIT, FIRST_COMMIT]);
+
+    key({ key: 'a' });
+    expect(scope(), 'from all changes a lands on the commit held').toBe('abc123');
+    press('next scope');
+    expect(scope()).toBe('def456');
+    key({ key: 'a' });
+    expect(scope(), 'a second a returns to all changes').toBe('All changes');
+    key({ key: 'a' });
+    expect(scope(), 'and a third returns to the commit it held, not the first').toBe('def456');
+  });
+
+  /**
+   * **The list is a reader's map of the branch**: all changes first, then
+   * the commits 1st to last with their short sha and how long ago each was
+   * made, the scope on screen marked.
+   */
+  it('lists the scopes oldest first, each with its sha and age', async () => {
+    const base = Math.floor(Date.now() / 1_000);
+    // Newest first, as the wire walks the chain.
+    await draw([], [], true, DIFF, [
+      { sha: 'e8b4c7f1cc', subject: 'release v0.2.22', time: base - 18 * 60 },
+      { sha: 'a72e55d0bb', subject: 'GPU plotting via wgpu', time: base - 26 * 3_600 },
+      { sha: '9b0f1c33aa', subject: 'drop the CUDA toolkit', time: base - 2 * 86_400 },
+      { sha: 'd41c2e7a99', subject: 'the carriage ignores a blank', time: base - 3 * 86_400 },
+    ]);
+
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+
+    const rows = [...document.querySelectorAll('.rv-menu-it')].map((row) => ({
+      text: row.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      on: row.classList.contains('on'),
+    }));
+    expect(
+      rows.map((row) => row.text),
+      'all changes, then the commits oldest first',
+    ).toEqual([
+      'A All changes 4 commits',
+      '1 the carriage ignores a blank d41c2e7a 3d ago',
+      '2 drop the CUDA toolkit 9b0f1c33 2d ago',
+      '3 GPU plotting via wgpu a72e55d0 26h ago',
+      '4 release v0.2.22 e8b4c7f1 18m ago',
+    ]);
+    expect(rows[0]?.on, 'the scope on screen is the one marked').toBe(true);
+
+    // Choosing a row takes that scope, and the next open marks it.
+    document.querySelectorAll<HTMLButtonElement>('.rv-menu-it')[1]?.click();
+    flushSync();
+    expect(scope()).toBe('d41c2e7a');
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+    expect(document.querySelector('.rv-menu-it.on')?.textContent, 'and the mark follows').toContain(
+      'the carriage ignores a blank',
     );
   });
 });
@@ -1503,7 +1604,7 @@ describe('the lines a diff left out', () => {
 
     // Back: the control is drawn from the answer that landed, with no second
     // ask for a scope whose content is already in hand.
-    press('next scope');
+    press('previous scope');
     await settle(() => document.querySelector('.rv-gapbtn') !== null);
     expect(
       document.querySelector('.rv-gapbtn')?.getAttribute('aria-label'),

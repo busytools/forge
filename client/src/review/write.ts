@@ -102,13 +102,33 @@ export function captureContext(
   index: number,
   radius = CONTEXT_RADIUS,
 ): string[] {
+  return neighbours(
+    lines.map((line) => line.text),
+    index,
+    radius,
+  );
+}
+
+/**
+ * [`captureContext`] over a file's whole carried lines: an expanded gap
+ * line's neighbours come from the read, not from a hunk.
+ */
+export function captureLineContext(
+  lines: string[],
+  index: number,
+  radius = CONTEXT_RADIUS,
+): string[] {
+  return neighbours(lines, index, radius);
+}
+
+function neighbours(lines: string[], index: number, radius: number): string[] {
   const start = Math.max(0, index - radius);
   const end = Math.min(lines.length, index + radius + 1);
   const captured: string[] = [];
   for (let at = start; at < end; at += 1) {
     if (at === index) continue;
     const line = lines[at];
-    if (line !== undefined) captured.push(line.text);
+    if (line !== undefined) captured.push(line);
   }
   return captured;
 }

@@ -1,7 +1,18 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import { anchorRow, doorSpot, insertRow, lineOf, rowSide } from './diff';
+import type { DiffFileRecord } from '../session/wire';
+import {
+  anchorRow,
+  commentAnchor,
+  doorSpot,
+  gapsOf,
+  insertRow,
+  lineOf,
+  revealedLines,
+  rowSide,
+  type FileLines,
+} from './diff';
 
 /**
  * The canvas's DOM decisions over the viewer's own shapes.
@@ -66,6 +77,61 @@ function body(html: string): HTMLElement {
   el.innerHTML = html;
   return el;
 }
+
+/**
+ * A split table as the viewer wraps it: four columns, the two sides named by
+ * the colgroup, which is where a split insert reads its halves from.
+ */
+function splitTable(...rows: HTMLTableRowElement[]): HTMLTableElement {
+  const table = document.createElement('table');
+  table.innerHTML = `<colgroup>
+    <col class="diff-table-old-num-col" width="40" />
+    <col class="diff-table-old-content-col" />
+    <col class="diff-table-new-num-col" width="40" />
+    <col class="diff-table-new-content-col" />
+  </colgroup><tbody></tbody>`;
+  table.querySelector('tbody')?.append(...rows);
+  return table;
+}
+
+/** The card a test hands an insert, so a row can be asked where it landed. */
+function card(): HTMLElement {
+  const el = document.createElement('div');
+  el.textContent = 'card';
+  return el;
+}
+
+/** One file whose two hunks leave eight lines between them, for the gap tests. */
+const GAPPED: DiffFileRecord = {
+  path: 'src/a.rs',
+  oldPath: null,
+  status: 'modified',
+  binary: false,
+  submodule: false,
+  truncated: false,
+  hunks: [
+    {
+      oldStart: 5,
+      oldCount: 1,
+      newStart: 5,
+      newCount: 1,
+      lines: [{ kind: 'context', text: 'five', oldLine: 5, newLine: 5 }],
+    },
+    {
+      oldStart: 14,
+      oldCount: 1,
+      newStart: 14,
+      newCount: 1,
+      lines: [{ kind: 'context', text: 'fourteen', oldLine: 14, newLine: 14 }],
+    },
+  ],
+};
+
+/** That file's whole content, as the read answers it. */
+const GAPPED_LINES: FileLines = {
+  lines: Array.from({ length: 20 }, (_, i) => `l${i + 1}`),
+  truncated: false,
+};
 
 describe('the viewer shapes the page reads back', () => {
   it('names the line a number span carries, whichever attribute form it uses', () => {
@@ -168,5 +234,126 @@ describe('the viewer shapes the page reads back', () => {
     expect(unifiedLine.children.length, 'unified takes the whole lane in one cell').toBe(1);
     expect(unifiedLine.children[0]?.getAttribute('colspan')).toBe('2');
     expect(unifiedLine.children[0]?.textContent).toBe('card');
+  });
+
+  /**
+   * **An insert never claims more columns than its anchor row has.** A card
+   * that spanned the whole row would leave its own half, and on a
+   * content-sized table it would rebalance every column under it. The three
+   * row shapes a card can land under each keep their own cell count.
+   */
+  it('covers exactly its anchor row columns, card inside one half', () => {
+    const card = (): HTMLElement => {
+      const el = document.createElement('div');
+      el.textContent = 'card';
+      return el;
+    };
+    const spans = (row: Element): number =>
+      [...row.children].reduce((n, cell) => n + Number(cell.getAttribute('colspan') ?? 1), 0);
+    const shapes = [
+      ['a context line', splitContextRow(6, 9)],
+      ['a removed line', splitRemovedRow(4)],
+      ['an added line', splitAddedRow(9)],
+    ] as const;
+    for (const [shape, anchor] of shapes) {
+      for (const side of ['old', 'new'] as const) {
+        const row = insertRow(anchor, side, 'split', card());
+        expect(spans(row), `${side} insert under ${shape} spans the same columns`).toBe(
+          spans(anchor),
+        );
+        expect(
+          [...row.children].filter((cell) => cell.textContent === 'card').length,
+          `${side} insert under ${shape} holds the card in exactly one cell`,
+        ).toBe(1);
+      }
+    }
+  });
+
+  /**
+   * **The split is the table's, not the anchor row's.** A reader's context
+   * expansion can leave the anchored row with no side on its cells at all;
+   * deciding by the anchor's own cells sends the card down the whole-lane
+   * branch and lands a full-width row in a split table.
+   */
+  it('takes its halves from the table when the anchor row names no side', () => {
+    const table = splitTable(splitContextRow(6, 9));
+    /** A row with one cell across the table: the shape whose cells name no side. */
+    const naked = document.createElement('tr');
+    naked.className = 'diff-line diff-line-extend';
+    naked.innerHTML = '<td colspan="4">expanded context</td>';
+    /** The expanded block's own row: halves, but no `data-side` on either. */
+    const extend = document.createElement('tr');
+    extend.className = 'diff-line diff-line-extend';
+    extend.innerHTML = `
+      <td class="diff-line-extend-old-content p-0" colspan="2">expanded</td>
+      <td class="diff-line-extend-new-placeholder select-none p-0" colspan="2"></td>`;
+    table.querySelector('tbody')?.append(naked, extend);
+
+    for (const anchor of [naked, extend]) {
+      const left = insertRow(anchor, 'old', 'split', card());
+      expect(
+        [...left.children].map((cell) => cell.getAttribute('colspan')),
+        'a left insert keeps the left half',
+      ).toEqual(['2', '2']);
+      expect(left.children[0]?.textContent, 'and the card is on the left').toBe('card');
+      const right = insertRow(anchor, 'new', 'split', card());
+      expect(
+        [...right.children].map((cell) => cell.getAttribute('colspan')),
+        'a right insert keeps the right half',
+      ).toEqual(['2', '2']);
+      expect(right.children[1]?.textContent, 'and the card is on the right').toBe('card');
+    }
+  });
+});
+
+describe('the lines a comment can anchor to', () => {
+  /**
+   * **A revealed line takes a comment like any other** (Ved, 2026-10-22):
+   * the expansion's lines come from the file read, not the record's hunks,
+   * so the anchor's text and neighbours come from the content. A line the
+   * reader has not revealed, or one the read did not carry, anchors nothing.
+   */
+  it('anchors a revealed gap line to the content it was drawn from', () => {
+    const gaps = gapsOf(GAPPED, GAPPED_LINES);
+    const between = gaps.find((gap) => gap.after === 0);
+    if (between === undefined) throw new Error('the between-hunks gap is missing');
+    const revealed = revealedLines([between], new Map([[0, { down: 2, up: 0 }]]));
+
+    expect(
+      commentAnchor(GAPPED, GAPPED_LINES, revealed, splitContextRow(6, 6), 'new', 6, 'split'),
+      'the first revealed line on the new side',
+    ).toEqual({ line: 6, contentIndex: 5 });
+    expect(
+      commentAnchor(GAPPED, GAPPED_LINES, revealed, splitContextRow(6, 6), 'old', 6, 'split'),
+      "and on the old side, through the row's paired new number",
+    ).toEqual({ line: 6, contentIndex: 5 });
+    expect(
+      commentAnchor(GAPPED, GAPPED_LINES, revealed, unifiedRow(6, 6), 'new', 6, 'unified'),
+      'and in unified, whose one cell carries the new number',
+    ).toEqual({ line: 6, contentIndex: 5 });
+
+    expect(
+      commentAnchor(GAPPED, GAPPED_LINES, revealed, splitContextRow(8, 8), 'new', 8, 'split'),
+      'a line past the two revealed takes none',
+    ).toBeNull();
+    expect(
+      commentAnchor(GAPPED, GAPPED_LINES, new Set(), splitContextRow(6, 6), 'new', 6, 'split'),
+      'and neither does a line with no reveal at all',
+    ).toBeNull();
+
+    const fromBottom = revealedLines([between], new Map([[0, { down: 0, up: 2 }]]));
+    expect(
+      commentAnchor(GAPPED, GAPPED_LINES, fromBottom, splitContextRow(13, 13), 'new', 13, 'split'),
+      "an up press reveals from the gap's other end",
+    ).toEqual({ line: 13, contentIndex: 12 });
+
+    expect(
+      commentAnchor(GAPPED, GAPPED_LINES, revealed, splitContextRow(5, 5), 'new', 5, 'split'),
+      "a hunk's own line anchors from the record, with no content index",
+    ).toEqual({ line: 5, contentIndex: null });
+    expect(
+      commentAnchor(GAPPED, null, revealed, splitContextRow(6, 6), 'new', 6, 'split'),
+      'a read that carried no content anchors nothing',
+    ).toBeNull();
   });
 });

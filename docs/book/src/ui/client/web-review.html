@@ -64,15 +64,36 @@
   .rv-scope-btn { display: flex; align-items: baseline; gap: 8px;
     background: var(--s1); border: 1px solid var(--line); border-radius: 8px;
     padding: 4px 10px; }
-  .rv-scope-lb { font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
-    text-transform: uppercase; color: var(--dim); }
   .rv-scope-now { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
   .rv-scope-sub { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-  .rv-step { display: flex; }
-  .rv-step span { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+  .rv-scope-place { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    white-space: nowrap; }
+  /* The scope's arrows stand alone on either side of the bar; the comments'
+     stepper keeps the attached pair with its count between them. */
+  .rv-step { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 8px; padding: 3px 9px; }
+  .rv-step.off { color: var(--dim); opacity: .45; }
+  .rv-cstep { display: flex; }
+  .rv-cstep span { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
     border: 1px solid var(--line); padding: 3px 9px; }
-  .rv-step span:first-child { border-radius: 8px 0 0 8px; }
-  .rv-step span:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
+  .rv-cstep span:first-child { border-radius: 8px 0 0 8px; }
+  .rv-cstep span:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
+  /* The picker, drawn open: all changes and then the commits oldest first,
+     each with its short sha and age; the scope on screen is marked. */
+  .rv-menu { width: 460px; max-width: 100%; background: var(--s2);
+    outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
+    padding: 4px; margin-bottom: 20px; }
+  .rv-menu-it { display: grid; grid-template-columns: 18px minmax(0, 1fr) 76px 62px;
+    gap: 8px; align-items: baseline; border-radius: 8px; padding: 6px 9px; }
+  .rv-menu-it.on { background: var(--s3); }
+  .rv-menu-it.on .rv-menu-label { color: var(--accent); }
+  .rv-menu-i, .rv-menu-sha { font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--muted); }
+  .rv-menu-sha { text-align: right; }
+  .rv-menu-label { font-size: var(--fs-data); color: var(--text); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rv-menu-age { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    text-align: right; white-space: nowrap; }
   .rv-keys { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .rv-hint { display: flex; align-items: center; gap: 7px; padding: 2px 2px 10px;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
@@ -307,15 +328,16 @@
     <span class="tab">Conversation</span>
     <span class="tab on">Files changed <span class="rv-tn">8</span></span>
     <span class="rv-scope">
+      <span class="rv-step off">&#8249;</span>
       <span class="rv-scope-btn">
-        <span class="rv-scope-lb">Scope</span>
         <span class="rv-scope-now">All changes</span>
         <span class="rv-scope-sub">8 commits</span>
       </span>
-      <span class="rv-step"><span>&#8249;</span><span>&#8250;</span></span>
+      <span class="rv-scope-place">scope 1 of 9</span>
+      <span class="rv-step">&#8250;</span>
     </span>
     <span class="rv-mode"><span>unified</span><span class="on">split</span></span>
-    <span class="rv-step">
+    <span class="rv-cstep">
       <span>&#8249;</span><span class="rv-cstep-n">2/5</span><span>&#8250;</span>
     </span>
   </nav>
@@ -334,6 +356,64 @@
     <span class="sep">&#183;</span>
     click any line to comment
   </p>
+
+  <div class="fig">the picker, opened: all changes, then the commits oldest first, each with its short sha and how long ago it was committed</div>
+  <div class="rv-menu">
+    <div class="rv-menu-it on">
+      <span class="rv-menu-i">A</span>
+      <span class="rv-menu-label">All changes</span>
+      <span class="rv-menu-sha"></span>
+      <span class="rv-menu-age">8 commits</span>
+    </div>
+    <div class="rv-menu-it">
+      <span class="rv-menu-i">1</span>
+      <span class="rv-menu-label">fix: the carriage ignores a blank</span>
+      <span class="rv-menu-sha">d41c2e7a</span>
+      <span class="rv-menu-age">4d ago</span>
+    </div>
+    <div class="rv-menu-it">
+      <span class="rv-menu-i">2</span>
+      <span class="rv-menu-label">drop the CUDA toolkit from clippy</span>
+      <span class="rv-menu-sha">9b0f1c33</span>
+      <span class="rv-menu-age">3d ago</span>
+    </div>
+    <div class="rv-menu-it">
+      <span class="rv-menu-i">3</span>
+      <span class="rv-menu-label">GPU plotting via wgpu</span>
+      <span class="rv-menu-sha">a72e55d0</span>
+      <span class="rv-menu-age">2d ago</span>
+    </div>
+    <div class="rv-menu-it">
+      <span class="rv-menu-i">4</span>
+      <span class="rv-menu-label">toolchain: bump the pinned nightly</span>
+      <span class="rv-menu-sha">7c31be04</span>
+      <span class="rv-menu-age">26h ago</span>
+    </div>
+    <div class="rv-menu-it">
+      <span class="rv-menu-i">5</span>
+      <span class="rv-menu-label">deps: refresh the lock</span>
+      <span class="rv-menu-sha">2f9a6d18</span>
+      <span class="rv-menu-age">5h ago</span>
+    </div>
+    <div class="rv-menu-it">
+      <span class="rv-menu-i">6</span>
+      <span class="rv-menu-label">review: name the scope's place</span>
+      <span class="rv-menu-sha">5b0c9f21</span>
+      <span class="rv-menu-age">2h ago</span>
+    </div>
+    <div class="rv-menu-it">
+      <span class="rv-menu-i">7</span>
+      <span class="rv-menu-label">the picker lists each commit's age</span>
+      <span class="rv-menu-sha">c7d1a4e8</span>
+      <span class="rv-menu-age">40m ago</span>
+    </div>
+    <div class="rv-menu-it">
+      <span class="rv-menu-i">8</span>
+      <span class="rv-menu-label">release v0.2.22</span>
+      <span class="rv-menu-sha">e8b4c7f1</span>
+      <span class="rv-menu-age">11m ago</span>
+    </div>
+  </div>
 
   <div class="rv-body">
     <nav class="rv-files" aria-label="files in this scope">
@@ -406,8 +486,11 @@
               <td class="num ln-add">&nbsp;</td><td class="add">&nbsp;</td>
               <td class="num ln-add">192</td><td class="add">   *  rides the snapshot. */</td>
             </tr>
+            <!-- The card holds its own side's columns: the split's halves are
+                 the table's, not the anchor row's. -->
             <tr class="rv-insert">
-              <td colspan="4">
+              <td colspan="2"></td>
+              <td colspan="2">
                 <div class="rv-inline">
                   <article class="rv-thread">
                     <div class="rv-tops">
@@ -454,7 +537,8 @@
               <td class="num">195</td><td>    | { outcome: 'read'; value: T }</td>
             </tr>
             <tr class="rv-insert">
-              <td colspan="4">
+              <td colspan="2"></td>
+              <td colspan="2">
                 <div class="rv-inline">
                   <article class="rv-thread">
                     <div class="rv-tops">

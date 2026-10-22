@@ -121,6 +121,26 @@ export function gapRemaining(gap: Gap, reveal: GapReveal | undefined): number {
   return Math.max(0, gap.count - opened);
 }
 
+/**
+ * The new-side lines the reader's own gap expansions have revealed: the
+ * `down` presses from a gap's top, and the `up` presses from its bottom.
+ */
+export function revealedLines(
+  gaps: readonly Gap[],
+  opened: ReadonlyMap<number, GapReveal> | undefined,
+): ReadonlySet<number> {
+  const lines = new Set<number>();
+  for (const gap of gaps) {
+    const reveal = opened?.get(gap.after);
+    if (reveal === undefined) continue;
+    const down = Math.min(reveal.down, gap.count);
+    const up = Math.min(reveal.up, gap.count - down);
+    for (let i = 0; i < down; i += 1) lines.add(gap.start + i);
+    for (let i = 1; i <= up; i += 1) lines.add(gap.start + gap.count - i);
+  }
+  return lines;
+}
+
 /** What an expansion draws: the file's whole carried lines, and what the
  *  reader opened per gap, by the hunk each gap follows. */
 export interface Expansion {
@@ -362,11 +382,66 @@ export function doorSpot(
   return { cell, line };
 }
 
+/** The columns a table declares, and where its old side ends. */
+function tableColumns(at: HTMLTableRowElement): { total: number; old: number } | null {
+  const cols = at.closest('table')?.querySelectorAll(':scope > colgroup > col');
+  if (cols === undefined || cols.length === 0) return null;
+  let old = 0;
+  for (const col of cols) {
+    if (
+      col.classList.contains('diff-table-old-num-col') ||
+      col.classList.contains('diff-table-old-content-col')
+    ) {
+      old += 1;
+    }
+  }
+  return { total: cols.length, old };
+}
+
+/**
+ * Where a comment on a drawn line anchors: its own side's number, and - for
+ * a line the record's hunks do not carry, drawn by the reader's own gap
+ * expansion - the file-content index its text and neighbours come from.
+ *
+ * A line the hunks carry anchors from the record. An expanded line anchors
+ * only when its row is drawn, the read carried it, and a press revealed it;
+ * anything else is a line the page cannot place and offers no box for.
+ */
+export interface CommentAnchor {
+  line: number;
+  contentIndex: number | null;
+}
+
+export function commentAnchor(
+  file: DiffFileRecord,
+  content: FileLines | null,
+  revealed: ReadonlySet<number>,
+  row: Element,
+  side: 'old' | 'new',
+  line: number,
+  mode: 'unified' | 'split',
+): CommentAnchor | null {
+  if (findLine(file, side, line) !== null) return { line, contentIndex: null };
+  const span =
+    mode === 'unified'
+      ? row.querySelector('span[data-line-new-num]')
+      : row.querySelector('td[data-side="new"] span[data-line-num]');
+  const fresh = span instanceof HTMLElement ? lineOf(span) : null;
+  if (fresh === null || content === null || fresh < 1 || fresh > content.lines.length) return null;
+  if (!revealed.has(fresh)) return null;
+  return { line, contentIndex: fresh - 1 };
+}
+
 /**
  * One inserted row, shaped after the row it lands under. **In split the
  * card holds the half it comments on** - a right-side comment under a
  * right-side line, a left-side one under the left - and in unified it takes
  * the whole lane, where the line itself does.
+ *
+ * **The split is the table's own.** A row the reader's context expansion
+ * produced can carry no side on its cells, so the anchor row is not the
+ * authority: the colgroup is, and the card takes the columns the side owns
+ * whatever shape the row above it has.
  */
 export function insertRow(
   at: HTMLTableRowElement,
@@ -389,14 +464,36 @@ export function insertRow(
     cell.colSpan = colspan;
     return cell;
   };
-  const spanOf = (which: 'old' | 'new'): number =>
-    cells.filter((cell) => cell.side === which).reduce((n, cell) => n + cell.colspan, 0);
-  // No cell names a side: unified, whose line owns the whole width.
-  if (mode === 'unified' || !cells.some((cell) => cell.side !== null)) {
-    const cell = card(cells.reduce((n, held) => n + held.colspan, 0));
+  const whole = (colspan: number): HTMLTableRowElement => {
+    const cell = card(colspan);
     cell.append(body);
     row.append(cell);
     return row;
+  };
+  const spanOf = (which: 'old' | 'new'): number =>
+    cells.filter((cell) => cell.side === which).reduce((n, cell) => n + cell.colspan, 0);
+
+  if (mode === 'split') {
+    const columns = tableColumns(at);
+    if (columns !== null) {
+      // One side's own table - the viewer's un-wrapped split - is the whole
+      // lane here, as the line it holds is.
+      if (columns.old === 0 || columns.old === columns.total) {
+        return whole(columns.total);
+      }
+      const own = side === 'old' ? columns.old : columns.total - columns.old;
+      const rest = columns.total - own;
+      const mine = card(own);
+      mine.append(body);
+      const theirs = card(rest);
+      if (side === 'new') row.append(theirs, mine);
+      else row.append(mine, theirs);
+      return row;
+    }
+  }
+  // No table structure to read: unified, whose line owns the whole width.
+  if (mode === 'unified' || !cells.some((cell) => cell.side !== null)) {
+    return whole(cells.reduce((n, held) => n + held.colspan, 0));
   }
   const mine = card(spanOf(side));
   mine.append(body);
