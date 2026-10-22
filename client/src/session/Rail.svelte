@@ -196,12 +196,10 @@
     {#if notice !== null}
       <div class="notice" role="status">{notice}</div>
     {/if}
-    {#if foot.account !== null}
-      <div class="who">
-        <span class="led {foot.account.tone}"></span>
-        <span class="an">{foot.account.name}</span>
-      </div>
-    {/if}
+    <div class="who">
+      <span class="led {foot.account.tone}"></span>
+      <span class="an">{foot.account.name}</span>
+    </div>
     {#if foot.figures.length > 0}
       <div class="frs">
         {#each foot.figures as figure (figure.label)}
@@ -218,7 +216,7 @@
           <div class="bar">
             <span class="lb">{window.label}</span>
             <span class="tk"><span class="fl" style={`width:${window.percent}%`}></span></span>
-            <span class="pc">{window.text}</span>
+            <span class="pc" class:none={window.dim}>{window.text}</span>
             {#if window.reset !== ''}<span class="eta">{window.reset}</span>{/if}
           </div>
         {/each}
