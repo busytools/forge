@@ -125,6 +125,20 @@ describe('a script that names its language in its first line', () => {
       kind: 'text',
     });
   });
+
+  /**
+   * **The extension wins over a shebang, and `#!` must open the file.** A
+   * `.rs` script with a shell shebang is still Rust; a line that merely
+   * contains `#!`, or starts with a space before it, names nothing.
+   */
+  it('keeps the extension grammar over a shebang, and reads only an exact opener', () => {
+    expect(formatOf('tools/build.rs', bytes('#!/usr/bin/env bash\nfn main() {}'))).toEqual({
+      kind: 'code',
+      language: 'rust',
+    });
+    expect(formatOf('notes', bytes(' #!/usr/bin/env bash\nset -e'))).toEqual({ kind: 'text' });
+    expect(formatOf('notes', bytes('#!/usr/bin/env klingon\nqapla'))).toEqual({ kind: 'text' });
+  });
 });
 
 describe('everything else', () => {

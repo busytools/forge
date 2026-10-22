@@ -90,7 +90,16 @@ describe('the reader built over a file', () => {
     const other = await buildReader(plain, 'fn main() {}', 'text');
     other.destroy();
 
-    expect(bridge.langs, 'the policy reaches the reader, per path').toEqual(['rust', 'text']);
+    const markdown = document.createElement('div');
+    document.body.append(markdown);
+    const source = await buildReader(markdown, '# hi', 'markdown');
+    source.destroy();
+
+    expect(bridge.langs, 'the policy reaches the reader, per language').toEqual([
+      'rust',
+      'text',
+      'markdown',
+    ]);
     expect(built.lines(), 'and the handle carries the file\u{27}s own lines').toEqual([
       'fn main() {}',
     ]);
@@ -221,10 +230,15 @@ describe('the reader component around it', () => {
     );
 
     expect(document.querySelector('.files-fact')?.textContent).toContain('shellscript');
-    await vi.waitFor(() => {
-      flushSync();
-      expect(bridge.langs, 'the editor is built with the shebang grammar').toContain('shellscript');
-    });
+    await vi.waitFor(
+      () => {
+        flushSync();
+        expect(bridge.langs, 'the editor is built with the shebang grammar').toContain(
+          'shellscript',
+        );
+      },
+      { timeout: 10_000 },
+    );
   });
 
   /**
@@ -236,12 +250,15 @@ describe('the reader component around it', () => {
     bridge.fail = new Error('the grammar chunk did not arrive');
     draw(answer({}));
 
-    await vi.waitFor(() => {
-      flushSync();
-      expect(document.querySelector('.files-quiet')?.textContent ?? '').toContain(
-        'could not be built',
-      );
-    });
+    await vi.waitFor(
+      () => {
+        flushSync();
+        expect(document.querySelector('.files-quiet')?.textContent ?? '').toContain(
+          'could not be built',
+        );
+      },
+      { timeout: 10_000 },
+    );
     expect(document.querySelector('.files-quiet')?.textContent).toContain('did not arrive');
   });
 
@@ -260,6 +277,16 @@ describe('the reader component around it', () => {
     expect(picture, 'the picture itself').not.toBeNull();
     expect(picture?.src, 'drawn from the read bytes').toBe('blob:picture');
     expect(document.querySelector('.files-fact')?.textContent).toContain('image/png');
+
+    // jsdom does not decode, so the natural size is set and the load event
+    // is fired the way a real decode would: the head names both dimensions.
+    if (picture !== null) {
+      Object.defineProperty(picture, 'naturalWidth', { value: 512, configurable: true });
+      Object.defineProperty(picture, 'naturalHeight', { value: 256, configurable: true });
+      picture.dispatchEvent(new Event('load'));
+      flushSync();
+    }
+    expect(document.querySelector('.files-fact')?.textContent).toContain('512 \u{d7} 256');
   });
 
   it('draws a PDF as its pages', () => {

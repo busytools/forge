@@ -138,9 +138,16 @@
     return formatOf(call.title, file === null ? null : new TextEncoder().encode(file));
   });
 
-  /** Whether a read's body is a file the code panel draws (code or text). */
+  /**
+   * Whether a read's body is a file the code panel draws: code or text.
+   *
+   * **Only those two.** An image or PDF result's sidecar ("Saved to ...") is
+   * text about the call, not the file, and used to draw in the terminal box;
+   * sending it to the code panel invented a plain-text note for a file that
+   * was never read as text.
+   */
   function asCode(piece: CallBody): boolean {
-    return piece.kind === 'text' && readFormat !== null && readFormat.kind !== 'markdown';
+    return piece.kind === 'text' && (readFormat?.kind === 'code' || readFormat?.kind === 'text');
   }
 
   /**

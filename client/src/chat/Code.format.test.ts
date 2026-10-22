@@ -13,13 +13,17 @@ import Code from './Code.svelte';
 async function panel(language: string | null, text: string): Promise<HTMLElement> {
   const app = mount(Code, { target: document.body, props: { language, text } });
   try {
-    await vi.waitFor(() => {
-      flushSync();
-      // The plain fallback is synchronous; the grammar's own spans are not.
-      if (document.querySelector('.code pre span[style*="color"]') === null) {
-        throw new Error('waiting for the highlighter');
-      }
-    });
+    // A COLD grammar chunk costs seconds on CI; the default wait is too short.
+    await vi.waitFor(
+      () => {
+        flushSync();
+        // The plain fallback is synchronous; the grammar's own spans are not.
+        if (document.querySelector('.code pre span[style*="color"]') === null) {
+          throw new Error('waiting for the highlighter');
+        }
+      },
+      { timeout: 10_000 },
+    );
     const drawn = document.querySelector<HTMLElement>('.code');
     if (drawn === null) throw new Error('the panel drew nothing');
     return drawn;

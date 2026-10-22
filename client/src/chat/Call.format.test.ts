@@ -35,13 +35,17 @@ const leaf = (overrides: Partial<ToolLeaf>): ToolLeaf => ({
 /** Mount the row open, let the async highlighter settle, and answer its close. */
 async function opened(call: ToolLeaf): Promise<() => void> {
   const app = mount(Call, { target: document.body, props: { k: 'f1', call, open: true } });
-  await vi.waitFor(() => {
-    flushSync();
-    const coloured = document.querySelector(
-      '.code pre span[style*="color"], .dif .ln span[style*="color"]',
-    );
-    if (coloured === null) throw new Error('waiting for the highlighter');
-  });
+  // A COLD shiki chunk costs seconds on CI; the default wait is too short.
+  await vi.waitFor(
+    () => {
+      flushSync();
+      const coloured = document.querySelector(
+        '.code pre span[style*="color"], .dif .ln span[style*="color"]',
+      );
+      if (coloured === null) throw new Error('waiting for the highlighter');
+    },
+    { timeout: 10_000 },
+  );
   return () => void unmount(app);
 }
 
@@ -199,11 +203,15 @@ describe('an Edit of code', () => {
         'a context line has no word tint',
       ).toBeNull();
 
-      const tinted = document.querySelector('.dif .ln.d .w');
-      expect(
-        tinted?.closest('.dif')?.querySelector('.ln.d span[style*="color"]'),
-        'the word tint sits inside the token colours rather than replacing them',
-      ).not.toBeNull();
+      // The tint must be INSIDE the token colour: a `.w` that replaced the
+      // colour span has an unstyled parent and would pass a page-wide query.
+      for (const tint of document.querySelectorAll('.dif .w')) {
+        const parent = tint.parentElement?.getAttribute('style') ?? '';
+        expect(
+          parent,
+          `the tint on "${tint.textContent ?? ''}" sits inside a token colour`,
+        ).toContain('color:');
+      }
     } finally {
       close();
     }
@@ -259,5 +267,104 @@ describe('an Edit of markdown', () => {
     expect(sheet, 'added markdown is not').not.toMatch(
       /\.prose \.mdadd \{[^}]*text-decoration:\s*line-through/,
     );
+  });
+
+  /**
+   * **A whole removed block keeps its marker and its words.** A three-line
+   * removal paired with one added heading is the shape a paragraph deletion
+   * takes in a hunk; the removed heading has to still parse as a heading,
+   * with its words struck, rather than spilling a raw `##` into a paragraph.
+   */
+  it('draws a whole removed block struck, its heading marker still parsing', () => {
+    const block = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'docs/book/src/index.md',
+      body: [
+        {
+          kind: 'hunk',
+          header: '@@ -1,5 +1,3 @@',
+          lines: [
+            line('del', '## The old heading', 1, null),
+            line('del', 'the first removed paragraph', 2, null),
+            line('del', 'the second removed paragraph', 3, null),
+            line('add', '## The kept heading', null, 1),
+          ],
+        },
+      ],
+      mutation: { hunks: 1, added: 1, removed: 3, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: block, open: true } });
+    try {
+      flushSync();
+      const prose = document.querySelector('.pbody .prose');
+      const headings = [...(prose?.querySelectorAll('h2') ?? [])].map((node) => node.textContent);
+      expect(headings, 'both headings parse as headings').toEqual([
+        'The old heading',
+        'The kept heading',
+      ]);
+      const struck = [...(prose?.querySelectorAll('.mddel') ?? [])].map((span) => span.textContent);
+      expect(struck, 'the removed block keeps every word, struck').toEqual([
+        'The old heading',
+        'the first removed paragraph',
+        'the second removed paragraph',
+      ]);
+      expect(document.querySelector('.dif'), 'the source diff is not shown').toBeNull();
+    } finally {
+      void unmount(app);
+    }
+  });
+
+  /** A Write's markdown body is the call's own two sides, not a hunk. */
+  it('renders a markdown Write from its two sides', () => {
+    const write = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Write',
+      title: 'docs/new.md',
+      body: [{ kind: 'diff', old: '', new: '# New\n\nthe first line' }],
+      mutation: { hunks: 1, added: 3, removed: 0, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: write, open: true } });
+    try {
+      flushSync();
+      const prose = document.querySelector('.pbody .prose');
+      expect(prose?.querySelector('h1')?.textContent, 'the new heading renders').toBe('New');
+      expect(
+        [...(prose?.querySelectorAll('.mdadd') ?? [])].map((span) => span.textContent),
+        'the written lines draw as additions',
+      ).toEqual(['New', 'the first line']);
+    } finally {
+      void unmount(app);
+    }
+  });
+});
+
+describe('a Read of a picture', () => {
+  /**
+   * **The image's sidecar is text about the call, not the file.** "Saved to
+   * ..." beside a screenshot used to be sent to the code panel because its
+   * format was not markdown; it invented a plain-text note for a file that
+   * was never read as text. It belongs in the terminal box.
+   */
+  it('draws the sidecar in the terminal box, not a code panel', () => {
+    const shot = leaf({
+      title: 'shots/screen.png',
+      body: [{ kind: 'text', text: 'Saved to /tmp/screen.png' }],
+      image: { mime: 'image/png', data: 'AA==' },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: shot, open: true } });
+    try {
+      flushSync();
+      expect(document.querySelector('.shot img'), 'the picture draws').not.toBeNull();
+      expect(document.querySelector('.code'), 'no code panel for a sidecar').toBeNull();
+      expect(document.querySelector('.term')?.textContent, 'the sidecar in its own box').toContain(
+        'Saved to /tmp/screen.png',
+      );
+    } finally {
+      void unmount(app);
+    }
   });
 });
