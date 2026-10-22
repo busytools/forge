@@ -9076,34 +9076,28 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         "bytes",
         "write_ms",
         "waited",
+        "peer",
     ] {
         assert!(parsed.get(field).is_some(), "the line carries {field}: {line}");
     }
-
-    // **The snapshot's own write, told apart from the rest of the open
-    // (#2506).** `open_ms` ends when the write returns, so without this
-    // record a slow open cannot be placed on the socket rather than on the
-    // work before it.
-    let line = caught
-        .lines()
-        .find(|line| line.contains("\"frame_write\""))
-        .unwrap_or_else(|| panic!("the open's frame logs its own write; caught: {caught}"));
-    let write: serde_json::Value = serde_json::from_str(line).expect("the line is JSON");
-    assert_eq!(write["event_name"], "frame_write");
-    assert_eq!(write["level"], "DEBUG", "a frame's own cost is information: {line}");
-    assert_eq!(write["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
-    for field in ["bytes", "write_ms", "waited"] {
-        assert!(write.get(field).is_some(), "the line carries {field}: {line}");
-    }
+    // **The peer is this client's own address (#2506).** The watch has
+    // several attachments and no address to tell them apart by, so the open
+    // itself has to name the client it served.
     assert_eq!(
-        write["bytes"], parsed["bytes"],
-        "the write's size is the open's: {write} beside {parsed}",
+        parsed["peer"],
+        serde_json::json!(peer.to_string()),
+        "the open names this client's own address: {line}",
     );
 
-    // **Both lines name the client (#2506).** The watch has several
-    // attachments and no address to tell them apart by, so the subscribe
-    // records the peer and the frame's write carries it again: a slow open
-    // is placed on the client it served.
+    // **One record per open.** The write's numbers live on the open, so a
+    // second line repeating them would be a second thing to keep in step.
+    assert!(
+        !caught.contains("\"frame_write\""),
+        "the open's write is not a record of its own: {caught}",
+    );
+
+    // The attach's own record, beside it, for the clients that never open
+    // (a declare) and for the address before an open fails.
     let line = caught
         .lines()
         .find(|line| line.contains("\"client_subscribed\""))
@@ -9113,26 +9107,24 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
     assert_eq!(subscribed["level"], "DEBUG", "an attach's own address is information: {line}");
     assert_eq!(subscribed["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
     assert_eq!(
-        subscribed["peer"],
-        serde_json::json!(peer.to_string()),
-        "the line names this client's own address: {line}",
-    );
-    assert_eq!(
-        write["peer"], subscribed["peer"],
-        "the frame's write names the same client the subscribe did: {write} beside {subscribed}",
+        subscribed["peer"], parsed["peer"],
+        "the attach and the open name the same client: {subscribed} beside {parsed}",
     );
 }
 
-/// **A declare opens nothing (#2374).** It re-states the browser capability
-/// against a subject the client already watches, holding no watch and no
-/// seat - no page came on screen, so the open line must not fire for it. The
-/// count is taken around the ask rather than over the whole capture, so a
+/// **A declare logs its client but opens nothing (#2374, #2506).** It
+/// re-states the browser capability against a subject the client already
+/// watches, holding no watch and no seat - no page came on screen, so the
+/// open line must not fire for it, while the attach's own record still has to
+/// (a declare is one of the attachments the watch cannot otherwise name). The
+/// counts are taken around the ask rather than over the whole capture, so a
 /// neighbouring record cannot be read as this one's.
 #[tokio::test]
-async fn a_declare_subscribe_logs_no_open() {
+async fn a_declare_subscribe_logs_its_client_but_no_open() {
     install_capture();
     let (url, _fleet, _state) = a_server_with_state().await;
     let opens_before = captured().matches("\"session_open\"").count();
+    let clients_before = captured().matches("\"client_subscribed\"").count();
 
     let mut socket = connect(&url).await;
     send(
@@ -9151,11 +9143,15 @@ async fn a_declare_subscribe_logs_no_open() {
         "a declare is still answered with its subject's snapshot",
     );
 
-    let opens_after = captured().matches("\"session_open\"").count();
+    let caught = captured();
     assert_eq!(
-        opens_after,
+        caught.matches("\"session_open\"").count(),
         opens_before,
-        "a declare is no page opening, so it logs no open; caught: {}",
-        captured(),
+        "a declare is no page opening, so it logs no open; caught: {caught}",
+    );
+    assert_eq!(
+        caught.matches("\"client_subscribed\"").count(),
+        clients_before + 1,
+        "a declare is still an attached client, so it is named once; caught: {caught}",
     );
 }

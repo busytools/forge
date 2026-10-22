@@ -429,6 +429,7 @@ where
             event_name = "connection_write_stalled",
             client = me,
             bound_seconds = stalled.bound.as_secs(),
+            waited_ms = stalled.waited.as_secs_f64() * 1000.0,
             "a frame write outlived its bound, so the connection is ended: the peer stopped \
              reading",
         );
@@ -1073,29 +1074,16 @@ where
                     if let Some(slot) = &seat
                         && !declare
                     {
-                        // The snapshot's own write, split out of the open
-                        // (#2506): the frame reaches the socket here, and a
-                        // write that waited on the reader is a different slow
-                        // switch from one that did not.
-                        tracing::debug!(
-                            event_name = "frame_write",
-                            slot = %slot.display(),
-                            peer = %caller.peer,
-                            bytes = write.bytes,
-                            write_ms = write.write_ms,
-                            waited = write.waited,
-                            "the snapshot's socket write: waited means the write yielded \
-                             before it was done, which is the peer draining rather than \
-                             forge copying",
-                        );
                         // The session's open, in its own slices: the numbers a
                         // reader places a slow switch with, beside the
-                        // client's own marks. Debug, and for one session's
-                        // work rather than a problem of forge's - but a record
-                        // a reader acts on, so it names what its remainder is.
+                        // client's own marks and the client it served. Debug,
+                        // and for one session's work rather than a problem of
+                        // forge's - but a record a reader acts on, so it names
+                        // what its remainder is.
                         tracing::debug!(
                             event_name = "session_open",
                             slot = %slot.display(),
+                            peer = %caller.peer,
                             open_ms = open_at.elapsed().as_secs_f64() * 1000.0,
                             seed_ms = timings.seed_ms,
                             conversation_ms = timings.conversation_ms,
@@ -1107,9 +1095,11 @@ where
                             "the subscribe's own work: seed is the transcript read a cold \
                              seat pays, conversation is the copy's arrival, page its cut and \
                              fold, and encode the record's value; open_ms ends when the \
-                             snapshot's write returns, so write_ms is inside it - the rest is \
-                             the queued flush, the copy's catch-up, the record's reads and the \
-                             frame's own serialisation into the bytes it carries",
+                             snapshot's write returns, so write_ms is inside it and waited \
+                             says that write yielded at least once (a prior frame's flush, \
+                             kernel pressure or a slow reader) - the rest is the queued \
+                             flush, the copy's catch-up, the record's reads and the frame's \
+                             own serialisation into the bytes it carries",
                         );
                     }
                     // Rather than keeping a spent mark until the next unrelated
@@ -2070,7 +2060,7 @@ where
 }
 
 /// One frame's write, measured: its size, the time the socket took it, and
-/// whether the write ever had to wait before it was done.
+/// whether the write yielded at least once before it was done.
 struct FrameWrite {
     bytes: usize,
     write_ms: f64,
@@ -2081,8 +2071,8 @@ struct FrameWrite {
 ///
 /// **The open's own line cannot place its remainder without it** (#2506):
 /// `open_ms` ends when this returns, so the frame's transfer is inside it,
-/// and a write that waited on the reader is otherwise indistinguishable from
-/// the fold, the record's reads and the serialisation before it.
+/// and a write that yielded is otherwise indistinguishable from the fold, the
+/// record's reads and the serialisation before it.
 async fn send_frame_timed<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<FrameWrite>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
@@ -2786,6 +2776,78 @@ mod tests {
         }
     }
 
+    /// A sink whose flush yields once before it finishes: the write waited,
+    /// and for no measurable time.
+    struct YieldsOnce {
+        yielded: bool,
+    }
+
+    impl futures_util::Sink<Message> for YieldsOnce {
+        type Error = axum::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            if !self.yielded {
+                self.yielded = true;
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A sink whose flush finishes only after `delay`.
+    struct Delayed {
+        delay: Duration,
+        sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+    }
+
+    impl futures_util::Sink<Message> for Delayed {
+        type Error = axum::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            let this = self.as_mut().get_mut();
+            let delay = this.delay;
+            let sleep = this.sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep(delay)));
+            std::future::Future::poll(sleep.as_mut(), cx).map(|()| Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
     /// **The stamp is taken after the send returns**, which is the caller's
     /// ordering and not the state machine's: a ping held in a full buffer
     /// must owe nothing until it is on the wire. The held sink is the stall,
@@ -2893,9 +2955,15 @@ mod tests {
             .expect("the connection ends at the write bound rather than never")
             .expect("the connection task joins");
         let error = outcome.expect_err("a peer that stopped reading must not end cleanly");
+        let stalled = error.downcast_ref::<WriteStalled>().unwrap_or_else(|| {
+            panic!(
+                "the connection ends on the write bound rather than on a socket error: {error:?}"
+            )
+        });
         assert!(
-            error.downcast_ref::<WriteStalled>().is_some(),
-            "the connection ends on the write bound rather than on a socket error: {error:?}",
+            stalled.waited >= WRITE_BOUND,
+            "the bound's own record carries how long the write ran: {:?}",
+            stalled.waited,
         );
 
         assert_eq!(
@@ -2954,6 +3022,44 @@ mod tests {
         tokio::time::timeout(WRITE_BOUND * 2, greet(&mut peer, state, attached_from()))
             .await
             .expect("the greeting ends at the write bound rather than never");
+    }
+
+    /// A frame for the write tests, whose encoded length is what the record
+    /// has to carry.
+    fn a_frame() -> ServerMessage {
+        ServerMessage::Error {
+            what: "frame".to_owned(),
+            why: "a measured write".to_owned(),
+            seat: None,
+            dispatch_id: None,
+        }
+    }
+
+    /// **The measurement is the write's own (#2506).** A record built from a
+    /// build-time or whole-open clock would pass a test that only checked a
+    /// number was present; this pins the two facts it claims: `waited` follows
+    /// a yield, and `write_ms` carries a write the sink held.
+    #[tokio::test]
+    async fn a_write_that_yields_is_timed_and_says_so() {
+        let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
+
+        let mut yielding = YieldsOnce { yielded: false };
+        let write = send_frame_timed(&mut yielding, a_frame()).await.expect("the write lands");
+        assert!(write.waited, "a flush that yielded once is reported as having waited");
+        assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
+
+        let delay = Duration::from_millis(100);
+        let mut slow = Delayed { delay, sleep: None };
+        let at = Instant::now();
+        let write = send_frame_timed(&mut slow, a_frame()).await.expect("the write lands");
+        assert!(write.waited, "a flush that was held is reported as having waited");
+        assert!(
+            write.write_ms >= delay.as_secs_f64() * 1000.0 * 0.9,
+            "write_ms carries the delay the sink held: {} ms for {delay:?}",
+            write.write_ms,
+        );
+        assert!(at.elapsed() >= delay, "the sink really held the write: {:?}", at.elapsed());
+        assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
     }
 
     /// The oldest boundary a window names, as a walk below the floor starts
