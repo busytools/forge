@@ -4,10 +4,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, State};
 use axum::response::Response;
 use futures_util::{SinkExt as _, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -274,9 +275,23 @@ struct InFlight {
 /// [`super::frame`] - which fails the ask it belongs to, naming the reason -
 /// rather than tearing the connection down at the socket layer, where the
 /// asker would be told only that its host went away.
-pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportState>>) -> Response {
+pub async fn upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<TransportState>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
     let limit = super::frame::MAX_IMAGE_BYTES + super::frame::IMAGE_HEADER_BYTES + 1;
-    ws.max_frame_size(limit).max_message_size(limit).on_upgrade(move |socket| greet(socket, state))
+    ws.max_frame_size(limit)
+        .max_message_size(limit)
+        .on_upgrade(move |socket| greet(socket, state, peer))
+}
+
+/// This connection as the log names it: the number its takes are told apart
+/// by, and the address it is attached from.
+#[derive(Clone, Copy)]
+struct Caller {
+    id: u64,
+    peer: std::net::SocketAddr,
 }
 
 /// Greet, then serve the client until it goes.
@@ -285,7 +300,7 @@ pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportStat
 /// than to whatever else holds the port, and it carries the settings the
 /// client draws with - so the client is configured before it draws anything
 /// rather than discovering a theme later.
-async fn greet<S>(mut socket: S, state: Arc<TransportState>)
+async fn greet<S>(mut socket: S, state: Arc<TransportState>, peer: std::net::SocketAddr)
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
         + futures_util::Sink<Message, Error = axum::Error>
@@ -314,7 +329,7 @@ where
     {
         return;
     }
-    if let Err(error) = drive(&mut socket, &state).await {
+    if let Err(error) = drive(&mut socket, &state, peer).await {
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "connection_ended",
@@ -329,7 +344,11 @@ where
 /// Every client message is answered: a client is never left waiting on a
 /// message this server chose to drop, which is the failure that reads as a
 /// hang rather than as an error.
-async fn drive<S>(socket: &mut S, state: &Arc<TransportState>) -> anyhow::Result<()>
+async fn drive<S>(
+    socket: &mut S,
+    state: &Arc<TransportState>,
+    peer: std::net::SocketAddr,
+) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
         + futures_util::Sink<Message, Error = axum::Error>
@@ -341,6 +360,7 @@ where
     // the updates that come back. Minted here so the teardown closes the
     // take this connection started and no other.
     let me = mint_connection_id();
+    let caller = Caller { id: me, peer };
     // This connection is a client that can draw the viewer for as long as it
     // lives; the guard hands the count back on the way out.
     let _attached = AttachedClient::new(&state.surface);
@@ -384,7 +404,7 @@ where
         &mut hosting,
         &reply_tx,
         &mut answers,
-        me,
+        caller,
     )
     .await;
     // **Which side ended the connection**, read before the hosting drops: the
@@ -409,6 +429,7 @@ where
             event_name = "connection_write_stalled",
             client = me,
             bound_seconds = stalled.bound.as_secs(),
+            waited_ms = stalled.waited.as_secs_f64() * 1000.0,
             "a frame write outlived its bound, so the connection is ended: the peer stopped \
              reading",
         );
@@ -535,7 +556,7 @@ async fn run_connection<S>(
     hosting: &mut Option<Hosting>,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     answers: &mut mpsc::UnboundedReceiver<ServerMessage>,
-    me: u64,
+    caller: Caller,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -575,7 +596,7 @@ where
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
                 handle_client(
-                    socket, state, watched, holds, updates, dictate, hosting, reply_tx, me, msg,
+                    socket, state, watched, holds, updates, dictate, hosting, reply_tx, caller, msg,
                 )
                 .await?;
             }
@@ -610,7 +631,7 @@ where
                     initiator: Some(id),
                     ..
                 } = &update
-                    && *id == me
+                    && *id == caller.id
                 {
                     dictate.stamp(key, *generation);
                 }
@@ -621,13 +642,13 @@ where
                     generation,
                     ..
                 } = &update
-                    && *id == me
+                    && *id == caller.id
                 {
                     dictate.retire(key, outcome, *generation);
                 }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
-                if forwards(&update, watched, me) {
+                if forwards(&update, watched, caller.id) {
                     // **A fatal goes out now, not on the batch's clock.** The
                     // exit it announces is already on its way - `workspace.
                     // shutdown` follows the run loop's return - and a frame
@@ -729,7 +750,7 @@ where
                         tracing::debug!(
                             target: "forge_server::transport",
                             event_name = "connection_reaped",
-                            client = me,
+                            client = caller.id,
                             waited_ms = waited.as_secs_f64() * 1000.0,
                             "the peer never answered the keepalive's ping, so its connection is ended",
                         );
@@ -875,7 +896,7 @@ async fn handle_client<S>(
     dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
-    me: u64,
+    caller: Caller,
     msg: Message,
 ) -> anyhow::Result<()>
 where
@@ -911,9 +932,9 @@ where
                             ),
                         );
                     }
-                    take_frame(&state.surface, dictate, me, FrameRoute::Refused(refusal));
+                    take_frame(&state.surface, dictate, caller.id, FrameRoute::Refused(refusal));
                 }
-                other => take_frame(&state.surface, dictate, me, other),
+                other => take_frame(&state.surface, dictate, caller.id, other),
             }
             return Ok(());
         }
@@ -938,6 +959,18 @@ where
             // switch waits on this half for, whatever subject it names; the
             // line below is emitted for a session, which is where the wait is.
             let open_at = Instant::now();
+            // **Which attached client this subscribe is (#2506).** Several
+            // clients attach from addresses the log otherwise never names, so
+            // a slow open could not be placed on the one that asked for it.
+            if let Subject::Session(slot) = &what {
+                tracing::debug!(
+                    event_name = "client_subscribed",
+                    slot = %slot.display(),
+                    peer = %caller.peer,
+                    declare,
+                    "a client subscribed a seat, from the address it is attached on",
+                );
+            }
             // **The browser role, offered once per connection.** A capable
             // client declares it on every subscribe it makes; the first
             // declaration while the role is free takes it, and a later one
@@ -956,7 +989,7 @@ where
             // every profile it holds.
             let mut seats: Option<Vec<SessionSlot>> = None;
             if browser && hosting.is_none() {
-                let (offering, held) = Hosting::offer(&state.browser, me);
+                let (offering, held) = Hosting::offer(&state.browser, caller.id);
                 *hosting = Some(offering);
                 // **The grant is said out loud**, after the snapshot: the
                 // client knew only that it COULD host; its own strip needs
@@ -968,7 +1001,8 @@ where
             }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
-            let queued = forward_queued(state, open_stream(state, updates, answering), watched, me);
+            let queued =
+                forward_queued(state, open_stream(state, updates, answering), watched, caller.id);
             // **A seat is held BEFORE its snapshot is encoded.** The hold is
             // what has its working tree read, and the encode answers that
             // store - so a read taken first would hand a page the tree as it
@@ -1030,8 +1064,12 @@ where
                     if !declare {
                         watched.push(what.clone());
                     }
-                    let bytes =
-                        send_frame(socket, ServerMessage::Snapshot { subject: what, data }).await?;
+                    let write = send_frame_timed(
+                        socket,
+                        ServerMessage::Snapshot { subject: what, data },
+                        &SystemClock,
+                    )
+                    .await?;
                     // **A declare is not an open.** It re-states the browser
                     // capability against a subject the client already watches
                     // and takes no hold and no watch, so no page came on
@@ -1039,25 +1077,42 @@ where
                     if let Some(slot) = &seat
                         && !declare
                     {
+                        // The snapshot's own write, its own record: the open
+                        // below keeps the slices, so the write's numbers are
+                        // not repeated there (#2506).
+                        tracing::debug!(
+                            event_name = "frame_write",
+                            slot = %slot.display(),
+                            peer = %caller.peer,
+                            bytes = write.bytes,
+                            write_ms = write.write_ms,
+                            waited = write.waited,
+                            "the snapshot's socket write: waited says the write yielded at \
+                             least once before it was done (a prior frame's flush, kernel \
+                             send-buffer pressure or a slow reader)",
+                        );
                         // The session's open, in its own slices: the numbers a
                         // reader places a slow switch with, beside the
-                        // client's own marks. Debug, and for one session's
-                        // work rather than a problem of forge's - but a record
-                        // a reader acts on, so it names what its remainder is.
+                        // client's own marks and the client it served. Debug,
+                        // and for one session's work rather than a problem of
+                        // forge's - but a record a reader acts on, so it names
+                        // what its remainder is.
                         tracing::debug!(
                             event_name = "session_open",
                             slot = %slot.display(),
+                            peer = %caller.peer,
                             open_ms = open_at.elapsed().as_secs_f64() * 1000.0,
                             seed_ms = timings.seed_ms,
                             conversation_ms = timings.conversation_ms,
                             page_ms = timings.page_ms,
                             encode_ms = timings.encode_ms,
-                            bytes,
                             "the subscribe's own work: seed is the transcript read a cold \
                              seat pays, conversation is the copy's arrival, page its cut and \
-                             fold, and encode the record's value; the rest of open_ms is the \
-                             queued flush, the copy's catch-up, the record's reads and the \
-                             frame's own serialisation into the bytes it carries",
+                             fold, and encode the record's value; open_ms ends when the \
+                             snapshot's write returns, so the write is inside it - \
+                             frame_write carries that write's own numbers, and the rest is \
+                             the queued flush, the copy's catch-up, the record's reads and \
+                             the frame's own serialisation into the bytes it carries",
                         );
                     }
                     // Rather than keeping a spent mark until the next unrelated
@@ -1150,16 +1205,16 @@ where
             // claim another's - the field never crosses the wire.
             let command = match *command {
                 Command::DictateStream { key, options, surface, .. } => {
-                    Command::DictateStream { key, options, surface, initiator: Some(me) }
+                    Command::DictateStream { key, options, surface, initiator: Some(caller.id) }
                 }
                 Command::DictateStop { key, submit, .. } => {
-                    Command::DictateStop { key, submit, initiator: Some(me) }
+                    Command::DictateStop { key, submit, initiator: Some(caller.id) }
                 }
                 Command::DictateReadAloudStart { .. } => {
-                    Command::DictateReadAloudStart { initiator: Some(me) }
+                    Command::DictateReadAloudStart { initiator: Some(caller.id) }
                 }
                 Command::DictateReadAloudStop { keep, .. } => {
-                    Command::DictateReadAloudStop { keep, initiator: Some(me) }
+                    Command::DictateReadAloudStop { keep, initiator: Some(caller.id) }
                 }
                 other => other,
             };
@@ -1193,7 +1248,7 @@ where
             let dispatch_id = command.dispatch_id();
             match (reply_to, answers_through_a_reply(&command)) {
                 (Some(to), true) => {
-                    dispatched(me, &command);
+                    dispatched(caller.id, &command);
                     dispatch_answering(state, command, to, reply_tx);
                     Ok(())
                 }
@@ -1225,7 +1280,7 @@ where
                     .await
                 }
                 (None, false) => {
-                    dispatched(me, &command);
+                    dispatched(caller.id, &command);
                     match state.surface.dispatch(command) {
                         Ok(()) => {
                             // Claimed as soon as the dispatch answers - Ok for a
@@ -1572,7 +1627,7 @@ where
             // that never declared has none. Both outcomes answer with the
             // same frame - the control that sent this draws the truth either
             // way, so a refusal needs no words.
-            let claimed = hosting.is_some() && state.browser.claim(me);
+            let claimed = hosting.is_some() && state.browser.claim(caller.id);
             send(socket, ServerMessage::BrowserRole { hosting: claimed }).await
         }
         ClientMessage::BrowserAnswer { id, parts, error } => {
@@ -2015,6 +2070,78 @@ where
     })
     .await?;
     Ok(bytes)
+}
+
+/// One frame's write, measured: its size, the time the socket took it, and
+/// whether the write yielded at least once before it was done.
+struct FrameWrite {
+    bytes: usize,
+    write_ms: f64,
+    waited: bool,
+}
+
+/// The clock a measured write reads.
+///
+/// **The start is handed the frame it measures**: the shipping clock ignores
+/// it, and the test's fake records its length - which is what proves the read
+/// happens after the message is serialised (#2506).
+trait WriteClock {
+    fn start(&self, frame: &str) -> Instant;
+
+    fn end(&self) -> Instant;
+}
+
+/// The shipping clock: the process's own monotonic one.
+struct SystemClock;
+
+impl WriteClock for SystemClock {
+    fn start(&self, _frame: &str) -> Instant {
+        Instant::now()
+    }
+
+    fn end(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// [`send_frame`], timing the socket's share of the write.
+///
+/// **The open's own line cannot place its remainder without it** (#2506):
+/// `open_ms` ends when this returns, so the frame's transfer is inside it,
+/// and a write that yielded is otherwise indistinguishable from the fold, the
+/// record's reads and the serialisation before it.
+async fn send_frame_timed<S, C>(
+    socket: &mut S,
+    message: ServerMessage,
+    clock: &C,
+) -> anyhow::Result<FrameWrite>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+    C: WriteClock,
+{
+    let text = serde_json::to_string(&message)?;
+    let bytes = text.len();
+    let waited = AtomicBool::new(false);
+    let at = clock.start(&text);
+    let mut write = std::pin::pin!(async {
+        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
+    });
+    write_within(WRITE_BOUND, async {
+        std::future::poll_fn(|cx| {
+            let poll = std::future::Future::poll(write.as_mut(), cx);
+            if poll.is_pending() {
+                waited.store(true, Ordering::Relaxed);
+            }
+            poll
+        })
+        .await
+    })
+    .await?;
+    Ok(FrameWrite {
+        bytes,
+        write_ms: clock.end().saturating_duration_since(at).as_secs_f64() * 1000.0,
+        waited: waited.load(Ordering::Relaxed),
+    })
 }
 
 /// What a `more` asks for, out of the cursor it was sent.
@@ -2524,6 +2651,12 @@ mod tests {
     use crate::transport::Heartbeat;
     use crate::work::WorkCache;
 
+    /// The address a test's own socket is attached from; no listener is
+    /// bound, so nothing dials it.
+    fn attached_from() -> std::net::SocketAddr {
+        "127.0.0.1:0".parse().expect("a test address")
+    }
+
     /// **Only a ping that went out can go unanswered.** The state holds no
     /// read clock at all, so a quiet read - a connection busy in one long
     /// write - cannot be mistaken for silence: a beat with no outstanding
@@ -2685,6 +2818,62 @@ mod tests {
         }
     }
 
+    /// A sink whose flush yields once before it finishes: the write waited,
+    /// and for no measurable time.
+    struct YieldsOnce {
+        yielded: bool,
+    }
+
+    impl futures_util::Sink<Message> for YieldsOnce {
+        type Error = axum::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            if !self.yielded {
+                self.yielded = true;
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// The clock a measured write reads, recording the frame each start was
+    /// handed and answering a fixed second. **Deterministic**: the test never
+    /// waits, and a start read taken before the frame exists records nothing.
+    struct FakeClock {
+        starts: std::cell::RefCell<Vec<usize>>,
+        base: Instant,
+    }
+
+    impl WriteClock for FakeClock {
+        fn start(&self, frame: &str) -> Instant {
+            self.starts.borrow_mut().push(frame.len());
+            self.base
+        }
+
+        fn end(&self) -> Instant {
+            self.base + Duration::from_secs(1)
+        }
+    }
+
     /// **The stamp is taken after the send returns**, which is the caller's
     /// ordering and not the state machine's: a ping held in a full buffer
     /// must owe nothing until it is on the wire. The held sink is the stall,
@@ -2753,7 +2942,7 @@ mod tests {
         let mut peer = StoppedReading { inbound: peer_in, writing: Some(writing) };
         let driven = tokio::spawn({
             let state = Arc::clone(&state);
-            async move { drive(&mut peer, &state).await }
+            async move { drive(&mut peer, &state, attached_from()).await }
         });
 
         // This connection declaring itself capable is what takes the role; the
@@ -2792,9 +2981,15 @@ mod tests {
             .expect("the connection ends at the write bound rather than never")
             .expect("the connection task joins");
         let error = outcome.expect_err("a peer that stopped reading must not end cleanly");
+        let stalled = error.downcast_ref::<WriteStalled>().unwrap_or_else(|| {
+            panic!(
+                "the connection ends on the write bound rather than on a socket error: {error:?}"
+            )
+        });
         assert!(
-            error.downcast_ref::<WriteStalled>().is_some(),
-            "the connection ends on the write bound rather than on a socket error: {error:?}",
+            stalled.waited >= WRITE_BOUND,
+            "the bound's own record carries how long the write ran: {:?}",
+            stalled.waited,
         );
 
         assert_eq!(
@@ -2850,9 +3045,56 @@ mod tests {
         let (_keep, inbound) = mpsc::unbounded_channel();
         let mut peer = StoppedReading { inbound, writing: None };
 
-        tokio::time::timeout(WRITE_BOUND * 2, greet(&mut peer, state))
+        tokio::time::timeout(WRITE_BOUND * 2, greet(&mut peer, state, attached_from()))
             .await
             .expect("the greeting ends at the write bound rather than never");
+    }
+
+    /// A frame for the write tests, whose encoded length is what the record
+    /// has to carry.
+    fn a_frame() -> ServerMessage {
+        ServerMessage::Error {
+            what: "frame".to_owned(),
+            why: "a measured write".to_owned(),
+            seat: None,
+            dispatch_id: None,
+        }
+    }
+
+    /// **The measurement starts after the frame exists (#2506).** The clock
+    /// is handed the serialised frame, so a start read taken before - or
+    /// around - the serialisation cannot be recorded: the fake sees the
+    /// frame's own length, and the elapsed is its fixed second exactly.
+    #[tokio::test]
+    async fn the_write_is_timed_from_after_the_frame_is_serialised() {
+        let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
+        let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
+
+        let write =
+            send_frame_timed(&mut NullSink, a_frame(), &clock).await.expect("the write lands");
+        assert!(!write.waited, "a sink that never yields is reported as not waiting");
+        assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
+        assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
+        assert_eq!(
+            clock.starts.borrow().as_slice(),
+            &[bytes],
+            "the clock is read once, with the serialised frame",
+        );
+    }
+
+    /// **`waited` is not a constant (#2506).** A write that yields says so;
+    /// the false case is pinned beside it.
+    #[tokio::test]
+    async fn a_write_that_yields_is_timed_and_says_so() {
+        let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
+        let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
+
+        let mut yielding = YieldsOnce { yielded: false };
+        let write =
+            send_frame_timed(&mut yielding, a_frame(), &clock).await.expect("the write lands");
+        assert!(write.waited, "a flush that yielded once is reported as having waited");
+        assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
+        assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
     }
 
     /// The oldest boundary a window names, as a walk below the floor starts
