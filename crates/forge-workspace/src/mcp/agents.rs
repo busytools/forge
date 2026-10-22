@@ -994,7 +994,7 @@ impl Tool for Update {
                 "mcp_families": {
                     "type": "array",
                     "items": { "type": "string", "enum": ["review", "cron", "tasks", "gotify", "slack", "systemone"] },
-                    "description": "Replacement MCP-family selection for this worker, validated as agents__spawn validates it. Omit to leave the stored selection unchanged; pass an empty list to restore every family. Takes effect on the next respawn.",
+                    "description": "Replacement MCP-family selection for this worker, validated as agents__spawn validates it. Omit to leave the stored selection unchanged; pass an empty list to restore every family. Takes effect on the next respawn. The six families, and what each gives a worker, are listed on agents__spawn's `mcp_families` argument; read them there before narrowing.",
                 },
             },
             "required": ["label"],
@@ -1252,20 +1252,55 @@ mod tests {
         let families = schema["properties"]["mcp_families"]["description"]
             .as_str()
             .expect("mcp_families carries a description");
-        for (purpose, family) in [
-            ("read and answer reviews filed on its branch", "review"),
-            ("schedule and manage durable work of its own", "cron"),
-            ("claim, file and update rows on the project board", "tasks"),
-            ("subscribe to and read Gotify notifications", "gotify"),
-            ("read Slack, subscribe, and post through held approval", "slack"),
-            ("put a yes/no, a choice or a score to the decision model", "systemone"),
+        for (purpose, guidance, family) in [
+            (
+                "read and answer reviews filed on its branch",
+                "give it to any worker that implements",
+                "review",
+            ),
+            (
+                "schedule and manage durable work of its own",
+                "give it to any worker that needs a recurring or deferred task",
+                "cron",
+            ),
+            (
+                "claim, file and update rows on the project board",
+                "give it to any worker whose work is on the board",
+                "tasks",
+            ),
+            (
+                "subscribe to and read Gotify notifications",
+                "give it to any worker that acts on them",
+                "gotify",
+            ),
+            (
+                "read Slack, subscribe, and post through held approval",
+                "give it to any worker that works in Slack",
+                "slack",
+            ),
+            (
+                "put a yes/no, a choice or a score to the decision model",
+                "give it to any worker that weighs decisions itself",
+                "systemone",
+            ),
         ] {
             assert!(
-                families.contains(&format!("`{family}` - {purpose}")),
-                "the mcp_families description does not say what {family} gives a worker: \
-                 {families}"
+                families.contains(&format!("`{family}` - {purpose}; {guidance}.")),
+                "the mcp_families description does not say what {family} gives a worker, or \
+                 who should have it: {families}"
             );
         }
+        // `agents__update` changes the same selection, so it points at the
+        // spawn argument for the purposes instead of restating them.
+        let update =
+            Update { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        assert!(
+            update.input_schema()["properties"]["mcp_families"]["description"]
+                .as_str()
+                .expect("update's mcp_families carries a description")
+                .contains("listed on agents__spawn's `mcp_families` argument"),
+            "the update argument points at the one list of family purposes",
+        );
     }
 
     /// The send cue fires at the moment a report is composed, and the tools

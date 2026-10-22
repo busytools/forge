@@ -9433,11 +9433,14 @@ mod lead_charter_tests {
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains("Never park a dispatch decision on your own judgment.")
+                && DEFAULT_LEAD_CHARTER.contains("decide whether the options genuinely differ")
                 && DEFAULT_LEAD_CHARTER.contains(
                     "put the enumerated options and the context that bears on them to \
                      `systemone__ask_choice` when your tools include it"
-                ),
-            "the dispatch cue and its guard are pinned",
+                )
+                && DEFAULT_LEAD_CHARTER.contains("without the tool, decide it yourself"),
+            "the dispatch cue, its genuine-difference scope, its guard and its fallback are \
+             pinned",
         );
     }
 
@@ -9450,16 +9453,22 @@ mod lead_charter_tests {
     fn the_charter_parallelises_independent_work() {
         for (clause, why) in [
             (
-                "A merge conflict is not, by itself, a reason to hold a piece: start it, \
-                 resolve the conflict and re-run the gates",
-                "the conflict rule and its remedy",
+                "Default is NOT strictly one-at-a-time: run ad-hoc workers CONCURRENTLY on \
+                 independent work",
+                "the parallel-by-default headline",
             ),
+            ("A merge conflict is not, by itself, a reason to hold a piece", "the conflict rule"),
+            ("resolve the conflict and re-run the gates", "its remedy"),
             ("Only genuine shared-state ordering serializes:", "the narrow serialization test"),
             (
                 "at most ONE in-flight migration branch at a time",
                 "the migration sequence stays serialized",
             ),
             ("One main, one version line", "the merge queue and release line stay serialized"),
+            (
+                "Review is not serialization but it is a real cap",
+                "review throughput is a cap, not a serialization claim",
+            ),
         ] {
             assert!(
                 DEFAULT_LEAD_CHARTER.contains(clause),
@@ -9467,8 +9476,9 @@ mod lead_charter_tests {
             );
         }
         assert!(
-            !DEFAULT_LEAD_CHARTER.contains("edit the SAME files"),
-            "the same-files hold is what #2509 removed; it must not come back",
+            !DEFAULT_LEAD_CHARTER.to_lowercase().contains("same files"),
+            "the same-files hold is what #2509 removed; it must not come back in any casing or \
+             wording",
         );
     }
 

@@ -122,9 +122,11 @@ hold a piece - start it, resolve the conflict and re-run the gates. \
 Only genuine shared-state ordering serializes: one in-flight migration \
 sequence, main's merge queue, a release/version line. Before you park \
 a dispatch decision - spawn now, queue behind a worker, or inline - \
-put the enumerated options and the context that bears on them to \
-systemone__ask_choice when your tools include it, and report the \
-decision where the work is reported. \
+decide whether the options genuinely differ; when they do, put the \
+enumerated options and the context that bears on them to \
+systemone__ask_choice when your tools include it, and without it \
+decide it yourself. Either way, report the decision where the work is \
+reported. \
 Spawned workers are durable: they survive forge restarts and re-spawn \
 automatically, resuming where they left off, until you explicitly \
 despawn them with agents__despawn (or close their row in the Projects \
@@ -16388,24 +16390,31 @@ mod worker_respawn_tests {
             ),
             "the look's scope is pinned",
         );
-        assert!(
-            preamble.contains(
-                "a merge conflict is not, by itself, a reason to hold a piece - start it, \
-                 resolve the conflict and re-run the gates"
-            ) && preamble.contains(
+        for (clause, why) in [
+            (
+                "Run independent pieces in parallel, up to the project's capacity",
+                "the parallel-by-default headline",
+            ),
+            ("a merge conflict is not, by itself, a reason to hold a piece", "the conflict rule"),
+            ("resolve the conflict and re-run the gates", "its remedy"),
+            (
                 "Only genuine shared-state ordering serializes: one in-flight migration \
-                 sequence, main's merge queue, a release/version line"
+                 sequence, main's merge queue, a release/version line",
+                "the shared-state list",
             ),
-            "the parallel rule and the shared-state list are pinned",
-        );
-        assert!(
-            preamble.contains(
-                "Before you park a dispatch decision - spawn now, queue behind a worker, or \
-                 inline - put the enumerated options and the context that bears on them to \
-                 systemone__ask_choice when your tools include it"
+            ("decide whether the options genuinely differ", "the dispatch cue's scope"),
+            (
+                "put the enumerated options and the context that bears on them to \
+                 systemone__ask_choice when your tools include it",
+                "the dispatch cue and its guard",
             ),
-            "the dispatch cue and its guard are pinned",
-        );
+            ("without it decide it yourself", "the dispatch fallback"),
+        ] {
+            assert!(
+                preamble.contains(clause),
+                "the delegation preamble does not carry the parallel rule ({why}): {clause}"
+            );
+        }
         assert!(
             !preamble.contains("doing the work yourself"),
             "the charter, not this block, carries the delegation default",
