@@ -3516,6 +3516,53 @@ describe('the conversation the chat draws', () => {
     expect(turns[0]?.key, 'with the older page above it').toBe('turn-older');
   });
 
+  /**
+   * **`running` is a carrier of its own** (#2503, #2405): a page settles a turn
+   * and frames arriving after it continue that same turn, which leaves it
+   * `running` while `live` is false. A sweep that read only `live` would pass
+   * it by and draw it below the resume for good.
+   */
+  it('settles a turn the frames continued when a newer page runs past it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // A settled page row, which the core still has in flight. No cursor: a
+    // page of history that has ended, so the next page is a newest one.
+    server.send(
+      page(
+        [
+          {
+            key: 'turn-before',
+            messages: [
+              stamped(typed('before'), '2026-10-19T09:00:00.000Z'),
+              stamped(ended(), '2026-10-19T09:01:00.000Z'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+    // The continuation arrives after the page settled the turn: `running` is
+    // the only mark left, because a page row is never `live` (#2405).
+    server.update({
+      chat_appended: { key: LEAD, msg: stamped(said('continued'), '2026-10-19T09:05:00.000Z') },
+    });
+    const continued = get(chat.value).turns.at(-1);
+    expect(continued?.live, 'precondition: the page row is not live').toBe(false);
+    expect(continued?.running, 'precondition: the continuation marks it running').toBe(true);
+
+    server.send(page([{ key: RESUME_KEY, messages: RESUME }], 'c1'));
+
+    const turns = get(chat.value).turns;
+    expect(turns[0]?.running, 'the continued turn is settled').toBe(false);
+    expect(turns.at(-1)?.key, 'and the resume page is the newest row').toBe(RESUME_KEY);
+  });
+
   it('replaces a live turn with the page that settled it', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
