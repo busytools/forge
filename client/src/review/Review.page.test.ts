@@ -1369,6 +1369,10 @@ describe('the steppers', () => {
     await draw([], [], true, DIFF, []);
 
     expect(place(), 'the only scope').toBe('scope 1 of 1');
+    expect(
+      document.querySelector('.rv-scope-sub')?.textContent?.trim(),
+      'an empty chain is not an unread one',
+    ).toBe('0 commits');
     key({ key: 'a' });
     expect(scope(), 'a has nowhere to land').toBe('All changes');
     expect(place()).toBe('scope 1 of 1');
@@ -1879,7 +1883,7 @@ describe('the lines a diff left out', () => {
       'line 9',
     );
     expect(document.querySelector('.rv-parked')?.textContent, 'and why it is parked').toContain(
-      'could not reach its line',
+      'the file content is not in hand',
     );
   });
 

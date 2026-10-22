@@ -1674,7 +1674,7 @@
             <span class="rv-parked-where"
               >{entry.held.anchor.path.split('/').pop() ?? ''} &#183; line {entry.line}</span
             >
-            <span class="rv-parked-note">not drawn: the file read could not reach its line</span>
+            <span class="rv-parked-note">not drawn: the file content is not in hand</span>
           </p>
         {/each}
         <div class="rv-diff" data-rv-path={file.path} bind:this={canvases[file.path]}>

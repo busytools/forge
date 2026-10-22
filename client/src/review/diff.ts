@@ -169,8 +169,8 @@ export function revealFor(
 
 /**
  * The gap whose lines hold an anchor, as its new-side number. A new-side
- * line counts itself; an old-side one is shifted by the block's delta, taken
- * from the nearest line carrying both numbers.
+ * line counts itself; an old-side one is shifted by its hunk's delta at the
+ * hunk's end, which is where the gap's own numbering starts.
  */
 export function gapHolding(
   file: DiffFileRecord,

@@ -152,17 +152,22 @@ the whole file - the branch tip for a new-side line, the merge-base for an
 old-side one - because the line is outside the bounded hunks by
 construction; a line the hunks do carry is placed there, and text the file
 no longer carries still parks as outdated. **The record reads at most eight
-such files per encode**: past that an anchor outside its hunks keeps the
-bounded content's answer and parks, rather than costing an unbounded pile
-of git reads on every seat encode. **A revealed-line comment
-written inside a commit scope is the one exception**: its line counts in
-that commit's numbering, so the all-changes view parks it - its own
-commit's view still draws it at its recorded line. A line no press has
-revealed, or one the read did not carry, takes no door. **A placed comment
-reopens the gap holding it when the page loads**, from the end its synthesis
-draws - a gap above the first hunk opens from its bottom, one below the last
-from its top, and only a gap between two hunks takes the nearer end - so a reload
-does not leave the card with no row to draw on.
+such files per encode**: past that an anchor outside its hunks is answered
+by the bounded content, which does not carry its line, so it parks rather
+than costing an unbounded pile of git reads on every seat encode.
+**A commit-scoped comment is the one exception**: a line the hunks carry
+places, but a revealed one counts in that commit's numbering, so the
+all-changes view parks it - its own commit's view still draws it at its
+recorded line. A line no press has revealed, or one the read did not carry,
+takes no door. **A placed comment reopens the gap holding it when the page
+loads**, from the end its synthesis draws - a gap above the first hunk
+opens from its bottom, one below the last from its top, and only a gap
+between two hunks takes the nearer end - so a reload does not leave the
+card with no row to draw on. **A placed comment the file read cannot reach**
+- a read in flight, failed, or cut before its line - draws as a parked line
+in the file's own section, naming its state, its line, and that its content
+is not in hand, so the tally and the comment stepper never count a comment
+that is nowhere.
 
 ## A thread
 

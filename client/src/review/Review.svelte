@@ -767,7 +767,9 @@
    */
   function ordinalOf(at: number): number {
     if (at === 0) return 0;
-    return commitTotal - (commits.length - at);
+    // A commit landing between the count's read and the list's can make the
+    // arithmetic name a zero or negative commit; the first is the floor.
+    return Math.max(1, commitTotal - (commits.length - at));
   }
 
   /** The oldest commits the walk did not carry, 0 when it carried them all. */
@@ -1011,7 +1013,9 @@
             </span>
             <span class="rv-scope-sub">
               {scopeCommit === null
-                ? `${commitTotal} commits${missing === commitTotal ? ' · list not read' : ''}`
+                ? `${commitTotal} commits${
+                    missing > 0 && missing === commitTotal ? ' · list not read' : ''
+                  }`
                 : `commit ${ordinalOf(scopeIdx)} of ${commitTotal}`}
             </span>
           </button>
@@ -1028,7 +1032,10 @@
             onclick={() => stepScope(1)}>&#8250;</button
           >
           {#if pickerOpen}
-            <div class="rv-menu" role="listbox" aria-label="diff scope">
+            <!-- The note sits outside the listbox: a listbox may hold only
+                 options and groups, and a note inside it is invalid to a
+                 screen reader. -->
+            <div class="rv-menu">
               {#if missing > 0 && commits.length === 0}
                 <p class="rv-menu-note">the commit list could not be read</p>
               {:else if missing > 0}
@@ -1037,22 +1044,24 @@
                   {missing === 1 ? 'commit is' : 'commits are'} not carried
                 </p>
               {/if}
-              {#each choices as choice (choice.idx)}
-                <button
-                  type="button"
-                  class="rv-menu-it"
-                  class:hi={pickerHi === choice.idx}
-                  class:on={choice.idx === scopeIdx}
-                  role="option"
-                  aria-selected={choice.idx === scopeIdx}
-                  onclick={() => choose(choice.idx)}
-                >
-                  <span class="rv-menu-i">{choice.index}</span>
-                  <span class="rv-menu-label">{choice.label}</span>
-                  <span class="rv-menu-sha">{choice.sha}</span>
-                  <span class="rv-menu-age">{choice.age}</span>
-                </button>
-              {/each}
+              <div role="listbox" aria-label="diff scope">
+                {#each choices as choice (choice.idx)}
+                  <button
+                    type="button"
+                    class="rv-menu-it"
+                    class:hi={pickerHi === choice.idx}
+                    class:on={choice.idx === scopeIdx}
+                    role="option"
+                    aria-selected={choice.idx === scopeIdx}
+                    onclick={() => choose(choice.idx)}
+                  >
+                    <span class="rv-menu-i">{choice.index}</span>
+                    <span class="rv-menu-label">{choice.label}</span>
+                    <span class="rv-menu-sha">{choice.sha}</span>
+                    <span class="rv-menu-age">{choice.age}</span>
+                  </button>
+                {/each}
+              </div>
             </div>
           {/if}
         </span>
@@ -1090,7 +1099,7 @@
     <Tabs
       tabs={[
         { id: 'conversation', label: 'Conversation' },
-        { id: 'files', label: 'Files changed', count: commits.length },
+        { id: 'files', label: 'Files changed', count: commitTotal },
       ]}
       active={tab}
       label="review sections"

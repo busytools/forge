@@ -165,6 +165,14 @@
 
   .rv-insert td { padding: 0; background: var(--s1); }
   .rv-inline { padding: 3px 10px 6px; }
+  /* A placed comment the file read cannot reach: its line is outside the
+     hunks and no read can reveal it, so the file's section says where it is
+     instead of drawing nothing. */
+  .rv-parked { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px;
+    margin-bottom: 8px; background: var(--s1); border: 1px solid var(--line);
+    border-radius: 9px; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--muted); }
+  .rv-parked-note { margin-left: auto; color: var(--dim); }
   /* The gap controls, in the hunk header's own gutter cell: GitHub's own
      strips, one per end of the gap and each taking half the row, so the
      down strip runs along the row's top and the up strip along its bottom -
@@ -467,6 +475,13 @@
           <span class="rv-path">client/src/session/wire.ts</span>
           <span class="rv-tally"><span class="rv-cc">1 thread</span></span>
         </div>
+        <!-- A placed comment whose line the file read cannot reach: the
+             file's section says where it is rather than drawing nothing. -->
+        <p class="rv-parked">
+          <span class="rv-parked-st">open</span>
+          <span class="rv-parked-where">wire.ts · line 199</span>
+          <span class="rv-parked-note">not drawn: the file content is not in hand</span>
+        </p>
         <table class="rv-diff">
           <colgroup>
             <col style="width: 46px"><col style="width: 38%">

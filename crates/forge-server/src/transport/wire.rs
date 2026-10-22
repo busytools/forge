@@ -3905,6 +3905,72 @@ mod tests {
         );
     }
 
+    /// **The whole-file reads are bounded per record.** Ten comments outside
+    /// their hunks ask for ten files; the encode reads eight and leaves the
+    /// rest to the bounded content, so a heavily commented branch cannot cost
+    /// an unbounded pile of git subprocesses on every seat read.
+    #[tokio::test]
+    async fn the_whole_file_reads_are_bounded_per_record() {
+        let repo = tempfile::tempdir().expect("a repository directory");
+        init_repo(repo.path());
+        let mut files = Vec::new();
+        let mut threads = Vec::new();
+        for n in 0..10 {
+            let path = format!("f{n}.txt");
+            std::fs::write(repo.path().join(&path), "one\ntwo\nthree\n").expect("write");
+            files.push(FileContent {
+                path: path.clone(),
+                old_path: None,
+                status: forge_workspace::env::git_diff::hunks::FileStatus::Modified,
+                binary: false,
+                submodule: false,
+                truncated: false,
+                hunks: vec![forge_workspace::env::git_diff::hunks::Hunk {
+                    old_start: 3,
+                    old_count: 1,
+                    new_start: 3,
+                    new_count: 1,
+                    lines: vec![forge_workspace::env::git_diff::hunks::DiffLine {
+                        kind: forge_workspace::env::git_diff::hunks::DiffLineKind::Context,
+                        text: "three".to_owned(),
+                        old_line: Some(3),
+                        new_line: Some(3),
+                    }],
+                }],
+            });
+            threads.push(ReviewThread {
+                id: format!("t{n}"),
+                anchor: ReviewAnchor {
+                    path,
+                    side: ReviewSide::New,
+                    line: 2,
+                    content_hash: forge_workspace::env::git_diff::resolver::anchor_hash("two"),
+                    context: vec!["one".to_owned(), "three".to_owned()],
+                    base_ref: "main".to_owned(),
+                },
+                comments: Vec::new(),
+                status: forge_primitives::review::ReviewStatus::Open,
+                created_at: "2026-01-01T00:00:00Z".to_owned(),
+                updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                commit: None,
+            });
+        }
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "base"]);
+        let content = DiffContent {
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Populated(files),
+            truncated: false,
+        };
+        let whole =
+            whole_files_for(repo.path(), 10 * 1024 * 1024, &threads, &content, Some("main")).await;
+        assert_eq!(whole.len(), 8, "the encode stops at its eight-file bound");
+        assert!(
+            !whole.contains_key(&("f9.txt".to_owned(), ReviewSide::New)),
+            "and the threads past it keep the bounded content's answer",
+        );
+    }
+
     /// A read cut before the anchored line cannot answer: the record carries
     /// no landing rather than calling the code gone.
     #[test]
