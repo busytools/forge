@@ -272,7 +272,7 @@ impl Window {
 /// A `Message` serializes by construction - every shape crossed to get here -
 /// so a short count is a frame that cannot cross either way, and it stays as
 /// the count it reached rather than failing the frame around it.
-fn wire_bytes(message: &Message) -> usize {
+pub(crate) fn wire_bytes(message: &Message) -> usize {
     let mut sink = Counted(0);
     serde_json::to_writer(&mut sink, message).map_or(sink.0, |()| sink.0)
 }

@@ -26,6 +26,12 @@ pub fn set_seat_ring_cap(workspace: &Workspace, cap: usize) {
     workspace.update_tx.set_ring_cap(cap);
 }
 
+/// Drive a seat's frame-window byte ceiling down, so a fixture reaches it
+/// without a giant tree. The module this sits in keeps it out of production.
+pub fn set_seat_ring_bytes(workspace: &Workspace, bytes: usize) {
+    workspace.update_tx.set_ring_cap_bytes(bytes);
+}
+
 /// The tool id a parked test prompt answers to, so a test addresses the one
 /// it seeded rather than a key it has to know how the fixture built.
 #[cfg(any(test, feature = "testing"))]

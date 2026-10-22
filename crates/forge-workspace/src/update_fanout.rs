@@ -32,6 +32,52 @@ pub struct SeatUpdate {
 /// are unreachable.
 const SEAT_RING: usize = crate::conversation_window::CONVERSATION_CAP;
 
+/// The byte ceiling on one seat's ring: the same 64 MiB the conversation copy
+/// beside it keeps ([`crate::conversation_window::CONVERSATION_CAP_BYTES`]).
+///
+/// **A ring exists to fill a copy that is behind**, so a ring allowed to weigh
+/// more than the copy it repairs bounds nothing a reader feels. The count alone
+/// left a released seat (a despawned worker, a lead closed for the day) pinning
+/// up to the full frame count for the process's life, and one
+/// `FileIndexChanged` frame holds a whole tree's index: at a hundred thousand
+/// files that is 15 MB per retained frame.
+const SEAT_RING_BYTES: usize = crate::conversation_window::CONVERSATION_CAP_BYTES;
+
+/// What a frame costs against [`SEAT_RING_BYTES`], counted from the payloads
+/// that can grow rather than from its serialization.
+///
+/// The big frames are big in their entries and messages; paying a JSON pass at
+/// mint would double the cost of exactly the frames this ceiling exists for. A
+/// frame whose payload is not counted here is charged a frame's fixed
+/// overhead, which is what keeps a long run of small frames bounded too.
+fn frame_bytes(update: &SessionUpdate) -> usize {
+    /// Fields, numbers and names a wire entry carries beside its strings.
+    const ENTRY: usize = 96;
+    /// A frame's own fields, its slot and its envelope.
+    const FRAME: usize = 256;
+    let payload = match update {
+        SessionUpdate::FileIndexChanged { index, .. } => index
+            .entries
+            .iter()
+            .map(|(key, candidate)| {
+                key.len()
+                    + candidate.rel_path.len()
+                    + candidate.rel_path_lower.len()
+                    + candidate.basename_lower.len()
+                    + ENTRY
+            })
+            .sum(),
+        SessionUpdate::ProcessesChanged { snapshot, .. } => snapshot
+            .processes
+            .iter()
+            .map(|entry| entry.name.len() + entry.command.len() + ENTRY)
+            .sum(),
+        SessionUpdate::ChatAppended { msg, .. } => crate::conversation_window::wire_bytes(msg),
+        _ => 0,
+    };
+    payload.saturating_add(FRAME)
+}
+
 /// What a subscriber can do with what it is sent.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubscriberRole {
@@ -74,6 +120,9 @@ struct Shared {
     /// frame of the seat crosses, whichever site emitted it - and the number a
     /// repair hands back is the one minted here.
     rings: HashMap<SessionSlot, VecDeque<SeatUpdate>>,
+    /// What each seat's ring weighs, beside the frames themselves, so the
+    /// byte ceiling is a running total rather than a walk of the ring.
+    ring_bytes: HashMap<SessionSlot, usize>,
     /// The numbers each seat has minted that the ring does NOT hold: the
     /// frames that close an epoch. A reader measuring whether a copy covers a
     /// stretch needs them, because a window can never serve them and a gap
@@ -96,6 +145,9 @@ struct Shared {
     /// drives it down so the transcript fallback is reachable without
     /// emitting thousands of frames.
     ring_cap: usize,
+    /// How many bytes a ring keeps. [`SEAT_RING_BYTES`] in production; a test
+    /// drives it down so the ceiling is reachable without a giant tree.
+    ring_cap_bytes: usize,
 }
 
 impl Default for Shared {
@@ -106,9 +158,11 @@ impl Default for Shared {
             attached: false,
             sequences: HashMap::new(),
             rings: HashMap::new(),
+            ring_bytes: HashMap::new(),
             unringed: HashMap::new(),
             sealed_with_rows: HashSet::new(),
             ring_cap: SEAT_RING,
+            ring_cap_bytes: SEAT_RING_BYTES,
         }
     }
 }
@@ -153,6 +207,7 @@ impl Shared {
             // unringed numbers are the same: the run after a seal mints them
             // again, and a stale one would cover a gap the new run opened.
             self.rings.remove(&slot);
+            self.ring_bytes.remove(&slot);
             self.unringed.remove(&slot);
             // **The mark describes the LATEST seal, so each mint replaces
             // it.** Only a seal that carried rows leaves a gap the ring cannot
@@ -188,10 +243,19 @@ impl Shared {
         }
         let frame = SeatUpdate { seq: Some(seq), update };
         if !epoch_frame {
-            let ring = self.rings.entry(slot).or_default();
+            let size = frame_bytes(&frame.update);
+            let ring = self.rings.entry(slot.clone()).or_default();
             ring.push_back(frame.clone());
-            while ring.len() > self.ring_cap {
-                ring.pop_front();
+            let bytes = self.ring_bytes.entry(slot).or_default();
+            *bytes = bytes.saturating_add(size);
+            // Two ceilings, one cut: a giant index frame must not survive on
+            // the count alone, and a long run of small frames must not survive
+            // on the byte ceiling alone.
+            while ring.len() > 1 && (ring.len() > self.ring_cap || *bytes > self.ring_cap_bytes) {
+                let Some(old) = ring.pop_front() else {
+                    break;
+                };
+                *bytes = bytes.saturating_sub(frame_bytes(&old.update));
             }
         }
         frame
@@ -339,6 +403,19 @@ impl UpdateFanout {
         self.shared.lock().ring_cap = cap;
     }
 
+    /// Drive the ring's byte ceiling down, so a test reaches it with frames a
+    /// fixture can build rather than with a giant tree.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn set_ring_cap_bytes(&self, bytes: usize) {
+        self.shared.lock().ring_cap_bytes = bytes;
+    }
+
+    /// What `slot`'s ring weighs, for the tests that pin its ceiling.
+    #[cfg(test)]
+    pub(crate) fn ring_bytes(&self, slot: &SessionSlot) -> usize {
+        self.shared.lock().ring_bytes.get(slot).copied().unwrap_or(0)
+    }
+
     /// How many subscribers are attached.
     ///
     /// A test uses this to tell one subscription from another. "Did anyone
@@ -445,6 +522,25 @@ mod tests {
             dropped: 0,
             compaction_count: 0,
         }
+    }
+
+    /// A `FileIndexChanged` of `entries` files, for the tests that drive the
+    /// ring's byte ceiling: the variant that pins a whole tree per frame.
+    fn a_big_index(key: &SessionSlot, entries: usize) -> SessionUpdate {
+        let mut index = crate::file_index::FileIndex::default();
+        for nth in 0..entries {
+            let rel = format!("src/deeply/nested/module/number-{nth:04}/file-{nth:04}.rs");
+            index.entries.insert(
+                rel.clone(),
+                crate::file_index::FileCandidate {
+                    rel_path: rel.clone(),
+                    rel_path_lower: rel.to_lowercase(),
+                    basename_lower: rel.to_lowercase(),
+                    depth: 5,
+                },
+            );
+        }
+        SessionUpdate::FileIndexChanged { key: key.clone(), index: Arc::new(index) }
     }
 
     /// The next frame on `who`'s stream, unread.
@@ -899,6 +995,48 @@ mod tests {
             fanout.unringed_between(&seat, 1, 2),
             1,
             "and the release itself is still a number no window holds",
+        );
+    }
+
+    /// **A released seat's ring answers its byte ceiling.** The frames before
+    /// a release are kept so a re-open can fill its copy, but a seat that
+    /// never gets a new occupant must not pin them for the process's life: the
+    /// ceiling drops the oldest, and the newest frame survives even alone over
+    /// it - the same rule the conversation window keeps for the turn it cuts
+    /// inside.
+    #[test]
+    fn a_released_seat_keeps_only_what_its_byte_ceiling_holds() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+        // Two of these frames fit; the ceiling is what sheds them, not a
+        // count a fixture had to reach.
+        fanout.set_ring_cap_bytes(10_000);
+
+        assert!(fanout.send(a_big_index(&seat, 20)), "a subscribed fan-out delivers");
+        assert!(
+            fanout.send(SessionUpdate::Releasing { key: seat.clone() }),
+            "a subscribed fan-out delivers"
+        );
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the frame before the release");
+        assert_eq!(next_seq(&mut rx, "seat"), Some(2), "and the release");
+
+        for _ in 0..3 {
+            assert!(fanout.send(a_big_index(&seat, 20)), "a subscribed fan-out delivers");
+        }
+
+        assert!(
+            fanout.ring_bytes(&seat) <= 10_000,
+            "the ring answers its byte ceiling: {} bytes",
+            fanout.ring_bytes(&seat),
+        );
+        assert!(
+            fanout.frames_between(&seat, 1, 1).is_empty(),
+            "and the frame before the release is shed once the ring outgrows it",
+        );
+        assert!(
+            !fanout.frames_between(&seat, 3, 5).is_empty(),
+            "while the newest frames are what a repair is answered from",
         );
     }
 
