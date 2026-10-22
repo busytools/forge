@@ -80,7 +80,7 @@ pub struct HomeWire {
     pub agents: Vec<AgentWire>,
     /// One row per project for the fleet page: the counts and the named
     /// misses (a stalled queue, a worker holding no row). A project's own
-    /// detail rides its [`ProjectWire::rows`]; this is the glance.
+    /// rows ride [`ProjectBoardWire::rows`]; this is the glance.
     pub fleet: Vec<forge_workspace::board::FleetRow>,
     /// The seats whose last turn finished while no client was showing them.
     ///
@@ -306,7 +306,7 @@ pub struct AccountUsageWire {
 /// What the inbound connectors are watching, server-wide.
 ///
 /// The liveness facts and nothing else: what each connector is subscribed to
-/// belongs to a project and rides [`ProjectWire::connectors`], so a
+/// belongs to a project and rides [`ProjectBoardWire::connectors`], so a
 /// subscriptions field here would be one no read can fill - and a page drawing
 /// it shows the section empty however long it waits.
 #[derive(Serialize, Deserialize)]
