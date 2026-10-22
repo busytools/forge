@@ -95,14 +95,14 @@ impl ViewSurface {
         self.workspace.file_index(slot).map(|held| held.index)
     }
 
-    /// Store a walked index for `slot`, which is the write half of
-    /// [`Self::file_index`].
-    ///
-    /// The record's cold-seat fallback walks the tree itself; storing that
-    /// walk keeps the seat's loop from walking the same tree again and
-    /// announcing an index the page already has.
-    pub fn store_file_index(&self, slot: &SessionSlot, index: std::sync::Arc<FileIndex>) {
-        self.workspace.store_file_index(slot, index);
+    /// The record's file index for `slot`: the store, or the walk the seat's
+    /// loop would take, under the same gate - so the snapshot's fallback and
+    /// the first pass are one walk rather than two of the same tree.
+    pub async fn file_index_for_record(&self, slot: &SessionSlot) -> std::sync::Arc<FileIndex> {
+        if let Some(index) = self.file_index(slot) {
+            return index;
+        }
+        self.workspace.walk_files_for_record(slot).await
     }
 
     /// One working tree's files, walked on demand. `root` is the session's

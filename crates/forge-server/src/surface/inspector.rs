@@ -117,16 +117,22 @@ impl ViewSurface {
     }
 
     /// The seat's working tree, as the scan that owns it last answered, or as
-    /// a read taken here when nothing has scanned it yet.
+    /// the record's own read when nothing has scanned it yet.
     ///
-    /// **The read is the exception rather than the path.** A seat a view is
-    /// showing is scanned by its own loop, so this answers a stored value and
-    /// shells out to nothing; reading here covers a seat nobody has held,
-    /// which is a lagging edge rather than a steady state.
+    /// **The record's read is the seat's first read, and the loop's too.** A
+    /// held seat's snapshot takes the tree under the same gate the watch's
+    /// first pass uses, so the two are one scan: whichever gets there first
+    /// stores, and the other answers that store rather than reading the tree
+    /// again. A seat nobody holds has no loop to race and reads unguarded.
     pub async fn work(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
         if let Some(held) = self.workspace.work_snapshot(slot) {
             return held;
         }
+        if let Ok(held) = self.workspace.scan_work_if_stale(slot, false).await {
+            return held;
+        }
+        // A seat with no session has no store to hold a read, and its record
+        // still answers the tree it stands in.
         self.workspace.scan_work_at(slot, cwd).await
     }
 
@@ -144,6 +150,12 @@ impl ViewSurface {
     /// hold, and a caller must release it exactly once.
     pub fn hold_seat(&self, slot: &SessionSlot) {
         self.workspace.hold_seat(slot);
+    }
+
+    /// Mark the seat's record read, so its watch's first pass starts from the
+    /// stores the snapshot carried.
+    pub fn note_record_read(&self, slot: &SessionSlot) {
+        self.workspace.note_record_read(slot);
     }
 
     /// Stop showing a seat, which is what lets its scan go when nobody else

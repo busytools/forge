@@ -1432,10 +1432,10 @@ pub(crate) async fn encode_subject_timed(
             let Some(cwd) = roster.cwd_for(slot) else {
                 anyhow::bail!("forge holds no session for {}", slot.display());
             };
-            // The seat's walk is not taken here: the connection holds the seat
-            // before this encode, and the hold walks - so the snapshot below
-            // is the one the hold just read, and the seat's loop keeps it
-            // fresh for as long as somebody is showing it.
+            // The record's reads ARE the seat's first read: the connection
+            // holds the seat before this encode, so its snapshot takes the
+            // stores under the seat's gate and the watch's first pass starts
+            // from what this record carries (#2506).
             request_context_usage_if_unreported(surface, slot);
             request_mcp_snapshot_if_unreported(surface, slot);
             let wire = session(state, surface, slot, &cwd, &mut timings).await?;
@@ -1926,43 +1926,17 @@ async fn session(
     };
     let state_at = surface.session(slot, cwd);
     // The seat's own loop walks the index and pushes the movement, so this
-    // answers that store - and a seat nothing has walked yet is walked here,
-    // the same fallback the work row above takes: a seat whose loop never ran
-    // (no resolvable cwd, a read before the first poke) answers its tree
-    // rather than an empty list the composer would draw nothing from. The walk
-    // is a whole tree on the calling thread, so it runs off the reactor; one
-    // that panicked reads as no files rather than as the page's problem.
-    let file_index = if let Some(index) = surface.file_index(slot) {
-        index
-    } else {
-        let walker = std::sync::Arc::clone(&state.surface);
-        let root = cwd.to_owned();
-        match tokio::task::spawn_blocking(move || walker.walk_file_index(&root)).await {
-            Ok(files) => {
-                let index = std::sync::Arc::new(files);
-                // The fallback's walk IS the seat's first read: storing it
-                // keeps the loop from walking the same tree again and
-                // announcing an index the snapshot already carries.
-                surface.store_file_index(slot, std::sync::Arc::clone(&index));
-                index
-            }
-            Err(error) => {
-                tracing::warn!(
-                    event_name = "file_index_walk_failed",
-                    %error,
-                    slot = %slot.display(),
-                    "the record's cold-seat file walk did not finish; the page draws no files",
-                );
-                std::sync::Arc::default()
-            }
-        }
-    };
+    // answers that store - and a seat nothing has walked yet takes the same
+    // walk under the seat's gate, off the reactor: whichever of the record and
+    // the first pass gets there first stores, and the other answers it rather
+    // than walking the same tree again.
+    let file_index = surface.file_index_for_record(slot).await;
 
     // One read for both halves of the record: the front is the first of the
     // list, so the two cannot disagree.
     let asks = surface.pending_asks(slot);
 
-    Ok(SessionWire {
+    let wire = SessionWire {
         slot: slot.clone(),
         file_index,
         slash_commands: surface.slash_commands(slot),
@@ -2040,7 +2014,12 @@ async fn session(
         pr: held.diff.pr,
         closes: held.diff.closes,
         diff,
-    })
+    };
+    // Every read the snapshot carries is taken: the seat's watch starts its
+    // first pass from these stores, so one read serves the frame and the
+    // page's fill and no value crosses twice.
+    surface.note_record_read(slot);
+    Ok(wire)
 }
 
 #[cfg(test)]

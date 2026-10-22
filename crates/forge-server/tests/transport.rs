@@ -3871,10 +3871,11 @@ async fn a_seats_answer_carries_its_epoch_and_the_number_the_next_frame_will_bea
         data["header"]["session_id"], "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
         "a client attaching after one frame reads the epoch its sequence belongs to",
     );
-    // The hold starts the seat's watch (#2506), whose first pass announces on
-    // this subscription; drain it so the baseline below is the counter's state
-    // rather than a race with the walk.
-    while next_server_within(&mut socket, 500).await.is_some() {}
+    // The hold starts the seat's watch (#2506) and the record's read marks it;
+    // drain the first pass's frames so the baseline below is the counter's
+    // state rather than a race with it. The window is wide enough for a cold
+    // pass, which walks the tree.
+    while next_server_within(&mut socket, 2_000).await.is_some() {}
     let baseline = next_frame_number(&mut socket, &seat).await;
 
     // Another seat's traffic must not move this one's number, and this one's
@@ -5589,8 +5590,10 @@ async fn a_snapshot_carries_the_stored_row_and_the_first_pass_corrects_it() {
         &lead_seat(),
         a_scan(std::path::Path::new(&repo), long_ago, "not-this-tree", 99, None),
     );
-    // The watch's first pass is held, so whatever the snapshot carries below
-    // came from the encode itself rather than from a read that already ran.
+    // The seat's index is already walked, so the record below answers both
+    // stores; the gate then holds the watch's first pass, which is what the
+    // stale work row in the snapshot waits for.
+    state.surface.file_index_for_record(&lead_seat()).await;
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     fleet.workspace().seed_test_scan_gate(Arc::clone(&gate));
 
@@ -5635,6 +5638,81 @@ async fn a_snapshot_carries_the_stored_row_and_the_first_pass_corrects_it() {
         );
         assert_eq!(work.changed, Some(0), "and the count it answered");
         return;
+    }
+}
+
+/// **A warm open announces nothing its snapshot already carried** (#2506
+/// review). The first pass seeds from the stores the record read, so a still
+/// tree sends no second copy of the work row or the file index - the two the
+/// open's own frame carries - while a value that moves still announces.
+#[tokio::test]
+async fn a_warm_open_announces_no_value_its_snapshot_carried() {
+    let (url, _fleet, state, _root) = a_repo_server().await;
+    let repo =
+        state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
+    // Both stores as a warm page leaves them: fresh enough that the first
+    // pass's own rules read neither.
+    state.surface.store_work_snapshot(
+        &lead_seat(),
+        a_scan(std::path::Path::new(&repo), std::time::Instant::now(), "work", 0, None),
+    );
+    state.surface.file_index_for_record(&lead_seat()).await;
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(data["work"]["branch"], "work", "the snapshot carries the stored row: {data}");
+
+    // The first pass runs and finds both stores fresh, so nothing it read is
+    // news: the window is the pass plus a beat.
+    let quiet = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+    while tokio::time::Instant::now() < quiet {
+        let Some(ServerMessage::Update { update, .. }) = next_server_within(&mut socket, 500).await
+        else {
+            continue;
+        };
+        match *update {
+            SessionUpdate::WorkChanged { .. } => panic!("a warm open re-sent its work row"),
+            SessionUpdate::FileIndexChanged { .. } => panic!("a warm open re-sent its file index"),
+            _ => {}
+        }
+    }
+
+    // A moved value still announces: an untracked file enters the index, and
+    // an edit moves the row.
+    std::fs::write(repo.join("new.rs"), "").expect("write");
+    loop {
+        let Some(ServerMessage::Update { update, .. }) =
+            next_server_within(&mut socket, 10_000).await
+        else {
+            panic!("a written file never reached the seat's viewers");
+        };
+        if let SessionUpdate::FileIndexChanged { index, .. } = *update {
+            assert!(index.entries.contains_key("new.rs"), "the index carries the file");
+            break;
+        }
+    }
+    std::fs::write(repo.join("kept.txt"), "moved").expect("write");
+    loop {
+        let Some(ServerMessage::Update { update, .. }) =
+            next_server_within(&mut socket, 10_000).await
+        else {
+            panic!("a moved row never reached the seat's viewers");
+        };
+        if let SessionUpdate::WorkChanged { work, .. } = *update
+            && work.changed == Some(1)
+        {
+            break;
+        }
     }
 }
 
