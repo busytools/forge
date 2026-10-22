@@ -1662,8 +1662,8 @@ details.sfold div.wk:hover { background: none; }
    and measures about 2.2:1 on the page. The underline is the browser's, and
    stays: a link is not carried by its colour alone. */
 .prose a { color: var(--blue); }
-/* A rule down the left, which is how this sheet marks an inset everywhere else:
-   the reader's own turn, a command's output, a search hit, a call. */
+/* A rule down the left, which is how this sheet marks an inset quotation; a
+   call's body is a panel now, not this inset. */
 .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
   padding: 2px 0 2px 12px; margin: 20px 0; }
 /* No rule between body rows: the terminal draws the one line under the header. */
@@ -1941,16 +1941,24 @@ details.leaf[open] > summary .arw { color: var(--accent); }
 details.leaf.running > summary { color: var(--text); }
 
 .body { margin: 3px 0 6px 27px; }
-/* **A plain row is the same panel as a code row**, not a bare vertical line:
-   one treatment for every body a call draws. The terminal's own colours are
-   unchanged; only its ground and edge are the panel's. */
-.term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
-  border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
+/* The one chrome a drawn body wears: a code panel and a call's plain body
+   compose it, so its border, ground and radius are declared once. A hook
+   row's `.term` does NOT compose it - hook output keeps its own inset rule. */
+.panel { border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
+  overflow: hidden; }
+/* A call body's plain text inside that panel. `.term` is the hook row's own
+   inset and is deliberately not this. */
+.bodytext { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
   padding: 6px 10px; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The hook output box: the sheet's left inset, unchanged by the call bodies'
+   panel. */
+.term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
+  border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
+  white-space: pre-wrap; overflow-wrap: anywhere; }
 /* The live mark a running call's own output draws: the row's ring says the
    call is still out, this says the box under it is still being written -
    without it a tail that stopped moving and a finished one read alike. */
-.outlive { display: flex; align-items: center; gap: 5px; margin: 4px 0 0 13px;
+.outlive { display: flex; align-items: center; gap: 5px; margin: 4px 0 0 11px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--hot); }
 .outlive::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
   background: var(--hot); animation: b-breath 2.4s ease-in-out infinite; }
@@ -1988,7 +1996,7 @@ details.leaf.running > summary { color: var(--text); }
 .ansi-white { color: var(--text); }
 .ansi-bright-white { color: var(--text); }
 .ansi-bold { font-weight: 640; }
-.ansi-dim { opacity: .7; }
+.ansi-dim { opacity: .75; }
 .ansi-italic { font-style: italic; }
 .ansi-underline { text-decoration: underline; }
 .term .pfx { color: var(--dim); }
@@ -2063,8 +2071,8 @@ details.leaf.running > summary { color: var(--text); }
    module: the `.k` / `.s` / `.f` rules that stood here read three tokens the
    client's theme does not carry, and they went with the Rust renderer that
    emitted them. */
-.code { border: 1px solid var(--line); border-radius: 9px;
-  background: var(--s2); overflow: hidden; }
+/* The code panel's chrome is `.panel`; this class is its own layout only. */
+.code { overflow: hidden; }
 .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   padding: 4px 10px; border-bottom: 1px solid var(--line); }
 /* A long line wraps inside the panel rather than scrolling it, and a token with
@@ -2077,8 +2085,14 @@ details.leaf.running > summary { color: var(--text); }
 /* A diff inside the panel: the panel owns the border, ground and label; the
    grid is just the rows, so the two do not draw a box within a box. */
 .code .dif { border: 0; border-radius: 0; }
-/* A rendered markdown diff's own padding inside the panel. */
-.code-diff { padding: 8px 12px 10px; }
+/* A rendered markdown body inside the panel. It keeps the prose colour and
+   paragraph gap the old `.pbody` lane gave it - this cut moved the container
+   only - and a fence inside it is chrome-less, because the outer panel
+   already owns the border, ground and strip. */
+.code-diff { padding: 8px 12px 10px; color: var(--muted); font-size: var(--fs-base); }
+.code-diff .prose p + p { margin-top: 9px; }
+.code-diff .code { border: 0; border-radius: 0; background: transparent; }
+.code-diff .code .lang { display: none; }
 /* The caption under a panel whose file has no grammar: the header carries no
    language, and this says why rather than leaving the absence unexplained. */
 .code-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
@@ -2112,15 +2126,15 @@ details.leaf.running > summary { color: var(--text); }
 /* A line the change did not touch, which is what puts it somewhere. */
 .dif .ln.ctx .l { color: var(--dim); }
 /* A mark whose default is nothing to say, so a row carries it only when it is
-   the exception. Bare rather than under `.term`: a rule that names a body's own
-   class reaches every row that draws one, and this belongs to one kind of row. */
+   the exception. Bare rather than under `.bodytext`: a rule that names a
+   body's own class reaches every row that draws one, and this belongs to one
+   kind of row. */
 .patchmark { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; margin-right: 6px; }
 /* The line under a mutation's diff: the change's own figures as a caption
-   rather than as output. It carries no rule - a left rule is what marks a
-   command's output, and a caption wearing one read as a block belonging to
-   something else - and it sits at the label size, the one the marks beside it
-   already take. */
+   rather than as output. It carries no frame of its own - the diff above is
+   the panel, and this is its caption - and it sits at the label size, the one
+   the marks beside it already take. */
 .patchline { display: flex; align-items: center; padding: 4px 0 0;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 /* A failed call's own words, in the same caption chrome rather than the error

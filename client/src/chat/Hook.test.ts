@@ -562,10 +562,7 @@ const BODY_CLASSES = ['body', 'term'];
  * there.
  */
 const BODY_PROPERTIES = [
-  'background',
-  'border',
   'border-left',
-  'border-radius',
   'color',
   'font-family',
   'font-size',

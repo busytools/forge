@@ -151,7 +151,7 @@ export function codePanel(label: string | null, language: string | null, text: s
  */
 export function panelHtml(label: string | null, body: string): string {
   const header = label === null ? '' : `<div class="lang">${escaped(label)}</div>`;
-  return `<div class="code">${header}<pre>${body}</pre></div>`;
+  return `<div class="code panel">${header}<pre>${body}</pre></div>`;
 }
 
 /**

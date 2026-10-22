@@ -94,8 +94,22 @@
     return out;
   });
 
+  /**
+   * The byte probe the format is read from: the new side of the change, so a
+   * shebang on an extensionless script names its grammar. A path alone cannot
+   * see one.
+   */
+  const probe = $derived.by((): Uint8Array | null => {
+    const piece = pieces[0];
+    if (piece === undefined) return null;
+    if (piece.kind === 'diff') {
+      return new TextEncoder().encode(piece.new === '' ? piece.old : piece.new);
+    }
+    return new TextEncoder().encode(piece.lines.map((line) => line.text).join('\n'));
+  });
+
   const language = $derived.by((): string | null => {
-    const format = formatOf(path);
+    const format = formatOf(path, probe);
     return format.kind === 'code' ? format.language : null;
   });
 
@@ -197,8 +211,8 @@
 
 <!-- The patch box in the same panel a Read draws: border, panel ground and a
      label strip naming the format, with the diff's rows inside it. -->
-<div class="code">
-  <div class="lang">{language ?? 'text'}</div>
+<div class="code panel">
+  {#if language !== null}<div class="lang">{language}</div>{/if}
   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
   <div class="dif" class:added class:bare>{@html html}</div>
 </div>

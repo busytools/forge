@@ -48,7 +48,7 @@
   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
   {@html html}
 {:else}
-  <div class="code">
+  <div class="code panel">
     {#if language !== null}<div class="lang">{language}</div>{/if}
     <pre>{text}</pre>
   </div>

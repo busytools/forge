@@ -219,11 +219,11 @@ const LIFTED = (token: string): string => `color-mix(in srgb, var(${token}) 70%,
 
 /**
  * The composite `.ansi-dim` paints: the token at the sheet's own opacity over
- * the box's ground. `opacity: .7` on text composites the glyph over what is
+ * the box's ground. `opacity: .75` on text composites the glyph over what is
  * behind it, which is exactly this mix - so the values the attribute costs are
  * the ones the rows below measure.
  */
-const DIMMED = (token: string): string => `color-mix(in srgb, var(${token}) 70%, var(--bg))`;
+const DIMMED = (token: string): string => `color-mix(in srgb, var(${token}) 75%, var(--s2))`;
 
 const DRAWN: readonly Pair[] = [
   ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
@@ -281,25 +281,24 @@ const DRAWN: readonly Pair[] = [
   [LIFTED('--teal'), '--bg', TEXT],
   // **`\e[2m` is the command's own attribute and draws dim.** A command that
   // asked for de-emphasis gets it, so these nine composites sit at their
-  // measured values - five of the eight coloured ones under the text floor
-  // (dim 3.03, red 3.37, blue 4.04, yellow 4.45, magenta 4.49) and three above
-  // it (green 5.21, cyan 5.28, white 6.65), with bare `\e[2m` - no colour
-  // class at all, so the box's own tone - at 3.85.
+  // measured values. **The ground is the panel's `--s2`**, which is what a
+  // call body draws its output on; the `.75` opacity is the sheet's value
+  // that keeps every one of them at or above the minima the old box set.
   //
-  // The floors are those values rounded down a tenth, so they are MINIMA: a
-  // lighter opacity is what they catch. A heavier one is caught by the
-  // sheet-parity assertion below, which reads the verbatim `.7` out of the
-  // sheet - the two together are what makes either direction of drift red.
-  [DIMMED('--dim'), '--bg', 3.0],
-  [DIMMED('--bad'), '--bg', 3.3],
-  [DIMMED('--blue'), '--bg', 4.0],
-  [DIMMED('--warn'), '--bg', 4.4],
-  [DIMMED('--violet'), '--bg', 4.4],
-  [DIMMED('--ok'), '--bg', 5.2],
-  [DIMMED('--teal'), '--bg', 5.2],
-  [DIMMED('--text'), '--bg', 6.6],
-  // Bare `\e[2m`: the box's own tone, `.term { color: var(--muted) }`.
-  [DIMMED('--muted'), '--bg', 3.8],
+  // The floors are those minima, so they catch a LIGHTER opacity; a heavier
+  // one is caught by the sheet-parity assertion below, which reads the
+  // verbatim `.75` out of the sheet - the two together are what makes either
+  // direction of drift red.
+  [DIMMED('--dim'), '--s2', 3.0],
+  [DIMMED('--bad'), '--s2', 3.3],
+  [DIMMED('--blue'), '--s2', 4.0],
+  [DIMMED('--warn'), '--s2', 4.4],
+  [DIMMED('--violet'), '--s2', 4.4],
+  [DIMMED('--ok'), '--s2', 5.2],
+  [DIMMED('--teal'), '--s2', 5.2],
+  [DIMMED('--text'), '--s2', 6.6],
+  // Bare `\e[2m`: the box's own tone, `.bodytext { color: var(--muted) }`.
+  [DIMMED('--muted'), '--s2', 3.8],
 ];
 
 /**
@@ -395,7 +394,7 @@ describe('the palette', () => {
       );
     }
     expect(sheet, 'and the dim composites are that sheet value').toContain(
-      '.ansi-dim { opacity: .7; }',
+      '.ansi-dim { opacity: .75; }',
     );
     expect(sheet, "bare dim draws the box's own tone").toContain(
       '.term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',

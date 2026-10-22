@@ -10,6 +10,7 @@
   import Forge from './Forge.svelte';
   import Call from './Call.svelte';
   import MarkdownDiff from './MarkdownDiff.svelte';
+  import MarkdownPanel from './MarkdownPanel.svelte';
   import { iconOf, isBrowserTool, isEdit, mcpParts } from './families';
   import { omittedText, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
   import { formatOf } from '../format/policy';
@@ -699,7 +700,7 @@
                    alike. -->
               <div class="outlive">live</div>
             {/if}
-            <div class="term"><Ansi text={readback.lines.join('\n')} /></div>
+            <div class="panel bodytext"><Ansi text={readback.lines.join('\n')} /></div>
           {:else if readback.kind === 'lines'}
             {#if liveTail}
               <!-- An empty file while the call runs is the same fact as none
@@ -728,7 +729,9 @@
           {/if}
         {/if}
         {#if tail === -1 && call.note !== null}
-          <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
+          <div class="panel bodytext">
+            <span class={call.note.tone ?? undefined}>{call.note.text}</span>
+          </div>
         {/if}
         {#if size !== null || marks.length > 0}
           <!-- The size always, then only the marks that are true: a reader acts
@@ -787,12 +790,7 @@
            knows how to draw, and its source is not what a reader wants. The
            CLI's line-number gutter comes off, or `#` sits after a number and
            every heading draws as a paragraph. -->
-      <div class="code">
-        <div class="lang">markdown</div>
-        <div class="code-diff">
-          <Prose text={withoutLineNumbers(stripEscapes(textOf(piece)))} />
-        </div>
-      </div>
+      <MarkdownPanel text={withoutLineNumbers(stripEscapes(textOf(piece)))} />
     {:else if asCode(piece)}
       <Code language={readLanguage} text={stripEscapes(textOf(piece))} />
     {:else}
@@ -801,7 +799,7 @@
            otherwise appear nowhere. The break is an element rather than
            a character in the text, so it is a break whatever the box's
            whitespace rule turns out to be. -->
-      <div class="term">
+      <div class="panel bodytext">
         {#if call.command !== null}<span class="pfx">$</span>
           {call.command}<br />{/if}<Ansi
           text={textOf(piece)}

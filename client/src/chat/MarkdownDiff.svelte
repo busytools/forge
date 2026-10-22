@@ -1,6 +1,7 @@
 <script lang="ts">
   import { markdownDiffHtml, patchLines } from '../format/markdown-diff';
   import type { CallBody } from './leaves';
+  import MarkdownPanel from './MarkdownPanel.svelte';
   import { renderProse } from './prose';
 
   /**
@@ -16,18 +17,5 @@
   const html = $derived(markdownDiffHtml(patchLines(pieces), renderProse));
 </script>
 
-<!--
-  The rendered markdown in the same panel a Read draws - border, panel ground
-  and a format strip - produced by the chat's one renderer from escaped input
-  (raw HTML off), with only the diff's own strike and add spans substituted
-  in after it.
--->
-<div class="code">
-  <div class="lang">markdown</div>
-  <div class="code-diff">
-    <div class="prose">
-      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-      {@html html}
-    </div>
-  </div>
-</div>
+<!-- The same panel a Read's markdown draws, one component for both. -->
+<MarkdownPanel {html} />

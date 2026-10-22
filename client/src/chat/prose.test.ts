@@ -203,14 +203,14 @@ describe('a code block in a message', () => {
     // panel is what a block of code draws as here.
     const html = renderProse('    seen as code\n');
 
-    expect(html).toContain('<div class="code">');
+    expect(html).toContain('<div class="code panel">');
     expect(html).not.toContain('class="lang"');
   });
 
   it("draws as the page's own code panel, labelled by its info string", () => {
     const html = renderProse('```yaml\nkey: value\n```');
 
-    expect(html).toContain('<div class="code">');
+    expect(html).toContain('<div class="code panel">');
     expect(html).toContain('<div class="lang">yaml</div>');
     // The delimiters never reach the panel. What this catches is a rule that
     // slices the source range - the way the splitter in the view this client
@@ -225,7 +225,7 @@ describe('a code block in a message', () => {
     // invent a word for it.
     const html = renderProse('```\nplain text\n```');
 
-    expect(html).toContain('<div class="code">');
+    expect(html).toContain('<div class="code panel">');
     expect(html).not.toContain('class="lang"');
   });
 
@@ -242,7 +242,7 @@ describe('a code block in a message', () => {
     for (const info of ['constructor', '__proto__']) {
       const html = renderProse(`\`\`\`${info}\nlet a = 1 < 2;\n\`\`\``);
 
-      expect(html, `${info}: the panel draws`).toContain('<div class="code">');
+      expect(html, `${info}: the panel draws`).toContain('<div class="code panel">');
       expect(html, `${info}: the fence still labels it`).toContain(
         `<div class="lang">${info}</div>`,
       );

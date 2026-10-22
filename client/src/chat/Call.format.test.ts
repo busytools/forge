@@ -89,6 +89,97 @@ describe('a Read of markdown', () => {
   });
 });
 
+describe('an Edit of an extensionless script', () => {
+  /**
+   * **The format strip is read from the change, not the path.** An
+   * extensionless script names its language only in its shebang, so a
+   * path-only probe would leave the panel unnamed.
+   */
+  it('reads the shebang from the change and names the panel', () => {
+    const edit = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'bin/run',
+      body: [
+        {
+          kind: 'hunk',
+          header: '@@ -0,0 +1,2 @@',
+          lines: [
+            line('add', '#!/usr/bin/env bash', null, 1),
+            line('add', 'set -euo pipefail', null, 2),
+          ],
+        },
+      ],
+      mutation: { hunks: 1, added: 2, removed: 0, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: edit, open: true } });
+    try {
+      flushSync();
+      expect(document.querySelector('.code > .lang')?.textContent, 'the shebang names it').toBe(
+        'shellscript',
+      );
+    } finally {
+      void unmount(app);
+    }
+  });
+});
+
+describe('a Read of markdown with a fence', () => {
+  /**
+   * **A fence inside the rendered body is chrome-less.** The outer panel owns
+   * the border, ground and strip; the fence renderer's own panel would
+   * otherwise draw a box inside a box, and prose keeps the colour and
+   * paragraph gap the old lane gave it.
+   */
+  it('flattens the fence panel inside the outer one and keeps the prose tone', () => {
+    const app = mount(Call, {
+      target: document.body,
+      props: {
+        k: 'f1',
+        open: true,
+        call: leaf({
+          body: [
+            {
+              kind: 'text',
+              text: '1\t# Title\n2\t\n3\t```rust\n4\tfn main() {}\n5\t```\n',
+            },
+          ],
+        }),
+      },
+    });
+    try {
+      flushSync();
+      const outer = document.querySelector('.code.panel');
+      expect(outer, 'the body is one panel').not.toBeNull();
+      expect(
+        outer?.querySelector('.code-diff .prose'),
+        'the markdown renders inside',
+      ).not.toBeNull();
+      expect(
+        outer?.querySelector('.code-diff .code'),
+        'the fence still draws its own code block inside',
+      ).not.toBeNull();
+
+      const sheet = readFileSync('src/assets/web.css', 'utf8');
+      expect(sheet, 'the inner fence drops its border').toMatch(
+        /\.code-diff \.code \{[^}]*border: 0/,
+      );
+      expect(sheet, 'and its language strip').toMatch(
+        /\.code-diff \.code \.lang \{[^}]*display: none/,
+      );
+      expect(sheet, 'the prose keeps its old colour').toMatch(
+        /\.code-diff \{[^}]*color: var\(--muted\)/,
+      );
+      expect(sheet, 'and its old paragraph gap').toMatch(
+        /\.code-diff \.prose p \+ p \{ margin-top: 9px; \}/,
+      );
+    } finally {
+      void unmount(app);
+    }
+  });
+});
+
 describe('a Read of an extensionless script', () => {
   /**
    * **The shebang must survive the CLI's gutter.** The row reads the format
@@ -225,21 +316,6 @@ describe('an Edit of code', () => {
     } finally {
       close();
     }
-  });
-});
-
-describe('a plain row', () => {
-  /**
-   * **One panel treatment for every body a call draws.** A terminal result
-   * used to be a bare vertical rule beside the code rows' panels; it now
-   * takes the same border, ground and radius, with its own colours kept.
-   */
-  it('draws in the same panel as a code row, not a bare vertical rule', () => {
-    const sheet = readFileSync('src/assets/web.css', 'utf8');
-    const rule = /\.term \{([^}]*)\}/.exec(sheet)?.[1] ?? '';
-    expect(rule, 'the panel ground').toContain('background: var(--s2)');
-    expect(rule, 'the panel border').toContain('border: 1px solid var(--line)');
-    expect(rule, 'no bare left rule').not.toContain('border-left');
   });
 });
 
@@ -380,6 +456,10 @@ describe('an Edit of markdown', () => {
         'the old definition is shown as source',
       ).toContain('https://example.com/old');
       expect(document.querySelector('.code .code-diff'), 'no rendered diff').toBeNull();
+      expect(
+        document.querySelector('.code > .lang'),
+        'a markdown source diff names no code grammar',
+      ).toBeNull();
     } finally {
       void unmount(app);
     }
@@ -429,9 +509,10 @@ describe('a Read of a picture', () => {
       flushSync();
       expect(document.querySelector('.shot img'), 'the picture draws').not.toBeNull();
       expect(document.querySelector('.code'), 'no code panel for a sidecar').toBeNull();
-      expect(document.querySelector('.term')?.textContent, 'the sidecar in its own box').toContain(
-        'Saved to /tmp/screen.png',
-      );
+      expect(
+        document.querySelector('.panel.bodytext')?.textContent,
+        'the sidecar in its own panel',
+      ).toContain('Saved to /tmp/screen.png');
     } finally {
       void unmount(app);
     }

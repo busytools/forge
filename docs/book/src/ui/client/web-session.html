@@ -631,7 +631,13 @@
   .f { color: var(--syn-fn); }
 
   .term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
-    border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
+    border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
+    white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* The call body's panel chrome, shared by its code and plain bodies. A hook
+     row's `.term` above is deliberately not this. */
+  .panel { border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
+    overflow: hidden; }
+  .bodytext { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
     padding: 6px 10px; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .term .pfx { color: var(--dim); }
   .term .sum { color: var(--ok); }
@@ -815,7 +821,12 @@
   /* A diff inside a call's panel: the panel owns the border, ground and
      label; the grid is just the rows. A rendered markdown diff pads itself. */
   .code .dif { border: 0; border-radius: 0; }
-  .code-diff { padding: 8px 12px 10px; }
+  .code-diff { padding: 8px 12px 10px; color: var(--muted); font-size: var(--fs-base); }
+  .code-diff .prose p + p { margin-top: 9px; }
+  /* A fence inside the rendered body is chrome-less: the outer panel owns
+     the border, ground and strip. */
+  .code-diff .code { border: 0; border-radius: 0; background: transparent; }
+  .code-diff .code .lang { display: none; }
   /* GitHub's row tint covers the number columns too: with `.ln` as
      `display: contents`, tinting only the body and the mark left two bare
      gaps at the row's left and broke the band. */
@@ -1902,6 +1913,9 @@ Set `service_key` per environment in the bot's own config.</pre>
                     <li>a call opens onto what it came back with</li>
                     <li>an edit opens onto its patch</li>
                   </ul>
+                  <div class="code"><div class="lang">rust</div><pre><span class="k">fn</span> <span class="f">main</span>() {
+    <span class="f">println!</span>(<span class="s">"the fence inside the panel"</span>);
+}</pre></div>
                 </div></div>
               </div>
             </div>
@@ -2068,7 +2082,7 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-square-terminal"/></svg><span class="tn">run the full workspace gate, then the feature-config build</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> just check
+              <div class="panel bodytext"><span class="pfx">$</span> just check
    Compiling forge-primitives v1.0.90
    Compiling forge-server v1.0.90
     Finished in 41.2s
@@ -2088,10 +2102,10 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf running" open>
             <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">bun run release:web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> bun run release:web
+              <div class="panel bodytext"><span class="pfx">$</span> bun run release:web
 Command running in background with ID: bj5g0t2kq.</div>
               <div class="outlive">live</div>
-              <div class="term">vite v7.1.3 building for production...
+              <div class="panel bodytext">vite v7.1.3 building for production...
 transforming (1284) src/index.ts
 rendering chunks (49/52)
 <span class="ansi-bright-green">&#10003; 42 modules transformed</span>
@@ -2105,7 +2119,7 @@ computing gzip size...</div>
           <details class="leaf running" open>
             <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">gh run watch 38861655815</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> gh run watch 38861655815
+              <div class="panel bodytext"><span class="pfx">$</span> gh run watch 38861655815
 Command running in background with ID: a69098eff5f5d405a.</div>
               <div class="sg-pr">the output has not appeared yet</div>
             </div>
@@ -2115,7 +2129,7 @@ Command running in background with ID: a69098eff5f5d405a.</div>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-square-terminal"/></svg><span class="tn">Echo test string after brief sleep</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> sleep 2 &amp;&amp; echo test string
+              <div class="panel bodytext"><span class="pfx">$</span> sleep 2 &amp;&amp; echo test string
 Command running in background with ID: bj5g0t2kq.
 <span class="sum">Background command "Echo test string after brief sleep" completed (exit code 0)</span></div>
             </div>
@@ -2125,7 +2139,7 @@ Command running in background with ID: bj5g0t2kq.
           <details class="leaf">
             <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">Run slow counting loop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> for i in $(seq 1 10000); do echo $i; sleep 1; done
+              <div class="panel bodytext"><span class="pfx">$</span> for i in $(seq 1 10000); do echo $i; sleep 1; done
 Command running in background with ID: a69098eff5f5d405a.
 <span class="fail">Run slow counting loop &middot; stopped</span></div>
             </div>
@@ -2134,7 +2148,7 @@ Command running in background with ID: a69098eff5f5d405a.
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-web"/></svg><span class="tn">docs.rs/ratatui/latest/ratatui/widgets/struct.List.html</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term">List &#183; ratatui 0.29.0
+              <div class="panel bodytext">List &#183; ratatui 0.29.0
 A widget that renders a scrollable list of items.</div>
             </div>
           </details>
@@ -2142,7 +2156,7 @@ A widget that renders a scrollable list of items.</div>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-lsp"/></svg><span class="tn">hover &#183; client/src/chat/families.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="k">export function</span> <span class="f">iconOf</span>(row: <span class="f">KindRow</span>): <span class="k">string</span>
+              <div class="panel bodytext"><span class="k">export function</span> <span class="f">iconOf</span>(row: <span class="f">KindRow</span>): <span class="k">string</span>
 docs: The sprite a row draws, by the class it belongs to.</div>
             </div>
           </details>
@@ -2310,7 +2324,7 @@ docs: The sprite a row draws, by the class it belongs to.</div>
 
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-toolsearch"/></svg><span class="tn">select:TaskStop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="term">Found KillShell, BashOutput</div></div>
+            <div class="body"><div class="panel bodytext">Found KillShell, BashOutput</div></div>
           </details>
 
           <details class="leaf">
@@ -2361,7 +2375,7 @@ docs: The sprite a row draws, by the class it belongs to.</div>
           </details>
           <details class="leaf">
             <summary><svg class="ic gl err"><use href="#i-slack"/></svg><span class="tn">conversations</span><span class="fam-tail">several Slack workspaces are configured; pass `workspace`</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="term">several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines</div></div>
+            <div class="body"><div class="panel bodytext">several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines</div></div>
           </details>
         </div>
 
@@ -2731,7 +2745,7 @@ branch main, nothing to commit</div>
                 <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st" id="lv-c-st"><span class="ring"></span></span>
                   <span class="tn">just check</span>
                   <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-                <div class="body"><div class="term">   Compiling forge-server v1.0.91
+                <div class="body"><div class="panel bodytext">   Compiling forge-server v1.0.91
     Running unittests...</div></div>
               </details>
             </div>

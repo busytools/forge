@@ -196,7 +196,7 @@ describe('a long line in the conversation', () => {
   });
 
   it('wraps and breaks a command result that has no space to wrap at', () => {
-    const applied = declarationsFor(CALL, '.term');
+    const applied = declarationsFor(CALL, '.bodytext');
 
     expect(applied, 'the result box has a rule at all').not.toBe('');
     expect(valuesOf(applied, 'white-space'), 'the result wraps where the box ends').toEqual([

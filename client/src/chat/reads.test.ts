@@ -163,7 +163,7 @@ describe('the chat column under a page that re-reads', () => {
     flushSync();
 
     expect(document.body.innerHTML, 'the read body is the code panel').toContain(
-      '<div class="code">',
+      '<div class="code panel">',
     );
     expect(
       document.body.innerHTML,
