@@ -136,6 +136,14 @@ mod commands {
                 let _ = match event {
                     ClientEvent::Connection => app.emit("client://connection", ()),
                     ClientEvent::Inbound(message) => app.emit("client://inbound", message),
+                    ClientEvent::Framed { subject, bytes, parse_ms } => app.emit(
+                        "client://framed",
+                        serde_json::json!({ "subject": subject, "bytes": bytes, "parse_ms": parse_ms }),
+                    ),
+                    ClientEvent::Written { key, declared, waited_ms } => app.emit(
+                        "client://written",
+                        serde_json::json!({ "key": key, "declared": declared, "waited_ms": waited_ms }),
+                    ),
                     ClientEvent::Refused { key, why } => {
                         app.emit("client://refused", serde_json::json!({ "key": key, "why": why }))
                     }

@@ -78,6 +78,31 @@ pub struct ClientPerfRecord {
     pub slow: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ms: Option<f64>,
+    /// #2513's own marks: the click/subscribe/snapshot records and the
+    /// connection window's counters. A field this struct does not know is
+    /// parsed away before the write, so each one must be named here to reach
+    /// the log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declare: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_click_ms: Option<f64>,
+    /// The desktop shell's own queue-and-write time for a `subscribe` (#2513).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_waited_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chars: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parse_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscribes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_chars: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscribe_rate: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_chars_per_s: Option<f64>,
 }
 
 /// One batch of the page's records into the perf log.
@@ -143,6 +168,16 @@ mod tests {
             frames: None,
             slow: None,
             max_ms: None,
+            auto: None,
+            declare: None,
+            since_click_ms: None,
+            write_waited_ms: None,
+            chars: None,
+            parse_ms: None,
+            subscribes: None,
+            snapshot_chars: None,
+            subscribe_rate: None,
+            snapshot_chars_per_s: None,
         }
     }
 
@@ -267,6 +302,73 @@ mod tests {
         ] {
             assert!(parsed.get(key).is_none(), "no {key} on a page without one: {text}");
         }
+    }
+
+    /// **The switch gap's marks survive the write (#2513).** The click, the
+    /// subscribe with its unprompted flag, the snapshot's size and parse, and
+    /// the connection window's counters are the evidence this instrument
+    /// exists for; a field the shell does not name is parsed away silently.
+    #[test]
+    fn the_switch_gap_marks_survive_the_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut click = record("click");
+        click.session = Some("forge/lead".to_owned());
+        let mut subscribe = record("subscribe");
+        subscribe.auto = Some(true);
+        subscribe.declare = Some(false);
+        subscribe.since_click_ms = Some(1_750.5);
+        subscribe.write_waited_ms = Some(12.5);
+        let mut snapshot = record("snapshot");
+        snapshot.chars = Some(2_200_000);
+        snapshot.parse_ms = Some(38.5);
+        let mut connection = record("connection");
+        connection.subscribes = Some(15);
+        connection.snapshot_chars = Some(33_000_000);
+        connection.subscribe_rate = Some(1.5);
+        connection.snapshot_chars_per_s = Some(3_300_000.0);
+        append(dir.path(), &[click, subscribe, snapshot, connection], MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let lines: Vec<serde_json::Value> =
+            text.lines().map(|line| serde_json::from_str(line).expect("a JSON line")).collect();
+        assert_eq!(lines[1]["auto"], true, "the unprompted flag survives: {text}");
+        assert_eq!(lines[1]["declare"], false, "and the declare flag: {text}");
+        assert_eq!(lines[1]["since_click_ms"], 1_750.5, "and the click gap: {text}");
+        assert_eq!(lines[1]["write_waited_ms"], 12.5, "and the shell's write wait: {text}");
+        assert_eq!(lines[2]["chars"], 2_200_000, "the snapshot's length: {text}");
+        assert_eq!(lines[2]["parse_ms"], 38.5, "and its parse time: {text}");
+        assert_eq!(lines[3]["subscribes"], 15, "the window's subscribe count: {text}");
+        assert_eq!(lines[3]["snapshot_chars"], 33_000_000, "and its snapshot chars: {text}");
+        assert_eq!(lines[3]["subscribe_rate"], 1.5, "and the rate: {text}");
+        assert_eq!(lines[3]["snapshot_chars_per_s"], 3_300_000.0, "and the char rate: {text}");
+    }
+
+    /// **The page's own JSON is the boundary (#2513).** A field the struct
+    /// does not name is parsed away before the write, so this pins the page's
+    /// shapes rather than a hand-built struct: a `subscribe` with its flags
+    /// and click gap, and a `snapshot` with its size and parse time.
+    #[test]
+    fn a_page_record_with_the_switch_gap_marks_reaches_the_log() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let page = concat!(
+            r#"{"schema":"forge-perf/v1","kind":"subscribe","run_id":"r","ts_ms":1,"#,
+            r#""session":"forge/lead","declare":false,"auto":true,"since_click_ms":1750.5,"#,
+            r#""write_waited_ms":12.5}"#,
+            "\n",
+            r#"{"schema":"forge-perf/v1","kind":"snapshot","run_id":"r","ts_ms":2,"#,
+            r#""chars":2200000,"parse_ms":38.5,"surface":"home"}"#,
+        );
+        let records: Vec<ClientPerfRecord> = page
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("the page's line parses"))
+            .collect();
+        append(dir.path(), &records, MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        assert!(text.contains("\"auto\":true"), "the flag reaches the log: {text}");
+        assert!(text.contains("\"since_click_ms\":1750.5"), "and the click gap: {text}");
+        assert!(text.contains("\"chars\":2200000"), "the snapshot's size reaches it: {text}");
+        assert!(text.contains("\"parse_ms\":38.5"), "and its parse time: {text}");
     }
 
     /// The other half: a record with no state writes no key at all, so a

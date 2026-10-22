@@ -201,6 +201,20 @@ between a placeholder and the content. The last two records carry the
 time since the switch. Slow frames are what the file is for; a quiet log
 is a client that is keeping up.
 
+**A switch's client-side gap has marks of its own (#2513).** `click` is
+written at the shell's delegated click handler, before the route moves, and
+carries the seat. `subscribe` is written where the frame leaves this side -
+the page's own socket in the web build, and the desktop shell half's
+reported write in the app, carrying `write_waited_ms` for the shell's queue
+and write - with `declare` and `auto`: `auto` is true when no click or
+conversation opening happened after the last snapshot completed, which is
+the repeated re-subscribe shape. `snapshot` carries the frame's length
+(`chars` in the web build, the raw frame's bytes from the desktop shell) and
+how long its parse took (`parse_ms`). A `connection` record, written once a
+second while anything happened, carries `subscribes` and `snapshot_chars`
+with `subscribe_rate` and `snapshot_chars_per_s` - the pair that tells a
+switch's own subscribe apart from a client re-subscribing back to back.
+
 The icon is the `panes` mark from `src/brand.ts`, on the `--bg` ground in
 the `--accent` colour. Render the mark to a 1024 PNG and pass that to
 `npx tauri icon` - the `icons/icon.png` the generator writes is a 512 and

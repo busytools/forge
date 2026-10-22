@@ -65,9 +65,15 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
     cb();
   };
 
+  /** Move the test's clock without a frame: a mark's own timestamp. */
+  const advance = (ms: number) => {
+    clock += ms;
+  };
+
   return {
     probe,
     frame,
+    advance,
     records,
     longTask: (ms: number, name = 'self') => longTask?.(ms, name),
     beat: (lateMs = 5) => heartbeat?.(lateMs),
@@ -930,5 +936,65 @@ describe('the surface a record names', () => {
 
   it('leaves a sessionless route without one', () => {
     expect(perfSurface({ name: 'home' })).toEqual({ surface: 'home', session: null });
+  });
+});
+
+describe('the switch gap marks (#2513)', () => {
+  it('measures a subscribe from the click that preceded it', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/agent');
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(1_750);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const click = h.records.flat().find((record) => record.kind === 'click');
+    expect(click?.session).toBe('forge/lead');
+    const subscribe = h.records.flat().find((record) => record.kind === 'subscribe');
+    expect(subscribe?.since_click_ms).toBe(1_750);
+    expect(subscribe?.auto).toBe(false);
+    expect(subscribe?.declare).toBe(false);
+    expect(subscribe?.session).toBe('forge/lead');
+  });
+
+  it('marks a subscribe that follows a snapshot with no user action', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/lead');
+    h.probe.noteSnapshot('forge/lead', 2_200_000, 38.5);
+    h.advance(5);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const snapshot = h.records.flat().find((record) => record.kind === 'snapshot');
+    expect(snapshot?.chars).toBe(2_200_000);
+    expect(snapshot?.parse_ms).toBe(38.5);
+    const subscribe = h.records.flat().find((record) => record.kind === 'subscribe');
+    expect(subscribe?.auto).toBe(true);
+    expect(subscribe?.since_click_ms).toBeUndefined();
+  });
+
+  it("records the desktop shell's own subscribe write wait", () => {
+    const h = harness();
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(1_500);
+    h.probe.noteSubscribe('forge/lead', false, 12.5);
+
+    const subscribe = h.records.flat().find((record) => record.kind === 'subscribe');
+    expect(subscribe?.since_click_ms).toBe(1_500);
+    expect(subscribe?.write_waited_ms).toBe(12.5);
+  });
+
+  it('counts subscribes and snapshot chars per second of connection', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/lead');
+    h.probe.noteSubscribe('forge/lead', false);
+    h.probe.noteSubscribe('forge/lead', false);
+    h.probe.noteSnapshot('forge/lead', 2_200_000, 10);
+    h.frame(1_000);
+
+    const connection = h.records.flat().find((record) => record.kind === 'connection');
+    expect(connection?.window_ms).toBe(1_000);
+    expect(connection?.subscribes).toBe(2);
+    expect(connection?.snapshot_chars).toBe(2_200_000);
+    expect(connection?.subscribe_rate).toBe(2);
+    expect(connection?.snapshot_chars_per_s).toBe(2_200_000);
   });
 });

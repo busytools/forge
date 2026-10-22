@@ -67,8 +67,14 @@ pub enum SocketEvent {
     /// The connection opened, dropped, or was closed by our own hand.
     Status(Status),
     /// A server frame, verbatim: the greeting, snapshots, updates, pages,
-    /// asks and errors alike. The receiver reads `kind`.
-    Message(Value),
+    /// asks and errors alike. The receiver reads `kind`. `bytes` is the raw
+    /// frame's length and `parse_ms` how long this half's parse took - the
+    /// page's perf log carries both for a snapshot (#2513).
+    Message { value: Value, bytes: usize, parse_ms: f64 },
+    /// A subscribe frame finished its write, with how long it waited in this
+    /// half (the queue plus the write) - the page's perf log times the switch
+    /// to it (#2513).
+    Written { key: String, declared: bool, waited_ms: f64 },
     /// The browser role moved - granted, taken, or released with the drop.
     Role { hosting: bool },
     /// A subscribe the core refused, attributed to the oldest ask still
@@ -84,7 +90,8 @@ impl SocketEvent {
     fn kind(&self) -> &'static str {
         match self {
             Self::Status(_) => "status",
-            Self::Message(_) => "message",
+            Self::Message { .. } => "message",
+            Self::Written { .. } => "written",
             Self::Role { .. } => "role",
             Self::Refused { .. } => "refused",
             Self::Malformed(_) => "malformed",
@@ -163,6 +170,10 @@ enum Outbound {
         what: Value,
         answering: bool,
         browser: bool,
+        /// When the page's command reached this half: the write's own wait is
+        /// measured from here, so a subscribe queued behind a frame the loop
+        /// is parsing is on the record (#2513).
+        queued: tokio::time::Instant,
     },
     /// One subscribe frame on the wire with nothing held: the role's own
     /// re-declaration (the page's `declare`), which must not add to the
@@ -170,6 +181,7 @@ enum Outbound {
     Declare {
         what: Value,
         answering: bool,
+        queued: tokio::time::Instant,
     },
     /// A browser answer's image, header included: a frame that cannot go
     /// ends the connection (the answer is already out and its images never
@@ -268,7 +280,12 @@ impl Socket {
     /// connection lives, and the flags stated here are what a reconnect
     /// re-asks with.
     pub fn subscribe(&self, what: Value, answering: bool, browser: bool) {
-        let _ = self.tx.send(Outbound::Subscribe { what, answering, browser });
+        let _ = self.tx.send(Outbound::Subscribe {
+            what,
+            answering,
+            browser,
+            queued: tokio::time::Instant::now(),
+        });
     }
 
     /// Give one subscription back.
@@ -285,7 +302,11 @@ impl Socket {
     /// declare**, which is what keeps the server's own bookkeeping out of it
     /// too: the client cannot give back what it never counted.
     pub fn declare(&self, what: Value, answering: bool) {
-        let _ = self.tx.send(Outbound::Declare { what, answering });
+        let _ = self.tx.send(Outbound::Declare {
+            what,
+            answering,
+            queued: tokio::time::Instant::now(),
+        });
     }
 
     /// Ask for more turns of a conversation.
@@ -436,7 +457,7 @@ fn subject_key(what: &Value) -> String {
 fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String>) -> bool {
     match next {
         Outbound::Close => true,
-        Outbound::Subscribe { what, answering, browser } => {
+        Outbound::Subscribe { what, answering, browser, .. } => {
             // The key is NOT queued here: nothing is outstanding until the
             // frame really goes, which is the reconnect's own re-ask. Queuing
             // it here as well would push it twice, and the extra entry would
@@ -534,6 +555,7 @@ async fn run(
         // **The declaration is re-asked, once per OPEN subscription** - the
         // server counts, so a subject two callers hold is asked for twice -
         // with the flags it carried: this is how the role survives a drop.
+        let reasking = tokio::time::Instant::now();
         for h in &held {
             for _ in 0..h.count {
                 if writer.send(h.subscribe_frame()).await.is_err() {
@@ -544,6 +566,14 @@ async fn run(
                 // this list the same length as the wire's (`socket.ts`'s
                 // `askFor` and `answered` are the pair being mirrored).
                 awaiting.push(h.key.clone());
+                say(
+                    &events,
+                    SocketEvent::Written {
+                        key: h.key.clone(),
+                        declared: false,
+                        waited_ms: reasking.elapsed().as_secs_f64() * 1000.0,
+                    },
+                );
             }
         }
         let mut pending: HashMap<u64, oneshot::Sender<Result<Value, String>>> = HashMap::new();
@@ -551,10 +581,22 @@ async fn run(
         loop {
             tokio::select! {
                 frame = reader.next() => match frame {
-                    Some(Ok(Message::Text(text))) => match serde_json::from_str::<Value>(&text) {
-                        Ok(value) => receive(&value, &mut pending, &mut awaiting, &events),
-                        Err(why) => say(&events, SocketEvent::Malformed(why.to_string())),
-                    },
+                    Some(Ok(Message::Text(text))) => {
+                        let at = tokio::time::Instant::now();
+                        let parsed = serde_json::from_str::<Value>(&text);
+                        let parse_ms = at.elapsed().as_secs_f64() * 1000.0;
+                        match parsed {
+                            Ok(value) => receive(
+                                &value,
+                                text.len(),
+                                parse_ms,
+                                &mut pending,
+                                &mut awaiting,
+                                &events,
+                            ),
+                            Err(why) => say(&events, SocketEvent::Malformed(why.to_string())),
+                        }
+                    }
                     Some(Ok(_)) => {}
                     Some(Err(why)) => {
                         say(&events, SocketEvent::Malformed(why.to_string()));
@@ -573,21 +615,30 @@ async fn run(
                             let _ = writer.send(Message::Close(None)).await;
                             break;
                         }
-                        Outbound::Subscribe { what, answering, browser } => {
+                        Outbound::Subscribe { what, answering, browser, queued } => {
                             if let Some(key) = hold(&mut held, what, answering, browser) {
-                                if let Some(h) = held.iter().find(|h| h.key == key) {
-                                    let _ = writer.send(h.subscribe_frame()).await;
+                                if let Some(h) = held.iter().find(|h| h.key == key)
+                                    && writer.send(h.subscribe_frame()).await.is_ok()
+                                {
+                                    say(
+                                        &events,
+                                        SocketEvent::Written {
+                                            key: key.clone(),
+                                            declared: false,
+                                            waited_ms: queued.elapsed().as_secs_f64() * 1000.0,
+                                        },
+                                    );
                                 }
                                 awaiting.push(key);
                             }
                         }
-                        Outbound::Declare { what, answering } => {
+                        Outbound::Declare { what, answering, queued } => {
                             // One frame with the browser capability, one
                             // outstanding ask, and nothing held: see
                             // `Socket::declare`.
                             let key = subject_key(&what);
                             if !key.is_empty() {
-                                let _ = writer
+                                let sent = writer
                                     .send(Message::Text(
                                         json!({
                                             "kind": "subscribe",
@@ -600,6 +651,16 @@ async fn run(
                                         .into(),
                                     ))
                                     .await;
+                                if sent.is_ok() {
+                                    say(
+                                        &events,
+                                        SocketEvent::Written {
+                                            key: key.clone(),
+                                            declared: true,
+                                            waited_ms: queued.elapsed().as_secs_f64() * 1000.0,
+                                        },
+                                    );
+                                }
                                 awaiting.push(key);
                             }
                         }
@@ -749,6 +810,8 @@ fn say(events: &mpsc::UnboundedSender<SocketEvent>, event: SocketEvent) {
 /// everything else crosses verbatim.
 fn receive(
     value: &Value,
+    bytes: usize,
+    parse_ms: f64,
     pending: &mut HashMap<u64, oneshot::Sender<Result<Value, String>>>,
     awaiting: &mut Vec<String>,
     events: &mpsc::UnboundedSender<SocketEvent>,
@@ -789,7 +852,7 @@ fn receive(
                     awaiting.remove(at);
                 }
             }
-            say(events, SocketEvent::Message(value.clone()));
+            say(events, SocketEvent::Message { value: value.clone(), bytes, parse_ms });
         }
         Some("error") => {
             if value.get("what").and_then(Value::as_str) == Some("subscribe")
@@ -800,9 +863,9 @@ fn receive(
                 say(events, SocketEvent::Refused { key, why });
                 return;
             }
-            say(events, SocketEvent::Message(value.clone()));
+            say(events, SocketEvent::Message { value: value.clone(), bytes, parse_ms });
         }
-        _ => say(events, SocketEvent::Message(value.clone())),
+        _ => say(events, SocketEvent::Message { value: value.clone(), bytes, parse_ms }),
     }
 }
 
@@ -962,7 +1025,10 @@ pub(crate) mod tests {
         let greeting = json!({ "kind": "greeting", "version": 8, "settings": {} });
         stub.say.send(greeting.clone()).expect("the stub broadcasts");
         match event_of(&mut rx, "message").await {
-            SocketEvent::Message(value) => assert_eq!(value, greeting),
+            SocketEvent::Message { value, bytes, .. } => {
+                assert_eq!(value, greeting);
+                assert!(bytes > 0, "a message carries its raw frame's length (#2513)");
+            }
             other => panic!("a message expected, got {other:?}"),
         }
         let _ = socket;
@@ -988,7 +1054,7 @@ pub(crate) mod tests {
             .expect("the oversized frame within the bound")
             .expect("the socket still feeding");
         match event {
-            SocketEvent::Message(value) => {
+            SocketEvent::Message { value, .. } => {
                 assert_eq!(value, snapshot, "the whole frame arrives intact");
             }
             // The production failure, named: the read that refuses the
@@ -1337,8 +1403,8 @@ pub(crate) mod tests {
             .send(json!({ "kind": "error", "what": "subscribe", "why": "nothing" }))
             .expect("the refusal");
         let seen = event_of(&mut rx, "message").await;
-        let SocketEvent::Message(message) = seen else { unreachable!("filtered") };
-        assert_eq!(message["what"], "subscribe", "nothing outstanding reads as a plain frame");
+        let SocketEvent::Message { value, .. } = seen else { unreachable!("filtered") };
+        assert_eq!(value["what"], "subscribe", "nothing outstanding reads as a plain frame");
     }
 
     /// **A reply the server never sends is not a caller parked forever.** An

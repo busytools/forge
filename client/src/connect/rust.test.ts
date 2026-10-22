@@ -33,6 +33,17 @@ const listen = vi.hoisted(() =>
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
 
+/**
+ * **The perf marks are the shim's own edges (#2513).** A snapshot's frame
+ * facts and a subscribe's write arrive as shell events; these are the
+ * wrappers the page records them through.
+ */
+vi.mock('../perf', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../perf')>();
+  return { ...real, noteSnapshot: vi.fn(), noteSubscribeWritten: vi.fn() };
+});
+
+import { noteSnapshot, noteSubscribeWritten } from '../perf';
 import { browserInflight } from '../browser/inflight.svelte';
 import { subjectKey, type ServerMessage } from '../protocol';
 import { onRefusal, type Refusal } from '../refusals';
@@ -61,9 +72,9 @@ async function opened(state: State = OPEN): Promise<Connection> {
     return Promise.resolve(undefined);
   });
   const connection = connectRust('ws://127.0.0.1:7777/socket');
-  // Six: the connection, the frames, the refusals, the role, the asks, and
-  // the sweep notices.
-  await vi.waitFor(() => expect(handlers.size).toBe(6));
+  // Eight: the connection, the frames, the refusals, the role, the asks, the
+  // sweep notices, and #2513's frame facts and subscribe writes.
+  await vi.waitFor(() => expect(handlers.size).toBe(8));
   await vi.waitFor(() =>
     expect(invoke).toHaveBeenCalledWith('client_connect', { url: 'ws://127.0.0.1:7777/socket' }),
   );
@@ -276,6 +287,24 @@ describe("the connection's own facts", () => {
     ).toEqual({ serverProtocol: 7, serverVersion: '1.1.0' });
   });
 
+  /**
+   * **The shell's own facts reach the perf log as their marks (#2513).** A
+   * forwarded snapshot's raw length and parse, and a subscribe's write wait,
+   * are measured in the Rust half; a one-sided rename here would silence the
+   * switch-gap record with nothing failing.
+   */
+  it("the shell's frame facts and subscribe writes reach the perf log", async () => {
+    await opened();
+    vi.mocked(noteSnapshot).mockClear();
+    vi.mocked(noteSubscribeWritten).mockClear();
+
+    fire('client://framed', { subject, bytes: 2_200_000, parse_ms: 38.5 });
+    expect(noteSnapshot).toHaveBeenCalledWith(subject, 2_200_000, 38.5);
+
+    fire('client://written', { key: subjectKey(subject), declared: false, waited_ms: 12.5 });
+    expect(noteSubscribeWritten).toHaveBeenCalledWith('Busytools/forge/lead', false, 12.5);
+  });
+
   it('a status move reaches onStatus, and the role reaches onBrowserRole once', async () => {
     let status = 'connecting';
     invoke.mockImplementation((command: string) => {
@@ -285,7 +314,7 @@ describe("the connection's own facts", () => {
       return Promise.resolve(undefined);
     });
     const connection = connectRust('ws://127.0.0.1:7777/socket');
-    await vi.waitFor(() => expect(handlers.size).toBe(6));
+    await vi.waitFor(() => expect(handlers.size).toBe(8));
     const moves: string[] = [];
     connection.onStatus((next) => moves.push(next));
     status = 'open';
