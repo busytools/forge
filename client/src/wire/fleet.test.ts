@@ -362,6 +362,17 @@ describe('what one update asks of the fleet', () => {
     // A turn's own words on a watched seat are neither fleet news nor
     // slot-less, so a home subscriber is never sent them.
     expect(coversHome(appended({ type: 'assistant' }))).toBe(false);
+    // **The board's own two do not reach the home** (#2517): their data left
+    // the home's snapshot, so a home re-read could not answer for them.
+    expect(coversHome({ cron_schedules_changed: { key: LEAD, crons: [] } })).toBe(false);
+    expect(
+      coversHome({
+        connector_subscriptions_changed: { key: LEAD, gotify: [], slack: [] },
+      }),
+    ).toBe(false);
+    // A task write still does: the fleet's counts are derived from the same
+    // tasks.
+    expect(coversHome({ tasks_changed: { key: LEAD, tasks: [] } })).toBe(true);
   });
 
   /**

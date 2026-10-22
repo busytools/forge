@@ -1,0 +1,116 @@
+/**
+ * The board over a live connection: the snapshot it is answered with, and the
+ * read that follows every update a board subscriber is sent (#2517).
+ *
+ * **One store per connection, shared by the pages that draw it.** The board
+ * page and the session rail both read it, and a second subscription would
+ * make the server encode the same rows twice. The subscription opens with the
+ * first reader and goes with the last, so a home page that draws no board
+ * pays nothing for it.
+ */
+
+import { writable, type Readable, type Writable } from 'svelte/store';
+
+import type { Connection, ConnectionStatus } from '../socket';
+import type { Store } from '../stores';
+import { boardFrom, coversBoard, type BoardRead, type BoardWire } from '../wire/board';
+
+/** How long an update waits before it is answered with a read. */
+const COALESCE_MS = 50;
+
+const NOTHING: BoardRead = { wire: null, refused: null };
+
+const STORES = new WeakMap<Connection, Readable<BoardRead>>();
+
+/** Watch the board, sharing one store with every other reader of it. */
+export function watchBoard(connection: Connection): Readable<BoardRead> {
+  const held = STORES.get(connection);
+  if (held !== undefined) return held;
+  const view = boardStore(connection);
+  STORES.set(connection, view);
+  return view;
+}
+
+function boardStore(connection: Connection): Readable<BoardRead> {
+  let held: Store | null = null;
+  // One read at a time: it is a whole encode on the server, and a read asked
+  // while one is in flight queues behind it.
+  let reading = false;
+  /** Whether an update landed while a read was in flight. */
+  let stale = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopMessages: (() => void) | null = null;
+  let stopStatus: (() => void) | null = null;
+
+  function schedule(): void {
+    if (timer !== null) return;
+    timer = setTimeout(() => {
+      timer = null;
+      reading = true;
+      connection.refresh('board');
+    }, COALESCE_MS);
+  }
+
+  function read(): void {
+    if (held === null) return;
+    const state = held.state();
+    if (state.kind === 'refused') {
+      view.set({ wire: null, refused: state.why });
+      return;
+    }
+    const data = held.snapshot();
+    view.set({
+      wire: data === null ? null : boardFrom(data as unknown as BoardWire),
+      refused: null,
+    });
+  }
+
+  function watch(): void {
+    held = connection.subscribe('board');
+    reading = false;
+    stopMessages = connection.onMessage((message) => {
+      if (message.kind === 'snapshot' || message.kind === 'error') {
+        if (message.kind === 'error' || message.subject === 'board') {
+          reading = false;
+          read();
+          if (stale) {
+            stale = false;
+            schedule();
+          }
+        }
+        return;
+      }
+      if (message.kind !== 'update' || !coversBoard(message.update)) return;
+      if (reading) {
+        stale = true;
+        return;
+      }
+      schedule();
+    });
+    stopStatus = connection.onStatus((next: ConnectionStatus) => {
+      if (next !== 'open') {
+        reading = false;
+        stale = false;
+      }
+    });
+  }
+
+  function unwatch(): void {
+    stopMessages?.();
+    stopStatus?.();
+    stopMessages = null;
+    stopStatus = null;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    connection.unsubscribe('board');
+    held = null;
+  }
+
+  const view: Writable<BoardRead> = writable(NOTHING, () => {
+    watch();
+    read();
+    return unwatch;
+  });
+
+  return { subscribe: view.subscribe };
+}

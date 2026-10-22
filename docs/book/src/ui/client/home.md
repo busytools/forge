@@ -197,12 +197,13 @@ attached to the seat", not "no client was looking at its page", and the
 difference is the cost of holding a seat rather than re-reading it on
 every return, filed as #1439.
 
-Two things the home subject carries and this page does not draw are the
-schedules a project holds and the account a row chips. Each is drawn
-elsewhere: the schedules on the session page's strip, whose schedules row
-keeps the seat's own set (a cron names the seat that created it), and the
-account on the session page's rail footer, beside what it is costing.
-Neither is a gap in this page.
+Two things this page does not draw are the schedules a project holds and the
+account a row chips. Each is drawn elsewhere: the schedules on the session
+page's strip, whose schedules row keeps the seat's own set (a cron names the
+seat that created it) - read from the `board` subject since #2517, which is
+also why the home's own read is a few kilobytes rather than the board's
+hundreds - and the account on the session page's rail footer, beside what it
+is costing. Neither is a gap in this page.
 
 ## The two widths
 

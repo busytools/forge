@@ -8,6 +8,7 @@
  */
 
 import { followable } from '../home/view';
+import type { BoardWire } from '../wire/board';
 import type { BoardRow, HomeWire, Marks, Task, TaskStatus } from '../wire/home';
 
 /** One card on the board, resolved for the markup. */
@@ -347,8 +348,13 @@ function cardView(
  * before the first frame lands, and a board with an active create line for a
  * project this forge does not hold invites a row against nothing.
  */
-export function boardView(wire: HomeWire, org: string, project: string): BoardView {
-  const row = wire.projects.find(
+export function boardView(
+  wire: HomeWire,
+  board: BoardWire,
+  org: string,
+  project: string,
+): BoardView {
+  const row = board.projects.find(
     (entry) => entry.project.org === org && entry.project.name === project,
   );
   // The fleet row is where the server's own count of the board lives.

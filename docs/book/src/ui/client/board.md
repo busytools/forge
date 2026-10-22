@@ -13,11 +13,12 @@ It is reached from two doors: `open board` on the project's row on the
 return the reader where they came from, and a deep link with nothing to go
 back to lands on the home.
 
-The page draws from the same `home` snapshot the fleet does - a project's
-rows ride in that project's entry - so the board is live off the same
-subscription: a seat that claims a row, a row that is cut, a move made in
-another view all arrive as an update, and the page re-reads without the
-reader doing anything.
+The page draws from the `board` subject: a project's rows, schedules and
+connector sets ride in that subject's entry, and it hears the updates that
+move them. The seats and the project's counters come from the home snapshot
+beside it. So a seat that claims a row, a row that is cut, or a move made in
+another view arrives as an update, and the page re-reads without the reader
+doing anything.
 
 ## What it draws
 
@@ -26,7 +27,7 @@ reader doing anything.
 | Top bar | `back`, the project's name with its own read (`N waiting on you`, `N rows`, `N running`), `done` | the route and the snapshot |
 | Seats | one chip per seat this project holds, linking to its session page; a card dropped on one assigns it | `agents` filtered to the project |
 | Waiting on you | the rows whose wait is a decision, each card leading with the wait's ask: the verify gate (`approve`, a words box, `send back`) on a row minted `verify: user`, or a worker's question (an answer box), with the row's links and a look's artifact beside it. A root whose children are not all done draws the count and the send-back instead of `approve`, because a row closes only when its children do | `waiting_on` with `kind: decision` (a verification park only where the row's own `verify` is `user`), the wait's `detail`, the row's links, and the row's `rollup` |
-| Lanes | every card, in its state's lane, with the grown groups folded - the finished ones to their five most recent, Backlog to its ten | `projects[].rows` |
+| Lanes | every card, in its state's lane, with the grown groups folded - the finished ones to their five most recent, Backlog to its ten | the board's `projects[].rows` |
 | Create | a subject box, an epic picker and `+ add`, which files the row at the queue's end | `task_create` |
 
 ## The lanes

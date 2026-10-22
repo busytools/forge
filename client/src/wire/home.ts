@@ -2,9 +2,9 @@
  * The home's snapshot, as `crates/forge-server/src/transport/wire.rs` writes
  * it, typed against the server's own fixture beside this file.
  *
- * The fixture's `rows` and `crons` arrays are empty, so those two element
- * shapes come from the Rust that emits them rather than from the fixture:
- * the fixture pins what it carries, and the source pins the rest.
+ * The board's own detail - each project's rows, schedules and connector sets -
+ * is `wire/board.ts`'s since #2517: the home is the fleet glance, and a board
+ * read is its own subject. The row narrowing here is shared with that file.
  */
 
 import { reportFrom, type ServiceReport } from './fleet';
@@ -198,7 +198,7 @@ export function missFrom(value: unknown): MissRow {
 
 /**
  * One project as the fleet page draws it: the counts and the named
- * misses. A project's own rows ride its [`ProjectWire.rows`]; this is
+ * misses. The rows themselves ride the board's own subject (#2517); this is
  * the glance.
  */
 export interface FleetRow {
@@ -210,6 +210,8 @@ export interface FleetRow {
   queue: number;
   /** Rows waiting on the user's decision. */
   waiting_on_user: number;
+  /** Every row the project holds, which the home's header totals. */
+  rows: number;
   misses: MissRow[];
 }
 
@@ -303,17 +305,6 @@ export interface ProjectWire {
   project: ProjectView;
   /** The branch and count for the project's own tree. */
   work: WorkState;
-  /** The project's live rows, with the board's own facts on each. */
-  rows: BoardRow[];
-  crons: CronEntry[];
-  /**
-   * This project's connector subscriptions, one list per connector.
-   *
-   * Left `unknown` here like the home's own member and narrowed where it
-   * enters: the sets are per project, so they ride the row rather than the
-   * home's `connectors`, which carries the liveness facts alone.
-   */
-  connectors: unknown;
   /** Whether a spawn here would find an account, beside `has_model`. */
   would_bind: boolean;
   /** The account the row chips, and its state. */
@@ -432,7 +423,7 @@ const NO_MARKS: Marks = {
  * So a flat entry is wrapped as the row this client reads, with the neutral
  * value for everything that server never stated.
  */
-function rowFrom(entry: unknown): BoardRow {
+export function rowFrom(entry: unknown): BoardRow {
   const raw = (entry ?? {}) as Record<string, unknown>;
   const flat = raw['task'] === undefined || raw['task'] === null;
   const task = (flat ? raw : (raw['task'] as Record<string, unknown>)) ?? {};
@@ -656,19 +647,10 @@ export function homeFrom(data: HomeWire): HomeWire {
           ? null
           : { ...agent.work, gate: narrow(agent.work.gate, GATES, 'in_repo') },
     })),
-    projects: data.projects.map((row) => {
-      // **The one step back.** A forge at protocol 7 sent this project's rows
-      // under `tasks`, so a client newer than its server reads the old key
-      // rather than drawing nothing. The cast is this boundary's own - the
-      // payload is typed as today's shape, and the field a move left behind is
-      // what is being read.
-      const legacy = row as { rows?: unknown[]; tasks?: unknown[] };
-      return {
-        ...row,
-        work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
-        rows: (legacy.rows ?? legacy.tasks ?? []).map(rowFrom),
-      };
-    }),
+    projects: data.projects.map((row) => ({
+      ...row,
+      work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
+    })),
     // The misses are the one member here that is a union of shapes rather
     // than a union of literals, so they are narrowed by `missFrom` rather
     // than by `narrow` - and a shape this client is older than survives as

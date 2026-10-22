@@ -9,6 +9,7 @@
   import { surface } from '../browser/surface.svelte';
   import { subjectKey } from '../protocol';
   import { report, type Connection } from '../socket';
+  import type { BoardRead } from '../wire/board';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import SessionId from './SessionId.svelte';
@@ -33,6 +34,7 @@
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
   import {
+    boardProjectOf,
     compactionFigure,
     chipState,
     gitStrip,
@@ -40,7 +42,6 @@
     mcpRows,
     monitorRows,
     orgNeeded,
-    projectOf,
     reviewRows,
     reviewSets,
     seatConnectorRows,
@@ -66,6 +67,7 @@
     slot,
     connection,
     wire,
+    board = { wire: null, refused: null },
     mark = null,
     conversation = null,
     composer = null,
@@ -75,6 +77,12 @@
     connection: Connection;
     /** The home's snapshot, which the rail, the header and four sections read. */
     wire: HomeWire;
+    /**
+     * The board's own read (#2517): the rail's task cells, the schedules and
+     * the connector sets. The router holds it while a page that draws one is
+     * open; absent, those cells draw nothing rather than the page failing.
+     */
+    board?: BoardRead;
     /** The brand the header's wordmark draws, as the home's own brand does. */
     mark?: string | null;
     /** The conversation column. Absent, the seat's own not-running state draws. */
@@ -135,22 +143,22 @@
   });
 
   /**
-   * The connectors row follows the HOME, not the seat's record: the
-   * subscription sets ride the project's own row there, and the seat's own
-   * are the ones whose `team_role` names it.
+   * The connectors row follows the project's set on the BOARD, not the seat's
+   * record: the subscription sets ride the project's own board row, and the
+   * seat's own are the ones whose `team_role` names it.
    */
   $effect(() => {
-    connectors.sync(seatConnectorRows(wire, slot));
+    connectors.sync(seatConnectorRows(wire, board.wire, slot));
   });
 
   /**
    * The schedules row reads the page's own clock: a countdown is part of every
    * row, so the list re-derives as `now` moves rather than going stale between
-   * home reads. A cron names the seat that created it, so the row keeps its
+   * board reads. A cron names the seat that created it, so the row keeps its
    * own label's set.
    */
   $effect(() => {
-    schedules.sync(seatScheduleRows(wire, slot, now));
+    schedules.sync(seatScheduleRows(board.wire, slot, now));
   });
 
   /**
@@ -160,9 +168,6 @@
   $effect(() => {
     mcp.sync(mcpRows(record));
   });
-
-  /** The project's own row on the home, which the tasks row reads. */
-  const project = $derived(projectOf(wire, slot));
 
   /**
    * The tree and the monitors are the seat's own reads; the tasks are the
@@ -189,7 +194,7 @@
   $effect(() => {
     tasks.sync(
       taskRows(
-        (project?.rows ?? []).map((row) => row.task),
+        (boardProjectOf(board.wire, slot)?.rows ?? []).map((row) => row.task),
         slot,
       ),
     );
@@ -552,6 +557,7 @@
   <div class="scrim" role="presentation" onclick={() => closeRail()}></div>
   <Rail
     home={wire}
+    board={board.wire}
     current={slot}
     {now}
     {connection}

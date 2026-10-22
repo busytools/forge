@@ -2,9 +2,12 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { homeWire } from '../dev/fixture.data';
+import { boardWire, homeWire } from '../dev/fixture.data';
+import type { ServerMessage, Subject } from '../protocol';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
+import { Stores } from '../stores';
+import type { BoardWire } from '../wire/board';
 import type { Task } from '../wire/home';
 import { DEFAULT_SETTINGS } from '../wire/types';
 import Router from './Router.svelte';
@@ -27,15 +30,21 @@ afterEach(async () => {
 
 const LEAD = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
-/** A connection whose `dispatch` records, and whose every other call refuses. */
-function recording(sent: Record<string, unknown>[]): { connection: Connection } {
+/**
+ * A connection whose `dispatch` records, whose board read is already
+ * answered, and whose every other call refuses.
+ */
+function recording(sent: Record<string, unknown>[], board: BoardWire): { connection: Connection } {
   const refuse = (): never => {
     throw new Error('this render reached a part of the connection it should not have');
   };
+  const stores = new Stores();
+  const listeners = new Set<(message: ServerMessage) => void>();
+  stores.open('board').set(board);
   const connection = {
-    subscribe: refuse,
-    unsubscribe: refuse,
-    refresh: refuse,
+    subscribe: (what: Subject) => stores.open(what),
+    unsubscribe: (what: Subject) => stores.close(what),
+    refresh: () => true,
     dispatch: (command: Record<string, unknown>) => {
       sent.push(command);
       return null;
@@ -47,8 +56,13 @@ function recording(sent: Record<string, unknown>[]): { connection: Connection } 
     onBrowserRole: refuse,
     onProfilesChanged: refuse,
     takeBrowserRole: refuse,
-    onMessage: refuse,
-    onStatus: refuse,
+    onMessage: (fn: (message: ServerMessage) => void) => {
+      listeners.add(fn);
+      return () => {
+        listeners.delete(fn);
+      };
+    },
+    onStatus: () => () => {},
     store: refuse,
     settings: refuse,
     skew: refuse,
@@ -59,9 +73,9 @@ function recording(sent: Record<string, unknown>[]): { connection: Connection } 
   return { connection };
 }
 
-/** The fixture's project, with one row waiting on the reader's look. */
-function wireWithWaiting(): typeof homeWire {
-  const first = homeWire.projects[0];
+/** The fixture's board, with one row waiting on the reader's look. */
+function boardWithWaiting(): BoardWire {
+  const first = boardWire.projects[0];
   if (first === undefined) throw new Error('the fixture holds no project');
   const waiting: Task = {
     id: 't1',
@@ -113,14 +127,14 @@ function wireWithWaiting(): typeof homeWire {
 }
 
 function summon(sent: Record<string, unknown>[]): void {
-  const { connection } = recording(sent);
+  const { connection } = recording(sent, boardWithWaiting());
   app = mount(Router, {
     target: document.body,
     props: {
       route: { name: 'board', org: 'TestOrg', project: 'proj' },
       settings: DEFAULT_SETTINGS,
       address: '127.0.0.1:8790',
-      home: { wire: wireWithWaiting(), refused: null, report: null },
+      home: { wire: homeWire, refused: null, report: null },
       failure: null,
       connected: true,
       connection,
@@ -161,7 +175,7 @@ describe('a board edit through the router', () => {
    * a read that is never coming.
    */
   it('says so when the home read was refused, rather than reading forever', () => {
-    const { connection } = recording([]);
+    const { connection } = recording([], boardWire);
     app = mount(Router, {
       target: document.body,
       props: {

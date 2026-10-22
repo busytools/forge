@@ -2,8 +2,9 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { homeWire } from '../dev/fixture.data';
+import { boardWire, homeWire } from '../dev/fixture.data';
 import { violationsOf } from '../testing/axe';
+import type { BoardWire } from '../wire/board';
 import type { BoardRow, HomeWire, Marks, Task, TaskLinkWire, TaskStatus } from '../wire/home';
 import Board from './Board.svelte';
 import Frames from './testing/Frames.svelte';
@@ -79,20 +80,26 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
   };
 }
 
-function wireWith(rows: BoardRow[]): HomeWire {
-  const first = homeWire.projects[0];
+function wireWith(rows: BoardRow[]): { home: HomeWire; board: BoardWire } {
+  const first = boardWire.projects[0];
   if (first === undefined) throw new Error('the fixture holds no project');
-  return { ...homeWire, projects: [{ ...first, rows }] };
+  return { home: homeWire, board: { ...boardWire, projects: [{ ...first, rows }] } };
 }
 
 function summon(
-  wire: HomeWire,
+  wires: { home: HomeWire; board: BoardWire },
   onact: (command: Record<string, Record<string, unknown>>) => void = (command) =>
     acts.push(command),
 ): void {
   app = mount(Board, {
     target: document.body,
-    props: { wire, org: 'TestOrg', project: 'proj', onact },
+    props: {
+      wire: wires.home,
+      board: { wire: wires.board, refused: null },
+      org: 'TestOrg',
+      project: 'proj',
+      onact,
+    },
   });
   flushSync();
 }
@@ -357,7 +364,7 @@ describe("the board's controls", () => {
           initial: wireWith([row(task('t1', 'stepped', 'pending'))]),
           onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
         },
-      }) as unknown as { set: (next: HomeWire) => void };
+      }) as unknown as { set: (next: { home: HomeWire; board: BoardWire }) => void };
       flushSync();
 
       const card = document.querySelector<HTMLElement>('.b-card[data-id="t1"]');
@@ -467,10 +474,12 @@ describe("the board's controls", () => {
    * did nothing and a press the core refused must not read the same.
    */
   it("draws the core's refusal where the reader is looking", () => {
+    const wires = wireWith([row(task('t1', 'a row', 'pending'))]);
     app = mount(Board, {
       target: document.body,
       props: {
-        wire: wireWith([row(task('t1', 'a row', 'pending'))]),
+        wire: wires.home,
+        board: { wire: wires.board, refused: null },
         org: 'TestOrg',
         project: 'proj',
         onact: () => {},
@@ -489,10 +498,12 @@ describe("the board's controls", () => {
    * above the lanes, where it reads as something about the board.
    */
   it("draws none of another producer's report", () => {
+    const wires = wireWith([row(task('t1', 'a row', 'pending'))]);
     app = mount(Board, {
       target: document.body,
       props: {
-        wire: wireWith([row(task('t1', 'a row', 'pending'))]),
+        wire: wires.home,
+        board: { wire: wires.board, refused: null },
         org: 'TestOrg',
         project: 'proj',
         onact: () => {},
@@ -517,6 +528,7 @@ describe("the board's controls", () => {
       target: document.body,
       props: {
         wire: homeWire,
+        board: { wire: boardWire, refused: null },
         org: 'TestOrg',
         project: 'nope',
         onact: () => {},

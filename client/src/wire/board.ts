@@ -1,0 +1,77 @@
+/**
+ * The board's snapshot, as `crates/forge-server/src/transport/wire.rs` writes
+ * it: every project's rows, schedules and connector sets (#2517).
+ *
+ * **Its own subject, not the home's.** These three fields were 97.6% of a
+ * home read, and a home read runs on every update that covers the fleet; a
+ * page that draws none of them should not pay for them. The page and the
+ * rail that do draw them subscribe here.
+ */
+
+import type { SessionUpdate } from '../protocol';
+import { rowFrom, type BoardRow, type CronEntry, type ProjectView } from './home';
+
+/** One project's board detail. */
+export interface ProjectBoardWire {
+  project: ProjectView;
+  /** The project's live rows, with the board's own facts on each. */
+  rows: BoardRow[];
+  crons: CronEntry[];
+  /**
+   * This project's connector subscriptions, one list per connector.
+   *
+   * Left `unknown` here like the home's own member and narrowed where it
+   * enters: the sets are per project, so they ride the board rather than the
+   * home's `connectors`, which carries the liveness facts alone.
+   */
+  connectors: unknown;
+}
+
+export interface BoardWire {
+  projects: ProjectBoardWire[];
+}
+
+/** What the board store holds: the read, or the server's own refusal. */
+export interface BoardRead {
+  wire: BoardWire | null;
+  refused: string | null;
+}
+
+/**
+ * Narrow the snapshot where it enters, so every union downstream is already
+ * one of the values the board draws.
+ */
+export function boardFrom(data: BoardWire): BoardWire {
+  return {
+    projects: data.projects.map((row) => {
+      // **The one step back.** A forge at protocol 7 sent a project's rows
+      // under `tasks`, flat; a client newer than its server reads the old key
+      // rather than drawing nothing.
+      const legacy = row as { rows?: unknown[]; tasks?: unknown[] };
+      return {
+        ...row,
+        rows: (legacy.rows ?? legacy.tasks ?? []).map(rowFrom),
+        crons: row.crons ?? [],
+      };
+    }),
+  };
+}
+
+/**
+ * Whether a board subscriber hears this update - the server's own
+ * `Subject::Board::covers`, and the one place it lives on this side.
+ *
+ * The three variants that move what the board's snapshot carries: a task
+ * write, a schedule set and a connector set. The home hears the task write
+ * too, because its fleet counts are derived from the same tasks; it hears
+ * neither of the other two, because its payload no longer carries them.
+ */
+export function coversBoard(update: SessionUpdate): boolean {
+  if (typeof update === 'string') return false;
+  const [variant] = Object.keys(update);
+  return (
+    variant === 'tasks_changed' ||
+    variant === 'cron_schedules_changed' ||
+    variant === 'connector_subscriptions_changed'
+  );
+}

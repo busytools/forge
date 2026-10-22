@@ -130,7 +130,8 @@ export function skewMessage(skew: Skew): string {
  * and catalogue only the models page draws, and the plugin inventory only
  * the extensions page draws.
  */
-export type Subject = 'home' | { session: SessionSlot } | 'usage' | 'dictate_models' | 'extensions';
+export type Subject =
+  'home' | 'board' | { session: SessionSlot } | 'usage' | 'dictate_models' | 'extensions';
 
 /**
  * A subscription's address as one string, which is what a store is keyed by.

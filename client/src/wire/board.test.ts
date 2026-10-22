@@ -1,27 +1,36 @@
 import { describe, expect, it } from 'vitest';
 
-import { homeFrom, type HomeWire } from './home';
+import { boardFrom, coversBoard, type BoardWire } from './board';
+import type { SessionSlot } from './types';
+
+const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
 /**
- * The home parse is the one place a task's newer fields enter, and a field
+ * The board parse is the one place a task's newer fields enter, and a field
  * it drops draws nothing: no mark, no reserved chip, no parked wait. These
  * pin the parse rather than the renderer, so a regression here fails by
  * name instead of quietly losing the board's words (#2423).
  */
 function parsedTask(task: Record<string, unknown>): Record<string, unknown> {
   const raw = {
-    service_status: null,
-    fatal_error: null,
-    agents: [],
     projects: [{ work: { gate: 'in_repo' }, rows: [{ task }] }],
-    fleet: [],
-    accounts: { loading: [] },
-    dictate: { snapshot: { models: [] } },
-  } as unknown as HomeWire;
-  const taskRow = homeFrom(raw).projects[0]?.rows[0]?.task;
+  } as unknown as BoardWire;
+  const taskRow = boardFrom(raw).projects[0]?.rows[0]?.task;
   if (taskRow === undefined) throw new Error('the row did not parse');
   return taskRow as unknown as Record<string, unknown>;
 }
+
+describe('the board hears exactly the variants that move it (#2517)', () => {
+  it('takes its own three and nothing else', () => {
+    expect(coversBoard({ tasks_changed: { key: LEAD, tasks: [] } })).toBe(true);
+    expect(coversBoard({ cron_schedules_changed: { key: LEAD, crons: [] } })).toBe(true);
+    expect(
+      coversBoard({ connector_subscriptions_changed: { key: LEAD, gotify: [], slack: [] } }),
+    ).toBe(true);
+    expect(coversBoard({ accounts_changed: {} })).toBe(false);
+    expect(coversBoard('catalog_loaded')).toBe(false);
+  });
+});
 
 describe('the task fields the board marks', () => {
   it('keeps the attestation, the reservation and a parked wait', () => {

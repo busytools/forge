@@ -3,10 +3,11 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { tasks } from '../chat/tasks.svelte';
-import { homeWire } from '../dev/fixture.data';
+import { boardWire, homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
-import type { HomeWire, TaskStatus } from '../wire/home';
+import type { BoardRead, BoardWire } from '../wire/board';
+import type { TaskStatus } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import SpawnHarness from './SpawnHarness.svelte';
 
@@ -20,12 +21,11 @@ import SpawnHarness from './SpawnHarness.svelte';
  */
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
-/** A home whose project carries one task, in the state named. */
-function homeWith(status: TaskStatus): HomeWire {
-  const project = homeWire.projects[0];
+/** A board whose project carries one task, in the state named. */
+function boardWith(status: TaskStatus): BoardRead {
+  const project = boardWire.projects[0];
   if (project === undefined) throw new Error('the fixture holds no project');
-  return {
-    ...homeWire,
+  const wire: BoardWire = {
     projects: [
       {
         ...project,
@@ -70,6 +70,7 @@ function homeWith(status: TaskStatus): HomeWire {
       },
     ],
   };
+  return { wire, refused: null };
 }
 
 /** A connection the page may hold without asking it for anything. */
@@ -121,7 +122,7 @@ describe('the tasks row under a moving home', () => {
   it('settles when the home moves the task, and lights the row that moved', () => {
     app = mount(SpawnHarness, {
       target: document.body,
-      props: { slot: LEAD, connection: quiet(), home: homeWith('in_progress') },
+      props: { slot: LEAD, connection: quiet(), home: homeWire, board: boardWith('in_progress') },
     });
     flushSync();
     expect(
@@ -129,9 +130,9 @@ describe('the tasks row under a moving home', () => {
       'the first frame did not land',
     ).toEqual(['in_progress']);
 
-    // The home moves the task, which is what a frame for this seat does.
-    const page = (app as unknown as { page: { home: HomeWire } }).page;
-    page.home = homeWith('completed');
+    // The board moves the task, which is what its own read answers.
+    const page = (app as unknown as { page: { board: BoardRead } }).page;
+    page.board = boardWith('completed');
     flushSync();
 
     expect(tasks.rows().map((row) => row.status)).toEqual(['completed']);

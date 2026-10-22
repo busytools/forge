@@ -147,7 +147,7 @@ export function closeCommand(home: HomeWire, slot: SessionSlot): Command | null 
 function liveSlots(home: HomeWire, slot: SessionSlot, now: number): SessionSlot[] {
   // The seat the rail marks affects nothing here - the groups, their order
   // and each project's rows come from the states and not from the mark.
-  return railGroups(home, slot, now)
+  return railGroups(home, null, slot, now)
     .flatMap((group) =>
       group.projects.flatMap((project) => [
         project.row.slot,

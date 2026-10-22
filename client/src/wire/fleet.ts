@@ -157,6 +157,15 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
  * not an error: it is a page that read them once and never again.
  */
 export function coversHome(update: SessionUpdate): boolean {
+  // **Two variants leave the home.** A cron set and a connector set left the
+  // home's snapshot with the board (#2517), so the home is not asked to
+  // re-read for what its answer cannot carry (rule 25); the board hears both.
+  if (typeof update !== 'string') {
+    const [variant] = Object.keys(update);
+    if (variant === 'cron_schedules_changed' || variant === 'connector_subscriptions_changed') {
+      return false;
+    }
+  }
   return fleetNews(update).kind !== 'nothing' || slotOf(update) === null;
 }
 
