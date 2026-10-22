@@ -638,12 +638,6 @@
   .term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
     border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
     white-space: pre-wrap; overflow-wrap: anywhere; }
-  /* The call body's panel chrome, shared by its code and plain bodies. A hook
-     row's `.term` above is deliberately not this. */
-  .panel { border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
-    overflow: hidden; }
-  .bodytext { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
-    padding: 6px 10px; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .term .pfx, .bodytext .pfx { color: var(--dim); }
   .term .sum, .bodytext .sum { color: var(--ok); }
   /* The live mark a running call's own output draws: the row's ring says the
