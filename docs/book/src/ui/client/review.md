@@ -144,10 +144,16 @@ nothing.
 **A revealed line takes a comment like any other** (Ved, 2026-10-22): it
 carries a door on its own side, and its anchor's text and neighbours come
 from the file read rather than a hunk. The record places such an anchor in
-the whole file - the branch tip for a new-side line, the default branch for
-an old-side one - because the line is outside the bounded hunks by
-construction; text the file no longer carries still parks as outdated. A
-line no press has revealed, or one the read did not carry, takes no door.
+the whole file - the branch tip for a new-side line, the merge-base for an
+old-side one - because the line is outside the bounded hunks by
+construction; a line the hunks do carry is placed there, and text the file
+no longer carries still parks as outdated. **A revealed-line comment
+written inside a commit scope is the one exception**: its line counts in
+that commit's numbering, so the all-changes view parks it - its own
+commit's view still draws it at its recorded line. A line no press has
+revealed, or one the read did not carry, takes no door. **A placed comment reopens the
+gap holding it when the page loads**, from the gap's nearer end, so a reload
+does not leave the card with no row to draw on.
 
 ## A thread
 
@@ -184,10 +190,11 @@ the lane; in unified it takes the whole width, as the line itself does. The
 same rule runs the doors and the drawing: one door per side's number cell
 in split, one per row in unified (an added or context line is the new side,
 a removed line the old), and a click anywhere on a line opens the composer
-on that line's side. **The split's halves are the table's own**: a row the
-expansion left without a side on its cells still gets its card in the half
-the comment was written on, because the colgroup names the columns and the
-row above it does not.
+on that line's side. **The split's halves are the table's own**: a removed
+line's blank half is a placeholder cell whose class a naive side test reads
+as `old` - "placeholder" contains it - so a card written there would count
+the whole lane as its own side and span it. The colgroup names the columns,
+and the card takes the half the comment was written on.
 
 The loop's `N replies to read` is derived rather than served: it counts the
 threads in `addressed` or `outdated` whose last turn is an agent's. An
@@ -256,9 +263,10 @@ resolve does not nudge at all: a thread read and accepted needs no second
 look.
 
 **The anchor is captured where the lines are.** The comment is written on a
-line of the drawn diff, so the page takes that line's text, its neighbours
-within the hunk, and the crate's own hash of the line - the capture the
-crate's resolver defines - and the thread carries it. The
+line of the drawn diff, so the page takes that line's text, its neighbours -
+within the hunk, or within the file read for a revealed line - and the
+crate's own hash of the line, the capture the crate's resolver defines, and
+the thread carries it. The
 hash is FNV-1a over whitespace-collapsed UTF-8, and the vectors the client's
 implementation is pinned against live in the crate's resolver tests too: a
 hash the two disagree on would leave a thread written here unplaceable when

@@ -23,7 +23,7 @@ use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord}
 use forge_primitives::slack::SlackSubscription;
 use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, UserEnvelope};
 use forge_workspace::env::git_diff::content::{DiffContent, FileContent, scan as scan_content};
-use forge_workspace::env::git_diff::file::read_file_lines;
+use forge_workspace::env::git_diff::file::{merge_base, read_file_lines};
 use forge_workspace::env::git_diff::resolver::{
     AnchorPlacement, OutdatedReason, place_anchor_in_content, place_anchor_in_lines_with,
 };
@@ -661,7 +661,7 @@ fn reviewed_threads(
                     // which is what keeps the line from anchoring onto
                     // unrelated code here.
                     let trusted = thread.commit.is_none();
-                    Some(resolution_wire(&thread.anchor, files, trusted, whole))
+                    resolution_wire(&thread.anchor, files, trusted, trusted.then_some(whole))
                 }
                 _ => None,
             };
@@ -670,19 +670,51 @@ fn reviewed_threads(
         .collect()
 }
 
-/// The whole files an anchor needed, one per `(path, side)`.
-type WholeFiles = std::collections::HashMap<(String, ReviewSide), Vec<String>>;
+/// One whole file an anchor needed, and whether the read carried all of it.
+struct WholeFile {
+    lines: Vec<String>,
+    truncated: bool,
+}
 
-/// The whole files the bounded content could not place a thread's line in.
+/// The whole files an anchor needed, one per `(path, side)`.
+type WholeFiles = std::collections::HashMap<(String, ReviewSide), WholeFile>;
+
+/// At most this many whole-file reads per record encode. An ordinary record
+/// reads none - every anchor sits in its hunks - and a review with more
+/// comments outside its hunks than this answers the rest from the bounded
+/// content rather than running an unbounded pile of git subprocesses on
+/// every seat encode.
+const WHOLE_FILE_READS_PER_RECORD: usize = 8;
+
+/// Whether any hunk of `files` carries `anchor.line` on the anchor's side.
+///
+/// **This is the rule that decides which authority answers**: a line the
+/// hunks carry is placed there, and a line they do not carry is answered by
+/// the whole file alone - never by a content match to some other hunk line
+/// that happens to read the same.
+fn line_carried(anchor: &ReviewAnchor, files: &[FileContent]) -> bool {
+    files.iter().filter(|file| file.path == anchor.path).any(|file| {
+        file.hunks.iter().any(|hunk| {
+            hunk.lines.iter().any(|line| match anchor.side {
+                ReviewSide::New => line.new_line == Some(anchor.line),
+                ReviewSide::Old => line.old_line == Some(anchor.line),
+            })
+        })
+    })
+}
+
+/// The whole files for the anchors no hunk carries a line for.
 ///
 /// **A comment written on a revealed context line is outside the diff's
 /// hunks by construction**, and the file it was written on is the whole
-/// answer: the branch tip carries the new side's numbering and the default
-/// branch the old side's. Only a comment this record can draw is read for -
-/// a thread written against another base, or a commit-scoped one whose line
-/// counts in its own commit, keeps the resolver's answer rather than being
-/// searched in a numbering that is not its own. A read that fails leaves the
-/// anchor outdated, as before.
+/// answer. The new side is numbered at the branch tip and the old side at
+/// the merge-base, because the branch-ahead diff is a three-dot diff; an old
+/// side read at the base's current tip would shift every line when the base
+/// has advanced. A renamed file's old side is read at its old path. Only a
+/// thread this record's own diff can draw is read for: another base's
+/// thread, or a commit-scoped one whose line counts in its own commit, keeps
+/// the resolver's answer. A read that fails leaves the anchor to the bounded
+/// content, as before.
 async fn whole_files_for(
     cwd: &std::path::Path,
     ceiling: u64,
@@ -695,27 +727,42 @@ async fn whole_files_for(
         LayerState::Clean | LayerState::ScanFailed => return WholeFiles::new(),
     };
     let mut whole = WholeFiles::new();
+    // Resolved once per encode, and only if an old-side anchor asks for it.
+    let mut old_rev: Option<String> = None;
+    let mut reads = 0_usize;
     for thread in threads {
         let anchor = &thread.anchor;
-        if thread.commit.is_some()
-            || default_branch != Some(anchor.base_ref.as_str())
-            || !files.iter().any(|file| file.path == anchor.path)
-        {
+        if thread.commit.is_some() || default_branch != Some(anchor.base_ref.as_str()) {
             continue;
         }
-        if !matches!(place_anchor_in_content(anchor, files, true), AnchorPlacement::Outdated(_)) {
+        let Some(file) = files.iter().find(|file| file.path == anchor.path) else {
+            continue;
+        };
+        if line_carried(anchor, files) {
             continue;
         }
         let key = (anchor.path.clone(), anchor.side);
-        if whole.contains_key(&key) {
+        if whole.contains_key(&key) || reads >= WHOLE_FILE_READS_PER_RECORD {
             continue;
         }
-        let rev = match anchor.side {
-            ReviewSide::New => "HEAD",
-            ReviewSide::Old => anchor.base_ref.as_str(),
+        let (rev, path) = match anchor.side {
+            ReviewSide::New => ("HEAD".to_owned(), file.path.clone()),
+            ReviewSide::Old => {
+                let Some(base) = default_branch else {
+                    continue;
+                };
+                if old_rev.is_none() {
+                    old_rev = merge_base(cwd, base).await;
+                }
+                let Some(found) = old_rev.clone() else {
+                    continue;
+                };
+                (found, file.old_path.clone().unwrap_or_else(|| file.path.clone()))
+            }
         };
-        if let Ok(read) = read_file_lines(cwd, rev, &anchor.path, ceiling).await {
-            whole.insert(key, read.lines);
+        reads += 1;
+        if let Ok(read) = read_file_lines(cwd, &rev, &path, ceiling).await {
+            whole.insert(key, WholeFile { lines: read.lines, truncated: read.truncated });
         }
     }
     whole
@@ -726,22 +773,36 @@ async fn whole_files_for(
 /// layer is the numbering the anchor was written in - the same trust a
 /// view's overlay extends to its own home scope. Untrusted, the placement
 /// is earned by content and neighbours alone.
+///
+/// `whole` is the file held for a line the hunks do not carry, and `None`
+/// for a commit-scoped thread, whose numbering belongs to its own commit and
+/// must not borrow the branch's read. A read cut before the anchored line
+/// cannot answer, and answers no landing rather than `Gone`.
 fn resolution_wire(
     anchor: &ReviewAnchor,
     files: &[FileContent],
     trusted: bool,
-    whole: &WholeFiles,
-) -> ThreadResolutionWire {
-    let mut placed = place_anchor_in_content(anchor, files, trusted);
-    // The hunks are bounded context around the changes, so a comment on a
-    // revealed line has no line to land on there. The whole file is held
-    // for exactly those anchors, at the revision its side is numbered in.
-    if matches!(placed, AnchorPlacement::Outdated(_))
-        && let Some(lines) = whole.get(&(anchor.path.clone(), anchor.side))
-    {
-        placed = place_anchor_in_lines_with(anchor, lines, trusted);
-    }
-    match placed {
+    whole: Option<&WholeFiles>,
+) -> Option<ThreadResolutionWire> {
+    let held = whole.and_then(|map| map.get(&(anchor.path.clone(), anchor.side)));
+    let placed = if line_carried(anchor, files) {
+        place_anchor_in_content(anchor, files, trusted)
+    } else {
+        match held {
+            Some(file) => {
+                let past_the_cut =
+                    usize::try_from(anchor.line).is_ok_and(|line| line > file.lines.len());
+                if file.truncated && past_the_cut {
+                    return None;
+                }
+                place_anchor_in_lines_with(anchor, &file.lines, trusted)
+            }
+            // The whole file is the authority for a line the hunks do not
+            // carry; without the read, the bounded content is the fallback.
+            None => place_anchor_in_content(anchor, files, trusted),
+        }
+    };
+    Some(match placed {
         AnchorPlacement::Placed { line, moved_from } => ThreadResolutionWire::Placed {
             line,
             // **A cross-scope landing names no `moved_from`**: the recorded
@@ -756,7 +817,7 @@ fn resolution_wire(
                 OutdatedReason::Ambiguous { matches } => OutdatedReasonWire::Ambiguous { matches },
             },
         },
-    }
+    })
 }
 
 /// [`resolution_wire`]'s twin for the seat tree: the placement the surface
@@ -3514,8 +3575,8 @@ mod tests {
                 read_at: std::time::Instant::now(),
             },
         );
-        let thread =
-            |id: &str, side, text: &str, context: &[&str]| forge_primitives::review::ReviewThread {
+        let thread = |id: &str, side, text: &str, context: &[&str], commit: Option<&str>| {
+            forge_primitives::review::ReviewThread {
                 id: id.to_owned(),
                 anchor: forge_primitives::review::ReviewAnchor {
                     path: "wide.txt".to_owned(),
@@ -3534,12 +3595,22 @@ mod tests {
                 status: forge_primitives::review::ReviewStatus::Open,
                 created_at: "2026-01-01T00:00:00Z".to_owned(),
                 updated_at: "2026-01-01T00:00:00Z".to_owned(),
-                commit: None,
-            };
+                commit: commit.map(str::to_owned),
+            }
+        };
         for held in [
-            thread("revealed-new", ReviewSide::New, "wide 2", &["wide 1", "wide 3"]),
-            thread("revealed-old", ReviewSide::Old, "wide 2", &["wide 1", "wide 3"]),
-            thread("revealed-gone", ReviewSide::New, "not in the file", &[]),
+            thread("revealed-new", ReviewSide::New, "wide 2", &["wide 1", "wide 3"], None),
+            thread("revealed-old", ReviewSide::Old, "wide 2", &["wide 1", "wide 3"], None),
+            thread("revealed-gone", ReviewSide::New, "not in the file", &[], None),
+            // The same path and side as an eligible read, but its line counts
+            // in its own commit: it must not borrow that read.
+            thread(
+                "scoped-borrow",
+                ReviewSide::New,
+                "wide 2",
+                &["wide 1", "wide 3"],
+                Some("abc123"),
+            ),
         ] {
             assert!(
                 fleet.workspace().upsert_review_thread("proj", "worktree-pr", held),
@@ -3573,6 +3644,319 @@ mod tests {
             of("revealed-gone")["resolution"],
             serde_json::json!({"state": "outdated", "reason": "gone"}),
             "code the file does not carry is still outdated: {encoded}",
+        );
+        assert_eq!(
+            of("scoped-borrow")["resolution"],
+            serde_json::json!({"state": "outdated", "reason": "gone"}),
+            "a commit-scoped thread never borrows the branch's read: {encoded}",
+        );
+    }
+
+    /// Run one git command in a fixture repository, with pinned dates.
+    fn git_in(path: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00+00:00")
+            .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00+00:00")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// Init a fixture repository on `main` with `user`/`email`/no signing.
+    fn init_repo(path: &Path) {
+        std::fs::create_dir_all(path).expect("the fixture's directory");
+        git_in(path, &["init", "-q"]);
+        git_in(path, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git_in(path, &["config", "user.email", "fixture@example.test"]);
+        git_in(path, &["config", "user.name", "Fixture"]);
+        git_in(path, &["config", "commit.gpgsign", "false"]);
+    }
+
+    /// Twenty numbered lines, with `ten` at the tenth.
+    fn wide_lines(ten: &str) -> String {
+        (1..=20).map(|n| if n == 10 { format!("{ten}\n") } else { format!("wide {n}\n") }).collect()
+    }
+
+    /// Store `diff` as the seat's scan and encode the record.
+    async fn encode_repo(
+        fleet: &crate::testing::Fleet,
+        seat: &SessionSlot,
+        repo: &Path,
+    ) -> serde_json::Value {
+        let surface = fleet.surface();
+        let diff =
+            forge_workspace::env::git_diff::scan(repo, &std::collections::HashMap::new(), None)
+                .await;
+        surface.store_work_snapshot(
+            seat,
+            forge_workspace::work::WorkSnapshot {
+                diff,
+                cwd: repo.to_owned(),
+                read_at: std::time::Instant::now(),
+            },
+        );
+        let state = TransportState {
+            surface,
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
+        };
+        encode_subject(&state, &Subject::Session(seat.clone())).await.expect("encode")
+    }
+
+    /// One thread anchored on `wide.txt` at `line`, on `side`.
+    fn wide_thread(
+        id: &str,
+        side: ReviewSide,
+        line: u32,
+        text: &str,
+        context: &[&str],
+        commit: Option<&str>,
+    ) -> ReviewThread {
+        ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "wide.txt".to_owned(),
+                side,
+                line,
+                content_hash: forge_workspace::env::git_diff::resolver::anchor_hash(text),
+                context: context.iter().map(|held| (*held).to_owned()).collect(),
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![forge_primitives::review::ReviewComment {
+                author: forge_primitives::review::ReviewAuthor::User,
+                text: "c".to_owned(),
+                at: "2026-01-01T00:00:00Z".to_owned(),
+                review_id: None,
+            }],
+            status: forge_primitives::review::ReviewStatus::Open,
+            created_at: "2026-01-01T00:00:00Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00Z".to_owned(),
+            commit: commit.map(str::to_owned),
+        }
+    }
+
+    /// The landing of one thread in an encoded record.
+    fn landing(encoded: &serde_json::Value, id: &str) -> serde_json::Value {
+        let threads =
+            encoded["reviews"]["threads"]["value"].as_array().expect("the threads read answered");
+        threads.iter().find(|held| held["id"] == id).expect(id)["resolution"].clone()
+    }
+
+    /// **The old side is numbered at the merge-base, not at the base's
+    /// current tip.** A base that has advanced since the branch forked shifts
+    /// every line in its tip, so a revealed old-side comment read there would
+    /// land one line off (or park Gone). A once-forked, then-advanced base is
+    /// the ordinary shape of a long-lived branch.
+    #[tokio::test]
+    async fn the_record_reads_the_old_side_at_the_merge_base() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let seat = fixture_seat();
+        let repo = tempfile::tempdir().expect("a repository directory");
+        init_repo(repo.path());
+        std::fs::write(repo.path().join("wide.txt"), wide_lines("wide 10")).expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "base"]);
+        git_in(repo.path(), &["checkout", "-q", "-b", "worktree-pr"]);
+        std::fs::write(repo.path().join("wide.txt"), wide_lines("wide 10 changed")).expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "branch"]);
+        // The base advances under the fork: a line inserted at the top shifts
+        // every line number below it.
+        git_in(repo.path(), &["checkout", "-q", "main"]);
+        let advanced: String = std::iter::once("wide 0\n".to_owned())
+            .chain((1..=20).map(|n| format!("wide {n}\n")))
+            .collect();
+        std::fs::write(repo.path().join("wide.txt"), advanced).expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "advance"]);
+        git_in(repo.path(), &["checkout", "-q", "worktree-pr"]);
+        for held in [
+            // The old side numbers at the merge-base.
+            wide_thread("revealed-old", ReviewSide::Old, 2, "wide 2", &["wide 1", "wide 3"], None),
+            // And the new side at the branch tip: the base's own numbering
+            // shifted the same line, so a read there would place it one down.
+            wide_thread(
+                "revealed-new",
+                ReviewSide::New,
+                16,
+                "wide 16",
+                &["wide 15", "wide 17"],
+                None,
+            ),
+        ] {
+            assert!(
+                fleet.workspace().upsert_review_thread("proj", "worktree-pr", held),
+                "the thread stores",
+            );
+        }
+        let encoded = encode_repo(&fleet, &seat, repo.path()).await;
+        assert_eq!(
+            landing(&encoded, "revealed-old"),
+            serde_json::json!({"state": "placed", "line": 2, "moved_from": null}),
+            "the merge-base's line 2 is the comment's own, though main's tip shifted it: {encoded}",
+        );
+        assert_eq!(
+            landing(&encoded, "revealed-new"),
+            serde_json::json!({"state": "placed", "line": 16, "moved_from": null}),
+            "and the branch tip's line 16 is the new side's own: {encoded}",
+        );
+    }
+
+    /// **A line the hunks do not carry is answered by the whole file alone.**
+    /// A repeated block inside a hunk offers a content-and-neighbours match
+    /// for an outside line that reads the same; the bounded content must not
+    /// place the comment there.
+    #[tokio::test]
+    async fn the_whole_file_wins_for_a_line_no_hunk_carries() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let seat = fixture_seat();
+        let repo = tempfile::tempdir().expect("a repository directory");
+        init_repo(repo.path());
+        let body = |target: &str| -> String {
+            let mut lines: Vec<String> = (1..=30).map(|n| format!("filler {n}\n")).collect();
+            lines[1] = "alpha\n".to_owned();
+            lines[2] = "beta\n".to_owned();
+            lines[3] = "gamma\n".to_owned();
+            lines[17] = "alpha\n".to_owned();
+            lines[18] = "beta\n".to_owned();
+            lines[19] = "gamma\n".to_owned();
+            lines[20] = format!("{target}\n");
+            lines.concat()
+        };
+        std::fs::write(repo.path().join("wide.txt"), body("target")).expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "base"]);
+        git_in(repo.path(), &["checkout", "-q", "-b", "worktree-pr"]);
+        std::fs::write(repo.path().join("wide.txt"), body("target changed")).expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "branch"]);
+        for held in [
+            // Outside the hunk (which covers 18..=24), and its text plus
+            // neighbours also match the repeated block inside it.
+            wide_thread("outside", ReviewSide::New, 3, "beta", &["alpha", "gamma"], None),
+            // And the hunk's own copy still places there.
+            wide_thread("inside", ReviewSide::New, 19, "beta", &["alpha", "gamma"], None),
+        ] {
+            assert!(
+                fleet.workspace().upsert_review_thread("proj", "worktree-pr", held),
+                "the thread stores",
+            );
+        }
+        let encoded = encode_repo(&fleet, &seat, repo.path()).await;
+        assert_eq!(
+            landing(&encoded, "outside"),
+            serde_json::json!({"state": "placed", "line": 3, "moved_from": null}),
+            "the outside line is its own, not the hunk's lookalike: {encoded}",
+        );
+        assert_eq!(
+            landing(&encoded, "inside"),
+            serde_json::json!({"state": "placed", "line": 19, "moved_from": null}),
+            "a line the hunks carry still places in the hunks: {encoded}",
+        );
+    }
+
+    /// **The old side's read follows the rename.** A file renamed with edits
+    /// keeps its old content at the old path in the base tree; reading the
+    /// new path there would park an old-side comment Gone though its line is
+    /// untouched.
+    #[tokio::test]
+    async fn the_record_reads_a_renamed_files_old_side_at_its_old_path() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let seat = fixture_seat();
+        let repo = tempfile::tempdir().expect("a repository directory");
+        init_repo(repo.path());
+        std::fs::write(repo.path().join("wide.txt"), wide_lines("wide 10")).expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "base"]);
+        git_in(repo.path(), &["checkout", "-q", "-b", "worktree-pr"]);
+        git_in(repo.path(), &["mv", "wide.txt", "renamed.txt"]);
+        std::fs::write(repo.path().join("renamed.txt"), wide_lines("wide 10 changed"))
+            .expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "rename"]);
+        let mut held =
+            wide_thread("revealed-old", ReviewSide::Old, 2, "wide 2", &["wide 1", "wide 3"], None);
+        held.anchor.path = "renamed.txt".to_owned();
+        assert!(fleet.workspace().upsert_review_thread("proj", "worktree-pr", held), "stores");
+        let encoded = encode_repo(&fleet, &seat, repo.path()).await;
+        assert_eq!(
+            landing(&encoded, "revealed-old"),
+            serde_json::json!({"state": "placed", "line": 2, "moved_from": null}),
+            "the old side lives at the old path, unchanged: {encoded}",
+        );
+    }
+
+    /// A read cut before the anchored line cannot answer: the record carries
+    /// no landing rather than calling the code gone.
+    #[test]
+    fn a_read_cut_before_the_anchor_answers_no_landing() {
+        let anchor = ReviewAnchor {
+            path: "wide.txt".to_owned(),
+            side: ReviewSide::New,
+            line: 5,
+            content_hash: forge_workspace::env::git_diff::resolver::anchor_hash("wide 5"),
+            context: Vec::new(),
+            base_ref: "main".to_owned(),
+        };
+        let cut = WholeFiles::from([(
+            ("wide.txt".to_owned(), ReviewSide::New),
+            WholeFile { lines: vec!["wide 1".to_owned()], truncated: true },
+        )]);
+        assert!(
+            resolution_wire(&anchor, &[], true, Some(&cut)).is_none(),
+            "a line past the cut is unresolved, not gone",
+        );
+        let whole = WholeFiles::from([(
+            ("wide.txt".to_owned(), ReviewSide::New),
+            WholeFile { lines: vec!["wide 1".to_owned()], truncated: false },
+        )]);
+        assert!(
+            matches!(
+                resolution_wire(&anchor, &[], true, Some(&whole)),
+                Some(ThreadResolutionWire::Outdated { reason: OutdatedReasonWire::Gone })
+            ),
+            "a complete read that does not carry the line is gone",
+        );
+    }
+
+    /// A commit-scoped thread must not borrow the branch's whole-file read:
+    /// its line counts in its own commit's numbering.
+    #[test]
+    fn a_commit_scoped_thread_does_not_borrow_the_branch_read() {
+        let anchor = wide_thread("commit", ReviewSide::New, 2, "wide 2", &["wide 1"], None).anchor;
+        let whole = WholeFiles::from([(
+            ("wide.txt".to_owned(), ReviewSide::New),
+            WholeFile { lines: vec!["wide 1".to_owned(), "wide 2".to_owned()], truncated: false },
+        )]);
+        assert!(
+            matches!(
+                resolution_wire(&anchor, &[], false, None),
+                Some(ThreadResolutionWire::Outdated { reason: OutdatedReasonWire::Gone })
+            ),
+            "with no read of its own, the commit's thread is not placed by the branch's",
+        );
+        assert!(
+            matches!(
+                resolution_wire(&anchor, &[], false, Some(&whole)),
+                Some(ThreadResolutionWire::Placed { line: 2, .. })
+            ),
+            "and the same anchor would have been placed had it been eligible",
         );
     }
 

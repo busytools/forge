@@ -751,23 +751,35 @@
   });
 
   /**
+   * The chain's true length: the record's count, not the capped list the
+   * stepper walks, so the bar and the picker name the whole chain.
+   */
+  const commitTotal = $derived(record?.git.ahead?.count ?? commits.length);
+
+  /** The review reads a day-old stamp as hours; the board keeps its own. */
+  const DAYS_FROM = 2 * 86_400;
+
+  /**
    * The scope picker's rows, all changes first and then the commits oldest
    * first, each naming its own sha and how long ago it was committed.
    */
   const choices = $derived([
-    { idx: 0, index: 'A', label: 'All changes', sha: '', age: `${commits.length} commits` },
+    { idx: 0, index: 'A', label: 'All changes', sha: '', age: `${commitTotal} commits` },
     ...commits.map((commit, i) => ({
       idx: i + 1,
       index: String(i + 1),
       label: commit.subject,
       sha: commit.sha.slice(0, 8),
-      age: `${ago(commit.time, nowSecs)} ago`,
+      age: commit.time > 0 ? `${ago(commit.time, nowSecs, DAYS_FROM)} ago` : 'time unknown',
     })),
   ]);
 
   function choose(idx: number): void {
-    scopeIdx = idx;
-    if (idx > 0) lastCommit = idx;
+    // A list that shrank under the scope (a force-push, a re-read) clamps
+    // here rather than leaving the bar naming a place it has no scope for.
+    const next = Math.max(0, Math.min(idx, choices.length - 1));
+    scopeIdx = next;
+    if (next > 0) lastCommit = next;
     pickerOpen = false;
     // The stepper's place is not the new scope's: its comments are others.
     commentAt = -1;
@@ -825,6 +837,11 @@
   function toggleAll(): void {
     choose(scopeIdx === 0 ? lastCommit : 0);
   }
+
+  /** A chain that shrank under the scope on screen pulls it back in range. */
+  $effect(() => {
+    if (scopeIdx > choices.length - 1) scopeIdx = choices.length - 1;
+  });
 
   /**
    * The diff half's keys, live only while it is on screen: the arrows (and
@@ -973,15 +990,15 @@
             }}
           >
             <span class="rv-scope-now">
-              {scopeCommit === null ? 'All changes' : (scopeCommit.slice(0, 8) ?? '')}
+              {scopeCommit === null ? 'All changes' : (commits[scopeIdx - 1]?.subject ?? '')}
             </span>
             <span class="rv-scope-sub">
               {scopeCommit === null
-                ? `${commits.length} commits`
-                : `commit ${scopeIdx} of ${commits.length}`}
+                ? `${commitTotal} commits`
+                : `commit ${scopeIdx} of ${commitTotal}`}
             </span>
           </button>
-          <span class="rv-scope-place">scope {scopeIdx + 1} of {choices.length}</span>
+          <span class="rv-scope-place">scope {scopeIdx + 1} of {commitTotal + 1}</span>
           <button
             type="button"
             class="rv-step-btn"
@@ -1199,16 +1216,20 @@
     font-family: var(--mono);
     font-size: var(--fs-data);
     color: var(--text);
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  /* The place is short and fixed ("commit 2 of 6"): it never truncates, and
+     the subject beside it does. */
   .rv-scope-sub {
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--dim);
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex: none;
     white-space: nowrap;
-    min-width: 0;
   }
   .rv-scope-place {
     font-family: var(--mono);
@@ -1264,6 +1285,7 @@
     white-space: nowrap;
   }
   .rv-cstep {
+    display: flex;
     flex: none;
   }
   .rv-hint .sep {

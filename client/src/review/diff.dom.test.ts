@@ -243,11 +243,6 @@ describe('the viewer shapes the page reads back', () => {
    * row shapes a card can land under each keep their own cell count.
    */
   it('covers exactly its anchor row columns, card inside one half', () => {
-    const card = (): HTMLElement => {
-      const el = document.createElement('div');
-      el.textContent = 'card';
-      return el;
-    };
     const spans = (row: Element): number =>
       [...row.children].reduce((n, cell) => n + Number(cell.getAttribute('colspan') ?? 1), 0);
     const shapes = [
@@ -256,6 +251,7 @@ describe('the viewer shapes the page reads back', () => {
       ['an added line', splitAddedRow(9)],
     ] as const;
     for (const [shape, anchor] of shapes) {
+      splitTable(anchor);
       for (const side of ['old', 'new'] as const) {
         const row = insertRow(anchor, side, 'split', card());
         expect(spans(row), `${side} insert under ${shape} spans the same columns`).toBe(
@@ -270,26 +266,59 @@ describe('the viewer shapes the page reads back', () => {
   });
 
   /**
-   * **The split is the table's, not the anchor row's.** A reader's context
-   * expansion can leave the anchored row with no side on its cells at all;
-   * deciding by the anchor's own cells sends the card down the whole-lane
-   * branch and lands a full-width row in a split table.
+   * **A reachable row keeps its own side's half, and the table's columns.**
+   * The shapes a card is really anchored to are the ones `anchorRow` finds -
+   * a sided number span: a context line, a removed line whose new half is
+   * the spanning placeholder, an added line whose old half is. The insert
+   * covers exactly the table's four columns, the card sits in its side, and
+   * the columns the viewer declares do not change under it. (The widths
+   * themselves were measured on the live page; jsdom lays nothing out, so
+   * this pins the structure those widths follow.)
+   */
+  it("keeps a reachable row's halves, and the table's columns, under an insert", () => {
+    const cases = [
+      ['a removed line', splitRemovedRow(4), 'old', 0],
+      ['a context line', splitContextRow(6, 9), 'old', 0],
+      ['a context line', splitContextRow(6, 9), 'new', 1],
+      ['an added line', splitAddedRow(9), 'new', 1],
+    ] as const;
+    for (const [shape, anchor, side, at] of cases) {
+      const table = splitTable(anchor);
+      const before = [...table.querySelectorAll(':scope > colgroup > col')].map(
+        (col) => col.className,
+      );
+      const row = insertRow(anchor, side, 'split', card());
+      expect(
+        [...row.children].map((cell) => cell.getAttribute('colspan')),
+        `${side} insert under ${shape} keeps both halves`,
+      ).toEqual(['2', '2']);
+      expect(row.children[at]?.textContent, `${side} insert under ${shape} holds the card`).toBe(
+        'card',
+      );
+      expect(
+        [...table.querySelectorAll(':scope > colgroup > col')].map((col) => col.className),
+        `${side} insert under ${shape} leaves the columns as they were`,
+      ).toEqual(before);
+    }
+  });
+
+  /**
+   * **The side-less row is a guard, not a reachable anchor.** `anchorRow`
+   * finds a row only by a sided number span, so a row this shape cannot be
+   * what a card lands under; the table's own columns are what keep the
+   * insert honest if one ever reaches `insertRow`. The reader's context
+   * expansion does not produce these rows on this page - the viewer's extend
+   * widget is off for a text-built diff - so this pins the guard only.
    */
   it('takes its halves from the table when the anchor row names no side', () => {
     const table = splitTable(splitContextRow(6, 9));
-    /** A row with one cell across the table: the shape whose cells name no side. */
+    /** A row with one cell across the table: its cells name no side at all. */
     const naked = document.createElement('tr');
     naked.className = 'diff-line diff-line-extend';
     naked.innerHTML = '<td colspan="4">expanded context</td>';
-    /** The expanded block's own row: halves, but no `data-side` on either. */
-    const extend = document.createElement('tr');
-    extend.className = 'diff-line diff-line-extend';
-    extend.innerHTML = `
-      <td class="diff-line-extend-old-content p-0" colspan="2">expanded</td>
-      <td class="diff-line-extend-new-placeholder select-none p-0" colspan="2"></td>`;
-    table.querySelector('tbody')?.append(naked, extend);
+    table.querySelector('tbody')?.append(naked);
 
-    for (const anchor of [naked, extend]) {
+    for (const anchor of [naked]) {
       const left = insertRow(anchor, 'old', 'split', card());
       expect(
         [...left.children].map((cell) => cell.getAttribute('colspan')),

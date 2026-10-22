@@ -90,6 +90,7 @@ import type { Connection } from '../socket';
 import type { SessionRecord } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 import Review from './Review.svelte';
+import { anchorHash } from './write';
 
 const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -276,6 +277,7 @@ function record(
   reviews: unknown[] = [],
   diff: unknown = DIFF,
   commits: { sha: string; subject: string; time?: number }[] = [],
+  total = commits.length,
 ): SessionRecord {
   return {
     slot: SLOT,
@@ -283,7 +285,10 @@ function record(
     work: { branch: 'b', dirt: 'clean' },
     git: {
       defaultBranch: 'main',
-      ahead: commits.length === 0 ? null : { commit_count: commits.length, commits, stats: null },
+      ahead:
+        commits.length === 0 && total === 0
+          ? null
+          : { commit_count: total, count: total, commits, stats: null },
     },
     diff: { branchAhead: diff },
     reviews: {
@@ -410,6 +415,7 @@ async function draw(
   dictation = true,
   diff: unknown = DIFF,
   commits: { sha: string; subject: string; time?: number }[] = [],
+  total = commits.length,
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -422,7 +428,7 @@ async function draw(
     props: { connection: connection(), slot: SLOT, dictation },
   });
   flushSync();
-  push({ wire: record(IDLE, threads, reviews, diff, commits), refused: null });
+  push({ wire: record(IDLE, threads, reviews, diff, commits, total), refused: null });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
   await settle(() => {
@@ -1293,17 +1299,17 @@ describe('the steppers', () => {
     expect(scope(), 'and a press there steps nowhere').toBe('All changes');
 
     press('next scope');
-    expect(scope(), 'right from all changes lands on the first commit').toBe('abc123');
+    expect(scope(), 'right from all changes lands on the first commit').toBe('the first commit');
     expect(place()).toBe('scope 2 of 3');
     press('next scope');
-    expect(scope()).toBe('def456');
+    expect(scope()).toBe('the second commit');
     expect(place(), 'the last commit is the last place').toBe('scope 3 of 3');
     expect(step('next scope').disabled, 'nothing is past the last commit').toBe(true);
     press('next scope');
-    expect(scope(), 'and a press there steps nowhere').toBe('def456');
+    expect(scope(), 'and a press there steps nowhere').toBe('the second commit');
 
     press('previous scope');
-    expect(scope()).toBe('abc123');
+    expect(scope()).toBe('the first commit');
     press('previous scope');
     expect(scope(), 'left from the first commit returns to all changes').toBe('All changes');
     expect(step('previous scope').disabled).toBe(true);
@@ -1325,9 +1331,9 @@ describe('the steppers', () => {
     key({ key: 'ArrowLeft' });
     expect(scope(), 'a bare left at all changes steps nowhere').toBe('All changes');
     key({ key: 'ArrowRight' });
-    expect(scope(), 'a bare right still steps the scope').toBe('def456');
+    expect(scope(), 'a bare right still steps the scope').toBe('the second commit');
     key({ key: 'ArrowRight' });
-    expect(scope(), 'and stops at the last commit').toBe('def456');
+    expect(scope(), 'and stops at the last commit').toBe('the second commit');
 
     expect(document.querySelector('.rv-hint')?.textContent, 'and the hint row says both').toContain(
       'shift',
@@ -1339,13 +1345,25 @@ describe('the steppers', () => {
     await draw([], [], true, DIFF, [SECOND_COMMIT, FIRST_COMMIT]);
 
     key({ key: 'a' });
-    expect(scope(), 'from all changes a lands on the commit held').toBe('abc123');
+    expect(scope(), 'from all changes a lands on the commit held').toBe('the first commit');
     press('next scope');
-    expect(scope()).toBe('def456');
+    expect(scope()).toBe('the second commit');
     key({ key: 'a' });
     expect(scope(), 'a second a returns to all changes').toBe('All changes');
     key({ key: 'a' });
-    expect(scope(), 'and a third returns to the commit it held, not the first').toBe('def456');
+    expect(scope(), 'and a third returns to the commit it held, not the first').toBe(
+      'the second commit',
+    );
+  });
+
+  /** A branch with no commits has one scope, and `a` stays on it. */
+  it('keeps to the one scope a commitless branch has', async () => {
+    await draw([], [], true, DIFF, []);
+
+    expect(place(), 'the only scope').toBe('scope 1 of 1');
+    key({ key: 'a' });
+    expect(scope(), 'a has nowhere to land').toBe('All changes');
+    expect(place()).toBe('scope 1 of 1');
   });
 
   /**
@@ -1385,12 +1403,37 @@ describe('the steppers', () => {
     // Choosing a row takes that scope, and the next open marks it.
     document.querySelectorAll<HTMLButtonElement>('.rv-menu-it')[1]?.click();
     flushSync();
-    expect(scope()).toBe('d41c2e7a');
+    expect(scope()).toBe('the carriage ignores a blank');
     document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
     flushSync();
     expect(document.querySelector('.rv-menu-it.on')?.textContent, 'and the mark follows').toContain(
       'the carriage ignores a blank',
     );
+  });
+
+  /** A commit whose time the record does not carry says so, not a date in
+   *  the year 20000. */
+  it('names a commit with no recorded time as unknown', async () => {
+    await draw([], [], true, DIFF, [{ sha: 'abcdef12', subject: 'no stamp', time: 0 }]);
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+    expect(
+      document.querySelectorAll('.rv-menu-it')[1]?.textContent?.replace(/\s+/g, ' ').trim(),
+      'the row says the time is unknown',
+    ).toContain('time unknown');
+  });
+
+  /** The chain the record counts is longer than the list it carries; the bar
+   *  names the whole chain rather than the capped list. */
+  it('names the chain by the record count, not the capped list', async () => {
+    await draw([], [], true, DIFF, [FIRST_COMMIT], 40);
+
+    expect(document.querySelector('.rv-scope-sub')?.textContent?.trim(), 'the whole chain').toBe(
+      '40 commits',
+    );
+    expect(place()).toBe('scope 1 of 41');
+    press('next scope');
+    expect(document.querySelector('.rv-scope-sub')?.textContent?.trim()).toBe('commit 1 of 40');
   });
 });
 
@@ -1500,6 +1543,67 @@ describe('the files half finishes the round too', () => {
 });
 
 describe('the lines a diff left out', () => {
+  /**
+   * **A revealed line's comment is anchored from the file read.** The door on
+   * an expanded line, the box it opens and the anchor the page files are one
+   * path the record cannot check: the line is not in the hunks, so its text
+   * and neighbours must come from the content. The plausible regression is a
+   * door that opens but files the anchor from the wrong source - no line
+   * text, or a neighbour set from a hunk - which lands outdated or on
+   * unrelated code.
+   */
+  it('files a comment on a revealed line with the content neighbours', async () => {
+    await draw([], [], true, BIG_GAP);
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: BIG_LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+
+    const down = [...document.querySelectorAll<HTMLButtonElement>('.rv-gapbtn')].find((button) =>
+      (button.getAttribute('aria-label') ?? '').includes('the next 20'),
+    );
+    if (down === undefined) throw new Error('the page drew no down strip');
+    down.click();
+    await settle(
+      () => document.querySelector('button[aria-label="comment on the new line 9"]') !== null,
+    );
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="comment on the new line 9"]')
+      ?.click();
+    await settle(() => document.querySelector('.rv-thread.comment') !== null);
+    const box = document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea');
+    if (box === null) throw new Error('the comment box drew no field');
+    box.value = 'a comment on a revealed line';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    [...document.querySelectorAll<HTMLButtonElement>('.rv-thread.comment button')]
+      .find((button) => (button.textContent ?? '').trim() === 'comment')
+      ?.click();
+    await settle(() =>
+      sent.some(
+        (command) =>
+          (command as { upsert_review_thread?: unknown }).upsert_review_thread !== undefined,
+      ),
+    );
+
+    const command = sent.find(
+      (held) => (held as { upsert_review_thread?: unknown }).upsert_review_thread !== undefined,
+    ) as { upsert_review_thread: { thread: { anchor: Record<string, unknown> } } };
+    expect(command.upsert_review_thread.thread.anchor, 'the anchor the file read gives').toEqual({
+      path: 'src/a.rs',
+      side: 'New',
+      line: 9,
+      content_hash: anchorHash('l9').toString(),
+      context: ['l6', 'l7', 'l8', 'l10', 'l11', 'l12'],
+      base_ref: 'main',
+    });
+  });
+
   /**
    * **The read is asked when the file is drawn**, not when a control is
    * pressed: the answer is what decides whether a control exists at all, so
@@ -1670,6 +1774,48 @@ describe('the lines a diff left out', () => {
   });
 
   /**
+   * **A placed comment outside the hunks is drawn on a reload.** A comment
+   * written on a revealed line resolves outside the diff's hunks, and a
+   * reload starts with every gap closed - without the page opening the gap
+   * holding it, the card has no row and the stepper counts a comment that is
+   * not on screen. The plausible regression is dropping that opening as a
+   * nicety, which leaves the comment invisible until the reader happens to
+   * expand its gap.
+   */
+  it('opens the gap holding a placed comment outside the hunks', async () => {
+    await draw([], [], true, TWO_HUNKS);
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+    expect(
+      document.querySelector('.rv-gapbtn')?.getAttribute('aria-label'),
+      'both lines are hidden before the comment is read',
+    ).toBe('show all 2 hidden lines of src/a.rs');
+
+    const placed = {
+      ...THREAD,
+      id: 't3',
+      anchor: { ...THREAD.anchor, line: 3 },
+      resolution: { state: 'placed', line: 3, moved_from: null },
+    };
+    push({ wire: record(IDLE, [placed], [], TWO_HUNKS, []), refused: null });
+    await settle(
+      () =>
+        document.querySelector('.rv-gapbtn')?.getAttribute('aria-label') ===
+        'show all 1 hidden line of src/a.rs',
+    );
+    expect(
+      viewer.built.at(-1),
+      'and the revealed line reached the viewer, so the row is drawn',
+    ).toContain('three');
+  });
+
+  /**
    * **A long gap wears GitHub's own pair of strips, one per end, and steps
    * open a screenful a press.** Ved, 2026-10-16, from the look: between two
    * hunks GitHub draws the down strip at the top of the header's gutter and
@@ -1803,12 +1949,13 @@ describe('the lines a diff left out', () => {
   });
 
   /**
-   * **A line the hunks do not carry takes no door.** An expanded gap draws
-   * lines the record does not hold, and a thread's anchor is resolved
-   * against what the server ships: a comment written on one would park as
-   * outdated the moment it was filed, so the page does not offer.
+   * **An unrevealed line takes no door.** A line the hunks do not carry is
+   * drawn only by an expansion, and its anchor comes from the file read:
+   * with no reveal there is no line to place, so the page offers nothing.
+   * A revealed one takes a door and its comment lands (the reveal's own
+   * test above).
    */
-  it('draws no door, and opens no box, on a line the hunks do not carry', async () => {
+  it('draws no door, and opens no box, on a line no press has revealed', async () => {
     await draw();
 
     const rows = [...document.querySelectorAll('tr.diff-line')];

@@ -9,8 +9,10 @@ import {
   gapRemaining,
   gapsOf,
   lineCounts,
+  revealFor,
   synthesizeFileDiff,
   treeRows,
+  type FileLines,
 } from './diff';
 
 function file(overrides: Partial<DiffFileRecord> = {}): DiffFileRecord {
@@ -323,6 +325,90 @@ describe('the canvas derivations', () => {
     expect(
       currentFileAt([{ path: 'src/c.rs', top: 300, bottom: 500 }], -500),
       'a virtualised list holds only what it drew, and the edge above all of it names none',
+    ).toBeNull();
+  });
+});
+
+describe('the reveal a placed comment needs', () => {
+  /** Two hunks with seventeen lines between them, three lines out of step. */
+  const gapped = file({
+    hunks: [
+      {
+        oldStart: 2,
+        oldCount: 1,
+        newStart: 5,
+        newCount: 1,
+        lines: [{ kind: 'context', text: 'two', oldLine: 2, newLine: 5 }],
+      },
+      {
+        oldStart: 20,
+        oldCount: 1,
+        newStart: 23,
+        newCount: 1,
+        lines: [{ kind: 'context', text: 'twenty', oldLine: 20, newLine: 23 }],
+      },
+    ],
+  });
+  const content: FileLines = {
+    lines: Array.from({ length: 30 }, (_, i) => `l${i + 1}`),
+    truncated: false,
+  };
+  const gaps = gapsOf(gapped, content);
+
+  /**
+   * **A comment written on a revealed line lands outside the hunks**, so a
+   * reload with every gap closed has no row for it. The page opens the gap
+   * holding its line from the nearer end, on either side's numbering.
+   */
+  it('opens the gap holding the line, from the nearer end', () => {
+    expect(revealFor(gapped, content, gaps, 'new', 6, undefined)).toEqual({
+      after: 0,
+      reveal: { down: 1, up: 0 },
+    });
+    expect(revealFor(gapped, content, gaps, 'new', 22, undefined)).toEqual({
+      after: 0,
+      reveal: { down: 0, up: 1 },
+    });
+    expect(revealFor(gapped, content, gaps, 'new', 13, undefined)).toEqual({
+      after: 0,
+      reveal: { down: 8, up: 0 },
+    });
+    // An old-side line is shifted by the block's delta: old 6 is new 9.
+    expect(revealFor(gapped, content, gaps, 'old', 6, undefined)).toEqual({
+      after: 0,
+      reveal: { down: 4, up: 0 },
+    });
+    // Above the first hunk both sides carry the same numbers, and the
+    // synthesis only draws that gap from its bottom.
+    expect(revealFor(gapped, content, gaps, 'old', 3, undefined)).toEqual({
+      after: -1,
+      reveal: { down: 0, up: 2 },
+    });
+    expect(revealFor(gapped, content, gaps, 'new', 1, undefined)).toEqual({
+      after: -1,
+      reveal: { down: 0, up: 4 },
+    });
+    // The gap below the last hunk is only ever drawn from its top.
+    expect(revealFor(gapped, content, gaps, 'new', 24, undefined)).toEqual({
+      after: 1,
+      reveal: { down: 1, up: 0 },
+    });
+  });
+
+  it('asks for nothing when the line is drawn, revealed, or unreachable', () => {
+    expect(revealFor(gapped, content, gaps, 'new', 5, undefined), 'a hunk line').toBeNull();
+    expect(
+      revealFor(gapped, content, gaps, 'new', 6, new Map([[0, { down: 2, up: 0 }]])),
+      'a line the reader already revealed',
+    ).toBeNull();
+    expect(
+      revealFor(gapped, content, gaps, 'new', 99, undefined),
+      'a line no gap holds',
+    ).toBeNull();
+    const short: FileLines = { lines: content.lines.slice(0, 10), truncated: true };
+    expect(
+      revealFor(gapped, short, gapsOf(gapped, short), 'new', 22, undefined),
+      'a line the read did not carry',
     ).toBeNull();
   });
 });

@@ -48,6 +48,7 @@
     gapsOf,
     insertRow,
     lineCounts,
+    revealFor,
     revealedLines,
     rowSide,
     synthesizeFileDiff,
@@ -915,6 +916,42 @@
     };
   });
 
+  /**
+   * **A placed comment must be drawable.** A comment written on a revealed
+   * line lands outside the hunks, and a reload starts with every gap closed:
+   * the card would have no row and the stepper would count a comment that is
+   * not on screen. Each such thread opens the gap holding its line, from the
+   * nearer end; a line the hunks carry, or one the read did not reach, asks
+   * for nothing.
+   */
+  $effect(() => {
+    void built;
+    void scopeCommit;
+    const rebuilt = new SvelteSet<string>();
+    for (const thread of scoped) {
+      const placed = canvasLine(thread, scopeCommit);
+      if (placed === null) continue;
+      const path = thread.anchor.path;
+      const file = built.find((held) => held.path === path)?.file;
+      const content = contentFor(path);
+      if (file === undefined || content === null) continue;
+      const key = contentKeyOf(path);
+      const side = thread.anchor.side === 'old' ? 'old' : 'new';
+      const needed = revealFor(
+        file,
+        content,
+        gapsOf(file, content),
+        side,
+        placed.line,
+        opened.get(key),
+      );
+      if (needed === null) continue;
+      openedFor(path).set(needed.after, needed.reveal);
+      rebuilt.add(path);
+    }
+    for (const path of rebuilt) void rebuild(path);
+  });
+
   // The canvas going away - the other tab, the page - takes its rows' roots
   // with it: an effect of its own, because the pass above cleans up between
   // every pair of runs and must leave the rows it is keeping alone.
@@ -1167,18 +1204,26 @@
    * own wording as the tooltip. The accessible name still says what the
    * press would do and to which file, which the glyph alone cannot.
    */
+  function gapWords(
+    path: string,
+    way: GapWay,
+    remaining: number,
+  ): { title: string; label: string } {
+    const opens = way === 'all' ? remaining : Math.min(GAP_STEP, remaining);
+    const which = way === 'all' ? 'all' : way === 'down' ? 'the next' : 'the previous';
+    return {
+      title: way === 'all' ? 'Expand All' : way === 'down' ? 'Expand Down' : 'Expand Up',
+      label: `show ${which} ${opens} hidden ${opens === 1 ? 'line' : 'lines'} of ${path}`,
+    };
+  }
+
   function gapButton(path: string, gap: Gap, way: GapWay, remaining: number): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'rv-gapbtn';
-    button.title = way === 'all' ? 'Expand All' : way === 'down' ? 'Expand Down' : 'Expand Up';
-    const step = Math.min(GAP_STEP, remaining);
-    const opens = way === 'all' ? remaining : step;
-    const which = way === 'all' ? 'all' : way === 'down' ? 'the next' : 'the previous';
-    button.setAttribute(
-      'aria-label',
-      `show ${which} ${opens} hidden ${opens === 1 ? 'line' : 'lines'} of ${path}`,
-    );
+    const words = gapWords(path, way, remaining);
+    button.title = words.title;
+    button.setAttribute('aria-label', words.label);
     const glyph = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     glyph.setAttribute('class', 'ic');
     const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
@@ -1318,6 +1363,17 @@
       button.dataset['for'] = key;
       cell.append(button);
     }
+    // **A wanted control's words follow the gap's remaining lines.** A press
+    // or a comment's own reveal can shrink the count without replacing the
+    // control, and a stale count asks the reader for lines it will not open.
+    for (const [key, want] of wanted) {
+      const button = el.querySelector<HTMLButtonElement>(`button.rv-gapbtn[data-for="${key}"]`);
+      if (button === null) continue;
+      const words = gapWords(path, want.way, gapRemaining(want.gap, reveals?.get(want.gap.after)));
+      if (button.getAttribute('aria-label') === words.label) continue;
+      button.title = words.title;
+      button.setAttribute('aria-label', words.label);
+    }
   }
 
   /**
@@ -1339,7 +1395,6 @@
     if (held === undefined || content === null) return;
     const gap = gapsOf(held.file, content).find((g) => g.after === after);
     if (gap === undefined) return;
-    const key = scopeCommit ?? 'all';
     const openedHere = openedFor(path);
     const reveal = openedHere.get(after) ?? { down: 0, up: 0 };
     const remaining = gapRemaining(gap, reveal);
@@ -1355,6 +1410,21 @@
           ? { down: reveal.down, up: reveal.up + step }
           : { down: after === -1 ? 0 : gap.count, up: after === -1 ? gap.count : 0 },
     );
+    await rebuild(path);
+  }
+
+  /**
+   * Re-emit one file's viewer model from the reveals in hand. A press on a
+   * gap's strip and the page opening a comment's own gap are the same build:
+   * the viewer parses diff text, so revealed lines exist only once the text
+   * carries them.
+   */
+  async function rebuild(path: string): Promise<void> {
+    const held = built.find((file) => file.path === path);
+    const content = contentFor(path);
+    if (held === undefined || content === null) return;
+    const key = scopeCommit ?? 'all';
+    const openedHere = openedFor(path);
     const { DiffFile } = await import('@git-diff-view/core');
     // A build that lands after the scope moved on is the old scope's.
     if ((scopeCommit ?? 'all') !== key) return;

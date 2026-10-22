@@ -122,6 +122,90 @@ export function gapRemaining(gap: Gap, reveal: GapReveal | undefined): number {
 }
 
 /**
+ * The reveal a placed comment needs so its own row is drawn: the gap holding
+ * its line, and how far to open that gap from the nearer end.
+ *
+ * A comment written on a revealed line lands outside the hunks, and a reload
+ * starts with every gap closed - the card would be drawn nowhere and the
+ * stepper would count a row that is not on screen. A line the hunks carry is
+ * already drawn, and one no gap holds cannot be revealed, so both answer
+ * `null`.
+ */
+export interface NeededReveal {
+  after: number;
+  reveal: GapReveal;
+}
+
+export function revealFor(
+  file: DiffFileRecord,
+  content: FileLines,
+  gaps: readonly Gap[],
+  side: 'old' | 'new',
+  line: number,
+  opened: ReadonlyMap<number, GapReveal> | undefined,
+): NeededReveal | null {
+  if (findLine(file, side, line) !== null) return null;
+  const located = gapFor(file, gaps, side, line);
+  if (located === null) return null;
+  const { gap, index } = located;
+  if (index < 1 || index > content.lines.length) return null;
+  const held = opened?.get(gap.after) ?? { down: 0, up: 0 };
+  const down = Math.min(held.down, gap.count);
+  const up = Math.min(held.up, gap.count - down);
+  if (index >= gap.start && index < gap.start + down) return null;
+  if (index >= gap.start + gap.count - up && index < gap.start + gap.count) return null;
+  const fromTop = index - gap.start + 1;
+  const fromBottom = gap.start + gap.count - index;
+  // **Only the end the synthesis honours.** A gap above the first hunk is
+  // drawn from its bottom (it has no hunk before it to carry a tail), and one
+  // below the last from its top; only a gap between two hunks takes either.
+  const last = file.hunks.length - 1;
+  const canTop = gap.after !== -1;
+  const canBottom = gap.after !== last;
+  return canTop && (!canBottom || fromTop <= fromBottom)
+    ? { after: gap.after, reveal: { down: fromTop, up: held.up } }
+    : { after: gap.after, reveal: { down: held.down, up: fromBottom } };
+}
+
+/**
+ * The gap whose lines hold an anchor, as its new-side number. A new-side
+ * line counts itself; an old-side one is shifted by the block's delta, taken
+ * from the nearest line carrying both numbers.
+ */
+function gapFor(
+  file: DiffFileRecord,
+  gaps: readonly Gap[],
+  side: 'old' | 'new',
+  line: number,
+): { gap: Gap; index: number } | null {
+  for (const gap of gaps) {
+    const index = side === 'new' ? line : shifted(file, gap, line);
+    if (index !== null && index >= gap.start && index < gap.start + gap.count) {
+      return { gap, index };
+    }
+  }
+  return null;
+}
+
+/** An old-side line's new-side number, by the delta at its block. */
+function shifted(file: DiffFileRecord, gap: Gap, oldLine: number): number | null {
+  // Lines above the first hunk are the same lines on both sides.
+  if (gap.after === -1) return oldLine;
+  const dual = (hunk: DiffFileRecord['hunks'][number] | undefined): number | null => {
+    if (hunk === undefined) return null;
+    for (const line of hunk.lines) {
+      if (line.oldLine !== null && line.newLine !== null) return line.oldLine - line.newLine;
+    }
+    return null;
+  };
+  // The gap sits between two hunks (or below the last): the delta is the
+  // same on either side of it.
+  const before = dual(file.hunks[gap.after]);
+  const delta = before ?? dual(file.hunks[gap.after + 1]);
+  return delta === null ? null : oldLine - delta;
+}
+
+/**
  * The new-side lines the reader's own gap expansions have revealed: the
  * `down` presses from a gap's top, and the `up` presses from its bottom.
  */
@@ -438,10 +522,10 @@ export function commentAnchor(
  * right-side line, a left-side one under the left - and in unified it takes
  * the whole lane, where the line itself does.
  *
- * **The split is the table's own.** A row the reader's context expansion
- * produced can carry no side on its cells, so the anchor row is not the
- * authority: the colgroup is, and the card takes the columns the side owns
- * whatever shape the row above it has.
+ * **The split is the table's own.** A row drawn with one cell across the
+ * table carries no side at all, so the anchor row is not the authority: the
+ * colgroup is, and the card takes the columns the side owns whatever shape
+ * the row above it has.
  */
 export function insertRow(
   at: HTMLTableRowElement,
