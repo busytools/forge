@@ -59,6 +59,17 @@ const said = (text: string): unknown => ({
   },
 });
 
+/**
+ * A frame carrying the CLI's own clock.
+ *
+ * Which of two turns is newer is read off these stamps, so a test about a turn
+ * a page has or has not run past has to carry them.
+ */
+const stamped = (message: unknown, at: string): unknown => ({
+  ...(message as object),
+  timestamp: at,
+});
+
 /** The frame a turn ends on, which is what tells a page's copy of it settled. */
 const ended = (): unknown => ({
   type: 'result',
@@ -3455,6 +3466,54 @@ describe('the conversation the chat draws', () => {
       newest !== undefined && beingWritten(newest),
       'and the turn being written is the resumed one',
     ).toBe(true);
+  });
+
+  /**
+   * **The other side of that rule** (#2503): a newest page read BEFORE the live
+   * turn's frames landed has a newest row older than the turn, and the turn
+   * stays where it is - last, and still being written. Settling on stamps
+   * alone would take the clock off the turn the reader is watching and seat it
+   * above a page that is older than it.
+   */
+  it('keeps a live turn a newest page is older than, below and still being written', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.update({
+      chat_appended: { key: LEAD, msg: stamped(typed('mine'), '2026-10-22T10:30:00.000Z') },
+    });
+    server.update({
+      chat_appended: { key: LEAD, msg: stamped(said('answer'), '2026-10-22T10:35:00.000Z') },
+    });
+    // A newest page read a moment before those frames landed: an older, settled
+    // turn, and the newest row it carries ends before the live turn does.
+    server.send(
+      page(
+        [
+          {
+            key: 'turn-older',
+            messages: [
+              stamped(typed('before'), '2026-10-22T09:00:00.000Z'),
+              stamped(ended(), '2026-10-22T09:55:00.000Z'),
+            ],
+          },
+        ],
+        'c0',
+      ),
+    );
+
+    const turns = get(chat.value).turns;
+    expect(turns.length, 'the page lands as a row of its own').toBe(2);
+    const newest = turns[turns.length - 1];
+    expect(
+      newest !== undefined && beingWritten(newest),
+      'the live turn is still being written',
+    ).toBe(true);
+    expect(
+      newest?.messages.some((message) => (message as { uuid?: string }).uuid === 'u-mine'),
+      'and it is still the last row',
+    ).toBe(true);
+    expect(turns[0]?.key, 'with the older page above it').toBe('turn-older');
   });
 
   it('replaces a live turn with the page that settled it', () => {
