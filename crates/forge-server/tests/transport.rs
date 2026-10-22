@@ -9067,17 +9067,7 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         "a session's own work is information, not a warning: {line}",
     );
     assert_eq!(parsed["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
-    for field in [
-        "open_ms",
-        "seed_ms",
-        "conversation_ms",
-        "page_ms",
-        "encode_ms",
-        "bytes",
-        "write_ms",
-        "waited",
-        "peer",
-    ] {
+    for field in ["open_ms", "seed_ms", "conversation_ms", "page_ms", "encode_ms", "peer"] {
         assert!(parsed.get(field).is_some(), "the line carries {field}: {line}");
     }
     // **The peer is this client's own address (#2506).** The watch has
@@ -9088,15 +9078,38 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         serde_json::json!(peer.to_string()),
         "the open names this client's own address: {line}",
     );
+    // **One record per open.** The write's numbers live on `frame_write`, so
+    // the open must not repeat them: a field in both places is a field to
+    // keep in step, and an open that doubled its debug volume for it.
+    for field in ["bytes", "write_ms", "waited"] {
+        assert!(
+            parsed.get(field).is_none(),
+            "the open does not repeat the write's {field}: {line}",
+        );
+    }
 
-    // **One record per open.** The write's numbers live on the open, so a
-    // second line repeating them would be a second thing to keep in step.
+    // The write's own record, carrying the fields the open no longer does.
+    let line = caught
+        .lines()
+        .find(|line| line.contains("\"frame_write\""))
+        .unwrap_or_else(|| panic!("the open's frame logs its own write; caught: {caught}"));
+    let write: serde_json::Value = serde_json::from_str(line).expect("the line is JSON");
+    assert_eq!(write["event_name"], "frame_write");
+    assert_eq!(write["level"], "DEBUG", "a frame's own cost is information: {line}");
+    assert_eq!(write["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
+    for field in ["bytes", "write_ms", "waited", "peer"] {
+        assert!(write.get(field).is_some(), "the line carries {field}: {line}");
+    }
     assert!(
-        !caught.contains("\"frame_write\""),
-        "the open's write is not a record of its own: {caught}",
+        write["bytes"].as_u64().is_some_and(|bytes| bytes > 0),
+        "the write names the frame's size: {line}",
+    );
+    assert_eq!(
+        write["peer"], parsed["peer"],
+        "the write and the open name the same client: {write} beside {parsed}",
     );
 
-    // The attach's own record, beside it, for the clients that never open
+    // The attach's own record, beside them, for the clients that never open
     // (a declare) and for the address before an open fails.
     let line = caught
         .lines()
@@ -9124,6 +9137,7 @@ async fn a_declare_subscribe_logs_its_client_but_no_open() {
     install_capture();
     let (url, _fleet, _state) = a_server_with_state().await;
     let opens_before = captured().matches("\"session_open\"").count();
+    let writes_before = captured().matches("\"frame_write\"").count();
     let clients_before = captured().matches("\"client_subscribed\"").count();
 
     let mut socket = connect(&url).await;
@@ -9148,6 +9162,11 @@ async fn a_declare_subscribe_logs_its_client_but_no_open() {
         caught.matches("\"session_open\"").count(),
         opens_before,
         "a declare is no page opening, so it logs no open; caught: {caught}",
+    );
+    assert_eq!(
+        caught.matches("\"frame_write\"").count(),
+        writes_before,
+        "and no frame was written for it, so it logs no write; caught: {caught}",
     );
     assert_eq!(
         caught.matches("\"client_subscribed\"").count(),

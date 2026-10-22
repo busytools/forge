@@ -1074,6 +1074,20 @@ where
                     if let Some(slot) = &seat
                         && !declare
                     {
+                        // The snapshot's own write, its own record: the open
+                        // below keeps the slices, so the write's numbers are
+                        // not repeated there (#2506).
+                        tracing::debug!(
+                            event_name = "frame_write",
+                            slot = %slot.display(),
+                            peer = %caller.peer,
+                            bytes = write.bytes,
+                            write_ms = write.write_ms,
+                            waited = write.waited,
+                            "the snapshot's socket write: waited says the write yielded at \
+                             least once before it was done (a prior frame's flush, kernel \
+                             send-buffer pressure or a slow reader)",
+                        );
                         // The session's open, in its own slices: the numbers a
                         // reader places a slow switch with, beside the
                         // client's own marks and the client it served. Debug,
@@ -1089,17 +1103,13 @@ where
                             conversation_ms = timings.conversation_ms,
                             page_ms = timings.page_ms,
                             encode_ms = timings.encode_ms,
-                            write_ms = write.write_ms,
-                            waited = write.waited,
-                            bytes = write.bytes,
                             "the subscribe's own work: seed is the transcript read a cold \
                              seat pays, conversation is the copy's arrival, page its cut and \
                              fold, and encode the record's value; open_ms ends when the \
-                             snapshot's write returns, so write_ms is inside it and waited \
-                             says that write yielded at least once (a prior frame's flush, \
-                             kernel pressure or a slow reader) - the rest is the queued \
-                             flush, the copy's catch-up, the record's reads and the frame's \
-                             own serialisation into the bytes it carries",
+                             snapshot's write returns, so the write is inside it - \
+                             frame_write carries that write's own numbers, and the rest is \
+                             the queued flush, the copy's catch-up, the record's reads and \
+                             the frame's own serialisation into the bytes it carries",
                         );
                     }
                     // Rather than keeping a spent mark until the next unrelated
