@@ -104,7 +104,12 @@ describe('a markdown change across block markers', () => {
 
     const languages = [...drawn.querySelectorAll('.code .lang')].map((node) => node.textContent);
     expect(languages, 'one block, in its own language').toEqual(['rust']);
-    expect(drawn.textContent ?? '', 'no literal closing marker').not.toContain('~~~');
+    // The pre-fix code leaked the OLD ``` marker, not the new one: pin the
+    // whole rendered text, so either marker leaking reds the test.
+    expect((drawn.textContent ?? '').trim(), 'only the language and the body remain').toBe(
+      'rustfn main() {}',
+    );
+    expect(drawn.textContent ?? '', 'no old marker either').not.toContain('```');
   });
 
   it('draws a rust fence replaced by a python fence as two blocks', () => {
@@ -173,6 +178,33 @@ describe('a reference-style link definition', () => {
   /** A destination on the following indented line is the same definition. */
   it('detects a definition whose destination is on the next line', () => {
     expect(hasDefinitionChange([{ kind: 'del', text: '[docs]:' }])).toBe(true);
+  });
+
+  /**
+   * **A marker-only del/add fence pair is one toggle.** Counting both closes
+   * and reopens the fence, so a definition-shaped line of CODE just inside
+   * it reads as prose and the hunk falls back needlessly.
+   */
+  it('treats a marker-only fence pair as one toggle', () => {
+    expect(
+      hasDefinitionChange([
+        { kind: 'del', text: '```md' },
+        { kind: 'add', text: '```markdown' },
+        { kind: 'del', text: '[docs]: https://example.com' },
+        { kind: 'del', text: '```' },
+      ]),
+      'the definition-shaped line is inside the fence',
+    ).toBe(false);
+    expect(
+      hasDefinitionChange([
+        { kind: 'del', text: '```md' },
+        { kind: 'add', text: '```markdown' },
+        { kind: 'ctx', text: 'a line' },
+        { kind: 'ctx', text: '```' },
+        { kind: 'del', text: '[docs]: https://example.com' },
+      ]),
+      'the same line outside the fence is a definition',
+    ).toBe(true);
   });
 });
 

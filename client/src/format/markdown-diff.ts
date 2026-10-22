@@ -282,8 +282,14 @@ const DEFINITION = /^\s*\[[^\]]+\]:/;
  */
 export function hasDefinitionChange(lines: readonly SourceLine[]): boolean {
   let insideFence = false;
-  for (const line of lines) {
+  for (let at = 0; at < lines.length; at += 1) {
+    const line = lines[at];
+    if (line === undefined) continue;
     if (isFence(line.text)) {
+      // A marker-only del/add pair is ONE toggle, exactly as the source
+      // builder treats it: counting both closes and reopens the fence, and
+      // a definition-shaped CODE line between them would read as prose.
+      if (markerOnlyChange(lines, at, insideFence)) at += 1;
       insideFence = !insideFence;
       continue;
     }
