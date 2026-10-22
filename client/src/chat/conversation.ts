@@ -395,8 +395,8 @@ function messagesOf(turn: PageTurn): unknown[] {
  */
 function newestStampMs(messages: readonly unknown[]): number | null {
   let newest: number | null = null;
-  for (const message of messages as Array<{ timestamp?: unknown }>) {
-    const stamp = message.timestamp;
+  for (const message of messages as Array<{ timestamp?: unknown } | null>) {
+    const stamp = message?.timestamp;
     if (typeof stamp !== 'string' || stamp === '') continue;
     const at = Date.parse(stamp);
     if (!Number.isFinite(at)) continue;
