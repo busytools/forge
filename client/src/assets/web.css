@@ -1941,9 +1941,12 @@ details.leaf[open] > summary .arw { color: var(--accent); }
 details.leaf.running > summary { color: var(--text); }
 
 .body { margin: 3px 0 6px 27px; }
+/* **A plain row is the same panel as a code row**, not a bare vertical line:
+   one treatment for every body a call draws. The terminal's own colours are
+   unchanged; only its ground and edge are the panel's. */
 .term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
-  border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
-  white-space: pre-wrap; overflow-wrap: anywhere; }
+  border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
+  padding: 6px 10px; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* The live mark a running call's own output draws: the row's ring says the
    call is still out, this says the box under it is still being written -
    without it a tail that stopped moving and a finished one read alike. */
@@ -2071,6 +2074,11 @@ details.leaf.running > summary { color: var(--text); }
    1.89x the one row the terminal draws for the same fence. */
 .code pre { font-family: var(--mono); font-size: var(--fs-prose); padding: 6px 10px;
   white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
+/* A diff inside the panel: the panel owns the border, ground and label; the
+   grid is just the rows, so the two do not draw a box within a box. */
+.code .dif { border: 0; border-radius: 0; }
+/* A rendered markdown diff's own padding inside the panel. */
+.code-diff { padding: 8px 12px 10px; }
 /* The caption under a panel whose file has no grammar: the header carries no
    language, and this says why rather than leaving the absence unexplained. */
 .code-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);

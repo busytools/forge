@@ -17,9 +17,17 @@
 </script>
 
 <!--
-  The rendered markdown, produced by the chat's one renderer from escaped
-  input (raw HTML off), with only the diff's own strike and add spans
-  substituted in after it.
+  The rendered markdown in the same panel a Read draws - border, panel ground
+  and a format strip - produced by the chat's one renderer from escaped input
+  (raw HTML off), with only the diff's own strike and add spans substituted
+  in after it.
 -->
-<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-<div class="pbody"><div class="prose">{@html html}</div></div>
+<div class="code">
+  <div class="lang">markdown</div>
+  <div class="code-diff">
+    <div class="prose">
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+      {@html html}
+    </div>
+  </div>
+</div>

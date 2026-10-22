@@ -195,7 +195,10 @@
   );
 </script>
 
-<!-- The patch box: the escaped body the plain pass drew, or the same rows with
-     the grammar's tokens in place. Both come from the same builder. -->
-<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-<div class="dif" class:added class:bare>{@html html}</div>
+<!-- The patch box in the same panel a Read draws: border, panel ground and a
+     label strip naming the format, with the diff's rows inside it. -->
+<div class="code">
+  <div class="lang">{language ?? 'text'}</div>
+  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+  <div class="dif" class:added class:bare>{@html html}</div>
+</div>

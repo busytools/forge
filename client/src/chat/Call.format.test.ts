@@ -75,11 +75,14 @@ describe('a Read of markdown', () => {
     });
     try {
       flushSync();
-      const prose = document.querySelector('.pbody .prose');
+      const prose = document.querySelector('.code .code-diff .prose');
+      expect(document.querySelector('.code > .lang')?.textContent, 'the format names it').toBe(
+        'markdown',
+      );
       expect(prose?.querySelector('h1')?.textContent, 'the heading renders').toBe('Placement');
       expect(prose?.querySelectorAll('li').length, 'the list renders').toBe(2);
       expect(prose?.textContent, 'no raw markdown marker in the DOM').not.toContain('# Placement');
-      expect(document.querySelector('.code'), 'and not the source panel').toBeNull();
+      expect(document.querySelector('.code pre'), 'and not the source panel').toBeNull();
     } finally {
       void unmount(app);
     }
@@ -174,6 +177,13 @@ describe('an Edit of code', () => {
       expect(document.querySelectorAll('.dif .ln.d').length, 'a removed row').toBe(1);
       expect(document.querySelectorAll('.dif .ln.a').length, 'two added rows').toBe(2);
       expect(
+        document.querySelector('.code > .dif'),
+        'the diff sits inside the Read panel, not a box of its own',
+      ).not.toBeNull();
+      expect(document.querySelector('.code > .lang')?.textContent, 'the format names it').toBe(
+        'rust',
+      );
+      expect(
         document.querySelector('.dif .ln.d span[style*="color"]'),
         'removed tokens coloured',
       ).not.toBeNull();
@@ -218,6 +228,21 @@ describe('an Edit of code', () => {
   });
 });
 
+describe('a plain row', () => {
+  /**
+   * **One panel treatment for every body a call draws.** A terminal result
+   * used to be a bare vertical rule beside the code rows' panels; it now
+   * takes the same border, ground and radius, with its own colours kept.
+   */
+  it('draws in the same panel as a code row, not a bare vertical rule', () => {
+    const sheet = readFileSync('src/assets/web.css', 'utf8');
+    const rule = /\.term \{([^}]*)\}/.exec(sheet)?.[1] ?? '';
+    expect(rule, 'the panel ground').toContain('background: var(--s2)');
+    expect(rule, 'the panel border').toContain('border: 1px solid var(--line)');
+    expect(rule, 'no bare left rule').not.toContain('border-left');
+  });
+});
+
 describe('an Edit of markdown', () => {
   const edit = leaf({
     row: { kind: 'family', family: 'edit' },
@@ -243,8 +268,11 @@ describe('an Edit of markdown', () => {
     const app = mount(Call, { target: document.body, props: { k: 'f1', call: edit, open: true } });
     try {
       flushSync();
-      const prose = document.querySelector('.pbody .prose');
+      const prose = document.querySelector('.code .code-diff .prose');
       expect(prose?.querySelector('h1'), 'the heading renders as a heading').not.toBeNull();
+      expect(document.querySelector('.code > .lang')?.textContent, 'the format names it').toBe(
+        'markdown',
+      );
 
       const struck = [...(prose?.querySelectorAll('.mddel') ?? [])].map((span) => span.textContent);
       const added = [...(prose?.querySelectorAll('.mdadd') ?? [])].map((span) => span.textContent);
@@ -298,7 +326,7 @@ describe('an Edit of markdown', () => {
     const app = mount(Call, { target: document.body, props: { k: 'f1', call: block, open: true } });
     try {
       flushSync();
-      const prose = document.querySelector('.pbody .prose');
+      const prose = document.querySelector('.code .code-diff .prose');
       const headings = [...(prose?.querySelectorAll('h2') ?? [])].map((node) => node.textContent);
       expect(headings, 'both headings parse as headings').toEqual([
         'The old heading',
@@ -351,7 +379,7 @@ describe('an Edit of markdown', () => {
         document.querySelector('.dif .ln.d .l')?.textContent,
         'the old definition is shown as source',
       ).toContain('https://example.com/old');
-      expect(document.querySelector('.pbody .prose'), 'no rendered diff').toBeNull();
+      expect(document.querySelector('.code .code-diff'), 'no rendered diff').toBeNull();
     } finally {
       void unmount(app);
     }
@@ -370,7 +398,7 @@ describe('an Edit of markdown', () => {
     const app = mount(Call, { target: document.body, props: { k: 'f1', call: write, open: true } });
     try {
       flushSync();
-      const prose = document.querySelector('.pbody .prose');
+      const prose = document.querySelector('.code .code-diff .prose');
       expect(prose?.querySelector('h1')?.textContent, 'the new heading renders').toBe('New');
       expect(
         [...(prose?.querySelectorAll('.mdadd') ?? [])].map((span) => span.textContent),

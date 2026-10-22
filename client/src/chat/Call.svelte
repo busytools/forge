@@ -787,8 +787,11 @@
            knows how to draw, and its source is not what a reader wants. The
            CLI's line-number gutter comes off, or `#` sits after a number and
            every heading draws as a paragraph. -->
-      <div class="pbody">
-        <Prose text={withoutLineNumbers(stripEscapes(textOf(piece)))} />
+      <div class="code">
+        <div class="lang">markdown</div>
+        <div class="code-diff">
+          <Prose text={withoutLineNumbers(stripEscapes(textOf(piece)))} />
+        </div>
       </div>
     {:else if asCode(piece)}
       <Code language={readLanguage} text={stripEscapes(textOf(piece))} />

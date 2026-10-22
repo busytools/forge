@@ -631,8 +631,8 @@
   .f { color: var(--syn-fn); }
 
   .term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
-    border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
-    white-space: pre-wrap; overflow-wrap: anywhere; }
+    border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
+    padding: 6px 10px; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .term .pfx { color: var(--dim); }
   .term .sum { color: var(--ok); }
   /* The live mark a running call's own output draws: the row's ring says the
@@ -812,6 +812,10 @@
   .dif .ln.d .l { background: var(--del-bg); }
   .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
   .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
+  /* A diff inside a call's panel: the panel owns the border, ground and
+     label; the grid is just the rows. A rendered markdown diff pads itself. */
+  .code .dif { border: 0; border-radius: 0; }
+  .code-diff { padding: 8px 12px 10px; }
   /* GitHub's row tint covers the number columns too: with `.ln` as
      `display: contents`, tinting only the body and the mark left two bare
      gaps at the row's left and broke the band. */
@@ -1888,14 +1892,19 @@ Set `service_key` per environment in the bot's own config.</pre>
                knows how to draw, and its source is not what a reader wants. -->
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/ui/client/session.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="prose">
-              <h2>The run of rows</h2>
-              <p>Every call, message and thought draws on its own row, in the order it arrived.</p>
-              <ul>
-                <li>a call opens onto what it came back with</li>
-                <li>an edit opens onto its patch</li>
-              </ul>
-            </div></div>
+            <div class="body">
+              <div class="code">
+                <div class="lang">markdown</div>
+                <div class="code-diff"><div class="prose">
+                  <h2>The run of rows</h2>
+                  <p>Every call, message and thought draws on its own row, in the order it arrived.</p>
+                  <ul>
+                    <li>a call opens onto what it came back with</li>
+                    <li>an edit opens onto its patch</li>
+                  </ul>
+                </div></div>
+              </div>
+            </div>
           </details>
           <!-- A read of a file no grammar names draws plain, and says so. -->
           <details class="leaf">
@@ -1929,6 +1938,8 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/assets/web.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code">
+                <div class="lang">css</div>
               <div class="dif">
                 <div class="h">@@ -30,4 +30,5 @@</div>
                 <div class="ln ctx"><span class="on">30</span><span class="nn">30</span><span class="n"></span><span class="l">  display: flex;</span></div>
@@ -1942,12 +1953,15 @@ Set `service_key` per environment in the bot's own config.</pre>
                 <div class="ln a"><span class="on"></span><span class="nn">74</span><span class="n">+</span><span class="l">  .row .what a:focus-visible { outline: 2px solid var(--accent); }</span></div>
                 <div class="ln ctx"><span class="on">73</span><span class="nn">75</span><span class="n"></span><span class="l">  }</span></div>
               </div>
+              </div>
               <div class="patchline"><span class="patchsize">2 hunks &#183; +4 &#8722;1</span><span class="patchmark">every match</span></div>
             </div>
           </details>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/home/Home.svelte</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code">
+                <div class="lang">svelte</div>
               <div class="dif">
                 <div class="h">@@ -91,2 +91,4 @@</div>
                 <div class="ln ctx"><span class="on">91</span><span class="nn">91</span><span class="n"></span><span class="l">      &lt;b&gt;v{view.header.version}&lt;/b&gt;</span></div>
@@ -1955,12 +1969,15 @@ Set `service_key` per environment in the bot's own config.</pre>
                 <div class="ln a"><span class="on"></span><span class="nn">93</span><span class="n">+</span><span class="l">      {#if view.header.installed}{' \u{b7} '}claude {view.header.installed}{/if}</span></div>
                 <div class="ln ctx"><span class="on">92</span><span class="nn">94</span><span class="n"></span><span class="l">      {#if view.header.update}</span></div>
               </div>
+              </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +2 &#8722;0</span><span class="patchmark">changed outside this edit</span></div>
             </div>
           </details>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/surface.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code">
+                <div class="lang">rust</div>
               <div class="dif">
                 <div class="h">@@ -74,2 +74,5 @@</div>
                 <div class="ln ctx"><span class="on">74</span><span class="nn">74</span><span class="n"></span><span class="l">    pub fn reviews(&amp;self) -&gt; Vec&lt;ReviewView&gt; {</span></div>
@@ -1968,6 +1985,7 @@ Set `service_key` per environment in the bot's own config.</pre>
                 <div class="ln a"><span class="on"></span><span class="nn">76</span><span class="n">+</span><span class="l">        self.workspace.cli_version()</span></div>
                 <div class="ln a"><span class="on"></span><span class="nn">77</span><span class="n">+</span><span class="l">    }</span></div>
                 <div class="ln ctx"><span class="on">75</span><span class="nn">78</span><span class="n"></span><span class="l">    }</span></div>
+              </div>
               </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
             </div>
@@ -1977,10 +1995,13 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/index.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="prose">
+              <div class="code">
+                <div class="lang">markdown</div>
+              <div class="code-diff"><div class="prose">
                 <h2><span class="mddel">Forge</span><span class="mdadd">forge - the agent</span></h2>
                 <p><span class="mdadd">A server that runs many sessions and the clients that draw them.</span></p>
                 <p>What it is: <span class="mddel">a terminal</span><span class="mdadd">a server and its clients</span>, one trusted person, one machine.</p>
+              </div></div>
               </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +2 &#8722;1</span></div>
             </div>

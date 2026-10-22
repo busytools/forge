@@ -80,12 +80,16 @@ read as one system.
   Files reader uses: markdown renders as prose, code stays coloured with the
   file's own grammar (a `Justfile` is `just`, a script's shebang names its
   own), and a text file no grammar names draws plain with a caption saying so.
-- **An edit** draws its diff the way GitHub does: the hunks with both line
-  numbers, the file's syntax colours on every line, the row tinted for a
-  removal or an addition, and the changed words of a paired removal and
-  addition tinted darker. **A markdown edit renders instead**: the hunk draws
-  as markdown with removed words kept inline, struck and dimmed, and added
-  words drawn normal; the source diff is not shown under it.
+- **An edit** draws its diff the way GitHub does, inside the same panel a read
+  draws - the panel's border and ground, with the file's format on the head:
+  the hunks with both line numbers, the file's syntax colours on every line,
+  the row tinted for a removal or an addition, and the changed words of a
+  paired removal and addition tinted darker. **A markdown edit renders
+  instead**: the hunk draws as markdown, in that same panel, with removed
+  words kept inline, struck and dimmed, and added words drawn normal; the
+  source diff is not shown under it. **A plain row** - a command's output, a
+  text result - draws in that same panel too, rather than as a bare rule
+  beside it.
   **An edit or a question whose structured record the page could not
   carry** says so on its marks line: an `omitted` figure with its size,
   scaled to the unit the size belongs to (`omitted, 5.0 MB`). On an edit it
