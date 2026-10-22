@@ -819,7 +819,11 @@ mod tests {
 
         let slack_only: BTreeSet<McpFamily> = [McpFamily::Slack].into_iter().collect();
         let lines = withheld_family_lines(&slack_only);
-        assert_eq!(lines.len(), 5, "five of the six families are withheld");
+        assert_eq!(
+            lines.len(),
+            McpFamily::ALL.len() - 1,
+            "one family is present, so every other family is withheld",
+        );
         for line in &lines {
             assert!(!line.contains("slack__"), "the present family gets no line: {line}");
         }
@@ -844,7 +848,11 @@ mod tests {
 
         let all_without_config = effective_mcp_families(None, false);
         assert!(!all_without_config.contains(&McpFamily::Systemone));
-        assert_eq!(all_without_config.len(), 5, "every other family stays");
+        assert_eq!(
+            all_without_config.len(),
+            McpFamily::ALL.len() - 1,
+            "systemone is the only family the config gate removes",
+        );
     }
 
     /// The config gate reaches the COMPOSER too: a selected-but-disabled

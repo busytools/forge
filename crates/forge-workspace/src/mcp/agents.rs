@@ -1259,16 +1259,21 @@ mod tests {
         // Drive the list from the enum, not a hand-written copy: a family
         // added to `McpFamily::ALL` fails the exhaustive match below, and
         // the shipped description then has to carry its purpose too.
-        let advertised: Vec<&str> = schema["properties"]["mcp_families"]["items"]["enum"]
-            .as_array()
-            .expect("the family enum is advertised")
-            .iter()
-            .map(|value| value.as_str().expect("a family name is a string"))
-            .collect();
+        let advertised = |schema: &serde_json::Value| -> Vec<String> {
+            schema["properties"]["mcp_families"]["items"]["enum"]
+                .as_array()
+                .expect("the family enum is advertised")
+                .iter()
+                .map(|value| value.as_str().expect("a family name is a string").to_owned())
+                .collect()
+        };
+        let enum_names: Vec<String> =
+            crate::mcp::McpFamily::ALL.iter().map(|family| family.as_str().to_owned()).collect();
+        assert_eq!(advertised(&schema), enum_names, "spawn advertises the enum's own list");
         assert_eq!(
-            advertised,
-            crate::mcp::McpFamily::ALL.iter().map(|family| family.as_str()).collect::<Vec<_>>(),
-            "the advertised families are the enum's own list",
+            families.matches("` - ").count(),
+            enum_names.len(),
+            "the description names every family once and no retired one: {families}",
         );
         for family in crate::mcp::McpFamily::ALL {
             let (purpose, guidance) = match family {
@@ -1308,6 +1313,11 @@ mod tests {
         // spawn argument for the purposes instead of restating them.
         let update =
             Update { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+        assert_eq!(
+            advertised(&update.input_schema()),
+            enum_names,
+            "update advertises the enum's own list",
+        );
         assert!(
             update.input_schema()["properties"]["mcp_families"]["description"]
                 .as_str()
