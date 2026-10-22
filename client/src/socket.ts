@@ -28,6 +28,7 @@ import {
   type Skew,
   type Subject,
 } from './protocol';
+import { noteSnapshot, noteSubscribe } from './perf';
 import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
 import { settingsFrom } from './wire/types';
@@ -419,6 +420,9 @@ export function connect(
   function sendNow(message: ClientMessage): void {
     if (!isOpen()) throw new Error('the socket is not open');
     socket?.send(JSON.stringify(message));
+    // **The write's own mark (#2513).** Taken after the send, so the gap a
+    // switch pays is measured to the frame leaving this side.
+    if (message.kind === 'subscribe') noteSubscribe(message.what, message.declare);
   }
 
   function failPending(why: string): void {
@@ -723,13 +727,21 @@ export function connect(
 
     next.onmessage = (event) => {
       if (next !== socket) return;
+      const raw = String(event.data);
       let message: ServerMessage;
       try {
         // The boundary: a frame is narrowed once, here, rather than by each
         // reader. A frame this client cannot read is reported rather than
         // thrown, because a throw out of this handler would take every frame
         // after it as well.
-        message = JSON.parse(String(event.data)) as ServerMessage;
+        const at = performance.now();
+        message = JSON.parse(raw) as ServerMessage;
+        // **The parse's own mark (#2513).** A large snapshot's parse is a
+        // main-thread cost between a click and its subscribe's answer, so the
+        // record carries the frame's length and the time the parse took.
+        if (message.kind === 'snapshot') {
+          noteSnapshot(message.subject, raw.length, performance.now() - at);
+        }
       } catch (why) {
         report('the server sent a frame this client could not read', why);
         return;

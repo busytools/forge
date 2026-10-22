@@ -11,6 +11,7 @@
     serverParameter,
   } from '../connect/remembered';
   import { watchHome, type HomeRead } from '../home/live';
+  import { noteSeatClick } from '../perf';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, type Route } from '../routes';
   import { forgetClosed, removedLanding, watchReleases, watchRemovals } from '../session/close';
@@ -322,7 +323,12 @@
     const href = anchor.getAttribute('href');
     if (!href || !href.startsWith('/')) return;
     event.preventDefault();
-    go(parseRoute(href));
+    const next = parseRoute(href);
+    // **The click's own mark (#2513).** Taken at the handler that takes the
+    // click, before the route moves: the gap a switch pays has two halves,
+    // and this is where the first one starts.
+    if (next.name === 'session') noteSeatClick(next.slot);
+    go(next);
   }
 </script>
 

@@ -42,6 +42,7 @@ import {
   type Skew,
   type Subject,
 } from '../protocol';
+import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
 import { READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
 import { StreamGate } from '../session/stream';
@@ -99,6 +100,36 @@ interface DesktopRefusal {
   why: string;
 }
 
+/** One forwarded snapshot's frame facts, as the shell half measured them. */
+interface FramedPayload {
+  subject: Subject;
+  bytes: number;
+  parse_ms: number;
+}
+
+/** One subscribe the shell half finished writing. */
+interface WrittenPayload {
+  key: string;
+  declared: boolean;
+  waited_ms: number;
+}
+
+/**
+ * The seat a subject key names, in the perf log's own spelling (#2513).
+ *
+ * The shell half keys a seat as `session:org\0project\0label` and every other
+ * subject as its own name; the log's seat is `org/project/label`, built by
+ * `seatLabel`, so this is the one other place that spelling is derived and it
+ * must agree.
+ */
+function seatOfKey(key: string): string | null {
+  const seat = key.startsWith('session:') ? key.slice('session:'.length) : null;
+  if (seat === null) return null;
+  const [org, project, label] = seat.split('\u0000');
+  if (org === undefined || project === undefined || label === undefined) return null;
+  return seatLabel({ org, project, label });
+}
+
 class RustConnection implements Connection {
   private readonly stores = new Stores();
   private readonly listeners = new Set<(message: ServerMessage) => void>();
@@ -140,6 +171,21 @@ class RustConnection implements Connection {
     this.stops.push(await listen('client://connection', () => void this.stateMoved()));
     this.stops.push(
       await listen('client://inbound', (event) => this.heard(event.payload as ServerMessage)),
+    );
+    // **The shell half's own facts (#2513).** A snapshot's raw length and the
+    // shell's parse travel beside the frame; a subscribe's write time is
+    // reported when the frame is on the wire, not when the page asked.
+    this.stops.push(
+      await listen<FramedPayload>('client://framed', (event) => {
+        const { subject, bytes, parse_ms: parseMs } = event.payload;
+        noteSnapshot(subject, bytes, parseMs);
+      }),
+    );
+    this.stops.push(
+      await listen<WrittenPayload>('client://written', (event) => {
+        const { key, declared, waited_ms: waitedMs } = event.payload;
+        noteSubscribeWritten(seatOfKey(key), declared, waitedMs);
+      }),
     );
     this.stops.push(
       await listen<DesktopRefusal>('client://refused', (event) => this.refuse(event.payload)),

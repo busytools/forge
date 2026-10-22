@@ -5,6 +5,7 @@
 import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { noteSnapshot, noteSubscribe } from './perf';
 import { connect, type Connection, type ConnectionStatus } from './socket';
 import { onRefusal, type Refusal } from './refusals';
 import {
@@ -17,6 +18,19 @@ import {
 } from './protocol';
 import { DEFAULT_AXES } from './session/wire';
 import { DEFAULT_SETTINGS, type SessionSlot } from './wire/types';
+
+/**
+ * **The perf log is the shell's file (#2513).** The switch gap's marks are
+ * taken in this module, and their wiring is asserted without a running probe:
+ * the probe itself only starts under the shell.
+ */
+vi.mock('./perf', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./perf')>();
+  return { ...real, noteSubscribe: vi.fn(), noteSnapshot: vi.fn() };
+});
+
+const mockSubscribe = vi.mocked(noteSubscribe);
+const mockSnapshot = vi.mocked(noteSnapshot);
 
 /** A forge that speaks the protocol and nothing else. */
 async function stubServer() {
@@ -236,6 +250,30 @@ describe('the connection', () => {
       browser: false,
       declare: false,
     });
+  });
+
+  /**
+   * **The socket marks its own write and its own parse (#2513).** The switch
+   * gap is measured between the click and the subscribe leaving this side, and
+   * a large snapshot is parsed here - so both marks have to be taken here,
+   * with the frame's length and the time its parse took.
+   */
+  it('marks each subscribe it writes and each snapshot it parses', async () => {
+    const { server, conn } = await connected();
+    mockSubscribe.mockClear();
+    mockSnapshot.mockClear();
+    const subject: Subject = { session: LEAD };
+
+    conn.subscribe(subject);
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+    expect(mockSubscribe).toHaveBeenCalledWith(subject, false);
+
+    server.send({ kind: 'snapshot', subject, data: { conversation: null } });
+    await until(() => mockSnapshot.mock.calls.length === 1, 'the snapshot mark');
+    const [parsed, chars, parseMs] = mockSnapshot.mock.calls[0] ?? [];
+    expect(parsed).toEqual(subject);
+    expect(chars).toBeGreaterThan(0);
+    expect(parseMs).toBeGreaterThanOrEqual(0);
   });
 
   /**

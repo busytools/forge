@@ -71,6 +71,12 @@ pub enum ClientEvent {
     Connection,
     /// A `ServerMessage`, as itself.
     Inbound(Value),
+    /// A forwarded snapshot's own frame facts: its raw length and the parse
+    /// this half took, for the page's perf log (#2513).
+    Framed { subject: Value, bytes: usize, parse_ms: f64 },
+    /// A subscribe frame finished writing in this half, with its wait
+    /// (#2513).
+    Written { key: String, declared: bool, waited_ms: f64 },
     /// A subscribe was refused, with the core's own words.
     Refused { key: String, why: String },
     /// The browser role moved.
@@ -499,11 +505,17 @@ impl Bridge {
                 continue;
             };
             let Some(Ok(record)) = state.records.read(key) else { continue };
-            self.emit(ClientEvent::Inbound(json!({
+            let snapshot = json!({
                 "kind": "snapshot",
                 "subject": watch.what,
                 "data": record,
-            })));
+            });
+            // The catch-up snapshot's frame facts (#2513): the page's byte
+            // counters and `auto` rule read every snapshot; nothing re-parses
+            // this one, so its parse is zero.
+            let bytes = serde_json::to_vec(&snapshot).map_or(0, |raw| raw.len());
+            self.emit(ClientEvent::Inbound(snapshot));
+            self.emit(ClientEvent::Framed { subject: watch.what.clone(), bytes, parse_ms: 0.0 });
             let Some(turns) = record.get("conversation").and_then(|c| c.get("turns")) else {
                 continue;
             };
@@ -533,7 +545,12 @@ impl Bridge {
     fn socket_event(self: &Arc<Self>, event: SocketEvent) {
         match event {
             SocketEvent::Status(status) => self.status_moved(status),
-            SocketEvent::Message(message) => self.message(message),
+            SocketEvent::Message { value, bytes, parse_ms } => {
+                self.message(value, bytes, parse_ms);
+            }
+            SocketEvent::Written { key, declared, waited_ms } => {
+                self.emit(ClientEvent::Written { key, declared, waited_ms });
+            }
             SocketEvent::Role { hosting } => {
                 self.lock().role = hosting;
                 self.emit(ClientEvent::Role { hosting });
@@ -584,13 +601,13 @@ impl Bridge {
         self.emit(ClientEvent::Connection);
     }
 
-    fn message(self: &Arc<Self>, message: Value) {
+    fn message(self: &Arc<Self>, message: Value, bytes: usize, parse_ms: f64) {
         let kind = message.get("kind").and_then(Value::as_str).unwrap_or_default();
         match kind {
             "greeting" => {
                 self.lock().greeting = Some(message.clone());
                 self.emit(ClientEvent::Connection);
-                self.forward(&message);
+                self.forward(&message, None);
             }
             "snapshot" => {
                 let Some(subject) = message.get("subject") else { return };
@@ -600,12 +617,12 @@ impl Bridge {
                 state.refreshing.remove(&key);
                 state.records.snapshot(subject, data);
                 drop(state);
-                self.forward(&message);
+                self.forward(&message, Some((bytes, parse_ms)));
             }
             "update" => {
                 let Some(update) = message.get("update") else { return };
                 let refresh = self.lock().records.apply(update);
-                self.forward(&message);
+                self.forward(&message, None);
                 self.acted(refresh);
             }
             "browser_ask" => self.answer_ask(&message),
@@ -618,7 +635,7 @@ impl Bridge {
             // and a seat set is the HOST's to sweep against, which no page
             // can do.
             "reply" | "browser_role" => {}
-            _ => self.forward(&message),
+            _ => self.forward(&message, None),
         }
     }
 
@@ -629,7 +646,7 @@ impl Bridge {
     /// counted, and every other frame is HELD in the ring for the reconcile
     /// to flush - a released seat, a dock's ending, a dictation's close and
     /// an error are frames no record carries.
-    fn forward(&self, message: &Value) {
+    fn forward(&self, message: &Value, framed: Option<(usize, f64)>) {
         let mut state = self.lock();
         let fresh =
             state.last_beat.is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
@@ -653,6 +670,14 @@ impl Bridge {
         }
         drop(state);
         self.emit(ClientEvent::Inbound(message.clone()));
+        // **A forwarded snapshot's own frame facts (#2513).** The page cannot
+        // see the raw length - this half parsed it - so the size and the
+        // parse travel beside the frame it belongs to.
+        if let Some((bytes, parse_ms)) = framed
+            && let Some(subject) = message.get("subject")
+        {
+            self.emit(ClientEvent::Framed { subject: subject.clone(), bytes, parse_ms });
+        }
     }
 
     /// **The server's seat set: sweep this client's profiles against it.**
@@ -808,7 +833,8 @@ mod tests {
     /// socket's own receive loop is `socket.rs`'s tested ground, and a test
     /// here is about what the bridge does with a frame.
     fn sent(bridge: &Arc<Bridge>, message: Value) {
-        bridge.socket_event(SocketEvent::Message(message));
+        let bytes = serde_json::to_string(&message).map_or(0, |text| text.len());
+        bridge.socket_event(SocketEvent::Message { value: message, bytes, parse_ms: 0.5 });
     }
 
     /// Park the page: nothing has heartbeated for longer than `FRESH_MS`.
@@ -898,6 +924,15 @@ mod tests {
             })),
         );
         event(&mut rx, is_inbound()).await;
+        // **A forwarded snapshot carries its frame facts beside it (#2513).**
+        let ClientEvent::Framed { subject, bytes, parse_ms } =
+            event(&mut rx, |event| matches!(event, ClientEvent::Framed { .. })).await
+        else {
+            unreachable!("filtered to framed");
+        };
+        assert_eq!(subject, seat(), "the facts belong to the frame's subject");
+        assert!(bytes > 0, "and carry its own length");
+        assert_eq!(parse_ms, 0.5, "and the parse the shell took");
         // The page goes away: its heartbeat stops, and the next frame is
         // counted rather than emitted - but the record still takes it.
         park(&bridge);
@@ -915,6 +950,20 @@ mod tests {
             json!(0.5),
             "the record folded the frame the page missed"
         );
+        // **The catch-up carries its frame facts too (#2513).** Without them
+        // the page's byte counters miss the read and its last-snapshot time
+        // stays behind, which can mark the next subscribe as prompted.
+        let ClientEvent::Framed {
+            subject: caught_subject,
+            bytes: caught_bytes,
+            parse_ms: caught_parse,
+        } = event(&mut rx, |event| matches!(event, ClientEvent::Framed { .. })).await
+        else {
+            unreachable!("filtered to framed");
+        };
+        assert_eq!(caught_subject, seat(), "the facts belong to the catch-up's subject");
+        assert!(caught_bytes > 0, "its bytes are measured");
+        assert_eq!(caught_parse, 0.0, "nothing parsed the record for it");
         let ClientEvent::Inbound(page) = event(&mut rx, is_inbound_kind("page")).await else {
             unreachable!("filtered to inbound");
         };

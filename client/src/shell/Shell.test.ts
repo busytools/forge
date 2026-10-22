@@ -8,6 +8,7 @@ import type { AddressInfo, RawData, WebSocket } from 'ws';
 import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
+import { noteSeatClick } from '../perf';
 import { PROTOCOL_VERSION } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
 import type { Connection } from '../socket';
@@ -28,6 +29,18 @@ vi.mock('../update/state', async (importOriginal) => {
 });
 
 const mockWatchUpdate = vi.mocked(watchUpdate);
+
+/**
+ * **The click's own mark is the shell's to take (#2513)**, in the delegated
+ * handler every internal anchor passes through; the module's own exports stay
+ * real, because the router reads them.
+ */
+vi.mock('../perf', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../perf')>();
+  return { ...real, noteSeatClick: vi.fn() };
+});
+
+const mockSeatClick = vi.mocked(noteSeatClick);
 
 /**
  * A socket and a server that a test in this realm can use, required through
@@ -877,5 +890,36 @@ describe('a seat removed under the reader', () => {
     await crossed();
 
     expect(location.pathname, 'a removal elsewhere moved the reader').toBe('/');
+  });
+});
+
+/**
+ * #2513: a switch's delay has a client-side half between the click and the
+ * subscribe. The click's mark has to be taken where the click lands - the
+ * shell's delegated handler - not where the route or the column later takes
+ * the seat on, or the handler's own share of the gap disappears into the
+ * switch mark.
+ */
+describe('the switch gap marks (#2513)', () => {
+  it('marks a seat click before the route moves', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => document.querySelector('.fleet-seat') !== null);
+
+    const seat = document.querySelector<HTMLAnchorElement>('.fleet-seat');
+    expect(seat, 'the home drew a seat to click').not.toBeNull();
+    const href = seat?.getAttribute('href') ?? '';
+    const [, , org, project, label] = href.split('/');
+    mockSeatClick.mockClear();
+    let markedAt: string | null = null;
+    mockSeatClick.mockImplementationOnce(() => {
+      markedAt = location.pathname;
+    });
+    seat?.click();
+
+    expect(mockSeatClick).toHaveBeenCalledTimes(1);
+    expect(mockSeatClick).toHaveBeenCalledWith({ org, project, label });
+    expect(markedAt, 'the mark is taken before the route moves').toBe('/');
   });
 });

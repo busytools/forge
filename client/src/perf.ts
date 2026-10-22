@@ -24,6 +24,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 
 import { HEARTBEAT_TICK_MS } from './heartbeat';
 import { CLIENT_VERSION } from './protocol';
+import type { Subject } from './protocol';
 import type { Route } from './routes';
 import { mintPromptId } from './wire/ids';
 import type { SessionSlot } from './wire/types';
@@ -43,6 +44,13 @@ const SLOW_FRAME_MS = 50;
 const SUMMARY_INTERVAL_MS = 10_000;
 
 /**
+ * How often the connection's own counters are written while something is
+ * happening: a subscribe burst is read at this cadence, not the summary's ten
+ * seconds (#2513).
+ */
+const CONNECTION_WINDOW_MS = 1_000;
+
+/**
  * Which terminal drawing is on screen for a seat's open (#2374).
  *
  * **`conversation` and `empty` are the seat's own answer** - rows on screen,
@@ -58,7 +66,18 @@ export type DrawnState = 'conversation' | 'empty' | 'waking' | 'refused';
 export interface PerfRecord {
   schema: string;
   kind:
-    'run_started' | 'frame' | 'longtask' | 'summary' | 'switch' | 'drawn' | 'quiet' | 'heartbeat';
+    | 'run_started'
+    | 'frame'
+    | 'longtask'
+    | 'summary'
+    | 'switch'
+    | 'drawn'
+    | 'quiet'
+    | 'heartbeat'
+    | 'click'
+    | 'subscribe'
+    | 'snapshot'
+    | 'connection';
   run_id: string;
   ts_ms: number;
   version?: string;
@@ -138,6 +157,36 @@ export interface PerfRecord {
   frames?: number;
   slow?: number;
   max_ms?: number;
+  /**
+   * A `subscribe`: whether it followed a snapshot's completion with no user
+   * action before it - the repeated re-subscribe shape a switch's delay can
+   * hide in (#2513). A click or a conversation opening counts as the action.
+   */
+  auto?: boolean;
+  /** A `subscribe`: the declare flag the frame carried. */
+  declare?: boolean;
+  /** A `subscribe` on the desktop: how long the shell half held it (its
+   *  queue plus the socket write) before it went (#2513). Absent on the web
+   *  build, where the page writes the frame itself. */
+  write_waited_ms?: number;
+  /** A `subscribe`: ms since the click that preceded it; absent when no
+   *  click did, so a reconnect never invents one. */
+  since_click_ms?: number;
+  /**
+   * A `snapshot`'s frame length in string units (UTF-16 code units). The
+   * wire is JSON and its non-ASCII arrives escaped, so this tracks the
+   * server's bytes closely without walking a multi-MB string (#2513).
+   */
+  chars?: number;
+  /** A `snapshot`: how long its JSON.parse took, at the boundary. */
+  parse_ms?: number;
+  /** A `connection` window's counts: subscribes sent, snapshot chars read. */
+  subscribes?: number;
+  snapshot_chars?: number;
+  /** The same counts per second of the window, which is the rate a burst is
+   *  read at (#2513). */
+  subscribe_rate?: number;
+  snapshot_chars_per_s?: number;
 }
 
 interface PerfProbe {
@@ -151,6 +200,15 @@ interface PerfProbe {
   noteConversationOpened(seat: string): void;
   /** The open seat's terminal drawing has landed, in `state` (#2374). */
   noteDrawn(state: DrawnState): void;
+  /** A click on a seat, at the handler that takes it (#2513). */
+  noteSeatClick(seat: string): void;
+  /** A subscribe written to the socket, with the seat its subject names when
+   *  it names one (#2513). `write_waited_ms` is the desktop shell's own
+   *  queue-and-write time, absent where the page wrote the frame itself. */
+  noteSubscribe(seat: string | null, declare: boolean, writeWaitedMs?: number): void;
+  /** A snapshot frame, after its JSON.parse: the frame's length and how long
+   *  the parse took (#2513). */
+  noteSnapshot(seat: string | null, chars: number, parseMs: number): void;
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
@@ -270,11 +328,31 @@ function observeHeartbeat(
   };
 }
 
-/** The shell's write: one invoke, fire-and-forget. */
+/**
+ * Records waiting for this turn's one invoke, and whether one is queued.
+ *
+ * **One write per turn, not one per record.** The shell command behind this
+ * opens, appends and closes a file, and a burst of marks (the home loop's
+ * subscribe and snapshot, a window's summary beside a slow frame) would
+ * otherwise put that IO on the main thread once per mark - on the path this
+ * probe measures (#2513).
+ */
+let pendingWrites: PerfRecord[] = [];
+let writeQueued = false;
+
+/** The shell's write: one invoke per turn, fire-and-forget. */
 function sinkToShell(records: PerfRecord[]): void {
-  void invoke('client_perf', { records }).catch(() => {
-    // A refused write is a lost record, not a broken page: the shell may be
-    // gone, and a perf sink that threw would take a render path with it.
+  pendingWrites.push(...records);
+  if (writeQueued) return;
+  writeQueued = true;
+  queueMicrotask(() => {
+    writeQueued = false;
+    const batch = pendingWrites;
+    pendingWrites = [];
+    void invoke('client_perf', { records: batch }).catch(() => {
+      // A refused write is a lost record, not a broken page: the shell may be
+      // gone, and a perf sink that threw would take a render path with it.
+    });
   });
 }
 
@@ -386,6 +464,21 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let openAt: number | null = null;
   let placeholderSeen = false;
   let contentSeen = false;
+  /**
+   * #2513's own counters: the click a subscribe is measured from, the last
+   * user action and the last snapshot's completion (what makes a subscribe
+   * "unprompted"), and the connection window's subscribes and snapshot chars.
+   */
+  let clickAt: number | null = null;
+  let lastUserActionAt: number | null = null;
+  let lastSnapshotAt: number | null = null;
+  let connStart = 0;
+  let connSubscribes = 0;
+  let connSnapshotChars = 0;
+  /** Where the CONNECTION window began, so a window spanning a switch names
+   *  the page the counts happened on rather than the one it ended on. */
+  let connSurface: string | null = null;
+  let connSession: string | null = null;
 
   function emit(record: PerfRecord): void {
     sink([record]);
@@ -466,6 +559,39 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     });
   }
 
+  /**
+   * Write the connection window's counts, if anything happened in it. A quiet
+   * second is the summary's to say, not a record of its own.
+   */
+  function flushConnection(at: number): void {
+    const windowMs = at - connStart;
+    if (connSubscribes === 0 && connSnapshotChars === 0) {
+      connStart = at;
+      connSurface = surface;
+      connSession = session;
+      return;
+    }
+    const seconds = windowMs / 1000;
+    emit({
+      schema: SCHEMA,
+      kind: 'connection',
+      run_id: runId,
+      ts_ms: Date.now(),
+      window_ms: windowMs,
+      subscribes: connSubscribes,
+      snapshot_chars: connSnapshotChars,
+      subscribe_rate: seconds > 0 ? connSubscribes / seconds : 0,
+      snapshot_chars_per_s: seconds > 0 ? connSnapshotChars / seconds : 0,
+      surface: connSurface,
+      session: connSession,
+    });
+    connSubscribes = 0;
+    connSnapshotChars = 0;
+    connStart = at;
+    connSurface = surface;
+    connSession = session;
+  }
+
   function tick(): void {
     const at = now();
     frames += 1;
@@ -528,6 +654,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       beatLate = 0;
     }
     last = at;
+    if (at - connStart >= CONNECTION_WINDOW_MS) flushConnection(at);
     if (at - windowStart >= summaryIntervalMs) flushWindow(at);
     cancelFrame = schedule(tick);
   }
@@ -553,10 +680,18 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       beatLate = 0;
       flushArmed = false;
       failedSeen = false;
+      clickAt = null;
+      lastUserActionAt = null;
+      lastSnapshotAt = null;
+      connStart = now();
+      connSubscribes = 0;
+      connSnapshotChars = 0;
       // Boot's own reading: the router has usually not wired a route yet,
       // so null here is the honest answer rather than a gap.
       windowSurface = surface;
       windowSession = session;
+      connSurface = surface;
+      connSession = session;
       cancelObserver = observe((ms, name) => {
         emit({
           schema: SCHEMA,
@@ -622,6 +757,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       // what the reader wants when the page is going away.
       flushSlow();
       flushWindow(now());
+      flushConnection(now());
       cancelFrame?.();
       cancelObserver?.();
       cancelHeartbeat?.();
@@ -644,6 +780,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     noteConversationOpened(seat: string): void {
       openSeat = seat;
       openAt = now();
+      // A conversation opening is a user action (a deep link, a reload, a
+      // palette move), so the subscribe it leads to is not "unprompted".
+      lastUserActionAt = openAt;
       placeholderSeen = false;
       contentSeen = false;
       emit({
@@ -676,6 +815,58 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         state,
         surface: 'session',
         session: openSeat,
+      });
+    },
+    noteSeatClick(seat: string): void {
+      const at = now();
+      clickAt = at;
+      lastUserActionAt = at;
+      emit({
+        schema: SCHEMA,
+        kind: 'click',
+        run_id: runId,
+        ts_ms: Date.now(),
+        surface: 'session',
+        session: seat,
+      });
+    },
+    noteSubscribe(seat: string | null, declare: boolean, writeWaitedMs?: number): void {
+      const at = now();
+      // **An unprompted subscribe follows a snapshot's completion.** No click
+      // or conversation opening happened after that completion, which is the
+      // repeated re-subscribe shape a switch's delay can hide in (#2513).
+      const auto = lastSnapshotAt !== null && lastSnapshotAt > (lastUserActionAt ?? -Infinity);
+      connSubscribes += 1;
+      // **A click is spent by the first subscribe it causes.** Left armed,
+      // every later subscribe - the automatic home loop included - would
+      // report its gap since some old click as its own (#2513).
+      const sinceClick = clickAt === null ? undefined : at - clickAt;
+      clickAt = null;
+      emit({
+        schema: SCHEMA,
+        kind: 'subscribe',
+        run_id: runId,
+        ts_ms: Date.now(),
+        declare,
+        auto,
+        ...(writeWaitedMs === undefined ? {} : { write_waited_ms: writeWaitedMs }),
+        ...(sinceClick === undefined ? {} : { since_click_ms: sinceClick }),
+        ...(seat === null ? {} : { session: seat }),
+        surface,
+      });
+    },
+    noteSnapshot(seat: string | null, chars: number, parseMs: number): void {
+      lastSnapshotAt = now();
+      connSnapshotChars += chars;
+      emit({
+        schema: SCHEMA,
+        kind: 'snapshot',
+        run_id: runId,
+        ts_ms: Date.now(),
+        chars,
+        parse_ms: parseMs,
+        ...(seat === null ? {} : { session: seat }),
+        surface,
       });
     },
   };
@@ -733,6 +924,41 @@ export function noteConversationOpened(slot: SessionSlot): void {
  */
 export function noteDrawn(state: DrawnState): void {
   running?.noteDrawn(state);
+}
+
+/** A click landed on `slot`, in the shell's delegated handler (#2513). */
+export function noteSeatClick(slot: SessionSlot): void {
+  running?.noteSeatClick(seatLabel(slot));
+}
+
+/**
+ * One subscribe was written to the socket (#2513). A string subject names no
+ * seat, so its record carries none.
+ */
+export function noteSubscribe(subject: Subject, declare: boolean): void {
+  running?.noteSubscribe(typeof subject === 'string' ? null : seatLabel(subject.session), declare);
+}
+
+/**
+ * One subscribe the DESKTOP's shell half wrote (#2513): the seat comes from
+ * the shell's own subject key, and `waitedMs` is how long that half held the
+ * frame between the page's command and the socket.
+ */
+export function noteSubscribeWritten(
+  seat: string | null,
+  declare: boolean,
+  waitedMs: number,
+): void {
+  running?.noteSubscribe(seat, declare, waitedMs);
+}
+
+/** One snapshot frame was parsed, with its length and parse time (#2513). */
+export function noteSnapshot(subject: Subject, chars: number, parseMs: number): void {
+  running?.noteSnapshot(
+    typeof subject === 'string' ? null : seatLabel(subject.session),
+    chars,
+    parseMs,
+  );
 }
 
 /**
