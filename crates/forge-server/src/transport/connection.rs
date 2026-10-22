@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
@@ -1030,8 +1031,9 @@ where
                     if !declare {
                         watched.push(what.clone());
                     }
-                    let bytes =
-                        send_frame(socket, ServerMessage::Snapshot { subject: what, data }).await?;
+                    let write =
+                        send_frame_timed(socket, ServerMessage::Snapshot { subject: what, data })
+                            .await?;
                     // **A declare is not an open.** It re-states the browser
                     // capability against a subject the client already watches
                     // and takes no hold and no watch, so no page came on
@@ -1039,6 +1041,20 @@ where
                     if let Some(slot) = &seat
                         && !declare
                     {
+                        // The snapshot's own write, split out of the open
+                        // (#2506): the frame reaches the socket here, and a
+                        // write that waited on the reader is a different slow
+                        // switch from one that did not.
+                        tracing::debug!(
+                            event_name = "frame_write",
+                            slot = %slot.display(),
+                            bytes = write.bytes,
+                            write_ms = write.write_ms,
+                            waited = write.waited,
+                            "the snapshot's socket write: waited means the write yielded \
+                             before it was done, which is the peer draining rather than \
+                             forge copying",
+                        );
                         // The session's open, in its own slices: the numbers a
                         // reader places a slow switch with, beside the
                         // client's own marks. Debug, and for one session's
@@ -1052,11 +1068,14 @@ where
                             conversation_ms = timings.conversation_ms,
                             page_ms = timings.page_ms,
                             encode_ms = timings.encode_ms,
-                            bytes,
+                            write_ms = write.write_ms,
+                            waited = write.waited,
+                            bytes = write.bytes,
                             "the subscribe's own work: seed is the transcript read a cold \
                              seat pays, conversation is the copy's arrival, page its cut and \
-                             fold, and encode the record's value; the rest of open_ms is the \
-                             queued flush, the copy's catch-up, the record's reads and the \
+                             fold, and encode the record's value; open_ms ends when the \
+                             snapshot's write returns, so write_ms is inside it - the rest is \
+                             the queued flush, the copy's catch-up, the record's reads and the \
                              frame's own serialisation into the bytes it carries",
                         );
                     }
@@ -2015,6 +2034,49 @@ where
     })
     .await?;
     Ok(bytes)
+}
+
+/// One frame's write, measured: its size, the time the socket took it, and
+/// whether the write ever had to wait before it was done.
+struct FrameWrite {
+    bytes: usize,
+    write_ms: f64,
+    waited: bool,
+}
+
+/// [`send_frame`], timing the socket's share of the write.
+///
+/// **The open's own line cannot place its remainder without it** (#2506):
+/// `open_ms` ends when this returns, so the frame's transfer is inside it,
+/// and a write that waited on the reader is otherwise indistinguishable from
+/// the fold, the record's reads and the serialisation before it.
+async fn send_frame_timed<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<FrameWrite>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    let text = serde_json::to_string(&message)?;
+    let bytes = text.len();
+    let waited = AtomicBool::new(false);
+    let at = Instant::now();
+    let mut write = std::pin::pin!(async {
+        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
+    });
+    write_within(WRITE_BOUND, async {
+        std::future::poll_fn(|cx| {
+            let poll = std::future::Future::poll(write.as_mut(), cx);
+            if poll.is_pending() {
+                waited.store(true, Ordering::Relaxed);
+            }
+            poll
+        })
+        .await
+    })
+    .await?;
+    Ok(FrameWrite {
+        bytes,
+        write_ms: at.elapsed().as_secs_f64() * 1000.0,
+        waited: waited.load(Ordering::Relaxed),
+    })
 }
 
 /// What a `more` asks for, out of the cursor it was sent.

@@ -9059,9 +9059,38 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         "a session's own work is information, not a warning: {line}",
     );
     assert_eq!(parsed["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
-    for field in ["open_ms", "seed_ms", "conversation_ms", "page_ms", "encode_ms", "bytes"] {
+    for field in [
+        "open_ms",
+        "seed_ms",
+        "conversation_ms",
+        "page_ms",
+        "encode_ms",
+        "bytes",
+        "write_ms",
+        "waited",
+    ] {
         assert!(parsed.get(field).is_some(), "the line carries {field}: {line}");
     }
+
+    // **The snapshot's own write, told apart from the rest of the open
+    // (#2506).** `open_ms` ends when the write returns, so without this
+    // record a slow open cannot be placed on the socket rather than on the
+    // work before it.
+    let line = caught
+        .lines()
+        .find(|line| line.contains("\"frame_write\""))
+        .unwrap_or_else(|| panic!("the open's frame logs its own write; caught: {caught}"));
+    let write: serde_json::Value = serde_json::from_str(line).expect("the line is JSON");
+    assert_eq!(write["event_name"], "frame_write");
+    assert_eq!(write["level"], "DEBUG", "a frame's own cost is information: {line}");
+    assert_eq!(write["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
+    for field in ["bytes", "write_ms", "waited"] {
+        assert!(write.get(field).is_some(), "the line carries {field}: {line}");
+    }
+    assert_eq!(
+        write["bytes"], parsed["bytes"],
+        "the write's size is the open's: {write} beside {parsed}",
+    );
 }
 
 /// **A declare opens nothing (#2374).** It re-states the browser capability
