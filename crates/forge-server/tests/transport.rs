@@ -9108,6 +9108,14 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         write["peer"], parsed["peer"],
         "the write and the open name the same client: {write} beside {parsed}",
     );
+    // **The write is a slice of the open, not the whole of it.** A
+    // whole-open value would equal `open_ms`; a draining client's write is a
+    // millisecond against tens.
+    assert!(
+        write["write_ms"].as_f64().expect("write_ms is a number")
+            < parsed["open_ms"].as_f64().expect("open_ms is a number"),
+        "the write's time is inside the open's: {write} beside {parsed}",
+    );
 
     // The attach's own record, beside them, for the clients that never open
     // (a declare) and for the address before an open fails.
@@ -9123,6 +9131,7 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         subscribed["peer"], parsed["peer"],
         "the attach and the open name the same client: {subscribed} beside {parsed}",
     );
+    assert_eq!(subscribed["declare"], false, "an open's attach is not a declare: {subscribed}");
 }
 
 /// **A declare logs its client but opens nothing (#2374, #2506).** It
@@ -9173,4 +9182,10 @@ async fn a_declare_subscribe_logs_its_client_but_no_open() {
         clients_before + 1,
         "a declare is still an attached client, so it is named once; caught: {caught}",
     );
+    let line = caught
+        .lines()
+        .find(|line| line.contains("\"client_subscribed\""))
+        .unwrap_or_else(|| panic!("a declare names its client; caught: {caught}"));
+    let client: serde_json::Value = serde_json::from_str(line).expect("the line is JSON");
+    assert_eq!(client["declare"], true, "the attach says it opened nothing: {line}");
 }

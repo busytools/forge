@@ -1064,9 +1064,12 @@ where
                     if !declare {
                         watched.push(what.clone());
                     }
-                    let write =
-                        send_frame_timed(socket, ServerMessage::Snapshot { subject: what, data })
-                            .await?;
+                    let write = send_frame_timed(
+                        socket,
+                        ServerMessage::Snapshot { subject: what, data },
+                        &SystemClock,
+                    )
+                    .await?;
                     // **A declare is not an open.** It re-states the browser
                     // capability against a subject the client already watches
                     // and takes no hold and no watch, so no page came on
@@ -2077,20 +2080,49 @@ struct FrameWrite {
     waited: bool,
 }
 
+/// The clock a measured write reads.
+///
+/// **The start takes the frame on purpose**: the seam cannot be read before
+/// the message exists, so a measurement wrapped around the serialisation
+/// cannot use it (#2506).
+trait WriteClock {
+    fn start(&self, frame: &str) -> Instant;
+
+    fn end(&self) -> Instant;
+}
+
+/// The shipping clock: the process's own monotonic one.
+struct SystemClock;
+
+impl WriteClock for SystemClock {
+    fn start(&self, _frame: &str) -> Instant {
+        Instant::now()
+    }
+
+    fn end(&self) -> Instant {
+        Instant::now()
+    }
+}
+
 /// [`send_frame`], timing the socket's share of the write.
 ///
 /// **The open's own line cannot place its remainder without it** (#2506):
 /// `open_ms` ends when this returns, so the frame's transfer is inside it,
 /// and a write that yielded is otherwise indistinguishable from the fold, the
 /// record's reads and the serialisation before it.
-async fn send_frame_timed<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<FrameWrite>
+async fn send_frame_timed<S, C>(
+    socket: &mut S,
+    message: ServerMessage,
+    clock: &C,
+) -> anyhow::Result<FrameWrite>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+    C: WriteClock,
 {
     let text = serde_json::to_string(&message)?;
     let bytes = text.len();
     let waited = AtomicBool::new(false);
-    let at = Instant::now();
+    let at = clock.start(&text);
     let mut write = std::pin::pin!(async {
         socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
     });
@@ -2107,7 +2139,7 @@ where
     .await?;
     Ok(FrameWrite {
         bytes,
-        write_ms: at.elapsed().as_secs_f64() * 1000.0,
+        write_ms: clock.end().saturating_duration_since(at).as_secs_f64() * 1000.0,
         waited: waited.load(Ordering::Relaxed),
     })
 }
@@ -2823,38 +2855,22 @@ mod tests {
         }
     }
 
-    /// A sink whose flush finishes only after `delay`.
-    struct Delayed {
-        delay: Duration,
-        sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+    /// The clock a measured write reads, recording the frame each start was
+    /// handed and answering a fixed second. **Deterministic**: the test never
+    /// waits, and a start read taken before the frame exists records nothing.
+    struct FakeClock {
+        starts: std::cell::RefCell<Vec<usize>>,
+        base: Instant,
     }
 
-    impl futures_util::Sink<Message> for Delayed {
-        type Error = axum::Error;
+    impl WriteClock for FakeClock {
+        fn start(&self, frame: &str) -> Instant {
+            self.starts.borrow_mut().push(frame.len());
+            self.base
+        }
 
-        fn poll_ready(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
-            Ok(())
-        }
-        fn poll_flush(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            let this = self.as_mut().get_mut();
-            let delay = this.delay;
-            let sleep = this.sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep(delay)));
-            std::future::Future::poll(sleep.as_mut(), cx).map(|()| Ok(()))
-        }
-        fn poll_close(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(Ok(()))
+        fn end(&self) -> Instant {
+            self.base + Duration::from_secs(1)
         }
     }
 
@@ -3045,31 +3061,40 @@ mod tests {
         }
     }
 
-    /// **The measurement is the write's own (#2506).** A record built from a
-    /// build-time or whole-open clock would pass a test that only checked a
-    /// number was present; this pins the two facts it claims: `waited` follows
-    /// a yield, and `write_ms` carries a write the sink held.
+    /// **The measurement starts after the frame exists (#2506).** The clock
+    /// is handed the serialised frame, so a start read taken before - or
+    /// around - the serialisation cannot be recorded: the fake sees the
+    /// frame's own length, and the elapsed is its fixed second exactly.
+    #[tokio::test]
+    async fn the_write_is_timed_from_after_the_frame_is_serialised() {
+        let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
+        let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
+
+        let write =
+            send_frame_timed(&mut NullSink, a_frame(), &clock).await.expect("the write lands");
+        assert!(!write.waited, "a sink that never yields is reported as not waiting");
+        assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
+        assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
+        assert_eq!(
+            clock.starts.borrow().as_slice(),
+            &[bytes],
+            "the clock is read once, with the serialised frame",
+        );
+    }
+
+    /// **`waited` is not a constant (#2506).** A write that yields says so;
+    /// the false case is pinned beside it.
     #[tokio::test]
     async fn a_write_that_yields_is_timed_and_says_so() {
         let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
+        let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
 
         let mut yielding = YieldsOnce { yielded: false };
-        let write = send_frame_timed(&mut yielding, a_frame()).await.expect("the write lands");
+        let write =
+            send_frame_timed(&mut yielding, a_frame(), &clock).await.expect("the write lands");
         assert!(write.waited, "a flush that yielded once is reported as having waited");
         assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
-
-        let delay = Duration::from_millis(100);
-        let mut slow = Delayed { delay, sleep: None };
-        let at = Instant::now();
-        let write = send_frame_timed(&mut slow, a_frame()).await.expect("the write lands");
-        assert!(write.waited, "a flush that was held is reported as having waited");
-        assert!(
-            write.write_ms >= delay.as_secs_f64() * 1000.0 * 0.9,
-            "write_ms carries the delay the sink held: {} ms for {delay:?}",
-            write.write_ms,
-        );
-        assert!(at.elapsed() >= delay, "the sink really held the write: {:?}", at.elapsed());
-        assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
+        assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
     }
 
     /// The oldest boundary a window names, as a walk below the floor starts
