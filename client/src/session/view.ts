@@ -1074,14 +1074,23 @@ interface FooterFigure {
   dim: boolean;
 }
 
+/** One window as the footer states it: a reading, or the mark of one it lacks. */
+interface FooterWindow extends AccountWindow {
+  /** Whether the value is the unprobed placeholder rather than a reading. */
+  dim: boolean;
+}
+
 /** The rail's footer: the account, what it is costing, and the two versions. */
 interface RailFooter {
-  /** The account this project binds to, or `null` when none would serve it. */
-  account: { name: string; tone: string } | null;
+  /**
+   * The account this project binds to: the chip's own name, or the project's
+   * declared one while no chip resolves.
+   */
+  account: { name: string; tone: string };
   /** The figures a spend-billed account reports; empty for a window-billed one. */
   figures: FooterFigure[];
-  /** A window-billed account's windows, in the shape the chip already draws. */
-  windows: AccountWindow[];
+  /** The two plan windows, with a placeholder for one the snapshot lacks. */
+  windows: FooterWindow[];
   /**
    * The pair the footer draws, side by side: what the server is and what it
    * speaks, beside what this client is and what it speaks. A mismatch is
@@ -1107,6 +1116,22 @@ interface RailFooter {
  * account does not read as one that has spent nothing.
  */
 const UNPROBED = '$-';
+
+/**
+ * What a window nobody has reported reads: a dash rather than `0%`, the mark
+ * the view this client replaced drew, because a zero is a reading.
+ */
+const UNPROBED_WINDOW = '-';
+
+/** The two plan windows, each the poller's reading or the mark of its absence. */
+function footerWindows(windows: AccountWindow[]): FooterWindow[] {
+  return (['5h', '7d'] as const).map((label) => {
+    const reading = windows.find((window) => window.label === label);
+    return reading === undefined
+      ? { label, percent: 0, text: UNPROBED_WINDOW, reset: '', dim: true }
+      : { ...reading, dim: false };
+  });
+}
 
 /**
  * The rail's footer: the account serving this seat's project, what it is
@@ -1143,10 +1168,21 @@ export function railFooter(
     update: availableVersion(home.cli_version?.installed ?? null, home.cli_version?.latest ?? null),
   };
   const account = accountChip(home, slot);
-  if (account === null) return { account: null, figures: [], windows: [], versions };
+  if (account === null) {
+    // The chip has not resolved: the project's declared account is still
+    // named, and both windows read as unprobed rather than the block vanishing.
+    const project = projectOf(home, slot)?.project;
+    const name = project?.accounts[0] ?? project?.fallback_accounts[0] ?? 'account';
+    return {
+      account: { name, tone: 'wait' },
+      figures: [],
+      windows: footerWindows([]),
+      versions,
+    };
+  }
   const head = { name: account.name, tone: account.tone };
   if (!account.spendBilled) {
-    return { account: head, figures: [], windows: account.windows, versions };
+    return { account: head, figures: [], windows: footerWindows(account.windows), versions };
   }
   const spend = account.spend;
   // Three states for the cap, as the view this client replaced drew them: a

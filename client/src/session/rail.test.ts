@@ -136,6 +136,93 @@ describe('the rail footer', () => {
   });
 });
 
+/** The fixture's project, chipping the account its pool already lists. */
+function chipped(snapshot: unknown): HomeWire {
+  const [row] = homeWire.projects;
+  if (row === undefined) throw new Error('the fixture holds no project');
+  return {
+    ...homeWire,
+    projects: [{ ...row, chip: { account_name: 'Acct', state: 'ready' } }],
+    accounts: { ...homeWire.accounts, usage: [{ display_name: 'Acct', snapshot }] },
+  };
+}
+
+/** The fixture with no account declared on its project at all. */
+function undeclared(): HomeWire {
+  const [row] = homeWire.projects;
+  if (row === undefined) throw new Error('the fixture holds no project');
+  return {
+    ...homeWire,
+    projects: [{ ...row, project: { ...row.project, accounts: [], fallback_accounts: [] } }],
+  };
+}
+
+describe('the footer when no account resolves', () => {
+  /**
+   * A footer that draws nothing for an absent account reads as "forge has no
+   * account", which is not a state the page may claim.
+   */
+  it('draws the project account it knows, or the bare word, never nothing', () => {
+    const drawn = render(Rail, {
+      props: { home: homeWire, current: LEAD, now: 0, connection: untouched() },
+    }).body;
+    expect(drawn, 'a project chipping no account lost the footer account line').toContain(
+      '<span class="an">Acct</span>',
+    );
+    expect(drawn, 'the unprobed 5h row went missing').toContain('<span class="lb">5h</span>');
+    expect(drawn, 'the unprobed 7d row went missing').toContain('<span class="lb">7d</span>');
+    expect(
+      drawn.match(/<span class="pc none">-<\/span>/g)?.length,
+      'the two windows do not read as unprobed',
+    ).toBe(2);
+
+    const bare = render(Rail, {
+      props: { home: undeclared(), current: LEAD, now: 0, connection: untouched() },
+    }).body;
+    expect(bare, 'a project declaring no account drew no account line').toContain(
+      '<span class="an">account</span>',
+    );
+  });
+});
+
+describe('the footer when the snapshot is absent', () => {
+  it('keeps the 5h and 7d rows with the placeholder spend already uses', () => {
+    const drawn = render(Rail, {
+      props: { home: chipped(null), current: LEAD, now: 0, connection: untouched() },
+    }).body;
+    expect(drawn, 'the account line went with the snapshot').toContain(
+      '<span class="an">Acct</span>',
+    );
+    expect(drawn, 'the 5h row went missing').toContain('<span class="lb">5h</span>');
+    expect(drawn, 'the 7d row went missing').toContain('<span class="lb">7d</span>');
+    expect(
+      drawn.match(/<span class="pc none">-<\/span>/g)?.length,
+      'a window nobody reported did not read as unprobed',
+    ).toBe(2);
+  });
+});
+
+describe('the footer when the snapshot carries windows', () => {
+  it('draws both readings and no placeholder', () => {
+    const drawn = render(Rail, {
+      props: {
+        home: chipped({
+          source: 'Oauth',
+          five_hour: { utilization: 68, reset_description: '1h 48m' },
+          seven_day: { utilization: 24, reset_description: '2d 6h' },
+        }),
+        current: LEAD,
+        now: 0,
+        connection: untouched(),
+      },
+    }).body;
+    expect(drawn, 'the 5h reading went missing').toContain('<span class="pc">68%</span>');
+    expect(drawn, 'the 7d reading went missing').toContain('<span class="pc">24%</span>');
+    expect(drawn, 'the 5h reset went missing').toContain('<span class="eta">1h 48m</span>');
+    expect(drawn, 'a reading drew a placeholder').not.toContain('class="pc none"');
+  });
+});
+
 describe('the asleep heading', () => {
   it('centres its chevron on the row rather than on the text baseline', () => {
     // `baseline` rides the icon on the label's baseline, which drew it about

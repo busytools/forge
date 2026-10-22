@@ -209,6 +209,10 @@ where it has moved on) beside the whole thread, its turns in order.
   rail's footer says so where the build facts live.
 - **A forge on another protocol**: the same footer line names the skew; the
   page behind it is live, and nothing is refused over a version.
+- **An account the poller has not reported**: the rail's footer still draws
+  the account it knows - the project's declared one while no chip resolves -
+  and states each plan window it has no reading for as `-`, so an absent
+  snapshot never reads as forge having no account.
 
 ## The two widths
 

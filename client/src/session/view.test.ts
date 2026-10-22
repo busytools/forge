@@ -1405,8 +1405,26 @@ describe('the rail footer', () => {
     expect(footer.account).toEqual({ name: 'Acct', tone: 'ok' });
   });
 
-  it('draws no footer account for a project that chips none', () => {
-    expect(railFooter(homeWire, LEAD).account).toBeNull();
+  /** A project whose chip has not resolved still names the account it
+   *  declares, and states both windows as unprobed rather than nothing. */
+  it('names the declared account and states both windows unprobed without a chip', () => {
+    const footer = railFooter(homeWire, LEAD);
+    expect(footer.account, 'a project chipping no account drew no account').toEqual({
+      name: 'Acct',
+      tone: 'wait',
+    });
+    expect(footer.windows).toEqual([
+      { label: '5h', percent: 0, text: '-', reset: '', dim: true },
+      { label: '7d', percent: 0, text: '-', reset: '', dim: true },
+    ]);
+  });
+
+  it('keeps a window the snapshot reports and places the one it does not', () => {
+    const footer = railFooter(withPool({ source: 'Oauth', five_hour: { utilization: 68 } }), LEAD);
+    expect(footer.windows.map((window) => [window.label, window.text, window.dim])).toEqual([
+      ['5h', '68%', false],
+      ['7d', '-', true],
+    ]);
   });
 });
 
