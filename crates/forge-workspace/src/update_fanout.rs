@@ -29,7 +29,7 @@ pub struct SeatUpdate {
 /// copy the task holds: it is the stretch a repair is answered from memory,
 /// and what falls past it is the transcript's own read. A ring is shed whole
 /// at an occupant change - the numbers start over, so the frames before one
-/// are unreachable - and at a release.
+/// are unreachable.
 const SEAT_RING: usize = crate::conversation_window::CONVERSATION_CAP;
 
 /// What a subscriber can do with what it is sent.
@@ -171,13 +171,16 @@ impl Shared {
                 self.sealed_with_rows.remove(&slot);
             }
         } else if matches!(update, SessionUpdate::Releasing { .. }) {
-            // The seat is being taken down, and its frames are on the far side
-            // of a release: nothing asks for the numbers of a seat that is
-            // going away. **The counter still advances** - the frame carries a
-            // number like any other, and leaving the counter behind mints that
-            // number again for the frame after it, which a client reads as one
+            // **The counter still advances** - the frame carries a number like
+            // any other, and leaving the counter behind mints that number
+            // again for the frame after it, which a client reads as one
             // already drawn.
-            self.rings.remove(&slot);
+            //
+            // **The ring stays.** A seat a connection re-opens after its
+            // session ended is answered from its record, and that read can be
+            // behind frames this release ends; shedding the ring would refuse
+            // it with a hole no window could fill. It is shed at the next
+            // occupant's seal, which is where the numbers start over.
             self.sequences.insert(slot.clone(), seq);
             self.unringed.entry(slot.clone()).or_default().push(seq);
         } else {
