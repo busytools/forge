@@ -158,7 +158,7 @@ pub(crate) fn resolve_mcp_families(stored: Option<&[String]>) -> BTreeSet<McpFam
     if requested.is_empty() {
         // A row nothing valid survives from is corrupt, not a selection
         // of nothing: fail open to every family the way an unreadable
-        // row does, never to agents-only beside six withheld lines.
+        // row does, never to agents-only beside a withheld line per family.
         tracing::warn!(
             target: "forge_workspace::mcp",
             event_name = "mcp_family_row_all_unknown",
@@ -892,8 +892,8 @@ mod tests {
 
     /// A stored row holding only unselectable names is corrupt, not a
     /// selection of nothing: it fails open to every family the way an
-    /// unreadable row does, never to agents-only beside six withheld
-    /// lines.
+    /// unreadable row does, never to agents-only beside a withheld line
+    /// per family.
     #[test]
     fn an_all_corrupt_selection_fails_open() {
         let corrupt = vec!["bogus".to_owned(), "agents".to_owned()];
