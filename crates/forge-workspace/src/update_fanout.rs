@@ -871,6 +871,37 @@ mod tests {
         );
     }
 
+    /// **A release keeps the frames before it reachable.** A seat a connection
+    /// re-opens after its session ended is answered from its record, and that
+    /// read can be behind frames the release ends - the ring is what fills it.
+    /// It is shed at the next epoch's seal, where the numbers start over, not
+    /// here.
+    #[test]
+    fn a_release_keeps_the_frames_before_it_reachable() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert!(
+            fanout.send(SessionUpdate::Releasing { key: seat.clone() }),
+            "a subscribed fan-out delivers"
+        );
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the row");
+        assert_eq!(next_seq(&mut rx, "seat"), Some(2), "and the release after it");
+
+        assert_eq!(
+            fanout.frames_between(&seat, 1, 1).iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+            vec![Some(1)],
+            "the frame before the release is still there for a copy that is behind it",
+        );
+        assert_eq!(
+            fanout.unringed_between(&seat, 1, 2),
+            1,
+            "and the release itself is still a number no window holds",
+        );
+    }
+
     /// The boot backlog keeps the numbers its frames were minted with, so a
     /// client joining at the first subscribe has no hole at the join.
     #[test]
