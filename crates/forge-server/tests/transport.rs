@@ -5026,14 +5026,14 @@ async fn a_range_ask_after_an_occupant_change_reaches_the_new_epoch() {
     assert!(body.contains("the new epoch's first"), "and it is that frame: {body}");
 }
 
-/// **A repaired frame crosses with no history on it.** The ring holds what the
-/// fanout emitted, and a frame carrying the history an epoch hands over must
-/// not ride a client frame (#2157) nor lean on the socket's size bound - so
-/// the repair path goes through the same stripper as every other path to a
-/// client. A `HistoryReplayed` is the shape that proves it: it is a frame with
-/// a conversation in it, and the ring keeps it.
+/// **A repair never hands a replay's window back.** A `HistoryReplayed` is
+/// numbered but not ringed: its window is the task's own seed for the
+/// transport's copy and a client reads a fresh one on re-open, so the ring
+/// keeps nothing of it and a range ask over its number falls to the
+/// transcript. What crosses is the transcript's own rows, never the window
+/// the epoch handed over (#2157).
 #[tokio::test]
-async fn a_repair_answer_carries_no_history() {
+async fn a_replay_is_never_handed_back_by_a_repair() {
     let (url, fleet, _state) = a_server_with_state().await;
     let seat = lead_seat();
     wait_for_the_fold(&fleet).await;
@@ -5050,8 +5050,13 @@ async fn a_repair_answer_carries_no_history() {
     let ServerMessage::SeatFrames { frames, .. } = next_server(&mut socket).await else {
         panic!("a range ask is answered with the frames it asked for")
     };
-    assert_eq!(frames.len(), 1, "the replay is the frame the ring holds");
-    let body = serde_json::to_string(&frames[0].update).unwrap_or_default();
+    assert!(
+        frames
+            .iter()
+            .all(|frame| !matches!(&frame.update, SessionUpdate::HistoryReplayed { .. })),
+        "a repair handed the replay's window back: {frames:?}"
+    );
+    let body = serde_json::to_string(&frames).unwrap_or_default();
     assert!(!body.contains("the replayed words"), "the history crossed on a repair: {body}");
 }
 

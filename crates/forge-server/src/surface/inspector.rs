@@ -151,6 +151,10 @@ impl ViewSurface {
     /// working tree scanned while the view holds it. A sessionless seat is
     /// held too - its watch waits for the session - so every call takes a
     /// hold, and a caller must release it exactly once.
+    ///
+    /// **The caller owes [`Self::note_record_read`] once its record is built.**
+    /// That mark is what starts the watch's first pass; a view that holds
+    /// without it has a watch that waits and scans nothing.
     pub fn hold_seat(&self, slot: &SessionSlot) {
         self.workspace.hold_seat(slot);
     }

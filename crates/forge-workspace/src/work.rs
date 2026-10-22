@@ -198,6 +198,12 @@ impl Announced {
 #[derive(Default)]
 pub(crate) struct HeldSeats {
     held: Mutex<HashMap<SessionSlot, Held>>,
+    /// The gate a seat's reads share, by weak reference, so it outlives the
+    /// hold exactly as long as a read still holds it. A re-hold during such a
+    /// read upgrades this and shares the gate; once the read lets go the weak
+    /// dies and the next hold starts a fresh one. Dead entries are pruned on
+    /// the next look.
+    gates: Mutex<HashMap<SessionSlot, std::sync::Weak<tokio::sync::Mutex<()>>>>,
 }
 
 struct Held {
@@ -228,30 +234,57 @@ impl HeldSeats {
         self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Take a hold on `slot`, answering the seat's gate and the sender that
-    /// stops its loop when this is the first hold.
+    /// The gate for a seat's first hold: the one a read still holds, or a new
+    /// one, remembered weakly for the next re-hold.
+    fn gate_arc(&self, slot: &SessionSlot) -> Arc<tokio::sync::Mutex<()>> {
+        let mut gates = self.gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        gates.retain(|_, weak| weak.strong_count() > 0);
+        if let Some(gate) = gates.get(slot).and_then(std::sync::Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        gates.insert(slot.clone(), Arc::downgrade(&gate));
+        gate
+    }
+
+    /// Take a hold on `slot`, answering the mark the record's read fires and
+    /// the sender that stops the seat's loop when this is the first hold.
     fn acquire(&self, slot: &SessionSlot) -> Taken {
         let mut held = self.lock();
-        let entry = held.entry(slot.clone()).or_insert_with(|| Held {
-            count: 0,
-            stop: None,
-            scanning: Arc::default(),
-            first_read: Arc::default(),
-        });
-        entry.count += 1;
-        let first_read = Arc::clone(&entry.first_read);
-        if entry.count > 1 {
-            return Taken { first_read, stopped: None };
+        if let Some(entry) = held.get_mut(slot) {
+            entry.count += 1;
+            if entry.count > 1 {
+                return Taken { first_read: Arc::clone(&entry.first_read), stopped: None };
+            }
+            // **A fresh mark per hold.** A gate a read still holds may carry a
+            // permit its previous record's read left, and that must not
+            // release this hold's watch before its own read.
+            entry.first_read = Arc::default();
+            let first_read = Arc::clone(&entry.first_read);
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            entry.stop = Some(stop);
+            return Taken { first_read, stopped: Some(stopped) };
         }
+        let scanning = self.gate_arc(slot);
+        let first_read = Arc::new(tokio::sync::Notify::new());
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        entry.stop = Some(stop);
+        held.insert(
+            slot.clone(),
+            Held { count: 1, stop: Some(stop), scanning, first_read: Arc::clone(&first_read) },
+        );
         Taken { first_read, stopped: Some(stopped) }
     }
 
-    /// The seat's read gate, when somebody holds it. A seat nobody holds has
-    /// no loop to race, so the caller reads unguarded rather than waiting.
+    /// The seat's read gate, when one is there: a held seat's, or one a read
+    /// still holds after its hold went. A seat neither held nor read has no
+    /// loop to race, so the caller reads unguarded rather than waiting.
     fn gate(&self, slot: &SessionSlot) -> Option<Arc<tokio::sync::Mutex<()>>> {
-        self.lock().get(slot).map(|held| Arc::clone(&held.scanning))
+        if let Some(held) = self.lock().get(slot) {
+            return Some(Arc::clone(&held.scanning));
+        }
+        let mut gates = self.gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        gates.retain(|_, weak| weak.strong_count() > 0);
+        gates.get(slot).and_then(std::sync::Weak::upgrade)
     }
 
     /// Say the record's first read is done, which is the mark the watch's
@@ -263,7 +296,9 @@ impl HeldSeats {
         }
     }
 
-    /// Give a hold back.
+    /// Give a hold back. The last hold stops the loop and drops the entry; a
+    /// read still in flight keeps its gate alive through [`Self::gates`], so
+    /// a re-hold before it finishes shares it rather than racing a second.
     fn release(&self, slot: &SessionSlot) {
         let mut held = self.lock();
         let Some(entry) = held.get_mut(slot) else {
@@ -287,6 +322,10 @@ impl Workspace {
     /// subscribe path encodes from the stores), and the watch's first pass
     /// starts from what that read left. Those reads ran before the hold
     /// answered until #2506, so a warm open waited on every one of them.
+    ///
+    /// **The caller owes the read's mark.** [`Self::note_record_read`] is what
+    /// releases the watch's first pass; a hold without it has a watch that
+    /// waits and scans nothing.
     ///
     /// **A held seat waits for its session.** A seat with no session has no
     /// store for a read, so the watch's own loop goes quiet on it and wakes
@@ -437,7 +476,8 @@ impl Workspace {
 
     /// The record's walk of `slot`'s tree: the store when there is one, else
     /// the walk the loop would take, under the same gate - so the snapshot's
-    /// fallback and the first pass cannot walk the tree twice.
+    /// fallback and the first pass never walk at once. The pass walks again
+    /// only when the tree moved.
     pub async fn walk_files_for_record(
         &self,
         slot: &SessionSlot,
@@ -609,6 +649,13 @@ fn walk_moved(
     walked != Some(&snapshot.processes)
 }
 
+/// Whether the seat's watch was stopped while it waited for the record's mark:
+/// the holder went (the sender is dropped) or the stop fired. Either way the
+/// reads it was about to take are owed to nobody.
+fn stopped_while_waiting(stopped: &mut tokio::sync::oneshot::Receiver<()>) -> bool {
+    matches!(stopped.try_recv(), Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed))
+}
+
 /// The commands a walk hands the OS scan: each running `local_bash` task's own
 /// command.
 ///
@@ -630,8 +677,9 @@ fn local_bash_commands(tasks: &[crate::BackgroundTask]) -> Vec<String> {
 /// **The record's read is the first pass.** The subscribe path holds the seat
 /// and then encodes its snapshot from the stores, so that read is what the
 /// page's first frame carries; this task waits for its mark, seeds from the
-/// stores it left, and announces only a value that differs. One read and one
-/// frame per value - and a page released before its read never scans at all.
+/// stores it left, and announces a value the page does not already hold. The
+/// gate keeps the two reads from running together; a pass the tree moved under
+/// still reads and announces.
 ///
 /// **The work scan comes first in every pass.** It is the cheapest of the
 /// three reads and the row a reader watches, so the process walk and the
@@ -663,10 +711,7 @@ fn spawn_work_watch(
         }
         // A page that opened and closed again leaves nothing to fill in, so
         // the expensive reads are not taken for it.
-        if matches!(
-            stopped.try_recv(),
-            Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed)
-        ) {
+        if stopped_while_waiting(&mut stopped) {
             return;
         }
         // The stores are what the snapshot carried, so they seat each
@@ -1711,6 +1756,55 @@ provider = "anthropic"
         );
     }
 
+    /// **A watch stopped while it waited on the record's mark is noticed.**
+    /// The release drops the stop sender, and a stop may fire beside the mark;
+    /// either is a page that is no longer there, and the reads it was owed are
+    /// not taken.
+    #[test]
+    fn a_watch_stopped_while_waiting_is_noticed_after_the_mark() {
+        let (_open, mut waiting) = tokio::sync::oneshot::channel();
+        assert!(!stopped_while_waiting(&mut waiting), "an open wait goes on");
+
+        let (dropped, mut released) = tokio::sync::oneshot::channel::<()>();
+        drop(dropped);
+        assert!(stopped_while_waiting(&mut released), "a released seat is noticed");
+
+        let (fired, mut stopped) = tokio::sync::oneshot::channel();
+        fired.send(()).expect("the stop fires");
+        assert!(stopped_while_waiting(&mut stopped), "and a fired stop is too");
+    }
+
+    /// **A release and re-hold share the gate a read still holds.** The
+    /// record's read can store after its page has gone; a re-held seat that
+    /// made a second gate would let that store land beside the new read's.
+    #[tokio::test]
+    async fn a_release_and_re_hold_share_the_gate_a_read_holds() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat);
+        let in_flight = workspace.held_work_seats.gate(&seat).expect("a held seat has one");
+
+        workspace.release_seat(&seat);
+        workspace.hold_seat(&seat);
+        let reheld = workspace.held_work_seats.gate(&seat).expect("the seat is held again");
+        assert!(
+            Arc::ptr_eq(&in_flight, &reheld),
+            "the gate outlived the hold while the read held it",
+        );
+
+        // With the read and the new hold both gone, the gate goes too: a later
+        // hold starts a fresh one rather than inheriting a dead seat's.
+        drop(in_flight);
+        drop(reheld);
+        workspace.release_seat(&seat);
+        assert!(
+            workspace.held_work_seats.gate(&seat).is_none(),
+            "no read and no hold leaves no gate",
+        );
+        assert!(workspace.held_work_seats.lock().is_empty(), "and the entry goes with the hold",);
+    }
+
     /// **A viewer's own hold is released exactly once.** A sessionless seat
     /// is held like any other since #1706 - its loop waits for the session -
     /// so the release is counted per seat and the accounting is the whole
@@ -1806,15 +1900,14 @@ provider = "anthropic"
     /// store a scan in, so the loop waits instead of scanning once a second
     /// forever with a `gh` lookup apiece.
     ///
-    /// **Both quiet layers are load-bearing and this test covers only the
-    /// PAIR** (measured): the loop's guard and the scan's own sessionless
-    /// refusal each swallow the other's absence - delete either alone and this
-    /// stays green, and only both gone emit. The walk the guard skips is not
-    /// observable either: a sessionless seat's stores drop what they are given,
-    /// so there is no state a control could read. What this holds is that a
-    /// sessionless seat is silent and held; the reason the guard can never be
-    /// dropped as "redundant, the scan refuses anyway" lives in the comment
-    /// there, not in a mutation.
+    /// **The mark starts the watch, and the guard is what keeps a sessionless
+    /// seat quiet.** The read is marked here as a page's is, so the loop's
+    /// first pass really runs and takes the sessionless branch - a plain hold
+    /// would leave the watch waiting on its mark and prove nothing.
+    ///
+    /// The scan's own sessionless refusal is the second layer: a session can
+    /// end between the guard and the read, and only the pair is observable -
+    /// deleting either alone leaves this green.
     ///
     /// Reachable the moment a client subscribes to a declared-but-unstarted
     /// project, whose cwd resolves from the declaration alone - and that
@@ -1825,10 +1918,8 @@ provider = "anthropic"
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_declared_project(dir.path());
         let seat = seat();
-        let gate = Arc::new(tokio::sync::Semaphore::new(0));
-        workspace.seed_test_scan_gate(Arc::clone(&gate));
 
-        workspace.hold_seat(&seat);
+        hold_for_a_page(&workspace, &seat);
 
         assert!(workspace.work_snapshot(&seat).is_none(), "nothing was read for it");
         assert!(
@@ -1836,9 +1927,6 @@ provider = "anthropic"
             "and the hold stands, waiting for the session",
         );
 
-        // A tree that moves says nothing while there is no session to store a
-        // scan under. (Not phrased as a control on the guard alone: see the
-        // doc above - only the pair is observable.)
         std::fs::write(dir.path().join("kept.txt"), "moved").expect("write");
         assert!(
             tokio::time::timeout(Duration::from_secs(2), updates.recv()).await.is_err(),

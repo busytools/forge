@@ -1673,10 +1673,11 @@ enum NotReady {
 /// of its own, so a frame minted before the counter was read can reach the
 /// copy after it - waited on here, briefly. When the wait runs out the frames
 /// come from the seat's own window instead, which the fanout feeds directly
-/// (every frame, subscriber or not) with the newest `CONVERSATION_CAP` of
-/// them. Only a gap wider than that window is refused, loudly and by name: a
-/// stuck fold is forge's problem, and an answer that pretended otherwise is a
-/// row lost in silence.
+/// (every frame, subscriber or not) under its two ceilings - a frame count and
+/// a byte budget, so a heavy seat's window holds fewer than the cap. Only a
+/// gap wider than that window is refused, loudly and by name: a stuck fold is
+/// forge's problem, and an answer that pretended otherwise is a row lost in
+/// silence.
 async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Result<(), NotReady> {
     if want == 0 || state.conversations.consumed_for(slot) >= want {
         return Ok(());
@@ -1933,6 +1934,14 @@ async fn session(
     // the first pass gets there first stores, and the other answers it rather
     // than walking the same tree again.
     let file_index = surface.file_index_for_record(slot).await;
+    // **The reads the watch seeds from are all taken, so the mark fires here**
+    // - after the tree's scan, the index and the process walk, and before the
+    // rest of the record. The watch's first pass starts from these stores
+    // without waiting on the transcript, the fold or the frame's
+    // serialisation; `processes` is read here so the record carries the same
+    // walk the pass seeds from.
+    let processes = surface.processes(slot);
+    surface.note_record_read(slot);
 
     // One read for both halves of the record: the front is the first of the
     // list, so the two cannot disagree.
@@ -1945,7 +1954,7 @@ async fn session(
         subagents: surface.subagents(slot),
         subagent_instances: instances,
         mcp: surface.mcp_servers(slot),
-        processes: surface.processes(slot),
+        processes,
         background_tasks: surface.background_tasks(slot),
         monitors: surface.monitors(slot),
         pending_ask: asks.first().map(PendingAskWire::from),
@@ -2017,10 +2026,6 @@ async fn session(
         closes: held.diff.closes,
         diff,
     };
-    // Every read the snapshot carries is taken: the seat's watch starts its
-    // first pass from these stores, so one read serves the frame and the
-    // page's fill and no value crosses twice.
-    surface.note_record_read(slot);
     Ok(wire)
 }
 
