@@ -9,7 +9,8 @@ import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import * as fleet from '../wire/fleet';
-import { Chat, Frames, type PageTurn } from './conversation';
+import { Chat, Frames, beingWritten, type PageTurn } from './conversation';
+import { PRE_RESUME, PRE_RESUME_OPEN, RESUME, RESUME_KEY } from './testing/resume-2503';
 import type { ToolLeaf } from './leaves';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
@@ -56,6 +57,17 @@ const said = (text: string): unknown => ({
     model: 'claude-opus-5',
     content: [{ type: 'text', text }],
   },
+});
+
+/**
+ * A frame carrying the CLI's own clock.
+ *
+ * Which of two turns is newer is read off these stamps, so a test about a turn
+ * a page has or has not run past has to carry them.
+ */
+const stamped = (message: unknown, at: string): unknown => ({
+  ...(message as object),
+  timestamp: at,
 });
 
 /** The frame a turn ends on, which is what tells a page's copy of it settled. */
@@ -3415,6 +3427,142 @@ describe('the conversation the chat draws', () => {
       held.some((messages) => messages.includes('answer-1')),
       'a page that does not share a frame with the turn does not drop it',
     ).toBe(true);
+  });
+
+  /**
+   * **A turn a newer page has run past is settled, and it is not the newest
+   * row** (#2503).
+   *
+   * A resume hands the client a page whose turn is days ahead of the live turn
+   * the frames built, and that turn carries no result frame - the transcript
+   * holds none - so the only thing that settles it is a newer turn following
+   * it. Kept in the live tail it became the newest row, and the pin drew its
+   * clock counting the downtime.
+   */
+  it('settles a live turn a newer page has run past, and lands it above', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    for (const message of PRE_RESUME) {
+      server.update({ chat_appended: { key: LEAD, msg: message } });
+    }
+    server.send(page([{ key: RESUME_KEY, messages: RESUME }], 'c1'));
+    // The core's own answer for the resumed turn, which its page has no result
+    // frame to say.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+
+    const turns = get(chat.value).turns;
+    expect(turns.length, 'the page and the turn it ran past are two rows').toBe(2);
+    expect(turns.at(-1)?.key, 'the resumed turn is the newest row').toBe(RESUME_KEY);
+    expect(
+      turns[0]?.messages.some((message) => (message as { uuid?: string }).uuid === PRE_RESUME_OPEN),
+      'and the turn the page ran past sits above it',
+    ).toBe(true);
+    expect(turns[0]?.live, 'the turn the page ran past is settled').toBe(false);
+    const newest = turns[turns.length - 1];
+    expect(
+      newest !== undefined && beingWritten(newest),
+      'and the turn being written is the resumed one',
+    ).toBe(true);
+  });
+
+  /**
+   * **The other side of that rule** (#2503): a newest page read BEFORE the live
+   * turn's frames landed has a newest row older than the turn, and the turn
+   * stays where it is - last, and still being written. Settling on stamps
+   * alone would take the clock off the turn the reader is watching and seat it
+   * above a page that is older than it.
+   */
+  it('keeps a live turn a newest page is older than, below and still being written', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.update({
+      chat_appended: { key: LEAD, msg: stamped(typed('mine'), '2026-10-22T10:30:00.000Z') },
+    });
+    server.update({
+      chat_appended: { key: LEAD, msg: stamped(said('answer'), '2026-10-22T10:35:00.000Z') },
+    });
+    // A newest page read a moment before those frames landed: an older, settled
+    // turn, and the newest row it carries ends before the live turn does.
+    server.send(
+      page(
+        [
+          {
+            key: 'turn-older',
+            messages: [
+              stamped(typed('before'), '2026-10-22T09:00:00.000Z'),
+              stamped(ended(), '2026-10-22T09:55:00.000Z'),
+            ],
+          },
+        ],
+        'c0',
+      ),
+    );
+
+    const turns = get(chat.value).turns;
+    expect(turns.length, 'the page lands as a row of its own').toBe(2);
+    const newest = turns[turns.length - 1];
+    expect(
+      newest !== undefined && beingWritten(newest),
+      'the live turn is still being written',
+    ).toBe(true);
+    expect(
+      newest?.messages.some((message) => (message as { uuid?: string }).uuid === 'u-mine'),
+      'and it is still the last row',
+    ).toBe(true);
+    expect(turns[0]?.key, 'with the older page above it').toBe('turn-older');
+  });
+
+  /**
+   * **`running` is a carrier of its own** (#2503, #2405): a page settles a turn
+   * and frames arriving after it continue that same turn, which leaves it
+   * `running` while `live` is false. A sweep that read only `live` would pass
+   * it by and draw it below the resume for good.
+   */
+  it('settles a turn the frames continued when a newer page runs past it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // A settled page row, which the core still has in flight. No cursor: a
+    // page of history that has ended, so the next page is a newest one.
+    server.send(
+      page(
+        [
+          {
+            key: 'turn-before',
+            messages: [
+              stamped(typed('before'), '2026-10-19T09:00:00.000Z'),
+              stamped(ended(), '2026-10-19T09:01:00.000Z'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+    // The continuation arrives after the page settled the turn: `running` is
+    // the only mark left, because a page row is never `live` (#2405).
+    server.update({
+      chat_appended: { key: LEAD, msg: stamped(said('continued'), '2026-10-19T09:05:00.000Z') },
+    });
+    const continued = get(chat.value).turns.at(-1);
+    expect(continued?.live, 'precondition: the page row is not live').toBe(false);
+    expect(continued?.running, 'precondition: the continuation marks it running').toBe(true);
+
+    server.send(page([{ key: RESUME_KEY, messages: RESUME }], 'c1'));
+
+    const turns = get(chat.value).turns;
+    expect(turns[0]?.running, 'the continued turn is settled').toBe(false);
+    expect(turns.at(-1)?.key, 'and the resume page is the newest row').toBe(RESUME_KEY);
   });
 
   it('replaces a live turn with the page that settled it', () => {
