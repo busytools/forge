@@ -116,7 +116,17 @@ worker in YOUR project. The same family reaches other projects' \
 agents: a message takes an org and project, plus a label to name a \
 worker rather than that project's own agent. At most one live worker \
 exists per label - if it already exists, message it instead of \
-spawning again. \
+spawning again. Run independent pieces in parallel, up to the \
+project's capacity; a merge conflict is not, by itself, a reason to \
+hold a piece - start it, resolve the conflict and re-run the gates. \
+Only genuine shared-state ordering serializes: one in-flight migration \
+sequence, main's merge queue, a release/version line. Before you park \
+a dispatch decision - spawn now, queue behind a worker, or inline - \
+decide whether the options genuinely differ; when they do, put the \
+enumerated options and the context that bears on them to \
+systemone__ask_choice when your tools include it, and without it \
+decide it yourself. Either way, report the decision where the work is \
+reported. \
 Spawned workers are durable: they survive forge restarts and re-spawn \
 automatically, resuming where they left off, until you explicitly \
 despawn them with agents__despawn (or close their row in the Projects \
@@ -16380,6 +16390,35 @@ mod worker_respawn_tests {
             ),
             "the look's scope is pinned",
         );
+        for (clause, why) in [
+            (
+                "Run independent pieces in parallel, up to the project's capacity",
+                "the parallel-by-default headline",
+            ),
+            ("a merge conflict is not, by itself, a reason to hold a piece", "the conflict rule"),
+            ("resolve the conflict and re-run the gates", "its remedy"),
+            (
+                "Only genuine shared-state ordering serializes: one in-flight migration \
+                 sequence, main's merge queue, a release/version line",
+                "the shared-state list",
+            ),
+            ("decide whether the options genuinely differ", "the dispatch cue's scope"),
+            (
+                "put the enumerated options and the context that bears on them to \
+                 systemone__ask_choice when your tools include it",
+                "the dispatch cue and its guard",
+            ),
+            ("without it decide it yourself", "the dispatch fallback"),
+            (
+                "Either way, report the decision where the work is reported",
+                "the dispatch report duty",
+            ),
+        ] {
+            assert!(
+                preamble.contains(clause),
+                "the delegation preamble does not carry the parallel rule ({why}): {clause}"
+            );
+        }
         assert!(
             !preamble.contains("doing the work yourself"),
             "the charter, not this block, carries the delegation default",
