@@ -143,11 +143,11 @@ nothing.
 
 **A revealed line takes a comment like any other** (Ved, 2026-10-22): it
 carries a door on its own side, and its anchor's text and neighbours come
-from the file read rather than a hunk. **The server places an anchor only
-within the diff's hunks**, so a thread written outside them parks as
-outdated - visible with its captured context in the Outdated section, and
-not on the canvas. A line no press has revealed, or one the read did not
-carry, still takes no door.
+from the file read rather than a hunk. The record places such an anchor in
+the whole file - the branch tip for a new-side line, the default branch for
+an old-side one - because the line is outside the bounded hunks by
+construction; text the file no longer carries still parks as outdated. A
+line no press has revealed, or one the read did not carry, takes no door.
 
 ## A thread
 

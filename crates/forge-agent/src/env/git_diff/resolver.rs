@@ -213,8 +213,26 @@ pub fn place_anchor_in_content(
 /// re-found by content plus neighbours, and `Gone` / `Ambiguous` as the
 /// diff resolver reports them.
 pub fn place_anchor_in_lines(anchor: &ReviewAnchor, lines: &[String]) -> AnchorPlacement {
+    place_anchor_in_lines_with(anchor, lines, true)
+}
+
+/// The whole-file placement with the diff resolver's trust rule: with
+/// `trust_line_number` the recorded line is evidence too, because the file
+/// handed in is numbered the way the anchor was written; otherwise the match
+/// is earned by content and neighbours alone.
+///
+/// The caller hands the file at the revision the anchor's side is numbered
+/// in - the branch tip for a new-side line, the base for an old-side one.
+/// A comment written on a revealed context line is outside the diff's hunks
+/// by construction, and this is where its line is found.
+pub fn place_anchor_in_lines_with(
+    anchor: &ReviewAnchor,
+    lines: &[String],
+    trust_line_number: bool,
+) -> AnchorPlacement {
     let line_at = |i: usize| lines.get(i).map(String::as_str);
-    if let Some(idx) = anchor.line.checked_sub(1).and_then(|i| usize::try_from(i).ok())
+    if trust_line_number
+        && let Some(idx) = anchor.line.checked_sub(1).and_then(|i| usize::try_from(i).ok())
         && let Some(text) = line_at(idx)
         && text_matches(anchor, text)
     {
@@ -460,6 +478,50 @@ mod tests {
         assert_eq!(
             place_anchor_in_lines(&placed, &shifted),
             AnchorPlacement::Placed { line: 4, moved_from: Some(2) },
+        );
+    }
+
+    /// **A comment written on a revealed line is placed in the whole file.**
+    /// The line is outside the diff's hunks by construction, so the content
+    /// read cannot carry it; the file at the revision the anchor's side is
+    /// numbered in does. The diff resolver's trust rule holds there too: the
+    /// recorded number is evidence only when it is the anchor's own
+    /// numbering, and text the file does not carry is still gone.
+    #[test]
+    fn a_whole_file_places_a_line_the_hunks_do_not_carry() {
+        let lines =
+            |texts: &[&str]| -> Vec<String> { texts.iter().map(|t| (*t).to_owned()).collect() };
+        let file = lines(&["wide one", "wide two", "wide three", "wide four"]);
+        let revealed =
+            anchor("src/a.rs", ReviewSide::New, 2, "wide two", &["wide one", "wide three"]);
+        assert_eq!(
+            place_anchor_in_lines_with(&revealed, &file, true),
+            AnchorPlacement::Placed { line: 2, moved_from: None },
+        );
+        // The old side is handed the base's file, whose numbering is its own.
+        let old = anchor("src/a.rs", ReviewSide::Old, 2, "wide two", &["wide one", "wide three"]);
+        assert_eq!(
+            place_anchor_in_lines_with(&old, &file, true),
+            AnchorPlacement::Placed { line: 2, moved_from: None },
+        );
+
+        // Trusted, the recorded line alone places it; untrusted, the same
+        // line has to earn the match with a neighbour, and this one has
+        // none to agree with.
+        let lonely = anchor("src/a.rs", ReviewSide::New, 2, "wide two", &["nowhere near this"]);
+        assert_eq!(
+            place_anchor_in_lines_with(&lonely, &file, true),
+            AnchorPlacement::Placed { line: 2, moved_from: None },
+        );
+        assert_eq!(
+            place_anchor_in_lines_with(&lonely, &file, false),
+            AnchorPlacement::Outdated(OutdatedReason::Gone),
+        );
+
+        let gone = anchor("src/a.rs", ReviewSide::New, 2, "not in this file", &[]);
+        assert_eq!(
+            place_anchor_in_lines_with(&gone, &file, true),
+            AnchorPlacement::Outdated(OutdatedReason::Gone),
         );
     }
 
