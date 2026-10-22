@@ -116,7 +116,15 @@ worker in YOUR project. The same family reaches other projects' \
 agents: a message takes an org and project, plus a label to name a \
 worker rather than that project's own agent. At most one live worker \
 exists per label - if it already exists, message it instead of \
-spawning again. \
+spawning again. Run independent pieces in parallel, up to the \
+project's capacity; a merge conflict is not, by itself, a reason to \
+hold a piece - start it, resolve the conflict and re-run the gates. \
+Only genuine shared-state ordering serializes: one in-flight migration \
+sequence, main's merge queue, a release/version line. Before you park \
+a dispatch decision - spawn now, queue behind a worker, or inline - \
+put the enumerated options and the context that bears on them to \
+systemone__ask_choice when your tools include it, and report the \
+decision where the work is reported. \
 Spawned workers are durable: they survive forge restarts and re-spawn \
 automatically, resuming where they left off, until you explicitly \
 despawn them with agents__despawn (or close their row in the Projects \
@@ -16379,6 +16387,24 @@ mod worker_respawn_tests {
                  before merge; a fix merges after the review loop as usual."
             ),
             "the look's scope is pinned",
+        );
+        assert!(
+            preamble.contains(
+                "a merge conflict is not, by itself, a reason to hold a piece - start it, \
+                 resolve the conflict and re-run the gates"
+            ) && preamble.contains(
+                "Only genuine shared-state ordering serializes: one in-flight migration \
+                 sequence, main's merge queue, a release/version line"
+            ),
+            "the parallel rule and the shared-state list are pinned",
+        );
+        assert!(
+            preamble.contains(
+                "Before you park a dispatch decision - spawn now, queue behind a worker, or \
+                 inline - put the enumerated options and the context that bears on them to \
+                 systemone__ask_choice when your tools include it"
+            ),
+            "the dispatch cue and its guard are pinned",
         );
         assert!(
             !preamble.contains("doing the work yourself"),

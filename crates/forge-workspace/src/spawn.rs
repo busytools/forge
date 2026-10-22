@@ -9431,6 +9431,45 @@ mod lead_charter_tests {
             ),
             "the escalation cue, its guard and the attention rule are pinned",
         );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("Never park a dispatch decision on your own judgment.")
+                && DEFAULT_LEAD_CHARTER.contains(
+                    "put the enumerated options and the context that bears on them to \
+                     `systemone__ask_choice` when your tools include it"
+                ),
+            "the dispatch cue and its guard are pinned",
+        );
+    }
+
+    /// A merge conflict is a cost, not a barrier (#2509). The charter used
+    /// to forbid parallel branches that edit the same files, and a lead
+    /// held a fix behind another cut for it. Only genuine shared-state
+    /// ordering still serializes, and the old same-files ban is pinned
+    /// absent so a reversion fails here rather than in a silent queue.
+    #[test]
+    fn the_charter_parallelises_independent_work() {
+        for (clause, why) in [
+            (
+                "A merge conflict is not, by itself, a reason to hold a piece: start it, \
+                 resolve the conflict and re-run the gates",
+                "the conflict rule and its remedy",
+            ),
+            ("Only genuine shared-state ordering serializes:", "the narrow serialization test"),
+            (
+                "at most ONE in-flight migration branch at a time",
+                "the migration sequence stays serialized",
+            ),
+            ("One main, one version line", "the merge queue and release line stay serialized"),
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not carry the parallel rule ({why}): {clause}",
+            );
+        }
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("edit the SAME files"),
+            "the same-files hold is what #2509 removed; it must not come back",
+        );
     }
 
     /// The one-shot rule ships to every lead, and its handle is the same
