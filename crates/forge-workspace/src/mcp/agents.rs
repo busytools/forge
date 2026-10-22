@@ -615,9 +615,9 @@ impl Tool for Spawn {
          spawn. The label 'lead' is reserved (it addresses a project's \
          own agent) and rejected here. Use agents__list to see your \
          project's current worker pool. `mcp_families` selects which \
-         MCP families this worker gets: any of review, cron, tasks, \
-         gotify, slack and systemone (the agents__* verbs are always on \
-         and cannot be listed). Omit it, or pass an empty list, and the \
+         MCP families this worker gets: any family the argument lists \
+         (the agents__* verbs are always on and cannot be listed). \
+         Omit it, or pass an empty list, and the \
          worker gets every family. Pass a list and it gets exactly \
          those; each withheld family is named in the worker's own prompt \
          so it knows what it does not have - a worker without systemone \
@@ -638,6 +638,8 @@ impl Tool for Spawn {
     }
 
     fn input_schema(&self) -> serde_json::Value {
+        let families: Vec<&str> =
+            crate::mcp::McpFamily::ALL.iter().map(|family| family.as_str()).collect();
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -667,7 +669,7 @@ impl Tool for Spawn {
                 },
                 "mcp_families": {
                     "type": "array",
-                    "items": { "type": "string", "enum": ["review", "cron", "tasks", "gotify", "slack", "systemone"] },
+                    "items": { "type": "string", "enum": families },
                     "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch; give it to any worker that implements. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself.",
                 },
                 "cwd": {
@@ -972,6 +974,8 @@ impl Tool for Update {
     }
 
     fn input_schema(&self) -> serde_json::Value {
+        let families: Vec<&str> =
+            crate::mcp::McpFamily::ALL.iter().map(|family| family.as_str()).collect();
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -993,8 +997,8 @@ impl Tool for Update {
                 },
                 "mcp_families": {
                     "type": "array",
-                    "items": { "type": "string", "enum": ["review", "cron", "tasks", "gotify", "slack", "systemone"] },
-                    "description": "Replacement MCP-family selection for this worker, validated as agents__spawn validates it. Omit to leave the stored selection unchanged; pass an empty list to restore every family. Takes effect on the next respawn. The six families, and what each gives a worker, are listed on agents__spawn's `mcp_families` argument; read them there before narrowing.",
+                    "items": { "type": "string", "enum": families },
+                    "description": "Replacement MCP-family selection for this worker, validated as agents__spawn validates it. Omit to leave the stored selection unchanged; pass an empty list to restore every family. Takes effect on the next respawn. The families, and what each gives a worker, are listed on agents__spawn's `mcp_families` argument; read them there before narrowing.",
                 },
             },
             "required": ["label"],
@@ -1252,42 +1256,52 @@ mod tests {
         let families = schema["properties"]["mcp_families"]["description"]
             .as_str()
             .expect("mcp_families carries a description");
-        for (purpose, guidance, family) in [
-            (
-                "read and answer reviews filed on its branch",
-                "give it to any worker that implements",
-                "review",
-            ),
-            (
-                "schedule and manage durable work of its own",
-                "give it to any worker that needs a recurring or deferred task",
-                "cron",
-            ),
-            (
-                "claim, file and update rows on the project board",
-                "give it to any worker whose work is on the board",
-                "tasks",
-            ),
-            (
-                "subscribe to and read Gotify notifications",
-                "give it to any worker that acts on them",
-                "gotify",
-            ),
-            (
-                "read Slack, subscribe, and post through held approval",
-                "give it to any worker that works in Slack",
-                "slack",
-            ),
-            (
-                "put a yes/no, a choice or a score to the decision model",
-                "give it to any worker that weighs decisions itself",
-                "systemone",
-            ),
-        ] {
+        // Drive the list from the enum, not a hand-written copy: a family
+        // added to `McpFamily::ALL` fails the exhaustive match below, and
+        // the shipped description then has to carry its purpose too.
+        let advertised: Vec<&str> = schema["properties"]["mcp_families"]["items"]["enum"]
+            .as_array()
+            .expect("the family enum is advertised")
+            .iter()
+            .map(|value| value.as_str().expect("a family name is a string"))
+            .collect();
+        assert_eq!(
+            advertised,
+            crate::mcp::McpFamily::ALL.iter().map(|family| family.as_str()).collect::<Vec<_>>(),
+            "the advertised families are the enum's own list",
+        );
+        for family in crate::mcp::McpFamily::ALL {
+            let (purpose, guidance) = match family {
+                crate::mcp::McpFamily::Review => (
+                    "read and answer reviews filed on its branch",
+                    "give it to any worker that implements",
+                ),
+                crate::mcp::McpFamily::Cron => (
+                    "schedule and manage durable work of its own",
+                    "give it to any worker that needs a recurring or deferred task",
+                ),
+                crate::mcp::McpFamily::Tasks => (
+                    "claim, file and update rows on the project board",
+                    "give it to any worker whose work is on the board",
+                ),
+                crate::mcp::McpFamily::Gotify => (
+                    "subscribe to and read Gotify notifications",
+                    "give it to any worker that acts on them",
+                ),
+                crate::mcp::McpFamily::Slack => (
+                    "read Slack, subscribe, and post through held approval",
+                    "give it to any worker that works in Slack",
+                ),
+                crate::mcp::McpFamily::Systemone => (
+                    "put a yes/no, a choice or a score to the decision model",
+                    "give it to any worker that weighs decisions itself",
+                ),
+            };
             assert!(
-                families.contains(&format!("`{family}` - {purpose}; {guidance}.")),
-                "the mcp_families description does not say what {family} gives a worker, or \
-                 who should have it: {families}"
+                families.contains(&format!("`{}` - {purpose}; {guidance}.", family.as_str())),
+                "the mcp_families description does not say what {} gives a worker, or who \
+                 should have it: {families}",
+                family.as_str(),
             );
         }
         // `agents__update` changes the same selection, so it points at the

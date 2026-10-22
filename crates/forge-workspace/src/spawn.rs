@@ -9438,9 +9438,11 @@ mod lead_charter_tests {
                     "put the enumerated options and the context that bears on them to \
                      `systemone__ask_choice` when your tools include it"
                 )
-                && DEFAULT_LEAD_CHARTER.contains("without the tool, decide it yourself"),
-            "the dispatch cue, its genuine-difference scope, its guard and its fallback are \
-             pinned",
+                && DEFAULT_LEAD_CHARTER.contains("without the tool, decide it yourself")
+                && DEFAULT_LEAD_CHARTER
+                    .contains("Either way, report the decision where the work is reported"),
+            "the dispatch cue, its genuine-difference scope, its guard, its fallback and its \
+             report duty are pinned",
         );
     }
 
@@ -9477,8 +9479,7 @@ mod lead_charter_tests {
         }
         assert!(
             !DEFAULT_LEAD_CHARTER.to_lowercase().contains("same files"),
-            "the same-files hold is what #2509 removed; it must not come back in any casing or \
-             wording",
+            "the same-files hold is what #2509 removed; it must not come back in any casing",
         );
     }
 

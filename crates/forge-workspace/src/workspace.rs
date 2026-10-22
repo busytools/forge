@@ -16409,6 +16409,10 @@ mod worker_respawn_tests {
                 "the dispatch cue and its guard",
             ),
             ("without it decide it yourself", "the dispatch fallback"),
+            (
+                "Either way, report the decision where the work is reported",
+                "the dispatch report duty",
+            ),
         ] {
             assert!(
                 preamble.contains(clause),
