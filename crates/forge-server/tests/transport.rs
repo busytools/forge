@@ -5051,9 +5051,7 @@ async fn a_replay_is_never_handed_back_by_a_repair() {
         panic!("a range ask is answered with the frames it asked for")
     };
     assert!(
-        frames
-            .iter()
-            .all(|frame| !matches!(&frame.update, SessionUpdate::HistoryReplayed { .. })),
+        frames.iter().all(|frame| !matches!(&frame.update, SessionUpdate::HistoryReplayed { .. })),
         "a repair handed the replay's window back: {frames:?}"
     );
     let body = serde_json::to_string(&frames).unwrap_or_default();
