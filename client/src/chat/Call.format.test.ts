@@ -602,8 +602,11 @@ describe('an Edit of markdown', () => {
     }
   });
 
-  /** A Write's markdown body is the call's own two sides, not a hunk. */
-  it('renders a markdown Write from its two sides', () => {
+  /**
+   * A `diff` piece is the fallback an Edit builds from its own two sides; a
+   * Write's fallback is a hunk from line zero. This is that diff branch.
+   */
+  it('renders a markdown diff fallback from its two sides', () => {
     const write = leaf({
       row: { kind: 'family', family: 'edit' },
       name: 'Write',

@@ -413,12 +413,14 @@ describe('the palette', () => {
     expect(sheet, "bare dim draws the body's own tone").toContain(
       '.bodytext { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',
     );
-    // The markdown diff grounds are drawn by the sheet too: a row copied
-    // here would keep measuring a mix the sheet had stopped drawing.
-    for (const ground of [
-      'color-mix(in srgb, #f85149 13%, var(--s2))',
-      'color-mix(in srgb, #2ea043 16%, var(--s2))',
-    ]) {
+    // The markdown diff grounds are drawn by the sheet too, derived from the
+    // table's own rows: a one-sided edit here would keep measuring a mix the
+    // sheet had stopped drawing.
+    const diffGrounds = DRAWN.map(([, ground]) => ground).filter((ground) =>
+      ground.startsWith('color-mix(in srgb, #'),
+    );
+    expect(diffGrounds.length, 'the diff grounds are rows of the table').toBe(2);
+    for (const ground of diffGrounds) {
       expect(sheet, `the sheet draws ${ground}`).toContain(ground);
     }
   });
