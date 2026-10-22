@@ -1978,10 +1978,12 @@ details.leaf.running > summary { color: var(--text); }
    cyan +0.62, yellow +1.14, and the two weights read the same), which is the
    theme's own answer rather than a missing weight.
    `.ansi-dim` is the one attribute the box draws as itself: `\e[2m` asked for
-   de-emphasis, so the composites sit at their measured values - five of the
-   eight coloured ones under the text floor, three above it, and bare `\e[2m`
-   on the box's own tone at 3.85. Those nine are measured in
-   contrast.test.ts; a colour that is both bright and dim is not. */
+   de-emphasis, so the composites sit at their measured values on the panel's
+   `--s2` at `.75` - three of the eight coloured ones under the text floor
+   (dim 3.13, red 3.43, blue 4.14) and five above it (yellow 4.60, magenta
+   4.66, green 5.41, cyan 5.47, white 6.89), with bare `\e[2m` on the body's
+   own tone at 3.95. Those nine are measured in contrast.test.ts; a colour
+   that is both bright and dim is not. */
 .ansi-black { color: var(--dim); }
 .ansi-bright-black { color: color-mix(in srgb, var(--dim) 70%, var(--text)); }
 .ansi-red { color: var(--bad); }
@@ -2004,11 +2006,12 @@ details.leaf.running > summary { color: var(--text); }
 .ansi-dim { opacity: .75; }
 .ansi-italic { font-style: italic; }
 .ansi-underline { text-decoration: underline; }
-.term .pfx { color: var(--dim); }
+.term .pfx, .bodytext .pfx { color: var(--dim); }
 /* A line a command reported as its own result: the book's drawing has the
-   summary half, and a task that ended badly is the same line in the bad tone. */
-.term .sum { color: var(--ok); }
-.term .fail { color: var(--bad); }
+   summary half, and a task that ended badly is the same line in the bad tone.
+   Both the hook inset and the call body's panel carry these. */
+.term .sum, .bodytext .sum { color: var(--ok); }
+.term .fail, .bodytext .fail { color: var(--bad); }
 /* A systemone decision's block: the question it answered, the answer as a
    facts line, the options as a plain list in the order they were given, the
    material it judged behind one fold, and what it cost along the bottom.
@@ -2098,8 +2101,15 @@ details.leaf.running > summary { color: var(--text); }
 .code-diff .prose p + p { margin-top: 9px; }
 .code-diff .code { border: 0; border-radius: 0; background: transparent; }
 .code-diff .code .lang { display: none; }
-/* The caption under a panel whose file has no grammar: the header carries no
-   language, and this says why rather than leaving the absence unexplained. */
+/* Inline code keeps the values the old prose lane gave it: the panel is a
+   container move, not a retheme. */
+.code-diff code { font-size: .88em; color: var(--text); border-radius: 4px; }
+/* A markdown panel lets a wide table outgrow it, as the sheet's table rule
+   does, rather than clipping it behind `overflow: hidden`. */
+.code.markdown-panel { overflow: visible; }
+/* The caption under a READ panel whose file has no grammar: the header
+   carries no language, and this says why. A diff with no grammar simply
+   carries no strip. */
 .code-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   padding: 4px 2px 0; }
 /* A search result, one row per hit: where it is, then what matched. */

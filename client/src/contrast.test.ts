@@ -410,8 +410,8 @@ describe('the palette', () => {
     expect(sheet, 'and the dim composites are that sheet value').toContain(
       '.ansi-dim { opacity: .75; }',
     );
-    expect(sheet, "bare dim draws the box's own tone").toContain(
-      '.term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',
+    expect(sheet, "bare dim draws the body's own tone").toContain(
+      '.bodytext { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',
     );
   });
 

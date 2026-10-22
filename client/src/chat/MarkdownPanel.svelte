@@ -12,7 +12,7 @@
   let { html = null, text = null }: { html?: string | null; text?: string | null } = $props();
 </script>
 
-<div class="code panel">
+<div class="code panel markdown-panel">
   <div class="lang">markdown</div>
   <div class="code-diff">
     {#if html !== null}

@@ -161,6 +161,59 @@ describe('an Edit of an extensionless script', () => {
       void unmount(app);
     }
   });
+
+  /**
+   * **A slice that starts past line 1 cannot know the file's first line.** A
+   * shebang-shaped line there is data, not the script's interpreter.
+   */
+  it('draws no strip for a hunk that starts past the file head', () => {
+    const edit = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'bin/run',
+      body: [
+        {
+          kind: 'hunk',
+          header: '@@ -10,1 +10,1 @@',
+          lines: [line('ctx', '#!/usr/bin/env bash', 10, 10)],
+        },
+      ],
+      mutation: { hunks: 1, added: 0, removed: 0, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: edit, open: true } });
+    try {
+      flushSync();
+      expect(document.querySelector('.code > .lang'), 'nothing to name it by').toBeNull();
+    } finally {
+      void unmount(app);
+    }
+  });
+
+  /** The NEW side decides: a removed shebang does not name the panel. */
+  it('draws no strip when the change removes the shebang', () => {
+    const edit = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'bin/run',
+      body: [
+        {
+          kind: 'hunk',
+          header: '@@ -1,1 +1,1 @@',
+          lines: [line('del', '#!/usr/bin/env bash', 1, null), line('add', 'set -e', null, 1)],
+        },
+      ],
+      mutation: { hunks: 1, added: 1, removed: 1, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: edit, open: true } });
+    try {
+      flushSync();
+      expect(document.querySelector('.code > .lang'), 'the new file is no script').toBeNull();
+    } finally {
+      void unmount(app);
+    }
+  });
 });
 
 describe('a Read of markdown with a fence', () => {
@@ -211,6 +264,12 @@ describe('a Read of markdown with a fence', () => {
       );
       expect(sheet, 'and its old paragraph gap').toMatch(
         /\.code-diff \.prose p \+ p \{ margin-top: 9px; \}/,
+      );
+      expect(sheet, 'inline code keeps its old tone and radius').toMatch(
+        /\.code-diff code \{[^}]*color: var\(--text\)[^}]*border-radius: 4px/,
+      );
+      expect(sheet, 'a wide table may outgrow the markdown panel').toContain(
+        '.code.markdown-panel { overflow: visible; }',
       );
     } finally {
       void unmount(app);
@@ -550,9 +609,9 @@ describe('a Read of a picture', () => {
    * **The image's sidecar is text about the call, not the file.** "Saved to
    * ..." beside a screenshot used to be sent to the code panel because its
    * format was not markdown; it invented a plain-text note for a file that
-   * was never read as text. It belongs in the terminal box.
+   * was never read as text. It belongs in the plain-text panel.
    */
-  it('draws the sidecar in the terminal box, not a code panel', () => {
+  it('draws the sidecar in the plain-text panel, not a code panel', () => {
     const shot = leaf({
       title: 'shots/screen.png',
       body: [{ kind: 'text', text: 'Saved to /tmp/screen.png' }],
@@ -568,6 +627,29 @@ describe('a Read of a picture', () => {
         document.querySelector('.panel.bodytext')?.textContent,
         'the sidecar in its own panel',
       ).toContain('Saved to /tmp/screen.png');
+    } finally {
+      void unmount(app);
+    }
+  });
+
+  /**
+   * **An image PIECE with no drawn picture is a plain body too.** It used to
+   * be the last `.term` in a call body; the hook inset must not reappear
+   * here.
+   */
+  it('draws a bare image piece in the same plain panel', () => {
+    const piece = leaf({
+      title: 'a result',
+      body: [{ kind: 'image', mime: 'image/png', uri: null }],
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: piece, open: true } });
+    try {
+      flushSync();
+      expect(document.querySelector('.term'), 'no hook inset in a call body').toBeNull();
+      expect(document.querySelector('.panel.bodytext')?.textContent, 'the caption panel').toContain(
+        'image',
+      );
     } finally {
       void unmount(app);
     }

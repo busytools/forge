@@ -14,7 +14,8 @@
   /**
    * A call's patch: the hunks with their line numbers and marks, GitHub's
    * tinted grounds, the file's grammar over every line, and the changed words
-   * of a paired removal and addition tinted darker.
+   * of a paired removal and addition tinted darker - inside the same panel a
+   * Read draws, with a format strip when the file names one.
    *
    * **Plain first, coloured when the grammar lands**, the code panel's own
    * rule: the plain pass draws every word, and shiki's tokens replace it
@@ -95,9 +96,16 @@
   });
 
   /**
-   * The byte probe the format is read from: the new side of the change, so a
-   * shebang on an extensionless script names its grammar. A path alone cannot
-   * see one.
+   * The byte probe the format is read from.
+   *
+   * **The NEW side only, and only when it can be known.** A `diff` piece is
+   * the call's own two sides: a Write is the file from line 1, and an Edit's
+   * new side is the replacement the panel draws, so a shebang replacement
+   * names the new grammar rather than the removed one. A hunk carries only
+   * its own slice; its first lines are the file's only when the slice starts
+   * at line 1, and a shebang cannot be guessed from a slice that begins
+   * later - that answers `null`, which leaves the path's own extension and
+   * filename table to decide.
    */
   const probe = $derived.by((): Uint8Array | null => {
     const piece = pieces[0];
@@ -105,7 +113,13 @@
     if (piece.kind === 'diff') {
       return new TextEncoder().encode(piece.new === '' ? piece.old : piece.new);
     }
-    return new TextEncoder().encode(piece.lines.map((line) => line.text).join('\n'));
+    const first = piece.lines[0];
+    if (first === undefined || (first.old !== 1 && first.new !== 1)) return null;
+    const newSide = piece.lines
+      .filter((line) => line.kind !== 'del')
+      .map((line) => line.text)
+      .join('\n');
+    return new TextEncoder().encode(newSide);
   });
 
   const language = $derived.by((): string | null => {

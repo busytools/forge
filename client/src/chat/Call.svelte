@@ -752,7 +752,7 @@
 {#snippet pieces(parts: RunPiece[], asProse = false)}
   {#each parts as piece, at (at)}
     {#if piece.kind === 'image'}
-      <div class="term">
+      <div class="panel bodytext">
         image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
       </div>
     {:else if piece.kind === 'error'}

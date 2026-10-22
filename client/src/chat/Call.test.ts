@@ -210,6 +210,18 @@ describe('the row one call draws', () => {
     expect(term, 'the hook inset keeps its rule').toContain('border-left');
     expect(term, 'and takes none of the panel radius').not.toContain('border-radius');
     expect(term, 'and none of the panel ground').not.toContain('background');
+    // **The body's own tones follow it into the panel.** The `$` prompt and
+    // the task's summary/failure lines are colours, and a container move that
+    // left them on `.term` would draw them muted in every call body.
+    expect(sheet, 'the prompt tone reaches the body').toContain(
+      '.term .pfx, .bodytext .pfx { color: var(--dim); }',
+    );
+    expect(sheet, 'the summary tone reaches the body').toContain(
+      '.term .sum, .bodytext .sum { color: var(--ok); }',
+    );
+    expect(sheet, 'the failure tone reaches the body').toContain(
+      '.term .fail, .bodytext .fail { color: var(--bad); }',
+    );
   });
 
   it('draws the picture a call read only while the row is open', () => {

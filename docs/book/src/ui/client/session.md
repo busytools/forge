@@ -81,8 +81,8 @@ read as one system.
   file's own grammar (a `Justfile` is `just`, a script's shebang names its
   own), and a text file no grammar names draws plain with a caption saying so.
 - **An edit** draws its diff the way GitHub does, inside the same panel a read
-  draws - the panel's border and ground, with the file's format on the head:
-  the hunks with both line numbers, the file's syntax colours on every line,
+  draws - the panel's border and ground, with the format on the head when the
+  file names one: the hunks with both line numbers, the file's syntax colours on every line,
   the row tinted for a removal or an addition, and the changed words of a
   paired removal and addition tinted darker. **A markdown edit renders
   instead**: the hunk draws as markdown, in that same panel, with removed
