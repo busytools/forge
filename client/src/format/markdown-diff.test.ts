@@ -72,6 +72,41 @@ describe('a markdown change across block markers', () => {
    * marker paired with the add opening marker: the new language must act as
    * a new block, and no literal marker may land inside the old one.
    */
+  /**
+   * **A marker whose text alone changed is ONE marker.** A fence's info
+   * string change is an adjacent removed/added pair with no body between
+   * them; drawing both toggles the block twice and the new opener lands as
+   * rust code content.
+   */
+  it('draws an info-string-only fence change as one block in the new language', () => {
+    const drawn = html([
+      { kind: 'del', text: '```rust' },
+      { kind: 'add', text: '```python' },
+      { kind: 'ctx', text: 'fn main() {}' },
+      { kind: 'ctx', text: '```' },
+    ]);
+
+    const languages = [...drawn.querySelectorAll('.code .lang')].map((node) => node.textContent);
+    expect(languages, 'the block opens in the new language').toEqual(['python']);
+    expect(drawn.textContent ?? '', 'no literal marker in the code').not.toContain('```');
+  });
+
+  /** A closing delimiter change is the same marker-only rule at the close. */
+  it('draws a changed closing fence as one balanced block', () => {
+    // The unchanged opener is `~~~`, so the added `~~~` is the valid close
+    // of that block (a ``` opener could not be closed by a ~~~ marker).
+    const drawn = html([
+      { kind: 'ctx', text: '~~~rust' },
+      { kind: 'ctx', text: 'fn main() {}' },
+      { kind: 'del', text: '```' },
+      { kind: 'add', text: '~~~' },
+    ]);
+
+    const languages = [...drawn.querySelectorAll('.code .lang')].map((node) => node.textContent);
+    expect(languages, 'one block, in its own language').toEqual(['rust']);
+    expect(drawn.textContent ?? '', 'no literal closing marker').not.toContain('~~~');
+  });
+
   it('draws a rust fence replaced by a python fence as two blocks', () => {
     const drawn = html([
       { kind: 'del', text: '```rust' },
@@ -122,6 +157,22 @@ describe('a reference-style link definition', () => {
       hasDefinitionChange([{ kind: 'ctx', text: '[docs]: https://example.com/old' }]),
       'an unchanged definition draws no change',
     ).toBe(false);
+  });
+
+  /** A definition-shaped line inside a fence is code, not a definition. */
+  it('does not fire on a definition-shaped line inside fenced code', () => {
+    expect(
+      hasDefinitionChange([
+        { kind: 'ctx', text: '```md' },
+        { kind: 'del', text: '[docs]: https://example.com' },
+        { kind: 'ctx', text: '```' },
+      ]),
+    ).toBe(false);
+  });
+
+  /** A destination on the following indented line is the same definition. */
+  it('detects a definition whose destination is on the next line', () => {
+    expect(hasDefinitionChange([{ kind: 'del', text: '[docs]:' }])).toBe(true);
   });
 });
 

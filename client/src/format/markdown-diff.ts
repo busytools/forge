@@ -59,6 +59,25 @@ function isTable(text: string): boolean {
   return TABLE.test(text);
 }
 
+/**
+ * Whether `lines[at]`/`lines[at + 1]` are one fence marker whose text
+ * changed rather than two markers of two blocks.
+ *
+ * Outside a fence, a removed opener followed by an added opener is one
+ * marker: draw the new one and keep the block open. Inside a fence, a
+ * removed closing marker followed by an added marker is a closing change
+ * only when no added BODY follows it; added body means a whole-fence
+ * replacement, whose close and open are two different markers.
+ */
+function markerOnlyChange(lines: readonly SourceLine[], at: number, insideFence: boolean): boolean {
+  const line = lines[at];
+  const next = lines[at + 1];
+  if (line?.kind !== 'del' || next?.kind !== 'add' || !isFence(next.text)) return false;
+  if (!insideFence) return true;
+  const after = lines[at + 2];
+  return after === undefined || after.kind !== 'add';
+}
+
 function isHeading(text: string): boolean {
   return /^\s*#{1,6}\s/.test(text);
 }
@@ -164,10 +183,18 @@ export function markdownDiffSource(lines: readonly SourceLine[]): string {
     if (line === undefined) break;
 
     if (isFence(line.text)) {
-      // **Every** fence marker is literal and toggles the block, wherever it
-      // sits in a run: a marker is a boundary, never wrapped and never
-      // word-paired. A whole-fence replacement is therefore a close and an
-      // open, which draws the old block and the new one separately.
+      // **A marker is a boundary**: never wrapped and never word-paired. An
+      // adjacent removed/added pair with no body between them is ONE marker
+      // whose text changed (an info string, or a closing delimiter), so the
+      // NEW marker is drawn once and the block stays balanced. A whole-fence
+      // replacement has body between the markers and stays two blocks.
+      const next = lines[i + 1];
+      if (markerOnlyChange(lines, i, insideFence)) {
+        out.push(next?.text ?? line.text);
+        insideFence = !insideFence;
+        i += 2;
+        continue;
+      }
       out.push(line.text);
       insideFence = !insideFence;
       i += 1;
@@ -239,8 +266,11 @@ export function plain(value: string): string {
   return out;
 }
 
-/** A reference-style link definition: `[name]: https://...`. */
-const DEFINITION = /^\s*\[[^\]]+\]:\s*\S/;
+/**
+ * A reference-style link definition's opener. The destination may sit on
+ * the same line or, indented, on the next one.
+ */
+const DEFINITION = /^\s*\[[^\]]+\]:/;
 
 /**
  * Whether a hunk changes a reference-style link definition.
@@ -248,9 +278,18 @@ const DEFINITION = /^\s*\[[^\]]+\]:\s*\S/;
  * **A rendered diff cannot draw one honestly**: a definition produces no
  * output, and a sentinel inside it makes both the definition and every
  * reference draw literally. Such a hunk falls back to the source diff.
+ * A definition-shaped line inside a fence is code, not a definition.
  */
 export function hasDefinitionChange(lines: readonly SourceLine[]): boolean {
-  return lines.some((line) => line.kind !== 'ctx' && DEFINITION.test(line.text));
+  let insideFence = false;
+  for (const line of lines) {
+    if (isFence(line.text)) {
+      insideFence = !insideFence;
+      continue;
+    }
+    if (!insideFence && line.kind !== 'ctx' && DEFINITION.test(line.text)) return true;
+  }
+  return false;
 }
 
 /** The rendered hunk, with the sentinels standing as the strike and add spans. */
