@@ -1938,8 +1938,8 @@ async fn session(
         let walker = std::sync::Arc::clone(&state.surface);
         let root = cwd.to_owned();
         match tokio::task::spawn_blocking(move || walker.walk_file_index(&root)).await {
-            Ok(walked) => {
-                let index = std::sync::Arc::new(walked);
+            Ok(files) => {
+                let index = std::sync::Arc::new(files);
                 // The fallback's walk IS the seat's first read: storing it
                 // keeps the loop from walking the same tree again and
                 // announcing an index the snapshot already carries.

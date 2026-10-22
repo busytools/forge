@@ -11963,7 +11963,7 @@ already completed."
     async fn a_seat_a_view_is_holding_is_still_continued() {
         let dir = tempdir().expect("tempdir");
         let (ws, key, _rx) = nudge_seat(&dir, "watching");
-        ws.hold_seat(&key).await;
+        ws.hold_seat(&key);
 
         fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
         ws.fire_auto_continue(&key);
@@ -12008,7 +12008,7 @@ already completed."
         ws.fire_auto_continue(&key);
         assert_eq!(dispatched_prompts(&ws).len(), 1, "precondition: the first failure was nudged");
 
-        ws.hold_seat(&key).await;
+        ws.hold_seat(&key);
         ws.release_seat(&key);
         fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
         ws.fire_auto_continue(&key);

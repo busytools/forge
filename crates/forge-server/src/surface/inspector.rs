@@ -6,8 +6,6 @@
 //! rather than deriving anything: a view reads the session instead of
 //! folding the update stream a second time.
 
-use std::sync::Arc;
-
 use forge_primitives::runtime::AvailableModel;
 use forge_primitives::{
     CurrentModel, EffortLevel, MonitorRecord, PermissionMode, SessionId, SessionSlot,
@@ -144,8 +142,8 @@ impl ViewSurface {
     /// working tree scanned while the view holds it. A sessionless seat is
     /// held too - its watch waits for the session - so every call takes a
     /// hold, and a caller must release it exactly once.
-    pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
-        self.workspace.hold_seat(slot).await;
+    pub fn hold_seat(&self, slot: &SessionSlot) {
+        self.workspace.hold_seat(slot);
     }
 
     /// Stop showing a seat, which is what lets its scan go when nobody else
@@ -248,7 +246,6 @@ impl ViewSurface {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::Duration;
 
     use forge_primitives::runtime::{AvailableModel, RuntimeSessionState};
     use forge_primitives::{
@@ -274,11 +271,9 @@ mod tests {
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         workspace.seed_test_scan_gate(Arc::clone(&gate));
 
-        tokio::time::timeout(Duration::from_secs(1), surface.hold_seat(&seat))
-            .await
-            .expect("the inspector's hold does not wait for the seat's scans");
+        surface.hold_seat(&seat);
 
-        assert!(workspace.work_snapshot(&seat).is_none(), "the tree is not read on the hold path",);
+        assert!(workspace.work_snapshot(&seat).is_none(), "the tree is not read on the hold path");
     }
 
     /// The output read is an ask routed by the slot like every other

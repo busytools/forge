@@ -279,7 +279,7 @@ impl Workspace {
     /// re-subscribe had no watch for as long as it showed the seat, and its
     /// pushed rows stood still; the hold is unconditional now, so the FIRST
     /// subscribe is the one that counts (#1706).
-    pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
+    pub fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
         // A hold is somebody looking: it ends the current failure episode,
         // so a later failure is a new one.
         if let Some(domain) = self.domain_session_for(slot) {
@@ -835,9 +835,8 @@ provider = "anthropic"
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         workspace.seed_test_scan_gate(Arc::clone(&gate));
 
-        tokio::time::timeout(Duration::from_secs(1), workspace.hold_seat(&seat))
-            .await
-            .expect("the hold is served while its scans are still in flight");
+        // The hold returns with the watch spawned; the reads are at the gate.
+        workspace.hold_seat(&seat);
 
         assert!(workspace.work_snapshot(&seat).is_none(), "the tree's scan has not answered");
         assert!(workspace.process_snapshot(&seat).is_none(), "nor has the process walk");
@@ -860,9 +859,8 @@ provider = "anthropic"
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         workspace.seed_test_scan_gate(Arc::clone(&gate));
 
-        tokio::time::timeout(Duration::from_secs(1), workspace.hold_seat(&seat))
-            .await
-            .expect("the hold is served while its scans are still in flight");
+        // The hold returns with the watch spawned; the reads are at the gate.
+        workspace.hold_seat(&seat);
         assert!(
             tokio::time::timeout(Duration::from_millis(100), updates.recv()).await.is_err(),
             "nothing is announced while the scans are still held",
@@ -904,7 +902,7 @@ provider = "anthropic"
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
 
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
 
         let row = announced_work(&mut updates).await;
         assert_eq!(row.gate, Gate::InRepo, "a checkout is read as a repository");
@@ -947,7 +945,7 @@ provider = "anthropic"
         let (workspace, mut updates, _config) = a_declared_project(dir.path());
         let seat = seat();
 
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
         assert!(
             !workspace.held_work_seats.lock().is_empty(),
             "a sessionless seat is still held - the loop waits quietly for its session",
@@ -979,7 +977,7 @@ provider = "anthropic"
         let dir = a_repo();
         let (workspace, _updates, _config) = a_workspace(dir.path());
         let seat = seat();
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
         let (gate, _stopped) = workspace.held_work_seats.acquire(&seat);
 
         // A TRACKED file: the row counts the worktree layer, which is
@@ -1167,7 +1165,7 @@ provider = "anthropic"
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
 
         // A walk another writer made, writing the store the loop holds a
         // baseline of - and with the clock inside the window, so the loop's
@@ -1210,7 +1208,7 @@ provider = "anthropic"
         // The pid the loop walks is this test's own, so a child spawned below
         // is a process under the seat's tree.
         workspace.seed_test_claude_pid(&seat, std::process::id());
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
 
         let child =
             Child(std::process::Command::new("sleep").arg("30").spawn().expect("a child to find"));
@@ -1274,7 +1272,7 @@ provider = "anthropic"
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
         announced_index(&mut updates).await;
         let held_at = workspace.file_index(&seat).expect("the first pass stores it").read_at;
 
@@ -1299,7 +1297,7 @@ provider = "anthropic"
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
 
         std::fs::write(dir.path().join("new.rs"), "").expect("write");
 
@@ -1331,9 +1329,8 @@ provider = "anthropic"
         // making the writes' own frame the only index frame there is.
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         workspace.seed_test_scan_gate(Arc::clone(&gate));
-        tokio::time::timeout(Duration::from_secs(1), workspace.hold_seat(&seat))
-            .await
-            .expect("the hold is served while its scans are still in flight");
+        // The hold returns with the watch spawned; the reads are at the gate.
+        workspace.hold_seat(&seat);
 
         for name in ["a.rs", "b.rs", "c.rs"] {
             std::fs::write(dir.path().join(name), "").expect("write");
@@ -1378,7 +1375,7 @@ provider = "anthropic"
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
         // The first pass's own answer, drained so the window below opens after
         // it: the index is announced before the row in the same pass, so the
         // row's arrival says the pass is done.
@@ -1495,7 +1492,7 @@ provider = "anthropic"
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
         workspace.seed_test_user_preferences(serde_json::json!({}));
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
 
         let held = announced_index(&mut updates).await;
         assert!(
@@ -1524,13 +1521,13 @@ provider = "anthropic"
         let (workspace, _updates, _config) = a_workspace(dir.path());
         let seat = seat();
 
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
         assert!(!workspace.held_work_seats.lock().is_empty(), "the first viewer holds");
 
         // The session ends under the hold, and the next viewer still holds:
         // the watch waits for the session rather than refusing (#1706).
         workspace.release_session_with_cascade(&seat);
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
 
         // Two taken holds: one release leaves the seat held, the second lets
         // it go.
@@ -1559,7 +1556,7 @@ provider = "anthropic"
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
         assert!(!workspace.held_work_seats.lock().is_empty(), "the hold is taken");
         // The watch's first pass settles before the session goes, so the
         // release's own frame is the next one and the window after it is the
@@ -1630,9 +1627,7 @@ provider = "anthropic"
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         workspace.seed_test_scan_gate(Arc::clone(&gate));
 
-        tokio::time::timeout(Duration::from_secs(1), workspace.hold_seat(&seat))
-            .await
-            .expect("a sessionless seat's hold is served without waiting for any read");
+        workspace.hold_seat(&seat);
 
         assert!(workspace.work_snapshot(&seat).is_none(), "nothing was read for it");
         assert!(
@@ -1658,8 +1653,8 @@ provider = "anthropic"
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
 
-        workspace.hold_seat(&seat).await;
-        workspace.hold_seat(&seat).await;
+        workspace.hold_seat(&seat);
+        workspace.hold_seat(&seat);
         announced_work(&mut updates).await;
         assert!(workspace.work_snapshot(&seat).is_some(), "the watch reads the seat's tree");
 

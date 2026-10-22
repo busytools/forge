@@ -989,7 +989,7 @@ where
                 // every taken hold is remembered here so the two paths a
                 // subscribe can end without one can give it back: the encode's
                 // refusal below, and the unsubscribe.
-                state.surface.hold_seat(slot).await;
+                state.surface.hold_seat(slot);
                 holds.take(slot);
             }
             batch::flush(socket, queued).await?;
