@@ -938,6 +938,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "parking_lot",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

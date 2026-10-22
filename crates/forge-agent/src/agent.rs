@@ -58,6 +58,17 @@ impl AgentHandle {
         self.bridge.claude_pid()
     }
 
+    /// Take the session's process group down without the async drain.
+    ///
+    /// For a session that never got a task to run its exit path: dropping
+    /// the handle alone SIGKILLs the direct child and leaves the tools the
+    /// CLI already started behind.
+    pub fn kill_process_group(&self) {
+        if let Some(client) = self.bridge.clear_client() {
+            client.kill_process_group();
+        }
+    }
+
     pub fn project_memory_path(&self, cwd: &Path) -> PathBuf {
         self.bridge.project_memory_path(cwd)
     }

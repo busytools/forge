@@ -64,8 +64,9 @@ llama-cpp-2 = { version = "0.1.154", default-features = false }
 # or a multi-byte character split between two pieces is replaced.
 encoding_rs = "0.8.35"
 # Cross-process advisory file lock (flock) for the single-instance boot
-# guard: forge refuses a second instance on the same config dir.
-rustix = { version = "1", features = ["fs"] }
+# guard: forge refuses a second instance on the same config dir. Also
+# signals a session child's process group at teardown.
+rustix = { version = "1", features = ["fs", "process"] }
 # 5-field cron-expression parsing + next-fire computation. chrono is
 # croner's datetime dep; forge keeps it walled off inside the cron
 # schedule module's next-fire fn (SystemTime everywhere else).

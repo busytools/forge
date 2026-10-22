@@ -9,6 +9,7 @@
 // not reach it: the denied lints fire on a file that is entirely test code.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use std::fmt::Write as _;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -99,16 +100,35 @@ fn server_command(home: &std::path::Path, config: &std::path::Path) -> tokio::pr
     command
 }
 
-/// Send SIGTERM the way a system does, without linking a signal crate: the
+/// Send a signal the way a system does, without linking a signal crate: the
 /// `kill` the PATH resolves is the instrument.
-async fn terminate(pid: u32) {
+async fn send_signal(pid: u32, signal: &str) {
     let status = tokio::process::Command::new("kill")
-        .arg("-TERM")
+        .arg(signal)
         .arg(pid.to_string())
         .status()
         .await
         .expect("kill runs");
-    assert!(status.success(), "kill -TERM {pid} lands: {status}");
+    assert!(status.success(), "kill {signal} {pid} lands: {status}");
+}
+
+/// SIGTERM, the stop a supervisor sends.
+async fn terminate(pid: u32) {
+    send_signal(pid, "-TERM").await;
+}
+
+/// SIGTERM to the process group `pid` leads: what a terminal close does.
+///
+/// `--` ends the options, so the group operand cannot be read as a signal or
+/// a pid by a `kill` that parses differently from BSD's (procps on the Linux
+/// runner does; ambiguous there means the signal goes somewhere else).
+async fn terminate_group(pid: u32) {
+    let status = tokio::process::Command::new("kill")
+        .args(["-s", "TERM", "--", &format!("-{pid}")])
+        .status()
+        .await
+        .expect("kill runs");
+    assert!(status.success(), "kill -s TERM -- -{pid} lands: {status}");
 }
 
 /// Wait until the server answers on `port`, or fail with its stderr.
@@ -169,6 +189,348 @@ async fn walk(script: &str, url: &str) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).expect("one message per line"))
         .collect()
+}
+
+/// A scratch tree whose declared projects start at boot, over a mock
+/// `claude` on PATH: the boot wave spawns a live session per project, and
+/// each session's child leaves a sleeper whose pid lands in that project's
+/// marker.
+///
+/// The mock is the SDK's own lingering fixture under the name production
+/// spawns, so one script describes the shape for both layers.
+fn write_session_fixture(
+    root: &std::path::Path,
+    server_port: u16,
+    gateway_port: u16,
+    projects: &[(&str, &std::path::Path, Option<&str>)],
+    child_term_marker: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let home = root.join("home");
+    let config = root.join("config");
+    let bin = root.join("bin");
+    std::fs::create_dir_all(config.join("forge")).expect("config dir");
+    std::fs::create_dir_all(&home).expect("home dir");
+    std::fs::create_dir_all(&bin).expect("bin dir");
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../forge-sdk/tests/fixtures/mock_claude_lingering.sh"
+        ),
+        bin.join("claude"),
+    )
+    .expect("install the mock claude");
+    let mut blocks = String::new();
+    for (name, marker, close_delay) in projects {
+        let path = root.join(format!("project-{name}"));
+        std::fs::create_dir_all(&path).expect("project dir");
+        let mut env = format!("FORGE_TEST_ORPHAN_MARKER = \"{}\"", marker.display());
+        if let Some(delay) = close_delay {
+            let _ = write!(env, ", FORGE_TEST_CLOSE_DELAY = \"{delay}\"");
+        }
+        let _ = write!(
+            blocks,
+            "\n[[orgs.projects]]\nname = \"{name}\"\npath = \"{}\"\nauto_start = true\n\
+             model = \"claude-sonnet-5\"\nenv = {{ {env} }}\n",
+            path.display(),
+        );
+    }
+    std::fs::write(
+        config.join("forge/forge.toml"),
+        format!(
+            r#"
+[env]
+FORGE_TEST_CHILD_TERM_MARKER = "{child_marker}"
+FORGE_TEST_CHILD_PID_MARKER = "{child_marker}.pid"
+
+[[orgs]]
+name = "Default"
+accounts = ["Stub"]
+{blocks}
+[[accounts]]
+display_name = "Stub"
+token = "t"
+provider = "openrouter"
+base_url = "http://127.0.0.1:9/api"
+models = ["claude-sonnet-5"]
+
+[server]
+enabled = true
+bind = "127.0.0.1"
+port = {server_port}
+
+[gateway]
+port = {gateway_port}
+"#,
+            child_marker = child_term_marker.display(),
+            blocks = blocks,
+        ),
+    )
+    .expect("write forge.toml");
+    (home, config, bin)
+}
+
+/// The pid the session's mock child wrote, or a failure naming the tree.
+async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(marker)
+            && let Ok(pid) = text.trim().parse()
+        {
+            return pid;
+        }
+        assert!(
+            std::time::Instant::now() <= deadline,
+            "the session's child never wrote its descendant's pid to {}",
+            marker.display()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Wait for a file to appear, or answer false once the deadline passes.
+async fn wait_for_file(path: &std::path::Path) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    path.exists()
+}
+
+/// Read the pid's own state; a zombie is gone, not surviving.
+fn is_running(pid: u32) -> bool {
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
+        .output()
+        .expect("ps runs");
+    let stat = String::from_utf8_lossy(&out.stdout);
+    let stat = stat.trim();
+    !stat.is_empty() && !stat.starts_with('Z')
+}
+
+async fn wait_until_gone(pid: u32) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        if !is_running(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    !is_running(pid)
+}
+
+/// A pid this test owns, killed by number when it ends however it ends.
+struct Orphan(u32);
+
+impl Drop for Orphan {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill").args(["-KILL", &self.0.to_string()]).status();
+    }
+}
+
+/// A stop signal takes the session's descendants with it. SIGTERM is the
+/// supervisor's stop; SIGHUP is a terminal closing, whose default
+/// disposition kills forge with no unwinding at all.
+#[tokio::test]
+async fn a_stop_signal_takes_the_sessions_descendants_with_it() {
+    for signal in ["-TERM", "-HUP"] {
+        assert_stop_leaves_no_descendant(signal).await;
+    }
+}
+
+async fn assert_stop_leaves_no_descendant(signal: &str) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (port, gateway) = two_free_ports();
+    let marker = dir.path().join("session.pid");
+    let child_marker = dir.path().join("child-term");
+    let (home, config, bin) = write_session_fixture(
+        dir.path(),
+        port,
+        gateway,
+        &[("forge", &marker, None)],
+        &child_marker,
+    );
+
+    let mut command = server_command(&home, &config);
+    command
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
+    let mut server = command.spawn().expect("the server spawns");
+    wait_for_port(port, &mut server).await;
+
+    // The control: a session is live and its descendant is running before
+    // the stop, so a pass below cannot come from a session that never was.
+    let pid = wait_for_marker_pid(&marker).await;
+    let _orphan = Orphan(pid);
+    assert!(is_running(pid), "the session's descendant must be running before {signal}: pid {pid}");
+
+    send_signal(server.id().expect("the server has a pid while it runs"), signal).await;
+    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+        .await
+        .expect("the server finishes its stop within the deadline")
+        .expect("the server is reaped");
+    assert!(exit.success(), "the {signal} stop exits clean: {exit}");
+
+    assert!(
+        wait_until_gone(pid).await,
+        "a descendant outlived the server's {signal} stop: pid {pid}"
+    );
+}
+
+/// A signal to forge's own process group no longer reaches a session's
+/// tools: the child sits in a group of its own, so only the teardown's
+/// group kill ends it. The child marks TERM, so one that took the signal
+/// directly would leave the marker even though the tree still dies.
+#[tokio::test]
+async fn a_group_stop_signal_does_not_reach_the_session_tools() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (port, gateway) = two_free_ports();
+    let marker = dir.path().join("session.pid");
+    let child_marker = dir.path().join("child-term");
+    let (home, config, bin) = write_session_fixture(
+        dir.path(),
+        port,
+        gateway,
+        &[("forge", &marker, None)],
+        &child_marker,
+    );
+
+    let mut command = server_command(&home, &config);
+    command
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
+    // Its own group, so the signal below is aimed at forge's group alone
+    // and never at the test's.
+    command.process_group(0);
+    let mut server = command.spawn().expect("the server spawns");
+    wait_for_port(port, &mut server).await;
+
+    let pid = wait_for_marker_pid(&marker).await;
+    let _orphan = Orphan(pid);
+    assert!(is_running(pid), "the session's descendant must be running before the stop: pid {pid}");
+
+    let server_pid = server.id().expect("the server has a pid while it runs");
+    terminate_group(server_pid).await;
+    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+        .await
+        .expect("the server finishes its stop within the deadline")
+        .expect("the server is reaped");
+
+    assert!(exit.success(), "the group's stop exits clean: {exit}");
+    assert!(
+        !child_marker.exists(),
+        "the session child took forge's group signal directly: {} exists",
+        child_marker.display()
+    );
+    assert!(
+        wait_until_gone(pid).await,
+        "the descendant outlived the group's stop even though only the teardown should reach it: \
+         pid {pid}"
+    );
+}
+
+/// Two live sessions, one stop: both trees go, and the stop finishes well
+/// inside one teardown budget. That the budget is SHARED rather than
+/// restarted per session is pinned where it can be felt - the workspace's
+/// `a_shutdown_spends_one_budget_across_every_session` times two silent
+/// sessions against one injected deadline.
+#[tokio::test]
+async fn one_stop_takes_two_sessions_down() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (port, gateway) = two_free_ports();
+    let alpha = dir.path().join("alpha.pid");
+    let beta = dir.path().join("beta.pid");
+    let child_marker = dir.path().join("child-term");
+    // Beta closes slowly, so a drain that awaited only one session would
+    // exit with beta's tree still running.
+    let projects: [(&str, &std::path::Path, Option<&str>); 2] =
+        [("alpha", &alpha, None), ("beta", &beta, Some("3"))];
+    let (home, config, bin) =
+        write_session_fixture(dir.path(), port, gateway, &projects, &child_marker);
+
+    let mut command = server_command(&home, &config);
+    command
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
+    let mut server = command.spawn().expect("the server spawns");
+    wait_for_port(port, &mut server).await;
+
+    // The control: both sessions are live, each with its own descendant.
+    let alpha_pid = wait_for_marker_pid(&alpha).await;
+    let _alpha_orphan = Orphan(alpha_pid);
+    let beta_pid = wait_for_marker_pid(&beta).await;
+    let _beta_orphan = Orphan(beta_pid);
+    assert!(
+        is_running(alpha_pid) && is_running(beta_pid),
+        "both sessions' descendants must be running before the stop: {alpha_pid}, {beta_pid}"
+    );
+
+    let started = std::time::Instant::now();
+    terminate(server.id().expect("the server has a pid while it runs")).await;
+    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+        .await
+        .expect("the server finishes its stop within the deadline")
+        .expect("the server is reaped");
+    let elapsed = started.elapsed();
+    assert!(exit.success(), "the stop exits clean with two sessions live: {exit}");
+
+    assert!(
+        wait_until_gone(alpha_pid).await && wait_until_gone(beta_pid).await,
+        "both sessions' trees die with the stop: {alpha_pid}, {beta_pid}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "the stop finishes well inside one teardown budget: {elapsed:?}"
+    );
+}
+
+/// The positive control for the marker: SIGTERM sent straight at the
+/// session's child must leave it. It is what makes the group test's "no
+/// marker" a reading of the trap rather than of a script that never writes
+/// one.
+#[tokio::test]
+async fn a_termination_sent_straight_at_the_child_marks_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (port, gateway) = two_free_ports();
+    let marker = dir.path().join("session.pid");
+    let child_marker = dir.path().join("child-term");
+    let (home, config, bin) = write_session_fixture(
+        dir.path(),
+        port,
+        gateway,
+        &[("forge", &marker, None)],
+        &child_marker,
+    );
+
+    let mut command = server_command(&home, &config);
+    command
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
+    let mut server = command.spawn().expect("the server spawns");
+    wait_for_port(port, &mut server).await;
+
+    let descendant = wait_for_marker_pid(&marker).await;
+    let _orphan = Orphan(descendant);
+    let pid_marker = dir.path().join("child-term.pid");
+    assert!(wait_for_file(&pid_marker).await, "the fixture never wrote its own pid");
+    let child_pid: u32 = std::fs::read_to_string(&pid_marker)
+        .expect("read the child's pid")
+        .trim()
+        .parse()
+        .expect("the child wrote a pid");
+
+    send_signal(child_pid, "-TERM").await;
+
+    assert!(
+        wait_for_file(&child_marker).await,
+        "the child's TERM trap did not fire on a signal sent straight at it, so the group \
+         test's absent marker would prove nothing"
+    );
+
+    terminate(server.id().expect("the server has a pid while it runs")).await;
+    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+        .await
+        .expect("the server finishes its stop within the deadline")
+        .expect("the server is reaped");
+    assert!(exit.success(), "the stop exits clean after the direct signal: {exit}");
 }
 
 /// The boot stands alone: the binary binds the socket, greets a client and

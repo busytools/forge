@@ -439,6 +439,27 @@ impl Client {
         self.inner.claude_pid
     }
 
+    /// SIGKILL the child's process group now, without the reader-task drain
+    /// [`disconnect`](Self::disconnect) performs.
+    ///
+    /// For a session that has no task to run its exit path: dropping the
+    /// handle alone kills only the direct child and leaves whatever the CLI
+    /// already started behind.
+    pub fn kill_process_group(&self) {
+        let Some(pgid) = self.inner.claude_pid else { return };
+        if let Some(error) = crate::transport::process::kill_group(pgid) {
+            tracing::warn!(
+                target: "forge_sdk",
+                event_name = "subprocess_group_signal_failed",
+                session = %self.session_id(),
+                pgid,
+                error = %error,
+                "the session child's process group could not be signalled; \
+                 a descendant may outlive the session"
+            );
+        }
+    }
+
     /// Captured `system/init` payload - the CLI's first session-scoped
     /// frame, carrying `model`, `tools`, `mcp_servers`, `slash_commands`,
     /// `agents`, `skills`, etc. Stripped from the user-visible `Message`

@@ -214,6 +214,13 @@ pub struct Subprocess {
     /// The child handle. [`close`](Self::close) waits on it (with
     /// timeout) and SIGKILLs on hang.
     child: Option<Child>,
+    /// The child's process group, when this transport put it in one of
+    /// its own. `None` means no group was claimed and teardown must not
+    /// signal one.
+    pgid: Option<u32>,
+    /// The claude session this child carries, for a problem record that
+    /// has to name it: this layer knows no slot.
+    session: Option<String>,
     /// Idempotency guard for [`close`](Self::close).
     closed: bool,
 }
@@ -256,6 +263,7 @@ impl Subprocess {
             check_cli_version(&reported, min)?;
         }
         let args = build_args(options)?;
+        let session = options.session_id.clone().or_else(|| options.resume.clone());
         let mut cmd = Command::new(&options.binary);
         cmd.args(&args);
         if let Some(cwd) = &options.cwd {
@@ -289,6 +297,11 @@ impl Subprocess {
 
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
+        // Its own process group, so teardown can take down whatever the
+        // session started: a descendant otherwise outlives the child's
+        // death.
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         let (flags, flags_dropped) = flag_names(&args, &options.extra_args);
         debug!(
@@ -300,6 +313,13 @@ impl Subprocess {
             "spawning claude subprocess"
         );
         let mut child = cmd.spawn().map_err(|e| spawn_error(e, options))?;
+        // `process_group(0)` makes the child its own group leader, so the
+        // group id is its pid. Kept rather than re-read in `close`: a
+        // completed wait reaps the child and drops the id.
+        #[cfg(unix)]
+        let pgid = child.id();
+        #[cfg(not(unix))]
+        let pgid: Option<u32> = None;
 
         let stdin = child
             .stdin
@@ -331,6 +351,8 @@ impl Subprocess {
             writer_task: Some(writer_task),
             stderr_task: Some(stderr_task),
             child: Some(child),
+            pgid,
+            session,
             closed: false,
         })
     }
@@ -419,8 +441,9 @@ impl Subprocess {
     }
 
     /// Graceful shutdown: close stdin, wait for the subprocess to
-    /// exit (5s timeout, SIGKILL fallback), drain the stderr task.
-    /// Idempotent - subsequent calls are no-ops.
+    /// exit (5s timeout, SIGKILL fallback), SIGKILL whatever it left
+    /// in its process group, drain the stderr task. Idempotent -
+    /// subsequent calls are no-ops.
     ///
     /// # Errors
     ///
@@ -464,6 +487,24 @@ impl Subprocess {
         // doesn't pin the disconnect path forever.
         if let Some(mut child) = self.child.take() {
             let waited = tokio::time::timeout(CLOSE_WAIT_TIMEOUT, child.wait()).await;
+            // Whatever the child left running in its group goes down with
+            // it: a descendant that survived the child is not the
+            // session's to leave behind. An empty group is the ordinary
+            // answer and stays quiet; anything else leaves processes
+            // forge meant to kill, so it is forge's own problem.
+            if let Some(pgid) = self.pgid
+                && let Some(error) = kill_group(pgid)
+            {
+                warn!(
+                    target: "forge_sdk",
+                    event_name = "subprocess_group_signal_failed",
+                    session = self.session.as_deref().unwrap_or(""),
+                    pgid,
+                    error = %error,
+                    "the session child's process group could not be signalled; \
+                     a descendant may outlive the session"
+                );
+            }
             if waited.is_err() {
                 warn!("Subprocess::close timed out waiting for child; sending SIGKILL");
                 if let Err(e) = child.kill().await {
@@ -718,6 +759,35 @@ impl StderrTail {
     fn into_string(self) -> String {
         Vec::from(self.lines).join("\n")
     }
+}
+
+/// SIGKILL every process left in `pgid`, reporting a failure a caller
+/// should tell someone about.
+///
+/// `None` covers the ordinary answers: the signal landed, or the group
+/// was already empty (`ESRCH`), which is what a clean exit leaves.
+#[cfg(unix)]
+pub(crate) fn kill_group(pgid: u32) -> Option<std::io::Error> {
+    use rustix::io::Errno;
+    use rustix::process::{Pid, Signal, kill_process_group};
+
+    let Ok(raw) = i32::try_from(pgid) else {
+        debug!(pgid, "process group id does not fit in i32; nothing signalled");
+        return None;
+    };
+    let Some(pgid) = Pid::from_raw(raw) else {
+        debug!(raw, "process group id names no process; nothing signalled");
+        return None;
+    };
+    match kill_process_group(pgid, Signal::KILL) {
+        Ok(()) | Err(Errno::SRCH) => None,
+        Err(error) => Some(std::io::Error::from_raw_os_error(error.raw_os_error())),
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_pgid: u32) -> Option<std::io::Error> {
+    None
 }
 
 /// Background drain for the subprocess stderr pipe. Reads lines as UTF-8
@@ -1000,6 +1070,8 @@ mod tests {
             writer_task: Some(writer_task),
             stderr_task: Some(stderr_task),
             child: Some(child),
+            pgid: None,
+            session: None,
             closed: false,
         }
     }
@@ -1032,6 +1104,32 @@ mod tests {
             }
             other => panic!("expected Process error from kill, got {other:?}"),
         }
+    }
+
+    /// An empty group answers `ESRCH`, and that is not forge's problem:
+    /// mapping it to a report would warn on every clean exit.
+    #[cfg(unix)]
+    #[test]
+    fn kill_group_treats_an_empty_group_as_nothing_to_report() {
+        // Above any kernel's pid ceiling but inside `i32`, so the call
+        // reaches the kernel and fails there.
+        assert!(kill_group(2_000_000_000).is_none(), "an empty group is not a failure");
+    }
+
+    /// A signal that lands is no failure either, and it reaches the whole
+    /// group the child leads.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_group_signals_a_live_group_without_reporting() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30").process_group(0);
+        let mut child = command.spawn().expect("a child in its own group");
+        let pid = child.id().expect("a live child has a pid");
+
+        assert!(kill_group(pid).is_none(), "a landed group kill is not a failure");
+
+        let status = child.wait().await.expect("the child is reaped");
+        assert!(!status.success(), "the group signal killed the child: {status}");
     }
 
     #[test]

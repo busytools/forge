@@ -1931,7 +1931,7 @@ pub(crate) fn handle_despawn_worker(
 /// close-wait budget (the child's reap) plus a margin for the task to
 /// observe its closed channel, disconnect and drop. An expiry is logged -
 /// it is the one shape where the removal goes ahead unprotected.
-const TEARDOWN_WAIT: std::time::Duration =
+pub(crate) const TEARDOWN_WAIT: std::time::Duration =
     forge_sdk::CLOSE_WAIT_TIMEOUT.saturating_add(std::time::Duration::from_secs(5));
 
 /// [`handle_despawn_worker`] with the teardown wait injected, so a case
@@ -2131,7 +2131,7 @@ pub(crate) fn handle_despawn_worker_within(
     // a live spawn; the caller retries once the worker is up.
     let mut teardown_done = None;
     if is_git_repo && let Some(entry) = live.as_ref() {
-        teardown_done = workspace.take_session_teardown(&entry.slot);
+        teardown_done = workspace.session_teardown(&entry.slot);
         if teardown_done.is_none()
             && matches!(entry.status, forge_primitives::WorkerLiveness::Spawning)
         {
@@ -2262,8 +2262,15 @@ pub(crate) fn handle_despawn_worker_within(
         // the task's drop, and an unbounded wait would leave the reply
         // never arriving and the label cleanup-pending forever.
         handle.spawn(async move {
-            if let Some(done) = teardown_done
-                && tokio::time::timeout(teardown_wait, done).await.is_err()
+            if let Some(mut done) = teardown_done
+                && tokio::time::timeout(teardown_wait, async {
+                    if *done.borrow_and_update() {
+                        return;
+                    }
+                    let _ = done.changed().await;
+                })
+                .await
+                .is_err()
             {
                 warn_teardown_wait_expired(&log_project, &log_label, teardown_wait);
             }
@@ -2282,14 +2289,14 @@ pub(crate) fn handle_despawn_worker_within(
     } else {
         // No runtime to hand it to - a caller outside one: the cleanup runs
         // where it is, the way this path always did. The wait still
-        // happens, bounded: the receiver is awaited on a helper thread so
-        // a stalled teardown cannot pin this caller.
-        if let Some(done) = teardown_done {
-            let (fired_tx, fired_rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = fired_tx.send(done.blocking_recv());
-            });
-            if fired_rx.recv_timeout(teardown_wait).is_err() {
+        // happens, bounded: the value is polled on a deadline, since the
+        // watch's change notification is async-only.
+        if let Some(mut done) = teardown_done {
+            let deadline = std::time::Instant::now() + teardown_wait;
+            while !*done.borrow_and_update() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            if !*done.borrow() {
                 warn_teardown_wait_expired(project_key, label, teardown_wait);
             }
         }
@@ -4728,6 +4735,32 @@ provider = "anthropic"
             1,
             "the worker is left alone for the caller's retry",
         );
+    }
+
+    /// The same refusal after a re-spawn: the map still holds the previous
+    /// occupant's answered entry while the new child starts, and handing
+    /// that stale answer back would let the removal run over a child that
+    /// is only starting.
+    #[tokio::test]
+    async fn a_respawns_mid_spawn_window_is_refused_despite_the_previous_answer() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let mut entry = fake_git_worker_entry("mid-spawn", "worker-1");
+        let slot = entry.slot.clone();
+        // The previous occupant finished: its entry is still there, answered.
+        let previous = workspace.mint_session_teardown(&slot).expect("a mint before shutdown");
+        let _ = previous.send_replace(true);
+        entry.status = forge_primitives::WorkerLiveness::Spawning;
+        workspace.insert_live_worker(&project, entry);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "mid-spawn", false, tx);
+        let result = rx.await.expect("despawn result");
+
+        let crate::protocol::DespawnResult::Blocked { reason } = result else {
+            panic!("a stale answer must not wave the removal through: {result:?}");
+        };
+        assert!(reason.contains("still spawning"), "the reason says what to wait for: {reason}");
     }
 
     /// A session teardown that never answers must not wedge the despawn:
