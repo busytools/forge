@@ -1802,7 +1802,7 @@ provider = "anthropic"
             workspace.held_work_seats.gate(&seat).is_none(),
             "no read and no hold leaves no gate",
         );
-        assert!(workspace.held_work_seats.lock().is_empty(), "and the entry goes with the hold",);
+        assert!(workspace.held_work_seats.lock().is_empty(), "and the entry goes with the hold");
     }
 
     /// **A viewer's own hold is released exactly once.** A sessionless seat
