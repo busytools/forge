@@ -243,7 +243,10 @@ pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow:
     tokio::spawn(fold_the_stream(Arc::clone(&state)));
 
     let router = Router::new().route("/socket", get(connection::upgrade)).with_state(state);
-    axum::serve(listener, router).await?;
+    // Each connection carries the peer it was accepted from: the log names
+    // which attached client an open served (#2506).
+    axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .await?;
     Ok(())
 }
 

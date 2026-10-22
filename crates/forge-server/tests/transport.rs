@@ -9034,6 +9034,14 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
     install_capture();
     let (url, _fleet, _state) = a_server_with_state().await;
     let mut socket = connect(&url).await;
+    // The address this test's own socket is attached from, which is what
+    // both lines have to name.
+    let peer = match socket.get_ref() {
+        tokio_tungstenite::MaybeTlsStream::Plain(stream) => {
+            stream.local_addr().expect("the test client's address")
+        }
+        _ => panic!("the test's client is a plain socket"),
+    };
     send(
         &mut socket,
         ClientMessage::Subscribe {
@@ -9090,6 +9098,28 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
     assert_eq!(
         write["bytes"], parsed["bytes"],
         "the write's size is the open's: {write} beside {parsed}",
+    );
+
+    // **Both lines name the client (#2506).** The watch has several
+    // attachments and no address to tell them apart by, so the subscribe
+    // records the peer and the frame's write carries it again: a slow open
+    // is placed on the client it served.
+    let line = caught
+        .lines()
+        .find(|line| line.contains("\"client_subscribed\""))
+        .unwrap_or_else(|| panic!("a session subscribe names its client; caught: {caught}"));
+    let subscribed: serde_json::Value = serde_json::from_str(line).expect("the line is JSON");
+    assert_eq!(subscribed["event_name"], "client_subscribed");
+    assert_eq!(subscribed["level"], "DEBUG", "an attach's own address is information: {line}");
+    assert_eq!(subscribed["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
+    assert_eq!(
+        subscribed["peer"],
+        serde_json::json!(peer.to_string()),
+        "the line names this client's own address: {line}",
+    );
+    assert_eq!(
+        write["peer"], subscribed["peer"],
+        "the frame's write names the same client the subscribe did: {write} beside {subscribed}",
     );
 }
 

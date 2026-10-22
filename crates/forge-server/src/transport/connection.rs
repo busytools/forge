@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, State};
 use axum::response::Response;
 use futures_util::{SinkExt as _, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -275,9 +275,23 @@ struct InFlight {
 /// [`super::frame`] - which fails the ask it belongs to, naming the reason -
 /// rather than tearing the connection down at the socket layer, where the
 /// asker would be told only that its host went away.
-pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportState>>) -> Response {
+pub async fn upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<TransportState>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
     let limit = super::frame::MAX_IMAGE_BYTES + super::frame::IMAGE_HEADER_BYTES + 1;
-    ws.max_frame_size(limit).max_message_size(limit).on_upgrade(move |socket| greet(socket, state))
+    ws.max_frame_size(limit)
+        .max_message_size(limit)
+        .on_upgrade(move |socket| greet(socket, state, peer))
+}
+
+/// This connection as the log names it: the number its takes are told apart
+/// by, and the address it is attached from.
+#[derive(Clone, Copy)]
+struct Caller {
+    id: u64,
+    peer: std::net::SocketAddr,
 }
 
 /// Greet, then serve the client until it goes.
@@ -286,7 +300,7 @@ pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportStat
 /// than to whatever else holds the port, and it carries the settings the
 /// client draws with - so the client is configured before it draws anything
 /// rather than discovering a theme later.
-async fn greet<S>(mut socket: S, state: Arc<TransportState>)
+async fn greet<S>(mut socket: S, state: Arc<TransportState>, peer: std::net::SocketAddr)
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
         + futures_util::Sink<Message, Error = axum::Error>
@@ -315,7 +329,7 @@ where
     {
         return;
     }
-    if let Err(error) = drive(&mut socket, &state).await {
+    if let Err(error) = drive(&mut socket, &state, peer).await {
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "connection_ended",
@@ -330,7 +344,11 @@ where
 /// Every client message is answered: a client is never left waiting on a
 /// message this server chose to drop, which is the failure that reads as a
 /// hang rather than as an error.
-async fn drive<S>(socket: &mut S, state: &Arc<TransportState>) -> anyhow::Result<()>
+async fn drive<S>(
+    socket: &mut S,
+    state: &Arc<TransportState>,
+    peer: std::net::SocketAddr,
+) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
         + futures_util::Sink<Message, Error = axum::Error>
@@ -342,6 +360,7 @@ where
     // the updates that come back. Minted here so the teardown closes the
     // take this connection started and no other.
     let me = mint_connection_id();
+    let caller = Caller { id: me, peer };
     // This connection is a client that can draw the viewer for as long as it
     // lives; the guard hands the count back on the way out.
     let _attached = AttachedClient::new(&state.surface);
@@ -385,7 +404,7 @@ where
         &mut hosting,
         &reply_tx,
         &mut answers,
-        me,
+        caller,
     )
     .await;
     // **Which side ended the connection**, read before the hosting drops: the
@@ -536,7 +555,7 @@ async fn run_connection<S>(
     hosting: &mut Option<Hosting>,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     answers: &mut mpsc::UnboundedReceiver<ServerMessage>,
-    me: u64,
+    caller: Caller,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -576,7 +595,7 @@ where
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
                 handle_client(
-                    socket, state, watched, holds, updates, dictate, hosting, reply_tx, me, msg,
+                    socket, state, watched, holds, updates, dictate, hosting, reply_tx, caller, msg,
                 )
                 .await?;
             }
@@ -611,7 +630,7 @@ where
                     initiator: Some(id),
                     ..
                 } = &update
-                    && *id == me
+                    && *id == caller.id
                 {
                     dictate.stamp(key, *generation);
                 }
@@ -622,13 +641,13 @@ where
                     generation,
                     ..
                 } = &update
-                    && *id == me
+                    && *id == caller.id
                 {
                     dictate.retire(key, outcome, *generation);
                 }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
-                if forwards(&update, watched, me) {
+                if forwards(&update, watched, caller.id) {
                     // **A fatal goes out now, not on the batch's clock.** The
                     // exit it announces is already on its way - `workspace.
                     // shutdown` follows the run loop's return - and a frame
@@ -730,7 +749,7 @@ where
                         tracing::debug!(
                             target: "forge_server::transport",
                             event_name = "connection_reaped",
-                            client = me,
+                            client = caller.id,
                             waited_ms = waited.as_secs_f64() * 1000.0,
                             "the peer never answered the keepalive's ping, so its connection is ended",
                         );
@@ -876,7 +895,7 @@ async fn handle_client<S>(
     dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
-    me: u64,
+    caller: Caller,
     msg: Message,
 ) -> anyhow::Result<()>
 where
@@ -912,9 +931,9 @@ where
                             ),
                         );
                     }
-                    take_frame(&state.surface, dictate, me, FrameRoute::Refused(refusal));
+                    take_frame(&state.surface, dictate, caller.id, FrameRoute::Refused(refusal));
                 }
-                other => take_frame(&state.surface, dictate, me, other),
+                other => take_frame(&state.surface, dictate, caller.id, other),
             }
             return Ok(());
         }
@@ -939,6 +958,18 @@ where
             // switch waits on this half for, whatever subject it names; the
             // line below is emitted for a session, which is where the wait is.
             let open_at = Instant::now();
+            // **Which attached client this subscribe is (#2506).** Several
+            // clients attach from addresses the log otherwise never names, so
+            // a slow open could not be placed on the one that asked for it.
+            if let Subject::Session(slot) = &what {
+                tracing::debug!(
+                    event_name = "client_subscribed",
+                    slot = %slot.display(),
+                    peer = %caller.peer,
+                    declare,
+                    "a client subscribed a seat, from the address it is attached on",
+                );
+            }
             // **The browser role, offered once per connection.** A capable
             // client declares it on every subscribe it makes; the first
             // declaration while the role is free takes it, and a later one
@@ -957,7 +988,7 @@ where
             // every profile it holds.
             let mut seats: Option<Vec<SessionSlot>> = None;
             if browser && hosting.is_none() {
-                let (offering, held) = Hosting::offer(&state.browser, me);
+                let (offering, held) = Hosting::offer(&state.browser, caller.id);
                 *hosting = Some(offering);
                 // **The grant is said out loud**, after the snapshot: the
                 // client knew only that it COULD host; its own strip needs
@@ -969,7 +1000,8 @@ where
             }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
-            let queued = forward_queued(state, open_stream(state, updates, answering), watched, me);
+            let queued =
+                forward_queued(state, open_stream(state, updates, answering), watched, caller.id);
             // **A seat is held BEFORE its snapshot is encoded.** The hold is
             // what has its working tree read, and the encode answers that
             // store - so a read taken first would hand a page the tree as it
@@ -1048,6 +1080,7 @@ where
                         tracing::debug!(
                             event_name = "frame_write",
                             slot = %slot.display(),
+                            peer = %caller.peer,
                             bytes = write.bytes,
                             write_ms = write.write_ms,
                             waited = write.waited,
@@ -1169,16 +1202,16 @@ where
             // claim another's - the field never crosses the wire.
             let command = match *command {
                 Command::DictateStream { key, options, surface, .. } => {
-                    Command::DictateStream { key, options, surface, initiator: Some(me) }
+                    Command::DictateStream { key, options, surface, initiator: Some(caller.id) }
                 }
                 Command::DictateStop { key, submit, .. } => {
-                    Command::DictateStop { key, submit, initiator: Some(me) }
+                    Command::DictateStop { key, submit, initiator: Some(caller.id) }
                 }
                 Command::DictateReadAloudStart { .. } => {
-                    Command::DictateReadAloudStart { initiator: Some(me) }
+                    Command::DictateReadAloudStart { initiator: Some(caller.id) }
                 }
                 Command::DictateReadAloudStop { keep, .. } => {
-                    Command::DictateReadAloudStop { keep, initiator: Some(me) }
+                    Command::DictateReadAloudStop { keep, initiator: Some(caller.id) }
                 }
                 other => other,
             };
@@ -1212,7 +1245,7 @@ where
             let dispatch_id = command.dispatch_id();
             match (reply_to, answers_through_a_reply(&command)) {
                 (Some(to), true) => {
-                    dispatched(me, &command);
+                    dispatched(caller.id, &command);
                     dispatch_answering(state, command, to, reply_tx);
                     Ok(())
                 }
@@ -1244,7 +1277,7 @@ where
                     .await
                 }
                 (None, false) => {
-                    dispatched(me, &command);
+                    dispatched(caller.id, &command);
                     match state.surface.dispatch(command) {
                         Ok(()) => {
                             // Claimed as soon as the dispatch answers - Ok for a
@@ -1591,7 +1624,7 @@ where
             // that never declared has none. Both outcomes answer with the
             // same frame - the control that sent this draws the truth either
             // way, so a refusal needs no words.
-            let claimed = hosting.is_some() && state.browser.claim(me);
+            let claimed = hosting.is_some() && state.browser.claim(caller.id);
             send(socket, ServerMessage::BrowserRole { hosting: claimed }).await
         }
         ClientMessage::BrowserAnswer { id, parts, error } => {
@@ -2586,6 +2619,12 @@ mod tests {
     use crate::transport::Heartbeat;
     use crate::work::WorkCache;
 
+    /// The address a test's own socket is attached from; no listener is
+    /// bound, so nothing dials it.
+    fn attached_from() -> std::net::SocketAddr {
+        "127.0.0.1:0".parse().expect("a test address")
+    }
+
     /// **Only a ping that went out can go unanswered.** The state holds no
     /// read clock at all, so a quiet read - a connection busy in one long
     /// write - cannot be mistaken for silence: a beat with no outstanding
@@ -2815,7 +2854,7 @@ mod tests {
         let mut peer = StoppedReading { inbound: peer_in, writing: Some(writing) };
         let driven = tokio::spawn({
             let state = Arc::clone(&state);
-            async move { drive(&mut peer, &state).await }
+            async move { drive(&mut peer, &state, attached_from()).await }
         });
 
         // This connection declaring itself capable is what takes the role; the
@@ -2912,7 +2951,7 @@ mod tests {
         let (_keep, inbound) = mpsc::unbounded_channel();
         let mut peer = StoppedReading { inbound, writing: None };
 
-        tokio::time::timeout(WRITE_BOUND * 2, greet(&mut peer, state))
+        tokio::time::timeout(WRITE_BOUND * 2, greet(&mut peer, state, attached_from()))
             .await
             .expect("the greeting ends at the write bound rather than never");
     }
