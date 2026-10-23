@@ -93,6 +93,8 @@ interface DesktopState {
   status: ConnectionStatus;
   greeting: ServerMessage | null;
   role: boolean;
+  /** Whether the shell has been told the role on this connection (#2519). */
+  roleKnown: boolean;
 }
 
 /** One `client://refused` payload. */
@@ -149,6 +151,8 @@ class RustConnection implements Connection {
   private beat: ReturnType<typeof setInterval> | null = null;
   private state: ConnectionStatus = 'connecting';
   private hosting = false;
+  /** Whether the shell has said the role on this connection, grant or wait. */
+  private roleTold = false;
   private heldSettings: ClientSettings | null = null;
   private heldSkew: Skew | null = null;
   private heldProtocol: number | null = null;
@@ -215,7 +219,7 @@ class RustConnection implements Connection {
 
   private async stateMoved(): Promise<void> {
     const state = await invoke<DesktopState>('client_state');
-    this.roleMoved(state.role);
+    this.roleHeard(state.role, state.roleKnown);
     // The greeting is read by value: two reads of one greeting are two
     // objects, and the surfaces draw the skew notice off the message itself.
     const greeting = state.greeting === null ? null : JSON.stringify(state.greeting);
@@ -236,6 +240,12 @@ class RustConnection implements Connection {
   }
 
   private roleMoved(hosting: boolean): void {
+    // A `client://role` frame IS the answer, `false` included.
+    this.roleHeard(hosting, true);
+  }
+
+  private roleHeard(hosting: boolean, known: boolean): void {
+    this.roleTold = known;
     if (this.hosting === hosting) return;
     this.hosting = hosting;
     for (const fn of this.roles) fn(hosting);
@@ -471,6 +481,10 @@ class RustConnection implements Connection {
 
   browserRole(): boolean {
     return this.hosting;
+  }
+
+  browserRoleKnown(): boolean {
+    return this.roleTold;
   }
 
   onBrowserRole(fn: (hosting: boolean) => void): () => void {

@@ -88,6 +88,27 @@ export function clearHandOff(id: string): void {
 let generation = 0;
 
 /**
+ * The refusal for raising a hand-off on this client, or null when it may
+ * raise: the page lives in the one browser the session drives, and only the
+ * client the relay has told holds it has that page (#2519).
+ */
+export const HAND_OFF_ELSEWHERE =
+  'The page this hand-off prepared is in the browser another connected client holds, and ' +
+  "pressing Open here does not move it. Open the hand-off there; the browser strip's override " +
+  'takes the browser for this client without carrying that page across.';
+
+export function handOffRefusal(told: boolean, hosting: boolean): string | null {
+  return canHost() && told && !hosting ? HAND_OFF_ELSEWHERE : null;
+}
+
+/** Draw a raise's refusal where a failed open draws its own. */
+export function failSurface(reason: string): void {
+  surface.phase = 'failed';
+  surface.reason = reason;
+  surface.nav = { can_back: false, can_forward: false };
+}
+
+/**
  * Open the takeover for `profile` (`null` is shared). Answers why it could
  * not open, or `null` when it did.
  */

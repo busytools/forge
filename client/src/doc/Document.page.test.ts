@@ -140,10 +140,12 @@ describe('the document viewer', () => {
   });
 
   it('draws an unsupported kind as itself', () => {
-    draw({ kind: 'landed', document_kind: { other: 'rs' }, bytes: enc('fn main() {}') });
+    // A binary extension: a UTF-8 `.rs` reads as its own kind, and this arm
+    // is about a document the viewer does not draw at all.
+    draw({ kind: 'landed', document_kind: { other: 'png' }, bytes: new Uint8Array([0x89, 0x50]) });
 
     const said = document.querySelector('.doc-said');
-    expect(said?.textContent).toContain('.rs');
+    expect(said?.textContent).toContain('.png');
   });
 
   it('draws an empty document as its own state', () => {

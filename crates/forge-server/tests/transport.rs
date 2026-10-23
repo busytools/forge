@@ -2710,6 +2710,50 @@ async fn a_role_declare_leaves_no_watch_behind() {
     );
 }
 
+/// **A capable declare that waits is answered with the role it does not
+/// hold (#2519).** A hand-off's Open refuses on a client the relay has told
+/// it is not the host; an unsaid `false` is indistinguishable from a socket
+/// that has not been told yet, so without this frame a waiting client can
+/// never know the role is settled - and its hand-off raise would stay the
+/// local one, which is the defect.
+#[tokio::test]
+async fn a_capable_declare_that_waits_is_answered_without_the_role() {
+    let (url, _fleet) = a_server().await;
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut first).await;
+    assert!(
+        matches!(next_server(&mut first).await, ServerMessage::BrowserRole { hosting: true }),
+        "precondition: the first capable connection holds the role",
+    );
+
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut second).await;
+    let ServerMessage::BrowserRole { hosting } = next_server(&mut second).await else {
+        panic!("a declare that waits is answered with the role it does not hold");
+    };
+    assert!(!hosting, "which is not the browser");
+}
+
 /// A turn that finishes while nobody is showing the seat leaves a mark, and
 /// the mark is exactly the fact a client cannot reconstruct: a transcript says
 /// the turn ended, never that it ended unwatched. It rides the home snapshot,
@@ -7619,6 +7663,18 @@ async fn a_force_take_moves_the_role_and_tells_the_holder() {
     };
     let _ = second_hello;
 
+    // **The declare that waits is answered with the role it does not hold**
+    // (#2519): the frame before any claim, so a client can tell a settled
+    // `false` from a socket the relay has not answered yet.
+    let waited = loop {
+        match next_server_within(&mut second, 2000).await {
+            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
+            Some(_) => {}
+            None => panic!("a declare that waits is answered with the role frame"),
+        }
+    };
+    assert!(!waited, "which is not the browser, while the first client holds it");
+
     send(&mut second, ClientMessage::BrowserTakeRole).await;
 
     // The claimant's own answer, passing over whatever updates arrive.
@@ -7717,6 +7773,17 @@ async fn a_promoted_waiter_is_told_on_its_own_socket() {
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut second).await;
+
+    // **The declare that waits is answered with the role it does not hold**
+    // (#2519), so the promotion below is a change rather than the first word.
+    let waited = loop {
+        match next_server_within(&mut second, 2000).await {
+            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
+            Some(_) => {}
+            None => panic!("a declare that waits is answered with the role frame"),
+        }
+    };
+    assert!(!waited, "precondition: the second connection waits in line");
 
     // The holder's socket goes, which is the path a crashed client takes.
     drop(first);

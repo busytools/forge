@@ -45,7 +45,8 @@ pub enum DocumentHandOffEnding {
 ///
 /// `Other` is kept as itself rather than bucketed: a viewer draws the kind
 /// it was handed, and folding every unknown into one variant would leave it
-/// with nothing to say about what the document is.
+/// with nothing to say about what the document is. The Files reader's wider
+/// UTF-8 drawing classification is the client's policy, not this kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentKind {
@@ -58,8 +59,8 @@ pub enum DocumentKind {
 }
 
 /// One document, as the read answered: the path it resolved to, the bytes,
-/// the detected kind, and whether the DOCUMENT is reviewable - markdown and
-/// text are, a PDF or an unrecognised kind is not.
+/// the detected kind, and whether the DOCUMENT can carry a review - the
+/// hand-off's commentable set, by extension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentRead {
     /// The resolved absolute path - what a viewer deep-links by, and what

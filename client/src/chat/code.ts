@@ -30,10 +30,11 @@ import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 
 /**
- * The languages this page has, by the name `languageOf` answers.
+ * The languages the prose renderer's fences colour, by the name a fence's
+ * info string carries.
  *
  * A curated set rather than `highlight.js/lib/common`: the common bundle
- * carries thirty-odd languages, and a session reads a handful of them.
+ * carries thirty-odd languages, and a session writes a handful of them.
  */
 const LANGUAGES = {
   bash,
@@ -57,10 +58,11 @@ const LANGUAGES = {
 for (const [name, language] of Object.entries(LANGUAGES)) hljs.registerLanguage(name, language);
 
 /**
- * The languages this page has, by the name an extension or a fence names.
+ * The languages a markdown fence can name, by the name its info string uses.
  *
- * One table for both readers: a path's extension and a fence's info string name
- * the same set, and a second table is how the two drift.
+ * A read's path no longer comes through here: the per-format policy names
+ * that grammar (`format/policy.ts`), and this table is the prose renderer's
+ * own.
  */
 const NAMED: Record<string, keyof typeof LANGUAGES> = {
   rs: 'rust',
@@ -95,20 +97,6 @@ const NAMED: Record<string, keyof typeof LANGUAGES> = {
   markdown: 'markdown',
   svelte: 'xml',
 };
-
-/**
- * The language a path names, or `null` for one this page does not colour.
- *
- * A file with no extension and a file whose extension names no language both
- * answer `null`, which draws the text as it came. That is deliberate: a wrong
- * language colours the wrong tokens, and a reader trusts colour more than they
- * should.
- */
-export function languageOf(path: string): string | null {
-  const cut = path.lastIndexOf('.');
-  if (cut === -1) return null;
-  return namedFor(path.slice(cut + 1));
-}
 
 /**
  * The language a fence's info string names, or `null` for one this page does
@@ -154,8 +142,16 @@ function escaped(text: string): string {
  * itself.
  */
 export function codePanel(label: string | null, language: string | null, text: string): string {
+  return panelHtml(label, renderCode(language, text));
+}
+
+/**
+ * The panel around an already-highlighted body, so the shiki path and the
+ * highlight.js path draw one piece rather than two drawings of it.
+ */
+export function panelHtml(label: string | null, body: string): string {
   const header = label === null ? '' : `<div class="lang">${escaped(label)}</div>`;
-  return `<div class="code">${header}<pre>${renderCode(language, text)}</pre></div>`;
+  return `<div class="code panel">${header}<pre>${body}</pre></div>`;
 }
 
 /**

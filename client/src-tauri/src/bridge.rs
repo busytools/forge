@@ -111,6 +111,10 @@ struct State {
     status: &'static str,
     greeting: Option<Value>,
     role: bool,
+    /// Whether the server has SAID the role on this connection, grant or
+    /// wait. A `role` nobody has said is "not told yet", not "another client
+    /// holds it" (#2519).
+    role_known: bool,
     /// When the page last heartbeated, and how many frames went unforwarded
     /// while it was presumed parked. **Every suppressed frame except a
     /// seat's chat is HELD, not dropped** (rule 25): the ring carries a
@@ -150,6 +154,7 @@ impl Bridge {
                 status: "connecting",
                 greeting: None,
                 role: false,
+                role_known: false,
                 last_beat: None,
                 suppressed: 0,
                 parked: VecDeque::new(),
@@ -221,6 +226,8 @@ impl Bridge {
             state.socket = Some(socket.clone());
             state.status = "connecting";
             state.greeting = None;
+            // The new connection has been told nothing yet.
+            state.role_known = false;
             state.last_beat = Some(Instant::now());
             state.suppressed = 0;
             state.refreshing.clear();
@@ -329,6 +336,7 @@ impl Bridge {
             "status": state.status,
             "greeting": state.greeting,
             "role": state.role,
+            "roleKnown": state.role_known,
         })
     }
 
@@ -552,7 +560,12 @@ impl Bridge {
                 self.emit(ClientEvent::Written { key, declared, waited_ms });
             }
             SocketEvent::Role { hosting } => {
-                self.lock().role = hosting;
+                {
+                    let mut state = self.lock();
+                    state.role = hosting;
+                    // The frame is the answer, `false` included (#2519).
+                    state.role_known = true;
+                }
                 self.emit(ClientEvent::Role { hosting });
             }
             SocketEvent::Refused { key, why } => {
@@ -581,6 +594,12 @@ impl Bridge {
                 Status::Open => "open",
                 Status::Closed => "closed",
             };
+            if status != Status::Open {
+                // A connection that is not open has been told nothing: the
+                // role its predecessor held is no reading of who drives the
+                // browser now (#2519).
+                state.role_known = false;
+            }
             if status == Status::Open {
                 // A fresh connection's frames are forwarded at once: the page
                 // is there (it just asked to connect), and the first
@@ -863,6 +882,35 @@ mod tests {
             "kind": "update",
             "update": { "context_usage_snapshot": { "percentage": percentage, "key": seat()["session"] } },
         })
+    }
+
+    /// **The role the page reads is a reading only once the server said it**
+    /// (#2519): a connection nobody has answered reports `roleKnown` false,
+    /// a role frame - grant or wait - makes it true, and a connection that is
+    /// not open has been told nothing again.
+    #[tokio::test]
+    async fn the_role_is_known_only_after_the_server_says_it() {
+        let (bridge, _rx) = bridge();
+        assert_eq!(
+            bridge.state()["roleKnown"],
+            json!(false),
+            "a connection nobody has answered is not a reading",
+        );
+
+        bridge.socket_event(SocketEvent::Role { hosting: false });
+        let state = bridge.state();
+        assert_eq!(state["roleKnown"], json!(true), "a said false is the answer, not silence");
+        assert_eq!(state["role"], json!(false));
+
+        bridge.socket_event(SocketEvent::Role { hosting: true });
+        assert_eq!(bridge.state()["role"], json!(true), "the grant is the same frame");
+
+        bridge.socket_event(SocketEvent::Status(Status::Closed));
+        assert_eq!(
+            bridge.state()["roleKnown"],
+            json!(false),
+            "a dropped connection has been told nothing",
+        );
     }
 
     /// **The idle numbers come off the greeting**, and an absent pair is the

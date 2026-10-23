@@ -317,6 +317,12 @@ impl ViewSurface {
         .map_err(|refusal| refusal.to_string())
     }
 
+    /// The byte ceiling every whole-file read takes, which the record's
+    /// whole-file anchor fallback shares with the review page's expansion.
+    pub fn document_max_bytes(&self) -> u64 {
+        self.workspace.document_max_bytes()
+    }
+
     /// One file's whole content at a revision, for a review page's
     /// between-hunk expansion.
     ///

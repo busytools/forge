@@ -190,6 +190,13 @@ export interface Connection {
    * sends. A strip reads this to say who drives the browser it is drawing.
    */
   browserRole(): boolean;
+  /**
+   * Whether the relay has said the role on this connection, grant or wait.
+   *
+   * A `false` that has not been said is "not told yet" - a reconnect's answer
+   * still in flight - and is no reading of who drives the browser (#2519).
+   */
+  browserRoleKnown(): boolean;
   /** Hear each change of the role. Answers a function that stops listening. */
   onBrowserRole(fn: (hosting: boolean) => void): () => void;
   /**
@@ -369,6 +376,15 @@ export function connect(
    * alone would say so while another client is still the one being asked.
    */
   let browserRole = false;
+  /**
+   * Whether the relay has SAID the role on this connection - grant or wait.
+   *
+   * **A `false` nobody has said is not the same fact as a said `false`**: the
+   * first is a socket not told yet (a reconnect's answer is in flight), the
+   * second is another client holding the browser. The hand-off's raise reads
+   * the difference before it refuses (#2519).
+   */
+  let browserRoleKnown = false;
   const roleListeners = new Set<(hosting: boolean) => void>();
   /** The sweep notices this connection will never raise (no host lives on
    *  the web side); kept so the interface is implemented, not faked. */
@@ -599,6 +615,7 @@ export function connect(
       // own fact, and every strip reads it from one place.
       case 'browser_role':
         browserRole = message.hosting;
+        browserRoleKnown = true;
         for (const hear of roleListeners) hear(browserRole);
         return;
       // A frame whose kind this client does not know is REPORTED rather than
@@ -780,6 +797,8 @@ export function connect(
         browserRole = false;
         for (const hear of roleListeners) hear(browserRole);
       }
+      // The new connection has been told nothing yet, even if this one had.
+      browserRoleKnown = false;
       if (status === 'closed') return;
       move('connecting');
       // A command that was in flight has no answer coming: the reply died
@@ -969,6 +988,9 @@ export function connect(
     },
     browserRole() {
       return browserRole;
+    },
+    browserRoleKnown() {
+      return browserRoleKnown;
     },
     onBrowserRole(fn) {
       roleListeners.add(fn);

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { fenceLanguage, languageOf, renderCode } from './code';
+import { fenceLanguage, renderCode } from './code';
 import { renderInlineProse, renderProse } from './prose';
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
@@ -203,14 +203,14 @@ describe('a code block in a message', () => {
     // panel is what a block of code draws as here.
     const html = renderProse('    seen as code\n');
 
-    expect(html).toContain('<div class="code">');
+    expect(html).toContain('<div class="code panel">');
     expect(html).not.toContain('class="lang"');
   });
 
   it("draws as the page's own code panel, labelled by its info string", () => {
     const html = renderProse('```yaml\nkey: value\n```');
 
-    expect(html).toContain('<div class="code">');
+    expect(html).toContain('<div class="code panel">');
     expect(html).toContain('<div class="lang">yaml</div>');
     // The delimiters never reach the panel. What this catches is a rule that
     // slices the source range - the way the splitter in the view this client
@@ -225,7 +225,7 @@ describe('a code block in a message', () => {
     // invent a word for it.
     const html = renderProse('```\nplain text\n```');
 
-    expect(html).toContain('<div class="code">');
+    expect(html).toContain('<div class="code panel">');
     expect(html).not.toContain('class="lang"');
   });
 
@@ -242,7 +242,7 @@ describe('a code block in a message', () => {
     for (const info of ['constructor', '__proto__']) {
       const html = renderProse(`\`\`\`${info}\nlet a = 1 < 2;\n\`\`\``);
 
-      expect(html, `${info}: the panel draws`).toContain('<div class="code">');
+      expect(html, `${info}: the panel draws`).toContain('<div class="code panel">');
       expect(html, `${info}: the fence still labels it`).toContain(
         `<div class="lang">${info}</div>`,
       );
@@ -284,19 +284,6 @@ describe('the language a fence names', () => {
 });
 
 describe('a source file, as the maintained highlighter draws it', () => {
-  it('takes the language from the path a call named', () => {
-    expect(languageOf('crates/forge-server/src/family.rs')).toBe('rust');
-    // The two most-read file types the chat left uncoloured: markdown is the
-    // most-read of any type, a component tree the next uncoloured one.
-    expect(languageOf('README.md')).toBe('markdown');
-    expect(languageOf('docs/notes.markdown')).toBe('markdown');
-    expect(languageOf('client/src/chat/Chat.svelte')).toBe('xml');
-    expect(languageOf('a/file.py')).toBe('python');
-    expect(languageOf('no-extension')).toBeNull();
-    // A path whose extension names an object member rather than a language.
-    expect(languageOf('a/x.constructor')).toBeNull();
-  });
-
   it('marks the tokens up in the classes the highlighter emits', () => {
     const html = renderCode('rust', 'pub fn main() { let x = "one"; }');
 

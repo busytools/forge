@@ -37,6 +37,7 @@
   import type { SessionSlot } from '../wire/types';
   import {
     anchorRow,
+    commentAnchor,
     currentFileAt,
     doorSpot,
     filesOf,
@@ -44,18 +45,27 @@
     GAP_SMALL,
     GAP_STEP,
     gapRemaining,
+    gapHolding,
     gapsOf,
     insertRow,
     lineCounts,
+    revealFor,
+    revealedLines,
     rowSide,
     synthesizeFileDiff,
     treeRows,
+    type CommentAnchor,
     type FileLines,
     type Gap,
     type GapReveal,
   } from './diff';
   import { canvasLine, statusName, threadsInScope } from './view';
-  import { captureContext, type ComposedComment, type ReviewSpot } from './write';
+  import {
+    captureContext,
+    captureLineContext,
+    type ComposedComment,
+    type ReviewSpot,
+  } from './write';
   import { Mounts } from './mounts';
   import ResolvedMarker from './ResolvedMarker.svelte';
   import ThreadDelete from './ThreadDelete.svelte';
@@ -625,6 +635,28 @@
   }
 
   /**
+   * Where a comment on one drawn line anchors: a line the hunks carry, or a
+   * gap line the reader's own expansion revealed from the file read. The
+   * revealed set is read here, at the ask, so a press after an expansion is
+   * never judged by a stale capture.
+   */
+  function anchorAt(
+    path: string,
+    row: Element,
+    side: 'old' | 'new',
+    line: number,
+  ): CommentAnchor | null {
+    const file = built.find((held) => held.path === path)?.file;
+    if (file === undefined) return null;
+    const content = contentFor(path);
+    // Read, never create: this runs inside the drawing pass, and a write to
+    // the reactive map here would re-arm the pass that called it.
+    const reveals = opened.get(contentKeyOf(path));
+    const revealed = revealedLines(gapsOf(file, content), reveals);
+    return commentAnchor(file, content, revealed, row, side, line, mode);
+  }
+
+  /**
    * A real button on every line's number, revealed under the pointer or on
    * focus - the composer's door, and one a keyboard and a finger both reach.
    *
@@ -640,16 +672,21 @@
   function injectDoors(el: HTMLDivElement, path: string): void {
     const file = built.find((held) => held.path === path)?.file;
     if (file === undefined) return;
+    // Once per pass, not per row: a walk over every line must not repeat the
+    // file lookup and the gap derivation for each of them.
+    const content = contentFor(path);
+    const revealed = revealedLines(gapsOf(file, content), opened.get(contentKeyOf(path)));
     for (const tr of el.querySelectorAll('tr.diff-line')) {
       if (mode === 'split') {
         for (const side of ['new', 'old'] as const) {
           const spot = doorSpot(tr, side, mode);
-          // **A line the hunks do not carry takes no door.** An expanded
-          // gap's lines are drawn here but the record does not hold them,
-          // and a thread's anchor is resolved against what the server
-          // ships: a comment written on one would park outdated the moment
-          // it was filed.
-          if (spot !== null && findLine(file, side, spot.line) !== null) {
+          // **A revealed gap line takes a door like any other** (Ved,
+          // 2026-10-22): its text and neighbours come from the file read,
+          // so the anchor is captured where the line is drawn.
+          if (
+            spot !== null &&
+            commentAnchor(file, content, revealed, tr, side, spot.line, mode) !== null
+          ) {
             placeDoor(spot.cell, path, side, spot.line);
           }
         }
@@ -658,7 +695,7 @@
       const hit = rowSide(tr, null, mode);
       const cell = tr.querySelector('td');
       if (hit === null || !(cell instanceof HTMLElement)) continue;
-      if (findLine(file, hit.side, hit.line) === null) continue;
+      if (commentAnchor(file, content, revealed, tr, hit.side, hit.line, mode) === null) continue;
       placeDoor(cell, path, hit.side, hit.line);
     }
   }
@@ -880,6 +917,73 @@
     };
   });
 
+  /**
+   * **A placed comment must be drawable.** A comment written on a revealed
+   * line lands outside the hunks, and a reload starts with every gap closed:
+   * the card would have no row and the stepper would count a comment that is
+   * not on screen. Each such thread opens the gap holding its line, from the
+   * nearer end; a line the hunks carry, or one the read did not reach, asks
+   * for nothing.
+   */
+  $effect(() => {
+    void built;
+    void scopeCommit;
+    const rebuilt = new SvelteSet<string>();
+    for (const thread of scoped) {
+      const placed = canvasLine(thread, scopeCommit);
+      if (placed === null) continue;
+      const path = thread.anchor.path;
+      const file = built.find((held) => held.path === path)?.file;
+      const content = contentFor(path);
+      if (file === undefined || content === null) continue;
+      const key = contentKeyOf(path);
+      const side = thread.anchor.side === 'old' ? 'old' : 'new';
+      const needed = revealFor(
+        file,
+        content,
+        gapsOf(file, content),
+        side,
+        placed.line,
+        opened.get(key),
+      );
+      if (needed === null) continue;
+      openedFor(path).set(needed.after, needed.reveal);
+      rebuilt.add(path);
+    }
+    for (const path of rebuilt) void rebuild(path);
+  });
+
+  /**
+   * **A placed comment must be somewhere.** Its line can sit outside the
+   * hunks with no read to reveal it - a failed or cut content read - and
+   * then neither the table nor a gap can draw it. It is drawn as a parked
+   * line in the file's own section instead, so the header's tally and the
+   * comment stepper never name a comment with nothing on screen.
+   */
+  function parkedAt(path: string): { held: ReviewThreadRecord; line: number }[] {
+    const file = built.find((entry) => entry.path === path)?.file;
+    if (file === undefined) return [];
+    const content = contentFor(path);
+    const gaps = gapsOf(file, content);
+    const parked: { held: ReviewThreadRecord; line: number }[] = [];
+    for (const held of scoped) {
+      if (held.anchor.path !== path) continue;
+      const placed = canvasLine(held, scopeCommit);
+      if (placed === null) continue;
+      const side = held.anchor.side === 'old' ? 'old' : 'new';
+      if (findLine(file, side, placed.line) !== null) continue;
+      const located = gapHolding(file, gaps, side, placed.line);
+      const reachable =
+        content !== null &&
+        located !== null &&
+        located.index >= 1 &&
+        located.index <= content.lines.length;
+      if (reachable) continue;
+      parked.push({ held, line: placed.line });
+    }
+    return parked;
+  }
+
   // The canvas going away - the other tab, the page - takes its rows' roots
   // with it: an effect of its own, because the pass above cleans up between
   // every pair of runs and must leave the rows it is keeping alone.
@@ -904,10 +1008,9 @@
       if (row === null) return;
       const hit = rowSide(row, target, mode);
       if (hit === null) return;
-      // The rule the doors keep: a line the hunks do not carry - an expanded
-      // gap's own line - opens nothing.
-      const file = built.find((held) => held.path === path)?.file;
-      if (file === undefined || findLine(file, hit.side, hit.line) === null) return;
+      // The rule the doors keep: a line with no anchor - one no press
+      // revealed, or one the read did not carry - opens nothing.
+      if (anchorAt(path, row, hit.side, hit.line) === null) return;
       openBox({ path, side: hit.side, line: hit.line });
     });
   }
@@ -1133,18 +1236,26 @@
    * own wording as the tooltip. The accessible name still says what the
    * press would do and to which file, which the glyph alone cannot.
    */
+  function gapWords(
+    path: string,
+    way: GapWay,
+    remaining: number,
+  ): { title: string; label: string } {
+    const opens = way === 'all' ? remaining : Math.min(GAP_STEP, remaining);
+    const which = way === 'all' ? 'all' : way === 'down' ? 'the next' : 'the previous';
+    return {
+      title: way === 'all' ? 'Expand All' : way === 'down' ? 'Expand Down' : 'Expand Up',
+      label: `show ${which} ${opens} hidden ${opens === 1 ? 'line' : 'lines'} of ${path}`,
+    };
+  }
+
   function gapButton(path: string, gap: Gap, way: GapWay, remaining: number): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'rv-gapbtn';
-    button.title = way === 'all' ? 'Expand All' : way === 'down' ? 'Expand Down' : 'Expand Up';
-    const step = Math.min(GAP_STEP, remaining);
-    const opens = way === 'all' ? remaining : step;
-    const which = way === 'all' ? 'all' : way === 'down' ? 'the next' : 'the previous';
-    button.setAttribute(
-      'aria-label',
-      `show ${which} ${opens} hidden ${opens === 1 ? 'line' : 'lines'} of ${path}`,
-    );
+    const words = gapWords(path, way, remaining);
+    button.title = words.title;
+    button.setAttribute('aria-label', words.label);
     const glyph = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     glyph.setAttribute('class', 'ic');
     const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
@@ -1284,6 +1395,17 @@
       button.dataset['for'] = key;
       cell.append(button);
     }
+    // **A wanted control's words follow the gap's remaining lines.** A press
+    // or a comment's own reveal can shrink the count without replacing the
+    // control, and a stale count asks the reader for lines it will not open.
+    for (const [key, want] of wanted) {
+      const button = el.querySelector<HTMLButtonElement>(`button.rv-gapbtn[data-for="${key}"]`);
+      if (button === null) continue;
+      const words = gapWords(path, want.way, gapRemaining(want.gap, reveals?.get(want.gap.after)));
+      if (button.getAttribute('aria-label') === words.label) continue;
+      button.title = words.title;
+      button.setAttribute('aria-label', words.label);
+    }
   }
 
   /**
@@ -1305,7 +1427,6 @@
     if (held === undefined || content === null) return;
     const gap = gapsOf(held.file, content).find((g) => g.after === after);
     if (gap === undefined) return;
-    const key = scopeCommit ?? 'all';
     const openedHere = openedFor(path);
     const reveal = openedHere.get(after) ?? { down: 0, up: 0 };
     const remaining = gapRemaining(gap, reveal);
@@ -1321,6 +1442,21 @@
           ? { down: reveal.down, up: reveal.up + step }
           : { down: after === -1 ? 0 : gap.count, up: after === -1 ? gap.count : 0 },
     );
+    await rebuild(path);
+  }
+
+  /**
+   * Re-emit one file's viewer model from the reveals in hand. A press on a
+   * gap's strip and the page opening a comment's own gap are the same build:
+   * the viewer parses diff text, so revealed lines exist only once the text
+   * carries them.
+   */
+  async function rebuild(path: string): Promise<void> {
+    const held = built.find((file) => file.path === path);
+    const content = contentFor(path);
+    if (held === undefined || content === null) return;
+    const key = scopeCommit ?? 'all';
+    const openedHere = openedFor(path);
     const { DiffFile } = await import('@git-diff-view/core');
     // A build that lands after the scope moved on is the old scope's.
     if ((scopeCommit ?? 'all') !== key) return;
@@ -1353,24 +1489,32 @@
   function fileComment(text: string): void {
     const at = commentSpot();
     if (at === null) return;
+    const el = canvases[at.path];
+    const row = el === undefined ? null : anchorRow(el, at.side, at.line, mode);
+    const anchor = row === null ? null : anchorAt(at.path, row, at.side, at.line);
+    if (anchor === null) return;
+    // As with a reply: the composer stays open, holding the words, until the
+    // write lands.
+    const filed = (context: string[], lineText: string): Promise<boolean> =>
+      oncomment({ path: at.path, side: at.side, line: at.line, text, context, lineText }).then(
+        (went) => {
+          if (went) closeBox();
+          return went;
+        },
+      );
+    if (anchor.contentIndex !== null) {
+      const content = contentFor(at.path);
+      if (content === null) return;
+      const lineText = content.lines[anchor.contentIndex] ?? '';
+      void filed(captureLineContext(content.lines, anchor.contentIndex), lineText);
+      return;
+    }
     const file = scopeFiles.find((held) => held.path === at.path);
     const found = file === undefined ? null : findLine(file, at.side, at.line);
     if (found === null) return;
     const line = found.hunk.lines[found.index];
     if (line === undefined) return;
-    // As with a reply: the composer stays open, holding the words, until the
-    // write lands.
-    void oncomment({
-      path: at.path,
-      side: at.side,
-      line: at.line,
-      text,
-      context: captureContext(found.hunk.lines, found.index),
-      lineText: line.text,
-    }).then((filed) => {
-      if (!filed) return;
-      closeBox();
-    });
+    void filed(captureContext(found.hunk.lines, found.index), line.text);
   }
 
   /**
@@ -1524,6 +1668,15 @@
         </span>
       </div>
       {#if !closedFiles.has(file.path)}
+        {#each parkedAt(file.path) as entry (entry.held.id)}
+          <p class="rv-parked">
+            <span class="rv-parked-st">{statusName(entry.held.status)}</span>
+            <span class="rv-parked-where"
+              >{entry.held.anchor.path.split('/').pop() ?? ''} &#183; line {entry.line}</span
+            >
+            <span class="rv-parked-note">not drawn: the file content is not in hand</span>
+          </p>
+        {/each}
         <div class="rv-diff" data-rv-path={file.path} bind:this={canvases[file.path]}>
           <DiffView
             diffFile={file.diffFile}

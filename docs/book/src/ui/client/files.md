@@ -41,34 +41,52 @@ review page's own line.
 | Header        | the back link to the seat, `Files`, the seat's resolved tree and its file count, `N to read` while any thread waits on the reader, the `Conversation` / `Files` tabs, and the narrow doors                                    | the record's `state.scan_cwd`, its `file_index`, and the seat-tree threads             |
 | Conversation  | the rounds newest first, each with its age, tally chips, summary and threads - state chip, `path:line`, the turns with `edit`, and `respond` / `resolve` / `reopen` / `delete` (an accepted thread collapses to its marker, opened by a press, where only reopen, collapse and delete sit); parked threads above in an Outdated group with their captured lines | the record's `tree_reviews`; the page's own drafts and reply box                       |
 | Tree          | the seat's whole index as its own Project pane: the project row carrying the project's name with the seat's path beside it, then a row per directory and per file, folders before files at every level, indented by depth, each row wearing the 16px glyph the material icon theme gives its filename, extension or folder name (folder tints included). A folder holding a file starts folded; a folder holding only folders starts open, so the first view is the tree's shape with no file rows inside folders (root files still draw). A filter stands every fold down so its matches show, and a jump from the comments rail clears the filter and opens the folders above its file. With the current file marked, a pill per file carrying its comment count, and a filter | the record's `file_index` and `state.scan_cwd`; the filter ranks by the `@` list's own matching; the glyphs come from `material-icon-theme`'s manifest |
-| Reader        | the file's head - path, language, line count - and the file's text, read-only, colour and structure as the language set allows, wrapped at the box's edge; the target line carries the tint and the gutter `+`                | the `document_read` answer for the open path: kind and bytes                           |
+| Reader        | the file's head - its path, and what the per-format policy says it is: a grammar and line count, `plain text - no syntax for this file`, a mime and its dimensions, or a mime and size - then the file itself: a commentable editor for markdown, code and text, a bounded picture, a PDF's pages, or a notice naming a type no viewer draws; the target line carries the tint and the gutter `+` | the `document_read` answer for the open path: its bytes                                                |
 | A thread      | under the line it was written on: its state chip, where it is, its turns through the review page's own turn renderer, `edit` on a turn the reader wrote, and `respond` / `resolve` / `reopen` / `delete`; a resolved one collapses to its marker line, opened by a press | the record's `tree_reviews` threads and their landings, and the page's own drafts      |
 | A comment box | under the line a press landed on, the caret already in it; **Enter comments**, Shift+Enter keeps the newline                                                                                                                | the page's own comment shelf                                                           |
 | Comments      | every thread in the scope as one list, by path and then by line: the state chip, `path:line`, the first words, and `delete`; a row jumps back to its line                                                                    | the record's `tree_reviews` threads                                                    |
 | Parked        | a thread whose landing could not place it - the code moved too far, or no landing was carried - says so on its row, its captured lines kept; it is never dropped                                                             | the landing's `outdated` word, or none carried                                         |
 | Finish        | the round's summary - a roomy, resizable box, present by default in the rail's bottom, its own mic like every box - over `finish review (N)`, which seals the sitting into one round; a refusal keeps the words                | `submit_review`'s reply, and the round's number                                        |
-| States        | reading; a seat the server refused, in its own words; a tree with no files; no match for the filter; a kind this page draws no text for; a file read refused with its own sentence; **a seat-tree review read that failed or answered a shape this build cannot name, drawn in its own line rather than folded to the clean empty page** | the record's and the read's own outcomes                                               |
+| States        | reading; a seat the server refused, in its own words; a tree with no files; no match for the filter; a file with no viewer, in a notice naming its type and size; a file read refused with its own sentence; **a seat-tree review read that failed or answered a shape this build cannot name, drawn in its own line rather than folded to the clean empty page** | the record's and the read's own outcomes                                               |
 
 ## Reading
 
 The read is the document read - **the server carries the file's bytes, the
 client draws them** - so it resolves against the seat's tree, refuses with
-its own sentence (missing, unreadable, over the ceiling, outside the tree,
-not UTF-8) and answers the file's kind. The reader shows the bytes from
-when the file was opened and re-reads on a re-select: an open file is a
+its own sentence (missing, unreadable, over the ceiling, outside the tree)
+and answers the file's bytes. A file that does not decode is a binary read
+rather than a refusal: the page draws its notice. The reader shows the bytes
+from when the file was opened and re-reads on a re-select: an open file is a
 snapshot, never rewritten under the reader's eyes while a worker edits it.
 
-The pane is a read-only CodeMirror instance, coloured by shiki's github-dark
-family - the same the chat's code blocks draw - over the JS regex engine,
-with no wasm. Each language has two layers, neither guessed: structure and
-folding from the CodeMirror org's own package where one exists, and the
-colouring from shiki's grammar either way; `.svelte` and `.toml` are
-colour-only, and a path with no known language draws as plain text. The
-grammars are all loaded with the reader's own chunk, so a language's first
-file pays nothing extra, and the whole chunk - CodeMirror, shiki, the
-grammars - is pulled only when the reader first draws a file. A file that
-is not text (an image's bytes are not a rendering to invent) draws a line
-saying so.
+**What a file is comes from one policy, shared with the chat's Read rows**
+(`client/src/format/policy.ts`): the extension, then a filename (`Justfile`
+is `just`, `Makefile` is `make`, `Dockerfile` is `docker`, a `.env` file is
+`dotenv`), then a shebang, then whether the bytes decode as UTF-8. Markdown,
+code and text draw in a read-only CodeMirror instance, coloured by shiki's
+github-dark family over the JS regex engine, with no wasm. Each language has
+two layers, neither guessed: structure and folding from the CodeMirror org's
+own package where one exists, and the colouring from shiki's grammar either
+way; `.svelte` and `.toml` are colour-only. A text file no grammar names
+draws plain, and the head says `plain text - no syntax for this file`.
+**Grammars load one file at a time** from shiki's lazy set, so the reader
+carries the whole catalogue without downloading it up front, and the chunk -
+CodeMirror, the bridge - is pulled only when the reader first draws a text
+file. A picture draws itself, bounded, with its mime and dimensions; a PDF
+draws its pages; anything else draws a notice naming its type and size, and
+saying it is still in the tree and reviewable as a file. A reader that could
+not be built - a chunk or a grammar failed - draws that reason rather than an
+empty editor.
+
+**The reader draws by one policy; the document hand-off does not, by
+design.** The read answers the hand-off's extension kind and its
+commentable set; it does not widen. The reader's UTF-8 drawing
+classification is the client policy above. So an SVG is a picture here and
+a `.svg` document in a hand-off, and an extensionless Justfile opens as
+`just` here and read-only in a hand-off - the hand-off's set is what a
+reader may comment on, not what this page can draw. A file whose commentable
+extension is not UTF-8 is refused with the read's own sentence; bytes
+outside that set are a binary read.
 
 **A press on any line is a comment**: the line takes the tint and the
 gutter `+`, and the box opens under it with the caret in. Doors are press

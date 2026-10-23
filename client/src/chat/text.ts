@@ -132,6 +132,26 @@ export function stripEscapes(text: string): string {
   return out;
 }
 
+/** The gutter the CLI writes on a Read's result: the line's number, then a tab. */
+const READ_GUTTER = /^\s*\d+\t/;
+
+/**
+ * A Read result's text with the CLI's line-number gutter taken off.
+ *
+ * **The gutter is not the file.** `Read` answers every line as `N<TAB>text`,
+ * so a markdown file's `#` sits after a number and renders as a paragraph
+ * rather than a heading. Stripped only when the body is at least two lines
+ * and EVERY non-empty line carries the gutter: a one-line file that happens
+ * to read `1<TAB>hello` is the file, and must not lose its words.
+ */
+export function withoutLineNumbers(text: string): string {
+  const lines = text.split('\n');
+  const numbered = lines.filter((line) => line !== '');
+  if (numbered.length < 2) return text;
+  if (!numbered.every((line) => READ_GUTTER.test(line))) return text;
+  return lines.map((line) => line.replace(READ_GUTTER, '')).join('\n');
+}
+
 /**
  * The first line of a body that says anything.
  *

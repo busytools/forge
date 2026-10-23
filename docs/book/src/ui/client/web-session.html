@@ -615,8 +615,13 @@
      block and a monitor's call join the list, and an edit is a family
      inside the group, drawn above. */
   .body { margin: 3px 0 6px 27px; }
-  .code { border: 1px solid var(--line); border-radius: 9px;
-    background: var(--s2); overflow: hidden; }
+  /* The chrome a code panel and a call's plain body share; other result
+     shapes keep their own. Hook rows do not compose it. */
+  .panel { border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
+    overflow: hidden; }
+  .code { overflow: hidden; }
+  .bodytext { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
+    padding: 6px 10px; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     padding: 4px 10px; border-bottom: 1px solid var(--line); }
   /* A long line wraps inside the panel rather than scrolling it, and a token with
@@ -633,12 +638,12 @@
   .term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
     border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
     white-space: pre-wrap; overflow-wrap: anywhere; }
-  .term .pfx { color: var(--dim); }
-  .term .sum { color: var(--ok); }
+  .term .pfx, .bodytext .pfx { color: var(--dim); }
+  .term .sum, .bodytext .sum { color: var(--ok); }
   /* The live mark a running call's own output draws: the row's ring says the
      call is still out, this says the box under it is still being written -
      without it a tail that stopped moving and a finished one read alike. */
-  .outlive { display: flex; align-items: center; gap: 5px; margin: 4px 0 0 13px;
+  .outlive { display: flex; align-items: center; gap: 5px; margin: 4px 0 0 11px;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--hot); }
   .outlive::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
     background: var(--hot); animation: b-breath 2.4s ease-in-out infinite; }
@@ -665,14 +670,14 @@
   .ansi-white { color: var(--text); }
   .ansi-bright-white { color: var(--text); }
   .ansi-bold { font-weight: 640; }
-  .ansi-dim { opacity: .7; }
+  .ansi-dim { opacity: .75; }
   .ansi-italic { font-style: italic; }
   .ansi-underline { text-decoration: underline; }
   /* A muted line a row draws where there is no output to show. */
   .sg-pr { color: var(--muted); font-size: var(--fs-base); padding: 3px 0;
     max-width: 72ch; }
   /* A task that ended badly is the same line in the bad tone. */
-  .term .fail { color: var(--bad); }
+  .term .fail, .bodytext .fail { color: var(--bad); }
   /* A systemone decision's block: the question it answered, the answer as a
      facts line, the options as a plain list in the order they were given, the
      material it judged behind one fold, and what it cost along the bottom.
@@ -752,6 +757,7 @@
   .dif { display: grid; grid-template-columns: 38px 38px 22px 1fr;
     border: 1px solid var(--line); border-radius: 9px;
     overflow: hidden;
+    --add-word: rgba(46,160,67,.38); --del-word: rgba(248,81,73,.34);
     font-family: var(--mono); font-size: var(--fs-prose); }
   .dif .ln { display: contents; }
   /* The range a hunk covers, which is the one thing the two sides of an edit
@@ -773,10 +779,9 @@
   /* The figures the marks follow, which are the line's own words rather than a
      mark. Bare for the same reason `.patchmark` is. */
   /* The line under a mutation's diff: the change's own figures as a caption
-     rather than as output. It carries no rule - a left rule is what marks a
-     command's output, and a caption wearing one read as a block belonging to
-     something else - and it sits at the label size, the one the marks beside it
-     already take. */
+     rather than as output. It carries no frame of its own - the diff above is
+     the panel, and this is its caption - and it sits at the label size, the
+     one the marks beside it already take. */
   .patchline { display: flex; align-items: center; padding: 4px 0 0;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .patchsize { margin-right: 8px; }
@@ -811,6 +816,36 @@
   .dif .ln.d .l { background: var(--del-bg); }
   .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
   .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
+  /* A diff inside a call's panel: the panel owns the border, ground and
+     label; the grid is just the rows. A rendered markdown diff pads itself. */
+  .code .dif { border: 0; border-radius: 0; }
+  .code-diff { padding: 8px 12px 10px; color: var(--muted); font-size: var(--fs-base); }
+  .code-diff .prose p + p { margin-top: 9px; }
+  /* A fence inside the rendered body is chrome-less: the outer panel owns
+     the border, ground and strip. */
+  .code-diff .code { border: 0; border-radius: 0; background: transparent; }
+  .code-diff .code .lang { display: none; }
+  .code-diff code { font-size: .88em; color: var(--text); border-radius: 4px; }
+  .code.markdown-panel { overflow: visible; }
+  /* GitHub's row tint covers the number columns too: with `.ln` as
+     `display: contents`, tinting only the body and the mark left two bare
+     gaps at the row's left and broke the band. */
+  .dif .ln.a .on, .dif .ln.a .nn { background: var(--add-bg); }
+  .dif .ln.d .on, .dif .ln.d .nn { background: var(--del-bg); }
+  /* The changed WORDS of a paired removal and addition: a darker band on the
+     same ground, wrapping a slice inside the grammar's own token span. */
+  .dif .ln.a .w { background: var(--add-word); border-radius: 2px; }
+  .dif .ln.d .w { background: var(--del-word); border-radius: 2px; }
+  /* A rendered markdown diff: the removal keeps its words where they were,
+     struck and dimmed; the addition draws normal on its own tint. */
+  .prose .mdadd { background: color-mix(in srgb, #2ea043 16%, var(--s2));
+    border-radius: 3px; padding: 0 2px; }
+  .prose .mddel { background: color-mix(in srgb, #f85149 13%, var(--s2));
+    border-radius: 3px; padding: 0 2px; color: var(--muted);
+    text-decoration: line-through; }
+  /* The caption under a panel whose file has no grammar. */
+  .code-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    padding: 4px 2px 0; }
 
   /* peer traffic, drawn as tool rows: the mark says which way it went, the words
      say it first, and the label names the seat the row is about */
@@ -1742,7 +1777,7 @@
         <div class="prose">
           <h2 id="the-note">The note</h2>
           <p>Send this before the merge, so the bot carries the header on every request.</p>
-          <div class="code">
+          <div class="code panel">
             <div class="lang">yaml</div>
             <pre>Rate limiting is going into the api in PR #150. The liquidation bot has to send one header on every api request.
 
@@ -1831,8 +1866,8 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/families.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="code">
-                <div class="lang">ts</div>
+              <div class="code panel">
+                <div class="lang">typescript</div>
                 <pre><span class="c2">/** The group a call's row is summarised under. */</span>
 <span class="k">export type</span> <span class="f">Family</span> =
   | <span class="f">'read'</span> | <span class="f">'search'</span> | <span class="f">'bash'</span> | <span class="f">'web'</span> | <span class="f">'lsp'</span>
@@ -1846,8 +1881,8 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/units.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="code">
-                <div class="lang">ts</div>
+              <div class="code panel">
+                <div class="lang">typescript</div>
                 <pre><span class="k">export function</span> <span class="f">fold</span>(
   messages: <span class="k">readonly unknown</span>[],
   self: <span class="f">Self</span> | <span class="k">null</span> = <span class="k">null</span>,
@@ -1860,8 +1895,8 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/leaves.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="code">
-                <div class="lang">ts</div>
+              <div class="code panel">
+                <div class="lang">typescript</div>
                 <pre><span class="k">export function</span> <span class="f">leafOf</span>(
   id: <span class="k">string</span>,
   name: <span class="k">string</span>,
@@ -1870,14 +1905,36 @@ Set `service_key` per environment in the bot's own config.</pre>
               </div>
             </div>
           </details>
-          <details class="leaf">
+          <!-- A read of markdown RENDERS: the file is prose the page already
+               knows how to draw, and its source is not what a reader wants. -->
+          <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/ui/client/session.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="code">
+              <div class="code panel markdown-panel">
                 <div class="lang">markdown</div>
-                <pre><span class="c">1</span>  ## The run of rows
-<span class="c">2</span>  Every call, message and thought draws on its own row, in the order it arrived.</pre>
+                <div class="code-diff"><div class="prose">
+                  <h2>The run of rows</h2>
+                  <p>Every call, message and thought draws on its own row, in the order it arrived.</p>
+                  <ul>
+                    <li>a call opens onto what it came back with</li>
+                    <li>an edit opens onto its patch</li>
+                  </ul>
+                  <div class="code panel"><div class="lang">rust</div><pre><span class="k">fn</span> <span class="f">main</span>() {
+    <span class="f">println!</span>(<span class="s">"the fence inside the panel"</span>);
+}</pre></div>
+                </div></div>
               </div>
+            </div>
+          </details>
+          <!-- A read of a file no grammar names draws plain, and says so. -->
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/ops/release-notes</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="code panel">
+                <pre>1&#9;the release is cut from the tag, and the notes are its own file
+2&#9;the tag is the only name both halves share</pre>
+              </div>
+              <div class="code-note">plain text - no syntax for this file</div>
             </div>
           </details>
 
@@ -1901,12 +1958,14 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/assets/web.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code panel">
+                <div class="lang">css</div>
               <div class="dif">
                 <div class="h">@@ -30,4 +30,5 @@</div>
                 <div class="ln ctx"><span class="on">30</span><span class="nn">30</span><span class="n"></span><span class="l">  display: flex;</span></div>
-                <div class="ln d"><span class="on">31</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">  text-decoration: none; flex: none;</span></div>
+                <div class="ln d"><span class="on">31</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">  <span class="f">text-decoration</span>: <span class="s">none</span>; <span class="f">flex</span>: <span class="s"><span class="w">none</span></span><span class="w">;</span></span></div>
                 <div class="ln ctx"><span class="on">32</span><span class="nn">31</span><span class="n"></span><span class="l">  }</span></div>
-                <div class="ln a"><span class="on"></span><span class="nn">32</span><span class="n">+</span><span class="l">  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">32</span><span class="n">+</span><span class="l">  <span class="f">text-decoration</span>: <span class="s">none</span>; <span class="f">flex</span>: <span class="s"><span class="w">0 1 auto</span></span><span class="w">;</span> <span class="f">min-width</span>: <span class="s"><span class="w">0</span></span><span class="w">;</span></span></div>
                 <div class="ln a"><span class="on"></span><span class="nn">33</span><span class="n">+</span><span class="l">  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
                 <div class="ln ctx"><span class="on">33</span><span class="nn">34</span><span class="n"></span><span class="l">  }</span></div>
                 <div class="h">@@ -72,2 +73,3 @@</div>
@@ -1914,12 +1973,15 @@ Set `service_key` per environment in the bot's own config.</pre>
                 <div class="ln a"><span class="on"></span><span class="nn">74</span><span class="n">+</span><span class="l">  .row .what a:focus-visible { outline: 2px solid var(--accent); }</span></div>
                 <div class="ln ctx"><span class="on">73</span><span class="nn">75</span><span class="n"></span><span class="l">  }</span></div>
               </div>
+              </div>
               <div class="patchline"><span class="patchsize">2 hunks &#183; +4 &#8722;1</span><span class="patchmark">every match</span></div>
             </div>
           </details>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/home/Home.svelte</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code panel">
+                <div class="lang">svelte</div>
               <div class="dif">
                 <div class="h">@@ -91,2 +91,4 @@</div>
                 <div class="ln ctx"><span class="on">91</span><span class="nn">91</span><span class="n"></span><span class="l">      &lt;b&gt;v{view.header.version}&lt;/b&gt;</span></div>
@@ -1927,12 +1989,15 @@ Set `service_key` per environment in the bot's own config.</pre>
                 <div class="ln a"><span class="on"></span><span class="nn">93</span><span class="n">+</span><span class="l">      {#if view.header.installed}{' \u{b7} '}claude {view.header.installed}{/if}</span></div>
                 <div class="ln ctx"><span class="on">92</span><span class="nn">94</span><span class="n"></span><span class="l">      {#if view.header.update}</span></div>
               </div>
+              </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +2 &#8722;0</span><span class="patchmark">changed outside this edit</span></div>
             </div>
           </details>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/surface.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code panel">
+                <div class="lang">rust</div>
               <div class="dif">
                 <div class="h">@@ -74,2 +74,5 @@</div>
                 <div class="ln ctx"><span class="on">74</span><span class="nn">74</span><span class="n"></span><span class="l">    pub fn reviews(&amp;self) -&gt; Vec&lt;ReviewView&gt; {</span></div>
@@ -1941,7 +2006,24 @@ Set `service_key` per environment in the bot's own config.</pre>
                 <div class="ln a"><span class="on"></span><span class="nn">77</span><span class="n">+</span><span class="l">    }</span></div>
                 <div class="ln ctx"><span class="on">75</span><span class="nn">78</span><span class="n"></span><span class="l">    }</span></div>
               </div>
+              </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+            </div>
+          </details>
+          <!-- A markdown edit RENDERS: removals kept inline, struck and dimmed,
+               additions normal, and the source diff not shown under it. -->
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/index.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="code panel markdown-panel">
+                <div class="lang">markdown</div>
+              <div class="code-diff"><div class="prose">
+                <h2><span class="mddel">Forge</span><span class="mdadd">forge - the agent</span></h2>
+                <p><span class="mdadd">A server that runs many sessions and the clients that draw them.</span></p>
+                <p>What it is: <span class="mddel">a terminal</span><span class="mdadd">a server and its clients</span>, one trusted person, one machine.</p>
+              </div></div>
+              </div>
+              <div class="patchline"><span class="patchsize">1 hunk &#183; +2 &#8722;1</span></div>
             </div>
           </details>
           <!-- A file the call created carries no patch on the wire at all, so
@@ -1951,11 +2033,14 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code panel">
+                <div class="lang">typescript</div>
               <div class="dif added">
                 <div class="h">@@ -0,0 +1,3 @@</div>
                 <div class="ln a"><span class="on"></span><span class="nn">1</span><span class="n">+</span><span class="l">/**</span></div>
                 <div class="ln a"><span class="on"></span><span class="nn">2</span><span class="n">+</span><span class="l"> * The palettes and typefaces forge ships, by the names `[client] theme` and</span></div>
                 <div class="ln a"><span class="on"></span><span class="nn">3</span><span class="n">+</span><span class="l"> * `[client] font` take.</span></div>
+              </div>
               </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
             </div>
@@ -1966,9 +2051,12 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf" open>
             <summary><svg class="ic gl err"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/assets/web.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code panel">
+                <div class="lang">css</div>
               <div class="dif bare">
                 <div class="ln d"><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
                 <div class="ln a"><span class="n">+</span><span class="l">  flex: 0 1 auto;</span></div>
+              </div>
               </div>
               <div class="errhint">
                 <div class="m">String to replace not found in file.</div>
@@ -1985,9 +2073,12 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
+              <div class="code panel">
+                <div class="lang">typescript</div>
               <div class="dif bare">
                 <div class="ln d"><span class="n">&#8722;</span><span class="l">  --fs-prose: 13.5px;</span></div>
                 <div class="ln a"><span class="n">+</span><span class="l">  --fs-prose: 14px;</span></div>
+              </div>
               </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +1 &#8722;1</span><span class="patchmark">changed outside this edit</span><span class="patchmark">omitted, 5.0 MB</span></div>
             </div>
@@ -2006,7 +2097,7 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-square-terminal"/></svg><span class="tn">run the full workspace gate, then the feature-config build</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> just check
+              <div class="panel bodytext"><span class="pfx">$</span> just check
    Compiling forge-primitives v1.0.90
    Compiling forge-server v1.0.90
     Finished in 41.2s
@@ -2026,10 +2117,10 @@ Set `service_key` per environment in the bot's own config.</pre>
           <details class="leaf running" open>
             <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">bun run release:web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> bun run release:web
+              <div class="panel bodytext"><span class="pfx">$</span> bun run release:web
 Command running in background with ID: bj5g0t2kq.</div>
               <div class="outlive">live</div>
-              <div class="term">vite v7.1.3 building for production...
+              <div class="panel bodytext">vite v7.1.3 building for production...
 transforming (1284) src/index.ts
 rendering chunks (49/52)
 <span class="ansi-bright-green">&#10003; 42 modules transformed</span>
@@ -2043,7 +2134,7 @@ computing gzip size...</div>
           <details class="leaf running" open>
             <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">gh run watch 38861655815</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> gh run watch 38861655815
+              <div class="panel bodytext"><span class="pfx">$</span> gh run watch 38861655815
 Command running in background with ID: a69098eff5f5d405a.</div>
               <div class="sg-pr">the output has not appeared yet</div>
             </div>
@@ -2053,7 +2144,7 @@ Command running in background with ID: a69098eff5f5d405a.</div>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-square-terminal"/></svg><span class="tn">Echo test string after brief sleep</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> sleep 2 &amp;&amp; echo test string
+              <div class="panel bodytext"><span class="pfx">$</span> sleep 2 &amp;&amp; echo test string
 Command running in background with ID: bj5g0t2kq.
 <span class="sum">Background command "Echo test string after brief sleep" completed (exit code 0)</span></div>
             </div>
@@ -2063,7 +2154,7 @@ Command running in background with ID: bj5g0t2kq.
           <details class="leaf">
             <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">Run slow counting loop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="pfx">$</span> for i in $(seq 1 10000); do echo $i; sleep 1; done
+              <div class="panel bodytext"><span class="pfx">$</span> for i in $(seq 1 10000); do echo $i; sleep 1; done
 Command running in background with ID: a69098eff5f5d405a.
 <span class="fail">Run slow counting loop &middot; stopped</span></div>
             </div>
@@ -2072,7 +2163,7 @@ Command running in background with ID: a69098eff5f5d405a.
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-web"/></svg><span class="tn">docs.rs/ratatui/latest/ratatui/widgets/struct.List.html</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term">List &#183; ratatui 0.29.0
+              <div class="panel bodytext">List &#183; ratatui 0.29.0
 A widget that renders a scrollable list of items.</div>
             </div>
           </details>
@@ -2080,7 +2171,7 @@ A widget that renders a scrollable list of items.</div>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-lsp"/></svg><span class="tn">hover &#183; client/src/chat/families.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term"><span class="k">export function</span> <span class="f">iconOf</span>(row: <span class="f">KindRow</span>): <span class="k">string</span>
+              <div class="panel bodytext"><span class="k">export function</span> <span class="f">iconOf</span>(row: <span class="f">KindRow</span>): <span class="k">string</span>
 docs: The sprite a row draws, by the class it belongs to.</div>
             </div>
           </details>
@@ -2248,7 +2339,7 @@ docs: The sprite a row draws, by the class it belongs to.</div>
 
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-toolsearch"/></svg><span class="tn">select:TaskStop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="term">Found KillShell, BashOutput</div></div>
+            <div class="body"><div class="panel bodytext">Found KillShell, BashOutput</div></div>
           </details>
 
           <details class="leaf">
@@ -2299,7 +2390,7 @@ docs: The sprite a row draws, by the class it belongs to.</div>
           </details>
           <details class="leaf">
             <summary><svg class="ic gl err"><use href="#i-slack"/></svg><span class="tn">conversations</span><span class="fam-tail">several Slack workspaces are configured; pass `workspace`</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="term">several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines</div></div>
+            <div class="body"><div class="panel bodytext">several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines</div></div>
           </details>
         </div>
 
@@ -2601,7 +2692,7 @@ branch main, nothing to commit</div>
         <div class="prose">
           <p>Here is the mock I am working from - the rail covers the composer in it.</p>
           <p>A prompt is a document too: run <code>just client-preview</code> and read the rail.</p>
-          <div class="code">
+          <div class="code panel">
             <div class="lang">sh</div>
             <pre>just client-preview --port 8790</pre>
           </div>
@@ -2649,7 +2740,7 @@ branch main, nothing to commit</div>
                 <summary><svg class="ic gl"><use href="#i-read"/></svg><span class="st" id="lv-a-st"><span class="ring"></span></span>
                   <span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/families.ts</span>
                   <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-                <div class="body"><div class="code"><div class="lang">ts</div>
+                <div class="body"><div class="code panel"><div class="lang">typescript</div>
                   <pre><span class="k">export type</span> <span class="f">Family</span> = <span class="f">'read'</span> | <span class="f">'search'</span> | <span class="f">'bash'</span> | <span class="f">'web'</span> | <span class="f">'lsp'</span></pre></div></div>
               </details>
             </div>
@@ -2669,7 +2760,7 @@ branch main, nothing to commit</div>
                 <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st" id="lv-c-st"><span class="ring"></span></span>
                   <span class="tn">just check</span>
                   <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-                <div class="body"><div class="term">   Compiling forge-server v1.0.91
+                <div class="body"><div class="panel bodytext">   Compiling forge-server v1.0.91
     Running unittests...</div></div>
               </details>
             </div>

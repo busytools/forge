@@ -85,7 +85,15 @@ describe('the palette', () => {
     // working tree is the client's work from a maintained module, and those
     // rules go with it. Named rather than pattern-matched, so a token the
     // sheet starts reading that is NOT one of these is still a failure.
-    const retired = new Set(['--syn-key', '--syn-str', '--syn-fn', '--add-bg', '--del-bg']);
+    const retired = new Set([
+      '--syn-key',
+      '--syn-str',
+      '--syn-fn',
+      '--add-bg',
+      '--del-bg',
+      '--add-word',
+      '--del-word',
+    ]);
 
     const reads = new Set(
       captures(sheet, /var\((--[a-z0-9-]+)/g).filter(
@@ -109,7 +117,15 @@ describe('the palette', () => {
    */
   it('does not carry the retired highlighter tokens', () => {
     const tokens = rootTokens(THEME_NAMES[0]);
-    for (const token of ['--syn-key', '--syn-str', '--syn-fn', '--add-bg', '--del-bg']) {
+    for (const token of [
+      '--syn-key',
+      '--syn-str',
+      '--syn-fn',
+      '--add-bg',
+      '--del-bg',
+      '--add-word',
+      '--del-word',
+    ]) {
       expect(tokens, `${token} belongs to the server's renderer`).not.toHaveProperty(token);
     }
   });

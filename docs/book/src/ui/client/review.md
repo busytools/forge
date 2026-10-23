@@ -25,7 +25,7 @@ file tree, and the diff with the threads on their lines.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | Header        | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open`                                                                                               | the record's `work.branch`, and the two review halves              |
 | Tabs          | `Conversation` and `Files changed`, with the commit count                                                                                                                                                                                                                       | the record's git chain                                             |
-| Scope         | the scope on screen, a stepper, the keys, the unified/split picker, and the comments' stepper with its `N/M` count                                                                                                                                                              | the record's git chain (the commit list), and the scope's own threads |
+| Scope         | the scope on screen and its place (`scope 3 of 9`), a stepper whose ends stop, the keys, the unified/split picker, and the comments' stepper with its `N/M` count                                                                                                                | the record's git chain (the commit list), and the scope's own threads |
 | Tree          | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth; a directory carries the files beneath it, and the file whose region the reader is inside is marked as the current one                                    | the scope's diff, the threads in that scope, and the canvas's own scroll |
 | Canvas        | the scope's files as diffs, with each thread inserted under its own line, the composer under the line a comment is being written on, and GitHub's own gap strips between two hunks (above the first, below the last) that draw the lines the diff left out, a press at a time      | the scope's diff, the threads, the server's landing per thread, and the file's whole content read |
 | Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
@@ -59,17 +59,21 @@ carries its line:
   to make.
 
 The keys, as the keycap row under the tabs states them: `←` and `→` step one
-scope and `shift`+`←`/`→` step one comment, both **cycling** - the last
-steps round to the first, so a held arrow walks the branch rather than
-hitting a wall - `a` flips between all changes and the commit you were on,
-and `j` opens the picker (arrows and Enter; Escape closes). The brackets do
-the same stepping as the arrows and are not advertised beside them. The
-comments are walked in the order the canvas draws them, by path and then by
-line, and each step brings its card into view. Both walks have buttons in
-the tabs row - the scope's stepper and, beside it, the comments' stepper
-with its `N/M` count - because a key alone is no door on a touch screen. The
-keys are live only while the diff half is on screen, and a keypress in a
-text field is the field's.
+scope and `shift`+`←`/`→` step one comment. **The scopes are a line, not a
+ring** (Ved, 2026-10-22): all changes sits at position 0 and the commits
+1..N follow it oldest to newest, so right from all changes lands on commit 1,
+right at N stops, and left walks back to all changes and stops there - each
+end's arrow disabled rather than wrapping, so which commit is first is never
+ambiguous. The comments' walk still cycles. `a` flips between all changes
+and the commit you were on, and `j` opens the picker (arrows and Enter;
+Escape closes). The brackets do the same stepping as the arrows and are not
+advertised beside them. The comments are walked in the order the canvas
+draws them, by path and then by line, and each step brings its card into
+view. Both walks have buttons in the tabs row - the scope's stepper and,
+beside it, the comments' stepper with its `N/M` count - because a key alone
+is no door on a touch screen, and the scope's arrows disable at the two
+ends. The keys are live only while the diff half is on screen, and a
+keypress in a text field is the field's.
 
 **The tree has a walk of its own, the files page's own rule**: `↑` and `↓`
 move the mark without a prior focus, moving onto a file scrolls to it,
@@ -78,12 +82,19 @@ move the mark without a prior focus, moving onto a file scrolls to it,
 the horizontal arrows are the scope and comment stepper's here, so folding
 stays a press on this page.
 
-The commit list is the record's own; a commit's diff is fetched when its
-scope is first shown, and not carried on the record - a branch can hold
-dozens of commits, and every reader of a record
-would pay their content on every read for a scope only this page draws. An
-ask the socket did not take is asked again, so a scope opened while the
-connection was down recovers rather than reading for ever.
+The commit list is the record's own, drawn oldest first, each row carrying
+its subject, its short sha and how long ago it was committed - worded as
+the board words it, with the review reading days from two days old
+(`26h ago` under that, `2d ago` past it). **The walk carries at most twenty
+commits**: a longer chain numbers each carried row by its true ordinal - the
+oldest carried one is not commit 1 - and the picker says how many oldest
+ones it did not carry; a chain whose list could not be read says that
+instead of drawing an empty list. A commit's diff is fetched when its scope
+is first shown, and not carried on the record - a branch can hold dozens of
+commits, and every reader of a record would pay their content on every read
+for a scope only this page draws. An ask the socket did not take is asked
+again, so a scope opened while the connection was down recovers rather than
+reading for ever.
 
 **The tree draws the scope as its own structure**, not a flat list of paths:
 one row per directory and per file, folders before files at every level,
@@ -134,11 +145,29 @@ answer decides which controls exist: a read that could not run, or one cut
 before the gap it would fill, earns none rather than a door that opens on
 nothing.
 
-An expanded line takes no comment door and no click to comment. The record
-does not carry it - the file read does - and a thread's anchor is resolved
-against the content the record ships, so a comment written there would park
-as outdated the moment it was filed. The door is offered only on the lines
-the hunks carry.
+**A revealed line takes a comment like any other** (Ved, 2026-10-22): it
+carries a door on its own side, and its anchor's text and neighbours come
+from the file read rather than a hunk. The record places such an anchor in
+the whole file - the branch tip for a new-side line, the merge-base for an
+old-side one - because the line is outside the bounded hunks by
+construction; a line the hunks do carry is placed there, and text the file
+no longer carries still parks as outdated. **The record reads at most eight
+such files per encode**: past that an anchor outside its hunks is answered
+by the bounded content, which does not carry its line, so it parks rather
+than costing an unbounded pile of git reads on every seat encode.
+**A commit-scoped comment is the one exception**: a line the hunks carry
+places, but a revealed one counts in that commit's numbering, so the
+all-changes view parks it - its own commit's view still draws it at its
+recorded line. A line no press has revealed, or one the read did not carry,
+takes no door. **A placed comment reopens the gap holding it when the page
+loads**, from the end its synthesis draws - a gap above the first hunk
+opens from its bottom, one below the last from its top, and only a gap
+between two hunks takes the nearer end - so a reload does not leave the
+card with no row to draw on. **A placed comment the file read cannot reach**
+- a read in flight, failed, or cut before its line - draws as a parked line
+in the file's own section, naming its state, its line, and that its content
+is not in hand, so the tally and the comment stepper never count a comment
+that is nowhere.
 
 ## A thread
 
@@ -175,7 +204,11 @@ the lane; in unified it takes the whole width, as the line itself does. The
 same rule runs the doors and the drawing: one door per side's number cell
 in split, one per row in unified (an added or context line is the new side,
 a removed line the old), and a click anywhere on a line opens the composer
-on that line's side.
+on that line's side. **The split's halves are the table's own**: a removed
+line's blank half is a placeholder cell whose class a naive side test reads
+as `old` - "placeholder" contains it - so a card written there would count
+the whole lane as its own side and span it. The colgroup names the columns,
+and the card takes the half the comment was written on.
 
 The loop's `N replies to read` is derived rather than served: it counts the
 threads in `addressed` or `outdated` whose last turn is an agent's. An
@@ -244,9 +277,10 @@ resolve does not nudge at all: a thread read and accepted needs no second
 look.
 
 **The anchor is captured where the lines are.** The comment is written on a
-line of the drawn diff, so the page takes that line's text, its neighbours
-within the hunk, and the crate's own hash of the line - the capture the
-crate's resolver defines - and the thread carries it. The
+line of the drawn diff, so the page takes that line's text, its neighbours -
+within the hunk, or within the file read for a revealed line - and the
+crate's own hash of the line, the capture the crate's resolver defines, and
+the thread carries it. The
 hash is FNV-1a over whitespace-collapsed UTF-8, and the vectors the client's
 implementation is pinned against live in the crate's resolver tests too: a
 hash the two disagree on would leave a thread written here unplaceable when

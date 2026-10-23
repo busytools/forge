@@ -4,7 +4,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { hideBrowser, showBrowser } from '../browser/host';
-import { surface } from '../browser/surface.svelte';
+import { openSurface, surface } from '../browser/surface.svelte';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -439,6 +439,9 @@ beforeEach(() => {
   surface.phase = 'closed';
   surface.profile = null;
   surface.reason = null;
+  // A hand-off attached by a case that never answers it would otherwise
+  // outlive it and decide the next case's retry path.
+  surface.hand_off = null;
 });
 
 describe("the reader's draft", () => {
@@ -5716,6 +5719,167 @@ describe('the dock', () => {
     await vi.waitFor(() =>
       expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(
         'job-hunt',
+        SLOT,
+        expect.any(Number),
+      ),
+    );
+  });
+
+  /**
+   * **The hand-off's page lives in the ONE browser a session drives, and
+   * only the client holding the browser role has it (#2519).** A client that
+   * is not the host raised its own browser anyway, showing a page that had
+   * nothing to do with the session: Ved saw another app or another tab on the
+   * phone while the desktop held the browser. The role is the client's own
+   * read, and the card says the truth rather than opening the wrong surface.
+   */
+  it("does not raise this client's own browser when another client holds the role", async () => {
+    const shared = wire();
+    shared.connection.browserRole = () => false;
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(
+      showBrowser,
+      'no local browser is raised for a page this client does not hold',
+    ).not.toHaveBeenCalled();
+    expect(surface.phase, 'and no takeover is opened here').toBe('closed');
+    expect(drawn(), 'the card says where the page is').toContain('another connected client');
+    expect(drawn(), 'and that Open here does not move it, so it is not a retry').toContain(
+      'does not move it',
+    );
+    expect(drawn(), "the strip's override is named as the door, and what it cannot do").toContain(
+      'without carrying that page across',
+    );
+  });
+
+  /** **A role nobody has said is not a role reading.** The relay has not
+   *  answered this connection yet - a reconnect's grant is in flight - and a
+   *  client that was the host still has its page; reading the silence as
+   *  "another client drives it" would refuse a raise whose page is right
+   *  here. */
+  it('still raises while the relay has not said the role', async () => {
+    const shared = wire();
+    shared.connection.browserRole = () => false;
+    shared.connection.browserRoleKnown = () => false;
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    await vi.waitFor(() =>
+      expect(showBrowser, 'the unsaid role keeps the raise').toHaveBeenCalledWith(
+        'job-hunt',
+        SLOT,
+        expect.any(Number),
+      ),
+    );
+  });
+
+  /** **A refusal does not outlive the raise it refused** (#2520's gate). The
+   *  role moves to this client (the strip's override) and the same Open then
+   *  lands; a card still saying the page is elsewhere would be false over
+   *  buttons that now work. */
+  it('clears the refusal once a later open lands', async () => {
+    const shared = wire();
+    let hosting = false;
+    shared.connection.browserRole = () => hosting;
+    shared.connection.browserRoleKnown = () => true;
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(drawn(), 'precondition: the refusal is drawn').toContain('another connected client');
+
+    hosting = true;
+    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the second ask landed').toBe('live'));
+    flushSync();
+
+    expect(drawn(), 'the stale refusal is gone').not.toContain('another connected client');
+  });
+
+  /** **The takeover's retry is the same raise** (#2520's gate). When the role
+   *  has moved while this surface was failed, try again says where the page
+   *  is rather than raising this client's browser. */
+  it('refuses the takeover retry on a client that does not hold the role', async () => {
+    const shared = wire();
+    let hosting = true;
+    shared.connection.browserRole = () => hosting;
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser did not start in time - try again');
+    action('Open browser').click();
+    await vi.waitFor(() =>
+      expect(surface.phase, 'precondition: the surface failed').toBe('failed'),
+    );
+    flushSync();
+    vi.mocked(showBrowser).mockClear();
+
+    hosting = false;
+    barAction('try again').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+
+    expect(showBrowser, "the retry does not raise this client's browser").not.toHaveBeenCalled();
+    expect(surface.reason, 'and the bar says where the page is').toContain(
+      'another connected client',
+    );
+  });
+
+  /** **The bar's retry is not the hand-off's alone** (#2520's gate). The
+   *  person's own show can fail too - a profile another seat holds, a browser
+   *  that did not start - and its retry must still reach the shell; only a
+   *  surface standing for a hand-off asks who holds the browser first. */
+  it("retries the strip's own failed show on a client that does not hold the role", async () => {
+    const shared = wire();
+    shared.connection.browserRole = () => false;
+    shared.connection.browserRoleKnown = () => true;
+    open({ record: record() }, shared);
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser did not start in time - try again');
+    await openSurface(null);
+    await vi.waitFor(() => expect(surface.phase, 'precondition: the show failed').toBe('failed'));
+    flushSync();
+    expect(surface.hand_off, 'precondition: no hand-off stands behind this surface').toBeNull();
+    vi.mocked(showBrowser).mockClear();
+    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+
+    barAction('try again').click();
+    await vi.waitFor(() =>
+      expect(showBrowser, "the strip's retry still reaches the shell").toHaveBeenCalledTimes(1),
+    );
+    await vi.waitFor(() => expect(surface.phase, 'and the retried show lands').toBe('live'));
+  });
+
+  /** **A retry re-raises the surface it stands over** (#2520's gate, mixed
+   *  state): a hand-off ask can be parked while its Open was never pressed,
+   *  so the failed surface is the strip's own show. The retry must re-show
+   *  the strip's profile, not the parked hand-off's, and the role rule is
+   *  the hand-off's alone. */
+  it("retries the strip's own failed show while a hand-off is parked", async () => {
+    const shared = wire();
+    shared.connection.browserRole = () => false;
+    shared.connection.browserRoleKnown = () => true;
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser did not start in time - try again');
+    await openSurface(null);
+    await vi.waitFor(() => expect(surface.phase, 'precondition: the show failed').toBe('failed'));
+    flushSync();
+    expect(surface.hand_off, 'precondition: the parked ask never raised').toBeNull();
+    expect(surface.profile, 'precondition: the failed surface is the shared one').toBeNull();
+    vi.mocked(showBrowser).mockClear();
+    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+
+    barAction('try again').click();
+    await vi.waitFor(() =>
+      expect(showBrowser, "the retry re-raises the show's own profile").toHaveBeenCalledWith(
+        null,
         SLOT,
         expect.any(Number),
       ),

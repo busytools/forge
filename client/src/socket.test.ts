@@ -1477,9 +1477,14 @@ describe('the browser role', () => {
     const heard: boolean[] = [];
     conn.onBrowserRole((now) => heard.push(now));
     expect(conn.browserRole(), 'before any frame, this client does not host').toBe(false);
+    expect(
+      conn.browserRoleKnown(),
+      'and nobody has said so yet - the silence is not a refusal to host',
+    ).toBe(false);
 
     server.send({ kind: 'browser_role', hosting: true });
     await until(() => conn.browserRole(), 'the grant to land');
+    expect(conn.browserRoleKnown(), 'the frame is what makes the role a reading').toBe(true);
     expect(heard, 'the listener heard the grant').toEqual([true]);
 
     conn.takeBrowserRole();
@@ -1490,6 +1495,7 @@ describe('the browser role', () => {
 
     server.drop();
     await until(() => !conn.browserRole(), 'the drop to clear the role');
+    expect(conn.browserRoleKnown(), 'a dropped connection has been told nothing').toBe(false);
     expect(heard, 'and the drop is said out loud').toEqual([true, false]);
   });
 

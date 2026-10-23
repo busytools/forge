@@ -86,6 +86,29 @@ pub async fn resolve_commit(cwd: &Path, rev: &str, budget: Duration) -> Option<S
     }
 }
 
+/// The commit `base` and `HEAD` forked at, as a validated commit id.
+///
+/// **The branch-ahead diff is a three-dot diff**, so its old side is
+/// numbered in the merge-base tree, not at `base`'s current tip: a base that
+/// has advanced since the fork would otherwise shift every old-side line.
+pub async fn merge_base(cwd: &Path, base: &str) -> Option<String> {
+    merge_base_within(cwd, base, COMMAND_TIMEOUT).await
+}
+
+/// [`merge_base`] with its command budget spelled. `base` goes through
+/// [`resolve_commit`] first, so only a commit id reaches the argv.
+pub async fn merge_base_within(cwd: &Path, base: &str, budget: Duration) -> Option<String> {
+    let base = resolve_commit(cwd, base, budget).await?;
+    match run_git_within(cwd, &["merge-base", &base, "HEAD"], budget).await {
+        GitOutput::Ok(raw) => {
+            let id = raw.trim();
+            (id.len() >= 40 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .then(|| id.to_owned())
+        }
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => None,
+    }
+}
+
 /// Read `path`'s content in `rev`, as its lines, up to `ceiling_bytes`.
 pub async fn read_file_lines(
     cwd: &Path,

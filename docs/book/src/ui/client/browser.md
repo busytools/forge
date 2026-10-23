@@ -42,6 +42,16 @@ ends nothing: the sessions keep driving the same page, and the next Open
 shows it as they left it. A profile's close ends its run and keeps its
 logins; a delete takes them.
 
+**The hand-off is raised where the browser is.** The browser role is
+exclusive: one connected client drives the browser and every other waits its
+turn, so a client that is not the holder has none of the session's page. Its
+Open says the page is in another connected client's browser - pressing Open
+here does not move it - and names the browser strip's override, which takes
+the browser for this client without carrying that page across, rather than
+raising a browser of its own that has nothing to do with the session. A role
+the relay has not said yet - a reconnect's answer in flight - is no reading,
+so that raise stays the local one it always was.
+
 **A profile is a browser of its own.** The shared profile is the unnamed
 call's; a named profile is a directory under `browser/profiles/<name>/cef`,
 owned by the seat that opened it, with the ownership record beside it. A

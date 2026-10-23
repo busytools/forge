@@ -90,6 +90,7 @@ import type { Connection } from '../socket';
 import type { SessionRecord } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 import Review from './Review.svelte';
+import { anchorHash } from './write';
 
 const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -275,7 +276,8 @@ function record(
   threads: unknown[] = [],
   reviews: unknown[] = [],
   diff: unknown = DIFF,
-  commits: { sha: string; subject: string }[] = [],
+  commits: { sha: string; subject: string; time?: number }[] = [],
+  total = commits.length,
 ): SessionRecord {
   return {
     slot: SLOT,
@@ -283,7 +285,10 @@ function record(
     work: { branch: 'b', dirt: 'clean' },
     git: {
       defaultBranch: 'main',
-      ahead: commits.length === 0 ? null : { commit_count: commits.length, commits, stats: null },
+      ahead:
+        commits.length === 0 && total === 0
+          ? null
+          : { commit_count: total, count: total, commits, stats: null },
     },
     diff: { branchAhead: diff },
     reviews: {
@@ -409,7 +414,8 @@ async function draw(
   reviews: unknown[] = [],
   dictation = true,
   diff: unknown = DIFF,
-  commits: { sha: string; subject: string }[] = [],
+  commits: { sha: string; subject: string; time?: number }[] = [],
+  total = commits.length,
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -422,7 +428,7 @@ async function draw(
     props: { connection: connection(), slot: SLOT, dictation },
   });
   flushSync();
-  push({ wire: record(IDLE, threads, reviews, diff, commits), refused: null });
+  push({ wire: record(IDLE, threads, reviews, diff, commits, total), refused: null });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
   await settle(() => {
@@ -468,7 +474,7 @@ async function openReply(): Promise<void> {
 }
 
 /** Press one of the diff half's own buttons, and let the press settle. */
-function press(where: 'previous comment' | 'next comment' | 'next scope'): void {
+function press(where: 'previous comment' | 'next comment' | 'previous scope' | 'next scope'): void {
   const button = document.querySelector<HTMLButtonElement>(`.rv-step-btn[aria-label="${where}"]`);
   if (button === null) throw new Error(`the page drew no ${where} button`);
   button.click();
@@ -1114,7 +1120,33 @@ describe('a comment box opens', () => {
 });
 
 describe('the steppers', () => {
+  const FIRST_COMMIT = { sha: 'abc123', subject: 'the first commit' };
   const SECOND_COMMIT = { sha: 'def456', subject: 'the second commit' };
+
+  /** The scope the bar names on screen. */
+  function scope(): string | null {
+    return document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
+  }
+
+  /** The place the bar states for the scope on screen. */
+  function place(): string | null {
+    return document.querySelector('.rv-scope-place')?.textContent?.trim() ?? null;
+  }
+
+  /** One of the scope stepper's own buttons. */
+  function step(where: 'previous scope' | 'next scope'): HTMLButtonElement {
+    const button = document.querySelector<HTMLButtonElement>(`.rv-step-btn[aria-label="${where}"]`);
+    if (button === null) throw new Error(`the page drew no ${where} button`);
+    return button;
+  }
+
+  /** A key on the page, the way the reader presses it. */
+  function key(init: KeyboardEventInit): void {
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }),
+    );
+    flushSync();
+  }
 
   /** The readout the comment stepper draws, or null when it drew none. */
   function readout(): string | null {
@@ -1122,10 +1154,10 @@ describe('the steppers', () => {
   }
 
   /**
-   * **Both steppers cycle, with buttons a finger can press** (Ved,
-   * 2026-10-16): the comments of the scope, and the scopes themselves - the
-   * last steps round to the first rather than stopping at a wall, and the
-   * pair is on screen so a touch reader has a door the keys are not.
+   * **The comments' stepper cycles, with buttons a finger can press** (Ved,
+   * 2026-10-16): the last comment steps round to the first rather than
+   * stopping at a wall, and the pair is on screen so a touch reader has a
+   * door the keys are not. The scope stepper's ends stop (Ved, 2026-10-22).
    */
   it('walks the scope comments with wrap-around, from its own buttons', async () => {
     await draw([
@@ -1250,31 +1282,45 @@ describe('the steppers', () => {
     ).toBe(landed);
   });
 
-  it('steps the scopes with wrap-around, from its own buttons', async () => {
-    await draw([], [], true, DIFF, [{ sha: 'abc123', subject: 'the first commit' }, SECOND_COMMIT]);
+  /**
+   * **The scopes are a line, not a ring** (Ved, 2026-10-22): All changes at
+   * position 0, the commits 1..N oldest to newest, right walks into commit 1
+   * and stops at N, left walks back to All changes and stops there. Neither
+   * end wraps, so which commit is first is never ambiguous.
+   */
+  it('steps the scopes linearly and stops at both ends', async () => {
+    // The wire walks the chain newest first; commit 1 is its oldest.
+    await draw([], [], true, DIFF, [SECOND_COMMIT, FIRST_COMMIT]);
 
-    const scope = (): string | null =>
-      document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
-    expect(scope()).toBe('All changes');
+    expect(scope(), 'the first position is all changes').toBe('All changes');
+    expect(place(), 'and the bar states its place').toBe('scope 1 of 3');
+    expect(step('previous scope').disabled, 'nothing is before all changes').toBe(true);
+    press('previous scope');
+    expect(scope(), 'and a press there steps nowhere').toBe('All changes');
+
     press('next scope');
-    expect(scope()).toBe('abc123');
+    expect(scope(), 'right from all changes lands on the first commit').toBe('the first commit');
+    expect(place()).toBe('scope 2 of 3');
     press('next scope');
-    expect(scope()).toBe('def456');
+    expect(scope()).toBe('the second commit');
+    expect(place(), 'the last commit is the last place').toBe('scope 3 of 3');
+    expect(step('next scope').disabled, 'nothing is past the last commit').toBe(true);
     press('next scope');
-    expect(scope(), 'the last commit steps round to all changes').toBe('All changes');
+    expect(scope(), 'and a press there steps nowhere').toBe('the second commit');
+
+    press('previous scope');
+    expect(scope()).toBe('the first commit');
+    press('previous scope');
+    expect(scope(), 'left from the first commit returns to all changes').toBe('All changes');
+    expect(step('previous scope').disabled).toBe(true);
   });
 
   /**
    * **The keys are the pair the hint names**: arrows step commits, and
-   * shift+arrows step comments - the same walks the buttons make.
+   * shift+arrows step comments - the same walks the buttons make, and the
+   * arrows stop at the same two ends.
    */
   it('steps comments on shift+arrows and commits on the arrows', async () => {
-    const key = (init: KeyboardEventInit): void => {
-      document.body.dispatchEvent(
-        new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }),
-      );
-      flushSync();
-    };
     await draw([THREAD], [], true, DIFF, [SECOND_COMMIT]);
 
     key({ key: 'ArrowRight', shiftKey: true });
@@ -1282,14 +1328,159 @@ describe('the steppers', () => {
     key({ key: 'ArrowLeft', shiftKey: true });
     expect(readout(), 'and shift+left steps back round').toBe('1/1');
 
-    const scope = (): string | null =>
-      document.querySelector('.rv-scope-now')?.textContent?.trim() ?? null;
+    key({ key: 'ArrowLeft' });
+    expect(scope(), 'a bare left at all changes steps nowhere').toBe('All changes');
     key({ key: 'ArrowRight' });
-    expect(scope(), 'a bare right still steps the scope').toBe('def456');
+    expect(scope(), 'a bare right still steps the scope').toBe('the second commit');
+    key({ key: 'ArrowRight' });
+    expect(scope(), 'and stops at the last commit').toBe('the second commit');
 
     expect(document.querySelector('.rv-hint')?.textContent, 'and the hint row says both').toContain(
       'shift',
     );
+  });
+
+  /** `a` flips between all changes and the commit the reader was on. */
+  it('flips between all changes and the commit on a', async () => {
+    await draw([], [], true, DIFF, [SECOND_COMMIT, FIRST_COMMIT]);
+
+    key({ key: 'a' });
+    expect(scope(), 'from all changes a lands on the commit held').toBe('the first commit');
+    press('next scope');
+    expect(scope()).toBe('the second commit');
+    key({ key: 'a' });
+    expect(scope(), 'a second a returns to all changes').toBe('All changes');
+    key({ key: 'a' });
+    expect(scope(), 'and a third returns to the commit it held, not the first').toBe(
+      'the second commit',
+    );
+  });
+
+  /** A commit the record gives no subject falls back to its short sha, so
+   *  the bar is never blank. */
+  it('falls back to the short sha for a commit with no subject', async () => {
+    await draw([], [], true, DIFF, [{ sha: 'abcdef1234', subject: '' }]);
+    press('next scope');
+    expect(scope(), 'the bar names the commit by what it has').toBe('abcdef12');
+  });
+
+  /** A branch with no commits has one scope, and `a` stays on it. */
+  it('keeps to the one scope a commitless branch has', async () => {
+    await draw([], [], true, DIFF, []);
+
+    expect(place(), 'the only scope').toBe('scope 1 of 1');
+    expect(
+      document.querySelector('.rv-scope-sub')?.textContent?.trim(),
+      'an empty chain is not an unread one',
+    ).toBe('0 commits');
+    key({ key: 'a' });
+    expect(scope(), 'a has nowhere to land').toBe('All changes');
+    expect(place()).toBe('scope 1 of 1');
+  });
+
+  /**
+   * **The list is a reader's map of the branch**: all changes first, then
+   * the commits 1st to last with their short sha and how long ago each was
+   * made, the scope on screen marked.
+   */
+  it('lists the scopes oldest first, each with its sha and age', async () => {
+    const base = Math.floor(Date.now() / 1_000);
+    // Newest first, as the wire walks the chain.
+    await draw([], [], true, DIFF, [
+      { sha: 'e8b4c7f1cc', subject: 'release v0.2.22', time: base - 18 * 60 },
+      { sha: 'a72e55d0bb', subject: 'GPU plotting via wgpu', time: base - 26 * 3_600 },
+      { sha: '9b0f1c33aa', subject: 'drop the CUDA toolkit', time: base - 2 * 86_400 },
+      { sha: 'd41c2e7a99', subject: 'the carriage ignores a blank', time: base - 3 * 86_400 },
+    ]);
+
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+
+    const rows = [...document.querySelectorAll('.rv-menu-it')].map((row) => ({
+      text: row.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      on: row.classList.contains('on'),
+    }));
+    expect(
+      rows.map((row) => row.text),
+      'all changes, then the commits oldest first',
+    ).toEqual([
+      'A All changes 4 commits',
+      '1 the carriage ignores a blank d41c2e7a 3d ago',
+      '2 drop the CUDA toolkit 9b0f1c33 2d ago',
+      '3 GPU plotting via wgpu a72e55d0 26h ago',
+      '4 release v0.2.22 e8b4c7f1 18m ago',
+    ]);
+    expect(rows[0]?.on, 'the scope on screen is the one marked').toBe(true);
+
+    // Choosing a row takes that scope, and the next open marks it.
+    document.querySelectorAll<HTMLButtonElement>('.rv-menu-it')[1]?.click();
+    flushSync();
+    expect(scope()).toBe('the carriage ignores a blank');
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+    expect(document.querySelector('.rv-menu-it.on')?.textContent, 'and the mark follows').toContain(
+      'the carriage ignores a blank',
+    );
+  });
+
+  /** A commit whose time the record does not carry says so, not a date in
+   *  the year 20000. */
+  it('names a commit with no recorded time as unknown', async () => {
+    await draw([], [], true, DIFF, [{ sha: 'abcdef12', subject: 'no stamp', time: 0 }]);
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+    expect(
+      document.querySelectorAll('.rv-menu-it')[1]?.textContent?.replace(/\s+/g, ' ').trim(),
+      'the row says the time is unknown',
+    ).toContain('time unknown');
+  });
+
+  /**
+   * **The chain the record counts is longer than the list it carries.** The
+   * carried commits keep their TRUE ordinals - the oldest carried one is
+   * `total - carried + 1`, never 1 - and the list says which span it did
+   * not carry, so a capped walk never prints a false number.
+   */
+  it('names the chain by the record count, with the true ordinals', async () => {
+    await draw([], [], true, DIFF, [FIRST_COMMIT], 40);
+
+    expect(document.querySelector('.rv-scope-sub')?.textContent?.trim(), 'the whole chain').toBe(
+      '40 commits',
+    );
+    expect(place()).toBe('scope 1 of 41');
+    press('next scope');
+    expect(
+      document.querySelector('.rv-scope-sub')?.textContent?.trim(),
+      'the one carried commit is the fortieth',
+    ).toBe('commit 40 of 40');
+    expect(place()).toBe('scope 41 of 41');
+
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+    expect(
+      document.querySelector('.rv-menu-note')?.textContent?.replace(/\s+/g, ' ').trim(),
+      'the missing span is named',
+    ).toContain('the oldest 39 commits are not carried');
+    expect(document.querySelectorAll('.rv-menu-it')[1]?.textContent, 'a true ordinal').toContain(
+      '40',
+    );
+  });
+
+  /** A chain whose walk failed still has its count: the page says so rather
+   *  than drawing 40 commits with an empty list and a dead arrow. */
+  it('says the commit list could not be read', async () => {
+    await draw([], [], true, DIFF, [], 40);
+
+    expect(document.querySelector('.rv-scope-sub')?.textContent?.trim()).toBe(
+      '40 commits · list not read',
+    );
+    expect(place()).toBe('scope 1 of 1');
+    document.querySelector<HTMLButtonElement>('.rv-scope-btn')?.click();
+    flushSync();
+    expect(
+      document.querySelector('.rv-menu-note')?.textContent,
+      'the picker says why it is empty',
+    ).toContain('the commit list could not be read');
   });
 });
 
@@ -1400,6 +1591,67 @@ describe('the files half finishes the round too', () => {
 
 describe('the lines a diff left out', () => {
   /**
+   * **A revealed line's comment is anchored from the file read.** The door on
+   * an expanded line, the box it opens and the anchor the page files are one
+   * path the record cannot check: the line is not in the hunks, so its text
+   * and neighbours must come from the content. The plausible regression is a
+   * door that opens but files the anchor from the wrong source - no line
+   * text, or a neighbour set from a hunk - which lands outdated or on
+   * unrelated code.
+   */
+  it('files a comment on a revealed line with the content neighbours', async () => {
+    await draw([], [], true, BIG_GAP);
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: BIG_LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+
+    const down = [...document.querySelectorAll<HTMLButtonElement>('.rv-gapbtn')].find((button) =>
+      (button.getAttribute('aria-label') ?? '').includes('the next 20'),
+    );
+    if (down === undefined) throw new Error('the page drew no down strip');
+    down.click();
+    await settle(
+      () => document.querySelector('button[aria-label="comment on the new line 9"]') !== null,
+    );
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="comment on the new line 9"]')
+      ?.click();
+    await settle(() => document.querySelector('.rv-thread.comment') !== null);
+    const box = document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea');
+    if (box === null) throw new Error('the comment box drew no field');
+    box.value = 'a comment on a revealed line';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    [...document.querySelectorAll<HTMLButtonElement>('.rv-thread.comment button')]
+      .find((button) => (button.textContent ?? '').trim() === 'comment')
+      ?.click();
+    await settle(() =>
+      sent.some(
+        (command) =>
+          (command as { upsert_review_thread?: unknown }).upsert_review_thread !== undefined,
+      ),
+    );
+
+    const command = sent.find(
+      (held) => (held as { upsert_review_thread?: unknown }).upsert_review_thread !== undefined,
+    ) as { upsert_review_thread: { thread: { anchor: Record<string, unknown> } } };
+    expect(command.upsert_review_thread.thread.anchor, 'the anchor the file read gives').toEqual({
+      path: 'src/a.rs',
+      side: 'New',
+      line: 9,
+      content_hash: anchorHash('l9').toString(),
+      context: ['l6', 'l7', 'l8', 'l10', 'l11', 'l12'],
+      base_ref: 'main',
+    });
+  });
+
+  /**
    * **The read is asked when the file is drawn**, not when a control is
    * pressed: the answer is what decides whether a control exists at all, so
    * a door that would open on a read that cannot fill it is never drawn.
@@ -1503,7 +1755,7 @@ describe('the lines a diff left out', () => {
 
     // Back: the control is drawn from the answer that landed, with no second
     // ask for a scope whose content is already in hand.
-    press('next scope');
+    press('previous scope');
     await settle(() => document.querySelector('.rv-gapbtn') !== null);
     expect(
       document.querySelector('.rv-gapbtn')?.getAttribute('aria-label'),
@@ -1566,6 +1818,73 @@ describe('the lines a diff left out', () => {
       document.querySelector('.rv-gapbtn')?.getAttribute('aria-label'),
       'one hidden line, named as one line',
     ).toBe('show all 1 hidden line of src/a.rs');
+  });
+
+  /**
+   * **A placed comment outside the hunks is drawn on a reload.** A comment
+   * written on a revealed line resolves outside the diff's hunks, and a
+   * reload starts with every gap closed - without the page opening the gap
+   * holding it, the card has no row and the stepper counts a comment that is
+   * not on screen. The plausible regression is dropping that opening as a
+   * nicety, which leaves the comment invisible until the reader happens to
+   * expand its gap.
+   */
+  it('opens the gap holding a placed comment outside the hunks', async () => {
+    await draw([], [], true, TWO_HUNKS);
+    pushMessage({
+      kind: 'file_content',
+      session: SLOT,
+      path: 'src/a.rs',
+      sha: null,
+      content: { state: 'read', lines: LINES, truncated: false },
+    });
+    await settle(() => document.querySelector('.rv-gapbtn') !== null);
+    expect(
+      document.querySelector('.rv-gapbtn')?.getAttribute('aria-label'),
+      'both lines are hidden before the comment is read',
+    ).toBe('show all 2 hidden lines of src/a.rs');
+
+    const placed = {
+      ...THREAD,
+      id: 't3',
+      anchor: { ...THREAD.anchor, line: 3 },
+      resolution: { state: 'placed', line: 3, moved_from: null },
+    };
+    push({ wire: record(IDLE, [placed], [], TWO_HUNKS, []), refused: null });
+    await settle(
+      () =>
+        document.querySelector('.rv-gapbtn')?.getAttribute('aria-label') ===
+        'show all 1 hidden line of src/a.rs',
+    );
+    expect(
+      viewer.built.at(-1),
+      'and the revealed line reached the viewer, so the row is drawn',
+    ).toContain('three');
+  });
+
+  /**
+   * **A comment the read cannot reach is still somewhere.** A placed thread
+   * whose line sits outside the hunks and whose file read failed cannot be
+   * drawn in the table or revealed by a gap; the file's section says where
+   * it is, so the tally and the comment stepper never count nothing.
+   */
+  it('draws a comment the file read cannot reach as a parked line', async () => {
+    await draw([], [], true, TWO_HUNKS);
+    const placed = {
+      ...THREAD,
+      id: 't9',
+      anchor: { ...THREAD.anchor, line: 9 },
+      resolution: { state: 'placed', line: 9, moved_from: null },
+    };
+    push({ wire: record(IDLE, [placed], [], TWO_HUNKS, []), refused: null });
+    await settle(() => document.querySelector('.rv-parked') !== null);
+
+    expect(document.querySelector('.rv-parked')?.textContent, 'it names its line').toContain(
+      'line 9',
+    );
+    expect(document.querySelector('.rv-parked')?.textContent, 'and why it is parked').toContain(
+      'the file content is not in hand',
+    );
   });
 
   /**
@@ -1702,12 +2021,13 @@ describe('the lines a diff left out', () => {
   });
 
   /**
-   * **A line the hunks do not carry takes no door.** An expanded gap draws
-   * lines the record does not hold, and a thread's anchor is resolved
-   * against what the server ships: a comment written on one would park as
-   * outdated the moment it was filed, so the page does not offer.
+   * **An unrevealed line takes no door.** A line the hunks do not carry is
+   * drawn only by an expansion, and its anchor comes from the file read:
+   * with no reveal there is no line to place, so the page offers nothing.
+   * A revealed one takes a door and its comment lands (the reveal's own
+   * test above).
    */
-  it('draws no door, and opens no box, on a line the hunks do not carry', async () => {
+  it('draws no door, and opens no box, on a line no press has revealed', async () => {
     await draw();
 
     const rows = [...document.querySelectorAll('tr.diff-line')];
