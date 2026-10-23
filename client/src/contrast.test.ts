@@ -76,8 +76,13 @@ const OPAQUE = /^#[0-9a-f]{6}$/i;
 /** The sheet's spelling of a token, which is what a pair's entry names. */
 const TOKEN = /^--[a-z0-9-]+$/;
 
-/** And its spelling of a two-token lift: `color-mix(in srgb, var(--a) p%, var(--b))`. */
-const MIX = /^color-mix\(in srgb, var\((--[a-z0-9-]+)\) (\d+)%, var\((--[a-z0-9-]+)\)\)$/;
+/**
+ * And its spelling of a two-part lift: `color-mix(in srgb, var(--a) p%,
+ * var(--b))`, with a literal `#rrggbb` allowed where the sheet names a tint
+ * over a token ground (the markdown diff grounds).
+ */
+const MIX =
+  /^color-mix\(in srgb, (var\((--[a-z0-9-]+)\)|#[0-9a-f]{6}) (\d+)%, (var\((--[a-z0-9-]+)\)|#[0-9a-f]{6})\)$/i;
 
 /** An entry resolved to a `#rrggbb` value, or the reason it could not be. */
 type Resolved = { ink: string } | { why: string };
@@ -99,9 +104,13 @@ function inkOf(entry: string, palette: Readonly<Record<string, string>>): Resolv
   }
   const mix = MIX.exec(entry);
   if (mix === null) return { why: 'not a pair of #rrggbb values' };
-  const [, left = '', percent = '0', right = ''] = mix;
-  const a = palette[left];
-  const b = palette[right];
+  const [, left = '', , percent = '0', right = ''] = mix;
+  const named = (part: string): string | undefined => {
+    if (OPAQUE.test(part)) return part;
+    return palette[/^var\((--[a-z0-9-]+)\)$/i.exec(part)?.[1] ?? ''] ?? undefined;
+  };
+  const a = named(left);
+  const b = named(right);
   if (a === undefined || b === undefined) return { why: 'the palette resolves no such token' };
   const mixed = blend(a, b, Number(percent));
   return mixed === null ? { why: 'not a pair of #rrggbb values' } : { ink: mixed };
@@ -219,11 +228,11 @@ const LIFTED = (token: string): string => `color-mix(in srgb, var(${token}) 70%,
 
 /**
  * The composite `.ansi-dim` paints: the token at the sheet's own opacity over
- * the box's ground. `opacity: .7` on text composites the glyph over what is
+ * the box's ground. `opacity: .75` on text composites the glyph over what is
  * behind it, which is exactly this mix - so the values the attribute costs are
  * the ones the rows below measure.
  */
-const DIMMED = (token: string): string => `color-mix(in srgb, var(${token}) 70%, var(--bg))`;
+const DIMMED = (token: string): string => `color-mix(in srgb, var(${token}) 75%, var(--s2))`;
 
 const DRAWN: readonly Pair[] = [
   ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
@@ -281,25 +290,29 @@ const DRAWN: readonly Pair[] = [
   [LIFTED('--teal'), '--bg', TEXT],
   // **`\e[2m` is the command's own attribute and draws dim.** A command that
   // asked for de-emphasis gets it, so these nine composites sit at their
-  // measured values - five of the eight coloured ones under the text floor
-  // (dim 3.03, red 3.37, blue 4.04, yellow 4.45, magenta 4.49) and three above
-  // it (green 5.21, cyan 5.28, white 6.65), with bare `\e[2m` - no colour
-  // class at all, so the box's own tone - at 3.85.
+  // measured values. **The ground is the panel's `--s2`**, which is what a
+  // call body draws its output on; the `.75` opacity is the sheet's value
+  // that keeps every one of them at or above the minima the old box set.
   //
-  // The floors are those values rounded down a tenth, so they are MINIMA: a
-  // lighter opacity is what they catch. A heavier one is caught by the
-  // sheet-parity assertion below, which reads the verbatim `.7` out of the
-  // sheet - the two together are what makes either direction of drift red.
-  [DIMMED('--dim'), '--bg', 3.0],
-  [DIMMED('--bad'), '--bg', 3.3],
-  [DIMMED('--blue'), '--bg', 4.0],
-  [DIMMED('--warn'), '--bg', 4.4],
-  [DIMMED('--violet'), '--bg', 4.4],
-  [DIMMED('--ok'), '--bg', 5.2],
-  [DIMMED('--teal'), '--bg', 5.2],
-  [DIMMED('--text'), '--bg', 6.6],
-  // Bare `\e[2m`: the box's own tone, `.term { color: var(--muted) }`.
-  [DIMMED('--muted'), '--bg', 3.8],
+  // The floors are those minima, so they catch a LIGHTER opacity; a heavier
+  // one is caught by the sheet-parity assertion below, which reads the
+  // verbatim `.75` out of the sheet - the two together are what makes either
+  // direction of drift red.
+  [DIMMED('--dim'), '--s2', 3.0],
+  [DIMMED('--bad'), '--s2', 3.3],
+  [DIMMED('--blue'), '--s2', 4.0],
+  [DIMMED('--warn'), '--s2', 4.4],
+  [DIMMED('--violet'), '--s2', 4.4],
+  [DIMMED('--ok'), '--s2', 5.2],
+  [DIMMED('--teal'), '--s2', 5.2],
+  [DIMMED('--text'), '--s2', 6.6],
+  // Bare `\e[2m`: the box's own tone, `.bodytext { color: var(--muted) }`.
+  [DIMMED('--muted'), '--s2', 3.8],
+  // A rendered markdown diff's words on their own tinted grounds: the
+  // removal is struck but it is still content, so it takes the text floor
+  // rather than the dim rows' minima.
+  ['--muted', 'color-mix(in srgb, #f85149 13%, var(--s2))', TEXT],
+  ['--muted', 'color-mix(in srgb, #2ea043 16%, var(--s2))', TEXT],
 ];
 
 /**
@@ -395,11 +408,21 @@ describe('the palette', () => {
       );
     }
     expect(sheet, 'and the dim composites are that sheet value').toContain(
-      '.ansi-dim { opacity: .7; }',
+      '.ansi-dim { opacity: .75; }',
     );
-    expect(sheet, "bare dim draws the box's own tone").toContain(
-      '.term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',
+    expect(sheet, "bare dim draws the body's own tone").toContain(
+      '.bodytext { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',
     );
+    // The markdown diff grounds are drawn by the sheet too, derived from the
+    // table's own rows: a one-sided edit here would keep measuring a mix the
+    // sheet had stopped drawing.
+    const diffGrounds = DRAWN.map(([, ground]) => ground).filter((ground) =>
+      ground.startsWith('color-mix(in srgb, #'),
+    );
+    expect(diffGrounds.length, 'the diff grounds are rows of the table').toBe(2);
+    for (const ground of diffGrounds) {
+      expect(sheet, `the sheet draws ${ground}`).toContain(ground);
+    }
   });
 
   /** A pair naming a token the palette does not resolve is a stale pair. */

@@ -157,7 +157,7 @@ describe('one turn, as the page draws it', () => {
     const body = draw(prompt('Run this:\n\n```sh\njust check\n```\n\nand read `out`.'));
 
     expect(body, 'a fence in what the reader typed draws as the code panel').toContain(
-      'class="code"',
+      'class="code panel"',
     );
     expect(body, 'and an inline span draws as a code span').toContain('<code>out</code>');
     expect(body, 'and the words are still there').toContain('just check');

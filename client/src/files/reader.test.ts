@@ -33,10 +33,15 @@ vi.mock('../doc/live', () => ({
  * pin is which grammar a path asks for and that the rest of the reader
  * builds; the painting itself is the bridge's, verified in the browser.
  */
-const bridge = vi.hoisted(() => ({ langs: [] as string[] }));
+const bridge = vi.hoisted(() => ({
+  langs: [] as string[],
+  /** Set to make the bridge fail, the way a rejected grammar chunk does. */
+  fail: null as Error | null,
+}));
 vi.mock('@cmshiki/shiki', () => ({
   shikiToCodeMirror: (options: { lang: string }): Promise<{ shiki: unknown[] }> => {
     bridge.langs.push(options.lang);
+    if (bridge.fail !== null) return Promise.reject(bridge.fail);
     return Promise.resolve({ shiki: [] });
   },
 }));
@@ -66,21 +71,35 @@ function answer(overrides: Partial<DocRead>): DocRead {
 beforeEach(() => {
   reads.held = answer({});
   bridge.langs = [];
+  bridge.fail = null;
+  // jsdom has no object-URL implementation, and the picture and the PDF both
+  // draw from the read's bytes through one.
+  URL.createObjectURL = vi.fn(() => 'blob:picture');
+  URL.revokeObjectURL = vi.fn();
 });
 
 describe('the reader built over a file', () => {
-  it('asks the bridge for the language its path names, and for text when none does', async () => {
+  it('asks the bridge for the language it is handed, and for text when handed text', async () => {
     const rust = document.createElement('div');
     document.body.append(rust);
-    const built = await buildReader(rust, 'fn main() {}', 'crates/a.rs');
+    const built = await buildReader(rust, 'fn main() {}', 'rust');
     built.destroy();
 
     const plain = document.createElement('div');
     document.body.append(plain);
-    const other = await buildReader(plain, 'fn main() {}', 'notes.zzz');
+    const other = await buildReader(plain, 'fn main() {}', 'text');
     other.destroy();
 
-    expect(bridge.langs, 'languageForPath reaches the reader, per path').toEqual(['rust', 'text']);
+    const markdown = document.createElement('div');
+    document.body.append(markdown);
+    const source = await buildReader(markdown, '# hi', 'markdown');
+    source.destroy();
+
+    expect(bridge.langs, 'the policy reaches the reader, per language').toEqual([
+      'rust',
+      'text',
+      'markdown',
+    ]);
     expect(built.lines(), 'and the handle carries the file\u{27}s own lines').toEqual([
       'fn main() {}',
     ]);
@@ -89,7 +108,7 @@ describe('the reader built over a file', () => {
   it('draws the target line with its door, and mounts a block under one', async () => {
     const host = document.createElement('div');
     document.body.append(host);
-    const reader = await buildReader(host, 'one\ntwo\nthree', 'a.rs');
+    const reader = await buildReader(host, 'one\ntwo\nthree', 'rust');
 
     reader.targetLine(2);
     expect(host.querySelector('.cm-line.files-target')?.textContent, 'the line is tinted').toBe(
@@ -102,7 +121,7 @@ describe('the reader built over a file', () => {
 
     const second = document.createElement('div');
     document.body.append(second);
-    const withComment = await buildReader(second, 'one\ntwo', 'a.rs', (line) => pressed.push(line));
+    const withComment = await buildReader(second, 'one\ntwo', 'rust', (line) => pressed.push(line));
     const line = second.querySelector('.cm-line');
     line?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(pressed, 'a press on a line reports it').toEqual([1]);
@@ -112,7 +131,7 @@ describe('the reader built over a file', () => {
   it('mounts a thread block into its row', async () => {
     const host = document.createElement('div');
     document.body.append(host);
-    const reader = await buildReader(host, 'one\ntwo', 'a.rs');
+    const reader = await buildReader(host, 'one\ntwo', 'rust');
 
     reader.setBlocks([
       {
@@ -137,14 +156,14 @@ describe('the reader component around it', () => {
     document.body.innerHTML = '';
   });
 
-  function draw(value: DocRead): void {
+  function draw(value: DocRead, path = '/proj/a.rs'): void {
     reads.held = value;
     app = mount(Reader, {
       target: document.body,
       props: {
         connection: {} as never,
         slot: SLOT,
-        path: '/proj/a.rs',
+        path,
         handle: null,
       },
     });
@@ -165,9 +184,143 @@ describe('the reader component around it', () => {
     expect(document.querySelector('.files-quiet')?.textContent).toContain('over the ceiling');
   });
 
-  it('draws a kind it has no text for as its own line', () => {
-    draw(answer({ kind: 'pdf', bytes: new Uint8Array([1, 2, 3]), reviewable: false }));
+  it('opens an extensionless text file, with the header saying why it is plain', () => {
+    draw(
+      answer({
+        path: '/proj/notes.weird',
+        kind: 'text',
+        bytes: new TextEncoder().encode('nothing here matches a grammar'),
+      }),
+      '/proj/notes.weird',
+    );
 
-    expect(document.querySelector('.files-quiet')?.textContent).toContain('draws no text');
+    expect(document.querySelector('.files-fact')?.textContent).toBe(
+      'plain text - no syntax for this file',
+    );
+    expect(document.querySelector('.files-hint'), 'and it opens in the editor').not.toBeNull();
+    expect(document.querySelector('.files-quiet'), 'not a refusal').toBeNull();
+  });
+
+  it('opens a Justfile coloured with its own grammar', () => {
+    draw(
+      answer({
+        path: '/proj/Justfile',
+        kind: 'text',
+        bytes: new TextEncoder().encode('check:\n  cargo fmt'),
+      }),
+      '/proj/Justfile',
+    );
+
+    expect(document.querySelector('.files-fact')?.textContent).toContain('just');
+  });
+
+  /**
+   * **The head and the body read the same bytes.** An extensionless script
+   * names its language only by its shebang, and a body handed a path alone
+   * would draw it plain while the head said `shellscript`.
+   */
+  it('reads an extensionless script shebang into the head and the editor', async () => {
+    draw(
+      answer({
+        path: '/proj/run',
+        kind: 'text',
+        bytes: new TextEncoder().encode('#!/usr/bin/env bash\necho hi\n'),
+      }),
+      '/proj/run',
+    );
+
+    expect(document.querySelector('.files-fact')?.textContent).toContain('shellscript');
+    await vi.waitFor(
+      () => {
+        flushSync();
+        expect(bridge.langs, 'the editor is built with the shebang grammar').toContain(
+          'shellscript',
+        );
+      },
+      { timeout: 10_000 },
+    );
+  });
+
+  /**
+   * **A reader that could not be built is a state, not an empty editor.**
+   * A failed chunk fetch or a rejected grammar used to leave the box blank
+   * with nothing saying why.
+   */
+  it('draws a failed reader build instead of an empty editor', async () => {
+    bridge.fail = new Error('the grammar chunk did not arrive');
+    draw(answer({}));
+
+    await vi.waitFor(
+      () => {
+        flushSync();
+        expect(document.querySelector('.files-quiet')?.textContent ?? '').toContain(
+          'could not be built',
+        );
+      },
+      { timeout: 10_000 },
+    );
+    expect(document.querySelector('.files-quiet')?.textContent).toContain('did not arrive');
+  });
+
+  it('draws a picture inline with its mime in the header', () => {
+    draw(
+      answer({
+        path: '/proj/mark.png',
+        kind: { other: 'png' },
+        bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+        reviewable: false,
+      }),
+      '/proj/mark.png',
+    );
+
+    const picture = document.querySelector<HTMLImageElement>('.files-media img');
+    expect(picture, 'the picture itself').not.toBeNull();
+    expect(picture?.src, 'drawn from the read bytes').toBe('blob:picture');
+    expect(document.querySelector('.files-fact')?.textContent).toContain('image/png');
+
+    // jsdom does not decode, so the natural size is set and the load event
+    // is fired the way a real decode would: the head names both dimensions.
+    if (picture !== null) {
+      Object.defineProperty(picture, 'naturalWidth', { value: 512, configurable: true });
+      Object.defineProperty(picture, 'naturalHeight', { value: 256, configurable: true });
+      picture.dispatchEvent(new Event('load'));
+      flushSync();
+    }
+    expect(document.querySelector('.files-fact')?.textContent).toContain('512 \u{d7} 256');
+  });
+
+  it('draws a PDF as its pages', () => {
+    draw(
+      answer({
+        path: '/proj/retro.pdf',
+        kind: 'pdf',
+        bytes: new TextEncoder().encode('%PDF-1.4 fake'),
+        reviewable: false,
+      }),
+      '/proj/retro.pdf',
+    );
+
+    expect(document.querySelector('embed.doc-pdf'), 'the page viewer').not.toBeNull();
+    expect(document.querySelector('.files-fact')?.textContent).toContain('application/pdf');
+  });
+
+  it('draws a notice naming the type and size when there is no viewer', () => {
+    draw(
+      answer({
+        path: '/proj/forge.tar.gz',
+        kind: { other: 'gz' },
+        bytes: new Uint8Array([0xff, 0xfe, 0x00, 0x01]),
+        reviewable: false,
+      }),
+      '/proj/forge.tar.gz',
+    );
+
+    const notice = document.querySelector('.files-notice')?.textContent ?? '';
+    expect(notice).toContain('application/gzip');
+    expect(notice).toContain('not text');
+    expect(notice).toContain('still in the tree');
+    expect(document.querySelector('.files-fact')?.textContent, 'the head names it too').toContain(
+      'archive',
+    );
   });
 });

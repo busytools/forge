@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { render } from 'svelte/server';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -26,9 +28,9 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
   imageNote: null,
 });
 
-/** The body's term boxes, as the reader sees them. */
+/** The body's plain-text panels, as the reader sees them. */
 const boxes = (body: string): string[] =>
-  [...body.matchAll(/<div class="term">([\s\S]*?)<\/div>/g)].map((box) => box[1] ?? '');
+  [...body.matchAll(/<div class="panel bodytext">([\s\S]*?)<\/div>/g)].map((box) => box[1] ?? '');
 
 /** An MCP call, as the fold hands it to the row. */
 const mcp = (name: string, text: string): ToolLeaf => ({
@@ -170,7 +172,7 @@ describe('the row one call draws', () => {
     expect(drawn, 'a bare browser tool renders markdown, not a terminal box').toContain(
       'The person is done in the browser.',
     );
-    expect(drawn, 'and not the terminal box').not.toContain('class="term"');
+    expect(drawn, 'and not the terminal box').not.toContain('class="panel bodytext"');
   });
 
   it("flows an MCP result's soft breaks like a peer message", () => {
@@ -186,14 +188,39 @@ describe('the row one call draws', () => {
     expect(drawn, 'and they flow rather than drawing as forced breaks').not.toContain('<br>');
   });
 
-  it('keeps a local command output in its terminal box', () => {
+  it('keeps a local command output in a plain-text panel', () => {
     const drawn = render(Call, {
       props: { k: 'b1', open: true, call: backgrounded(null) },
     }).body;
 
-    expect(drawn, 'command output stays a terminal box').toContain('class="term"');
+    expect(drawn, 'command output draws in the shared panel').toContain('class="panel bodytext"');
     expect(drawn, 'and is not reflowed as prose').toContain(
       'Command running in background with ID',
+    );
+    // The chrome is one class and one rule, so a call body cannot drift from
+    // a code panel: the radius it wears is `.panel`'s.
+    const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
+    const panel = /(?:^|\n)\.panel \{([^}]*)\}/.exec(sheet)?.[1] ?? '';
+    expect(panel, 'the panel radius').toContain('border-radius: 9px');
+    expect(panel, 'the panel ground').toContain('background: var(--s2)');
+    // **The hook row's own box does not compose that chrome.** A call body
+    // wears `.panel`; `.term` stays the hook inset, so the two are told apart
+    // by their declarations rather than by a restated copy of them.
+    const term = /(?:^|\n)\.term \{([^}]*)\}/.exec(sheet)?.[1] ?? '';
+    expect(term, 'the hook inset keeps its rule').toContain('border-left');
+    expect(term, 'and takes none of the panel radius').not.toContain('border-radius');
+    expect(term, 'and none of the panel ground').not.toContain('background');
+    // **The body's own tones follow it into the panel.** The `$` prompt and
+    // the task's summary/failure lines are colours, and a container move that
+    // left them on `.term` would draw them muted in every call body.
+    expect(sheet, 'the prompt tone reaches the body').toContain(
+      '.term .pfx, .bodytext .pfx { color: var(--dim); }',
+    );
+    expect(sheet, 'the summary tone reaches the body').toContain(
+      '.term .sum, .bodytext .sum { color: var(--ok); }',
+    );
+    expect(sheet, 'the failure tone reaches the body').toContain(
+      '.term .fail, .bodytext .fail { color: var(--bad); }',
     );
   });
 

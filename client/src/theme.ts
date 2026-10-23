@@ -33,11 +33,11 @@ const SYSTEM_FONT = {
  * `web.css` declares none of these - only its own layout and type scale -
  * so the palette has exactly one home and this is it.
  *
- * Five more tokens - `--syn-key`, `--syn-str`, `--syn-fn`, `--add-bg` and
- * `--del-bg` - are deliberately NOT here: they colour code and a diff, and
- * colouring is the client's, from a maintained highlighter module that brings
- * its own theme. `web.css`'s `.k` / `.s` / `.f` / `.dif` rules go with it
- * when the chat's code rendering lands.
+ * Seven more tokens - `--syn-key`, `--syn-str`, `--syn-fn`, `--add-bg`,
+ * `--del-bg`, `--add-word` and `--del-word` - are deliberately NOT here: they
+ * colour code and a diff, and colouring is the client's, from a maintained
+ * highlighter module that brings its own theme. `web.css`'s `.k` / `.s` /
+ * `.f` / `.dif` rules go with it when the chat's code rendering lands.
  */
 const DARK: Record<string, string> = {
   '--bg': '#04050a',

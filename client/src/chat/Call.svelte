@@ -6,14 +6,19 @@
   import Ansi from './Ansi.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
+  import DiffCode from './DiffCode.svelte';
   import Forge from './Forge.svelte';
   import Call from './Call.svelte';
-  import { iconOf, isBrowserTool, mcpParts } from './families';
-  import { languageFor, omittedText, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
+  import MarkdownDiff from './MarkdownDiff.svelte';
+  import MarkdownPanel from './MarkdownPanel.svelte';
+  import { iconOf, isBrowserTool, isEdit, mcpParts } from './families';
+  import { omittedText, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
+  import { formatOf } from '../format/policy';
+  import { hasDefinitionChange, patchLines } from '../format/markdown-diff';
   import { duration, tokens } from './numbers';
   import { outputs } from './outputs.svelte';
   import Prose from './Prose.svelte';
-  import { firstLine, searchHits, stripEscapes } from './text';
+  import { firstLine, searchHits, stripEscapes, withoutLineNumbers } from './text';
   import Thought from './Thought.svelte';
   import { subagents } from './subagents.svelte';
   import { dispatchTimeline } from './timeline';
@@ -118,10 +123,42 @@
       : null,
   );
 
-  /** The language a read's body is drawn in, when the call named a file. */
-  function asCode(piece: CallBody): string | null {
-    return piece.kind === 'text' ? languageFor(call) : null;
+  /**
+   * What a Read's file is, decided by the one per-format policy.
+   *
+   * The bytes are the result's own text, so a filename table and a shebang
+   * are read the same way the Files reader reads them.
+   */
+  const readFormat = $derived.by(() => {
+    if (call.name !== 'Read') return null;
+    const text = call.body.find(
+      (piece): piece is Extract<CallBody, { kind: 'text' }> => piece.kind === 'text',
+    );
+    // The CLI writes a gutter on every line; the file is what is after it,
+    // and a shebang has to be read from the file's own first line.
+    const file = text === undefined ? null : withoutLineNumbers(stripEscapes(text.text));
+    return formatOf(call.title, file === null ? null : new TextEncoder().encode(file));
+  });
+
+  /**
+   * Whether a read's body is a file the code panel draws: code or text.
+   *
+   * **Only those two.** An image or PDF result's sidecar ("Saved to ...") is
+   * text about the call, not the file, and used to draw in the terminal box;
+   * sending it to the code panel invented a plain-text note for a file that
+   * was never read as text.
+   */
+  function asCode(piece: CallBody): boolean {
+    return piece.kind === 'text' && (readFormat?.kind === 'code' || readFormat?.kind === 'text');
   }
+
+  /**
+   * The grammar the panel draws with, from the format the row detected.
+   *
+   * Handed down rather than re-derived: the panel's text still carries the
+   * CLI's `N<TAB>` gutter, and a shebang cannot be read through it.
+   */
+  const readLanguage = $derived(readFormat?.kind === 'code' ? readFormat.language : null);
 
   /** A piece the patch box does not draw: a run of text, or a picture. */
   type RunPiece = Exclude<CallBody, { kind: 'diff' } | { kind: 'hunk' }>;
@@ -167,6 +204,18 @@
    */
   const patches = $derived(
     call.body.filter((piece) => piece.kind === 'diff' || piece.kind === 'hunk'),
+  );
+
+  /**
+   * Whether a mutation's patch is a markdown change drawn as a rendered
+   * diff. A changed reference-style definition falls back to the source
+   * diff: a rendered view cannot show a definition, and a sentinel in one
+   * breaks the definition and every reference to it.
+   */
+  const markdownPatch = $derived(
+    isEdit(call.name) &&
+      formatOf(call.title).kind === 'markdown' &&
+      !hasDefinitionChange(patchLines(patches)),
   );
   const tail = $derived(rest.map((piece) => piece.kind).lastIndexOf('text'));
 
@@ -628,50 +677,15 @@
         {/each}
       {:else}
         {#if patches.length > 0}
-          <div class="dif" class:added class:bare>
-            {#each patches as piece, at (at)}
-              {#if piece.kind === 'diff'}
-                <!-- No header naming the file: the row's own title is the path,
-                     and it is the same path, so a line here would print it
-                     twice. No number columns either: this is the call's own two
-                     sides, which have no position to number (`bare`). -->
-                {#each piece.old.split('\n') as line, n (`old-${n}`)}
-                  {#if piece.old !== ''}
-                    <div class="ln d">
-                      <span class="n">{'\u{2212}'}</span><span class="l">{line}</span>
-                    </div>
-                  {/if}
-                {/each}
-                {#each piece.new.split('\n') as line, n (`new-${n}`)}
-                  {#if piece.new !== ''}
-                    <div class="ln a">
-                      <span class="n">+</span><span class="l">{line}</span>
-                    </div>
-                  {/if}
-                {/each}
-              {:else}
-                <!-- The CLI's own hunk, which is where the change sits and what
-                     is around it. The header is the range it covers, and each
-                     line is read by the mark the wire prefixes it with. -->
-                <div class="h">{piece.header}</div>
-                {#each piece.lines as line, n (`h-${n}`)}
-                  <div
-                    class="ln"
-                    class:d={line.kind === 'del'}
-                    class:a={line.kind === 'add'}
-                    class:ctx={line.kind === 'ctx'}
-                  >
-                    <span class="on">{line.old ?? ''}</span>
-                    <span class="nn">{line.new ?? ''}</span>
-                    <span class="n"
-                      >{line.kind === 'del' ? '\u{2212}' : line.kind === 'add' ? '+' : ''}</span
-                    >
-                    <span class="l">{line.text}</span>
-                  </div>
-                {/each}
-              {/if}
-            {/each}
-          </div>
+          {#if markdownPatch}
+            <!-- A markdown change draws as rendered markdown, removals kept
+                 inline and struck; the source diff is not shown under it. -->
+            <MarkdownDiff pieces={patches} />
+          {:else}
+            <!-- The patch box: the CLI's hunks and a call's own two sides,
+                 with the file's grammar and GitHub's tinted grounds. -->
+            <DiffCode pieces={patches} path={call.title} {added} {bare} />
+          {/if}
         {/if}
         {@render pieces(rest)}
         {#if readback !== null}
@@ -686,7 +700,7 @@
                    alike. -->
               <div class="outlive">live</div>
             {/if}
-            <div class="term"><Ansi text={readback.lines.join('\n')} /></div>
+            <div class="panel bodytext"><Ansi text={readback.lines.join('\n')} /></div>
           {:else if readback.kind === 'lines'}
             {#if liveTail}
               <!-- An empty file while the call runs is the same fact as none
@@ -715,7 +729,9 @@
           {/if}
         {/if}
         {#if tail === -1 && call.note !== null}
-          <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
+          <div class="panel bodytext">
+            <span class={call.note.tone ?? undefined}>{call.note.text}</span>
+          </div>
         {/if}
         {#if size !== null || marks.length > 0}
           <!-- The size always, then only the marks that are true: a reader acts
@@ -736,7 +752,7 @@
 {#snippet pieces(parts: RunPiece[], asProse = false)}
   {#each parts as piece, at (at)}
     {#if piece.kind === 'image'}
-      <div class="term">
+      <div class="panel bodytext">
         image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
       </div>
     {:else if piece.kind === 'error'}
@@ -769,15 +785,21 @@
            is where literal lines live. A local command's OUTPUT is not prose
            and stays the terminal box below. -->
       <div class="pbody"><Prose text={stripEscapes(textOf(piece))} /></div>
-    {:else if asCode(piece) !== null}
-      <Code path={call.title} text={stripEscapes(textOf(piece))} />
+    {:else if readFormat?.kind === 'markdown'}
+      <!-- A Read of markdown renders: the file is prose the page already
+           knows how to draw, and its source is not what a reader wants. The
+           CLI's line-number gutter comes off, or `#` sits after a number and
+           every heading draws as a paragraph. -->
+      <MarkdownPanel text={withoutLineNumbers(stripEscapes(textOf(piece)))} />
+    {:else if asCode(piece)}
+      <Code language={readLanguage} text={stripEscapes(textOf(piece))} />
     {:else}
       <!-- The command a call ran leads its own output: a call given a
            description shows that as its title, and the command would
            otherwise appear nowhere. The break is an element rather than
            a character in the text, so it is a break whatever the box's
            whitespace rule turns out to be. -->
-      <div class="term">
+      <div class="panel bodytext">
         {#if call.command !== null}<span class="pfx">$</span>
           {call.command}<br />{/if}<Ansi
           text={textOf(piece)}

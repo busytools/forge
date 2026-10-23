@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { firstLine, headline, joinedLine, searchHits, shortPath, stripEscapes } from './text';
+import {
+  firstLine,
+  headline,
+  joinedLine,
+  searchHits,
+  shortPath,
+  stripEscapes,
+  withoutLineNumbers,
+} from './text';
 
 describe('the text a command produced, as a page draws it', () => {
   it('strips the colour a command wrote', () => {
@@ -146,6 +154,24 @@ describe('the text a command produced, as a page draws it', () => {
     // arm it would return the bare tool name, which is the regression the arm
     // exists to remove - so it keeps the generic chain's own answer.
     expect(headline('advisor', { query: 'how to handle X' })).toBe('how to handle X');
+  });
+
+  /**
+   * **A Read's result is the file behind the CLI's gutter.** Rendered as
+   * it arrives, a markdown heading's `#` sits after a number and the page
+   * draws a paragraph; rendered as the file, it is a heading. The second
+   * half is the control: a text file that happens to open `1<TAB>` is not
+   * numbered, and must lose nothing.
+   */
+  it("takes the CLI's line-number gutter off a Read's text, and only when the body is numbered", () => {
+    expect(withoutLineNumbers('1\t# Placement\n2\t\n3\t- one\n')).toBe('# Placement\n\n- one\n');
+    // A SINGLE line is the file, not a numbered body: `1<TAB>hello` is a
+    // genuine line and must keep its words.
+    expect(withoutLineNumbers('1\thello')).toBe('1\thello');
+    expect(withoutLineNumbers('1\thello\n')).toBe('1\thello\n');
+    expect(withoutLineNumbers('1\tthis file is not numbered\nthe rest is prose\n')).toBe(
+      '1\tthis file is not numbered\nthe rest is prose\n',
+    );
   });
 
   it('drops the working directory a reader is already in', () => {

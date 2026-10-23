@@ -38,8 +38,12 @@ pub enum DocumentRefusal {
 /// Read one document out of `cwd`'s tree, or under one of `vault_roots`.
 ///
 /// `path` resolves against `cwd`. The read answers whether the DOCUMENT is
-/// reviewable - a markdown or text kind is, and a PDF opens read-only - so a
-/// viewer's door does not depend on how the page was reached. The request's
+/// reviewable - the commentable set the hand-off has always offered, by
+/// extension, while a PDF and a binary open read-only - so a viewer's door
+/// does not depend on how the page was reached. The Files reader's wider
+/// UTF-8 drawing classification is the CLIENT's policy, not this read's:
+/// the wire keeps the hand-off's extension kind, so the hand-off viewer and
+/// its documented behaviour are unchanged. The request's
 /// `reviewable` flag asks the hand-off's own question and is refused for a
 /// PDF, whose kind can never carry a review. The read is bounded by
 /// `ceiling_bytes`, and a refusal names its reason.
@@ -109,23 +113,25 @@ pub fn read(
     if bytes.len() as u64 > ceiling_bytes {
         return Err(DocumentRefusal::OverCeiling { size_bytes: bytes.len() as u64, ceiling_bytes });
     }
+    // A file the hand-off has always treated as text must still decode: a
+    // corrupt markdown or code file is refused, not handed on.
     if reviewable_kind(&kind) && std::str::from_utf8(&bytes).is_err() {
         return Err(DocumentRefusal::NotUtf8 { path: path.to_owned() });
     }
-    let content_hash = crate::env::git_diff::resolver::content_hash_bytes(&bytes);
     let can_review = reviewable_kind(&kind);
+    let content_hash = crate::env::git_diff::resolver::content_hash_bytes(&bytes);
     Ok(DocumentRead { path: resolved, kind, bytes, reviewable: can_review, content_hash })
 }
 
-/// The extensions whose files read as reviewable text: **one set named
-/// twice** with `client/src/files/languages.ts`'s `LANGS` table, which is
-/// the reader's own list - the table the files page actually colours by,
-/// not the chat's `NAMED`. The two cannot share a constant across the wire,
-/// so each side pins its own list against a literal of the other's in a
-/// test; a language added on one side is added here in the same change (the
-/// lead's gate, 2026-10-17: the comment named `chat/code.ts`, which itself
-/// lacked `svelte` and `kt` this list already carried, and eight client
-/// extensions opened to a refusal).
+/// The extensions whose files the hand-off can carry a review on.
+///
+/// **This is the hand-off's set, not the drawing policy.** The Files reader
+/// draws by the client's per-format policy - any UTF-8 file is text, an SVG
+/// is a picture - while a hand-off keeps its commentable set exactly as it
+/// was, so a `.rs` document still draws as it did and an extensionless
+/// Justfile opens read-only. A language added here is one the hand-off
+/// should comment, which is a different question from whether the reader can
+/// draw it.
 const TEXT_EXTENSIONS: &[&str] = &[
     "rs", "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "svelte", "py", "go", "json",
     "toml", "yaml", "yml", "sh", "bash", "zsh", "css", "html", "htm", "xml", "svg", "sql", "kt",
@@ -133,8 +139,8 @@ const TEXT_EXTENSIONS: &[&str] = &[
 ];
 
 /// Whether a kind can carry a review at all: markdown, text and the code
-/// kinds draw as comment targets (the files page's comments ride a
-/// document read), and a PDF or an image kind opens read-only.
+/// kinds draw as comment targets (the hand-off's comments ride a document
+/// read), and a PDF or an unrecognised kind opens read-only.
 fn reviewable_kind(kind: &DocumentKind) -> bool {
     match kind {
         DocumentKind::Markdown | DocumentKind::Text => true,
@@ -251,30 +257,6 @@ mod tests {
     /// 1 MiB, so the over-ceiling case is small rather than a 10 MiB fixture.
     const CEILING: u64 = 1024 * 1024;
 
-    /// **The two language lists are one set named twice.** This literal is
-    /// the CLIENT's table, `client/src/files/languages.ts`'s `LANGS`, copied
-    /// by hand because a constant cannot cross the wire - so a language
-    /// added there is added to `TEXT_EXTENSIONS` in the same change, and the
-    /// client's own test pins the same set from its side (the lead's gate,
-    /// 2026-10-17: these eight - mts, cts, cjs, htm, svg, markdown, ini,
-    /// kts - opened to a refusal because nothing compared the two).
-    const CLIENT_LANGS: &[&str] = &[
-        "rs", "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "svelte", "py", "go", "json",
-        "yaml", "yml", "css", "html", "htm", "xml", "svg", "sql", "md", "markdown", "toml", "ini",
-        "sh", "bash", "zsh", "kt", "kts", "txt",
-    ];
-
-    /// Every extension the reader colours is reviewable, and nothing more:
-    /// both directions, so neither a hole nor a kind the client cannot draw.
-    #[test]
-    fn the_reviewable_extensions_are_the_clients_language_table() {
-        let mut ours = super::TEXT_EXTENSIONS.to_vec();
-        ours.sort_unstable();
-        let mut theirs = CLIENT_LANGS.to_vec();
-        theirs.sort_unstable();
-        assert_eq!(ours, theirs, "TEXT_EXTENSIONS and the client's LANGS are one set named twice");
-    }
-
     fn fixture() -> TempDir {
         tempfile::tempdir().expect("a tempdir")
     }
@@ -314,12 +296,13 @@ mod tests {
 
     /// The kinds the list starts with, by extension, case-insensitive; an
     /// extension the list does not know is kept as itself, and no extension
-    /// is kept as none.
+    /// is kept as none. **The kind is the hand-off's**, not the Files
+    /// reader's drawing: the reader classifies UTF-8 by the client policy.
     #[test]
     fn each_extension_maps_to_its_kind_and_other_is_kept_as_itself() {
         let dir = fixture();
-        write(dir.path(), "notes.md", b"x");
-        write(dir.path(), "paper.PDF", b"x");
+        write(dir.path(), "notes.md", b"# hi\n");
+        write(dir.path(), "paper.PDF", b"%PDF-1.4 fake");
         write(dir.path(), "notes.txt", b"x");
         write(dir.path(), "sketch.rs", b"x");
         write(dir.path(), "LICENSE", b"x");
@@ -335,8 +318,10 @@ mod tests {
     /// **The read answers whether the DOCUMENT is reviewable, not what the
     /// caller asked.** A markdown, text or code document a viewer opened
     /// cold - the request flag false - is reviewable all the same, so the
-    /// files page draws its comments however the reader reached it; a PDF
-    /// and an image kind are not, whatever the caller asked for.
+    /// hand-off draws its comments however the reader reached it; an
+    /// extensionless file, a PDF and a binary are not, whatever the caller
+    /// asked for. The Files reader still OPENS the extensionless text file:
+    /// its drawing policy does not consult this flag.
     #[test]
     fn the_read_answers_the_documents_own_reviewability_not_the_callers_flag() {
         let dir = fixture();
@@ -344,11 +329,21 @@ mod tests {
         write(dir.path(), "notes.txt", b"x");
         write(dir.path(), "paper.pdf", b"%PDF-1.4 fake");
         write(dir.path(), "sketch.rs", b"fn main() {}");
+        write(dir.path(), "Justfile", b"check:\n");
+        write(dir.path(), "notes.weird", b"plain words\n");
+        write(dir.path(), "mark.svg", b"<svg/>");
         write(dir.path(), "blob.png", b"\x89PNG fake");
 
-        for probe in ["plan.md", "notes.txt", "sketch.rs"] {
+        // The hand-off's commentable set, by extension, as it always was.
+        for probe in ["plan.md", "notes.txt", "sketch.rs", "mark.svg"] {
             let cold = read(dir.path(), &[], probe, false, CEILING).expect("reads");
             assert!(cold.reviewable, "{probe}: reviewable however the reader got there");
+        }
+        // An extensionless or unknown extension is not in the hand-off's
+        // commentable set - the Files reader draws it, a hand-off does not.
+        for probe in ["Justfile", "notes.weird"] {
+            let text = read(dir.path(), &[], probe, false, CEILING).expect("reads");
+            assert!(!text.reviewable, "{probe}: not in the hand-off's commentable set");
         }
         for probe in ["paper.pdf", "blob.png"] {
             let read_only = read(dir.path(), &[], probe, false, CEILING).expect("reads");
@@ -651,28 +646,33 @@ mod tests {
         assert!(document.bytes.is_empty());
     }
 
-    /// A text-bearing kind that is not UTF-8 is refused at the read rather
-    /// than handed on: a viewer that decoded it would draw replacement
-    /// characters, and the agent asked for a document it cannot show. An
-    /// image kind is never checked - its bytes are drawn as the kind's own
-    /// name, not as text.
+    /// **A commentable extension that does not decode is still REFUSED**,
+    /// as it always was: the hand-off cannot carry comments on bytes it
+    /// cannot read, and a corrupt markdown file must not silently become a
+    /// binary. A kind outside that set - an image, an unknown extension -
+    /// is a binary read, which the Files reader draws as its notice.
     #[test]
-    fn a_non_utf8_text_document_is_refused_and_other_kinds_are_not() {
+    fn a_non_utf8_document_is_refused_when_commentable_and_binary_otherwise() {
         let dir = fixture();
         let bytes = [0xff, 0xfe, 0x00, 0x01];
         write(dir.path(), "broken.md", &bytes);
         write(dir.path(), "broken.txt", &bytes);
         write(dir.path(), "broken.rs", &bytes);
         write(dir.path(), "blob.png", &bytes);
+        write(dir.path(), "noext", &bytes);
 
         for probe in ["broken.md", "broken.txt", "broken.rs"] {
-            let refusal = read(dir.path(), &[], probe, false, CEILING).expect_err("not text");
+            let refusal = read(dir.path(), &[], probe, false, CEILING)
+                .expect_err("a commentable extension must decode");
             assert!(matches!(refusal, DocumentRefusal::NotUtf8 { .. }), "{probe}: {refusal:?}");
             assert!(refusal.to_string().contains("UTF-8"), "{probe}: names the reason: {refusal}");
         }
 
-        let other =
-            read(dir.path(), &[], "blob.png", false, CEILING).expect("an image kind is not text");
-        assert_eq!(other.kind, DocumentKind::Other("png".to_owned()));
+        for (probe, ext) in [("blob.png", "png"), ("noext", "")] {
+            let binary =
+                read(dir.path(), &[], probe, false, CEILING).expect("a binary read is a read");
+            assert!(!binary.reviewable, "{probe}: binary is not reviewable");
+            assert_eq!(binary.kind, DocumentKind::Other(ext.to_owned()), "{probe}: its extension");
+        }
     }
 }

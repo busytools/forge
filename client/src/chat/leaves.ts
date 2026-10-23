@@ -10,7 +10,6 @@
  * the call, and everything else is in the result that answers it.
  */
 
-import { languageOf } from './code';
 import { decisionOf, decisionTitle, decisionWord, type Decision } from './decisions';
 import {
   browserVerb,
@@ -233,11 +232,6 @@ function wrappedRows(text: string): number {
 
 /** Roughly the diff's text column at a wide window; the bound only needs its order. */
 const DIFF_COLUMNS = 76;
-
-/** Whether a call's body is a source file the page colours. */
-function readsSource(name: string): boolean {
-  return name === 'Read';
-}
 
 /** A field of a JSON object, when it is a string. */
 function field(value: unknown, key: string): string | null {
@@ -769,9 +763,4 @@ function drawnBody(
 function settledBy(result: Block | undefined, abandoned: boolean): CallStatus {
   if (result === undefined) return abandoned ? 'failed' : 'pending';
   return result.is_error === true ? 'failed' : 'completed';
-}
-
-/** Whether a call's body draws as a source file: a read that named one this page knows. */
-export function languageFor(leaf: ToolLeaf): string | null {
-  return readsSource(leaf.name) ? languageOf(leaf.title) : null;
 }

@@ -133,6 +133,24 @@
     font-size: var(--fs-label); color: var(--dim); }
   .files-editor { border: 1px solid var(--line); border-top: 0;
     border-radius: 0 0 9px 9px; overflow: hidden; background: var(--s2); }
+  /* A picture and a PDF draw in the reader's own box, bounded. */
+  .files-media { padding: 16px; display: flex; align-items: center; justify-content: center;
+    background: #0d1013; border: 1px solid var(--line); border-top: 0;
+    border-radius: 0 0 9px 9px; }
+  .files-media img { max-width: 100%; max-height: 420px; border-radius: 8px;
+    border: 1px solid var(--line); }
+  .files-media .pdfpage { width: 300px; height: 388px; background: #f6f6f4; border-radius: 3px;
+    box-shadow: 0 2px 14px rgba(0,0,0,.5); padding: 24px 22px; font-family: Georgia, serif;
+    font-size: 6.5px; color: #3a3a38; }
+  .files-media .pdfpage h3 { font-size: 12px; margin: 0 0 8px; color: #1c1c1a; }
+  .files-media .pdfpage p { margin: 0 0 6px; line-height: 1.7; }
+  /* The notice for a file with no viewer: its type, its size, and that it is
+     still in the tree. */
+  .files-notice { margin: 13px; padding: 11px 13px; border: 1px solid var(--line);
+    border-radius: 9px; color: var(--dim); font-size: var(--fs-label); }
+  .files-notice b { color: var(--text); font-weight: 600; }
+  .files-kinds { display: flex; flex-direction: column; gap: 12px; }
+  .files-kinds .files-reader { gap: 0; }
   .cm { display: grid; grid-template-columns: 44px minmax(0, 1fr); font-family: var(--mono);
     font-size: var(--fs-label); }
   .cm-gut { border-right: 1px solid var(--line); color: var(--dim); padding: 8px 8px 10px 0;
@@ -341,7 +359,7 @@
     <section class="files-reader" aria-label="the file">
       <div class="files-filehead">
         <span class="files-path">crates/forge-server/src/surface.rs</span>
-        <span class="files-fact">rust<span class="files-sep">|</span>1,406 lines</span>
+        <span class="files-fact">rust<span class="files-sep">&#183;</span>1,406 lines</span>
       </div>
       <div class="files-editor">
         <div class="cm">
@@ -441,7 +459,82 @@
   </div>
 </div>
 
-<p class="fig"><b>Specimen 2 - the states.</b> A refused read owns its sentence where the file would sit; a tree with no files, and a filter with no match, say so in the tree's own place; a thread the landing could not place parks in the rail with its captured lines kept, never dropped.</p>
+<p class="fig"><b>Specimen 2 - the kinds.</b> One policy decides every file, the same the chat's Read rows read: a Justfile opens coloured with its own grammar and named in the head; a text file no grammar names draws plain, and the head says why; a picture draws itself, bounded, with its mime and dimensions; a PDF draws its pages; and a file with no viewer draws a notice naming its type and size, saying it is still in the tree.</p>
+
+<div class="files-kinds">
+  <div class="files-reader">
+    <div class="files-filehead">
+      <span class="files-path">Justfile</span>
+      <span class="files-fact">just<span class="files-sep">&#183;</span>41 lines</span>
+    </div>
+    <div class="files-editor">
+      <div class="cm">
+        <div class="cm-gut"><div>1</div><div>3</div><div>4</div><div>5</div></div>
+        <div class="cm-body">
+          <div><span class="k">set</span> shell := [<span class="s">"bash"</span>, <span class="s">"-cu"</span>]</div>
+          <div><span class="f">check:</span></div>
+          <div>    cargo fmt --check</div>
+          <div>    cargo clippy --all-targets -- -D warnings</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="files-reader">
+    <div class="files-filehead">
+      <span class="files-path">data/notes.weird</span>
+      <span class="files-fact">plain text - no syntax for this file</span>
+    </div>
+    <div class="files-editor">
+      <div class="cm">
+        <div class="cm-gut"><div>1</div><div>2</div></div>
+        <div class="cm-body">
+          <div>nothing here matches a grammar</div>
+          <div>so it draws as plain text, and the head says why.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="files-reader">
+    <div class="files-filehead">
+      <span class="files-path">assets/forge-mark.png</span>
+      <span class="files-fact">image/png<span class="files-sep">&#183;</span>512 &#215; 512</span>
+    </div>
+    <div class="files-media">
+      <svg width="180" height="180" viewBox="0 0 180 180" role="img" aria-label="forge mark">
+        <rect width="180" height="180" rx="28" fill="#11161c"/>
+        <path d="M46 52h88v20H66v24h58v20H66v32H46z" fill="#f47600"/>
+        <circle cx="132" cy="128" r="12" fill="#e6e6e3"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="files-reader">
+    <div class="files-filehead">
+      <span class="files-path">docs/retro.pdf</span>
+      <span class="files-fact">application/pdf<span class="files-sep">&#183;</span>2.1 MB</span>
+    </div>
+    <div class="files-media">
+      <div class="pdfpage">
+        <h3>The browser epic, retro</h3>
+        <p>Six tasks, 45h worked against 59h estimated, 0 reopened, 0 failed.</p>
+        <p>The engine was the easy half; the lifecycle was the cut.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="files-reader">
+    <div class="files-filehead">
+      <span class="files-path">dist/forge.tar.gz</span>
+      <span class="files-fact">archive<span class="files-sep">&#183;</span>2.1 MB</span>
+    </div>
+    <div class="files-notice">This file is <b>not text</b> (application/gzip, 2.1 MB), and there is
+      no viewer for it here. It is still in the tree and reviewable as a file.</div>
+  </div>
+</div>
+
+<p class="fig"><b>Specimen 3 - the states.</b> A refused read owns its sentence where the file would sit; a tree with no files, and a filter with no match, say so in the tree's own place; a thread the landing could not place parks in the rail with its captured lines kept, never dropped.</p>
 
 <div class="states">
   <div class="state">
@@ -455,13 +548,13 @@
     <div class="say">- or: No file matches this filter.</div>
   </div>
   <div class="state">
-    <div class="head">not text</div>
-    This page draws no text for this kind of file.
-    <div class="say">- an image's bytes are not a rendering to invent</div>
+    <div class="head">no viewer</div>
+    This file is not text (application/gzip, 2.1 MB), and there is no viewer for it here.
+    <div class="say">- it is still in the tree and reviewable as a file</div>
   </div>
 </div>
 
-<p class="fig"><b>Specimen 3 - the narrow page.</b> The reader is the page; the tree and the comments are sheets behind two real buttons, each raising a history entry so the hardware Back closes what it opened, with <span class="files-sheetbtn">done</span> and Escape as the other doors. The strip's files slip (the door onto this page) is drawn on the session page's own drawing.</p>
+<p class="fig"><b>Specimen 4 - the narrow page.</b> The reader is the page; the tree and the comments are sheets behind two real buttons, each raising a history entry so the hardware Back closes what it opened, with <span class="files-sheetbtn">done</span> and Escape as the other doors. The strip's files slip (the door onto this page) is drawn on the session page's own drawing.</p>
 
 <div class="phone">
   <div class="ptop">
