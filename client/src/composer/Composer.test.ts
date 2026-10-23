@@ -107,7 +107,8 @@ import { echoes, type Echo } from '../chat/echoes.svelte';
 import { pinnedRow } from '../chat/pinnedRow.svelte';
 import type { TurnInfo } from '../chat/units';
 import { boxKey } from './box.svelte';
-import { subjectKey, type ServerMessage } from '../protocol';
+import { modelsWire } from '../models/testing';
+import { subjectKey, type ServerMessage, type Subject } from '../protocol';
 import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 import {
   browserHandOffAsk,
@@ -7138,16 +7139,43 @@ describe('the dictation panel', () => {
   });
 
   /**
-   * The cap follows the COMPOSER, not just the window.
+   * A measured rect on an element jsdom lays out nothing for.
+   *
+   * `clientTop`/`clientHeight` come with it because the panel hangs off the
+   * host's padding box, which is what the CSS anchor measured against: a
+   * borderless host, as every one of these is, has its border at zero and its
+   * padding box the whole rect.
+   */
+  function rectAt(el: Element, top: number, bottom: number): void {
+    Object.defineProperty(el, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        top,
+        bottom,
+        height: bottom - top,
+        left: 0,
+        right: 0,
+        width: 0,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }),
+    });
+    Object.defineProperty(el, 'clientTop', { configurable: true, value: 0 });
+    Object.defineProperty(el, 'clientHeight', { configurable: true, value: bottom - top });
+  }
+
+  /**
+   * The cap follows the INPUT ROW, not the whole surface above it.
    *
    * A list opening above the field, or a take row landing above it, grows the
-   * composer and lifts the panel with it - and a cap measured on mount would
+   * input row and lifts the panel with it - and a cap measured on mount would
    * stay where it was and cut the panel's own top off. jsdom has no
    * `ResizeObserver` and performs no layout, so what this pins is that one is
-   * watching the composer; that the cap then tracks a growing box is a browser
+   * watching the row; that the cap then tracks a growing row is a browser
    * measurement, and the body carries its numbers.
    */
-  it('watches the composer, so a box that grows under the panel re-measures it', () => {
+  it('watches the input row, so a box that grows under the panel re-measures it', () => {
     const observed: Element[] = [];
     const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
     class Watching {
@@ -7167,24 +7195,25 @@ describe('the dictation panel', () => {
 
       expect(
         observed.length,
-        'nothing watches the composer, so a box growing under the panel re-clips it',
+        'nothing watches the input row, so a box growing under the panel re-clips it',
       ).toBeGreaterThan(0);
-      expect(observed[0]?.classList.contains('comp'), 'the composer is what is watched').toBe(true);
+      expect(observed[0]?.classList.contains('box'), 'the input row is what is watched').toBe(true);
     } finally {
       Reflect.set(globalThis, 'ResizeObserver', original);
     }
   });
 
   /**
-   * And the cap READS what the composer reports.
+   * And the cap READS what the row reports.
    *
    * The assertion above pins that something watches; this pins that the watch
    * does something - the regression the whole cap exists for. jsdom performs no
-   * layout, but it does not have to: the rect is supplied as an own property on
-   * the panel, so the component's own call answers what a browser would have
-   * measured, and the callback a fake observer was handed is fired by hand.
+   * layout, but it does not have to: the rects are supplied as own properties on
+   * the composer's own elements, so the component's calls answer what a browser
+   * would have measured, and the callback a fake observer was handed is fired by
+   * hand.
    */
-  it('caps the panel from the bottom the composer reports', () => {
+  it('caps the panel from the input row it hangs off', () => {
     const callbacks: (() => void)[] = [];
     const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
     class Watching {
@@ -7202,28 +7231,231 @@ describe('the dictation panel', () => {
       opened();
 
       const pop = document.querySelector('.pop');
+      const comp = document.querySelector('.comp');
+      const box = document.querySelector('.comp .box');
       if (!(pop instanceof HTMLElement)) throw new Error('the panel drew nothing to cap');
-      Object.defineProperty(pop, 'getBoundingClientRect', {
-        configurable: true,
-        value: () => ({
-          bottom: 500,
-          top: 0,
-          left: 0,
-          right: 0,
-          width: 0,
-          height: 0,
-          x: 0,
-          y: 0,
-          toJSON: () => ({}),
-        }),
-      });
+      if (!(comp instanceof Element)) throw new Error('the composer drew no surface');
+      if (!(box instanceof Element)) throw new Error('the composer drew no input row');
 
-      const fire = callbacks.at(0);
-      if (fire === undefined) throw new Error('nothing watched the composer');
+      rectAt(comp, 0, 500);
+      rectAt(box, 380, 425);
+      const fire = callbacks.at(-1);
+      if (fire === undefined) throw new Error('nothing watched the input row');
       fire();
       flushSync();
 
-      expect(pop.style.maxHeight, 'the cap reads the measured bottom').toBe('494px');
+      expect(pop.style.maxHeight, "the cap reads the row's top").toBe('368px');
+      expect(pop.style.bottom, 'and the hang is held from the page foot').toBe('126px');
+    } finally {
+      Reflect.set(globalThis, 'ResizeObserver', original);
+    }
+  });
+
+  /**
+   * **A page update is not a new read.**
+   *
+   * The models subscription used to be made inside the effect that watches the
+   * connection, and the page hands the panel its props again on every record
+   * frame - so each one tore the subscription down and built it again. The
+   * store goes with its last reader, so the subscribe that followed found no
+   * snapshot, asked the server, and the panel drew "reading the models this
+   * session runs..." for the round trip: measured in the dev client, a
+   * one-frame flicker of the panel's model rows on every update (#2524). One
+   * connection, one subscription.
+   */
+  it('reads the models once per connection, not once per page update', () => {
+    const shared = wire();
+    const asked: Subject[] = [];
+    const subscribe = shared.connection.subscribe.bind(shared.connection);
+    shared.connection.subscribe = (what) => {
+      asked.push(what);
+      return subscribe(what);
+    };
+
+    const harness = opened({}, shared);
+    const models = (): number => asked.filter((what) => what === 'dictate_models').length;
+    expect(models(), 'the panel asked for the models it draws').toBe(1);
+
+    // The page hands the composer a new record, as a frame landing does.
+    harness.page.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+
+    expect(document.querySelector('.pop'), 'the panel closed on the page update').not.toBeNull();
+    expect(models(), 'the page update tore the read down and asked again').toBe(1);
+
+    // The read the panel kept is still LIVE: a landing on the subject redraws
+    // its rows rather than leaving a subscription nobody hears.
+    harness.say({ kind: 'update', update: { dictate_models_changed: { models: modelsWire } } });
+    flushSync();
+    expect(document.body.textContent, 'the models landing never reached the panel').toContain(
+      'cohere-transcribe-03-2026-Q4_K_M.gguf',
+    );
+  });
+
+  /**
+   * **A turn's strip lane is above the input row, and the panel hangs off the
+   * row, so the strip's comings and goings cannot reach it.**
+   *
+   * The surface carries the pinned strip, whose height moves with the turn: the
+   * figures row appears at the start, the chips re-wrap, the row goes at the
+   * end. Measured in the dev client (#2524), a panel anchored to the surface
+   * jumped to a negative top - its header clipped - for one frame at every turn
+   * start and dropped 25px for one at every turn end, and its cap shrank by the
+   * strip's own height. Anchored to the input row, the strip growing 25px
+   * upward moves the input row not at all, and the panel with it.
+   */
+  it("keeps its place while a turn's strip grows above the input row", () => {
+    const callbacks: (() => void)[] = [];
+    const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
+    class Watching {
+      run: () => void;
+      constructor(run: () => void) {
+        this.run = run;
+      }
+      observe(): void {
+        callbacks.push(this.run);
+      }
+      disconnect(): void {}
+    }
+    Reflect.set(globalThis, 'ResizeObserver', Watching);
+    try {
+      opened();
+
+      const pop = document.querySelector('.pop');
+      const comp = document.querySelector('.comp');
+      const box = document.querySelector('.comp .box');
+      if (!(pop instanceof HTMLElement)) throw new Error('the panel drew nothing to place');
+      if (!(comp instanceof Element)) throw new Error('the composer drew no surface');
+      if (!(box instanceof Element)) throw new Error('the composer drew no input row');
+
+      // At rest on the page: the strip lane 74px deep, the input row 45px, the
+      // page's foot at 608.
+      rectAt(comp, 488, 608);
+      rectAt(box, 562, 607);
+      const fire = callbacks.at(-1);
+      if (fire === undefined) throw new Error('nothing watched the panel');
+      fire();
+      flushSync();
+
+      expect(pop.style.bottom, 'the panel hangs 6px above the input row').toBe('52px');
+      expect(pop.style.maxHeight, 'capped by the room above the input row').toBe('550px');
+
+      // A turn starts: the strip lane gains its figures row and the surface
+      // grows 25px UPWARD. The input row and the page's foot hold still.
+      rectAt(comp, 463, 608);
+      fire();
+      flushSync();
+
+      expect(document.querySelector('.pop'), 'the panel closed on the turn update').toBe(pop);
+      expect(pop.style.bottom, 'the turn moved the panel off its row').toBe('52px');
+      expect(pop.style.maxHeight, 'the turn re-capped the panel').toBe('550px');
+    } finally {
+      Reflect.set(globalThis, 'ResizeObserver', original);
+    }
+  });
+
+  /**
+   * **A prompt's dock taking the box is not the panel's row leaving for good.**
+   *
+   * The composer swaps `.box` for the dock when an ask lands, so the row the
+   * panel hangs off is detached. A detached row's ResizeObserver fires once
+   * more at 0x0, and measuring that wrote `bottom: hostBottom + 6;
+   * max-height: 0`: the open panel collapsed under a prompt that had nothing
+   * to do with it. The observation stops with the row and the place measured
+   * last stands; the box that replaces the dock re-measures.
+   */
+  it('keeps its place when a dock takes the box', () => {
+    const callbacks: (() => void)[] = [];
+    const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
+    class Watching {
+      run: () => void;
+      dead = false;
+      constructor(run: () => void) {
+        this.run = run;
+      }
+      observe(): void {
+        callbacks.push(() => {
+          if (!this.dead) this.run();
+        });
+      }
+      disconnect(): void {
+        this.dead = true;
+      }
+    }
+    Reflect.set(globalThis, 'ResizeObserver', Watching);
+    try {
+      const harness = opened();
+
+      const pop = document.querySelector('.pop');
+      const comp = document.querySelector('.comp');
+      const box = document.querySelector('.comp .box');
+      if (!(pop instanceof HTMLElement)) throw new Error('the panel drew nothing to place');
+      if (!(comp instanceof Element)) throw new Error('the composer drew no surface');
+      if (!(box instanceof Element)) throw new Error('the composer drew no input row');
+
+      rectAt(comp, 488, 608);
+      // A row that is detached measures 0x0, which is what the browser does.
+      Object.defineProperty(box, 'getBoundingClientRect', {
+        configurable: true,
+        value: () =>
+          box.isConnected
+            ? {
+                top: 562,
+                bottom: 607,
+                height: 45,
+                left: 0,
+                right: 0,
+                width: 0,
+                x: 0,
+                y: 562,
+                toJSON: () => ({}),
+              }
+            : {
+                top: 0,
+                bottom: 0,
+                height: 0,
+                left: 0,
+                right: 0,
+                width: 0,
+                x: 0,
+                y: 0,
+                toJSON: () => ({}),
+              },
+      });
+      const fire = callbacks.at(-1);
+      if (fire === undefined) throw new Error('nothing watched the panel');
+      fire();
+      flushSync();
+      expect(pop.style.bottom, 'the panel hangs 6px above the input row').toBe('52px');
+      expect(pop.style.maxHeight, 'capped by the room above the input row').toBe('550px');
+
+      // An ask lands: the dock takes the box's place and the row detaches.
+      harness.page.record = record({ pending_asks: [permissionAsk()] });
+      flushSync();
+      expect(document.querySelector('.comp .box'), 'the dock did not take the box').toBeNull();
+      expect(box.isConnected, 'the row is still attached').toBe(false);
+
+      // The detached row's observer fires once more, as the browser does.
+      for (const callback of callbacks) callback();
+      flushSync();
+
+      expect(document.querySelector('.pop'), 'the panel closed under the dock').not.toBeNull();
+      expect(pop.style.bottom, 'the detached row re-placed the panel').toBe('52px');
+      expect(pop.style.maxHeight, 'the detached row collapsed the panel').toBe('550px');
+
+      // The ask clears and the composer's own box returns: a NEW row, which
+      // must be measured rather than inheriting the place the old one left.
+      harness.page.record = record();
+      flushSync();
+      const again = document.querySelector('.comp .box');
+      if (!(again instanceof Element)) throw new Error('the box did not come back');
+      rectAt(again, 550, 607);
+      const rebind = callbacks.at(-1);
+      if (rebind === undefined) throw new Error('nothing watched the row that returned');
+      rebind();
+      flushSync();
+      expect(pop.style.bottom, 'the row that returned did not re-measure the panel').toBe('64px');
+      expect(pop.style.maxHeight, 'the room was never taken from the new row').toBe('538px');
     } finally {
       Reflect.set(globalThis, 'ResizeObserver', original);
     }

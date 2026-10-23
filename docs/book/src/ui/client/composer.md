@@ -66,6 +66,13 @@ axes - styling, structure, context - the models each role runs, and the
 input device. The axes are per seat and remembered on this machine, so a
 reload returns what the reader chose rather than the config's value.
 
+**The panel hangs off the input row, not the surface above it.** The strip
+lane changes height with every turn, so a panel anchored to the surface would
+move and re-cap as a turn starts and ends; anchored to the row, the strip
+grows under it and the panel stays where it is. Its models read is held for
+the connection rather than remade whenever the page hands the composer its
+props again, so a record frame never blinks the rows back to "reading".
+
 **On the desktop the picked input stays open for the client's whole
 run**: the shell takes the hold as the page that takes typing appears and
 again whenever the pick changes, so a press records from the press rather

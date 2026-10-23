@@ -46,6 +46,7 @@
     bind,
     mode,
     device = null,
+    anchor,
     onaxes,
     ondevice,
     onclose,
@@ -63,6 +64,17 @@
     mode: Mode;
     /** The input this seat records from, or `null` for the system default. */
     device?: string | null;
+    /**
+     * The row the panel hangs above, when the surface draws lanes above it.
+     *
+     * The composer keeps the running turn's strip in that lane, and its height
+     * moves with every turn; a panel anchored to the surface would move and
+     * re-cap at each one (#2524). `undefined` hangs the panel off the element
+     * that holds it, which is what every other surface draws - its own card.
+     * `null` is a row that is off screen right now: the panel keeps the place
+     * it had rather than jumping to another.
+     */
+    anchor?: HTMLElement | null;
     onaxes: (axes: DictateAxes) => void;
     ondevice: (device: string | null) => void;
     /** The visible way out, which a touch screen needs: a phone has no Escape. */
@@ -81,12 +93,36 @@
   /** Which role's list is open, when one is. */
   let modelsOpen = $state<ModelRole | null>(null);
 
+  /**
+   * The models subscription, held for as long as the connection is.
+   *
+   * **Not inside the effect's own cleanup.** The effect re-runs whenever the
+   * page hands this component its props again - a record frame, a new turn -
+   * even though the connection is the same object, and a subscription torn
+   * down there closes the store with its last reader: the subscribe that
+   * follows finds no snapshot, asks the server, and the panel draws "reading
+   * the models this session runs..." for the round trip, a one-frame flicker
+   * of its rows on every update (#2524). So the effect notices only a
+   * DIFFERENT connection, and the panel's own teardown lets the last one go.
+   */
+  let held: { connection: ComposerConnection; stop: () => void } | null = null;
+
   $effect(() => {
     const open = connection;
     if (open === null) return;
-    return watchModels(open).subscribe((read) => {
-      snapshot = read.wire;
-    });
+    if (held !== null && held.connection === open) return;
+    held?.stop();
+    held = {
+      connection: open,
+      stop: watchModels(open).subscribe((read) => {
+        snapshot = read.wire;
+      }),
+    };
+  });
+
+  $effect(() => () => {
+    held?.stop();
+    held = null;
   });
 
   function switchTo(role: ModelRole, file: string): void {
@@ -221,48 +257,95 @@
     ondevice(pick);
   }
 
-  /** The panel's own box, whose top edge the cap is measured from. */
+  /** The panel's own box, whose place the measurement writes. */
   let pop = $state<HTMLDivElement | null>(null);
+  /** The panel's distance above the host's bottom edge, or `null` before it is measured. */
+  let lift = $state<number | null>(null);
   /** How tall the panel may be, in pixels, or `null` before it is measured. */
   let room = $state<number | null>(null);
 
   /**
-   * Cap the panel by the room above the box rather than by a share of the
-   * viewport.
+   * What the panel's place is measured against, held the way the models
+   * subscription is: one observation per row, let go with the panel.
+   */
+  let place: { above: HTMLElement; host: HTMLElement; stop: () => void } | null = null;
+
+  /**
+   * Hang the panel above the row it belongs to, and cap it by the room there.
    *
    * The page is a fixed-height element that does not scroll, so a panel taller
    * than the room above it has its top clipped with no way to reach it - the
-   * title and the key hint go first, and nothing can scroll them back. Anchored
-   * here, the panel's own bottom edge IS the box's top edge, so the room is
-   * that offset; below the box is past the fold, which is why this opens upward
-   * and caps rather than flipping. The cap only ever shrinks the panel, and the
-   * panel scrolls inside it, so every row stays reachable.
+   * title and the key hint go first, and nothing can scroll them back. The
+   * panel's own bottom edge IS the row's top edge, so the room is that offset;
+   * below the row is past the fold, which is why this opens upward and caps
+   * rather than flipping. The cap only ever shrinks the panel, and the panel
+   * scrolls inside it, so every row stays reachable.
+   *
+   * **The place is held from the HOST's bottom edge, not its top.** The host is
+   * the surface the panel is drawn in, and on the composer that surface carries
+   * the running turn's strip above the input row - a lane whose height moves
+   * with every turn. Held from the bottom, a strip growing upward leaves the
+   * panel where it is; held from the top it would ride the strip, and the CSS
+   * anchor alone put it a frame at a negative top at every turn start (#2524).
+   * The row is watched rather than the host so that what the reader grows - a
+   * second row for the keys, a take card, a list - still lifts the panel, and
+   * only a DIFFERENT row re-measures: the page hands this component its props
+   * again on every frame, and a measure per frame is a layout per frame.
    */
   $effect(() => {
-    const held = pop;
-    if (held === null) return;
+    const panel = pop;
+    if (panel === null) return;
+    const host = panel.parentElement;
+    if (host === null) return;
+    // `undefined` is a surface with no lane above its row: the host IS the row.
+    const above = anchor === undefined ? host : anchor;
+    // **A row that is not on screen has no geometry to measure.** The composer
+    // swaps its box for the dock or a blocker, and the row the observation is
+    // on is then detached: a ResizeObserver fires on it once more at 0x0, and
+    // measuring that wrote `bottom: hostBottom + 6; max-height: 0` - the open
+    // panel collapsed under a prompt that had nothing to do with it. So the
+    // observation stops when the row leaves, the place measured last stands,
+    // and the row that comes back is a new element that re-measures.
+    if (above === null || !above.isConnected) {
+      place?.stop();
+      place = null;
+      return;
+    }
+    if (place !== null && place.above === above && place.host === host) return;
+    place?.stop();
     const measure = (): void => {
-      // No floor: a floor is what reintroduces the clipped top, and a panel
-      // that shrinks to the room it has is always reachable while one whose
-      // header is cut off is not.
-      room = Math.max(0, held.getBoundingClientRect().bottom - 6);
+      const box = host.getBoundingClientRect();
+      // **The host's PADDING box is the containing block the CSS anchor used**,
+      // so a bordered host (the review's thread card) must hang the panel off
+      // `clientHeight`, not the border-box rect: the two differ by the border.
+      const hostTop = box.top + host.clientTop;
+      const hostBottom = hostTop + host.clientHeight;
+      // The row is the host itself on every surface without a lane above it.
+      const rowTop = above === host ? hostTop : above.getBoundingClientRect().top;
+      lift = Math.max(0, hostBottom - rowTop + 6);
+      // No floor beyond zero: a floor is what reintroduces the clipped top, and
+      // a panel that shrinks to the room it has is always reachable while one
+      // whose header is cut off is not.
+      room = Math.max(0, rowTop - 12);
     };
     measure();
+    // The window is the other thing that moves the row: a resize, a rotation.
     window.addEventListener('resize', measure);
-    // **The window is not the only thing that moves the box.** A list opening
-    // above the field, or a take row landing above it, grows the composer and
-    // lifts the panel with it - and a cap measured on mount would stay where it
-    // was and cut the panel's own top off, which is the failure this cap
-    // exists to prevent. So the composer's own geometry is watched too, and
-    // what a SIZE observer does not catch is a pure move: an ancestor shifting
-    // the box and the panel together without changing either one's size. The
-    // window listener is what covers that, and neither signal alone is enough.
     const watching = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
-    watching?.observe(held.parentElement ?? held);
-    return () => {
-      window.removeEventListener('resize', measure);
-      watching?.disconnect();
+    watching?.observe(above);
+    place = {
+      above,
+      host,
+      stop: () => {
+        window.removeEventListener('resize', measure);
+        watching?.disconnect();
+      },
     };
+  });
+
+  $effect(() => () => {
+    place?.stop();
+    place = null;
   });
 </script>
 
@@ -271,7 +354,7 @@
   role="dialog"
   aria-label="Dictation"
   bind:this={pop}
-  style={room === null ? undefined : `max-height: ${room}px`}
+  style={room === null || lift === null ? undefined : `bottom: ${lift}px; max-height: ${room}px`}
 >
   <div class="hd">
     <span class="t">Dictation</span>
