@@ -60,7 +60,9 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       timer = null;
       // A beat (or any read) already in flight is the ask this update would
       // have made: asking again would queue a second whole encode behind it.
-      if (reading) return;
+      // **A refused subject is not asked again either** - the refusal is the
+      // answer, and an update would knock on a door already shut.
+      if (reading || held?.state().kind === 'refused') return;
       reading = true;
       connection.refresh('board');
     }, COALESCE_MS);

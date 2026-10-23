@@ -231,6 +231,25 @@ describe('the board over a connection', () => {
     }
   });
 
+  it('does not ask again for an update once the board is refused', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    forge.stores.get(BOARD)?.refuse('this forge holds no board');
+    forge.arrive({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'this forge holds no board',
+      seat: null,
+      subject: BOARD,
+    });
+    expect(forge.refreshed).toEqual([]);
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'an update asked a refused board again').toEqual([]);
+    stop();
+  });
+
   it('does not double-ask when the beat lands inside the coalesce window', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     try {

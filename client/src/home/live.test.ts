@@ -151,6 +151,34 @@ describe('the home over a connection', () => {
   });
 
   /**
+   * **A refusal another subject owns is not the home's.** The board's refused
+   * subscribe arrives as an `error` too; taking it for the home's would read
+   * the home store and, with an update behind it, ask for a home read that
+   * nothing asked for (#2517).
+   */
+  it("does not answer another subject's refusal with a home read", async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'the first update did not ask for a read').toEqual(['home']);
+
+    // An update lands behind the read in flight, then the board is refused.
+    forge.arrive(UPDATE);
+    forge.arrive({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'this forge holds no board',
+      seat: null,
+      subject: 'board',
+    });
+    await settle();
+    expect(forge.refreshed, "another subject's refusal asked the home to read").toEqual(['home']);
+    stop();
+  });
+
+  /**
    * **The turn's start is a read, and #1887 is what a page that skipped it
    * drew.** A prompt's lifecycle is the earliest frame that says a turn was
    * accepted: the roster's `running` comes from `turn_pending`, stamped when

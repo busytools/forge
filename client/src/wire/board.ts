@@ -74,7 +74,7 @@ export function boardFrom(data: BoardWire): BoardWire {
  * same tasks; it hears neither of the other sets, because its payload no
  * longer carries them.
  */
-const BOARD_VARIANTS: readonly string[] = [
+export const BOARD_VARIANTS: readonly string[] = [
   'tasks_changed',
   'cron_schedules_changed',
   'connector_subscriptions_changed',

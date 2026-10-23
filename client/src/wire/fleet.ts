@@ -102,8 +102,9 @@ export const REDRAWS = new Set([
   'browser_hand_off_resolved',
   'worker_status_changed',
   // The project's task set, its schedules and its connector subscriptions
-  // moved. The home's own row draws all three sections, so the update is a
-  // redraw of that row and nothing the fleet reads.
+  // moved. Since #2517 the schedules and connector sets ride the board's
+  // subject; the home still hears the task write, because its fleet counts
+  // are derived from the same tasks, so this stays a redraw here.
   'tasks_changed',
   'cron_schedules_changed',
   'connector_subscriptions_changed',

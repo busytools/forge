@@ -837,6 +837,38 @@ describe('the connection', () => {
   });
 
   /**
+   * **A v8 server cannot read a `board` subscribe at all**, so it answers
+   * `client_message` rather than a subscribe refusal. The refused
+   * subscription is still the oldest ask, and the page is told which subject
+   * it was - otherwise the board waits for an answer that never comes
+   * (#2517).
+   */
+  it("gives an unknown-message error to the board's ask, as its refusal", async () => {
+    const { server, conn } = await connected();
+    const board = conn.subscribe('board');
+    await until(() => server.received.length === 1, 'the board subscribe');
+    const seen: ServerMessage[] = [];
+    conn.onMessage((message) => seen.push(message));
+
+    server.send({
+      kind: 'error',
+      what: 'client_message',
+      why: 'that is not a message this server knows',
+    });
+
+    await until(() => board.state().kind === 'refused', 'the refusal to land');
+    expect(board.state()).toEqual({
+      kind: 'refused',
+      why: 'that is not a message this server knows',
+    });
+    expect(seen.at(-1), 'the refusal did not name its subject to the page').toMatchObject({
+      kind: 'error',
+      what: 'client_message',
+      subject: 'board',
+    });
+  });
+
+  /**
    * A refresh over a store that is already ready is refused with no store in
    * `loading` to find, so attribution is a queue of asks rather than a scan
    * of states. Without it the store keeps a `ready` state and a full
