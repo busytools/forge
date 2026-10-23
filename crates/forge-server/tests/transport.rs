@@ -5142,12 +5142,23 @@ async fn a_seal_over_a_transcripts_copy_is_not_answered_with_the_previous_runs_r
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket2).await;
+    // **The seat's stream can move inside this window.** The first read above
+    // started the seat's watch, and `seed_view_facts` above gives the seat the
+    // domain that pass seeds from: a pass that runs after it announces
+    // `WorkChanged` and `FileIndexChanged` under the NEW epoch's numbers,
+    // because the seal restarted the counter. So the answer's number is the
+    // copy's own and not a constant 1 - what it must be is this epoch's, and
+    // the rows below must not be the replaced run's. (The copy's-own-number
+    // rule itself is pinned, with a watermark that can be told apart,
+    // in `an_answer_through_a_reseed_carries_the_copys_own_number`.)
+    let next = fleet.workspace().seat_next_seq(&seat);
     state.conversations.hold_the_fold(false);
 
-    assert_eq!(
-        data["header"]["seq"].as_u64(),
-        Some(1),
-        "the answer is the new epoch's count: {data}",
+    let seq = data["header"]["seq"].as_u64().expect("the answer numbers the seat's stream");
+    assert!(
+        (1..=next).contains(&seq),
+        "the answer numbers the new epoch's stream, at most the number it will mint next \
+         ({seq} against 1..={next}): {data}",
     );
     assert_eq!(
         says_times(&data, "reply "),
