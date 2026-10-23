@@ -50,6 +50,7 @@ function fakeConnection() {
     },
     onBrowserAsk: () => () => {},
     browserRole: () => false,
+    browserRoleKnown: () => false,
     onBrowserRole: () => () => {},
     onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},
