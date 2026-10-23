@@ -1160,6 +1160,11 @@ release version: check-release check-feature-configs
         echo "[ERROR] not on main - release tags should be cut from main" >&2; \
         exit 1; \
     fi
+    @git fetch --quiet origin main
+    @if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then \
+        echo "[ERROR] local main is not origin/main - fast-forward before releasing (HEAD $(git rev-parse --short HEAD), origin/main $(git rev-parse --short origin/main))" >&2; \
+        exit 1; \
+    fi
     @if git rev-parse "v{{version}}" >/dev/null 2>&1; then \
         echo "[ERROR] tag v{{version}} already exists" >&2; \
         exit 1; \

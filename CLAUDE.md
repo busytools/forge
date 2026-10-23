@@ -956,6 +956,11 @@ stages the Android release APK and the web archive, then pushes `main` with
 the tag and publishes the GitHub release with every asset the update path
 reads. One number and one tag name every half.
 
+**The recipe refuses to start unless the tree is clean, on `main`, and
+`HEAD` equals `origin/main` after a fetch.** Everything it builds, tags
+and installs comes from the commit it checked, so a stale local main
+cannot produce a release labelled with code it does not contain.
+
 The server install goes first, so the client's refusal - the one that
 names `just client-release` as its recovery - cannot leave the binary
 behind. It is unconditional and fails rather than skipping: an install
