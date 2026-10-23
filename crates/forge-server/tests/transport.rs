@@ -387,6 +387,89 @@ async fn a_board_subscriber_hears_what_the_home_no_longer_carries() {
     }
 }
 
+/// **A late subscriber sees the same world as one attached at boot** (#2517):
+/// the board's rows and the home's total, on both subjects.
+#[tokio::test]
+async fn a_late_subscriber_sees_the_same_board_and_home() {
+    let (url, fleet) = a_server().await;
+    let mut early = connect(&url).await;
+    for subject in [Subject::Board, Subject::Home] {
+        send(
+            &mut early,
+            ClientMessage::Subscribe {
+                what: subject,
+                answering: true,
+                browser: false,
+                declare: false,
+            },
+        )
+        .await;
+        snapshot_answering(&mut early).await;
+    }
+
+    fleet.add_task("TestOrg", "proj", "a live row", "w1", None).expect("the task is seeded");
+    fleet.emit(SessionUpdate::TasksChanged { key: lead_seat(), tasks: Vec::new() });
+
+    // The early subscriber's next board read, once the write has landed.
+    let mut early_board = serde_json::Value::Null;
+    assert!(
+        snapshot_until(&mut early, Subject::Board, |data| {
+            let rows = data["projects"][0]["rows"].as_array();
+            if rows.is_some_and(|rows| !rows.is_empty()) {
+                early_board = data.clone();
+                true
+            } else {
+                false
+            }
+        })
+        .await,
+        "the early subscriber never read the seeded row",
+    );
+
+    // A connection that attaches after the write reads the same row first.
+    let mut late = connect(&url).await;
+    send(
+        &mut late,
+        ClientMessage::Subscribe {
+            what: Subject::Board,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, late_board, _) = snapshot_answering(&mut late).await;
+    let task_ids = |data: &serde_json::Value| {
+        data["projects"][0]["rows"]
+            .as_array()
+            .map(|rows| rows.iter().map(|row| row["task"]["id"].clone()).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        task_ids(&early_board),
+        task_ids(&late_board),
+        "a late board subscriber saw a different world",
+    );
+
+    // And the home's total on a late connection matches the board's rows.
+    send(
+        &mut late,
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, late_home, _) = snapshot_answering(&mut late).await;
+    assert_eq!(
+        late_home["fleet"][0]["rows"].as_u64(),
+        Some(task_ids(&late_board).len() as u64),
+        "the late home's total does not match the board's rows",
+    );
+}
+
 /// Showing a seat spends the marks the home carries for it - the diamond
 /// and the failure mark both clear by showing the seat - so the home is
 /// re-sent as part of the attach. Without it the row keeps a spent mark

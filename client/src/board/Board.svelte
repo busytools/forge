@@ -552,7 +552,7 @@
       <span class="b-nm">{project}</span>
       <span class="b-read">
         {#if board.wire === null}
-          reading the board...
+          {board.refused ?? 'reading the board...'}
         {:else}
           {#if view.read.onYou > 0}<b>{view.read.onYou} waiting on you</b> &middot;
           {/if}{view.read.rows} rows &middot; {view.read.running} running

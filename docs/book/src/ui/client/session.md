@@ -170,7 +170,7 @@ there is nothing here but the way in.
 **Every cell is a read, not a computation.** The schedules row keeps the
 seat's own set - a cron names the seat that created it - and its
 countdowns re-derive against the page's own clock, as the monitors' ages
-do; the tasks row reads the project's slice of the home; the tree row is
+do; the tasks row reads the project's slice of the board; the tree row is
 the seat's own working tree, the worktree for a worker and the project's
 directory for a lead, and a worker a lead pointed at a tree of its own is
 named by that tree - `~/Projects/nazar` beside its project's siblings -

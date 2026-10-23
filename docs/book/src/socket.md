@@ -46,7 +46,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 8,
+  "version": 9,
   "forge_version": "1.0.115 · abc1234",
   "forge_version_short": "1.0.115+abc1234",
   "settings": {
@@ -579,17 +579,23 @@ facts a row is drawn from.
 **`board`** is every project's board: the rows, schedules and connector sets
 the board page and the session rail draw. It is a subject of its own because a
 home read happens on every update that covers the fleet, and these three
-fields were 97.6% of it for a page that draws none of them (#2517).
+fields were most of a ~708 KB home read for a page that draws none of them
+(#2517).
 
 | Field      | What it is                                                                                                                                                                                                                                                               |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `projects` | One entry per project: `project` (name, org, path, sessions, `has_model`), `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
 
 **`board` hears the variants that move it**: `tasks_changed`,
-`cron_schedules_changed` and `connector_subscriptions_changed`. The home
-hears `tasks_changed` too, because its fleet row's counts are derived from
-the same tasks; it hears neither of the other two, because its snapshot no
-longer carries them.
+`cron_schedules_changed` and `connector_subscriptions_changed`, plus the
+seat events its rows' `stale` mark is read from (`spawning`, `connected`,
+`session_replaced`, `releasing`, `connection_failed`,
+`worker_status_changed`). A row's ages and its time-derived marks move with
+the clock and no frame announces that, so a page holding the subject re-reads
+on a slow beat of its own - 30 s - while it is mounted. The home hears
+`tasks_changed` too, because its fleet row's counts are derived from the same
+tasks; it hears neither of the other two, because its snapshot no longer
+carries them.
 
 **`session <org>/<project>/<label>`** is one seat: its record, its
 conversation, and what the composer is doing.

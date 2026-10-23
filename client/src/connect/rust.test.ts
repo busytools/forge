@@ -207,9 +207,11 @@ describe('frames from the bridge', () => {
     ).toBeNull();
   });
 
-  it('a snapshot seeds its store, and a refusal lands in it', async () => {
+  it('a snapshot seeds its store, and a refusal lands in it and reaches the page', async () => {
     const connection = await opened();
     const store = connection.subscribe(subject);
+    const seen: unknown[] = [];
+    connection.onMessage((message) => seen.push(message));
     fire('client://inbound', { kind: 'snapshot', subject, data: { header: {} } });
     expect(store.snapshot()).toEqual({ header: {} });
     expect(store.state()).toEqual({ kind: 'ready' });
@@ -217,6 +219,14 @@ describe('frames from the bridge', () => {
     expect(store.state(), 'a refused subscribe is an answer with its own words').toEqual({
       kind: 'refused',
       why: 'no session there',
+    });
+    // **The page is told as a frame**, which is what a subject store reads its
+    // refused state on; without it a board stays "reading..." forever.
+    expect(seen.at(-1), 'the refusal did not reach the page listeners').toEqual({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'no session there',
+      seat: null,
     });
   });
 

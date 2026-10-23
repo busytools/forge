@@ -1948,7 +1948,7 @@ describe("a seat's own connector rows", () => {
     const board = boardWith([
       {
         ...boardProject(),
-        project: { ...boardProject().project, name: 'other', key: 'TestOrg-other' },
+        project: { ...boardProject().project, name: 'other' },
         connectors: {
           gotify: [],
           slack: [{ id: 's-x', workspace: 'Acme', target: 'Mentions', team_role: null }],
@@ -2118,7 +2118,7 @@ describe("the project's schedule rows", () => {
     const board = boardWith([
       {
         ...boardProject(),
-        project: { ...boardProject().project, name: 'other', key: 'TestOrg-other' },
+        project: { ...boardProject().project, name: 'other' },
         crons: [cron({ id: 'c-x', description: 'the other project' })],
       },
       { ...boardProject(), crons: [cron()] },

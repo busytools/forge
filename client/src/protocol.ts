@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -126,9 +126,10 @@ export function skewMessage(skew: Skew): string {
 /**
  * What a client can watch, and the address a subscription is held under.
  *
- * `dictate_models` and `extensions` are their pages' own reads: the pins
- * and catalogue only the models page draws, and the plugin inventory only
- * the extensions page draws.
+ * `board` is the board page's and the session rail's read: every project's
+ * rows, schedules and connector sets (#2517). `dictate_models` and
+ * `extensions` are their pages' own reads: the pins and catalogue only the
+ * models page draws, and the plugin inventory only the extensions page draws.
  */
 export type Subject =
   'home' | 'board' | { session: SessionSlot } | 'usage' | 'dictate_models' | 'extensions';

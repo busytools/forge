@@ -16,7 +16,7 @@ every list it opens is a live read.
 
 | Lane | Shows | Read from |
 |---|---|---|
-| Strip | the running turn's figures (clock, thinking, tokens, cached) and the seat's segments - the rows the session page's strip draws | the seat's record and the home's project row |
+| Strip | the running turn's figures (clock, thinking, tokens, cached) and the seat's segments - the rows the session page's strip draws | the seat's record and the board's project row |
 | Field | the box: the draft, the caret, the key hints, and the controls - the mic at the row's end, `send` once there is content, `stop` while a turn runs | the host's composer store |
 | Dock | the front of the seat's parked asks: a question's options, or a permission's actions, over the reader's own words row | `pending_asks` |
 | Hints | one line above the box where there is something to say: a sign-in, a cancelled turn resubmitting, a suggestion | `notice`, the take, the CLI's own frames |

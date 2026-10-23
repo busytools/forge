@@ -93,7 +93,18 @@ pub mod wire;
 /// `undefined` while DRAWING, so a same-version skew would be a page that
 /// never lands rather than one that shows less. `baselines/socket/7/` is the
 /// record a v7 server emitted.
-pub const PROTOCOL_VERSION: u32 = 8;
+///
+/// **v9 is a bump for the board's own subject (#2517).** A project's `rows`,
+/// `crons` and `connectors` left the home's project row for a `board` subject
+/// of their own, and the home's fleet rows gained `rows` for the header's
+/// total. Both directions break silently on a same-version skew: a v8 client
+/// subscribes `board`, the v9 server answers (and the reverse: a v9 client
+/// asks a v8 server, which refuses the subject), while a v9 client reading a
+/// v8 server sums a missing `fleet[].rows` into `NaN` and draws an empty
+/// board. So the greeting's version is what turns it into the notice rather
+/// than a page that never lands. `baselines/socket/8/` is the record a v8
+/// server emitted.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

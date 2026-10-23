@@ -2,8 +2,8 @@
  * The seat's own connector subscriptions, as its strip row draws them.
  *
  * Held as the record is: one seat is on screen, so one list, replaced whole
- * when the home moves. The rows are built in `view.ts` from the project's
- * home row and filtered by the seat - ownership is `team_role`, and the lead
+ * when the board moves. The rows are built in `view.ts` from the project's
+ * board row and filtered by the seat - ownership is `team_role`, and the lead
  * reads the no-owner set, so a seat shows its own and never another's.
  */
 import type { SeatConnectorRow } from '../session/view';

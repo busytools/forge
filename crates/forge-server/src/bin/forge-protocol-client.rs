@@ -189,7 +189,7 @@ fn parse_line(line: &str, reply_to: &mut u64) -> anyhow::Result<ClientMessage> {
     }
 }
 
-/// `home`, `usage`, `dictate_models`, `extensions`, or
+/// `home`, `board`, `usage`, `dictate_models`, `extensions`, or
 /// `session <org>/<project>/<label>`.
 fn subject(rest: &str) -> anyhow::Result<Subject> {
     if rest == "home" {

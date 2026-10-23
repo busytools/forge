@@ -18,6 +18,16 @@ import { boardFrom, coversBoard, type BoardRead, type BoardWire } from '../wire/
 /** How long an update waits before it is answered with a read. */
 const COALESCE_MS = 50;
 
+/**
+ * How often a mounted board re-reads while nothing writes.
+ *
+ * **The rows carry time-derived marks** - `updated_secs_ago`, `worked_secs`,
+ * and the overdue / no-movement / waiting-too-long marks read off them - and
+ * those only advance on a read. A slow beat keeps them moving without a frame
+ * to trigger one (#2517).
+ */
+const BEAT_MS = 30_000;
+
 const NOTHING: BoardRead = { wire: null, refused: null };
 
 const STORES = new WeakMap<Connection, Readable<BoardRead>>();
@@ -39,6 +49,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
   /** Whether an update landed while a read was in flight. */
   let stale = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let beat: ReturnType<typeof setInterval> | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
@@ -93,6 +104,13 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         stale = false;
       }
     });
+    // The slow beat a mounted board needs: a row's ages and its time-derived
+    // marks move with the clock, and no frame announces that.
+    beat = setInterval(() => {
+      if (reading) return;
+      reading = true;
+      connection.refresh('board');
+    }, BEAT_MS);
   }
 
   function unwatch(): void {
@@ -102,6 +120,8 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     stopStatus = null;
     if (timer !== null) clearTimeout(timer);
     timer = null;
+    if (beat !== null) clearInterval(beat);
+    beat = null;
     connection.unsubscribe('board');
     held = null;
   }

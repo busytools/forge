@@ -171,8 +171,8 @@
 
   /**
    * The tree and the monitors are the seat's own reads; the tasks are the
-   * project's set on the home. The monitors read `now` so a settled one's age
-   * re-derives on the page's clock rather than going stale between reads.
+   * project's set on the board. The monitors read `now` so a settled one's
+   * age re-derives on the page's clock rather than going stale between reads.
    */
   $effect(() => {
     git.sync(record === null ? null : gitStrip(record, slot, seatTree(wire, slot)));

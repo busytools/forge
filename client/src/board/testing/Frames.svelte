@@ -1,6 +1,5 @@
 <script lang="ts">
-  import type { BoardRead } from '../../wire/board';
-  import type { BoardWire } from '../../wire/board';
+  import type { BoardRead, BoardWire } from '../../wire/board';
   import type { HomeWire } from '../../wire/home';
   import Board from '../Board.svelte';
 

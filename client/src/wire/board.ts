@@ -2,18 +2,28 @@
  * The board's snapshot, as `crates/forge-server/src/transport/wire.rs` writes
  * it: every project's rows, schedules and connector sets (#2517).
  *
- * **Its own subject, not the home's.** These three fields were 97.6% of a
- * home read, and a home read runs on every update that covers the fleet; a
- * page that draws none of them should not pay for them. The page and the
- * rail that do draw them subscribe here.
+ * **Its own subject, not the home's.** These three fields were most of a
+ * ~708 KB home read, and a home read runs on every update that covers the
+ * fleet; a page that draws none of them should not pay for them. The page and
+ * the rail that do draw them subscribe here.
  */
 
 import type { SessionUpdate } from '../protocol';
-import { rowFrom, type BoardRow, type CronEntry, type ProjectView } from './home';
+import { rowFrom, type BoardRow, type CronEntry } from './home';
+
+/**
+ * One project's identity, which is all a board row needs to place it. The
+ * rest of the home's project view - its sessions, accounts and paths - is not
+ * carried here: the board neither hears nor draws it (#2517).
+ */
+export interface ProjectBoardIdentity {
+  org: string;
+  name: string;
+}
 
 /** One project's board detail. */
 export interface ProjectBoardWire {
-  project: ProjectView;
+  project: ProjectBoardIdentity;
   /** The project's live rows, with the board's own facts on each. */
   rows: BoardRow[];
   crons: CronEntry[];
@@ -43,17 +53,11 @@ export interface BoardRead {
  */
 export function boardFrom(data: BoardWire): BoardWire {
   return {
-    projects: data.projects.map((row) => {
-      // **The one step back.** A forge at protocol 7 sent a project's rows
-      // under `tasks`, flat; a client newer than its server reads the old key
-      // rather than drawing nothing.
-      const legacy = row as { rows?: unknown[]; tasks?: unknown[] };
-      return {
-        ...row,
-        rows: (legacy.rows ?? legacy.tasks ?? []).map(rowFrom),
-        crons: row.crons ?? [],
-      };
-    }),
+    projects: data.projects.map((row) => ({
+      ...row,
+      rows: (row.rows ?? []).map(rowFrom),
+      crons: row.crons ?? [],
+    })),
   };
 }
 

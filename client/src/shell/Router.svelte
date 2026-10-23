@@ -159,7 +159,8 @@
   {#if home.wire !== null}
     <!-- One project's board, a takeover over wherever the reader was: the
          top bar's back and done return through history. The page reads the
-         same snapshot the fleet does - its rows ride the wire. -->
+         board subject for its rows; the home snapshot beside it supplies the
+         seats and the counters. -->
     <Board
       wire={home.wire}
       {board}
@@ -169,9 +170,10 @@
       notice={home.report}
     />
   {:else if home.refused}
-    <!-- The board reads the same snapshot the fleet does, so a subscription
-         the server turned down leaves it with nothing to draw - and saying so
-         is not the same page as never having read. -->
+    <!-- The board's own read has its own refusal in the page; this branch is
+         the HOME read it also needs (the seats and the counters), and one the
+         server turned down leaves it with nothing to draw - saying so is not
+         the same page as never having read. -->
     <main class="wrap">
       <p class="pending">This forge would not answer for the home: {home.refused}</p>
     </main>

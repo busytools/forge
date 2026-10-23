@@ -181,20 +181,31 @@ pub struct ProjectWire {
 /// rail that draw it (#2517).
 ///
 /// **Its own subject and its own snapshot.** The rows, schedules and
-/// connector sets are 97.6% of what the home used to carry, and a home read
-/// happens on every update that covers the fleet; a page that draws none of
-/// them should not pay for them.
+/// connector sets are most of what a ~708 KB home read used to carry, and a
+/// home read happens on every update that covers the fleet; a page that draws
+/// none of them should not pay for them.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BoardWire {
     pub projects: Vec<ProjectBoardWire>,
 }
 
+/// One project's identity, which is all a board row needs to place it.
+///
+/// The rest of [`ProjectView`] - its sessions, its accounts, its paths - is
+/// the home's: the board neither hears nor draws it (#2517).
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectBoardIdentity {
+    pub org: String,
+    pub name: String,
+}
+
 /// One project's board detail.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectBoardWire {
-    pub project: ProjectView,
+    pub project: ProjectBoardIdentity,
     /// The project's live rows, with what the board derives on each:
     /// worked time, ages, and the marks. Computed once, in the workspace's
     /// board module, and passed through - the client never re-derives a
@@ -1665,7 +1676,7 @@ fn board(surface: &ViewSurface) -> BoardWire {
     for project in &roster.projects {
         let subscribed = surface.connectors(Some(&project.name));
         projects.push(ProjectBoardWire {
-            project: project.clone(),
+            project: ProjectBoardIdentity { org: project.org.clone(), name: project.name.clone() },
             rows: surface.board_rows(&project.name),
             crons: roster.crons_for_project(&project.name),
             connectors: ProjectConnectorsWire {
@@ -2947,13 +2958,14 @@ mod tests {
     }
 
     /// **The home carries the fleet glance and the board carries the board**
-    /// (#2517): the three fields that were 97.6% of the home's payload moved
-    /// to their own subject, and the board's answer carries every one.
+    /// (#2517): the three fields that were most of the home's ~708 KB payload
+    /// moved to their own subject, and the board's answer carries every one.
     #[tokio::test]
     async fn the_home_carries_no_board_and_the_board_carries_all_of_it() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.add_task("TestOrg", "proj", "a counted row", "w1", None).expect("the task is seeded");
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
@@ -2982,6 +2994,52 @@ mod tests {
                  {board_project}",
             );
         }
+
+        // **The header's total is the board's own row count**, on a project
+        // that holds one: the fleet row must count it, not count it minus one.
+        let board_rows = board_project["rows"].as_array().map(Vec::len);
+        assert_eq!(board_rows, Some(1), "the seeded row did not reach the board: {board}");
+        assert_eq!(
+            home["fleet"][0]["rows"].as_u64(),
+            Some(1),
+            "the fleet row's total does not match the board's rows: {home}",
+        );
+    }
+
+    /// **A board row's owner-gone chip is read from the seat registry on the
+    /// encode**, not from the task: an owner nothing holds is `stale`, and a
+    /// seat that comes up clears it on the next read (#2517).
+    #[tokio::test]
+    async fn a_board_row_marks_an_owner_whose_seat_is_not_live() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.add_task("TestOrg", "proj", "an owned row", "w1", None).expect("the task is seeded");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
+        };
+
+        let board = encode_subject(&state, &Subject::Board).await.expect("encode");
+        let gone_chip = |board: &Value| board["projects"][0]["rows"][0]["marks"]["stale"].clone();
+        assert_eq!(
+            gone_chip(&board),
+            Value::Bool(true),
+            "an owner no seat holds must draw the gone chip: {board}",
+        );
+
+        // The seat comes up: the next read clears the chip.
+        let _commands = fleet.install_agent("TestOrg", "proj", "w1");
+        let board = encode_subject(&state, &Subject::Board).await.expect("encode");
+        assert_eq!(
+            gone_chip(&board),
+            Value::Bool(false),
+            "a live owner must not draw the gone chip: {board}",
+        );
     }
 
     /// The home's fatal carries the words the server prints, not the serde

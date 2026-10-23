@@ -19,6 +19,8 @@ Taken from `busytools/forge` main at
 - `home.json` is blob `2f9254a3a85b826ab837d960e53dddbffc8ae113`
 - `session.json` is blob `8515aaac9fe02b158b625d93a11eb46b31f9612f`
 - `usage.json` is blob `5b068cbab71cf6bf03767fecc3a4415d40fedeef`
+- `board.json` is the board subject's own read (#2517); it has no blob from
+  that commit because the subject did not exist there.
 
 `home.json` and `session.json` have been re-synced since that commit. What
 moved is below.
@@ -41,11 +43,14 @@ The first copy was taken while the server was still building the socket, and
 these changed before it landed. Each is now drawn:
 
 - **A project row is nested.** `projects[]` entries are
-  `{project, work, tasks, crons, would_bind, chip}` rather than a bare
-  project, so the home's `where` cell, its `what` cell, the refusal line and
-  the row's chip are all reachable. The per-row working tree is the one that
-  mattered most: it was a per-row read the snapshot did not carry, so the
-  branch and the changed count could not be drawn at all.
+  `{project, work, would_bind, chip}` rather than a bare project, so the
+  home's `where` cell, its `what` cell, the refusal line and the row's chip
+  are all reachable. The per-row working tree is the one that mattered most:
+  it was a per-row read the snapshot did not carry, so the branch and the
+  changed count could not be drawn at all.
+- **The board has a fixture of its own (#2517).** The home's project rows
+  lost `rows`, `crons` and `connectors` to the `board` subject, and the
+  home's `fleet[]` rows gained `rows`, the project's total the header sums.
 - **`unseen` is a new top-level key** - the seats whose last turn finished
   while no client was showing them. It is the fact a late subscriber cannot
   reconstruct from the records, which is why it is carried rather than
@@ -75,9 +80,9 @@ these changed before it landed. Each is now drawn:
   no boundaries were a conversation it could not fold at all. The grouping
   inside a turn stays the client's; only the boundary is the server's.
 
-`tasks` and `crons` are empty in the fixture, so their element shapes come
-from `crates/forge-server/src/transport/wire.rs` rather than from the file.
-The fixture pins what it carries; the source pins the rest.
+`rows` and `crons` are empty in the board fixture, so their element shapes
+come from `crates/forge-server/src/transport/wire.rs` rather than from the
+file. The fixture pins what it carries; the source pins the rest.
 
 ## The one file that is not a copy
 

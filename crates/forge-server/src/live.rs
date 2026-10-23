@@ -291,8 +291,9 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // through this arm alone (#1930).
         | SessionUpdate::Releasing { .. }
         // The project's task set, its schedules and its connector
-        // subscriptions moved - the three sections the home's project row
-        // draws from this stream.
+        // subscriptions moved - the three sections the board's project row
+        // draws from this stream. The home hears the task write too, because
+        // its fleet counts are derived from the same tasks (#2517).
         | SessionUpdate::TasksChanged { .. }
         | SessionUpdate::CronSchedulesChanged { .. }
         | SessionUpdate::ConnectorSubscriptionsChanged { .. } => FleetNews::Redraw,

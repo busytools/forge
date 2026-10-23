@@ -547,6 +547,47 @@ describe("the board's controls", () => {
   });
 
   /**
+   * The board's own read has its own states, and neither may draw as an
+   * unknown project: the read in flight is a wait, and a refusal is the
+   * server's words.
+   */
+  it('draws the read state until the board answers', () => {
+    app = mount(Board, {
+      target: document.body,
+      props: {
+        wire: homeWire,
+        board: { wire: null, refused: null },
+        org: 'TestOrg',
+        project: 'proj',
+        onact: () => {},
+      },
+    });
+    flushSync();
+    expect(document.body.textContent, 'the wait did not draw').toContain('reading the board...');
+    expect(document.querySelector('.b-lanes'), 'a wait drew lanes').toBeNull();
+  });
+
+  it('draws the server refusal when the board read is refused', () => {
+    app = mount(Board, {
+      target: document.body,
+      props: {
+        wire: homeWire,
+        board: { wire: null, refused: 'this forge holds no board for you' },
+        org: 'TestOrg',
+        project: 'proj',
+        onact: () => {},
+      },
+    });
+    flushSync();
+    expect(document.body.textContent, 'the refusal did not draw its words').toContain(
+      'this forge holds no board for you',
+    );
+    expect(document.body.textContent, 'a refusal read as a read in flight').not.toContain(
+      'reading the board...',
+    );
+  });
+
+  /**
    * The picker's OPEN menu, which no server render reaches: the board draws
    * it closed, so its listbox, its options and the button's expanded state
    * would go unguarded by the page's own axe pass - and a menu is exactly

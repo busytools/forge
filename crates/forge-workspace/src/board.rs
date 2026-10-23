@@ -75,7 +75,7 @@ pub struct BoardRow {
     /// it opens. The tail beyond the cap is stated by `history_total` rather
     /// than carried: the walk below already groups the transitions for the
     /// worked time, and carrying the whole trail costs every `board_rows`
-    /// caller - every home read and every `tasks__list` - the record's full
+    /// caller - every board read and every `tasks__list` - the record's full
     /// weight.
     ///
     /// `default` is backward compatibility with older records, and nothing
@@ -122,7 +122,7 @@ pub struct FleetRow {
 ///
 /// `mine` is that one row's transitions, in time order. They are grouped and
 /// sorted once for the whole board rather than filtered per row: the log is
-/// read on every home read and every task write, and scanning it once per row
+/// read on every board read and every task write, and scanning it once per row
 /// makes each of those O(rows x history).
 fn worked_secs(mine: &[&TaskTransition], now: SystemTime) -> u64 {
     let mut total = 0u64;

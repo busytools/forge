@@ -27,8 +27,8 @@ pub enum Subject {
     ///
     /// A subject of its own rather than fields of [`Subject::Home`] because
     /// the board is its own page's data: the home is a glance at the fleet,
-    /// and carrying every project's rows made a home read 708 KB, 97.6% of it
-    /// board data a home page draws none of (#2517).
+    /// and carrying every project's rows made a home read about 708 KB, most
+    /// of it board data a home page draws none of (#2517).
     Board,
     Session(SessionSlot),
     /// The token/cost pool, scanned on the ask.
@@ -91,10 +91,13 @@ impl Subject {
                 (fleet_news(update).any() || update.slot().is_none()) && !board_detail(update)
             }
             // The board snapshot carries every project's rows, crons and
-            // connector sets, so exactly the variants that move them belong
-            // here - and nothing else.
+            // connector sets, so the variants that move them - plus the seat
+            // events a row's `stale` mark is read from - belong here. A row's
+            // time-derived marks are the page's own beat, not a frame.
             Self::Board => {
-                board_detail(update) || matches!(update, SessionUpdate::TasksChanged { .. })
+                board_detail(update)
+                    || matches!(update, SessionUpdate::TasksChanged { .. })
+                    || seat_liveness(update)
             }
             Self::Session(seat) => update.slot() == Some(seat),
             // Nothing carries the pool: its snapshot is a scan, and a
@@ -139,6 +142,25 @@ fn board_detail(update: &SessionUpdate) -> bool {
         update,
         SessionUpdate::CronSchedulesChanged { .. }
             | SessionUpdate::ConnectorSubscriptionsChanged { .. }
+    )
+}
+
+/// The seat events a board row's `stale` mark is read from.
+///
+/// `seat_is_live` reads the domain/agent registry and the worker registry,
+/// and these are the frames that change either: a seat starting, connecting,
+/// being replaced, releasing, failing to connect, or a worker's status
+/// moving. Turn frames are not here - a task write is what moves a row's work,
+/// and a page's own beat advances its clocks.
+fn seat_liveness(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::Spawning { .. }
+            | SessionUpdate::Connected { .. }
+            | SessionUpdate::SessionReplaced { .. }
+            | SessionUpdate::Releasing { .. }
+            | SessionUpdate::ConnectionFailed { .. }
+            | SessionUpdate::WorkerStatusChanged { .. }
     )
 }
 
@@ -1034,6 +1056,89 @@ mod tests {
         assert!(
             !Subject::Board.covers(&SessionUpdate::AccountsChanged),
             "and nothing outside the board's own three reaches it",
+        );
+    }
+
+    /// **A board row's `stale` mark is read from seat liveness**, so the
+    /// frames that move the registries behind `seat_is_live` reach the board -
+    /// and a turn frame does not (#2517).
+    #[test]
+    fn the_seat_liveness_frames_reach_the_board_and_a_turn_frame_does_not() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let model = || forge_primitives::CurrentModel {
+            resolved_id: "claude".to_owned(),
+            display_name_short: "claude".to_owned(),
+            display_name_long: "claude".to_owned(),
+            requested_id: None,
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: true,
+        };
+        for update in [
+            SessionUpdate::Spawning {
+                key: seat.clone(),
+                project_name: "proj".to_owned(),
+                cwd: "/tmp".to_owned(),
+                display_name: "lead".to_owned(),
+            },
+            SessionUpdate::Connected {
+                key: seat.clone(),
+                session_id: forge_primitives::SessionId::new("s"),
+                cwd: "/tmp".to_owned(),
+                current_model: model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                dropped: 0,
+                compaction_count: 0,
+            },
+            SessionUpdate::SessionReplaced {
+                key: seat.clone(),
+                session_id: forge_primitives::SessionId::new("s"),
+                cwd: "/tmp".to_owned(),
+                current_model: model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                dropped: 0,
+                compaction_count: 0,
+            },
+            SessionUpdate::Releasing { key: seat.clone() },
+            SessionUpdate::ConnectionFailed {
+                key: seat.clone(),
+                message: "gone".to_owned(),
+                fatal: false,
+            },
+            SessionUpdate::WorkerStatusChanged {
+                project_key: forge_workspace::ProjectKey::new("TestOrg-proj"),
+                action: forge_workspace::protocol::WorkerStatusAction::Removed,
+                status: forge_primitives::WorkerStatus {
+                    label: "w1".to_owned(),
+                    charter: "a worker".to_owned(),
+                    status: forge_primitives::WorkerLiveness::Running,
+                    session_id: "s".to_owned(),
+                    slot: seat.clone(),
+                    spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                    spawned_by: seat.clone(),
+                    diagnostic: None,
+                    activity: None,
+                },
+                worktree: forge_workspace::protocol::WorktreeDisposition::Absent,
+            },
+        ] {
+            assert!(
+                Subject::Board.covers(&update),
+                "a row's owner-gone chip is read from these: {update:?}",
+            );
+        }
+
+        assert!(
+            !Subject::Board
+                .covers(&SessionUpdate::TurnComplete { key: seat, terminal_reason: None }),
+            "a turn frame moves no board row's marks",
         );
     }
 

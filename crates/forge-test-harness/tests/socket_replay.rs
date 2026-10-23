@@ -802,6 +802,7 @@ fn frames_record() -> Value {
 
     let subjects = [
         Subject::Home,
+        Subject::Board,
         Subject::Usage,
         Subject::Session(seat.clone()),
         Subject::DictateModels,
@@ -1234,6 +1235,20 @@ fn frames_record() -> Value {
                 "../../forge-server/tests/wire_fixtures/home.json"
             ))
             .expect("the home fixture parses"),
+        }),
+    );
+    // **The board's own read (#2517)**, the payload the home used to carry:
+    // its rows, schedules and connector sets. Read from the server's fixture,
+    // the same bytes its wire test round-trips, so a field rename moves this
+    // record rather than only the page.
+    payload_sampled.insert(
+        "SnapshotBoard".to_owned(),
+        shape_of(&ServerMessage::Snapshot {
+            subject: Subject::Board,
+            data: serde_json::from_str::<Value>(include_str!(
+                "../../forge-server/tests/wire_fixtures/board.json"
+            ))
+            .expect("the board fixture parses"),
         }),
     );
     // **The extensions read, built from the server's own types** so a field

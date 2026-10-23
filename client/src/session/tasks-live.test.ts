@@ -118,8 +118,8 @@ afterEach(async () => {
   tasks.sync(null);
 });
 
-describe('the tasks row under a moving home', () => {
-  it('settles when the home moves the task, and lights the row that moved', () => {
+describe('the tasks row under a moving board', () => {
+  it('settles when the board moves the task, and lights the row that moved', () => {
     app = mount(SpawnHarness, {
       target: document.body,
       props: { slot: LEAD, connection: quiet(), home: homeWire, board: boardWith('in_progress') },

@@ -18,7 +18,9 @@ connector sets ride in that subject's entry, and it hears the updates that
 move them. The seats and the project's counters come from the home snapshot
 beside it. So a seat that claims a row, a row that is cut, or a move made in
 another view arrives as an update, and the page re-reads without the reader
-doing anything.
+doing anything. While it is mounted it also re-reads on a slow 30 s beat:
+a row's age, its worked time and the marks read off them move with the clock,
+and no update announces that.
 
 ## What it draws
 

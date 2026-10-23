@@ -166,9 +166,9 @@ impl Workspace {
 
     /// Tell every view the project's connector subscriptions moved, as the
     /// two sets the core holds, on the project's lead seat. One update
-    /// carries both connectors: they are one section of the home's row, and
-    /// a reader that patches it needs the pair. A name no project carries
-    /// has no seat to route on and announces nothing.
+    /// carries both connectors: they are one section of the board's project
+    /// row, and a reader that patches it needs the pair. A name no project
+    /// carries has no seat to route on and announces nothing.
     ///
     /// Lives here rather than on either connector: the section is the pair,
     /// so both seams announce through the one site.

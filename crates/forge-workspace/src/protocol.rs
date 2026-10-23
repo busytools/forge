@@ -1660,9 +1660,9 @@ pub enum SessionUpdate {
     /// The project's task list moved, as the whole set the core holds.
     ///
     /// **Pushed rather than read.** The `tasks__*` writes are the only movers
-    /// and the section a view draws sits on the home's project row - the
-    /// project's lead seat, which exists for every declared project - so the
-    /// write announces the set rather than leaving the row to the next
+    /// and the section a view draws sits on the board's project row - keyed by
+    /// the project's lead seat, which exists for every declared project - so
+    /// the write announces the set rather than leaving the row to the next
     /// unrelated read.
     TasksChanged {
         key: SessionSlot,
@@ -1685,8 +1685,8 @@ pub enum SessionUpdate {
     /// them, and so do the doors no tool call reaches: a mention's
     /// auto-subscribe, a watched conversation's name healing on its first
     /// message, and a worker's teardown taking its own with it. One update
-    /// carries both connectors because they are one section of the home's
-    /// row, and a reader that patches it needs the pair. `key` is the
+    /// carries both connectors because they are one section of the board's
+    /// project row, and a reader that patches it needs the pair. `key` is the
     /// project's lead seat.
     ConnectorSubscriptionsChanged {
         key: SessionSlot,

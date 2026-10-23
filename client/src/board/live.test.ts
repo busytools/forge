@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ServerMessage, Subject } from '../protocol';
 import { PROTOCOL_VERSION } from '../protocol';
@@ -138,6 +138,26 @@ describe('the board over a connection', () => {
     await settle();
     expect(forge.refreshed, 'a chat frame asked for a board read').toEqual([BOARD]);
     stop();
+  });
+
+  it('re-reads on the slow beat while the board is mounted', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const forge = fakeConnection();
+      const stop = watchBoard(forge.connection).subscribe(() => {});
+      expect(forge.refreshed).toEqual([]);
+
+      vi.advanceTimersByTime(29_000);
+      expect(forge.refreshed, 'the beat fired early').toEqual([]);
+      vi.advanceTimersByTime(1_000);
+      expect(forge.refreshed, "the beat did not advance the rows' clocks").toEqual([BOARD]);
+
+      stop();
+      vi.advanceTimersByTime(60_000);
+      expect(forge.refreshed, 'the beat outlived the last reader').toEqual([BOARD]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('coalesces a burst into one read', async () => {

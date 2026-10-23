@@ -1405,7 +1405,7 @@ interface RowConnectorViews {
  * **Ownership is `team_role`**: a subscription names the worker label it
  * belongs to, and `None` targets the project lead - so the lead's page reads
  * the None set and a worker's page reads its own label's, and neither shows
- * the other's. The sets ride the project's home row (all of the project's,
+ * the other's. The sets ride the project's board row (all of the project's,
  * both owners in one list), which is why the seat filter happens here.
  */
 export interface SeatConnectorRow {
@@ -1501,7 +1501,7 @@ function connectorsLiveness(home: HomeWire): {
 /**
  * One project's subscriptions, narrowed where they enter.
  *
- * A seat with no row on the home - a project that left `forge.toml` between
+ * A seat with no row on the board - a project that left `forge.toml` between
  * the record and this snapshot - reads as nothing subscribed rather than as
  * the page's problem: the strip's row draws nothing, the way it does for a
  * project nobody has subscribed anything to.
