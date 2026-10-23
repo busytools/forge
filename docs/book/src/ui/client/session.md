@@ -153,6 +153,22 @@ room has no top to scroll to**, so it asks for the page above on the
 fitting state itself and keeps asking as pages land, until the history
 fills the room or ends.
 
+**The held history settles on the newest window.** Reading back through a
+seat keeps whatever the reader pulls, and the server answers pages below its
+own window from the transcript with no byte budget - on the seat from #2532 a
+walk to the 64th page answer pulled 55 MB of pages. So when the reader comes
+back to the latest, the oldest pages are dropped until the held set fits
+8 MiB, and a seat the reader has left settles on each page that lands while it
+is away. Dropping is by whole page and never under
+the row at the column's top edge: a page's rows share the cursor that
+re-fetches it, so a row cut from inside one would be skipped. The newest page
+and the subscribe seed stay whole even when they alone are over the window -
+their rows name the place above themselves, and no `more` can return them.
+The first page left carries the cursor that re-fetches it - the one its page
+was asked with, or the newest page's own handle when the trim kept that page
+whole - so scrolling back into the trimmed stretch asks for it again and the
+column's top-edge pill says it is loading. Nothing is made unreachable.
+
 ## The strip
 
 One lane of segments above the foot, in a fixed order: the browser, the

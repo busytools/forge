@@ -96,6 +96,16 @@ export interface Turn {
    * drain fills it in place.
    */
   held?: boolean;
+  /**
+   * The `more` cursor that fetched the page this turn arrived on.
+   *
+   * **What makes a trimmed history reachable again**: the held window drops its
+   * oldest turns as the reader returns to the latest, and the first turn left
+   * names the page above it - so `more before=<it>` pulls the trimmed pages
+   * back rather than skipping them. A turn the frames built carries none; the
+   * trim only ever drops from the oldest end, where the page's own turns sit.
+   */
+  before?: string | null;
 }
 
 /**
@@ -267,6 +277,18 @@ export interface Conversation {
   /** The server's own words when it turned the conversation down. */
   refused: string | null;
   /**
+   * The message JSON held, in bytes, as the walk's window counts it.
+   *
+   * **A conversation is not held whole**: reading back through a seat keeps
+   * every page pulled - a long transcript answers those pulls from the file
+   * with no page budget, 55 MB of pages on the #2532 seat at the measured walk
+   * point - and coming back to the latest is what trims it. This is what the
+   * trim counts (see [`HISTORY_WINDOW_BYTES`]). Exact for what is held: every
+   * message counts its own JSON, and the sum is re-taken when a landing,
+   * merge or retraction moves the set (see `heldBytes`).
+   */
+  bytes: number;
+  /**
    * Whether the reader follows the newest end, which is the column's own
    * state and not something a comparison can derive: the `auto_scroll` state
    * the view this client replaced kept, with its transitions.
@@ -302,6 +324,7 @@ export const NOTHING: Conversation = {
   turns: [],
   loaded: false,
   cursor: null,
+  bytes: 0,
   reaskAt: null,
   askedFor: null,
   pages: 0,
@@ -766,6 +789,35 @@ const RETRY_MS = 2_000;
 const EMPTY_RETRY_MAX_MS = 30_000;
 
 /**
+ * The most message JSON a conversation keeps once the reader is at the latest.
+ *
+ * **The server bounds its own copy and `more` does not.** Its in-memory
+ * conversation is cut at 4,000 frames and 64 MiB, but a page below that floor
+ * is read from the transcript with no byte budget - so a reader walking back
+ * through a long seat could materialize the whole file on the page. In the
+ * measured run on the #2532 seat, both builds walked the same copy of the
+ * transcript to the 64th page answer (55 MB of pages): the build before this
+ * one held 55.6 MB of turns, with the renderer at a 452 MB footprint.
+ *
+ * **Only the oldest end gives** (Ved, 2026-10-23): the latest turns are what
+ * the reader is waiting on, and a window that dropped them would hide the live
+ * end. Reading back through a seat still loads whatever is pulled - the bound
+ * is enforced when the reader returns to the latest, so the column settles on
+ * the newest window instead of the whole transcript, and a later pull re-fetches
+ * the trimmed pages through the cursor the oldest kept turn carries. In the
+ * same run the return settled that build to 8.3 MB over 8 turns, and scrolling
+ * up again re-fetched the trimmed pages.
+ *
+ * **Eight mebibytes is the plateau on this seat**: the trim keeps whole pages,
+ * so the kept set is a whole number of them - 8,294,549 bytes over 8 turns,
+ * under the budget - and below 8 MiB the same page boundary decides what is
+ * kept, so a smaller number buys no memory. The constant lives here rather
+ * than in `forge.toml` because the trade is the renderer's memory against
+ * re-reading, and no reader can see it to have an opinion.
+ */
+export const HISTORY_WINDOW_BYTES = 8 << 20;
+
+/**
  * How long a publish waits for a paint before it goes out anyway.
  *
  * `requestAnimationFrame` is the coalescer, not the guarantee: a scheduled
@@ -997,6 +1049,42 @@ export class Chat {
   private walkTo: string | null = null;
   /** The cursor the in-flight ask went out with, so a page that repeats it stops the walk. */
   private askedBefore: string | null = null;
+  /** The last landing's id, so each page block is named as it arrives. */
+  private landing = 0;
+  /**
+   * The first turn of the newest page, when one landed.
+   *
+   * **The floor a trim may not cross.** The newest page's rows name the place
+   * ABOVE it, so a row dropped from inside it would be skipped by the
+   * `more` that re-fetches the rest - and the latest end is what a reader is
+   * waiting on anyway. The page is kept whole even when it alone is over the
+   * window; that is the one-page floor.
+   */
+  private pageFloor: string | null = null;
+  /**
+   * The newest page's own handle, kept from the landing that placed it.
+   *
+   * **The floor row's `before` is not the floor's cursor.** A newest page
+   * repeats the held tail, and a repeated row keeps the cursor of the page
+   * that FIRST fetched it - which names a place above that older page. When a
+   * trim drops everything above the newest page and keeps its first row, the
+   * only handle that re-fetches the dropped stretch is the newest page's own:
+   * `more` with it returns the page immediately above the newest page. A
+   * refresh landing therefore records this, and the trim uses it whenever the
+   * kept top is the floor (#2532 review).
+   */
+  private pageCursor: string | null = null;
+  /**
+   * The first turn this conversation was seeded with.
+   *
+   * **The other row a trim may not cross.** The subscribe's page is the one
+   * page no `more` can return: its rows name the place above it, so dropping
+   * them leaves the walk heading older and the seed behind it - reachable
+   * only as a newest page, which it stops being as soon as another row lands.
+   * Keeping it whole is what makes a later newest landing (a live turn's page)
+   * safe to trim above.
+   */
+  private seedFloor: string | null = null;
   /**
    * The held tail's turn keys when the walk started: the marks a walk page
    * inserts ABOVE.
@@ -1353,6 +1441,12 @@ export class Chat {
   /** The seat's page has gone: the draw stops, the fold does not. */
   leaving(): void {
     this.shown = false;
+    // **A seat the reader has left keeps only its newest window** (Ved,
+    // 2026-10-23): the conversation goes on folding every frame for the seat,
+    // but the history read on the way up is not worth holding for a page
+    // nobody is drawing. A return re-reads it from the first kept turn's
+    // cursor like any trimmed stretch.
+    this.trim();
   }
 
   /**
@@ -1366,6 +1460,97 @@ export class Chat {
    */
   following(follows: boolean): void {
     this.fold((held) => (held.following === follows ? held : { ...held, following: follows }));
+  }
+
+  /**
+   * Drop the OLDEST pages until the held set is inside the window.
+   *
+   * **Whole pages only, and never the newest one or the seed.** A page's rows
+   * share the cursor that re-fetches the page - except the newest page's and
+   * the subscribe seed's, which name the place above themselves - so a row
+   * dropped from inside them would be skipped by the re-fetch. Both stay whole
+   * even when they alone are over the window: the latest end is what the
+   * reader waits on, and the seed is the one page `more` can never name again
+   * (Ved, 2026-10-23, sharpened in #2532's reviews).
+   *
+   * **The kept top row's `before` is the ask that re-fetches the trimmed
+   * stretch** - the page above the kept top - and it is the one the first kept
+   * turn carries. **Unless the kept top is the newest page's floor**: a page
+   * repeats the held tail, and a repeated row keeps the stamp of the page that
+   * first fetched it - which is stale after a refresh - so a kept floor row
+   * takes the newest page's own cursor instead (see `pageCursor`).
+   *
+   * `keepFrom` is the row the column is drawing at its top edge: a fitting
+   * column, whose whole conversation is on screen, passes it so nothing under
+   * the reader is dropped. Reading back through history may hold more than the
+   * window; the column trims where the reader returns to the latest or its
+   * latest row lands, leaving an exploration alone while it happens.
+   */
+  trim(keepFrom: string | null = null): void {
+    this.fold((held) => {
+      const rows = held.turns;
+      // The count is recomputed from the rows themselves: frames, heals and
+      // retractions move messages without touching the running sum, and an
+      // over-count would drop a page the window had room for.
+      const size = this.heldBytes(rows);
+      if (size <= HISTORY_WINDOW_BYTES) return held;
+      const indexOf = (key: string | null): number =>
+        key === null ? rows.length : rows.findIndex((r) => r.key === key);
+      const floors = [indexOf(this.pageFloor), indexOf(this.seedFloor), indexOf(keepFrom)];
+      const stop = Math.min(...floors.map((index) => (index < 0 ? rows.length : index)));
+      let bytes = size;
+      let at = 0;
+      while (at < stop && bytes > HISTORY_WINDOW_BYTES) {
+        const row = rows[at];
+        const block = row === undefined ? undefined : BLOCK.get(row);
+        // A page's run is contiguous; never split it, and never cross the
+        // floor or the row the reader is looking at.
+        let end = at + 1;
+        while (end < rows.length) {
+          const next = rows[end];
+          if (next === undefined || BLOCK.get(next) !== block) break;
+          end += 1;
+        }
+        if (end > stop) break;
+        for (let index = at; index < end; index += 1) {
+          const row = rows[index];
+          if (row !== undefined) bytes -= turnBytes(row);
+        }
+        at = end;
+      }
+      if (at === 0) return held;
+      const turns = rows.slice(at);
+      const top = turns[0];
+      // **A kept floor row takes the newest page's cursor, not its own.** The
+      // row's `before` belongs to the page that first fetched it; the newest
+      // page's handle is what names the place above the kept window.
+      const cursor =
+        top !== undefined && top.key === this.pageFloor && this.pageCursor !== null
+          ? this.pageCursor
+          : (top?.before ?? held.cursor);
+      return {
+        ...held,
+        turns,
+        bytes: this.heldBytes(turns),
+        cursor,
+      };
+    });
+  }
+
+  /**
+   * The window's own count: every held row, plus the frames waiting for a turn.
+   *
+   * **Exact, by two routes.** A landing, a merge and a retraction re-take the
+   * sum from what is held, because each moves the set without moving a
+   * counter; a frame that only appends adds its own JSON to the carried count,
+   * because re-summing there would walk the whole window on every frame (the
+   * fold-cost guard caught exactly that). The per-row sums are cached by
+   * message array, so a re-take is a lookup per row, not a re-stringify.
+   */
+  private heldBytes(turns: readonly { messages: unknown[] }[]): number {
+    let bytes = turnsBytes(turns);
+    for (const message of this.unturned) bytes += messageBytes(message);
+    return bytes;
   }
 
   private read(): Conversation {
@@ -1960,6 +2145,29 @@ export class Chat {
           this.unturned = [];
         }
       }
+      // **Every row this page carried names the page above it, and the landing
+      // it came from.** `before` is what re-fetches a trimmed stretch - for a
+      // page the walk asked for it is the ask's own cursor, which returns that
+      // page again, and for the newest page it is the page's handle, which
+      // names the place above it - and `page` makes the block a run a trim can
+      // drop whole (#2532 review). A turn already stamped keeps the first page
+      // that fetched it: asking for the page that held it re-reads a turn or
+      // two already held, which the merge reconciles by key, and never skips
+      // the stretch between. The block is re-labelled as this landing's because
+      // the rows are placed as one contiguous run.
+      const above = direction === 'older' ? askedBefore : cursor;
+      const block = (this.landing += 1);
+      for (let at = 0; at < drawn.length; at += 1) {
+        const row = drawn[at];
+        if (row === undefined) continue;
+        // A row already stamped keeps its object: the list keys rows by it and
+        // the fold hands held objects back, so a replacement here would re-draw
+        // a row the reader is looking at. The block is a side record for that
+        // reason, not a field.
+        const placed = row.before === undefined ? { ...row, before: above } : row;
+        drawn[at] = placed;
+        BLOCK.set(placed, block);
+      }
       // The page's own names count as being on the page: a turn it settled is
       // held under the name its row already had, and the copy the page carried
       // is the same turn rather than another row to keep beside it.
@@ -2074,9 +2282,42 @@ export class Chat {
           loose.push(turn);
         }
       }
+      const turns =
+        direction === 'older'
+          ? this.walkTo !== null && this.walkBelow !== null
+            ? [
+                // **A walk page lands in the middle, not at the front.**
+                // The plain older landing prepends above everything held,
+                // which is true for a scroll (its page is older than all of
+                // it) and false for a walk (its page is newer than the held
+                // tail it walks toward). The tail's keys split the held
+                // turns, and the page lands between them - so the recovered
+                // stretch draws where it happened, not above the history.
+                ...rest.filter((turn) => this.walkBelow?.has(turn.key) === true),
+                ...drawn,
+                ...rest.filter((turn) => this.walkBelow?.has(turn.key) !== true),
+                ...loose,
+              ]
+            : [...drawn, ...rest, ...loose]
+          : [...rest, ...overtaken, ...drawn, ...loose];
+      // **The newest page is the trim's floor**: its first row is where the
+      // window may stop, so no row of it is ever dropped. The seed is the
+      // other floor - the one page `more` can never name again.
+      if (direction === 'newest' && drawn[0] !== undefined) {
+        this.pageFloor = drawn[0].key;
+        this.pageCursor = cursor;
+      }
+      if (first && turns[0] !== undefined) this.seedFloor = turns[0].key;
       return this.answered({
         ...healed,
         loaded: true,
+        turns,
+        // **Every landed turn counts**, the newest page's included: a
+        // reconnect's newest page carries turns this client missed, and a
+        // count that only took the walk's pages left the window blind to them,
+        // so repeated reconnects grew past it (#2532 review). The sum is cached
+        // per turn, so this is a lookup per held row, not a re-stringify.
+        bytes: this.heldBytes(turns),
         // A page that lands is the ask the refusal spoke for, answered - the
         // refusal is about THAT ask rather than about the conversation, and
         // one that outlived its ask leaves every later page undrawable.
@@ -2111,24 +2352,6 @@ export class Chat {
             ? cursor
             : held.cursor,
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
-        turns:
-          direction === 'older'
-            ? this.walkTo !== null && this.walkBelow !== null
-              ? [
-                  // **A walk page lands in the middle, not at the front.**
-                  // The plain older landing prepends above everything held,
-                  // which is true for a scroll (its page is older than all of
-                  // it) and false for a walk (its page is newer than the held
-                  // tail it walks toward). The tail's keys split the held
-                  // turns, and the page lands between them - so the recovered
-                  // stretch draws where it happened, not above the history.
-                  ...rest.filter((turn) => this.walkBelow?.has(turn.key) === true),
-                  ...drawn,
-                  ...rest.filter((turn) => this.walkBelow?.has(turn.key) !== true),
-                  ...loose,
-                ]
-              : [...drawn, ...rest, ...loose]
-            : [...rest, ...overtaken, ...drawn, ...loose],
       });
     });
     // The walk's own step, after the fold: the held tail is never dropped,
@@ -2163,6 +2386,12 @@ export class Chat {
       this.older();
     }
     this.returnIfWanted();
+    // **A seat nobody is drawing settles on every landing.** A seat the reader
+    // has left still receives its frames, and a page that lands while it is
+    // away must not grow it past the window - nothing else would trim it until
+    // the reader came back. The shown-and-following case is the column's,
+    // which is what knows whether its whole conversation is on screen.
+    if (!this.shown) this.trim();
   }
 
   /**
@@ -2202,6 +2431,10 @@ export class Chat {
     // A swap is not a frame's draw: the reset lands now, whatever any paint
     // was waiting for. The fill's mark and landing count go with it - they
     // name the occupant that is gone.
+    // The floors named rows of the conversation that is going.
+    this.pageFloor = null;
+    this.pageCursor = null;
+    this.seedFloor = null;
     this.held = NOTHING;
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
@@ -2655,7 +2888,7 @@ export class Chat {
         // its measured space and the words land back in it.
         turns.push(messages.length > 0 ? { ...turn, messages } : { ...turn, messages, held: true });
       }
-      return changed ? { ...held, turns } : held;
+      return changed ? { ...held, turns, bytes: this.heldBytes(turns) } : held;
     });
     if (pulled !== undefined) this.drained.set(uuid, pulled);
   }
@@ -2805,6 +3038,7 @@ export class Chat {
           const grown: Turn = { ...target, messages: [...target.messages, message] };
           return this.answered({
             ...held,
+            bytes: held.bytes + messageBytes(message),
             turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
           });
         }
@@ -2819,6 +3053,7 @@ export class Chat {
           const grown: Turn = { ...target, messages: [...target.messages, message] };
           return this.answered({
             ...held,
+            bytes: held.bytes + messageBytes(message),
             turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
           });
         }
@@ -2835,6 +3070,7 @@ export class Chat {
           const grown: Turn = { ...newest, messages: [...newest.messages, message] };
           return this.answered({
             ...held,
+            bytes: held.bytes + messageBytes(message),
             turns: [...held.turns.slice(0, -1), grown],
           });
         }
@@ -2842,7 +3078,7 @@ export class Chat {
         // way every frame with nothing to attach to is - the interrupt
         // belongs to a turn this page has not seen yet.
         this.unturned.push(message);
-        return held;
+        return { ...held, bytes: held.bytes + messageBytes(message) };
       }
       // A frame opens a row of its own only where no turn is being written,
       // and only where it is a frame a turn opens at. **The transcript fold
@@ -2875,7 +3111,7 @@ export class Chat {
           // than dropped (rule 25): the turn that will carry it is the one
           // still coming.
           this.unturned.push(message);
-          return held;
+          return { ...held, bytes: held.bytes + messageBytes(message) };
         }
         // **A result goes back to the turn holding the call it answers.**
         // The newest turn is where a drawn-nothing frame usually belongs (a
@@ -2887,7 +3123,7 @@ export class Chat {
         const target = held.turns[at];
         if (target === undefined) {
           this.unturned.push(message);
-          return held;
+          return { ...held, bytes: held.bytes + messageBytes(message) };
         }
         // The newest turn draws again with what joined it, so a hold taken by
         // the pile is released; an older turn is not the pile's, and its own
@@ -2912,6 +3148,7 @@ export class Chat {
         return this.answered({
           ...held,
           following: follow,
+          bytes: held.bytes + messageBytes(message),
           turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
         });
       }
@@ -2936,10 +3173,63 @@ export class Chat {
       return this.answered({
         ...held,
         following: follow,
+        // The riding frames are already in `bytes`: they were counted when
+        // they were held back for this row.
+        bytes: held.bytes + messageBytes(message),
         turns: [...held.turns, { key, messages: [...riding, message], live }],
       });
     });
   }
+}
+
+/** One frame's own JSON, as the window counts it; `0` when it has no size. */
+function messageBytes(message: unknown): number {
+  if (message === null || message === undefined) return 0;
+  try {
+    return JSON.stringify(message)?.length ?? 0;
+  } catch {
+    // A frame JSON cannot represent is one no page ever carried whole; it
+    // weighs nothing against the window rather than failing the landing.
+    return 0;
+  }
+}
+
+/**
+ * A turn's frames summed once, by the array that holds them.
+ *
+ * The window sums a page's rows on every landing, and the trim sums the held
+ * rows again when the reader comes back to the latest - against arrays that
+ * do not change between the two, so the second pass is a lookup rather than a
+ * re-stringify of the whole window.
+ */
+const TURN_BYTES = new WeakMap<unknown[], number>();
+
+/**
+ * The landing that placed a turn, as a run a trim can drop whole.
+ *
+ * **A page's rows share a cursor that re-fetches the page** - except the newest
+ * page's, which name the place above it - so a row dropped from inside a page
+ * would be skipped by the re-fetch. The rows one landing placed are contiguous,
+ * so the side record is what says where a page's run starts and ends without
+ * re-cutting the objects the list and the fold hand back by identity.
+ */
+const BLOCK = new WeakMap<object, number>();
+
+/** The message JSON one turn holds. */
+function turnBytes(turn: { messages: unknown[] }): number {
+  const held = TURN_BYTES.get(turn.messages);
+  if (held !== undefined) return held;
+  let bytes = 0;
+  for (const message of turn.messages) bytes += messageBytes(message);
+  TURN_BYTES.set(turn.messages, bytes);
+  return bytes;
+}
+
+/** The message JSON a set of held turns carries. */
+function turnsBytes(rows: readonly { messages: unknown[] }[]): number {
+  let bytes = 0;
+  for (const row of rows) bytes += turnBytes(row);
+  return bytes;
 }
 
 /** The turns a page carried, as the shape above, with anything else dropped. */

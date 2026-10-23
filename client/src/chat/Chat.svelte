@@ -15,6 +15,7 @@
   import { latestCompaction } from './compaction-jump';
   import {
     Chat,
+    HISTORY_WINDOW_BYTES,
     NOTHING,
     beingWritten,
     runningAt,
@@ -593,6 +594,23 @@
     return viewport !== null && viewport.scrollHeight <= viewport.clientHeight;
   }
 
+  /**
+   * Settle the held window on the newest page where the reader has reached the
+   * foot or a page has landed under them.
+   *
+   * **The trim is bounded by the row at the viewport's top edge**, so nothing
+   * the reader can see goes: a fitting column's top row is row 0, which makes
+   * the trim a no-op there without a second guard.
+   */
+  function settleWindow(): void {
+    // **The budget is decided from the record, before any layout read**: a
+    // frame lands many times a second and a scroll height read per frame is
+    // the cost #1710 removed. Only a held set over the window pays one.
+    if (held.bytes <= HISTORY_WINDOW_BYTES) return;
+    const at = viewport === null || list === null ? null : list.findItemIndex(viewport.scrollTop);
+    working?.trim(at === null ? null : (held.turns[at]?.key ?? null));
+  }
+
   $effect(() => {
     const which = seat;
     const open = connection;
@@ -670,7 +688,10 @@
       // a seat's conversation is kept, and its follow flag was kept with it -
       // so a seat left scrolled up came back with the pass returning early
       // and the reader landing wherever the old offset fell. A place belongs
-      // to the visit; every entry lands at the latest.
+      // to the visit; every entry lands at the latest. The window is settled
+      // by the follow effect below, which runs on the arriving conversation's
+      // own publish - this call would hand the outgoing seat's row key to the
+      // incoming chat's trim.
       working?.following(true);
       // **And so were the asks this column is holding.** They belong to the
       // conversation that is going, and their pages are not coming here: left
@@ -1139,6 +1160,11 @@
   $effect(() => {
     if (follows === null || !held.loaded || !held.following) return;
     land();
+    // A landing while the reader is at the latest can take the held set over
+    // the window, and this is the place that knows what is on screen: the
+    // window settles here rather than in the conversation, which cannot see
+    // whether the column fits.
+    settleWindow();
   });
 
   /**
@@ -1396,6 +1422,9 @@
       // and the away-from-foot branch is untouched.
       if (!rose || byReader || aimed || towardFoot) {
         working?.following(true);
+        // The reader is back at the latest: the older stretch behind them is
+        // what the window gives up.
+        settleWindow();
         // The foot is where a following reader wants to be, so the place they
         // held on the way there is done with.
         anchor = null;
@@ -1608,6 +1637,7 @@
       title="back to the latest"
       onclick={() => {
         working?.following(true);
+        settleWindow();
         anchor = null;
         land();
       }}
