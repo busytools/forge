@@ -221,12 +221,34 @@ describe('frames from the bridge', () => {
       why: 'no session there',
     });
     // **The page is told as a frame**, which is what a subject store reads its
-    // refused state on; without it a board stays "reading..." forever.
+    // refused state on; without it a board stays "reading..." forever. The
+    // frame names the subject it belongs to, so only that subject's readers
+    // act on it.
     expect(seen.at(-1), 'the refusal did not reach the page listeners').toEqual({
       kind: 'error',
       what: 'subscribe',
       why: 'no session there',
+      seat: slot,
+      subject,
+    });
+  });
+
+  it('names a non-seat subject on the refusal frame, and no seat', async () => {
+    const connection = await opened();
+    const store = connection.subscribe('board');
+    const seen: unknown[] = [];
+    connection.onMessage((message) => seen.push(message));
+    fire('client://refused', { key: 'board', why: 'this forge holds no board' });
+    expect(store.state(), 'the board store is refused').toEqual({
+      kind: 'refused',
+      why: 'this forge holds no board',
+    });
+    expect(seen.at(-1), 'the board refusal did not name its subject').toEqual({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'this forge holds no board',
       seat: null,
+      subject: 'board',
     });
   });
 

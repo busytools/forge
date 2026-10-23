@@ -170,9 +170,9 @@ describe('a board edit through the router', () => {
 
   /**
    * A subscription the server turned down is its own state here too: the
-   * board reads the same snapshot the fleet does, so a refused read leaves it
-   * with nothing - and "Reading the fleet..." forever is the page lying about
-   * a read that is never coming.
+   * board still needs the HOME read for its seats and counters, so a refused
+   * home read leaves it with nothing - and "Reading the fleet..." forever is
+   * the page lying about a read that is never coming.
    */
   it('says so when the home read was refused, rather than reading forever', () => {
     const { connection } = recording([], boardWire);

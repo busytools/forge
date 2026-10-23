@@ -21,14 +21,27 @@ function parsedTask(task: Record<string, unknown>): Record<string, unknown> {
 }
 
 describe('the board hears exactly the variants that move it (#2517)', () => {
-  it('takes its own three and nothing else', () => {
+  it('takes its own three and the seat events its rows read', () => {
     expect(coversBoard({ tasks_changed: { key: LEAD, tasks: [] } })).toBe(true);
     expect(coversBoard({ cron_schedules_changed: { key: LEAD, crons: [] } })).toBe(true);
     expect(
       coversBoard({ connector_subscriptions_changed: { key: LEAD, gotify: [], slack: [] } }),
     ).toBe(true);
+    // A row's owner-gone chip is read from seat liveness, so these reach it.
+    for (const variant of [
+      'spawning',
+      'connected',
+      'session_replaced',
+      'releasing',
+      'connection_failed',
+      'worker_status_changed',
+    ]) {
+      expect(coversBoard({ [variant]: { key: LEAD } }), `${variant} was dropped`).toBe(true);
+    }
     expect(coversBoard({ accounts_changed: {} })).toBe(false);
     expect(coversBoard('catalog_loaded')).toBe(false);
+    // A turn frame moves no board row's marks.
+    expect(coversBoard({ turn_complete: { key: LEAD } })).toBe(false);
   });
 });
 
@@ -54,8 +67,8 @@ describe('the task fields the board marks', () => {
   });
 
   it('defaults absent newer fields rather than dropping the row', () => {
-    // A server older than the fields, and a v7 flat task alike: no attestation,
-    // no reservation, and a wait that is not parked.
+    // A payload that states none of the newer fields: no attestation, no
+    // reservation, and a wait that is not parked.
     const task = parsedTask({
       id: 't-2',
       project_name: 'proj',

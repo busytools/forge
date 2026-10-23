@@ -1453,6 +1453,9 @@ export class Chat {
         // answer or refusal draws and retries. The error names the seat it
         // refused, so another seat's refused read is not this conversation's.
         if (message.what === 'subscribe') {
+          // A refusal this side attributed to a non-seat subject - the home,
+          // the board - is not this conversation's, loaded or not.
+          if (typeof message.subject === 'string') return;
           if (message.seat != null) {
             if (subjectKey({ session: message.seat }) !== this.key) return;
             // **This seat's refused subscribe** (#2420): no snapshot follows,

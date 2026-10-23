@@ -1,10 +1,10 @@
 /**
- * One project's board, gathered from the snapshot and nothing else.
+ * One project's board, gathered from the board's snapshot and nothing else.
  *
- * The board is a view of the same wire the fleet reads: its cards carry
- * the server's own marks, and this module only decides what a reader sees
- * - the lanes, the order inside them, the words on a card. Nothing here
- * re-derives a fact.
+ * Its cards carry the server's own marks, and this module only decides what a
+ * reader sees - the lanes, the order inside them, the words on a card.
+ * Nothing here re-derives a fact; the home's snapshot supplies the seats and
+ * the `onYou` count beside them.
  */
 
 import { followable } from '../home/view';

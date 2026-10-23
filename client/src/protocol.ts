@@ -152,6 +152,29 @@ export function subjectKey(subject: Subject): string {
   return `session:${org}\u0000${project}\u0000${label}`;
 }
 
+/** The subjects whose key is the subject itself, which is what the wire sends. */
+const NAMED_SUBJECTS: readonly string[] = [
+  'home',
+  'board',
+  'usage',
+  'dictate_models',
+  'extensions',
+];
+
+/**
+ * The subject a store key names, or `null` for a key this client does not
+ * know. The inverse of [`subjectKey`], used where the wire names no subject
+ * and the side that attributed a refusal has to say which one it was.
+ */
+export function subjectFromKey(key: string): Subject | null {
+  if (NAMED_SUBJECTS.includes(key)) return key as Subject;
+  const seat = key.startsWith('session:') ? key.slice('session:'.length) : null;
+  if (seat === null) return null;
+  const [org, project, label] = seat.split('\u0000');
+  if (org === undefined || project === undefined || label === undefined) return null;
+  return { session: { org, project, label } };
+}
+
 /**
  * A core command: the variant's name around its own fields.
  *
@@ -453,6 +476,17 @@ export type ServerMessage =
        * case the wire produces.
        */
       seat?: SessionSlot | null;
+      /**
+       * The subscription a refusal belongs to, when THIS side synthesized the
+       * frame.
+       *
+       * **The wire's own errors name no subject** - an `error` carries `what`
+       * and `why`, and a subscribe refusal is attributed by the side that
+       * remembers what it asked for. That side says which subject it was, so
+       * a page does not act on another subject's refusal; absent means the
+       * frame came off the wire and the reader falls back to its own store.
+       */
+      subject?: Subject;
       dispatch_id?: number | null;
     }
   /**

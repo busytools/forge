@@ -65,17 +65,30 @@ export function boardFrom(data: BoardWire): BoardWire {
  * Whether a board subscriber hears this update - the server's own
  * `Subject::Board::covers`, and the one place it lives on this side.
  *
- * The three variants that move what the board's snapshot carries: a task
- * write, a schedule set and a connector set. The home hears the task write
- * too, because its fleet counts are derived from the same tasks; it hears
- * neither of the other two, because its payload no longer carries them.
+ * The three variants that move what the board's snapshot carries - a task
+ * write, a schedule set and a connector set - and the six seat events a row's
+ * `stale` mark is read from (a seat starting, connecting, being replaced,
+ * releasing, failing to connect, or a worker's status moving). A row's ages
+ * move with the clock instead, which the page's own beat answers. The home
+ * hears the task write too, because its fleet counts are derived from the
+ * same tasks; it hears neither of the other sets, because its payload no
+ * longer carries them.
  */
+const BOARD_VARIANTS: readonly string[] = [
+  'tasks_changed',
+  'cron_schedules_changed',
+  'connector_subscriptions_changed',
+  // A row's owner-gone chip is read from seat liveness.
+  'spawning',
+  'connected',
+  'session_replaced',
+  'releasing',
+  'connection_failed',
+  'worker_status_changed',
+];
+
 export function coversBoard(update: SessionUpdate): boolean {
   if (typeof update === 'string') return false;
   const [variant] = Object.keys(update);
-  return (
-    variant === 'tasks_changed' ||
-    variant === 'cron_schedules_changed' ||
-    variant === 'connector_subscriptions_changed'
-  );
+  return variant !== undefined && BOARD_VARIANTS.includes(variant);
 }

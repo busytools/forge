@@ -523,6 +523,27 @@ describe('the fleet the snapshot describes', () => {
     expect(missFrom(7).kind).toBe('unknown');
   });
 
+  it('reads a fleet row a v8 server sent without a row count as none', () => {
+    // A v9 client against a v8 server: the row carries no `rows`, and a
+    // header that summed `undefined` would draw `NaN tasks`.
+    const old = {
+      ...homeWire,
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 0,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 0,
+          misses: [],
+        },
+      ],
+    } as unknown as HomeWire;
+    const parsed = homeFrom(old);
+    expect(parsed.fleet[0]?.rows, 'a missing count read as a number').toBe(0);
+    expect(homeView(parsed, '').header.tasks, 'the header summed a missing count').toBe(0);
+  });
+
   it('totals the tasks across every project, not the ones a row happens to show', () => {
     const wire: HomeWire = {
       ...homeWire,

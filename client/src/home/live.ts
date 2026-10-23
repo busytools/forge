@@ -15,6 +15,7 @@
 import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { canHost } from '../browser/host';
+import { subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
@@ -125,6 +126,16 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     reading = false;
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'snapshot' || message.kind === 'error') {
+        // A refusal this side attributed to another subject says nothing
+        // about the home's read; one off the wire names no subject and is
+        // read against the home's own store.
+        if (
+          message.kind === 'error' &&
+          message.subject !== undefined &&
+          subjectKey(message.subject) !== 'home'
+        ) {
+          return;
+        }
         if (message.kind === 'error' || message.subject === 'home') {
           reading = false;
           read();

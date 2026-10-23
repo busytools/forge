@@ -152,6 +152,11 @@ fn board_detail(update: &SessionUpdate) -> bool {
 /// being replaced, releasing, failing to connect, or a worker's status
 /// moving. Turn frames are not here - a task write is what moves a row's work,
 /// and a page's own beat advances its clocks.
+///
+/// **The coverage is not exact.** A session task exiting and a worktree
+/// rollback release the handle with no frame of their own, and `Spawning`
+/// fires before the handle exists - so in those windows a row's mark can lag
+/// until the seat's next covered frame, or until the page's beat re-reads.
 fn seat_liveness(update: &SessionUpdate) -> bool {
     matches!(
         update,

@@ -582,6 +582,10 @@ describe("the board's controls", () => {
     expect(document.body.textContent, 'the refusal did not draw its words').toContain(
       'this forge holds no board for you',
     );
+    expect(
+      document.body.textContent?.split('this forge holds no board for you').length,
+      'the refusal was drawn more than once',
+    ).toBe(2);
     expect(document.body.textContent, 'a refusal read as a read in flight').not.toContain(
       'reading the board...',
     );

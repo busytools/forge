@@ -87,7 +87,6 @@
     "WorkerStatusChanged": "worker_status_changed"
   },
   "subject": {
-    "Board": "board",
     "DictateModels": "dictate_models",
     "Extensions": "extensions",
     "Home": "home",
@@ -905,7 +904,6 @@
         "misses",
         "project",
         "queue",
-        "rows",
         "slots",
         "waiting_on_user"
       ],
@@ -914,9 +912,16 @@
       ],
       "/data/projects[]": [
         "chip",
+        "connectors",
+        "crons",
         "project",
+        "rows",
         "work",
         "would_bind"
+      ],
+      "/data/projects[]/connectors": [
+        "gotify",
+        "slack"
       ],
       "/data/projects[]/project": [
         "accounts",

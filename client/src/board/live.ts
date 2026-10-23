@@ -11,6 +11,7 @@
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
+import { subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { boardFrom, coversBoard, type BoardRead, type BoardWire } from '../wire/board';
@@ -57,6 +58,9 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     if (timer !== null) return;
     timer = setTimeout(() => {
       timer = null;
+      // A beat (or any read) already in flight is the ask this update would
+      // have made: asking again would queue a second whole encode behind it.
+      if (reading) return;
       reading = true;
       connection.refresh('board');
     }, COALESCE_MS);
@@ -81,6 +85,16 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     reading = false;
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'snapshot' || message.kind === 'error') {
+        // A refusal this side attributed to another subject says nothing about
+        // the board's read; one off the wire names no subject and is read
+        // against the board's own store.
+        if (
+          message.kind === 'error' &&
+          message.subject !== undefined &&
+          subjectKey(message.subject) !== 'board'
+        ) {
+          return;
+        }
         if (message.kind === 'error' || message.subject === 'board') {
           reading = false;
           read();
@@ -105,9 +119,11 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       }
     });
     // The slow beat a mounted board needs: a row's ages and its time-derived
-    // marks move with the clock, and no frame announces that.
+    // marks move with the clock, and no frame announces that. **A refused
+    // subject is not asked again** - the refusal is the answer, and a beat
+    // that re-asked it would knock on a door already shut.
     beat = setInterval(() => {
-      if (reading) return;
+      if (reading || held?.state().kind === 'refused') return;
       reading = true;
       connection.refresh('board');
     }, BEAT_MS);

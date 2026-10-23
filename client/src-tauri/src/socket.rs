@@ -857,9 +857,14 @@ fn receive(
             say(events, SocketEvent::Message { value: value.clone(), bytes, parse_ms });
         }
         Some("error") => {
-            if value.get("what").and_then(Value::as_str) == Some("subscribe")
-                && !awaiting.is_empty()
-            {
+            // **An unknown subject comes back as `client_message`**, because
+            // the server could not read the frame that named it - a v8 server
+            // and a `board` subscribe, above all. The refused subscription is
+            // the one this side is still waiting on, so the refusal is
+            // attributed to it; left as a plain frame the page would wait on
+            // an answer that is never coming (#2517).
+            let what = value.get("what").and_then(Value::as_str);
+            if matches!(what, Some("subscribe" | "client_message")) && !awaiting.is_empty() {
                 let key = awaiting.remove(0);
                 let why = value.get("why").and_then(Value::as_str).unwrap_or_default().to_owned();
                 say(events, SocketEvent::Refused { key, why });
@@ -1077,6 +1082,34 @@ pub(crate) mod tests {
         let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(first["what"], json!("home"));
         assert_eq!(first["browser"], true);
+    }
+
+    /// **A v8 server's answer to an unknown `board` subscribe is
+    /// `client_message`**, because it could not read the frame at all. The
+    /// oldest outstanding subscribe is what it refused, and the page must
+    /// learn that as a refusal rather than wait on an answer never coming
+    /// (#2517).
+    #[tokio::test]
+    async fn an_unknown_message_error_refuses_the_outstanding_subscribe() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        socket.subscribe(json!("board"), false, false);
+        let subscribed = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(subscribed["what"], json!("board"));
+
+        stub.say
+            .send(json!({
+                "kind": "error",
+                "what": "client_message",
+                "why": "that is not a message this server knows",
+            }))
+            .expect("the stub broadcasts");
+        let SocketEvent::Refused { key, why } = event_of(&mut rx, "refused").await else {
+            unreachable!("filtered to refused");
+        };
+        assert_eq!(key, "board", "the refusal was not attributed to the subscribe that failed");
+        assert_eq!(why, "that is not a message this server knows");
+        assert!(rx.try_recv().is_err(), "the error was both refused and forwarded");
     }
 
     /// **The desktop's only subscribe mark is this event (#2513).** A

@@ -584,7 +584,7 @@ fields were most of a ~708 KB home read for a page that draws none of them
 
 | Field      | What it is                                                                                                                                                                                                                                                               |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `projects` | One entry per project: `project` (name, org, path, sessions, `has_model`), `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
+| `projects` | One entry per project: `project` (its identity - `org` and `name`; the rest of a project's view is the home's), `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
 
 **`board` hears the variants that move it**: `tasks_changed`,
 `cron_schedules_changed` and `connector_subscriptions_changed`, plus the

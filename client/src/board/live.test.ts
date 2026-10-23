@@ -189,6 +189,65 @@ describe('the board over a connection', () => {
     stop();
   });
 
+  it('ignores a refusal another subject owns', () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe(($next) => seen.push($next));
+    forge.stores.get(BOARD)?.set({ projects: [] });
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    const before = seen.length;
+
+    forge.arrive({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'the home was refused',
+      seat: null,
+      subject: 'home',
+    });
+    expect(seen.length, "another subject's refusal re-set the board").toBe(before);
+    stop();
+  });
+
+  it('does not ask again on the beat once the board is refused', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const forge = fakeConnection();
+      const stop = watchBoard(forge.connection).subscribe(() => {});
+      forge.stores.get(BOARD)?.refuse('this forge holds no board');
+      forge.arrive({
+        kind: 'error',
+        what: 'subscribe',
+        why: 'this forge holds no board',
+        seat: null,
+        subject: BOARD,
+      });
+
+      vi.advanceTimersByTime(30_000);
+      expect(forge.refreshed, 'a refused board was asked again on the beat').toEqual([]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not double-ask when the beat lands inside the coalesce window', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      const forge = fakeConnection();
+      const stop = watchBoard(forge.connection).subscribe(() => {});
+      // Just before the beat, an update schedules its read 50 ms out; the
+      // beat fires first and the timer behind it must not ask again.
+      vi.advanceTimersByTime(29_990);
+      forge.arrive(UPDATE);
+      vi.advanceTimersByTime(10);
+      vi.advanceTimersByTime(40);
+      expect(forge.refreshed, 'the beat and the coalesce timer both asked').toEqual([BOARD]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reads a refusal as the board refusal rather than an empty board', () => {
     const forge = fakeConnection();
     const seen: BoardRead[] = [];
