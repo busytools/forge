@@ -3900,26 +3900,62 @@ async fn a_seats_answer_carries_its_epoch_and_the_number_the_next_frame_will_bea
     fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
 
     let mut socket = connect(&url).await;
-    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
-        data["header"]["session_id"] == "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"
-            && data["header"]["seq"] == 2
-    })
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
     .await;
-    assert!(
-        held,
-        "a client attaching after one frame reads the epoch and the number its next frame will bear",
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        data["header"]["session_id"], "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        "a client attaching after one frame reads the epoch its sequence belongs to",
     );
+    // The hold starts the seat's watch (#2506) and the record's read marks it.
+    // A still tree's first pass is seeded from that read and adds no frame, so
+    // the count is the seat's one frame and nothing else - pinned absolutely
+    // rather than waited out, so a pass that announces on open reds here.
+    let baseline = next_frame_number(&mut socket, &seat).await;
+    assert_eq!(baseline, 2, "the open adds no frame to the seat's one");
 
     // Another seat's traffic must not move this one's number, and this one's
     // own frame must: the counter is the seat's.
     let other = SessionSlot::worker("TestOrg", "proj", "reviewer");
     fleet.emit(SessionUpdate::TurnComplete { key: other.clone(), terminal_reason: None });
+    assert_eq!(
+        next_frame_number(&mut socket, &seat).await,
+        baseline,
+        "another seat's traffic does not move this one's number",
+    );
     fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
-    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
-        data["header"]["seq"] == 3
-    })
+    assert_eq!(
+        next_frame_number(&mut socket, &seat).await,
+        baseline + 1,
+        "the seat's own frame is what moves its number",
+    );
+}
+
+/// The number a seat's next frame will bear, read off a fresh subscribe's
+/// answer.
+async fn next_frame_number(socket: &mut Client, seat: &SessionSlot) -> u64 {
+    send(
+        socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
     .await;
-    assert!(held, "the seat's own frame is what moves its number");
+    let (_, data, _) = snapshot_answering(socket).await;
+    data["header"]["seq"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the answer carries the number its next frame will bear: {data}"))
 }
 
 /// **A seat nobody has attached to yet is still at a number a client can
@@ -4064,6 +4100,81 @@ async fn a_reconnect_answer_covers_every_frame_below_its_number() {
         says_times(&after, "the frame the fold has not taken yet"),
         1,
         "the fold applied a frame the catch-up had already put in the copy",
+    );
+}
+
+/// **A fill that spans a replay is refused, never marked past.**
+///
+/// A `HistoryReplayed`'s window is never ringed, so a fill that rescues a read
+/// from a lagging fold has nothing to apply for its number. Marking the copy
+/// past it anyway would have the fold skip the replay when it lands - as a
+/// frame the copy already holds - and the window's rows would be gone with
+/// nothing failing. The fold is held here so the window is deterministic
+/// rather than raced; the second read proves the rows arrive once it lands.
+#[tokio::test]
+async fn a_fill_that_spans_a_replay_is_refused_rather_than_marked_past() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::HistoryReplayed {
+        key: seat.clone(),
+        history: vec![a_said_frame("the replayed window row")],
+        compaction_count: 0,
+    });
+    let replay = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
+
+    // **The FIRST answer, not a poll.** The next subscribe would find the fold
+    // caught up whatever this one did.
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    match next_server(&mut socket).await {
+        ServerMessage::Error { what, why, .. } => {
+            assert_eq!(what, "subscribe", "the refusal is the subscribe's own read");
+            assert!(
+                why.contains("replay"),
+                "and names the replay the copy is behind rather than a number: {why}",
+            );
+        }
+        other => panic!(
+            "a fill over a replay must refuse rather than mark the copy past its window, and \
+             this answered {other:?}"
+        ),
+    }
+
+    state.conversations.hold_the_fold(false);
+    assert!(
+        state.conversations.await_consumed(&seat, replay, SEED_WAIT).await,
+        "the fold never applied the replay the refusal left for it: the watermark is {}",
+        state.conversations.consumed_for(&seat),
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, after, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        says_times(&after, "the replayed window row"),
+        1,
+        "the replay's row crosses once the fold has landed, and once only",
     );
 }
 
@@ -5034,14 +5145,14 @@ async fn a_range_ask_after_an_occupant_change_reaches_the_new_epoch() {
     assert!(body.contains("the new epoch's first"), "and it is that frame: {body}");
 }
 
-/// **A repaired frame crosses with no history on it.** The ring holds what the
-/// fanout emitted, and a frame carrying the history an epoch hands over must
-/// not ride a client frame (#2157) nor lean on the socket's size bound - so
-/// the repair path goes through the same stripper as every other path to a
-/// client. A `HistoryReplayed` is the shape that proves it: it is a frame with
-/// a conversation in it, and the ring keeps it.
+/// **A repair never hands a replay's window back.** A `HistoryReplayed` is
+/// numbered but not ringed: its window is the task's own seed for the
+/// transport's copy and a client reads a fresh one on re-open, so the ring
+/// keeps nothing of it and a range ask over its number falls to the
+/// transcript. What crosses is the transcript's own rows, never the window
+/// the epoch handed over (#2157).
 #[tokio::test]
-async fn a_repair_answer_carries_no_history() {
+async fn a_replay_is_never_handed_back_by_a_repair() {
     let (url, fleet, _state) = a_server_with_state().await;
     let seat = lead_seat();
     wait_for_the_fold(&fleet).await;
@@ -5058,8 +5169,11 @@ async fn a_repair_answer_carries_no_history() {
     let ServerMessage::SeatFrames { frames, .. } = next_server(&mut socket).await else {
         panic!("a range ask is answered with the frames it asked for")
     };
-    assert_eq!(frames.len(), 1, "the replay is the frame the ring holds");
-    let body = serde_json::to_string(&frames[0].update).unwrap_or_default();
+    assert!(
+        frames.iter().all(|frame| !matches!(&frame.update, SessionUpdate::HistoryReplayed { .. })),
+        "a repair handed the replay's window back: {frames:?}"
+    );
+    let body = serde_json::to_string(&frames).unwrap_or_default();
     assert!(!body.contains("the replayed words"), "the history crossed on a repair: {body}");
 }
 
@@ -5358,7 +5472,11 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
                 continue;
             };
             assert_eq!(key, lead_seat(), "the row goes to the seat that was held");
-            assert_eq!(work.changed, Some(1), "and carries the count the edit made");
+            // The watch's first pass announces the stored row before any edit;
+            // the row under test is the one the edit made.
+            if work.changed != Some(1) {
+                continue;
+            }
             moved = Some((work, git, pr, closes));
             break;
         }
@@ -5500,6 +5618,95 @@ async fn a_refused_subscribe_leaves_another_connections_hold_alone() {
     panic!("A's hold did not survive B's visit: its seat stopped being scanned");
 }
 
+/// **A seat re-opened after its release is filled from the ring, not
+/// refused.** The frames a seat minted before its release stay reachable, so a
+/// page switching back to a seat whose session has ended reads the
+/// conversation it missed rather than an error about a copy that cannot be
+/// filled.
+#[tokio::test]
+async fn a_seat_reopened_after_a_release_is_filled_from_its_ring() {
+    let (url, fleet, state, _root) = a_repo_server().await;
+    let seat = lead_seat();
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts {
+            session_id: Some(SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45")),
+            ..Default::default()
+        },
+    );
+
+    // A page opens the seat and hears one prompt row.
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    snapshot_answering(&mut first).await;
+    let prompt: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": "before the release" },
+        "session_id": "s",
+    }))
+    .expect("parse a user message");
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        msg: prompt,
+        origin: None,
+        source: None,
+    });
+    loop {
+        let Some(ServerMessage::Update { update, .. }) =
+            next_server_within(&mut first, 5_000).await
+        else {
+            panic!("the prompt row never reached the page");
+        };
+        if matches!(*update, SessionUpdate::ChatAppended { .. }) {
+            break;
+        }
+    }
+    drop(first);
+
+    // The session ends under the seat.
+    state
+        .surface
+        .dispatch(Command::CloseSession { session_key: seat.clone() })
+        .expect("the seat's session closes");
+    for _ in 0..200 {
+        if state.surface.header(&seat).session_id.is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(state.surface.header(&seat).session_id.is_none(), "the seat's session is gone");
+
+    // A page switching back reads the seat: the copy is filled from the frames
+    // the release kept, so the snapshot carries the prompt rather than the
+    // refusal a shed ring would leave.
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut second).await;
+    let conversation = serde_json::to_string(&data["conversation"]).expect("json");
+    assert!(
+        conversation.contains("before the release"),
+        "the re-opened seat's copy carries the frame the ring kept: {conversation}",
+    );
+}
+
 /// A seat whose tree is a real repository, with its session started - the
 /// store rides the seat's own record, so a seat nothing runs behind is not
 /// held at all.
@@ -5575,20 +5782,18 @@ fn a_scan(
     }
 }
 
-/// A seat's snapshot is the row of the tree as the hold read it, however
-/// stale what the store held was.
-///
-/// The hold is taken BEFORE the snapshot is encoded, and it is what reads the
-/// tree: a read taken first would hand a page a row from before this
-/// subscription, and nothing would correct it, because the loop announces
-/// only what moves after the hold.
+/// **A stored scan past its window is re-read by the record, not carried.**
+/// The record's hunks ride the same scan as its row, so serving an
+/// arbitrarily old store would put its hunks beside a row the first pass has
+/// since moved; the record takes the scan itself and the snapshot carries
+/// what git answers now.
 #[tokio::test]
-async fn a_snapshot_carries_the_row_the_hold_read() {
+async fn a_stale_store_is_re_read_by_the_record() {
     let (url, _fleet, state, _root) = a_repo_server().await;
     let repo =
         state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
-    // Stale, and saying what the tree cannot: a row the encode can only
-    // answer from the store, which the hold's own read then replaces.
+    // A row the tree cannot answer, old enough that the record must not
+    // serve it.
     let long_ago = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(60))
         .expect("an instant a minute ago");
@@ -5596,6 +5801,8 @@ async fn a_snapshot_carries_the_row_the_hold_read() {
         &lead_seat(),
         a_scan(std::path::Path::new(&repo), long_ago, "not-this-tree", 99, None),
     );
+    // The index is pre-walked so the record's only read here is the tree's.
+    state.surface.file_index_for_record(&lead_seat()).await;
 
     let mut socket = connect(&url).await;
     send(
@@ -5612,9 +5819,79 @@ async fn a_snapshot_carries_the_row_the_hold_read() {
 
     assert_eq!(
         data["work"]["branch"], "work",
-        "the snapshot carries the branch the hold read, not the one the store held: {data}",
+        "the record re-read the stale store rather than carrying it: {data}",
     );
-    assert_eq!(data["work"]["changed"], 0, "and the count the hold read: {data}");
+    assert_eq!(data["work"]["changed"], 0, "with the count the read answered: {data}");
+}
+
+/// **An open announces nothing its snapshot already carried** (#2506 review).
+/// The record's read is the first pass's baseline, so a still tree sends no
+/// second copy of the work row or the file index - the two the open's own
+/// frame carries - while a value that moves still announces.
+#[tokio::test]
+async fn an_open_announces_no_value_its_snapshot_carried() {
+    let (url, _fleet, state, _root) = a_repo_server().await;
+    let repo =
+        state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
+    // Nothing is seeded: the record's own first read takes both stores under
+    // the seat's gate, and the first pass starts from what it left.
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(data["work"]["branch"], "work", "the snapshot carries the read row: {data}");
+
+    // The first pass starts from the stores that read left, so nothing it
+    // reads is news: the window is the pass plus a beat.
+    let quiet = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+    while tokio::time::Instant::now() < quiet {
+        let Some(ServerMessage::Update { update, .. }) = next_server_within(&mut socket, 500).await
+        else {
+            continue;
+        };
+        match *update {
+            SessionUpdate::WorkChanged { .. } => panic!("an open re-sent its work row"),
+            SessionUpdate::FileIndexChanged { .. } => panic!("an open re-sent its file index"),
+            _ => {}
+        }
+    }
+
+    // A moved value still announces: an untracked file enters the index, and
+    // an edit moves the row.
+    std::fs::write(repo.join("new.rs"), "").expect("write");
+    loop {
+        let Some(ServerMessage::Update { update, .. }) =
+            next_server_within(&mut socket, 10_000).await
+        else {
+            panic!("a written file never reached the seat's viewers");
+        };
+        if let SessionUpdate::FileIndexChanged { index, .. } = *update {
+            assert!(index.entries.contains_key("new.rs"), "the index carries the file");
+            break;
+        }
+    }
+    std::fs::write(repo.join("kept.txt"), "moved").expect("write");
+    loop {
+        let Some(ServerMessage::Update { update, .. }) =
+            next_server_within(&mut socket, 10_000).await
+        else {
+            panic!("a moved row never reached the seat's viewers");
+        };
+        if let SessionUpdate::WorkChanged { work, .. } = *update
+            && work.changed == Some(1)
+        {
+            break;
+        }
+    }
 }
 
 /// A repository with one commit, for a test that needs a tree git can read.

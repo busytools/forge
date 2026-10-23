@@ -95,6 +95,16 @@ impl ViewSurface {
         self.workspace.file_index(slot).map(|held| held.index)
     }
 
+    /// The record's file index for `slot`: the store, or the walk the seat's
+    /// loop would take, under the same gate - so the snapshot's fallback and
+    /// the first pass are one walk rather than two of the same tree.
+    pub async fn file_index_for_record(&self, slot: &SessionSlot) -> std::sync::Arc<FileIndex> {
+        if let Some(index) = self.file_index(slot) {
+            return index;
+        }
+        self.workspace.walk_files_for_record(slot).await
+    }
+
     /// One working tree's files, walked on demand. `root` is the session's
     /// own scan cwd, which a git worker's worktree overrides.
     ///

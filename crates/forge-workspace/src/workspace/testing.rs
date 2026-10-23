@@ -493,6 +493,7 @@ impl Workspace {
             test_extra_projects: Mutex::new(Vec::new()),
             test_user_preferences: Mutex::new(None),
             test_claude_pid: Mutex::new(HashMap::new()),
+            test_scan_gate: Mutex::new(None),
         };
         (Arc::new(workspace), update_rx)
     }
@@ -510,6 +511,14 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_claude_pid(&self, key: &SessionSlot, pid: u32) {
         self.test_claude_pid.lock().insert(key.clone(), pid);
+    }
+
+    /// Hold every stale read at `gate` until the fixture adds permits, so a
+    /// test can say what a hold answers while its scans are still in flight.
+    /// Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_scan_gate(&self, gate: Arc<tokio::sync::Semaphore>) {
+        *self.test_scan_gate.lock() = Some(gate);
     }
 }
 

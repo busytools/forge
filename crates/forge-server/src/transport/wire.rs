@@ -1561,10 +1561,10 @@ pub(crate) async fn encode_subject_timed(
             let Some(cwd) = roster.cwd_for(slot) else {
                 anyhow::bail!("forge holds no session for {}", slot.display());
             };
-            // The seat's walk is not taken here: the connection holds the seat
-            // before this encode, and the hold walks - so the snapshot below
-            // is the one the hold just read, and the seat's loop keeps it
-            // fresh for as long as somebody is showing it.
+            // The record's reads ARE the seat's first read: the connection
+            // holds the seat before this encode, so its snapshot takes the
+            // stores under the seat's gate and the watch's first pass starts
+            // from what this record carries (#2506).
             request_context_usage_if_unreported(surface, slot);
             request_mcp_snapshot_if_unreported(surface, slot);
             let wire = session(state, surface, slot, &cwd, &mut timings).await?;
@@ -1784,13 +1784,15 @@ const CATCH_UP_WAIT: std::time::Duration = std::time::Duration::from_millis(250)
 const SEAL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Why a read could not bring its copy current, which the refusal's text says
-/// apart: the two are different losses and only one is about a number.
+/// apart: they are different losses and only one is about a number.
 #[derive(Debug)]
 enum NotReady {
     /// The seat's window no longer reaches back to the copy's front.
     Behind,
     /// The epoch's seal rows are unapplied, so its history cannot be reached.
     AwaitsSeal,
+    /// A replay's window is unapplied, and the ring never holds one.
+    AwaitsReplay,
 }
 
 /// Bring `slot`'s held conversation up to `want`, or report that it cannot.
@@ -1800,10 +1802,11 @@ enum NotReady {
 /// of its own, so a frame minted before the counter was read can reach the
 /// copy after it - waited on here, briefly. When the wait runs out the frames
 /// come from the seat's own window instead, which the fanout feeds directly
-/// (every frame, subscriber or not) with the newest `CONVERSATION_CAP` of
-/// them. Only a gap wider than that window is refused, loudly and by name: a
-/// stuck fold is forge's problem, and an answer that pretended otherwise is a
-/// row lost in silence.
+/// (every frame, subscriber or not) under its two ceilings - a frame count and
+/// a byte budget, so a heavy seat's window holds fewer than the cap. Only a
+/// gap wider than that window is refused, loudly and by name: a stuck fold is
+/// forge's problem, and an answer that pretended otherwise is a row lost in
+/// silence.
 async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Result<(), NotReady> {
     if want == 0 || state.conversations.consumed_for(slot) >= want {
         return Ok(());
@@ -1833,6 +1836,22 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
         return Ok(());
     }
     let from = state.conversations.consumed_for(slot).saturating_add(1);
+    // **A replay in the stretch is history the fill cannot apply.** Its window
+    // is not ringed, so no window serves it, and marking the copy past its
+    // number would have the fold skip the replay when it lands - the rows
+    // gone with nothing failing. Refused instead, for the fold to apply;
+    // counted apart from a frame that merely closes an epoch.
+    if state.surface.seat_replays_between(slot, from, want) > 0 {
+        tracing::error!(
+            event_name = "seat_copy_awaits_replay",
+            slot = %slot.display(),
+            want,
+            "the seat's copy is behind a replay the fold has not applied, and the ring cannot \
+             carry the window it hands over; the read is refused rather than answered with a \
+             hole",
+        );
+        return Err(NotReady::AwaitsReplay);
+    }
     let frames = state.surface.seat_frames_between(slot, from, want);
     // **A stretch holding only a seal is not a stretch the copy is behind on.**
     // The frames that close an epoch are numbered but never ringed, so no
@@ -1935,6 +1954,9 @@ async fn session(
             NotReady::AwaitsSeal => {
                 "the fold has not applied its epoch's seal, whose history an answer would be \
                  missing"
+            }
+            NotReady::AwaitsReplay => {
+                "the fold has not applied its replay, whose window an answer would be missing"
             }
         };
         anyhow::bail!("the seat's stream has not settled for {}; {why}", slot.display());
@@ -2071,35 +2093,31 @@ async fn session(
     };
     let state_at = surface.session(slot, cwd);
     // The seat's own loop walks the index and pushes the movement, so this
-    // answers that store - and a seat nothing has walked yet is walked here,
-    // the same fallback the work row above takes: a seat whose loop never ran
-    // (no resolvable cwd, a read before the first poke) answers its tree
-    // rather than an empty list the composer would draw nothing from. The walk
-    // is a whole tree on the calling thread, so it runs off the reactor; one
-    // that panicked reads as no files rather than as the page's problem.
-    let file_index = if let Some(index) = surface.file_index(slot) {
-        index
-    } else {
-        let walker = std::sync::Arc::clone(&state.surface);
-        let root = cwd.to_owned();
-        tokio::task::spawn_blocking(move || walker.walk_file_index(&root))
-            .await
-            .map(std::sync::Arc::new)
-            .unwrap_or_default()
-    };
+    // answers that store - and a seat nothing has walked yet takes the same
+    // walk under the seat's gate, off the reactor: whichever of the record and
+    // the first pass gets there first stores, and the other answers it rather
+    // than walking the same tree again.
+    let file_index = surface.file_index_for_record(slot).await;
+    // **The reads the watch seeds from are all taken, so the mark fires here**
+    // - after the tree's scan, the index and the process walk, and before the
+    // record's remaining reads and its serialisation. The first pass starts
+    // from these stores while this frame is still being built; `processes` is
+    // read here so the record carries the same walk the pass seeds from.
+    let processes = surface.processes(slot);
+    surface.note_record_read(slot);
 
     // One read for both halves of the record: the front is the first of the
     // list, so the two cannot disagree.
     let asks = surface.pending_asks(slot);
 
-    Ok(SessionWire {
+    let wire = SessionWire {
         slot: slot.clone(),
         file_index,
         slash_commands: surface.slash_commands(slot),
         subagents: surface.subagents(slot),
         subagent_instances: instances,
         mcp: surface.mcp_servers(slot),
-        processes: surface.processes(slot),
+        processes,
         background_tasks: surface.background_tasks(slot),
         monitors: surface.monitors(slot),
         pending_ask: asks.first().map(PendingAskWire::from),
@@ -2170,7 +2188,8 @@ async fn session(
         pr: held.diff.pr,
         closes: held.diff.closes,
         diff,
-    })
+    };
+    Ok(wire)
 }
 
 #[cfg(test)]

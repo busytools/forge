@@ -258,6 +258,13 @@ impl ViewSurface {
         self.workspace.seat_unringed_between(slot, from, to)
     }
 
+    /// How many of the numbers in `from..=to` on `slot`'s stream a replay was
+    /// minted under: history the ring cannot serve, so a fill that spans one
+    /// is refused rather than marked past.
+    pub fn seat_replays_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
+        self.workspace.seat_replays_between(slot, from, to)
+    }
+
     /// Whether `slot`'s latest epoch-opening seal carried rows, which no ring
     /// holds.
     pub fn seat_epoch_opened_with_rows(&self, slot: &SessionSlot) -> bool {

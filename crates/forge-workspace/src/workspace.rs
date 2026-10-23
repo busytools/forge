@@ -747,6 +747,11 @@ pub struct Workspace {
     /// no entry reads the pid off its own handle, as production does.
     #[cfg(any(test, feature = "testing"))]
     test_claude_pid: Mutex<std::collections::HashMap<SessionSlot, u32>>,
+    /// Test-only gate every stale read waits on before it scans, so a fixture
+    /// can hold a read in flight and see what a hold answers first. `None`
+    /// means reads run as they do in production.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_scan_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>`, the account key
@@ -1850,6 +1855,8 @@ impl Workspace {
             test_user_preferences: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_claude_pid: Mutex::new(std::collections::HashMap::new()),
+            #[cfg(any(test, feature = "testing"))]
+            test_scan_gate: Mutex::new(None),
         };
         if let Some(prober) = cli_version_prober {
             workspace.start_cli_version_probe(prober);
@@ -4026,6 +4033,13 @@ impl Workspace {
     /// out of what it must account for.
     pub fn seat_unringed_between(&self, key: &SessionSlot, from: u64, to: u64) -> u64 {
         self.update_tx.unringed_between(key, from, to)
+    }
+
+    /// How many numbers in `from..=to` on `key`'s stream a replay was minted
+    /// under: history the ring cannot serve, so a fill that spans one must
+    /// refuse rather than mark past it.
+    pub fn seat_replays_between(&self, key: &SessionSlot, from: u64, to: u64) -> u64 {
+        self.update_tx.replays_between(key, from, to)
     }
 
     /// Whether `key`'s latest epoch-opening seal carried rows, which no ring
@@ -11966,7 +11980,7 @@ already completed."
     async fn a_seat_a_view_is_holding_is_still_continued() {
         let dir = tempdir().expect("tempdir");
         let (ws, key, _rx) = nudge_seat(&dir, "watching");
-        ws.hold_seat(&key).await;
+        ws.hold_seat(&key);
 
         fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
         ws.fire_auto_continue(&key);
@@ -12011,7 +12025,7 @@ already completed."
         ws.fire_auto_continue(&key);
         assert_eq!(dispatched_prompts(&ws).len(), 1, "precondition: the first failure was nudged");
 
-        ws.hold_seat(&key).await;
+        ws.hold_seat(&key);
         ws.release_seat(&key);
         fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
         ws.fire_auto_continue(&key);
