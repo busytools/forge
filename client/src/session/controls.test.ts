@@ -167,9 +167,12 @@ const sleepingRows = () => {
     ...homeWire,
     agents: [row('lead', 'Running'), row('slept-1', 'Sleeping'), row('slept-2', 'Sleeping')],
   };
-  const project = railGroups(home, { org: 'TestOrg', project: 'proj', label: 'lead' }, 0).flatMap(
-    (group) => group.projects,
-  )[0];
+  const project = railGroups(
+    home,
+    null,
+    { org: 'TestOrg', project: 'proj', label: 'lead' },
+    0,
+  ).flatMap((group) => group.projects)[0];
   return project?.sleeping ?? [];
 };
 

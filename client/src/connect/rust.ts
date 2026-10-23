@@ -35,6 +35,7 @@ import {
   MORE_TURNS,
   skewOf,
   slotOf,
+  subjectFromKey,
   type BrowserAnswer,
   type BrowserAsk,
   type Command,
@@ -268,10 +269,25 @@ class RustConnection implements Connection {
       report(`the server refused ${payload.key}, which this client no longer holds`, payload.why);
       return;
     }
+    const refused = subjectFromKey(payload.key);
     // A refusal is an answer: nothing is owed on that subject any more.
     this.bounds.clearKey(payload.key);
     store.refuse(payload.why);
     report(`the subscription to ${payload.key} was refused`, payload.why);
+    if (refused === null) return;
+    // **The page learns from a frame, not from the store alone.** A seat's
+    // readers act on an `error` frame ("a refused subscribe is given to the
+    // store it was attributed to"), and a subject store re-reads its refused
+    // state on one; without this, a refused board stays on "reading the
+    // board..." forever. **The frame names its subject** so a page acts on
+    // its OWN refusal and not another subject's.
+    this.deliver({
+      kind: 'error',
+      what: 'subscribe',
+      why: payload.why,
+      seat: typeof refused === 'object' ? refused.session : null,
+      subject: refused,
+    });
   }
 
   /**

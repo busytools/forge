@@ -5,7 +5,7 @@ import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MORE_TURNS, subjectKey } from '../protocol';
-import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
+import type { ClientMessage, ServerMessage, SessionUpdate, Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import * as fleet from '../wire/fleet';
@@ -332,8 +332,14 @@ function fakeConnection() {
       for (const fn of statuses) fn(status);
     },
     /** A refusal, which is the answer a page is not. */
-    refuse(what: string, why: string, seat?: SessionSlot | null): void {
-      this.send({ kind: 'error', what, why, ...(seat === undefined ? {} : { seat }) });
+    refuse(what: string, why: string, seat?: SessionSlot | null, subject?: Subject): void {
+      this.send({
+        kind: 'error',
+        what,
+        why,
+        ...(seat === undefined ? {} : { seat }),
+        ...(subject === undefined ? {} : { subject }),
+      });
     },
   };
 }
@@ -1383,6 +1389,18 @@ describe('the conversation the chat draws', () => {
     // belong to any seat, so this one asks nothing (#2420).
     server.refuse('subscribe', 'forge holds no session for TestOrg/proj/w1', null);
     expect(server.more(), "another seat's refusal asks this conversation nothing").toEqual([]);
+    stop();
+  });
+
+  it('asks nothing for a non-seat subject refusal, even before the first page', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    // The board's refused subscribe is attributed to the board, so an
+    // unloaded conversation must not take it for a seat's (#2517).
+    server.refuse('subscribe', 'this forge holds no board', null, 'board');
+    expect(server.more(), "the board's refusal asked this conversation for a page").toEqual([]);
     stop();
   });
 

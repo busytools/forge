@@ -2,6 +2,7 @@
   import Icon from '../components/Icon.svelte';
   import { hrefForSlot } from '../routes';
   import type { Connection } from '../socket';
+  import type { BoardWire } from '../wire/board';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
@@ -28,6 +29,7 @@
    */
   let {
     home,
+    board = null,
     current,
     now,
     connection,
@@ -38,6 +40,9 @@
     onleave = null,
   }: {
     home: HomeWire;
+    /** The board's read, for each row's task cell (#2517). Absent while it
+     *  is still landing, which draws the rows without one. */
+    board?: BoardWire | null;
     /** The seat the page is showing, which is the one row the rail marks. */
     current: SessionSlot;
     now: number;
@@ -57,7 +62,7 @@
     onleave?: (() => void) | null;
   } = $props();
 
-  const groups = $derived(railGroups(home, current, now, closingSeat));
+  const groups = $derived(railGroups(home, board, current, now, closingSeat));
   /**
    * The account and the two builds, which sit under the list rather than in it:
    * the projects scroll behind them.

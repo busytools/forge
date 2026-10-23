@@ -17,6 +17,7 @@ import {
   MORE_TURNS,
   skewOf,
   slotOf,
+  subjectFromKey,
   subjectKey,
   type BrowserAnswer,
   type BrowserAsk,
@@ -471,21 +472,22 @@ export function connect(
    * creating a store, and the server answers in the order it was asked, so
    * the oldest subscription still waiting on an answer is the refused one.
    */
-  function refuse(why: string): void {
+  function refuse(why: string): Subject | null {
     const [key] = awaiting.splice(0, 1);
     if (key === undefined) {
       report('the server refused a subscribe this client cannot account for', why);
-      return;
+      return null;
     }
     const store = stores.byKey(key);
     if (store === undefined) {
       report(`the server refused ${key}, which this client no longer holds`, why);
-      return;
+      return null;
     }
     // A refusal is an answer: nothing is owed on that subject any more.
     bounds.clearKey(key);
     store.refuse(why);
     report(`the subscription to ${key} was refused`, why);
+    return subjectFromKey(key);
   }
 
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
@@ -579,9 +581,15 @@ export function connect(
         return;
       }
       case 'error':
-        if (message.what === 'subscribe') refuse(message.why);
-        else
+        if (message.what === 'subscribe' || message.what === 'client_message') {
+          // **An unknown subject comes back as `client_message`**, because the
+          // server could not read the frame that named it; the refused
+          // subscription is the one this side is still waiting on.
+          const refused = refuse(message.why);
+          if (refused !== null) message.subject = refused;
+        } else {
           report(`the server refused a ${message.what}`, { why: message.why, seat: message.seat });
+        }
         return;
       // `page` is the conversation's and `commit_diff` the review canvas': a
       // surface that draws one reads it from `onMessage`.

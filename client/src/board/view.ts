@@ -1,13 +1,14 @@
 /**
- * One project's board, gathered from the snapshot and nothing else.
+ * One project's board, gathered from the board's snapshot and nothing else.
  *
- * The board is a view of the same wire the fleet reads: its cards carry
- * the server's own marks, and this module only decides what a reader sees
- * - the lanes, the order inside them, the words on a card. Nothing here
- * re-derives a fact.
+ * Its cards carry the server's own marks, and this module only decides what a
+ * reader sees - the lanes, the order inside them, the words on a card.
+ * Nothing here re-derives a fact; the home's snapshot supplies the seats and
+ * the `onYou` count beside them.
  */
 
 import { followable } from '../home/view';
+import type { BoardWire } from '../wire/board';
 import type { BoardRow, HomeWire, Marks, Task, TaskStatus } from '../wire/home';
 
 /** One card on the board, resolved for the markup. */
@@ -347,8 +348,13 @@ function cardView(
  * before the first frame lands, and a board with an active create line for a
  * project this forge does not hold invites a row against nothing.
  */
-export function boardView(wire: HomeWire, org: string, project: string): BoardView {
-  const row = wire.projects.find(
+export function boardView(
+  wire: HomeWire,
+  board: BoardWire,
+  org: string,
+  project: string,
+): BoardView {
+  const row = board.projects.find(
     (entry) => entry.project.org === org && entry.project.name === project,
   );
   // The fleet row is where the server's own count of the board lives.

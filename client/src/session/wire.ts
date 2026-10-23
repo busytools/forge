@@ -6,9 +6,9 @@
  * for it is the drift the wire's own comments warn about.
  *
  * Half of the strip's rows are not on this record and are read from the
- * home's snapshot instead - a project's tasks and its schedules, and the
+ * board's snapshot instead - a project's tasks and its schedules, and the
  * connector views. They are keyed by PROJECT there, which is the grain the
- * home needs; a session subscribes to the home beside its own seat and picks
+ * board needs; a session page holds the board beside its own seat and picks
  * its project out.
  */
 

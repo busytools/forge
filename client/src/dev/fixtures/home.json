@@ -19,12 +19,6 @@
         "changed": null,
         "gate": "gone"
       },
-      "rows": [],
-      "crons": [],
-      "connectors": {
-        "gotify": [],
-        "slack": []
-      },
       "would_bind": false,
       "chip": null
     }
@@ -60,6 +54,7 @@
       "slots": 2,
       "queue": 0,
       "waiting_on_user": 0,
+      "rows": 0,
       "misses": [
         {
           "unaccounted_worker": "w1"

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { homeWire } from '../dev/fixture.data';
+import { boardWire, homeWire } from '../dev/fixture.data';
+import type { BoardWire } from '../wire/board';
 import type { BoardRow, HomeWire, Marks, Task, TaskStatus, TaskLinkWire } from '../wire/home';
 import { applyMoves, boardView, fmtSecs, landed } from './view';
 
@@ -54,10 +55,10 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
   };
 }
 
-function wireWith(rows: BoardRow[]): HomeWire {
-  const first = homeWire.projects[0];
+function wireWith(rows: BoardRow[]): { home: HomeWire; board: BoardWire } {
+  const first = boardWire.projects[0];
   if (first === undefined) throw new Error('the fixture holds no project');
-  return { ...homeWire, projects: [{ ...first, rows }] };
+  return { home: homeWire, board: { ...boardWire, projects: [{ ...first, rows }] } };
 }
 
 describe("one project's board", () => {
@@ -85,7 +86,7 @@ describe("one project's board", () => {
       ),
     ]);
 
-    const view = boardView(wire, 'TestOrg', 'proj');
+    const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     const lane = (key: string) => view.lanes.find((entry) => entry.key === key);
     // Every state has its lane, in the order the board draws them: the pool
     // leads, then the lane that wants the reader, then the work.
@@ -121,7 +122,7 @@ describe("one project's board", () => {
       row(task('r3', 'and this one', 'in_progress')),
     ]);
 
-    const view = boardView(wire, 'TestOrg', 'proj');
+    const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     expect(view.read.rows).toBe(5);
     expect(view.read.running, 'the header counted the backlog as running').toBe(3);
   });
@@ -138,7 +139,7 @@ describe("one project's board", () => {
       row(task('early', 'a child', 'waiting', { parent: 'epic', rank: 1 })),
       row(task('loose', 'no parent', 'pending')),
     ]);
-    const view = boardView(wire, 'TestOrg', 'proj');
+    const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     const cards = view.lanes.flatMap((lane) => lane.cards);
     const epic = cards.find((card) => card.id === 'epic');
     expect(epic?.children.map((child) => child.id)).toEqual(['early', 'late']);
@@ -183,7 +184,7 @@ describe("one project's board", () => {
       row(task('c4', 'fourth child', 'canceled', { parent: 'verify' })),
     ]);
 
-    const view = boardView(wire, 'TestOrg', 'proj');
+    const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     expect(view.waiting.map((entry) => entry.id)).toEqual(['verify', 'ask']);
     expect(view.waiting[0]?.verification).toBe(true);
     expect(view.waiting[0]?.age).toBe('40m');
@@ -218,7 +219,7 @@ describe("one project's board", () => {
       ),
     ]);
 
-    const view = boardView(wire, 'TestOrg', 'proj');
+    const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     expect(view.waiting.map((entry) => entry.id)).toEqual(['own']);
     const cards = view.lanes.flatMap((lane) => lane.cards);
     const chips = (id: string) => cards.find((card) => card.id === id)?.chips ?? [];
@@ -253,7 +254,7 @@ describe("one project's board", () => {
       child('mid', 'waiting', 'epic'),
     ]);
 
-    const view = boardView(wire, 'TestOrg', 'proj');
+    const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     expect(view.lanes.flatMap((lane) => lane.cards).length).toBe(4);
     // Nothing is in the strip here; the hold's numbers are what this pins, so
     // they are read off a root put in the gate.
@@ -269,7 +270,7 @@ describe("one project's board", () => {
       child('gone2', 'failed', 'epic2'),
       child('open2', 'in_progress', 'epic2'),
     ]);
-    const held = boardView(gated, 'TestOrg', 'proj').waiting[0];
+    const held = boardView(gated.home, gated.board, 'TestOrg', 'proj').waiting[0];
     expect(held?.open, 'a failed child was counted as one the close waits on').toBe(1);
     expect(held?.rollup).toBe('1/3');
     expect(held?.root).toBe(true);
@@ -287,7 +288,7 @@ describe("one project's board", () => {
       ),
       child('grand', 'pending', 'kid'),
     ]);
-    const childRow = boardView(asChild, 'TestOrg', 'proj').waiting[0];
+    const childRow = boardView(asChild.home, asChild.board, 'TestOrg', 'proj').waiting[0];
     expect(childRow?.root, 'a child row read as a root').toBe(false);
     expect(childRow?.open, 'a child counted children the close never waits on').toBe(1);
   });
@@ -308,7 +309,9 @@ describe("one project's board", () => {
       ),
       row(task('r', 'a reserved pick', 'pending', { reserved: 'user' })),
     ]);
-    const cards = boardView(wire, 'TestOrg', 'proj').lanes.flatMap((lane) => lane.cards);
+    const cards = boardView(wire.home, wire.board, 'TestOrg', 'proj').lanes.flatMap(
+      (lane) => lane.cards,
+    );
     const chips = (id: string) => cards.find((card) => card.id === id)?.chips ?? [];
     expect(chips('a').map((chip) => chip.label)).toContain('lead attested');
     expect(chips('r').map((chip) => chip.label)).toContain('reserved for you');
@@ -337,7 +340,7 @@ describe("one project's board", () => {
       ),
     ]);
 
-    const view = boardView(wire, 'TestOrg', 'proj');
+    const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     const cards = view.lanes.flatMap((lane) => lane.cards);
     const card = (id: string) => cards.find((entry) => entry.id === id);
     const over = card('t1');
@@ -375,7 +378,7 @@ describe("one project's board", () => {
     ];
     const wire = wireWith([row(task('t1', 'linked', 'pending', { links }))]);
 
-    const view = boardView(wire, 'TestOrg', 'proj');
+    const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     const card = view.lanes.flatMap((lane) => lane.cards).find((entry) => entry.id === 't1');
     expect(card?.links).toEqual([
       { label: '#1889', href: 'https://example.test/pull/1889' },
@@ -390,7 +393,7 @@ describe("one project's board", () => {
    * draws, because the page is a route and the reader addressed it.
    */
   it('reads a project the snapshot does not carry as unknown, not empty', () => {
-    const view = boardView(homeWire, 'TestOrg', 'nope');
+    const view = boardView(homeWire, boardWire, 'TestOrg', 'nope');
     expect(view.known, 'an absent project read as one this forge carries').toBe(false);
     expect(view.empty, 'an absent project read as an empty one').toBe(false);
     expect(view.name).toBe('nope');
@@ -399,7 +402,7 @@ describe("one project's board", () => {
 
     // The control: a project the snapshot DOES carry reads as known, so the
     // assertion above is reading the flag rather than a constant.
-    expect(boardView(homeWire, 'TestOrg', 'proj').known).toBe(true);
+    expect(boardView(homeWire, boardWire, 'TestOrg', 'proj').known).toBe(true);
   });
 
   /**
@@ -411,7 +414,7 @@ describe("one project's board", () => {
       row(task('a', 'first', 'pending', { rank: 1 })),
       row(task('b', 'second', 'pending', { rank: 2 })),
     ]);
-    const view = boardView(wire, 'TestOrg', 'proj');
+    const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     const ids = (lanes: typeof view.lanes, key: string) =>
       lanes.find((lane) => lane.key === key)?.cards.map((card) => card.id);
 

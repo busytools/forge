@@ -1,0 +1,284 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import type { ServerMessage, Subject } from '../protocol';
+import { PROTOCOL_VERSION } from '../protocol';
+import type { Connection, ConnectionStatus } from '../socket';
+import { Stores } from '../stores';
+import type { BoardRead } from '../wire/board';
+import type { SessionSlot } from '../wire/types';
+import { watchBoard } from './live';
+
+const BOARD: Subject = 'board';
+const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+
+/** One update a board subscriber is sent, which is what it answers with a read. */
+const UPDATE: ServerMessage = {
+  kind: 'update',
+  update: { tasks_changed: { key: LEAD, tasks: [] } },
+};
+
+/** An update the board does not cover, and must not re-read for. */
+const OTHER: ServerMessage = {
+  kind: 'update',
+  update: { chat_appended: { key: LEAD, msg: { type: 'assistant' } } },
+};
+
+/**
+ * A connection a test drives by hand: what the board asked it to do, and a
+ * way to hand it a frame. The stores are the real ones.
+ */
+function fakeConnection() {
+  const stores = new Stores();
+  const subscribed: Subject[] = [];
+  const unsubscribed: Subject[] = [];
+  const refreshed: Subject[] = [];
+  const messages = new Set<(message: ServerMessage) => void>();
+  const statuses = new Set<(status: ConnectionStatus) => void>();
+
+  const connection: Connection = {
+    subscribe(what) {
+      subscribed.push(what);
+      return stores.open(what);
+    },
+    unsubscribe(what) {
+      unsubscribed.push(what);
+      return stores.close(what);
+    },
+    refresh(what) {
+      refreshed.push(what);
+      return true;
+    },
+    onBrowserAsk: () => () => {},
+    browserRole: () => false,
+    browserRoleKnown: () => false,
+    onBrowserRole: () => () => {},
+    onProfilesChanged: () => () => {},
+    takeBrowserRole: () => {},
+    onMessage(fn) {
+      messages.add(fn);
+      return () => {
+        messages.delete(fn);
+      };
+    },
+    onStatus(fn) {
+      statuses.add(fn);
+      return () => {
+        statuses.delete(fn);
+      };
+    },
+    dispatch: () => null,
+    more: () => false,
+    commitDiff: () => false,
+    fileContent: () => false,
+    readDocument: () => false,
+    seatRange: () => false,
+    frame: () => false,
+    store: () => undefined,
+    settings: () => null,
+    skew: () => null,
+    serverProtocol: () => PROTOCOL_VERSION,
+    status: () => 'open',
+    close: () => {},
+  };
+
+  return {
+    connection,
+    stores,
+    subscribed,
+    unsubscribed,
+    refreshed,
+    listening: () => messages.size + statuses.size,
+    arrive(message: ServerMessage) {
+      for (const fn of [...messages]) fn(message);
+    },
+  };
+}
+
+/** Give a timer a chance to fire, for everything it would have set off to show. */
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+
+describe('the board over a connection', () => {
+  it('subscribes once, shared by every reader of the board store', () => {
+    const forge = fakeConnection();
+    const first = watchBoard(forge.connection).subscribe(() => {});
+    const second = watchBoard(forge.connection).subscribe(() => {});
+    expect(forge.subscribed, 'the board was not subscribed once').toEqual([BOARD]);
+
+    first();
+    second();
+    expect(forge.unsubscribed, 'the subscription did not go with the last reader').toEqual([BOARD]);
+    expect(forge.listening(), 'a listener outlived the last reader').toBe(0);
+  });
+
+  it('answers with the whole read the server sent', () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+
+    const data = { projects: [] };
+    forge.stores.get(BOARD)?.set(data);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data });
+    expect(seen.at(-1)?.wire, 'the board snapshot did not reach the store').toEqual(data);
+    expect(seen.at(-1)?.refused).toBeNull();
+    stop();
+  });
+
+  it('asks again for a board update, and not for one the board does not carry', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'a task write did not ask for a board read').toEqual([BOARD]);
+
+    forge.arrive(OTHER);
+    await settle();
+    expect(forge.refreshed, 'a chat frame asked for a board read').toEqual([BOARD]);
+    stop();
+  });
+
+  it('re-reads on the slow beat while the board is mounted', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const forge = fakeConnection();
+      const stop = watchBoard(forge.connection).subscribe(() => {});
+      expect(forge.refreshed).toEqual([]);
+
+      vi.advanceTimersByTime(29_000);
+      expect(forge.refreshed, 'the beat fired early').toEqual([]);
+      vi.advanceTimersByTime(1_000);
+      expect(forge.refreshed, "the beat did not advance the rows' clocks").toEqual([BOARD]);
+
+      stop();
+      vi.advanceTimersByTime(60_000);
+      expect(forge.refreshed, 'the beat outlived the last reader').toEqual([BOARD]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('coalesces a burst into one read', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    forge.arrive(UPDATE);
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'a burst was not coalesced').toEqual([BOARD]);
+    stop();
+  });
+
+  it('asks again when an update lands while a read is in flight', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed).toEqual([BOARD]);
+    // The answer is in flight and an update lands behind it: the read in hand
+    // was encoded before it, so the update is answered as soon as it lands.
+    forge.arrive(UPDATE);
+    forge.stores.get(BOARD)?.set({ projects: [] });
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    await settle();
+    expect(forge.refreshed, 'the update that crossed the read was dropped').toEqual([BOARD, BOARD]);
+    stop();
+  });
+
+  it('ignores a refusal another subject owns', () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe(($next) => seen.push($next));
+    forge.stores.get(BOARD)?.set({ projects: [] });
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    const before = seen.length;
+
+    forge.arrive({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'the home was refused',
+      seat: null,
+      subject: 'home',
+    });
+    expect(seen.length, "another subject's refusal re-set the board").toBe(before);
+    stop();
+  });
+
+  it('does not ask again on the beat once the board is refused', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const forge = fakeConnection();
+      const stop = watchBoard(forge.connection).subscribe(() => {});
+      forge.stores.get(BOARD)?.refuse('this forge holds no board');
+      forge.arrive({
+        kind: 'error',
+        what: 'subscribe',
+        why: 'this forge holds no board',
+        seat: null,
+        subject: BOARD,
+      });
+
+      vi.advanceTimersByTime(30_000);
+      expect(forge.refreshed, 'a refused board was asked again on the beat').toEqual([]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not ask again for an update once the board is refused', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    forge.stores.get(BOARD)?.refuse('this forge holds no board');
+    forge.arrive({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'this forge holds no board',
+      seat: null,
+      subject: BOARD,
+    });
+    expect(forge.refreshed).toEqual([]);
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'an update asked a refused board again').toEqual([]);
+    stop();
+  });
+
+  it('does not double-ask when the beat lands inside the coalesce window', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      const forge = fakeConnection();
+      const stop = watchBoard(forge.connection).subscribe(() => {});
+      // Just before the beat, an update schedules its read 50 ms out; the
+      // beat fires first and the timer behind it must not ask again.
+      vi.advanceTimersByTime(29_990);
+      forge.arrive(UPDATE);
+      vi.advanceTimersByTime(10);
+      vi.advanceTimersByTime(40);
+      expect(forge.refreshed, 'the beat and the coalesce timer both asked').toEqual([BOARD]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads a refusal as the board refusal rather than an empty board', () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+
+    forge.stores.get(BOARD)?.refuse('no such subject');
+    forge.arrive({ kind: 'error', what: 'subscribe', why: 'no such subject' });
+    expect(seen.at(-1)?.refused, 'the refusal did not reach the store').toBe('no such subject');
+    expect(seen.at(-1)?.wire).toBeNull();
+    stop();
+  });
+});

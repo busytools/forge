@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -126,11 +126,13 @@ export function skewMessage(skew: Skew): string {
 /**
  * What a client can watch, and the address a subscription is held under.
  *
- * `dictate_models` and `extensions` are their pages' own reads: the pins
- * and catalogue only the models page draws, and the plugin inventory only
- * the extensions page draws.
+ * `board` is the board page's and the session rail's read: every project's
+ * rows, schedules and connector sets (#2517). `dictate_models` and
+ * `extensions` are their pages' own reads: the pins and catalogue only the
+ * models page draws, and the plugin inventory only the extensions page draws.
  */
-export type Subject = 'home' | { session: SessionSlot } | 'usage' | 'dictate_models' | 'extensions';
+export type Subject =
+  'home' | 'board' | { session: SessionSlot } | 'usage' | 'dictate_models' | 'extensions';
 
 /**
  * A subscription's address as one string, which is what a store is keyed by.
@@ -148,6 +150,29 @@ export function subjectKey(subject: Subject): string {
   if (typeof subject === 'string') return subject;
   const { org, project, label } = subject.session;
   return `session:${org}\u0000${project}\u0000${label}`;
+}
+
+/** The subjects whose key is the subject itself, which is what the wire sends. */
+const NAMED_SUBJECTS: readonly string[] = [
+  'home',
+  'board',
+  'usage',
+  'dictate_models',
+  'extensions',
+];
+
+/**
+ * The subject a store key names, or `null` for a key this client does not
+ * know. The inverse of [`subjectKey`], used where the wire names no subject
+ * and the side that attributed a refusal has to say which one it was.
+ */
+export function subjectFromKey(key: string): Subject | null {
+  if (NAMED_SUBJECTS.includes(key)) return key as Subject;
+  const seat = key.startsWith('session:') ? key.slice('session:'.length) : null;
+  if (seat === null) return null;
+  const [org, project, label] = seat.split('\u0000');
+  if (org === undefined || project === undefined || label === undefined) return null;
+  return { session: { org, project, label } };
 }
 
 /**
@@ -451,6 +476,17 @@ export type ServerMessage =
        * case the wire produces.
        */
       seat?: SessionSlot | null;
+      /**
+       * The subscription a refusal belongs to, when THIS side synthesized the
+       * frame.
+       *
+       * **The wire's own errors name no subject** - an `error` carries `what`
+       * and `why`, and a subscribe refusal is attributed by the side that
+       * remembers what it asked for. That side says which subject it was, so
+       * a page does not act on another subject's refusal; absent means the
+       * frame came off the wire and the reader falls back to its own store.
+       */
+      subject?: Subject;
       dispatch_id?: number | null;
     }
   /**

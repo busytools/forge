@@ -7,21 +7,23 @@
  * promotions - the cases a state read from the wire alone would disagree
  * with that view about, silently, the first time one of them turned.
  *
- * Every cell the server's own home draws is drawn from the snapshot. The
- * three things it used to leave empty - the task a seat holds, whether an
- * account would bind, and the schedules a project keeps - cross on
- * `ProjectWire`, as do the unseen marks and the forge version. A row's own
- * working tree crosses on the ROW, because a project has one read and a seat
- * has its own.
+ * Every cell the server's own home draws is drawn from the snapshot: whether
+ * an account would bind crosses on `ProjectWire`, as do the unseen marks and
+ * the forge version. A row's own working tree crosses on the ROW, because a
+ * project has one read and a seat has its own. The task a seat holds and the
+ * schedules a project keeps are the board's own read (#2517), passed in by
+ * the page that draws them.
  */
 
 import { displayAddress } from '../connect/attempt';
 import { railCounts, stalePlugins } from '../extensions/view';
 import { hrefFor, hrefForSlot } from '../routes';
+import type { BoardWire } from '../wire/board';
 import type { ExtensionsRead } from '../wire/extensions';
 import type { ServiceReport } from '../wire/fleet';
 import type {
   AgentRow,
+  BoardRow,
   Gate,
   HomeWire,
   Lifecycle,
@@ -123,9 +125,9 @@ export interface ProjectRows {
 interface Header {
   liveAgents: number;
   /**
-   * Every project's tasks added up, which is the fleet's total: the snapshot
-   * carries every project and each one's whole list, so the sum is what the
-   * server's own home summed - not a count of what happens to be on screen.
+   * Every project's tasks added up, which is the fleet's total: each fleet row
+   * carries its project's own count, so the sum is the server's - not a count
+   * of what happens to be on screen.
    */
   tasks: number;
   projects: number;
@@ -882,9 +884,9 @@ function taskFor(tasks: Task[], label: string): Task | null {
  * `null` is a seat forge holds no directory for, which draws the blank rather
  * than borrowing a tree it is not in.
  */
-function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: SessionSlot[]): Row {
+function rowOf(agent: AgentRow, name: string, rows: BoardRow[], unseen: SessionSlot[]): Row {
   const held = taskFor(
-    wire.rows.map((entry) => entry.task),
+    rows.map((entry) => entry.task),
     agent.label,
   );
   return {
@@ -940,10 +942,23 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
  * projects by the strongest state among their own rows and keeps them in
  * `forge.toml`'s order, which is the roster's order rather than the org
  * grouping the home sorts into - so the rail cannot read them off `homeView`.
+ *
+ * `board` is the project's own rows, from the board's subject (#2517): the
+ * home no longer carries them, and a rail that passes `null` (a landing that
+ * only needs the order) draws its rows without a task cell.
  */
-export function projectRows(wire: HomeWire, row: ProjectWire): ProjectRows {
+export function projectRows(
+  wire: HomeWire,
+  row: ProjectWire,
+  board: BoardWire | null = null,
+): ProjectRows {
+  const boardRow = board?.projects.find(
+    (entry) =>
+      keyOf(entry.project.org, entry.project.name) === keyOf(row.project.org, row.project.name),
+  );
+  const rows = boardRow?.rows ?? [];
   const project = row.project;
-  const rows = wire.agents.filter(
+  const seats = wire.agents.filter(
     (agent) => keyOf(agent.slot.org, agent.slot.project) === keyOf(project.org, project.name),
   );
   const lastRan = project.sessions.reduce<WireTime | null>(
@@ -957,12 +972,12 @@ export function projectRows(wire: HomeWire, row: ProjectWire): ProjectRows {
 
   // A project's row is its lead, and both pages name it for the project: the
   // lead's label is its identity, not what the row is called here.
-  const [head, ...rest] = rows;
+  const [head, ...rest] = seats;
   const lead =
-    head === undefined ? dormantRow(row, lastRan) : rowOf(head, project.name, row, wire.unseen);
+    head === undefined ? dormantRow(row, lastRan) : rowOf(head, project.name, rows, wire.unseen);
   // Every started row draws its own seat's tree, which is the read the ROW
   // carries: the project's `work` is the lead's seat whatever row it lands on.
-  const workers = rest.map((agent) => rowOf(agent, agent.label, row, wire.unseen));
+  const workers = rest.map((agent) => rowOf(agent, agent.label, rows, wire.unseen));
   return { lead, workers, started: head !== undefined };
 }
 
@@ -976,7 +991,7 @@ export function homeView(wire: HomeWire, address: string): HomeView {
       // a reader is shown it, and counting it would name an agent that is
       // not running.
       liveAgents: wire.agents.filter((agent) => agent.lifecycle !== 'Failed').length,
-      tasks: wire.projects.reduce((total, row) => total + row.rows.length, 0),
+      tasks: wire.fleet.reduce((total, row) => total + row.rows, 0),
       projects: wire.projects.length,
       installed: wire.cli_version?.installed ?? null,
       update: availableVersion(

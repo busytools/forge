@@ -5,6 +5,7 @@
   import Composer from '../composer/Composer.svelte';
   import { holdDeviceFor } from '../composer/dictation';
   import { dictationOffered } from '../composer/view';
+  import { watchBoard } from '../board/live';
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
   import Files from '../files/Files.svelte';
@@ -13,6 +14,7 @@
   import Document from '../doc/Document.svelte';
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
+  import type { BoardRead } from '../wire/board';
   import Models from '../models/Models.svelte';
   import { notePerfSurface, perfSurface } from '../perf';
   import Review from '../review/Review.svelte';
@@ -64,6 +66,24 @@
    * seat's: the engine is process-wide, and the page's own wire carries it.
    */
   const dictate = $derived(home.wire === null ? false : dictationOffered(home.wire.dictate));
+
+  /**
+   * The board's own read (#2517): the session rail and the board page draw
+   * its rows, schedules and connector sets. **Only those routes hold it** -
+   * the home is the fleet glance, and a page that draws no board must not pay
+   * for one.
+   */
+  let board = $state.raw<BoardRead>({ wire: null, refused: null });
+  // A boolean rather than the route: session and board are the same reader,
+  // and a move between them must not close and re-open a 640 KB subscription.
+  const needsBoard = $derived(route.name === 'session' || route.name === 'board');
+  $effect(() => {
+    const open = connection;
+    if (open === null || !needsBoard) return;
+    return watchBoard(open).subscribe(($next) => {
+      board = $next;
+    });
+  });
 
   /**
    * The board's edits, sent over the socket as commands: the user's own
@@ -139,18 +159,21 @@
   {#if home.wire !== null}
     <!-- One project's board, a takeover over wherever the reader was: the
          top bar's back and done return through history. The page reads the
-         same snapshot the fleet does - its rows ride the wire. -->
+         board subject for its rows; the home snapshot beside it supplies the
+         seats and the counters. -->
     <Board
       wire={home.wire}
+      {board}
       org={route.org}
       project={route.project}
       onact={boardAct}
       notice={home.report}
     />
   {:else if home.refused}
-    <!-- The board reads the same snapshot the fleet does, so a subscription
-         the server turned down leaves it with nothing to draw - and saying so
-         is not the same page as never having read. -->
+    <!-- The board's own read has its own refusal in the page; this branch is
+         the HOME read it also needs (the seats and the counters), and one the
+         server turned down leaves it with nothing to draw - saying so is not
+         the same page as never having read. -->
     <main class="wrap">
       <p class="pending">This forge would not answer for the home: {home.refused}</p>
     </main>
@@ -185,6 +208,7 @@
       slot={route.slot}
       {connection}
       wire={home.wire}
+      {board}
       mark={settings.mark}
       notice={sessionNotice}
     >

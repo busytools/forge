@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { homeWire } from '../dev/fixture.data';
+import { boardWire, homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import session from '../dev/fixtures/session.json';
 import load from '../dev/fixtures/session-load.json';
@@ -11,6 +11,7 @@ import { mcp } from '../chat/mcp.svelte';
 import { processes } from '../chat/processes.svelte';
 import { schedules } from '../chat/schedules.svelte';
 import type { CronEntry } from '../wire/home';
+import type { BoardRead } from '../wire/board';
 import type { ServerMessage, Subject } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
@@ -170,11 +171,12 @@ function open(
   turns: unknown[] = load.turns,
   fields: Record<string, unknown> = {},
   wire: typeof homeWire = homeWire,
+  board: BoardRead = { wire: boardWire, refused: null },
 ): ReturnType<typeof seat> {
   const server = seat(turns, fields);
   app = mount(Session, {
     target: document.body,
-    props: { slot: LEAD, connection: server.connection, wire },
+    props: { slot: LEAD, connection: server.connection, wire, board },
   });
   flushSync();
   return server;
@@ -261,7 +263,7 @@ describe('what one arriving frame costs the page', () => {
    * seat must not ride this page's list.
    */
   it('hands the record and the home to the row stores, for this seat', () => {
-    const project = homeWire.projects[0];
+    const project = boardWire.projects[0];
     if (project === undefined) throw new Error('the fixture holds no project');
     const mine: CronEntry = {
       id: 'c-mine',
@@ -286,7 +288,8 @@ describe('what one arriving frame costs the page', () => {
           servers: [{ name: 'forge', status: 'connected', tools: [{ name: 'roster' }] }],
         },
       },
-      { ...homeWire, projects: [{ ...project, crons: [mine, theirs] }] },
+      homeWire,
+      { wire: { ...boardWire, projects: [{ ...project, crons: [mine, theirs] }] }, refused: null },
     );
 
     expect(

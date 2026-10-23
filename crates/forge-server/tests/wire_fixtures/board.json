@@ -1,0 +1,16 @@
+{
+  "projects": [
+    {
+      "project": {
+        "org": "TestOrg",
+        "name": "proj"
+      },
+      "rows": [],
+      "crons": [],
+      "connectors": {
+        "gotify": [],
+        "slack": []
+      }
+    }
+  ]
+}

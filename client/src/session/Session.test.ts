@@ -500,7 +500,7 @@ describe("a project's sleeping seats", () => {
       ...homeWire,
       agents: [row('lead', 'Running'), row('slept-1', 'Sleeping'), row('slept-2', 'Sleeping')],
     };
-    const project = railGroups(home, LEAD, 0).flatMap((group) => group.projects)[0];
+    const project = railGroups(home, null, LEAD, 0).flatMap((group) => group.projects)[0];
     return render(SleeperFold, {
       props: { sleeping: project?.sleeping ?? [], shown, closing: () => false },
     }).body;
@@ -523,7 +523,7 @@ describe("a project's sleeping seats", () => {
       ...homeWire,
       agents: [row('lead', 'Running'), row('slept-1', 'Sleeping')],
     };
-    const project = railGroups(home, LEAD, 0).flatMap((group) => group.projects)[0];
+    const project = railGroups(home, null, LEAD, 0).flatMap((group) => group.projects)[0];
     const sleeping = project?.sleeping ?? [];
     expect(sleeping.length, 'the fixture drew no sleeping seat to fold').toBeGreaterThan(0);
 

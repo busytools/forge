@@ -9,9 +9,10 @@
  * when there is something behind it - a row that is always there says nothing
  * when it is empty.
  *
- * Some rows do not read the seat's own record. A project's tasks and its
- * schedules are keyed by PROJECT on the home's snapshot, and the home is the
- * subscription the shell already holds for the rest of the app.
+ * Some rows do not read the seat's own record. A project's tasks, its
+ * schedules and its connector sets are keyed by PROJECT on the board's
+ * snapshot (#2517), which the router holds while a page that draws one is
+ * open.
  */
 
 import type { Snippet } from 'svelte';
@@ -44,6 +45,7 @@ import {
 } from '../review/view';
 import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
+import type { BoardWire, ProjectBoardWire } from '../wire/board';
 import type {
   AgentRow,
   CronEntry,
@@ -797,6 +799,7 @@ function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null
  */
 export function railGroups(
   home: HomeWire,
+  board: BoardWire | null,
   current: SessionSlot,
   now: number,
   closing: (slot: SessionSlot) => boolean = () => false,
@@ -815,7 +818,7 @@ export function railGroups(
   }));
 
   for (const entry of home.projects) {
-    const { lead, workers } = projectRows(home, entry);
+    const { lead, workers } = projectRows(home, entry, board);
     const all = [lead, ...workers];
     const rankOfRow = (row: Row): number =>
       closing(row.slot) ? 2 : rankOf(row.state, row.pending);
@@ -972,6 +975,21 @@ export function seatTree(home: HomeWire, slot: SessionSlot): string | null {
 export function projectOf(home: HomeWire, slot: SessionSlot): ProjectWire | null {
   return (
     home.projects.find(
+      (row) => row.project.org === slot.org && row.project.name === slot.project,
+    ) ?? null
+  );
+}
+
+/**
+ * The project this seat belongs to on the board's snapshot (#2517): the rows,
+ * schedules and connector sets the home no longer carries.
+ */
+export function boardProjectOf(
+  board: BoardWire | null,
+  slot: SessionSlot,
+): ProjectBoardWire | null {
+  return (
+    board?.projects.find(
       (row) => row.project.org === slot.org && row.project.name === slot.project,
     ) ?? null
   );
@@ -1304,11 +1322,11 @@ export interface SeatScheduleRow {
  * the caller re-reads as that clock moves.
  */
 export function seatScheduleRows(
-  home: HomeWire,
+  board: BoardWire | null,
   slot: SessionSlot,
   now: number,
 ): SeatScheduleRow[] {
-  const crons = projectOf(home, slot)?.crons ?? [];
+  const crons = boardProjectOf(board, slot)?.crons ?? [];
   const mine = crons.filter((cron) =>
     slot.label === 'lead' ? (cron.team_role ?? null) === null : cron.team_role === slot.label,
   );
@@ -1387,7 +1405,7 @@ interface RowConnectorViews {
  * **Ownership is `team_role`**: a subscription names the worker label it
  * belongs to, and `None` targets the project lead - so the lead's page reads
  * the None set and a worker's page reads its own label's, and neither shows
- * the other's. The sets ride the project's home row (all of the project's,
+ * the other's. The sets ride the project's board row (all of the project's,
  * both owners in one list), which is why the seat filter happens here.
  */
 export interface SeatConnectorRow {
@@ -1406,8 +1424,12 @@ export interface SeatConnectorRow {
   value: string;
 }
 
-export function seatConnectorRows(home: HomeWire, slot: SessionSlot): SeatConnectorRow[] {
-  const held = rowConnectors(projectOf(home, slot));
+export function seatConnectorRows(
+  home: HomeWire,
+  board: BoardWire | null,
+  slot: SessionSlot,
+): SeatConnectorRow[] {
+  const held = rowConnectors(boardProjectOf(board, slot));
   const live = connectorsLiveness(home);
   const mine = <T extends { team_role: string | null }>(subs: T[]): T[] =>
     subs.filter((sub) =>
@@ -1479,12 +1501,12 @@ function connectorsLiveness(home: HomeWire): {
 /**
  * One project's subscriptions, narrowed where they enter.
  *
- * A seat with no row on the home - a project that left `forge.toml` between
+ * A seat with no row on the board - a project that left `forge.toml` between
  * the record and this snapshot - reads as nothing subscribed rather than as
  * the page's problem: the strip's row draws nothing, the way it does for a
  * project nobody has subscribed anything to.
  */
-function rowConnectors(project: ProjectWire | null): RowConnectorViews {
+function rowConnectors(project: ProjectBoardWire | null): RowConnectorViews {
   const held = isRecord(project?.connectors) ? project.connectors : {};
   return {
     gotify: array(held['gotify']).map((entry) => {

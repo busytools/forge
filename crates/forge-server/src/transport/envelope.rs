@@ -22,6 +22,14 @@ use crate::{Command, SessionUpdate};
 #[serde(rename_all = "snake_case")]
 pub enum Subject {
     Home,
+    /// Every project's board detail: its rows, its schedules and its
+    /// connector subscriptions.
+    ///
+    /// A subject of its own rather than fields of [`Subject::Home`] because
+    /// the board is its own page's data: the home is a glance at the fleet,
+    /// and carrying every project's rows made a home read about 708 KB, most
+    /// of it board data a home page draws none of (#2517).
+    Board,
     Session(SessionSlot),
     /// The token/cost pool, scanned on the ask.
     ///
@@ -73,7 +81,24 @@ impl Subject {
     /// `client/src/wire/fleet.ts`'s `coversHome`.
     pub fn covers(&self, update: &SessionUpdate) -> bool {
         match self {
-            Self::Home => fleet_news(update).any() || update.slot().is_none(),
+            // **The board's own variants are not the home's.** A cron or a
+            // connector set left the home's payload with the rows, so a home
+            // subscriber that heard one would be asked to re-read for news its
+            // snapshot cannot carry (rule 25). `TasksChanged` stays: the
+            // fleet's counts are derived from the same tasks, so the home's
+            // answer does carry its effect.
+            Self::Home => {
+                (fleet_news(update).any() || update.slot().is_none()) && !board_detail(update)
+            }
+            // The board snapshot carries every project's rows, crons and
+            // connector sets, so the variants that move them - plus the seat
+            // events a row's `stale` mark is read from - belong here. A row's
+            // time-derived marks are the page's own beat, not a frame.
+            Self::Board => {
+                board_detail(update)
+                    || matches!(update, SessionUpdate::TasksChanged { .. })
+                    || seat_liveness(update)
+            }
             Self::Session(seat) => update.slot() == Some(seat),
             // Nothing carries the pool: its snapshot is a scan, and a
             // transcript's tokens moving is not an update any variant
@@ -106,6 +131,42 @@ impl Subject {
             ),
         }
     }
+}
+
+/// The updates whose whole effect is the board's own snapshot.
+///
+/// Crons and connector sets moved out of the home's payload with the rows
+/// (#2517), so the home must not hear them; the board carries both.
+fn board_detail(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::CronSchedulesChanged { .. }
+            | SessionUpdate::ConnectorSubscriptionsChanged { .. }
+    )
+}
+
+/// The seat events a board row's `stale` mark is read from.
+///
+/// `seat_is_live` reads the domain/agent registry and the worker registry,
+/// and these are the frames that change either: a seat starting, connecting,
+/// being replaced, releasing, failing to connect, or a worker's status
+/// moving. Turn frames are not here - a task write is what moves a row's work,
+/// and a page's own beat advances its clocks.
+///
+/// **The coverage is not exact.** A session task exiting and a worktree
+/// rollback release the handle with no frame of their own, and `Spawning`
+/// fires before the handle exists - so in those windows a row's mark can lag
+/// until the seat's next covered frame, or until the page's beat re-reads.
+fn seat_liveness(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::Spawning { .. }
+            | SessionUpdate::Connected { .. }
+            | SessionUpdate::SessionReplaced { .. }
+            | SessionUpdate::Releasing { .. }
+            | SessionUpdate::ConnectionFailed { .. }
+            | SessionUpdate::WorkerStatusChanged { .. }
+    )
 }
 
 /// What a client sends.
@@ -954,20 +1015,31 @@ mod tests {
         }
     }
 
-    /// A section push reaches the subscribers the section belongs to: home,
-    /// which draws the project row, and the seat the update routes on.
+    /// The section pushes reach the BOARD, and the task push reaches the home
+    /// too (#2517).
     ///
-    /// Every one of these carries a key, so the slot-less arm is not what
-    /// admits it - dropping it from `fleet_news`'s redraw arm is a section
-    /// that stops popping, which is what this test exists to make fail by
-    /// name.
+    /// **The home keeps `TasksChanged` because its snapshot still carries it**:
+    /// the fleet row's queue and waiting counts are derived from the same
+    /// tasks. Crons and connector sets left the home's payload with the rows,
+    /// so the home must not hear them (rule 25); the board snapshot carries
+    /// all three.
     #[test]
-    fn the_section_pushes_are_home_news() {
+    fn the_section_pushes_reach_the_board_and_tasks_also_home() {
+        let tasks = SessionUpdate::TasksChanged {
+            key: SessionSlot::lead("TestOrg", "proj"),
+            tasks: Vec::new(),
+        };
+        assert!(
+            fleet_news(&tasks).any(),
+            "admitted by the redraw arm, not by the wildcard: {tasks:?}",
+        );
+        assert!(Subject::Board.covers(&tasks), "the board draws every row: {tasks:?}");
+        assert!(
+            Subject::Home.covers(&tasks),
+            "and the home's fleet counts are derived from the same tasks: {tasks:?}",
+        );
+
         for update in [
-            SessionUpdate::TasksChanged {
-                key: SessionSlot::lead("TestOrg", "proj"),
-                tasks: Vec::new(),
-            },
             SessionUpdate::CronSchedulesChanged {
                 key: SessionSlot::lead("TestOrg", "proj"),
                 crons: Vec::new(),
@@ -978,20 +1050,101 @@ mod tests {
                 slack: Vec::new(),
             },
         ] {
+            assert!(Subject::Board.covers(&update), "the board draws both: {update:?}");
             assert!(
-                fleet_news(&update).any(),
-                "admitted by the redraw arm, not by the wildcard: {update:?}",
-            );
-            assert!(Subject::Home.covers(&update), "so the home is sent it: {update:?}");
-            assert!(
-                Subject::Session(SessionSlot::lead("TestOrg", "proj")).covers(&update),
-                "and the project's own seat is sent it too: {update:?}",
-            );
-            assert!(
-                !Subject::Session(SessionSlot::lead("TestOrg", "other")).covers(&update),
-                "while another seat's page is not: {update:?}",
+                !Subject::Home.covers(&update),
+                "the home's snapshot carries neither, so it must not be asked to \
+                 re-read for it: {update:?}",
             );
         }
+
+        assert!(
+            !Subject::Board.covers(&SessionUpdate::AccountsChanged),
+            "and nothing outside the board's own three reaches it",
+        );
+    }
+
+    /// **A board row's `stale` mark is read from seat liveness**, so the
+    /// frames that move the registries behind `seat_is_live` reach the board -
+    /// and a turn frame does not (#2517).
+    #[test]
+    fn the_seat_liveness_frames_reach_the_board_and_a_turn_frame_does_not() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let model = || forge_primitives::CurrentModel {
+            resolved_id: "claude".to_owned(),
+            display_name_short: "claude".to_owned(),
+            display_name_long: "claude".to_owned(),
+            requested_id: None,
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: true,
+        };
+        for update in [
+            SessionUpdate::Spawning {
+                key: seat.clone(),
+                project_name: "proj".to_owned(),
+                cwd: "/tmp".to_owned(),
+                display_name: "lead".to_owned(),
+            },
+            SessionUpdate::Connected {
+                key: seat.clone(),
+                session_id: forge_primitives::SessionId::new("s"),
+                cwd: "/tmp".to_owned(),
+                current_model: model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                dropped: 0,
+                compaction_count: 0,
+            },
+            SessionUpdate::SessionReplaced {
+                key: seat.clone(),
+                session_id: forge_primitives::SessionId::new("s"),
+                cwd: "/tmp".to_owned(),
+                current_model: model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                dropped: 0,
+                compaction_count: 0,
+            },
+            SessionUpdate::Releasing { key: seat.clone() },
+            SessionUpdate::ConnectionFailed {
+                key: seat.clone(),
+                message: "gone".to_owned(),
+                fatal: false,
+            },
+            SessionUpdate::WorkerStatusChanged {
+                project_key: forge_workspace::ProjectKey::new("TestOrg-proj"),
+                action: forge_workspace::protocol::WorkerStatusAction::Removed,
+                status: forge_primitives::WorkerStatus {
+                    label: "w1".to_owned(),
+                    charter: "a worker".to_owned(),
+                    status: forge_primitives::WorkerLiveness::Running,
+                    session_id: "s".to_owned(),
+                    slot: seat.clone(),
+                    spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                    spawned_by: seat.clone(),
+                    diagnostic: None,
+                    activity: None,
+                },
+                worktree: forge_workspace::protocol::WorktreeDisposition::Absent,
+            },
+        ] {
+            assert!(
+                Subject::Board.covers(&update),
+                "a row's owner-gone chip is read from these: {update:?}",
+            );
+        }
+
+        assert!(
+            !Subject::Board
+                .covers(&SessionUpdate::TurnComplete { key: seat, terminal_reason: None }),
+            "a turn frame moves no board row's marks",
+        );
     }
 
     /// The client's settings come off the server's own config, so the

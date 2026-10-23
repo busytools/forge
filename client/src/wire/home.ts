@@ -2,9 +2,9 @@
  * The home's snapshot, as `crates/forge-server/src/transport/wire.rs` writes
  * it, typed against the server's own fixture beside this file.
  *
- * The fixture's `rows` and `crons` arrays are empty, so those two element
- * shapes come from the Rust that emits them rather than from the fixture:
- * the fixture pins what it carries, and the source pins the rest.
+ * The board's own detail - each project's rows, schedules and connector sets -
+ * is `wire/board.ts`'s since #2517: the home is the fleet glance, and a board
+ * read is its own subject. The row narrowing here is shared with that file.
  */
 
 import { reportFrom, type ServiceReport } from './fleet';
@@ -198,7 +198,7 @@ export function missFrom(value: unknown): MissRow {
 
 /**
  * One project as the fleet page draws it: the counts and the named
- * misses. A project's own rows ride its [`ProjectWire.rows`]; this is
+ * misses. The rows themselves ride the board's own subject (#2517); this is
  * the glance.
  */
 export interface FleetRow {
@@ -210,6 +210,8 @@ export interface FleetRow {
   queue: number;
   /** Rows waiting on the user's decision. */
   waiting_on_user: number;
+  /** Every row the project holds, which the home's header totals. */
+  rows: number;
   misses: MissRow[];
 }
 
@@ -303,17 +305,6 @@ export interface ProjectWire {
   project: ProjectView;
   /** The branch and count for the project's own tree. */
   work: WorkState;
-  /** The project's live rows, with the board's own facts on each. */
-  rows: BoardRow[];
-  crons: CronEntry[];
-  /**
-   * This project's connector subscriptions, one list per connector.
-   *
-   * Left `unknown` here like the home's own member and narrowed where it
-   * enters: the sets are per project, so they ride the row rather than the
-   * home's `connectors`, which carries the liveness facts alone.
-   */
-  connectors: unknown;
   /** Whether a spawn here would find an account, beside `has_model`. */
   would_bind: boolean;
   /** The account the row chips, and its state. */
@@ -410,7 +401,7 @@ export const TASK_STATUSES: TaskStatus[] = [
   'canceled',
 ];
 
-/** The marks a row carries when nobody stated any, which is a v7 server's row. */
+/** The marks a row carries when the payload states none. */
 const NO_MARKS: Marks = {
   ready: false,
   in_review: false,
@@ -422,20 +413,15 @@ const NO_MARKS: Marks = {
 };
 
 /**
- * One entry of a project's `rows` (v8) or `tasks` (v7), as a board row.
+ * One entry of a project's `rows`, as a board row.
  *
- * **The step back is a SHAPE, not only a name.** A v7 server sent the TASK
- * itself, flat: no `worked_secs`, no marks, an `estimate` that is its words
- * alone. A fallback that only renamed the key would read `entry.task.status`
- * off such an entry, and a page that throws while drawing draws nothing at
- * all - which is the failure the protocol bump exists to turn into a notice.
- * So a flat entry is wrapped as the row this client reads, with the neutral
- * value for everything that server never stated.
+ * The unions of literals are narrowed here, at the boundary, so every reader
+ * downstream is exhaustive; a field the payload omits reads as the neutral
+ * value the board draws rather than as `undefined` reaching its arithmetic.
  */
-function rowFrom(entry: unknown): BoardRow {
+export function rowFrom(entry: unknown): BoardRow {
   const raw = (entry ?? {}) as Record<string, unknown>;
-  const flat = raw['task'] === undefined || raw['task'] === null;
-  const task = (flat ? raw : (raw['task'] as Record<string, unknown>)) ?? {};
+  const task = (raw['task'] as Record<string, unknown> | undefined) ?? {};
   const history = historyFrom(raw['history']);
   return {
     task: {
@@ -443,15 +429,7 @@ function rowFrom(entry: unknown): BoardRow {
       // keeps whatever was sent and is only defaulted where it is absent.
       ...(task as unknown as Task),
       // The unions of literals every read narrows, the link kinds included.
-      // The casts are this boundary's own: an entry off a v7 server is a shape
-      // this client has no type for, which is the whole reason for the branch.
-      //
-      // **`blocked` is v7's spelling for a wait.** Narrowed as an unknown it
-      // would fall to `pending` and be drawn in the Ready lane as a row a lead
-      // dispatches, where the core's own migration of the same value lands on
-      // `waiting` with its reason unstated - the board must not read one row
-      // two ways depending on which half stepped back.
-      status: narrow(statusFrom(task['status']), TASK_STATUSES, 'pending'),
+      status: narrow(spelled(task['status']), TASK_STATUSES, 'pending'),
       verify:
         task['verify'] === null || task['verify'] === undefined
           ? null
@@ -470,8 +448,6 @@ function rowFrom(entry: unknown): BoardRow {
       archived_at: (task['archived_at'] ?? null) as WireTime | null,
     },
     worked_secs: (raw['worked_secs'] as number | undefined) ?? 0,
-    // A v7 entry carries none of the three below: it is a task, and the
-    // worked time, the ages and the marks are what the board derives.
     updated_secs_ago: (raw['updated_secs_ago'] as number | undefined) ?? 0,
     marks: (raw['marks'] as Marks | undefined) ?? NO_MARKS,
     rollup: (raw['rollup'] as [number, number] | null | undefined) ?? null,
@@ -491,45 +467,24 @@ function historyTotalFrom(raw: unknown, shown: number): number {
   return typeof raw === 'number' && Number.isInteger(raw) && raw >= shown ? raw : shown;
 }
 
-/**
- * The status a task entry carries, with v7's own spelling for a wait read as
- * the state this client draws.
- */
-function statusFrom(raw: unknown): string {
-  const spelled = typeof raw === 'string' ? raw : '';
-  return spelled === 'blocked' ? 'waiting' : spelled;
+/** A value as the string `narrow` takes: anything else spells nothing. */
+function spelled(raw: unknown): string {
+  return typeof raw === 'string' ? raw : '';
 }
 
 /**
- * The references a row carries, and the one a v7 server sent instead.
- *
- * A v8 row carries `links`; a v7 task carried the single `artifact` that field
- * replaced, so it crosses as one link - with the CORE's own classification of
- * a bare target (`LinkKind::for_target`, which its migration of a v7 artifact
- * applies too), because `other` is the one kind both readers drop: the strip's
- * meta and the home row's cell filter it out, so a v7 row would draw no
- * artifact anywhere but the board card.
+ * The references a row carries. **Total**: a payload carrying `links` as
+ * anything but an array of objects reads as no links rather than throwing
+ * inside the read, because a page that throws while drawing draws nothing.
  */
 function linksFrom(task: Record<string, unknown>): TaskLinkWire[] {
   const held = Array.isArray(task['links']) ? task['links'] : [];
-  const links = held
+  return held
     .filter((link): link is Record<string, unknown> => typeof link === 'object' && link !== null)
     .map((link) => {
       const spelled = link as unknown as TaskLinkWire;
       return { ...spelled, kind: narrow(spelled.kind, LINK_KINDS, 'other') };
     });
-  const artifact = task['artifact'];
-  if (links.length === 0 && typeof artifact === 'string' && artifact !== '') {
-    links.push({
-      kind: artifact.includes('/pull/') ? 'pr' : 'path',
-      label: null,
-      target: artifact,
-      state: null,
-      // Unread on this side; a v7 task never carried one.
-      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-    });
-  }
-  return links;
 }
 
 /**
@@ -552,8 +507,8 @@ function historyFrom(raw: unknown): BoardTransition[] {
         from:
           from === null || from === undefined
             ? null
-            : narrow(statusFrom(from), TASK_STATUSES, 'pending'),
-        to: narrow(statusFrom(step['to']), TASK_STATUSES, 'pending'),
+            : narrow(spelled(from), TASK_STATUSES, 'pending'),
+        to: narrow(spelled(step['to']), TASK_STATUSES, 'pending'),
         at: (step['at'] ?? { secs_since_epoch: 0, nanos_since_epoch: 0 }) as WireTime,
         by: byFrom(step['by']),
       };
@@ -570,16 +525,8 @@ function byFrom(raw: unknown): ByWire {
   return 'unknown';
 }
 
-/**
- * The estimate as this client reads it. **A v7 server sent its words alone**,
- * and this side draws them with `secs: 0` - which the board's own rule reads
- * as no measure - rather than parsing them back: the grammar is the core's
- * (`Estimate::parse`, which its migration applies to these same words), and a
- * second copy of it here would drift from the first, silently, the first time
- * one of them learned a spelling the other did not.
- */
+/** The estimate as this client reads it: its words and measure, or none. */
 function estimateFrom(raw: unknown): Task['estimate'] {
-  if (typeof raw === 'string') return { words: raw, secs: 0 };
   const held = raw as { words?: unknown; secs?: unknown } | null | undefined;
   if (held === null || held === undefined) return null;
   return typeof held.words === 'string' && typeof held.secs === 'number'
@@ -656,27 +603,22 @@ export function homeFrom(data: HomeWire): HomeWire {
           ? null
           : { ...agent.work, gate: narrow(agent.work.gate, GATES, 'in_repo') },
     })),
-    projects: data.projects.map((row) => {
-      // **The one step back.** A forge at protocol 7 sent this project's rows
-      // under `tasks`, so a client newer than its server reads the old key
-      // rather than drawing nothing. The cast is this boundary's own - the
-      // payload is typed as today's shape, and the field a move left behind is
-      // what is being read.
-      const legacy = row as { rows?: unknown[]; tasks?: unknown[] };
-      return {
-        ...row,
-        work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
-        rows: (legacy.rows ?? legacy.tasks ?? []).map(rowFrom),
-      };
-    }),
+    projects: data.projects.map((row) => ({
+      ...row,
+      work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
+    })),
     // The misses are the one member here that is a union of shapes rather
     // than a union of literals, so they are narrowed by `missFrom` rather
     // than by `narrow` - and a shape this client is older than survives as
     // `unknown` rather than vanishing.
     // A server older than the board sends no `fleet`; an empty list draws
-    // no rows rather than failing the whole read.
+    // no rows rather than failing the whole read. **A row's `rows` may be
+    // absent too** - a v8 server answers a v9 client's home without it - and
+    // a header that summed `undefined` would draw `NaN tasks`, so it reads as
+    // none.
     fleet: (data.fleet ?? []).map((row) => ({
       ...row,
+      rows: typeof row.rows === 'number' ? row.rows : 0,
       misses: (row.misses as unknown[]).map(missFrom),
     })),
     accounts: {

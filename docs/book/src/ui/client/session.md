@@ -7,19 +7,20 @@ the [composer](./composer.md) share. It is addressed by the seat's slot -
 reach; `/new` and `/resume` swap the occupant and leave the slot alone.
 
 It is drawn from one read of the `session` subject - a snapshot, then the
-updates that move it - plus the home's snapshot, which the page is handed
-for the facts that ride a project's row. The drawing it is held against is
+updates that move it - plus the home's snapshot for the facts that ride a
+project's row and the board's snapshot for the row's task, its schedules and
+its connector sets. The drawing it is held against is
 [web-session.html](./web-session.html), beside this page.
 
 ## What it draws
 
 | Region | Shows | Read from |
 |---|---|---|
-| Rail | every declared project grouped by the strongest state among its rows, the current seat marked, sleepers folded; its footer carries the account and what it is costing | the home's snapshot; `accounts` |
+| Rail | every declared project grouped by the strongest state among its rows, the current seat marked, sleepers folded; its footer carries the account and what it is costing | the home's snapshot, the board's snapshot for each row's task, and `accounts` |
 | Header | the chip, the seat's own mark, org and name, and the facts: session id, model with its effort, mode, context fill, and the compaction count | `header`, `conversation.compaction_count` |
 | Conversation | the turns and everything inside them, in the column's own scroll viewport | `conversation` |
 | Queue | the prompts waiting, drawn against what is running | `queue`, `queue_ended` |
-| Strip | the segments this seat has anything to say in, in one order, standing whenever it has something to say | the seat's record, the project's home row, the page's clock |
+| Strip | the segments this seat has anything to say in, in one order, standing whenever it has something to say | the seat's record, the project's board row, the page's clock |
 | Foot | the strip lane, the dock or the box | the composer's own record |
 
 **The chip is the one projects control, and its click is smart.** It
@@ -181,7 +182,7 @@ there is nothing here but the way in.
 **Every cell is a read, not a computation.** The schedules row keeps the
 seat's own set - a cron names the seat that created it - and its
 countdowns re-derive against the page's own clock, as the monitors' ages
-do; the tasks row reads the project's slice of the home; the tree row is
+do; the tasks row reads the project's slice of the board; the tree row is
 the seat's own working tree, the worktree for a worker and the project's
 directory for a lead, and a worker a lead pointed at a tree of its own is
 named by that tree - `~/Projects/nazar` beside its project's siblings -

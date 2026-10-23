@@ -32,7 +32,8 @@ import {
 } from './composer/testing';
 import Turn from './chat/Turn.svelte';
 import Connect from './connect/Connect.svelte';
-import { homeWire } from './dev/fixture.data';
+import { boardWire, homeWire } from './dev/fixture.data';
+import type { BoardWire } from './wire/board';
 import Document from './doc/Document.svelte';
 import Files from './files/Files.svelte';
 import ExtensionsBody from './extensions/ExtensionsBody.svelte';
@@ -132,10 +133,9 @@ describe('axe over the rendered pages', () => {
   it('draws a project board with no violations', async () => {
     // The fixture's board is empty, which is one of its states; a row that
     // waits on the reader is the other state the page draws controls in.
-    const first = homeWire.projects[0];
+    const first = boardWire.projects[0];
     if (first === undefined) throw new Error('the fixture holds no project');
-    const withWaiting: typeof homeWire = {
-      ...homeWire,
+    const withWaiting: BoardWire = {
       projects: [
         {
           ...first,
@@ -203,7 +203,12 @@ describe('axe over the rendered pages', () => {
       ],
     };
     const html = render(Board, {
-      props: { wire: withWaiting, org: 'TestOrg', project: 'proj' },
+      props: {
+        wire: homeWire,
+        board: { wire: withWaiting, refused: null },
+        org: 'TestOrg',
+        project: 'proj',
+      },
     }).body;
     expect(await idsOf(html)).toEqual([]);
   });

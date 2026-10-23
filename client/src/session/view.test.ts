@@ -3,11 +3,12 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { FORGE_COMMANDS } from '../composer/forge-commands';
-import { homeWire } from '../dev/fixture.data';
+import { boardWire, homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
 import { rankOf } from '../home/view';
 import { repoPath } from '../repo';
+import type { BoardWire, ProjectBoardWire } from '../wire/board';
 import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { applyUpdate } from './apply';
@@ -28,7 +29,7 @@ import {
   monitorLabel,
   monitorRows,
   railFooter,
-  railGroups,
+  railGroups as railGroupsWithBoard,
   railMark,
   reviewRows,
   reviewSets,
@@ -64,6 +65,28 @@ const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 const withHome = (change: Partial<HomeWire>): HomeWire => ({ ...homeWire, ...change });
 const withProject = (change: Partial<ProjectWire>): HomeWire =>
   withHome({ projects: [{ ...project(), ...change }] });
+
+/** The fixture's one board project, which every board-shaped test starts from. */
+function boardProject(): ProjectBoardWire {
+  const first = boardWire.projects[0];
+  if (first === undefined) throw new Error('the fixture holds no board project');
+  return first;
+}
+const boardWith = (entries: ProjectBoardWire[]): BoardWire => ({ projects: entries });
+/** A board whose one project is the fixture's own, with `change` applied. */
+const boardOf = (change: Partial<ProjectBoardWire>): BoardWire =>
+  boardWith([{ ...boardProject(), ...change }]);
+
+/**
+ * The rail's grouping without a board read: no grouping depends on a row's
+ * task cell, and the landing paths that call this have no board to pass.
+ */
+const railGroups = (
+  home: HomeWire,
+  current: SessionSlot,
+  now: number,
+  closing: (slot: SessionSlot) => boolean = () => false,
+) => railGroupsWithBoard(home, null, current, now, closing);
 
 describe('the boundary', () => {
   /**
@@ -1833,34 +1856,30 @@ describe("a seat's own connector rows", () => {
     },
   });
 
-  const home = (change: Record<string, unknown> = {}) =>
-    withHome({
-      ...live(),
-      ...change,
-      projects: [
-        {
-          ...project(),
-          connectors: {
-            gotify: [
-              { id: 'g-1', applications: ['client-alerts'], min_priority: 5, team_role: null },
-              { id: 'g-2', applications: [], min_priority: null, team_role: 'builder' },
-            ],
-            slack: [
-              { id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null },
-              {
-                id: 's-2',
-                workspace: 'forge',
-                target: { Conversation: { name: 'field-notes', mode: 'All' } },
-                team_role: 'builder',
-              },
-            ],
+  const home = (change: Record<string, unknown> = {}) => ({
+    home: withHome({ ...live(), ...change }),
+    board: boardOf({
+      connectors: {
+        gotify: [
+          { id: 'g-1', applications: ['client-alerts'], min_priority: 5, team_role: null },
+          { id: 'g-2', applications: [], min_priority: null, team_role: 'builder' },
+        ],
+        slack: [
+          { id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null },
+          {
+            id: 's-2',
+            workspace: 'forge',
+            target: { Conversation: { name: 'field-notes', mode: 'All' } },
+            team_role: 'builder',
           },
-        },
-      ],
-    });
+        ],
+      },
+    }),
+  });
 
   it('reads the lead the no-owner subscriptions and nothing else', () => {
-    const rows = seatConnectorRows(home(), LEAD);
+    const { home: wire, board } = home();
+    const rows = seatConnectorRows(wire, board, LEAD);
 
     expect(rows, 'the lead owns one of each').toHaveLength(2);
     expect(rows[0], 'its gotify apps and floor, keyed by the subscription own id').toEqual({
@@ -1878,7 +1897,8 @@ describe("a seat's own connector rows", () => {
   });
 
   it("reads a worker its own label and never the lead's", () => {
-    const rows = seatConnectorRows(home(), WORKER);
+    const { home: wire, board } = home();
+    const rows = seatConnectorRows(wire, board, WORKER);
 
     expect(rows, 'the worker owns one of each').toHaveLength(2);
     expect(rows[0], 'its own gotify row: no app filter, any priority').toEqual({
@@ -1899,28 +1919,23 @@ describe("a seat's own connector rows", () => {
     // The live crash shape: a mentions watcher + the auto-subscribed
     // conversation in one workspace read the same drawn words, and a row
     // keyed by those words throws in dev and prod alike.
-    const two = withHome({
-      ...live(),
-      projects: [
-        {
-          ...project(),
-          connectors: {
-            gotify: [],
-            slack: [
-              { id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null },
-              {
-                id: 's-2',
-                workspace: 'forge',
-                target: { Conversation: { name: 'forge', mode: 'All' } },
-                team_role: null,
-              },
-            ],
+    const wire = withHome(live());
+    const board = boardOf({
+      connectors: {
+        gotify: [],
+        slack: [
+          { id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null },
+          {
+            id: 's-2',
+            workspace: 'forge',
+            target: { Conversation: { name: 'forge', mode: 'All' } },
+            team_role: null,
           },
-        },
-      ],
+        ],
+      },
     });
 
-    const rows = seatConnectorRows(two, LEAD);
+    const rows = seatConnectorRows(wire, board, LEAD);
 
     expect(rows, 'both subscriptions draw').toHaveLength(2);
     expect(new Set(rows.map((row) => row.id)).size, 'and their ids are distinct').toBe(2);
@@ -1929,28 +1944,26 @@ describe("a seat's own connector rows", () => {
   it('reads only the seat project, never another project on the home', () => {
     // The OTHER project comes FIRST on purpose: with the seat's project
     // first, a lookup that took `projects[0]` would pass this whole file.
-    const two = withHome({
-      ...live(),
-      projects: [
-        {
-          ...project(),
-          project: { ...project().project, name: 'other', key: 'TestOrg-other' },
-          connectors: {
-            gotify: [],
-            slack: [{ id: 's-x', workspace: 'Acme', target: 'Mentions', team_role: null }],
-          },
+    const wire = withHome(live());
+    const board = boardWith([
+      {
+        ...boardProject(),
+        project: { ...boardProject().project, name: 'other' },
+        connectors: {
+          gotify: [],
+          slack: [{ id: 's-x', workspace: 'Acme', target: 'Mentions', team_role: null }],
         },
-        {
-          ...project(),
-          connectors: {
-            gotify: [],
-            slack: [{ id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null }],
-          },
+      },
+      {
+        ...boardProject(),
+        connectors: {
+          gotify: [],
+          slack: [{ id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null }],
         },
-      ],
-    });
+      },
+    ]);
 
-    const rows = seatConnectorRows(two, LEAD);
+    const rows = seatConnectorRows(wire, board, LEAD);
 
     expect(rows, 'one row, from the seat project').toHaveLength(1);
     expect(rows[0]?.key, "another project's channel drew on this seat").toBe('forge');
@@ -1965,15 +1978,10 @@ describe("a seat's own connector rows", () => {
         gotify: { connected: true },
         slack: { connected_workspaces: [], load_failed: true },
       },
-      projects: [
-        {
-          ...project(),
-          connectors: { gotify: [], slack: [] },
-        },
-      ],
     });
+    const board = boardOf({ connectors: { gotify: [], slack: [] } });
 
-    const rows = seatConnectorRows(failed, LEAD);
+    const rows = seatConnectorRows(failed, board, LEAD);
 
     expect(rows, 'the failure draws as a row of its own').toHaveLength(1);
     expect(rows[0], 'naming what failed').toEqual({
@@ -1985,20 +1993,15 @@ describe("a seat's own connector rows", () => {
   });
 
   it('reads the direct-messages arm by name, mode and all', () => {
-    const dm = withHome({
-      ...live(),
-      projects: [
-        {
-          ...project(),
-          connectors: {
-            gotify: [],
-            slack: [{ id: 's-1', workspace: 'forge', target: 'DirectMessages', team_role: null }],
-          },
-        },
-      ],
+    const dm = withHome(live());
+    const board = boardOf({
+      connectors: {
+        gotify: [],
+        slack: [{ id: 's-1', workspace: 'forge', target: 'DirectMessages', team_role: null }],
+      },
     });
 
-    const rows = seatConnectorRows(dm, LEAD);
+    const rows = seatConnectorRows(dm, board, LEAD);
 
     expect(rows[0]?.value, 'a bare-string arm must not draw an empty key').toBe(
       'direct messages \u{b7} every message',
@@ -2011,18 +2014,15 @@ describe("a seat's own connector rows", () => {
         gotify: { connected: false },
         slack: { connected_workspaces: [] },
       },
-      projects: [
-        {
-          ...project(),
-          connectors: {
-            gotify: [{ id: 'g-1', applications: [], min_priority: null, team_role: null }],
-            slack: [{ id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null }],
-          },
-        },
-      ],
+    });
+    const board = boardOf({
+      connectors: {
+        gotify: [{ id: 'g-1', applications: [], min_priority: null, team_role: null }],
+        slack: [{ id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null }],
+      },
     });
 
-    const rows = seatConnectorRows(down, LEAD);
+    const rows = seatConnectorRows(down, board, LEAD);
 
     expect(rows[0]?.value, 'a disconnected gotify stream reads on its row').toBe(
       'any priority \u{b7} offline',
@@ -2048,9 +2048,9 @@ describe("the project's schedule rows", () => {
   });
 
   it('names a schedule by its description and states its countdown and kind', () => {
-    const home = withProject({ crons: [cron()] });
+    const board = boardOf({ crons: [cron()] });
 
-    const rows = seatScheduleRows(home, LEAD, NOW);
+    const rows = seatScheduleRows(board, LEAD, NOW);
 
     expect(rows, 'one schedule').toHaveLength(1);
     expect(rows[0], 'the description leads, the countdown and kind follow').toEqual({
@@ -2070,9 +2070,9 @@ describe("the project's schedule rows", () => {
       kind: { Once: { secs_since_epoch: 1_702_332_800, nanos_since_epoch: 0 } },
     });
     delete bare.description;
-    const home = withProject({ crons: [bare] });
+    const board = boardOf({ crons: [bare] });
 
-    const rows = seatScheduleRows(home, LEAD, NOW);
+    const rows = seatScheduleRows(board, LEAD, NOW);
 
     expect(rows[0]?.key, 'the first line of the prompt, not all of it').toBe('audit the plugins');
     expect(rows[0]?.value, 'a one-shot is a one-shot').toBe('in 27d \u{b7} one-shot');
@@ -2084,17 +2084,17 @@ describe("the project's schedule rows", () => {
    * the connector row applies.
    */
   it("keeps another seat's crons off this page, and this seat's own on it", () => {
-    const home = withProject({
+    const board = boardOf({
       crons: [cron(), cron({ id: 'c-w1', description: 'the worker sweep', team_role: 'w1' })],
     });
 
-    const lead = seatScheduleRows(home, LEAD, NOW);
+    const lead = seatScheduleRows(board, LEAD, NOW);
     expect(
       lead.map((row) => row.key),
       "a worker's cron drew on the lead's page",
     ).toEqual(['rules sweep']);
 
-    const worker = seatScheduleRows(home, { ...LEAD, label: 'w1' }, NOW);
+    const worker = seatScheduleRows(board, { ...LEAD, label: 'w1' }, NOW);
     expect(
       worker.map((row) => row.key),
       "the lead's cron drew on a worker's page",
@@ -2102,11 +2102,11 @@ describe("the project's schedule rows", () => {
   });
 
   it('keeps two schedules reading the same words apart by their ids', () => {
-    const home = withProject({
+    const board = boardOf({
       crons: [cron(), cron({ id: 'c-9' })],
     });
 
-    const rows = seatScheduleRows(home, LEAD, NOW);
+    const rows = seatScheduleRows(board, LEAD, NOW);
 
     expect(rows, 'both schedules draw').toHaveLength(2);
     expect(new Set(rows.map((row) => row.id)).size, 'with distinct ids to key by').toBe(2);
@@ -2115,18 +2115,16 @@ describe("the project's schedule rows", () => {
   it('reads only the seat project, whatever the order on the home', () => {
     // The OTHER project comes first on purpose, so a lookup that took
     // `projects[0]` would read the wrong schedules.
-    const home = withHome({
-      projects: [
-        {
-          ...project(),
-          project: { ...project().project, name: 'other', key: 'TestOrg-other' },
-          crons: [cron({ id: 'c-x', description: 'the other project' })],
-        },
-        { ...project(), crons: [cron()] },
-      ],
-    });
+    const board = boardWith([
+      {
+        ...boardProject(),
+        project: { ...boardProject().project, name: 'other' },
+        crons: [cron({ id: 'c-x', description: 'the other project' })],
+      },
+      { ...boardProject(), crons: [cron()] },
+    ]);
 
-    const rows = seatScheduleRows(home, LEAD, NOW);
+    const rows = seatScheduleRows(board, LEAD, NOW);
 
     expect(rows, 'one row, from the seat project').toHaveLength(1);
     expect(rows[0]?.key, "another project's schedule drew on this seat").toBe('rules sweep');

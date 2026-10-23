@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { homeWire } from '../dev/fixture.data';
+import { boardWire, homeWire } from '../dev/fixture.data';
+import { boardFrom, type BoardWire } from '../wire/board';
 import type {
   AgentRow,
   BoardRow,
@@ -147,13 +148,14 @@ const FLEET: HomeWire = {
 };
 
 /** One fleet row's counts, whose project the fixture's orgs resolve. */
-function fleetRow(project: string, live: number): FleetRow {
+function fleetRow(project: string, live: number, rows = 0): FleetRow {
   return {
     project,
     live_workers: live,
     slots: 2,
     queue: 0,
     waiting_on_user: 0,
+    rows,
     misses: [],
   };
 }
@@ -180,17 +182,8 @@ function boardRow(task: Task): BoardRow {
   };
 }
 
-/**
- * One project row: the project, and the per-row reads the home draws it
- * from. A test still passes `tasks` (the records it reasons about); the
- * helper wraps them as board rows, which is the wire's own shape.
- */
-function project(
-  org: string,
-  name: string,
-  over: Partial<ProjectWire> & { tasks?: Task[] } = {},
-): ProjectWire {
-  const { tasks = [], ...rest } = over;
+/** One project row: the project, and the per-row reads the home draws it from. */
+function project(org: string, name: string, over: Partial<ProjectWire> = {}): ProjectWire {
   return {
     project: {
       key: `${org}-${name}`,
@@ -204,12 +197,9 @@ function project(
       sessions: [],
     },
     work: { branch: null, changed: null, gate: 'in_repo' },
-    rows: tasks.map(boardRow),
-    crons: [],
-    connectors: { gotify: [], slack: [] },
     would_bind: true,
     chip: null,
-    ...rest,
+    ...over,
   };
 }
 
@@ -502,6 +492,7 @@ describe('the fleet the snapshot describes', () => {
           slots: 2,
           queue: 3,
           waiting_on_user: 1,
+          rows: 4,
           misses: [
             { kind: 'stalled', label: 'queue is stalling' },
             { kind: 'no-row', label: 'w1 holds no row' },
@@ -532,16 +523,38 @@ describe('the fleet the snapshot describes', () => {
     expect(missFrom(7).kind).toBe('unknown');
   });
 
+  it('reads a fleet row a v8 server sent without a row count as none', () => {
+    // A v9 client against a v8 server: the row carries no `rows`, and a
+    // header that summed `undefined` would draw `NaN tasks`.
+    const old = {
+      ...homeWire,
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 0,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 0,
+          misses: [],
+        },
+      ],
+    } as unknown as HomeWire;
+    const parsed = homeFrom(old);
+    expect(parsed.fleet[0]?.rows, 'a missing count read as a number').toBe(0);
+    expect(homeView(parsed, '').header.tasks, 'the header summed a missing count').toBe(0);
+  });
+
   it('totals the tasks across every project, not the ones a row happens to show', () => {
     const wire: HomeWire = {
       ...homeWire,
       projects: [
-        project('Busytools', 'forge', {
-          tasks: [task('in_progress', 'a'), task('completed', 'b')],
-        }),
-        project('Busytools', 'notes', { tasks: [task('pending', 'c')] }),
+        project('Busytools', 'forge'),
+        project('Busytools', 'notes'),
         project('Personal', 'dotfiles'),
       ],
+      // The count now rides the fleet's own row rather than each project's
+      // board (#2517), so the header reads it off the glance.
+      fleet: [fleetRow('forge', 0, 2), fleetRow('notes', 0, 1), fleetRow('dotfiles', 0)],
       agents: [],
     };
 
@@ -756,12 +769,10 @@ describe('a row over the fleet', () => {
 
 describe('the cells the reshape made drawable', () => {
   /** One project of the fixture fleet, with its row's reads varied. */
-  const withRow = (over: Partial<ProjectWire> & { tasks?: Task[] }): HomeWire => {
-    // A test reasons about task records; the wire carries board rows.
-    const { tasks = [], ...rest } = over;
-    const base = tasks.length > 0 ? { ...PROJECT, rows: tasks.map(boardRow) } : PROJECT;
-    return { ...homeWire, projects: [{ ...base, ...rest }] };
-  };
+  const withRow = (over: Partial<ProjectWire>): HomeWire => ({
+    ...homeWire,
+    projects: [{ ...PROJECT, ...over }],
+  });
 
   /**
    * The fixture's one agent, with ITS row's reads varied. The tree a row
@@ -794,9 +805,19 @@ describe('the cells the reshape made drawable', () => {
    * saying running.
    */
   it('shows the task furthest from done, not the first held', () => {
-    const held = leadOf(
-      withRow({ tasks: [task('completed', 'shipped'), task('in_progress', 'now')] }),
-    );
+    const wire = withRow({});
+    const project = first(wire.projects, 'project');
+    const board = {
+      projects: [
+        {
+          project: project.project,
+          rows: [task('completed', 'shipped'), task('in_progress', 'now')].map(boardRow),
+          crons: [],
+          connectors: { gotify: [], slack: [] },
+        },
+      ],
+    };
+    const held = projectRows(wire, project, board).lead;
     expect(held.task?.subject).toBe('now');
     expect(held.task?.chip).toBe('in progress');
   });
@@ -1141,10 +1162,10 @@ describe('what a row says', () => {
    * drawer reads as nothing withheld.
    */
   it('reads a row with no stated count as carrying its whole trail', () => {
-    const base = homeWire.projects[0];
+    const base = boardWire.projects[0];
     if (base === undefined) throw new Error('the fixture holds no project');
     const raw = {
-      ...homeWire,
+      ...boardWire,
       projects: [
         {
           ...base,
@@ -1161,8 +1182,8 @@ describe('what a row says', () => {
           ],
         },
       ],
-    } as unknown as HomeWire;
-    const row = homeFrom(raw).projects[0]?.rows[0];
+    } as unknown as BoardWire;
+    const row = boardFrom(raw).projects[0]?.rows[0];
     expect(row?.history_total, 'no stated count reads as the trail it sent').toBe(1);
   });
 
@@ -1210,98 +1231,6 @@ describe('what a row says', () => {
   });
 
   /**
-   * The one step back, which is a SHAPE and not only a name.
-   *
-   * A v7 forge sent each of a project's entries as the TASK alone, flat, under
-   * `tasks` - no `worked_secs`, no marks, an `artifact` rather than `links`,
-   * and an `estimate` that is its words. An entry like that is not a row, so a
-   * read that only renamed the key takes `entry.task.status` off `undefined`
-   * and THROWS while drawing: nothing renders and the skew notice is the only
-   * thing on the page. What that server never stated reads as the neutral
-   * value instead.
-   */
-  it('reads a project whose rows crossed as flat v7 tasks', () => {
-    const first = homeWire.projects[0];
-    if (first === undefined) throw new Error('the fixture holds no project');
-    const stepBack = {
-      ...homeWire,
-      projects: [
-        {
-          ...first,
-          rows: undefined,
-          // Shaped by the v7 server's own wire type (`ProjectWire.tasks` was
-          // `Vec<Task>`), not by wrapping a v8 row under the old key.
-          tasks: [
-            {
-              id: 'v7-1',
-              project_name: 'proj',
-              subject: 'a row from a v7 server',
-              active_form: null,
-              detail: null,
-              status: 'in_progress',
-              owner: null,
-              parent: null,
-              artifact: 'https://example.test/pull/7',
-              estimate: '1d',
-              created_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
-              updated_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
-            },
-            {
-              id: 'v7-2',
-              project_name: 'proj',
-              subject: 'a blocked row from a v7 server',
-              active_form: null,
-              detail: null,
-              // v7's own spelling for a wait, which the core's migration of
-              // the same value lands on `waiting`.
-              status: 'blocked',
-              owner: null,
-              parent: null,
-              artifact: 'docs/plan.md',
-              estimate: null,
-              created_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
-              updated_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
-            },
-          ],
-        },
-      ],
-    } as unknown as HomeWire;
-
-    const rows = homeFrom(stepBack).projects[0]?.rows ?? [];
-    expect(rows, 'the flat task did not read as a row').toHaveLength(2);
-    const task = rows[0]?.task;
-    expect(task?.subject, 'the task itself was lost').toBe('a row from a v7 server');
-    expect(task?.status, 'the status did not come off the entry').toBe('in_progress');
-    // The fields v7 never sent read as what this client draws for nothing,
-    // rather than as `undefined` reaching the board's arithmetic.
-    expect(rows[0]?.worked_secs).toBe(0);
-    expect(rows[0]?.marks.overdue).toBe(false);
-    expect(rows[0]?.rollup).toBeNull();
-    // A server (or a committed capture) that never stated the row's own
-    // transitions reads as none, so the drawer draws without the section.
-    expect(rows[0]?.history).toEqual([]);
-    expect(task?.rank).toBeNull();
-    expect(task?.waiting_on).toBeNull();
-    expect(task?.attempt).toBe(0);
-    // `artifact` is `links` now, with the CORE's own classification of a bare
-    // target: a pull-request url is a `pr` and anything else a `path`, both of
-    // which the strip and the home row draw - `other` is filtered out of both.
-    expect(
-      rows.map((entry) => entry.task.links.map((link) => link.kind)),
-      'the v7 artifacts did not cross as their own kinds',
-    ).toEqual([['pr'], ['path']]);
-    expect(rows[0]?.task.links[0]?.target).toBe('https://example.test/pull/7');
-    // And the estimate keeps its words with no seconds to be measured against,
-    // which the board reads as no measure rather than as a NaN ratio.
-    expect(task?.estimate).toEqual({ words: '1d', secs: 0 });
-
-    // **`blocked` is a WAIT, not a fresh row.** Narrowed as an unknown it
-    // falls to `pending` and is drawn in the Ready lane as a row a lead would
-    // dispatch.
-    expect(rows[1]?.task.status, 'a v7 blocked row read as ready').toBe('waiting');
-  });
-
-  /**
    * **The links reader is total.** A payload carrying `links` as anything but
    * an array of objects - `{}`, a string, `[null]` - is a shape this client
    * has no type for, and throwing inside the read is the one outcome the step
@@ -1309,7 +1238,7 @@ describe('what a row says', () => {
    * sends one; the point is that nothing draws nothing either.
    */
   it('reads a row whose links are not an array of objects', () => {
-    const first = homeWire.projects[0];
+    const first = boardWire.projects[0];
     if (first === undefined) throw new Error('the fixture holds no project');
     const base = {
       id: 'odd',
@@ -1327,24 +1256,24 @@ describe('what a row says', () => {
 
     for (const links of [{}, 'x', [null], [42]]) {
       const odd = {
-        ...homeWire,
+        ...boardWire,
         projects: [{ ...first, rows: [{ task: { ...base, links }, worked_secs: 0 }] }],
-      } as unknown as HomeWire;
+      } as unknown as BoardWire;
       expect(
-        homeFrom(odd).projects[0]?.rows[0]?.task.links,
+        boardFrom(odd).projects[0]?.rows[0]?.task.links,
         `a row with links = ${JSON.stringify(links)} read as something else`,
       ).toEqual([]);
     }
   });
 
   it('reads a project a server sends no rows for as an empty board', () => {
-    const first = homeWire.projects[0];
+    const first = boardWire.projects[0];
     if (first === undefined) throw new Error('the fixture holds no project');
     const neither = {
-      ...homeWire,
+      ...boardWire,
       projects: [{ ...first, rows: undefined, tasks: undefined }],
-    } as unknown as HomeWire;
-    expect(homeFrom(neither).projects[0]?.rows).toEqual([]);
+    } as unknown as BoardWire;
+    expect(boardFrom(neither).projects[0]?.rows).toEqual([]);
   });
 
   it('narrows an account state it does not know', () => {

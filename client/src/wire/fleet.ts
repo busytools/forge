@@ -102,8 +102,9 @@ export const REDRAWS = new Set([
   'browser_hand_off_resolved',
   'worker_status_changed',
   // The project's task set, its schedules and its connector subscriptions
-  // moved. The home's own row draws all three sections, so the update is a
-  // redraw of that row and nothing the fleet reads.
+  // moved. Since #2517 the schedules and connector sets ride the board's
+  // subject; the home still hears the task write, because its fleet counts
+  // are derived from the same tasks, so this stays a redraw here.
   'tasks_changed',
   'cron_schedules_changed',
   'connector_subscriptions_changed',
@@ -157,6 +158,15 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
  * not an error: it is a page that read them once and never again.
  */
 export function coversHome(update: SessionUpdate): boolean {
+  // **Two variants leave the home.** A cron set and a connector set left the
+  // home's snapshot with the board (#2517), so the home is not asked to
+  // re-read for what its answer cannot carry (rule 25); the board hears both.
+  if (typeof update !== 'string') {
+    const [variant] = Object.keys(update);
+    if (variant === 'cron_schedules_changed' || variant === 'connector_subscriptions_changed') {
+      return false;
+    }
+  }
   return fleetNews(update).kind !== 'nothing' || slotOf(update) === null;
 }
 

@@ -2,7 +2,8 @@
   import { tick } from 'svelte';
   import { hrefForSlot } from '../routes';
   import { isBoardRefusal, type ServiceReport } from '../wire/fleet';
-  import type { HomeWire, TaskStatus } from '../wire/home';
+  import type { BoardRead } from '../wire/board';
+  import type { BoardRow, HomeWire, TaskStatus } from '../wire/home';
   import { TASK_STATUSES } from '../wire/home';
   import Icon from '../components/Icon.svelte';
   import { ago } from '../components/age';
@@ -24,12 +25,17 @@
    */
   let {
     wire,
+    board,
     org,
     project,
     onact = null,
     notice = null,
   }: {
+    /** The home's read: the seats the owner picker offers and the fleet's
+     *  own `onYou` count. The rows are the board's read (#2517). */
     wire: HomeWire;
+    /** The board's own read, held by the page that mounts this one. */
+    board: BoardRead;
     org: string;
     project: string;
     onact?: ((command: Record<string, Record<string, unknown>>) => void) | null;
@@ -37,7 +43,9 @@
     notice?: ServiceReport | null;
   } = $props();
 
-  const view = $derived(boardView(wire, org, project));
+  // An empty board before the read lands: the lanes draw nothing, and the
+  // markup says which state it is in rather than calling the project unknown.
+  const view = $derived(boardView(wire, board.wire ?? { projects: [] }, org, project));
   /**
    * The reader's own drags, applied at once and reconciled against the
    * wire: a card that waits seconds for the server's snapshot reads as a
@@ -94,12 +102,16 @@
       .filter((agent) => agent.slot.org === org && agent.slot.project === project)
       .map((agent) => ({ label: agent.label, href: hrefForSlot(agent.slot) })),
   );
+  /** This project's rows, off the board's own read. */
+  function boardRowsOf(read: BoardRead): BoardRow[] {
+    return (
+      read.wire?.projects.find(
+        (entry) => entry.project.org === org && entry.project.name === project,
+      )?.rows ?? []
+    );
+  }
   /** The epics a new row can nest under. */
-  const epics = $derived(
-    wire.projects
-      .find((entry) => entry.project.org === org && entry.project.name === project)
-      ?.rows.filter((entry) => entry.task.parent === null) ?? [],
-  );
+  const epics = $derived(boardRowsOf(board).filter((entry) => entry.task.parent === null));
   /** The worker's own words on a row it sent back, before it is dispatched. */
   const sendBackWords: Record<string, string> = $state({});
   const answers: Record<string, string> = $state({});
@@ -255,11 +267,7 @@
       the drawer does not hand it back to the one it opened from. */
   let jumping = false;
   const openedRow = $derived(
-    opened === null
-      ? null
-      : (wire.projects
-          .find((entry) => entry.project.org === org && entry.project.name === project)
-          ?.rows.find((row) => row.task.id === opened) ?? null),
+    opened === null ? null : (boardRowsOf(board).find((row) => row.task.id === opened) ?? null),
   );
 
   /** The waiting view of the open row, where it waits: the approve gate's
@@ -347,9 +355,9 @@
    * goes back to the wire's own answer and the page says so.
    */
   $effect(() => {
-    const snapshot = wire;
+    const held = board.wire;
     const tick = nowSecs;
-    const row = snapshot.projects.find(
+    const row = held?.projects.find(
       (entry) => entry.project.org === org && entry.project.name === project,
     );
     for (const [id, want] of Object.entries(moved)) {
@@ -536,8 +544,12 @@
     <span class="b-id">
       <span class="b-nm">{project}</span>
       <span class="b-read">
-        {#if view.read.onYou > 0}<b>{view.read.onYou} waiting on you</b> &middot;
-        {/if}{view.read.rows} rows &middot; {view.read.running} running
+        {#if board.wire === null}
+          {board.refused === null ? 'reading the board...' : 'no board'}
+        {:else}
+          {#if view.read.onYou > 0}<b>{view.read.onYou} waiting on you</b> &middot;
+          {/if}{view.read.rows} rows &middot; {view.read.running} running
+        {/if}
       </span>
     </span>
     <span class="b-spacer"></span>
@@ -660,7 +672,11 @@
     </section>
   {/if}
 
-  {#if !view.known}
+  {#if board.wire === null}
+    <!-- The board's own read has not landed: a refusal says why, and the
+         silence is the read in flight. Neither is an unknown project. -->
+    <p class="b-empty">{board.refused ?? 'reading the board...'}</p>
+  {:else if !view.known}
     <!-- The page is a route and this one names a project the fleet does not
          carry: it has no rows to draw and no board to edit, and the create
          line would file a row against nothing. -->
