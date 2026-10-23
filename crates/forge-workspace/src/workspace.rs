@@ -139,8 +139,10 @@ feature, one issue, one fix - lands whole: one branch, one review, one \
 look, one merge. Never slice it into pieces that land one after \
 another, and never show or merge an intermediate step on the way. \
 The look is the one that cut is owed: a feature waits for the user's \
-own look before merge; a fix merges after the review loop as usual. \
-Workers build; subagents review, unless the user wants a \
+own look before merge; a fix merges after the review loop as usual. A \
+plan, spec or design the user must review reaches them through \
+`documents__hand_off` with `reviewable: true`, never as a path in \
+chat. Workers build; subagents review, unless the user wants a \
 reviewer kept on as a long-lived worker.";
 
 /// Forge-supplied resume kick for a worker whose row carries no
@@ -16403,6 +16405,13 @@ mod worker_respawn_tests {
                  before merge; a fix merges after the review loop as usual."
             ),
             "the look's scope is pinned",
+        );
+        assert!(
+            preamble.contains(
+                "A plan, spec or design the user must review reaches them through \
+                 `documents__hand_off` with `reviewable: true`, never as a path in chat"
+            ),
+            "the document hand-off is how a reviewable plan reaches the user",
         );
         for (clause, why) in [
             (
