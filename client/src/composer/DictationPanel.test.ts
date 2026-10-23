@@ -131,3 +131,53 @@ describe('the model rows', () => {
     });
   });
 });
+
+/**
+ * **A panel with no row of its own hangs off the host's PADDING box**, which is
+ * what the `bottom: calc(100% + 6px)` this replaced measured against. The
+ * review's thread card is a bordered host, and a border-box measurement hangs
+ * the panel a border's height too high (#2527's gate).
+ */
+describe('the panel without a row above it', () => {
+  it("hangs off the host's padding box, not its border box", () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    Object.defineProperty(host, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        top: 100,
+        bottom: 700,
+        height: 600,
+        left: 0,
+        right: 0,
+        width: 0,
+        x: 0,
+        y: 100,
+        toJSON: () => ({}),
+      }),
+    });
+    // A 2px border, as the thread card draws.
+    Object.defineProperty(host, 'clientTop', { configurable: true, value: 2 });
+    Object.defineProperty(host, 'clientHeight', { configurable: true, value: 596 });
+
+    app = mount(DictationPanel, {
+      target: host,
+      props: {
+        axes: DEFAULT_AXES,
+        defaults: DEFAULT_AXES,
+        bind: 'right_cmd',
+        mode: 'auto',
+        device: null,
+        onaxes: () => undefined,
+        ondevice: () => undefined,
+        onclose: () => undefined,
+      },
+    });
+    flushSync();
+
+    const pop = document.querySelector('.pop');
+    if (!(pop instanceof HTMLElement)) throw new Error('the panel drew nothing to place');
+    expect(pop.style.bottom, 'the hang ignored the border').toBe('602px');
+    expect(pop.style.maxHeight, 'the room counted the border').toBe('90px');
+  });
+});

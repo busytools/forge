@@ -114,6 +114,14 @@
   let clock = $state(Date.now());
   /** The field, so focus can go back to it when the box returns. */
   let field = $state<HTMLElement | null>(null);
+  /**
+   * The box the dictation panel hangs above.
+   *
+   * It is the input row rather than the whole surface: the running turn's strip
+   * is a lane above this box, and its height moves with every turn - a panel
+   * anchored to the surface rode it, and jumped at each turn's start and end.
+   */
+  let inputBox = $state<HTMLElement | null>(null);
   /** The mic, wherever the row gate has put it, so a started take can keep the caret on it. */
   let micEl = $state<HTMLElement | null>(null);
   /**
@@ -1312,7 +1320,7 @@
         </span>
       {/snippet}
 
-      <div class="box">
+      <div class="box" bind:this={inputBox}>
         {#if line !== null && composer.take === null}
           <div class="notice {line.tone}">{line.text}</div>
         {/if}
@@ -1395,6 +1403,7 @@
       bind={composer.bind}
       mode={composer.mode}
       device={seatDevice}
+      anchor={inputBox}
       onaxes={setAxes}
       ondevice={setDevice}
       onclose={() => {
