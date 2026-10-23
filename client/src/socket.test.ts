@@ -1104,6 +1104,45 @@ describe('the connection', () => {
     expect(store.snapshot()).toBeNull();
   });
 
+  /**
+   * **A repeated refusal is reported once.** A page asks a refused seat again
+   * on a beat, and every ask meets the same words; a warning per retry would
+   * flood the console with nothing new. The first refusal is news, and so is
+   * one whose words changed.
+   */
+  it('reports a repeated refusal once, and a changed one again', async () => {
+    const warned: string[] = [];
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
+      warned.push(String(args[0]));
+    });
+    try {
+      const { server, conn } = await connected();
+      const seat: Subject = { session: LEAD };
+      const store = conn.subscribe(seat);
+      // The retry's own shape: the same subject asked again.
+      conn.subscribe(seat);
+      conn.subscribe(seat);
+      await until(() => server.received.length === 3, 'the asks to arrive');
+
+      const why = 'forge holds no session for that seat';
+      server.send({ kind: 'error', what: 'subscribe', why });
+      server.send({ kind: 'error', what: 'subscribe', why });
+      server.send({ kind: 'error', what: 'subscribe', why: 'a different reason' });
+
+      await until(() => {
+        const state = store.state();
+        return state.kind === 'refused' && state.why === 'a different reason';
+      }, 'the changed refusal to land');
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(
+      warned.filter((line) => line.includes('was refused')),
+      'a repeated refusal was reported again',
+    ).toHaveLength(2);
+  });
+
   /** Nothing replays a subscribe made after the socket went, so a live store would be a lie. */
   it('refuses a subscribe on a closed connection', async () => {
     const { conn } = await connected();

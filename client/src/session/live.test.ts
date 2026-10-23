@@ -85,7 +85,7 @@ async function stubServer(
   session: unknown,
   conversations: Record<string, unknown[]> = {},
   home: typeof homeWire = homeWire,
-  options: { holdOlder?: boolean } = {},
+  options: { holdOlder?: boolean; refuseSeat?: boolean } = {},
 ) {
   const server = new WebSocketServer({ port: 0 });
   await new Promise((resolve) => server.once('listening', resolve));
@@ -143,6 +143,20 @@ async function stubServer(
       // is what the real server answers a subscribe with - so the per-seat
       // override the test hands this stub has to ride it, not only the `more`.
       const what = message.what;
+      if (options.refuseSeat === true && what !== null && typeof what === 'object') {
+        // The refusal a lagging fold gives (#2514), in the server's own words:
+        // no snapshot follows it, and the seat itself is what was refused.
+        socket.send(
+          JSON.stringify({
+            kind: 'error',
+            what: 'subscribe',
+            why: `the seat's stream has not settled for ${LEAD.org}/${LEAD.project}/${LEAD.label}; the fold has not applied its replay, whose window an answer would be missing`,
+            seat: LEAD,
+            dispatch_id: null,
+          } satisfies ServerMessage),
+        );
+        return;
+      }
       let body: unknown = session;
       if (what === 'home') {
         body = home;
@@ -452,6 +466,32 @@ describe('the session page over a socket', () => {
     expect(git.strip()?.label, 'the seat record never reached the page').toContain('worktree-pr');
     const facts = document.querySelector('.sess .facts');
     expect(facts?.textContent, 'the header drew no facts from the record').toContain('max');
+  });
+
+  /**
+   * **A refused seat subscribe is drawn, in the server's own words.**
+   *
+   * The page held the refusal and never drew it: the conversation copy still
+   * answered the chat's own `more`, so the page read as a seat with nothing
+   * said rather than one forge would not answer for. The line is the seat's,
+   * so it draws whether or not the chat holds a page.
+   */
+  it("draws the server's refusal for the seat, over the conversation it still holds", async () => {
+    server = await stubServer(sessionFixture, {}, homeWire, { refuseSeat: true });
+    connection = connect(server.url);
+    app = mount(Router, {
+      target: document.body,
+      props: { route: { name: 'session', slot: LEAD }, ...routerProps() },
+    });
+
+    await until(
+      () =>
+        drawn().includes('This forge would not answer for the seat') && drawn().includes('hello'),
+      'the refusal to draw over the conversation',
+    );
+    expect(drawn(), "the refusal drew without the server's own words").toContain(
+      'has not applied its replay',
+    );
   });
 
   /**
@@ -1314,6 +1354,8 @@ interface Driveable extends Omit<Connection, 'status'> {
   unsubscribes(): number;
   /** The seat's session appears, so a later read answers with a record. */
   ready(): void;
+  /** The server's answer turns the seat's store refused, as a refusal does. */
+  refuse(): void;
   status(): ConnectionStatus;
   /** Every range ask the seat made, in order. */
   ranges: { slot: SessionSlot; epoch: string | null; from: number; to: number }[];
@@ -1421,8 +1463,30 @@ function drivable(refusedAtFirst = false): Driveable {
     ready: () => {
       refused = false;
     },
+    refuse: () => {
+      refused = true;
+    },
     ranges,
   };
+}
+
+/**
+ * Land the server's refusal of the seat's subscribe.
+ *
+ * Both halves of it, the way the socket delivers one: the store is set to
+ * refused first, then the frame goes to every listener with the subject the
+ * socket attributed it to.
+ */
+function refuseSeat(connection: Driveable, why: string = NO_SESSION): void {
+  connection.refuse();
+  connection.land({
+    kind: 'error',
+    what: 'subscribe',
+    why,
+    seat: LEAD,
+    subject: { session: LEAD },
+    dispatch_id: null,
+  });
 }
 
 /**
@@ -2219,6 +2283,254 @@ describe('the seat the client holds between visits', () => {
     ).toBe(2);
     expect(back.read().refused, 'the return drew nothing of the refusal').toBe(NO_SESSION);
     back.stop();
+  });
+
+  /**
+   * **A refused seat is asked again while a page shows it, and the answer it
+   * meets replaces the refusal.**
+   *
+   * Nothing arrives to resolve a refusal: the states a session subscribe is
+   * refused on are the transport copy's own - behind the answer's number, a
+   * seal or a replay the fold has not applied - and the fold catching up is
+   * transport state that emits no frame. So a refused subscribe cannot be
+   * watched into an answer; the page's own re-ask is what finds it, as a
+   * refused `more` already says ("asking again may find it").
+   */
+  it('asks a refused seat again on a beat, and lands the answer it meets', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      refuseSeat(connection);
+      expect(page.read().refused, 'precondition: the seat was refused').toBe(NO_SESSION);
+
+      vi.advanceTimersByTime(1_900);
+      expect(connection.reads(), 'the seat was asked again before the beat').toBe(0);
+      vi.advanceTimersByTime(200);
+      expect(connection.reads(), 'the refused seat was never asked again').toBe(1);
+
+      // The re-ask comes back refused too: the beat keeps going rather than
+      // stopping at the first re-ask, because a fold can take more than one.
+      const published = page.publishes();
+      refuseSeat(connection);
+      expect(
+        page.publishes(),
+        'the same refusal was published again, redrawing the page for no news',
+      ).toBe(published);
+      vi.advanceTimersByTime(2_000);
+      expect(connection.reads(), 'a refusal that repeats stopped the beat').toBe(2);
+
+      connection.ready();
+      page.land(snapshotOf(LEAD));
+      expect(page.read().wire, "the retry's answer did not land").not.toBeNull();
+      expect(page.read().refused, 'the answer did not clear the refusal').toBeNull();
+
+      vi.advanceTimersByTime(5_000);
+      expect(connection.reads(), 'a seated record was asked for again').toBe(2);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A beat that is still pending when the answer lands has nothing to ask
+   * for.** The record is the answer the beat was asking for, so firing it
+   * would unsubscribe and subscribe a seat that has just been answered.
+   */
+  it('asks nothing after the answer lands with the beat still pending', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      refuseSeat(connection);
+      expect(page.read().refused, 'precondition: the seat was refused').toBe(NO_SESSION);
+
+      // The answer lands inside the beat, and the refusal is gone with it.
+      connection.ready();
+      page.land(snapshotOf(LEAD));
+      expect(page.read().wire, 'precondition: the answer landed').not.toBeNull();
+
+      vi.advanceTimersByTime(5_000);
+      expect(connection.reads(), 'a beat fired over a seat that had answered').toBe(0);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A leave gives the refused seat back, and the beat dies with it.** This
+   * is the leave's own teardown rather than a retry guard: `leaving` gives the
+   * subscription back and clears the seat's held store, which is what keeps a
+   * beat from outliving the page that armed it.
+   */
+  it('gives the seat back on leave, so a pending beat asks nothing', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      refuseSeat(connection);
+      expect(page.read().refused, 'precondition: the seat was refused').toBe(NO_SESSION);
+
+      page.stop();
+      expect(connection.unsubscribes(), 'the leave kept the refused subscription').toBe(1);
+      vi.advanceTimersByTime(5_000);
+      expect(connection.reads(), 'the beat asked after its page had gone').toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A seat opened for the answering role, with no page showing it yet, is
+   * not asked again either.** The escalation opens the subscription before
+   * any page subscribes the store, so `shown` is the only thing that says
+   * nobody is drawing it.
+   */
+  it('asks nothing for a seat no page shows', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      // The role opens the seat; nothing subscribes the store, so no page is
+      // showing it.
+      watchSession(connection, LEAD, false);
+      watchSession(connection, LEAD, true);
+      refuseSeat(connection);
+
+      vi.advanceTimersByTime(5_000);
+      expect(connection.reads(), 'a seat no page showed was asked again').toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A hidden page does not ask, and its return picks the beat up.** A
+   * background tab retrying a refused seat forever is a whole encode per
+   * beat for a record nobody is looking at; the return is the moment the
+   * page can say it is looking again.
+   */
+  it('stops the beat while the page is hidden, and picks it up when it returns', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      refuseSeat(connection);
+      hidePage();
+
+      vi.advanceTimersByTime(5_000);
+      expect(connection.reads(), 'a hidden page kept asking for a refused seat').toBe(0);
+
+      delete (document as { hidden?: boolean }).hidden;
+      document.dispatchEvent(new Event('visibilitychange'));
+      vi.advanceTimersByTime(2_000);
+      expect(connection.reads(), 'the returning page did not pick the beat up').toBe(1);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A reconnect's own subscribe is the ask, so a beat armed across the drop
+   * is a second one.** The socket re-subscribes every subject it holds when
+   * the socket opens again; a beat firing behind it unsubscribes and
+   * subscribes a seat the reconnect has just asked for.
+   */
+  it("drops the beat a reconnect's own subscribe answers", () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      refuseSeat(connection);
+
+      connection.wentTo('connecting');
+      connection.wentTo('open');
+      vi.advanceTimersByTime(2_000);
+      expect(connection.reads(), 'the beat asked behind the reconnect').toBe(0);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **Another seat's refusal is not this seat's answer.** The connection is
+   * shared, so every seat hears every refusal; a seat whose own store is
+   * refused from an earlier ask must not have the ask it has in flight spent
+   * by a refusal the socket named for someone else.
+   */
+  it("spends no ask on another seat's refusal", () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      refuseSeat(connection);
+      vi.advanceTimersByTime(2_000);
+      expect(connection.reads(), 'precondition: the beat asked').toBe(1);
+
+      const other: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'worker' };
+      connection.land({
+        kind: 'error',
+        what: 'subscribe',
+        why: NO_SESSION,
+        seat: other,
+        subject: { session: other },
+        dispatch_id: null,
+      });
+      // A frame that wants a whole record asks only when nothing is in flight:
+      // spent by the other seat's refusal, this one would ask again.
+      page.land(frameOf(occupant('new'), 2));
+      expect(connection.reads(), "another seat's refusal spent this seat's ask").toBe(1);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A refusal with no subject is this seat's when its store says so.** The
+   * wire's own errors name no subject, so a frame off an older server falls
+   * back to the store the socket refused - and that answer still spends the
+   * ask in flight rather than leaving it standing forever.
+   */
+  it('spends the ask on an unattributed refusal', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      refuseSeat(connection);
+      vi.advanceTimersByTime(2_000);
+      expect(connection.reads(), 'precondition: the beat asked').toBe(1);
+
+      // No `subject`: the wire's own refusal, attributed by the store alone.
+      expect(
+        () => connection.land({ kind: 'error', what: 'subscribe', why: NO_SESSION }),
+        'an unattributed refusal threw instead of falling back to the store',
+      ).not.toThrow();
+      page.land(frameOf(occupant('new'), 2));
+      expect(connection.reads(), 'the unattributed refusal left the ask standing').toBe(2);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   /**
