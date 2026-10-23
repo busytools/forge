@@ -1829,8 +1829,9 @@ const CATCH_UP_WAIT: std::time::Duration = std::time::Duration::from_millis(250)
 /// **The window cannot stand in for the fold here.** A seal's history is not
 /// ringed, so nothing the fill below can reach carries it; only the fold's own
 /// apply does. That apply lands in milliseconds when the fold is running, so
-/// this bound is reached only by a fold that is not - and a client has no
-/// re-ask for a refused subscribe, which is why the wait exists at all.
+/// this bound is reached only by a fold that is not - and a refusal costs the
+/// client a whole re-ask (`client/src/session/live.ts`), so the wait is what
+/// keeps an ordinary lag from paying it.
 const SEAL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Why a read could not bring its copy current, which the refusal's text says

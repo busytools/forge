@@ -9372,6 +9372,26 @@ mod lead_charter_tests {
         assert_eq!(settings.charter.as_deref(), Some("pre-existing"));
     }
 
+    /// A plan, spec or design the lead writes for the USER's own review
+    /// reaches them as a document, not as a path in chat. Pinned on the
+    /// plan step, which is the moment the file is written - a lead reads
+    /// "write the spec/plan as a file" there and nothing else in the
+    /// charter tells it how the USER is meant to receive it.
+    #[test]
+    fn lead_charter_hands_the_users_review_a_document() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "when the plan, spec or design is for the USER's own review, deliver it through \
+                 `documents__hand_off` with `reviewable: true`"
+            ),
+            "the plan step hands the USER's review a document: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("a path in chat is not a hand-off"),
+            "the correction is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
     /// The bundled charter ships to every install, so it must not name
     /// tooling or projects that only exist in one author's environment:
     /// a fresh install has no user-scope skills, no plugins and no

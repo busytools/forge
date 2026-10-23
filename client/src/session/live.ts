@@ -212,6 +212,19 @@ const SEATS = new WeakMap<Connection, Map<string, Seat>>();
 const PAINT_WATCHDOG_MS = 250;
 
 /**
+ * How long a refused seat waits before a page showing it asks again.
+ *
+ * **Nothing arrives to resolve a refusal, so the page has to ask.** A seat's
+ * read is refused while the transport's copy is behind the number an answer
+ * would carry - a seal or a replay the fold has not applied (#2446, #2514) -
+ * and the fold catching up is transport state that emits no frame. The
+ * refused seat is watched by nobody, so no frame could carry the cue either,
+ * and the re-ask is what finds the answer ("asking again may find it", as a
+ * refused `more` already says).
+ */
+const REFUSED_RETRY_MS = 2_000;
+
+/**
  * How many frames one seat holds above a hole before it draws them unordered.
  *
  * The hold is the repair's round trip, so it is a handful of frames in every
@@ -551,6 +564,16 @@ function createSeat(
    * published or armed, and nothing else clears that.
    */
   function wake(): void {
+    // **The page's return is also the refusal beat's.** A beat that stopped
+    // because the page was hidden has nothing else to start it, so the seat
+    // still refused re-arms here; a visible return says the same.
+    if (
+      typeof document !== 'undefined' &&
+      !document.hidden &&
+      seat.held?.state().kind === 'refused'
+    ) {
+      retryRefused();
+    }
     if (queued !== null) flush();
   }
 
@@ -601,6 +624,7 @@ function createSeat(
   function release(): void {
     if (released) return;
     released = true;
+    clearRetry();
     pageReturns?.release();
     visited.delete(key);
   }
@@ -634,7 +658,13 @@ function createSeat(
     if (seat.held === null) return;
     const state = seat.held.state();
     if (state.kind === 'refused') {
-      publish(null, state.why);
+      // **A refusal the seat already holds is not news.** The beat below reads
+      // the store on every retry, and publishing the same words again would
+      // redraw every reader of the page for nothing.
+      if (seat.wire !== null || seat.refused !== state.why) publish(null, state.why);
+      // The refusal is the seat's state now, and nothing else will move it:
+      // see `retryRefused`.
+      retryRefused();
       return;
     }
     const data = seat.held.snapshot();
@@ -664,6 +694,40 @@ function createSeat(
     // against what has arrived since.
     seat.askedAt = seat.seen;
     connection.refresh(subject);
+  }
+
+  /** The beat a refused seat is asked again on, or `null` when none is armed. */
+  let retry: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Ask a refused seat again, once a beat, while a page shows it.
+   *
+   * **A refusal is sometimes an answer and sometimes a wait**: a seat forge
+   * holds no session for clears when it starts, and a copy behind a seal or a
+   * replay clears when the fold applies it (#2514). Nothing announces either,
+   * so the page's own re-ask is the recovery - and the ask that comes back
+   * refused arms the next beat, so the two continue until an answer lands.
+   */
+  function retryRefused(): void {
+    if (retry !== null || released) return;
+    retry = setTimeout(() => {
+      retry = null;
+      if (released || !shown) return;
+      if (seat.held?.state().kind !== 'refused') return;
+      // **A hidden page has no reader to redraw and no reason to ask.** The
+      // beat stops here, and the page's own return re-arms it (`wake`).
+      if (typeof document !== 'undefined' && document.hidden) return;
+      // A dropped socket has nothing to ask on; the reconnect's own subscribe
+      // is its ask, and a refusal it meets arms this beat again.
+      if (connection.status() === 'open') reread();
+    }, REFUSED_RETRY_MS);
+  }
+
+  /** The seat's lifetime has ended: nothing is owed a re-ask. */
+  function clearRetry(): void {
+    if (retry === null) return;
+    clearTimeout(retry);
+    retry = null;
   }
 
   /**
@@ -876,26 +940,32 @@ function createSeat(
   function watch(): void {
     connection.onMessage((message) => {
       if (message.kind === 'error') {
-        // **An error names the operation it is about, never a subject**, and
-        // this client holds every seat it has visited, so the subject is not
-        // what tells this seat whether the error is its own. A refused
-        // subscribe is given to the store it was attributed to, which is what
-        // the socket does with the refusal, so this store reading `refused` IS
-        // that answer.
+        // **A refused subscribe is this seat's own answer only when the socket
+        // says so.** The socket hangs a refusal on the ask it answers and
+        // names that ask's subject on the frame; this client holds every seat
+        // it has visited, so a store that happens to be refused from an
+        // earlier ask is not evidence that this refusal is its own. Absent a
+        // subject - an older frame off the wire - the store's state is the
+        // only answer there is, which is the rule this branch grew from.
         //
-        // **Only that spends the ask in flight.** A blanket clear on any
-        // subscribe refusal spends a seat's whole-record ask on a refusal
-        // about another seat, and the answer it was waiting for is then
-        // refused as outrun and asked again - the new occupant's record never
-        // adopted, and the previous conversation standing until the next
+        // **Only its own refusal spends the ask in flight.** A blanket clear
+        // on any subscribe refusal spends a seat's whole-record ask on a
+        // refusal about another seat, and the answer it was waiting for is
+        // then refused as outrun and asked again - the new occupant's record
+        // never adopted, and the previous conversation standing until the next
         // answer. Anything else - a refused command, a page that could not be
         // read, a frame the server did not know - leaves the ask standing too,
         // and with it whatever whole record is still wanted.
-        if (message.what === 'subscribe' && seat.held?.state().kind === 'refused') {
-          seat.asking = false;
-          // A refusal is the seat's own answer and a page draws why from it,
-          // rather than keeping the record it read before the refusal.
-          read();
+        if (message.what === 'subscribe') {
+          const subject = message.subject;
+          const ours =
+            subject === undefined || (typeof subject !== 'string' && subjectKey(subject) === key);
+          if (ours && seat.held?.state().kind === 'refused') {
+            seat.asking = false;
+            // A refusal is the seat's own answer and a page draws why from it,
+            // rather than keeping the record it read before the refusal.
+            read();
+          }
           return;
         }
         // **A refused repair means read the seat again.** The numbers the
@@ -1028,7 +1098,13 @@ function createSeat(
           seat.wire = { ...seat.wire, composer: { ...seat.wire.composer, take: null } };
           soon();
         }
+        return;
       }
+      // **The reconnect re-subscribes every subject this connection holds**,
+      // so a beat armed across the drop would be a second ask behind the
+      // connection's own. The ask it sends is the one that answers - and a
+      // refusal it meets arms the beat again.
+      clearRetry();
     });
   }
 

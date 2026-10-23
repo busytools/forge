@@ -773,6 +773,13 @@
          rules are that viewport's padding and scrollbar, so this wrapper
          carries none of them and adds no second scroller. -->
     <div class="conv-body">
+      {#if read.refused !== null}
+        <!-- The seat's own read was turned down: the server's words, above
+             whatever the conversation still holds. The chat's copy answers
+             the page's `more` on its own, so the page is not empty - only
+             without the record - and the refusal is what says so. -->
+        <p class="refused">This forge would not answer for the seat: {read.refused}</p>
+      {/if}
       {#if conversation !== null}
         {@render conversation(conversationProps)}
       {:else if seat.waking || seat.lifecycle === 'Spawning'}
