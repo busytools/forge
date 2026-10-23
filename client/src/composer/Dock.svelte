@@ -5,6 +5,7 @@
     attachHandOff,
     clearHandOff,
     closeSurface,
+    handOffRefusal,
     openSurface,
     surface,
   } from '../browser/surface.svelte';
@@ -47,7 +48,7 @@
      */
     ownKey?: string | null;
     slot: SessionSlot;
-    connection: Pick<Connection, 'dispatch'>;
+    connection: Pick<Connection, 'dispatch' | 'browserRole' | 'browserRoleKnown'>;
     /** How many prompts wait behind this one, which the queue line states. */
     depth?: number;
     /** Why the core refused an answer to this prompt, when it did. */
@@ -595,6 +596,18 @@
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
+    // **Only the client the relay has told holds the browser raises it.** The
+    // shell's show raises THIS client's browser; when the role is another
+    // client's that browser has no page of the session's, so the card says
+    // where the page is instead of opening the wrong surface. **An unsaid
+    // role is no reading** - a reconnect's answer is still in flight - so an
+    // unknown role takes the old path rather than claiming another has it.
+    const refusal = handOffRefusal(connection.browserRoleKnown(), connection.browserRole());
+    if (refusal !== null) {
+      raiseFailedFor = id;
+      raiseWhy = refusal;
+      return;
+    }
     // **The takeover marks itself live for this ask, and the composer's bar
     // is what answers it.** Attaching also routes a take started from the
     // bar's mic into this dock's own words box.
@@ -608,6 +621,14 @@
       if (why !== null) {
         raiseFailedFor = id;
         raiseWhy = why;
+        return;
+      }
+      // **A raise that landed is no refusal any more**: the role can move to
+      // this client (the strip's override), and a card still saying the page
+      // is elsewhere would be false over buttons that now work.
+      if (raiseFailedFor === id) {
+        raiseFailedFor = null;
+        raiseWhy = null;
       }
     });
   }

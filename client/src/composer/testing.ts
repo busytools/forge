@@ -219,6 +219,7 @@ export interface Wire {
     | 'unsubscribe'
     | 'refresh'
     | 'browserRole'
+    | 'browserRoleKnown'
     | 'onBrowserRole'
     | 'onProfilesChanged'
     | 'takeBrowserRole'
@@ -262,8 +263,11 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
       store: (what) => stores.get(what),
       // The strip lane's browser segment, which registers a role listener and
       // reads the role as it draws; these tests never press its override, and
-      // nothing here sweeps a profile.
-      browserRole: () => false,
+      // nothing here sweeps a profile. **A lone client holds the role**, and
+      // the relay has said so, which is the ordinary single-client page; a
+      // test about two clients overrides either read.
+      browserRole: () => true,
+      browserRoleKnown: () => true,
       onBrowserRole: () => () => {},
       onProfilesChanged: () => () => {},
       takeBrowserRole: () => {},

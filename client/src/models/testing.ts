@@ -298,6 +298,7 @@ export function fakeConnection() {
     close: () => {},
     onBrowserAsk: () => () => {},
     browserRole: () => false,
+    browserRoleKnown: () => false,
     onBrowserRole: () => () => {},
     onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},
