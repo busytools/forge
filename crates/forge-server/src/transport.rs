@@ -99,10 +99,10 @@ pub mod wire;
 /// of their own, and the home's fleet rows gained `rows` for the header's
 /// total. Both directions break silently on a same-version skew: a v9 client
 /// asking a v8 server for `board` gets that subject back as an unknown
-/// message, and a v8 client reading a v9 home finds no `rows` under its
-/// projects' `rows`/`crons`/`connectors` - it draws an empty board and sums a
-/// missing `fleet[].rows` into `NaN` until the greeting's version turns it
-/// into the notice. `baselines/socket/8/` is the record a v8 server emitted.
+/// message, and a v8 client reading a v9 home finds no `rows`, `crons` or
+/// `connectors` under its projects - it draws an empty board and a zero total
+/// until the greeting's version turns it into the notice.
+/// `baselines/socket/8/` is the record a v8 server emitted.
 pub const PROTOCOL_VERSION: u32 = 9;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
