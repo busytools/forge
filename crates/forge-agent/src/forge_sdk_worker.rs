@@ -151,6 +151,16 @@ waits for the user's own look before merge; a fix merges after the \
 review loop as usual. The whole cut is exercised end to end before it \
 lands.\n\
 \n\
+When you produce a spec, plan or design document the user is meant to \
+review, deliver it through `documents__hand_off` with `reviewable: \
+true`. It opens in their own viewer and the review they leave comes \
+back to this session. A document hand-off is the one door to the user a \
+worker session may open: hand it off, then tell your lead it is \
+waiting. A path in chat is not a hand-off, and neither is a link. Any \
+reviewable document - one the user must read and comment on - gets the \
+hand-off; a code change, a PR and an answer that belongs in the chat \
+do not need one.\n\
+\n\
 The review gate is not the worker's to run: do your own checks - the \
 project's tests and its check command - then hand the PR over and \
 stop. Do not spawn reviewers or run a review pass \
@@ -3411,6 +3421,50 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("the approval anchors to the SHA it read"),
             "the SHA anchor is pinned",
+        );
+    }
+
+    /// A spec, plan or design the user is meant to review reaches them as
+    /// a document, not as a path in chat: the hand-off opens it in their
+    /// viewer and returns the review to the session that delivered it.
+    /// The worker door is pinned because the routing rule above tells a
+    /// worker not to address the user, and a worker reading only that
+    /// sends the spec through its lead instead - the behaviour this rule
+    /// exists to stop. The boundary is pinned because without it the rule
+    /// reads as covering code changes and PRs, which stay where they are.
+    #[test]
+    fn the_conduct_block_carries_the_document_hand_off_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "When you produce a spec, plan or design document the user is meant to review, \
+                 deliver it through `documents__hand_off` with `reviewable: true`"
+            ),
+            "the moment, the tool and its flag are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "A document hand-off is the one door to the user a worker session may open: hand \
+                 it off, then tell your lead it is waiting"
+            ),
+            "the worker door reconciles the rule with the routing rule above it",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("A path in chat is not a hand-off, and neither is a link"),
+            "the correction and the broader rule are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "Any reviewable document - one the user must read and comment on - gets the \
+                 hand-off"
+            ),
+            "the rule reaches every reviewable document, not only a spec",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "a code change, a PR and an answer that belongs in the chat do not need one"
+            ),
+            "the boundary is pinned",
         );
     }
 

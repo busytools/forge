@@ -55,14 +55,16 @@ const DESCRIPTION: &str = "\
 Hand the reader a document from this session's working tree, or from one of \
 the project's vault roots, opened in their own viewer. Use it when a \
 document is the thing the reader should see - a plan, a report, a spec - \
-rather than part of the conversation. `path` is relative to the working \
-directory, or absolute under one of the project's `vault_roots` in \
-`forge.toml`. Set `reviewable` when you want review \
-comments back: the reader opens it, comments on lines and finishes, and \
-their review then arrives filed under the document's own scope. A PDF \
-always opens read-only. The reader is asked to open it or not, and **this \
-call waits for them**: it answers when they finish - with the review their \
-comments were filed as - or when they say not now.";
+rather than part of the conversation; a document the reader is meant to \
+review goes here with `reviewable: true`, never as a path or link in \
+chat. `path` is relative to the working directory, or absolute under \
+one of the project's `vault_roots` in `forge.toml`. Set `reviewable` \
+when you want review comments back: the reader opens it, comments on \
+lines and finishes, and their review then arrives filed under the \
+document's own scope. A PDF always opens read-only. The reader is asked \
+to open it or not, and **this call waits for them**: it answers when \
+they finish - with the review their comments were filed as - or when \
+they say not now.";
 
 /// The one tool: the hand-off itself.
 pub(crate) struct HandOffTool {
@@ -312,6 +314,23 @@ mod tests {
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("`path`"), "{text}");
         assert!(mock.calls.lock().is_empty(), "and nothing read");
+    }
+
+    /// The description is read at the moment a caller reaches for the tool,
+    /// so the delivery rule lives there too: a document the reader is meant
+    /// to review goes through the hand-off, never as a path or link in
+    /// chat.
+    #[test]
+    fn the_description_sends_a_review_document_through_the_hand_off() {
+        let tool = tool(MockDocumentFacade::new().into_arc());
+        assert!(
+            tool.description().contains(
+                "a document the reader is meant to review goes here with `reviewable: true`, \
+                 never as a path or link in chat"
+            ),
+            "the description carries the delivery rule: {}",
+            tool.description(),
+        );
     }
 
     /// The family registers exactly one tool, under the name a prompt calls
