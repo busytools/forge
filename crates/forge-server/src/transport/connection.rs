@@ -1034,7 +1034,14 @@ where
             match encode_subject_timed(state, &what).await {
                 Ok((data, timings)) => {
                     // Watched only once the subject is one this server can
-                    // answer for: a refused subscribe leaves nothing to hear.
+                    // answer for: a refused subscribe leaves nothing to hear,
+                    // and the client's own re-ask is what recovers it
+                    // (`client/src/session/live.ts`). For a seat the server
+                    // can answer for, the refusal is the transport copy's
+                    // own - the fold catching up is state, not a frame - so
+                    // no frame could be waited for; a sessionless seat's
+                    // refusal clears when the seat starts, which the re-ask
+                    // finds without a subscription to hear it on.
                     //
                     // A seat subscription is also this connection SHOWING the
                     // seat, which is what keeps a turn finishing on it from

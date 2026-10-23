@@ -485,8 +485,14 @@ export function connect(
     }
     // A refusal is an answer: nothing is owed on that subject any more.
     bounds.clearKey(key);
-    store.refuse(why);
-    report(`the subscription to ${key} was refused`, why);
+    // **A refusal the store already holds is not news.** A page that asks a
+    // refused subject again on a beat meets the same words every time, and
+    // reporting them again would warn once per retry for no new information.
+    const held = store.state();
+    if (held.kind !== 'refused' || held.why !== why) {
+      store.refuse(why);
+      report(`the subscription to ${key} was refused`, why);
+    }
     return subjectFromKey(key);
   }
 
