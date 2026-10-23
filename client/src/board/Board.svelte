@@ -5,6 +5,7 @@
   import type { HomeWire, TaskStatus } from '../wire/home';
   import { TASK_STATUSES } from '../wire/home';
   import Icon from '../components/Icon.svelte';
+  import { ago } from '../components/age';
   import Picker from './Picker.svelte';
   import TaskDrawer from './TaskDrawer.svelte';
   import { applyMoves, boardView, landed } from './view';
@@ -215,14 +216,6 @@
     const id = setInterval(() => (nowSecs = Math.floor(Date.now() / 1_000)), 5_000);
     return () => clearInterval(id);
   });
-
-  /** How long since the row last moved, in the board's words. */
-  function ago(secs: number): string {
-    const d = Math.max(0, nowSecs - secs);
-    if (d >= 3_600) return `${Math.floor(d / 3_600)}h`;
-    if (d >= 60) return `${Math.floor(d / 60)}m`;
-    return `${d}s`;
-  }
 
   /** A row is live while it is running and wrote within the last two minutes. */
   function live(row: { status: string; updatedAt: number }): boolean {
@@ -779,7 +772,9 @@
                     >
                   {/if}
                 </span>
-                <span class="b-wrote" class:live={live(row)}>wrote {ago(row.updatedAt)} ago</span>
+                <span class="b-wrote" class:live={live(row)}
+                  >wrote {ago(row.updatedAt, nowSecs)} ago</span
+                >
                 <span class="b-acts">
                   <Picker
                     label="the seat holding {row.subject}"

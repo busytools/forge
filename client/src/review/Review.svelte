@@ -14,6 +14,7 @@
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from '../composer/dictation';
   import { Landing } from '../composer/landing';
   import { noticeLine, joined } from '../composer/view';
+  import { ago } from '../components/age';
   import { hrefForSlot } from '../routes';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
@@ -113,7 +114,9 @@
   let mode = $state<'unified' | 'split'>('split');
 
   const branch = $derived(record?.work.branch ?? '');
-  const commits = $derived(record?.git.ahead?.commits ?? []);
+  /** The chain the wire walks newest first, read here oldest first - the
+   *  order the scopes are numbered in. */
+  const commits = $derived(record?.git.ahead?.commits.toReversed() ?? []);
   const scopeCommit = $derived(scopeIdx === 0 ? null : (commits[scopeIdx - 1]?.sha ?? null));
   const diffLayer = $derived(record?.diff.branchAhead ?? { state: 'clean' as const });
 
@@ -739,34 +742,75 @@
     }
   }
 
-  /** The scope picker's rows, all changes first. */
+  /** The clock the picker's ages read against; ticking keeps a sitting page honest. */
+  let now = $state(Date.now());
+  const nowSecs = $derived(Math.floor(now / 1_000));
+  $effect(() => {
+    const tick = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(tick);
+  });
+
+  /**
+   * The chain's true length: the record's count, not the capped list the
+   * stepper walks, so the bar and the picker name the whole chain.
+   */
+  const commitTotal = $derived(record?.git.ahead?.count ?? commits.length);
+
+  /** The review reads a day-old stamp as hours; the board keeps its own. */
+  const DAYS_FROM = 2 * 86_400;
+
+  /**
+   * A scope's TRUE ordinal in the chain, which is not its index in the
+   * capped list. The wire walks the chain newest first and caps it, so the
+   * oldest carried commit is `total - carried + 1`, and only an uncapped
+   * chain numbers a row the same as its position.
+   */
+  function ordinalOf(at: number): number {
+    if (at === 0) return 0;
+    // A commit landing between the count's read and the list's can make the
+    // arithmetic name a zero or negative commit; the first is the floor.
+    return Math.max(1, commitTotal - (commits.length - at));
+  }
+
+  /** The oldest commits the walk did not carry, 0 when it carried them all. */
+  const missing = $derived(Math.max(0, commitTotal - commits.length));
+
+  /**
+   * The scope picker's rows, all changes first and then the commits oldest
+   * first, each naming its own sha and how long ago it was committed - and
+   * its true ordinal, so a capped list never prints a false one.
+   */
   const choices = $derived([
-    { idx: 0, label: 'All changes', sub: `${commits.length} commits` },
+    { idx: 0, index: 'A', label: 'All changes', sha: '', age: `${commitTotal} commits` },
     ...commits.map((commit, i) => ({
       idx: i + 1,
+      index: String(ordinalOf(i + 1)),
       label: commit.subject,
-      sub: commit.sha.slice(0, 8),
+      sha: commit.sha.slice(0, 8),
+      age: commit.time > 0 ? `${ago(commit.time, nowSecs, DAYS_FROM)} ago` : 'time unknown',
     })),
   ]);
 
   function choose(idx: number): void {
-    scopeIdx = idx;
-    if (idx > 0) lastCommit = idx;
+    // A list that shrank under the scope (a force-push, a re-read) clamps
+    // here rather than leaving the bar naming a place it has no scope for.
+    const next = Math.max(0, Math.min(idx, choices.length - 1));
+    scopeIdx = next;
+    if (next > 0) lastCommit = next;
     pickerOpen = false;
     // The stepper's place is not the new scope's: its comments are others.
     commentAt = -1;
   }
 
   /**
-   * One scope along, CYCLING: the last commit steps on to all changes, and
-   * all changes back to the last commit, so a reader holding an arrow walks
-   * the branch round rather than hitting a wall.
+   * One scope along a LINE, not a ring: All changes sits at position 0 and
+   * the commits 1..N follow it, so each end simply stops - which is what
+   * makes "the first commit" unambiguous.
    */
   function stepScope(delta: number): void {
     const next = scopeIdx + delta;
-    if (next < 0) choose(choices.length - 1);
-    else if (next >= choices.length) choose(0);
-    else choose(next);
+    if (next < 0 || next >= choices.length) return;
+    choose(next);
   }
 
   /** The comments this scope draws, in the order the canvas draws them. */
@@ -811,11 +855,16 @@
     choose(scopeIdx === 0 ? lastCommit : 0);
   }
 
+  /** A chain that shrank under the scope on screen pulls it back in range. */
+  $effect(() => {
+    if (scopeIdx > choices.length - 1) scopeIdx = choices.length - 1;
+  });
+
   /**
    * The diff half's keys, live only while it is on screen: the arrows (and
-   * `[` / `]`) step one scope, cycling, shift+arrows step one comment,
-   * cycling, `a` flips between all changes and the commit you were on, `j`
-   * opens the picker. A keypress in a text field is the field's.
+   * `[` / `]`) step one scope, stopping at both ends, shift+arrows step one
+   * comment, cycling, `a` flips between all changes and the commit you were
+   * on, `j` opens the picker. A keypress in a text field is the field's.
    */
   function onKey(event: KeyboardEvent): void {
     if (tab !== 'files') return;
@@ -851,13 +900,6 @@
   $effect(() => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  });
-
-  /** The clock the ages read against; ticking keeps a sitting page honest. */
-  let now = $state(Date.now());
-  $effect(() => {
-    const tick = setInterval(() => (now = Date.now()), 30_000);
-    return () => clearInterval(tick);
   });
 </script>
 
@@ -949,6 +991,13 @@
         <span class="rv-scope">
           <button
             type="button"
+            class="rv-step-btn"
+            aria-label="previous scope"
+            disabled={scopeIdx === 0}
+            onclick={() => stepScope(-1)}>&#8249;</button
+          >
+          <button
+            type="button"
             class="rv-scope-btn"
             aria-haspopup="listbox"
             aria-expanded={pickerOpen}
@@ -957,48 +1006,62 @@
               pickerOpen = !pickerOpen;
             }}
           >
-            <span class="rv-scope-lb">Scope</span>
             <span class="rv-scope-now">
-              {scopeCommit === null ? 'All changes' : (scopeCommit.slice(0, 8) ?? '')}
+              {scopeCommit === null
+                ? 'All changes'
+                : commits[scopeIdx - 1]?.subject || (scopeCommit.slice(0, 8) ?? '')}
             </span>
             <span class="rv-scope-sub">
               {scopeCommit === null
-                ? `${commits.length} commits`
-                : (commits[scopeIdx - 1]?.subject ?? '')}
+                ? `${commitTotal} commits${
+                    missing > 0 && missing === commitTotal ? ' · list not read' : ''
+                  }`
+                : `commit ${ordinalOf(scopeIdx)} of ${commitTotal}`}
             </span>
           </button>
-          <span class="rv-step">
-            <button
-              type="button"
-              class="rv-step-btn"
-              aria-label="previous scope"
-              disabled={choices.length <= 1}
-              onclick={() => stepScope(-1)}>&#8249;</button
-            >
-            <button
-              type="button"
-              class="rv-step-btn"
-              aria-label="next scope"
-              disabled={choices.length <= 1}
-              onclick={() => stepScope(1)}>&#8250;</button
-            >
-          </span>
+          <span class="rv-scope-place"
+            >scope {scopeIdx === 0 ? 1 : ordinalOf(scopeIdx) + 1} of {commits.length === 0
+              ? 1
+              : commitTotal + 1}</span
+          >
+          <button
+            type="button"
+            class="rv-step-btn"
+            aria-label="next scope"
+            disabled={scopeIdx === choices.length - 1}
+            onclick={() => stepScope(1)}>&#8250;</button
+          >
           {#if pickerOpen}
-            <div class="rv-menu" role="listbox" aria-label="diff scope">
-              {#each choices as choice (choice.idx)}
-                <button
-                  type="button"
-                  class="rv-menu-it"
-                  class:hi={pickerHi === choice.idx}
-                  class:on={choice.idx === scopeIdx}
-                  role="option"
-                  aria-selected={choice.idx === scopeIdx}
-                  onclick={() => choose(choice.idx)}
-                >
-                  <span class="rv-menu-label">{choice.label}</span>
-                  <span class="rv-menu-sub">{choice.sub}</span>
-                </button>
-              {/each}
+            <!-- The note sits outside the listbox: a listbox may hold only
+                 options and groups, and a note inside it is invalid to a
+                 screen reader. -->
+            <div class="rv-menu">
+              {#if missing > 0 && commits.length === 0}
+                <p class="rv-menu-note">the commit list could not be read</p>
+              {:else if missing > 0}
+                <p class="rv-menu-note">
+                  the oldest {missing}
+                  {missing === 1 ? 'commit is' : 'commits are'} not carried
+                </p>
+              {/if}
+              <div role="listbox" aria-label="diff scope">
+                {#each choices as choice (choice.idx)}
+                  <button
+                    type="button"
+                    class="rv-menu-it"
+                    class:hi={pickerHi === choice.idx}
+                    class:on={choice.idx === scopeIdx}
+                    role="option"
+                    aria-selected={choice.idx === scopeIdx}
+                    onclick={() => choose(choice.idx)}
+                  >
+                    <span class="rv-menu-i">{choice.index}</span>
+                    <span class="rv-menu-label">{choice.label}</span>
+                    <span class="rv-menu-sha">{choice.sha}</span>
+                    <span class="rv-menu-age">{choice.age}</span>
+                  </button>
+                {/each}
+              </div>
             </div>
           {/if}
         </span>
@@ -1013,7 +1076,7 @@
         <!-- The comments' own stepper, beside the scope's: the two things a
              reader walks in a diff, each with a button a finger can press -
              a key alone is no door on a touch screen (rule 22). -->
-        <span class="rv-step rv-cstep">
+        <span class="rv-cstep">
           <button
             type="button"
             class="rv-step-btn"
@@ -1036,7 +1099,7 @@
     <Tabs
       tabs={[
         { id: 'conversation', label: 'Conversation' },
-        { id: 'files', label: 'Files changed', count: commits.length },
+        { id: 'files', label: 'Files changed', count: commitTotal },
       ]}
       active={tab}
       label="review sections"
@@ -1187,31 +1250,30 @@
   .rv-scope-btn:hover {
     border-color: var(--ctl);
   }
-  .rv-scope-lb {
-    font-size: var(--fs-label);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--dim);
-    flex: none;
-  }
   .rv-scope-now {
     font-family: var(--mono);
     font-size: var(--fs-data);
     color: var(--text);
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  /* The place is short and fixed ("commit 2 of 6"): it never truncates, and
+     the subject beside it does. */
   .rv-scope-sub {
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--dim);
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex: none;
     white-space: nowrap;
-    min-width: 0;
   }
-  .rv-step {
-    display: flex;
+  .rv-scope-place {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--muted);
+    white-space: nowrap;
   }
   .rv-step-btn {
     font-family: var(--mono);
@@ -1219,13 +1281,16 @@
     color: var(--muted);
     background: none;
     border: 1px solid var(--line);
+    border-radius: 8px;
     padding: 3px 9px;
     cursor: pointer;
   }
-  .rv-step-btn:first-child {
+  /* The comment stepper's pair shares one border, the scope's arrows stand
+     alone on either side of the bar. */
+  .rv-cstep .rv-step-btn:first-child {
     border-radius: 8px 0 0 8px;
   }
-  .rv-step-btn:last-child {
+  .rv-cstep .rv-step-btn:last-child {
     border-radius: 0 8px 8px 0;
     border-left: 0;
   }
@@ -1258,6 +1323,7 @@
     white-space: nowrap;
   }
   .rv-cstep {
+    display: flex;
     flex: none;
   }
   .rv-hint .sep {
@@ -1328,7 +1394,7 @@
   }
   .rv-menu-it {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 62px;
+    grid-template-columns: 18px minmax(0, 1fr) 76px 62px;
     gap: 8px;
     align-items: baseline;
     width: 100%;
@@ -1339,6 +1405,32 @@
     padding: 6px 9px;
     cursor: pointer;
     font: inherit;
+  }
+  .rv-menu-note {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--muted);
+    padding: 6px 9px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 3px;
+  }
+  .rv-menu-i {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--muted);
+  }
+  .rv-menu-sha {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--muted);
+    text-align: right;
+  }
+  .rv-menu-age {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--dim);
+    text-align: right;
+    white-space: nowrap;
   }
   .rv-menu-it.hi {
     background: var(--s3);
@@ -1353,12 +1445,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .rv-menu-sub {
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--dim);
-    text-align: right;
   }
   .rv-mode {
     display: flex;

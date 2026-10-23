@@ -22,7 +22,7 @@ pub enum ReviewStatus {
 }
 
 /// Which side of the diff the anchored line sits on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ReviewSide {
     Old,
     New,

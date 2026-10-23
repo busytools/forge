@@ -11,7 +11,8 @@
    * because a card may be anchored somewhere other than line 1 - a moved
    * thread's resolution draws it away from where the comment was written -
    * a third, line 9, that no hunk in the tests carries: the shape an
-   * expanded gap's line draws, which takes no comment door - and a fourth,
+   * expanded gap's line draws, which takes a door once a press reveals it -
+   * and a fourth,
    * line 30, far enough below the first hunk that the gap between them is
    * longer than one press fills, which is the shape the directional strips
    * and the below-the-last-hunk row are read off. Each hunk carries its own
