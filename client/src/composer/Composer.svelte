@@ -6,7 +6,14 @@
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/host';
-  import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
+  import {
+    clearHandOff,
+    closeSurface,
+    failSurface,
+    handOffRefusal,
+    openSurface,
+    surface,
+  } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -1130,8 +1137,22 @@
    * sentence.
    */
   function takeoverRetry(): void {
-    const profile = takeoverAsk?.request.profile ?? surface.profile;
-    void openSurface(profile, slot);
+    // **A retry re-raises the surface it stands over, and the role rule is
+    // the hand-off's alone.** With no hand-off attached, the failed surface
+    // is the person's own show - a profile another seat holds, a browser that
+    // did not start - so it re-shows THAT profile straight to the shell, even
+    // while a hand-off ask is parked elsewhere. An attached hand-off retries
+    // its own profile, after asking the role (#2519).
+    if (surface.hand_off !== null) {
+      const refusal = handOffRefusal(connection.browserRoleKnown(), connection.browserRole());
+      if (refusal !== null) {
+        failSurface(refusal);
+        return;
+      }
+      void openSurface(takeoverAsk?.request.profile ?? surface.profile, slot);
+      return;
+    }
+    void openSurface(surface.profile, slot);
   }
 
   /**

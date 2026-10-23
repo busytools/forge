@@ -980,7 +980,16 @@ where
             // error: the relay keeps this connection's channel and hands it
             // the role when the holder goes, so nothing has to be declared
             // again for the handover to happen.
-            let mut grant_role = false;
+            // **The role is said out loud, grant or wait**, after the
+            // snapshot: the client knew only that it COULD host, and its
+            // strip needs "does". A declaration that waits is told `false`
+            // too - an unsaid false is indistinguishable from a socket that
+            // has not been told yet, and the dock refuses a hand-off's raise
+            // on "told not the host" (#2519). A force-take later is the same
+            // frame with `false`. `None` when this connection already offered
+            // and has its answer. Sent last so the subscribe's own answer
+            // keeps being the snapshot.
+            let mut role_answer: Option<bool> = None;
             // The seat set a fresh offer is answered with: the client's
             // profile sweep reads it, so a capable connection learns which
             // seats exist the moment it declares - boot, a reconnect, or a
@@ -991,12 +1000,7 @@ where
             if browser && hosting.is_none() {
                 let (offering, held) = Hosting::offer(&state.browser, caller.id);
                 *hosting = Some(offering);
-                // **The grant is said out loud**, after the snapshot: the
-                // client knew only that it COULD host; its own strip needs
-                // "does", and a force-take later is the same frame with
-                // `false`. Sent last so the subscribe's own answer keeps
-                // being the snapshot.
-                grant_role = held;
+                role_answer = Some(held);
                 seats = state.surface.live_seats();
             }
             // Forwarded before the snapshot: they were emitted before it was
@@ -1141,8 +1145,8 @@ where
                             ),
                         }
                     }
-                    if grant_role {
-                        send(socket, ServerMessage::BrowserRole { hosting: true }).await?;
+                    if let Some(hosting) = role_answer {
+                        send(socket, ServerMessage::BrowserRole { hosting }).await?;
                     }
                     if let Some(seats) = seats {
                         return send(socket, ServerMessage::BrowserSeats { seats }).await;
@@ -1181,14 +1185,15 @@ where
                         },
                     )
                     .await?;
-                    // **The role was taken at register, before the snapshot
-                    // could refuse** - so the grant is owed here too, or a
-                    // connection that holds the role (and will be sent asks)
-                    // is one the client believes never got it. The seat set
+                    // **The role was answered at register, before the
+                    // snapshot could refuse** - so the answer is owed here
+                    // too, or a connection that holds the role (and will be
+                    // sent asks) is one the client believes never got it, and
+                    // a waiting one is never told it does not. The seat set
                     // is the client's sweep to run, so it is owed here as
                     // well - the offer was made, refused snapshot or not.
-                    if grant_role {
-                        send(socket, ServerMessage::BrowserRole { hosting: true }).await?;
+                    if let Some(hosting) = role_answer {
+                        send(socket, ServerMessage::BrowserRole { hosting }).await?;
                     }
                     if let Some(seats) = seats {
                         return send(socket, ServerMessage::BrowserSeats { seats }).await;

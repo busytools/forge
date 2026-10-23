@@ -1385,6 +1385,7 @@ function drivable(refusedAtFirst = false): Driveable {
     frame: () => false,
     onBrowserAsk: () => () => {},
     browserRole: () => false,
+    browserRoleKnown: () => false,
     onBrowserRole: () => () => {},
     onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},

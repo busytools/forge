@@ -61,6 +61,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     frame: () => false,
     onBrowserAsk: () => () => {},
     browserRole: () => false,
+    browserRoleKnown: () => false,
     onBrowserRole: () => () => {},
     onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},
