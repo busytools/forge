@@ -1507,6 +1507,14 @@ impl SessionTask {
     /// Start the handoff's own turn when the caller supplied no judgment
     /// half, or swap straight away when it did.
     fn begin_handoff(&mut self, supplied: Option<String>) {
+        if self.session_id_string().is_none() {
+            self.emit(SessionUpdate::Notice {
+                key: self.key.clone(),
+                severity: NoticeSeverity::Error,
+                text: "a handoff needs a connected session; this seat has none yet".to_owned(),
+            });
+            return;
+        }
         if let Some(text) = supplied {
             self.swap(forge_primitives::HandoffReason::Manual, handoff::parse_judgment(&text));
             return;

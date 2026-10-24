@@ -709,11 +709,20 @@ fn cap_judgment(mut sections: Vec<HandoffSection>) -> Vec<HandoffSection> {
         }
     }
     if cut {
-        let last = kept.len().saturating_sub(1);
-        if let Some(section) = kept.get_mut(last) {
-            section
+        // The cut is stated even when nothing fit: a half that silently
+        // vanished would read as a reply that said nothing.
+        match kept.last_mut() {
+            Some(section) => section
                 .lines
-                .push("[the rest of this reply is in the transcript named above]".to_owned());
+                .push("[the rest of this reply is in the transcript named above]".to_owned()),
+            None => kept.push(HandoffSection {
+                label: "judgment".to_owned(),
+                lines: vec![
+                    "[the reply was longer than the brief allows; it is in the transcript \
+                     named above]"
+                        .to_owned(),
+                ],
+            }),
         }
     }
     kept
