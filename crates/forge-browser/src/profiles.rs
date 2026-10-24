@@ -58,7 +58,9 @@ impl Store {
         }
         match std::fs::read_dir(self.profiles()) {
             Ok(entries) => {
-                for entry in entries.flatten() {
+                for entry in entries {
+                    let entry =
+                        entry.map_err(|why| format!("the profiles cannot be read: {why}"))?;
                     let path = entry.path();
                     if path.join("cef").is_dir() && path.is_dir() {
                         remove_tree(&path)?;
@@ -164,5 +166,42 @@ mod tests {
         let second = store.delete_legacy().expect("the second boot is a no-op");
         assert_eq!(second.removed, 0, "the deletion never runs twice");
         assert!(dir.path().join("shared").exists());
+    }
+
+    /// A deletion that cannot finish must not leave the marker behind, so
+    /// the next boot retries the whole thing.
+    #[cfg(unix)]
+    #[test]
+    fn a_legacy_tree_that_cannot_be_removed_fails_the_boot_before_the_marker() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let profiles = dir.path().join("profiles");
+        std::fs::create_dir_all(profiles.join("lead/cef")).expect("a legacy tree");
+        std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o500))
+            .expect("profiles made read-only");
+
+        // A root user ignores the mode bits, so there is no refusal to see.
+        let probe = profiles.join("permission-probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            std::fs::remove_file(&probe).expect("the probe goes");
+            std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o700))
+                .expect("profiles writable again");
+            println!("skipping: the mode bits are not enforced (running as root?)");
+            return;
+        }
+
+        let store = Store::at(dir.path());
+        assert!(
+            store.delete_legacy().is_err(),
+            "a legacy tree that cannot be removed fails the boot"
+        );
+        assert!(
+            !dir.path().join("legacy-profiles-deleted").exists(),
+            "the marker is not written when the deletion failed"
+        );
+
+        std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o700))
+            .expect("profiles writable again");
     }
 }
