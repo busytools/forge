@@ -600,9 +600,10 @@ mod tests {
         accounts.gateway.ready = true;
         accounts.gateway.port = 8787;
         accounts.gateway.bind_error = Some("port in use".to_owned());
-        accounts
-            .usage
-            .push(forge_workspace::AccountUsageView { display_name: "A".to_owned(), snapshot: None });
+        accounts.usage.push(forge_workspace::AccountUsageView {
+            display_name: "A".to_owned(),
+            snapshot: None,
+        });
 
         let json = serde_json::to_value(&update).expect("encode");
         let body = json.get("accounts_changed").expect("the variant tag is the frame's key");

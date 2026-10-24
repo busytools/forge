@@ -20544,14 +20544,18 @@ provider = "anthropic"
         workspace.record_usage_success(&AccountKey("B".to_owned()), usage_at(20.0));
 
         let pool = workspace.account_pool_view();
-        let loading: Vec<&str> =
-            pool.loading.iter().map(|row| row.display_name.as_str()).collect();
+        let loading: Vec<&str> = pool.loading.iter().map(|row| row.display_name.as_str()).collect();
         assert_eq!(loading, ["A", "B"], "the loading rows keep declaration order");
         let usage: Vec<(&str, Option<f64>)> = pool
             .usage
             .iter()
             .map(|row| {
-                (row.display_name.as_str(), row.snapshot.as_ref().and_then(|s| s.five_hour_util()))
+                (
+                    row.display_name.as_str(),
+                    row.snapshot
+                        .as_ref()
+                        .and_then(forge_primitives::usage::UsageSnapshot::five_hour_util),
+                )
             })
             .collect();
         assert_eq!(
