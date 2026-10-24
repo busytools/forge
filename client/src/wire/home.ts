@@ -113,11 +113,13 @@ export interface Task {
  * A `tasks_changed` update as its project and a digest of the tasks it
  * carries, for a store that skips a re-read when the set has not moved.
  *
- * **The chase sweep announces every project every 30 s with the set
+ * **The chase sweep used to announce every project every 30 s with the set
  * unchanged** (#2540). A board that re-read 628 KB for that, or a home that
- * re-read 72 KB, is a loop with no news in it. The project comes from the
- * update's key, so an empty set is comparable too: the store's last digest
- * tells an empty-to-empty sweep from a deletion that emptied the project.
+ * re-read 72 KB, was a loop with no news in it; the sweep no longer sends
+ * them, and the skip stays because any re-announced set is still no read.
+ * The project comes from the update's key, so an empty set is comparable
+ * too: the store's last digest tells an unchanged empty set from a deletion
+ * that emptied the project.
  */
 export function tasksChanged(update: SessionUpdate): { project: string; digest: string } | null {
   const payload = (
@@ -653,15 +655,17 @@ export function homeFrom(data: HomeWire): HomeWire {
       ...row,
       work: { ...row.work, gate: narrow(row.work?.gate, GATES, 'in_repo') },
     })),
+    // The renderer calls `some` on this one, so a page handed no list reads
+    // as no unseen marks rather than throwing inside a draw.
+    unseen: Array.isArray(data.unseen) ? data.unseen : [],
     // The misses are the one member here that is a union of shapes rather
     // than a union of literals, so they are narrowed by `missFrom` rather
     // than by `narrow` - and a shape this client is older than survives as
     // `unknown` rather than vanishing.
-    // A server older than the board sends no `fleet`; an empty list draws
-    // no rows rather than failing the whole read. **A row's `rows` may be
-    // absent too** - a v8 server answers a v9 client's home without it - and
-    // a header that summed `undefined` would draw `NaN tasks`, so it reads as
-    // none.
+    // A list this client cannot read draws no rows rather than failing the
+    // whole read. **A row's `rows` may be absent** - a v8 server answers a v9
+    // client's home without it - and a header that summed `undefined` would
+    // draw `NaN tasks`, so it reads as none.
     fleet: (Array.isArray(data.fleet) ? data.fleet : []).map((row) => ({
       ...row,
       rows: typeof row.rows === 'number' ? row.rows : 0,

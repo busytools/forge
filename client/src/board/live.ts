@@ -113,8 +113,9 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       if (message.kind !== 'update' || !coversBoard(message.update)) return;
       const tasks = tasksChanged(message.update);
       if (tasks !== null) {
-        // The chase sweep re-announces every project every 30 s with the set
-        // unchanged; a full board re-read for that is a loop with no news.
+        // An unchanged set is no news: the chase used to re-announce every
+        // project every 30 s, and a full board read for that was the loop
+        // #2540 removed.
         if (lastTasks.get(tasks.project) === tasks.digest) return;
         lastTasks.set(tasks.project, tasks.digest);
       }

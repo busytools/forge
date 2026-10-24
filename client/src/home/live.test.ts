@@ -229,9 +229,9 @@ describe('the home over a connection', () => {
   });
 
   /**
-   * **The chase sweep re-announces every project every 30 s with the set
-   * unchanged** (#2540). A home read for that is a loop with no news; only a
-   * moved task set asks.
+   * **A re-announced task set is no read** (#2540). The chase used to send
+   * every project every 30 s with the set unchanged, and a home read for
+   * that was a loop with no news; only a moved set asks.
    */
   it('skips a task set that has not moved', async () => {
     const forge = fakeConnection();
@@ -337,6 +337,89 @@ describe('the home over a connection', () => {
 
     expect(seen.at(-1)?.wire, 'a malformed read drew a wire').toBeNull();
     expect(seen.at(-1)?.failed, 'a malformed read drew no failed words').toContain('agents');
+    stop();
+  });
+
+  /**
+   * **Every collection check runs, and names its field.** A snapshot with
+   * three broken collections names all three, so a check dropped from
+   * `malformedOf` fails here instead of drawing a home that reads healthy.
+   */
+  it('names every collection a malformed read broke', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+
+    const bad = {
+      agents: [],
+      projects: [],
+      unseen: [],
+      fleet: 'not a list',
+      accounts: { loading: 'not a list' },
+      dictate: { snapshot: { models: 7 } },
+    };
+    forge.stores.get(HOME)?.set(bad);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: bad });
+    await settle();
+
+    const failed = seen.at(-1)?.failed ?? '';
+    expect(failed, 'the fleet check did not run').toContain('fleet was not a list');
+    expect(failed, 'the accounts check did not run').toContain('accounts.loading was not a list');
+    expect(failed, 'the dictate check did not run').toContain(
+      'dictate.snapshot.models was not a list',
+    );
+    stop();
+  });
+
+  /**
+   * A good read is the page recovering: the failure belongs to the read that
+   * broke, so the next one that lands clears it rather than leaving the page
+   * on the old words.
+   */
+  it('clears the failure when a good snapshot lands', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+    const good = {
+      agents: [],
+      projects: [],
+      unseen: [],
+      accounts: { loading: [] },
+      dictate: { snapshot: { models: [] } },
+    };
+
+    forge.stores.get(HOME)?.set({ agents: undefined, projects: [] });
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: { agents: undefined, projects: [] } });
+    await settle();
+    expect(seen.at(-1)?.failed, 'the malformed read drew no failure').not.toBeNull();
+
+    forge.stores.get(HOME)?.set(good);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: good });
+    await settle();
+    expect(seen.at(-1)?.failed, 'the good read kept the old failure').toBeNull();
+    expect(seen.at(-1)?.wire, 'the good read drew no wire').not.toBeNull();
+    stop();
+  });
+
+  /**
+   * **A store that reports `ready` and holds nothing lost its answer.** The
+   * read landed and its snapshot is gone, so standing on the loading state
+   * waits for an answer that already came and went.
+   */
+  it('draws a ready store with no snapshot as failed, not loading', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+    expect(seen.at(-1)?.failed, 'a loading read claimed a failure').toBeNull();
+
+    forge.stores.get(HOME)?.set(null);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: null });
+    await settle();
+
+    expect(seen.at(-1)?.wire, 'a ready empty store drew a wire').toBeNull();
+    expect(seen.at(-1)?.failed, 'a ready empty store fell back to waiting').toBe(
+      'the snapshot was empty',
+    );
     stop();
   });
 

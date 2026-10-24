@@ -188,9 +188,10 @@ describe('the board over a connection', () => {
   });
 
   /**
-   * **The chase sweep re-announces every project every 30 s with the set
-   * unchanged** (#2540). Answering that with a full 628 KB board read is the
-   * loop the installed client was paying; only a moved task set asks.
+   * **A re-announced task set is no read** (#2540). The chase used to send
+   * every project every 30 s with the set unchanged, and answering that with
+   * a full 628 KB board read was the loop the installed client was paying;
+   * only a moved set asks.
    */
   it('skips a task set that has not moved', async () => {
     const forge = fakeConnection();
@@ -234,9 +235,9 @@ describe('the board over a connection', () => {
   });
 
   /**
-   * An empty project is the case the first dedupe missed: two of the chase's
-   * sixteen projects carry no tasks, so an `[]` that is `[]` again must not
-   * ask, while an `[]` after a set is a deletion and must.
+   * An empty project is the case the first dedupe missed: an update can
+   * carry `[]` for a project with no tasks, so an `[]` that is `[]` again
+   * must not ask, while an `[]` after a set is a deletion and must.
    */
   it('skips an unchanged empty set and reads a deletion', async () => {
     const forge = fakeConnection();

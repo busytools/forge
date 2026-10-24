@@ -198,3 +198,35 @@ describe('a board edit through the router', () => {
     );
   });
 });
+
+describe('a home read this client could not draw', () => {
+  /**
+   * The read landed and this client could not narrow it: its own state, not
+   * an empty fleet and not a wait. The page draws the reason in the fleet's
+   * place, because standing on "Reading the fleet..." waits for an answer
+   * that already arrived.
+   */
+  it('draws the reason in the fleet place rather than reading forever', () => {
+    const { connection } = recording([], boardWire);
+    app = mount(Router, {
+      target: document.body,
+      props: {
+        route: { name: 'home' },
+        settings: DEFAULT_SETTINGS,
+        address: '127.0.0.1:8790',
+        home: { wire: null, refused: null, failed: 'agents was missing', report: null },
+        failure: null,
+        connected: true,
+        connection,
+        notice: null,
+        onconnect: () => {},
+      },
+    });
+    flushSync();
+
+    expect(document.body.textContent).toContain('agents was missing');
+    expect(document.body.textContent, 'the page claimed a read was coming').not.toContain(
+      'Reading the fleet',
+    );
+  });
+});

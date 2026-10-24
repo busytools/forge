@@ -1169,6 +1169,7 @@ describe('what a row says', () => {
       agents: undefined,
       projects: undefined,
       fleet: undefined,
+      unseen: undefined,
       accounts: undefined,
       dictate: undefined,
     } as unknown as HomeWire;
@@ -1177,6 +1178,7 @@ describe('what a row says', () => {
     expect(parsed.agents).toEqual([]);
     expect(parsed.projects).toEqual([]);
     expect(parsed.fleet).toEqual([]);
+    expect(parsed.unseen).toEqual([]);
     expect(parsed.accounts.loading).toEqual([]);
     expect(parsed.dictate.snapshot.models).toEqual([]);
     // A missing `accounts` used to leave no `gateway`, and the band read

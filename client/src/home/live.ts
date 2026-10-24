@@ -41,7 +41,8 @@ export interface HomeRead {
    * **A malformed read is its own state, not an empty home**: the store is
    * already `ready` and its bound cleared before the page narrows it, so a
    * healthy-empty drawing would stand forever with nothing saying why. The
-   * page draws this instead and the next read tries again.
+   * page draws this instead. Nothing periodic retries it: the next update
+   * that covers the home, or a reconnect, reads again.
    */
   failed: string | null;
   /**
@@ -59,23 +60,48 @@ export interface HomeRead {
 const NOTHING: HomeRead = { wire: null, refused: null, failed: null, report: null };
 
 /**
- * The collections a v9 home must carry. **Absent is not the older-server
- * shape here**: `homeFrom` already defaults what a v8 server omits (`fleet`,
- * a row's `misses`), so a missing `agents`, `projects`, `accounts.loading`
- * or `dictate.snapshot.models` is a read this client cannot draw as healthy.
+ * The collections a v9 home must carry, and the shapes the renderer reads
+ * out of them. **Absent is not the older-server shape here**: `homeFrom`
+ * defaults the fields an older server omits (a row's `misses`, a page's
+ * `unseen`), so a missing or wrong collection is a read this client cannot
+ * draw as healthy. The element checks are the ones the fleet rows
+ * dereference: a project's `sessions` and a seat's `slot`.
  */
 function malformedOf(data: unknown): string | null {
   if (data === null || typeof data !== 'object') return 'the snapshot was not an object';
   const held = data as Record<string, unknown>;
-  const missing: string[] = [];
-  if (!Array.isArray(held['agents'])) missing.push('agents');
-  if (!Array.isArray(held['projects'])) missing.push('projects');
-  if (held['fleet'] !== undefined && !Array.isArray(held['fleet'])) missing.push('fleet');
+  const wrong: string[] = [];
+  const problem = (value: unknown): string | null =>
+    Array.isArray(value) ? null : value === undefined ? 'was missing' : 'was not a list';
+  for (const field of ['agents', 'projects', 'unseen']) {
+    const why = problem(held[field]);
+    if (why !== null) wrong.push(`${field} ${why}`);
+  }
+  if (held['fleet'] !== undefined) {
+    const why = problem(held['fleet']);
+    if (why !== null) wrong.push(`fleet ${why}`);
+  }
   const accounts = held['accounts'] as { loading?: unknown } | undefined;
-  if (!Array.isArray(accounts?.loading)) missing.push('accounts');
+  const accountsWhy = problem(accounts?.loading);
+  if (accountsWhy !== null) wrong.push(`accounts.loading ${accountsWhy}`);
   const dictate = held['dictate'] as { snapshot?: { models?: unknown } } | undefined;
-  if (!Array.isArray(dictate?.snapshot?.models)) missing.push('dictate');
-  return missing.length === 0 ? null : `the snapshot was missing ${missing.join(', ')}`;
+  const dictateWhy = problem(dictate?.snapshot?.models);
+  if (dictateWhy !== null) wrong.push(`dictate.snapshot.models ${dictateWhy}`);
+  if (Array.isArray(held['projects'])) {
+    const broken = held['projects'].some((entry) => {
+      const project = (entry as { project?: { sessions?: unknown } | null } | null)?.project;
+      return project === undefined || project === null || !Array.isArray(project.sessions);
+    });
+    if (broken) wrong.push('projects[].project.sessions was not a list');
+  }
+  if (Array.isArray(held['agents'])) {
+    const broken = held['agents'].some((entry) => {
+      const slot = (entry as { slot?: unknown } | null)?.slot;
+      return slot === undefined || slot === null;
+    });
+    if (broken) wrong.push('agents[].slot was missing');
+  }
+  return wrong.length === 0 ? null : wrong.join('; ');
 }
 
 /**
@@ -129,19 +155,36 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       return;
     }
     const data = held.snapshot();
-    const malformed = data === null ? null : malformedOf(data);
+    // A store that says `ready` and holds no snapshot is a read that lost its
+    // answer, not a read still owed: drawing it as loading would wait forever.
+    if (data === null) {
+      const failed = state.kind === 'ready' ? 'the snapshot was empty' : null;
+      view.set({ wire: null, refused: null, failed, report });
+      return;
+    }
+    const malformed = malformedOf(data);
     if (malformed !== null) {
       view.set({ wire: null, refused: null, failed: malformed, report });
       return;
     }
     // The snapshot is JSON the server wrote from its own type, and `homeFrom`
-    // narrows every union member in it straight afterwards.
-    view.set({
-      wire: data === null ? null : homeFrom(data as unknown as HomeWire),
-      refused: null,
-      failed: null,
-      report,
-    });
+    // narrows every union member in it straight afterwards. The guard above
+    // covers the collections; the catch covers an element shape neither saw.
+    try {
+      view.set({
+        wire: homeFrom(data as unknown as HomeWire),
+        refused: null,
+        failed: null,
+        report,
+      });
+    } catch (why) {
+      view.set({
+        wire: null,
+        refused: null,
+        failed: `the snapshot could not be read: ${why instanceof Error ? why.message : String(why)}`,
+        report,
+      });
+    }
   }
 
   function watch(): void {
@@ -193,8 +236,9 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       if (said !== null) report = said;
       const tasks = tasksChanged(message.update);
       if (tasks !== null) {
-        // The chase sweep re-announces every project every 30 s with the set
-        // unchanged; a full home re-read for that is a loop with no news.
+        // An unchanged set is no news: the chase used to re-announce every
+        // project every 30 s, and a full home read for that was the loop
+        // #2540 removed.
         if (lastTasks.get(tasks.project) === tasks.digest) return;
         lastTasks.set(tasks.project, tasks.digest);
       }
