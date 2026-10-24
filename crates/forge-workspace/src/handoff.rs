@@ -27,6 +27,7 @@ const COMMAND_CAP: usize = 10;
 const DIRTY_CAP: usize = 20;
 const CONSTRAINT_CAP: usize = 10;
 const CONSTRAINT_LINE_CAP: usize = 300;
+const CONSTRAINT_BLOCK_CAP: usize = 6;
 const PROMPT_LINE_CAP: usize = 600;
 const MEASURED_LINE_CAP: usize = 200;
 /// The judgment half's ceiling. Long enough for the five headings written
@@ -208,6 +209,22 @@ pub(crate) fn successor_counts(
     }
 }
 
+/// The counts, or `None` when the transcript read answered nothing.
+///
+/// **A failed read is not a successor that re-read nothing.** The read is a
+/// whole transcript; a successor with turns to count cannot have an empty
+/// one, so an empty answer is a failure and writing zeros for it would read
+/// as the best possible brief.
+fn successor_measurement(
+    messages: &[Message],
+    predecessor_reads: &[String],
+) -> Option<forge_primitives::HandoffSuccessor> {
+    if messages.is_empty() {
+        return None;
+    }
+    Some(successor_counts(messages, predecessor_reads))
+}
+
 /// Whether a user prompt reads as a correction of what came before.
 fn states_a_correction(text: &str) -> bool {
     let lower = text.to_lowercase();
@@ -263,10 +280,10 @@ fn ask_section(asks: &[(usize, String)]) -> HandoffSection {
     if recent > 0
         && let Some((_, first)) = asks.first()
     {
-        lines.push(format!("first: {}", clipped(first, PROMPT_LINE_CAP)));
+        lines.push(format!("first: {}", clipped_verbatim(first, PROMPT_LINE_CAP)));
     }
     for (ordinal, text) in &asks[recent..] {
-        lines.push(format!("#{ordinal}: {}", clipped(text, PROMPT_LINE_CAP)));
+        lines.push(format!("#{ordinal}: {}", clipped_verbatim(text, PROMPT_LINE_CAP)));
     }
     HandoffSection { label: "ask".to_owned(), lines }
 }
@@ -274,16 +291,38 @@ fn ask_section(asks: &[(usize, String)]) -> HandoffSection {
 /// The rules still binding, quoted. A cue word is the pattern and a heading
 /// the user wrote is the other, so a constraint is picked out of the prompt
 /// that stated it rather than paraphrased from it.
+///
+/// **A heading takes its block with it.** `Hard rule:` alone is the label of
+/// a rule and none of it; the bullets under it are the rule, so a cue line
+/// ending in `:` carries the contiguous indented or bulleted lines below it.
 fn constraint_section(asks: &[(usize, String)]) -> HandoffSection {
     let mut found: Vec<String> = Vec::new();
     for (ordinal, text) in asks.iter().rev() {
-        for line in text.lines().rev() {
-            let line = line.trim();
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        for (at, line) in lines.iter().enumerate().rev() {
             if line.is_empty() || !states_a_rule(line) {
                 continue;
             }
-            let quoted =
-                format!("\"{}\" (user prompt {ordinal})", clipped(line, CONSTRAINT_LINE_CAP));
+            let mut block = vec![*line];
+            if line.ends_with(':') {
+                for next in lines.iter().skip(at + 1) {
+                    if next.is_empty()
+                        || !(next.starts_with("- ")
+                            || next.starts_with("* ")
+                            || next.starts_with("  "))
+                    {
+                        break;
+                    }
+                    block.push(*next);
+                    if block.len() >= CONSTRAINT_BLOCK_CAP {
+                        break;
+                    }
+                }
+            }
+            let quoted = format!(
+                "\"{}\" (user prompt {ordinal})",
+                clipped_verbatim(&block.join("\n"), CONSTRAINT_LINE_CAP)
+            );
             if !found.contains(&quoted) {
                 found.push(quoted);
             }
@@ -327,16 +366,32 @@ fn files_section(messages: &[Message], git: &HandoffGitState) -> HandoffSection 
     }
     let mut lines = Vec::new();
     if !changed.is_empty() {
-        lines.push(format!("changed: {}", tail(&changed, FILE_CAP).join(", ")));
+        lines.push(list_line("changed", &changed, FILE_CAP));
     }
     if !read_paths.is_empty() {
-        lines.push(format!("read: {}", tail(&read_paths, FILE_CAP).join(", ")));
+        lines.push(list_line("read", &read_paths, FILE_CAP));
     }
     if git.dirty.is_empty() {
         lines.push("uncommitted: none".to_owned());
     } else {
         let shown = tail(&git.dirty, DIRTY_CAP);
-        lines.push(format!("uncommitted: {} paths", git.dirty.len()));
+        // The count is the tree's, not the list's: the probe caps what it
+        // keeps, and a brief that said 20 for 60 paths loses the one thing
+        // the line is for.
+        let total = if git.dirty_total > 0 {
+            usize::try_from(git.dirty_total).unwrap_or(usize::MAX)
+        } else {
+            git.dirty.len()
+        };
+        let omitted = total.saturating_sub(shown.len());
+        if omitted > 0 {
+            lines.push(format!(
+                "uncommitted: {total} paths, newest {} shown ({omitted} omitted)",
+                shown.len()
+            ));
+        } else {
+            lines.push(format!("uncommitted: {total} paths"));
+        }
         lines.extend(shown);
     }
     if !git.diff.is_empty() {
@@ -358,8 +413,14 @@ fn verify_section(messages: &[Message]) -> HandoffSection {
             recent.push(command);
         }
     }
-    for command in tail(&recent, COMMAND_CAP) {
+    // The commands the session ran: the first plus the newest nine when the
+    // list is long, with the omission stated rather than read as the whole.
+    let (shown, omitted) = first_and_newest(&recent, COMMAND_CAP);
+    for command in &shown {
         lines.push(format!("ran: {}", clipped(command, MEASURED_LINE_CAP)));
+    }
+    if omitted > 0 {
+        lines.push(format!("ran: ... {omitted} more commands omitted"));
     }
     let gate = calls
         .into_iter()
@@ -367,15 +428,25 @@ fn verify_section(messages: &[Message]) -> HandoffSection {
         .find(|(_, command)| is_a_gate(command))
         .map(|(id, command)| (id, command.to_owned()));
     if let Some((id, command)) = gate {
-        let outcome = results.get(&id);
-        let failed = outcome.is_some_and(|(is_error, _)| *is_error);
-        let verdict = if failed { "failed" } else { "ok" };
-        lines.push(format!("gate: {} -> {verdict}", clipped(&command, MEASURED_LINE_CAP)));
-        if failed {
-            let failing = outcome
-                .and_then(|(_, text)| failing_line(text))
-                .unwrap_or_else(|| "see the transcript".to_owned());
-            lines.push(format!("failing: {failing}"));
+        // **No recorded result is not a pass.** A gate whose output is not in
+        // the transcript (a call still running, a result the window dropped)
+        // is unknown, and a brief that called it ok would be the exact lie
+        // this section exists to prevent.
+        match results.get(&id) {
+            Some((true, text)) => {
+                lines.push(format!("gate: {} -> failed", clipped(&command, MEASURED_LINE_CAP)));
+                let failing = failing_line(text).unwrap_or_else(|| "see the transcript".to_owned());
+                lines.push(format!("failing: {failing}"));
+            }
+            Some((false, _)) => {
+                lines.push(format!("gate: {} -> ok", clipped(&command, MEASURED_LINE_CAP)));
+            }
+            None => {
+                lines.push(format!(
+                    "gate: {} -> no result recorded",
+                    clipped(&command, MEASURED_LINE_CAP)
+                ));
+            }
         }
     }
     if let Some(measured) = measured_line(messages) {
@@ -458,19 +529,37 @@ fn cycle(messages: &[Message], turns: usize) -> HandoffCycle {
 }
 
 /// Every real user prompt, ordinal and text, in transcript order. A
-/// synthetic row is the harness speaking, and a row with no text is a tool
-/// result rather than something a person or a peer said.
+/// synthetic row is the harness speaking, a row with no text is a tool
+/// result, and a machine prompt is forge's own words.
 fn user_prompts(messages: &[Message]) -> Vec<(usize, String)> {
     let mut prompts = Vec::new();
     for message in messages {
         let Message::User { message: envelope, synthetic, .. } = message else { continue };
-        if *synthetic {
+        if *synthetic || is_machine_prompt(message) {
             continue;
         }
         let Some(text) = text_of(&envelope.content) else { continue };
         prompts.push((prompts.len() + 1, text));
     }
     prompts
+}
+
+/// Whether a user row is forge's own prompt rather than a person's or a
+/// peer's.
+///
+/// **A forged prompt is an ordinary user row in the transcript**, and the
+/// forged id is the only mark the CLI keeps. Without this the judgment
+/// prompt reads back as the newest ask (its own "Do not restate what is on
+/// disk" line as a user constraint), and the previous brief becomes the next
+/// handoff's first ask.
+fn is_machine_prompt(message: &Message) -> bool {
+    let Message::User { uuid, message: envelope, .. } = message else { return false };
+    if uuid.as_deref().is_some_and(|id| id.starts_with("forge_nudge_")) {
+        return true;
+    }
+    let Some(text) = text_of(&envelope.content) else { return false };
+    let text = text.trim_start();
+    text.starts_with("HANDOFF - ") || text.starts_with("A handoff is starting for this session:")
 }
 
 /// Every tool call's id, name and input, in transcript order.
@@ -629,6 +718,38 @@ fn text_of(blocks: &[ContentBlock]) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// A list line: everything when it fits, and when it does not, the first
+/// entry plus the newest `cap - 1` with the omission stated.
+///
+/// **The first is kept on purpose.** The file a successor first changed, or
+/// the command that started the work, is usually the one it will need again;
+/// a newest-only cut loses exactly that one.
+fn list_line(label: &str, items: &[String], cap: usize) -> String {
+    let (shown, omitted) = first_and_newest(items, cap);
+    if omitted == 0 {
+        return format!("{label}: {}", items.join(", "));
+    }
+    format!(
+        "{label}: {} shown of {} ({omitted} omitted), first and newest: {}",
+        shown.len(),
+        items.len(),
+        shown.iter().map(|item| item.as_str()).collect::<Vec<_>>().join(", "),
+    )
+}
+
+/// The first entry plus the newest `cap - 1`, and how many that leaves out.
+fn first_and_newest<T>(items: &[T], cap: usize) -> (Vec<&T>, usize) {
+    if items.len() <= cap {
+        return (items.iter().collect(), 0);
+    }
+    let newest = cap.saturating_sub(1);
+    let mut shown: Vec<&T> = Vec::with_capacity(cap);
+    shown.push(&items[0]);
+    shown.extend(items[items.len() - newest..].iter());
+    let omitted = items.len() - shown.len();
+    (shown, omitted)
+}
+
 /// The last `cap` entries.
 fn tail<T: Clone>(items: &[T], cap: usize) -> Vec<T> {
     items[items.len().saturating_sub(cap)..].to_vec()
@@ -640,6 +761,16 @@ fn clipped(text: &str, cap: usize) -> String {
     }
     let cut: String = text.chars().take(cap).collect();
     format!("{cut}...")
+}
+
+/// A quote clipped at `cap`, with the cut stated in words: the brief calls
+/// these verbatim, so a shortened one must not read as the whole.
+fn clipped_verbatim(text: &str, cap: usize) -> String {
+    if text.chars().count() <= cap {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(cap).collect();
+    format!("{cut}... [cut; the full text is in the transcript]")
 }
 
 /// Parse the handing-over session's reply into the judgment half.
@@ -778,6 +909,10 @@ pub(crate) struct HeldPrompt {
     pub text: String,
     pub attachments: Vec<forge_primitives::ImageAttachment>,
     pub source: crate::protocol::PromptSource,
+    /// The seat that sent it, when a peer message has one: a handoff that
+    /// never reaches a successor answers that sender, the way the parked
+    /// bucket does, rather than only telling the seat.
+    pub sender: Option<SessionSlot>,
 }
 
 /// The handoff a session arrived by, while its first turns are measured.
@@ -875,6 +1010,34 @@ impl crate::Workspace {
         self.swapping.lock().contains(slot)
     }
 
+    /// Dispatch a peer message's prompt, holding it for the successor when a
+    /// swap is in flight and keeping its sender so a handoff that fails can
+    /// answer it.
+    pub(crate) fn dispatch_peer_prompt_under(
+        self: &Arc<Self>,
+        caller: &SessionSlot,
+        key: &SessionSlot,
+        text: String,
+        uuid: String,
+    ) -> Result<(), crate::DispatchError> {
+        let held = HeldPrompt {
+            text: text.clone(),
+            attachments: Vec::new(),
+            source: crate::protocol::PromptSource::Peer,
+            sender: Some(caller.clone()),
+        };
+        if self.hold_prompt(key, held) {
+            return Ok(());
+        }
+        self.route(Command::PromptUnder {
+            key: key.clone(),
+            text,
+            attachments: Vec::new(),
+            uuid,
+            source: crate::protocol::PromptSource::Peer,
+        })
+    }
+
     /// Hold a prompt for the successor. `true` when a swap took it.
     pub(crate) fn hold_prompt(&self, slot: &SessionSlot, prompt: HeldPrompt) -> bool {
         if !self.swap_in_progress(slot) {
@@ -907,26 +1070,34 @@ impl crate::Workspace {
         }
     }
 
-    /// The seat's newest handoff record, read from the store.
+    /// The handoff row a seat's OCCUPANT arrived by, read from the store.
     ///
     /// This is what a view attaching after the swap - or after a forge
     /// restart - draws the row from, where the transport holds no live copy.
-    pub fn latest_handoff_for(&self, slot: &SessionSlot) -> Option<HandoffRecord> {
+    /// It is looked up by the occupant, not by recency: a later handoff that
+    /// never reached its successor must not hide the row of the session that
+    /// is actually running.
+    pub fn handoff_record_for(&self, slot: &SessionSlot, occupant: &str) -> Option<HandoffRecord> {
         let guard = self.db.lock();
         let db = guard.as_ref()?;
-        match crate::store::handoffs::latest_for_slot(db, slot) {
-            Ok(record) => record,
+        match crate::store::handoffs::for_successor(db, slot, occupant) {
+            Ok(found) => found.map(|(record, _)| record),
             Err(error) => {
                 tracing::warn!(
                     target: "forge_workspace::handoff",
                     event_name = "handoff_record_unreadable",
                     slot = %slot.display(),
                     %error,
-                    "the seat's newest handoff could not be read",
+                    "the seat's handoff record could not be read",
                 );
                 None
             }
         }
+    }
+
+    /// The brief waiting for `slot`'s successor, when one is.
+    pub(crate) fn pending_brief_for(&self, slot: &SessionSlot) -> Option<PendingBrief> {
+        self.pending_handoffs.lock().get(slot).cloned()
     }
 
     /// The handoff `occupant` arrived by, if it arrived by one.
@@ -971,7 +1142,15 @@ impl crate::Workspace {
             })
             .await;
             let messages = read.map(|history| history.messages).unwrap_or_default();
-            let counts = successor_counts(&messages, &predecessor_reads);
+            let Some(counts) = successor_measurement(&messages, &predecessor_reads) else {
+                tracing::debug!(
+                    target: "forge_workspace::handoff",
+                    event_name = "handoff_successor_measurement_skipped",
+                    slot = %slot.display(),
+                    "the successor's transcript read answered nothing; no counts are written",
+                );
+                return;
+            };
             let guard = workspace.db.lock();
             let Some(db) = guard.as_ref() else { return };
             if let Err(error) = crate::store::handoffs::set_successor(db, &slot, &occupant, counts)
@@ -1066,6 +1245,15 @@ impl crate::Workspace {
                     "the handoff could not start its successor; prompts held for it were dropped",
                 );
             }
+            for prompt in &held {
+                if let Some(sender) = &prompt.sender {
+                    self.notice_undelivered_message(
+                        sender,
+                        &request.slot,
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                    );
+                }
+            }
             let _ = self.update_tx.send(SessionUpdate::Notice {
                 key: request.slot.clone(),
                 severity: NoticeSeverity::Error,
@@ -1073,6 +1261,16 @@ impl crate::Workspace {
             });
         }
     }
+}
+
+/// A fresh session id, deliberately NOT recorded against a slot's row.
+///
+/// **A handoff records its successor on Connected, not before the spawn.**
+/// Minting-and-recording ahead of a spawn that then fails would leave the
+/// next boot resuming an id that never ran, which an empty session then fills
+/// and a handoff record claims to have joined.
+pub(crate) fn mint_session_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Where a session's transcript lives: the project directory the run's cwd
@@ -1264,6 +1462,109 @@ mod tests {
         );
     }
 
+    /// **Forge's own prompts are not the person's.** A forged row reads back
+    /// as a user turn, so without the filter the judgment prompt becomes the
+    /// newest ask and the previous brief becomes the first one.
+    #[test]
+    fn forge_prompts_and_prior_briefs_are_not_the_asks() {
+        let forged = |text: &str| {
+            let mut frame = user(text);
+            if let Message::User { uuid, .. } = &mut frame {
+                *uuid = Some("forge_nudge_7_deadbeef".to_owned());
+            }
+            frame
+        };
+        let messages = vec![
+            user("ship the handoff"),
+            forged("A handoff is starting for this session: its context is nearly full"),
+            user("and open the PR"),
+            user("HANDOFF - old -> new\n\nPART 1: GROUND TRUTH"),
+        ];
+        let asks = user_prompts(&messages);
+        assert_eq!(
+            asks.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>(),
+            vec!["ship the handoff", "and open the PR"],
+            "only the two real prompts are asks",
+        );
+        let constraints = constraint_section(&asks);
+        assert!(
+            !constraints.lines.iter().any(|line| line.contains("restate what is on disk")),
+            "the judgment prompt's own instruction is not a user constraint: {:?}",
+            constraints.lines,
+        );
+    }
+
+    /// A gate with no result in the transcript is unknown, never a pass.
+    #[test]
+    fn a_gate_with_no_recorded_result_is_not_a_pass() {
+        let messages = vec![call("g1", "Bash", serde_json::json!({ "command": "just check" }))];
+        let section = verify_section(&messages);
+        assert!(
+            section.lines.contains(&"gate: just check -> no result recorded".to_owned()),
+            "an unanswered gate is stated as unknown: {:?}",
+            section.lines,
+        );
+        assert!(
+            !section.lines.iter().any(|line| line.ends_with("-> ok")),
+            "and it is never read as a pass",
+        );
+    }
+
+    /// The uncommitted count is the tree's, not the capped list's.
+    #[test]
+    fn the_uncommitted_count_is_the_trees_not_the_caps() {
+        let git = HandoffGitState {
+            branch: Some("main".to_owned()),
+            head: Some("abc".to_owned()),
+            dirty: (0..20).map(|n| format!(" M file{n}.rs")).collect(),
+            dirty_total: 60,
+            diff: Vec::new(),
+        };
+        let section = files_section(&[], &git);
+        assert!(
+            section
+                .lines
+                .iter()
+                .any(|line| line.contains("uncommitted: 60 paths, newest 20 shown (40 omitted)")),
+            "the line states the total and what it omits: {:?}",
+            section.lines,
+        );
+    }
+
+    /// A heading constraint takes the block under it: `Hard rule:` alone is
+    /// a label, and the bullets are the rule.
+    #[test]
+    fn a_heading_constraint_takes_its_block() {
+        let prompts = user_prompts(&[user(
+            "Please do the thing.\nHard rule:\n- Edit/Write only, never sed -i.\n- Never touch main.",
+        )]);
+        let section = constraint_section(&prompts);
+        let quoted = section.lines.first().expect("the rule");
+        assert!(
+            quoted.contains("Hard rule:")
+                && quoted.contains("Edit/Write only")
+                && quoted.contains("Never touch main"),
+            "the heading and both bullets are quoted: {quoted}",
+        );
+    }
+
+    /// A clipped verbatim quote says it was cut: a brief calling a quote
+    /// verbatim must not present a shortened one as the whole.
+    #[test]
+    fn a_clipped_quote_states_the_cut() {
+        let long = format!("Hard rule: {}", "x".repeat(CONSTRAINT_LINE_CAP));
+        let prompts = user_prompts(&[user(&long)]);
+        let section = constraint_section(&prompts);
+        assert!(
+            section
+                .lines
+                .first()
+                .is_some_and(|line| line.contains("[cut; the full text is in the transcript]")),
+            "the cut is named: {:?}",
+            section.lines,
+        );
+    }
+
     /// The brief opens on the session's intent and carries the last three
     /// prompts, so a successor sees the ask that started it and the words
     /// that moved it since.
@@ -1315,6 +1616,7 @@ mod tests {
             branch: Some("worktree-handoff-cut".to_owned()),
             head: Some("94cab2f20".to_owned()),
             dirty: vec![" M src/handoff.rs".to_owned()],
+            dirty_total: 1,
             diff: vec![" src/handoff.rs | 10 +++++-----".to_owned()],
         };
         let section = files_section(&messages, &git);
@@ -1338,6 +1640,28 @@ mod tests {
             "and the count is stated: {:?}",
             section.lines,
         );
+    }
+
+    /// A long list keeps the first entry and the newest, and says what it
+    /// left out: the first file a successor changed is the one it will
+    /// re-read, so a newest-only cut loses the wrong one.
+    #[test]
+    fn a_long_file_list_keeps_the_first_and_the_newest() {
+        let messages: Vec<Message> = (0..12)
+            .map(|n| {
+                call(
+                    &format!("t{n}"),
+                    "Edit",
+                    serde_json::json!({ "file_path": format!("src/f{n}.rs") }),
+                )
+            })
+            .collect();
+        let section = files_section(&messages, &HandoffGitState::default());
+        let line = section.lines.first().expect("the changed line");
+        assert!(line.contains("10 shown of 12 (2 omitted)"), "the omission is stated: {line}");
+        assert!(line.contains("src/f0.rs"), "the first is kept: {line}");
+        assert!(line.contains("src/f11.rs"), "and the newest: {line}");
+        assert!(!line.contains("src/f1.rs"), "the second-oldest is what the cap takes: {line}");
     }
 
     /// A failed gate is reported as failed, with the line that names the
@@ -1463,6 +1787,39 @@ mod tests {
         assert!(text.contains("Next: the client row"), "and so is the judgment");
     }
 
+    /// The brief reaches the successor as a prompt and nowhere else: its
+    /// text is already in the handoff row, so a forged conversation row
+    /// would draw it twice (and the transcript a third time on reload).
+    #[test]
+    fn the_brief_does_not_forge_a_second_row() {
+        use crate::protocol::PromptSource;
+
+        let (workspace, mut rx) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        workspace
+            .dispatch_handoff_brief(&slot, "HANDOFF - a -> b".to_owned(), "brief-1".to_owned())
+            .expect("the brief is routed");
+
+        let routed = workspace.drain_test_dispatch_buffer();
+        assert!(
+            routed.iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, source: PromptSource::Forge, .. }
+                    if text.starts_with("HANDOFF - ")
+            )),
+            "the successor runs it as forge's first turn: {routed:?}",
+        );
+        while let Ok(frame) = rx.try_recv() {
+            assert!(
+                !matches!(frame.update, SessionUpdate::ChatAppended { .. }),
+                "no conversation row is forged for it: {:?}",
+                frame.update,
+            );
+        }
+    }
+
     /// Every machinery delivery goes through one gate, so a cron, a peer
     /// message, a Gotify push and a Slack message all wait for the successor
     /// rather than starting a turn on the session that is leaving.
@@ -1503,6 +1860,20 @@ mod tests {
         let counts = successor_counts(&messages, &[]);
         assert_eq!(counts.turns, 2, "two turns, not the brief");
         assert_eq!(counts.corrections, 1, "and the correction is the later prompt: {counts:?}");
+    }
+
+    /// A transcript read that answered nothing writes no counts: zeros would
+    /// read as a successor that re-read nothing, the best possible brief.
+    #[test]
+    fn an_empty_read_measures_nothing() {
+        assert!(
+            successor_measurement(&[], &[]).is_none(),
+            "an empty read is a failure, not a perfect successor",
+        );
+        assert!(
+            successor_measurement(&[user("carry on")], &[]).is_some(),
+            "a read with a turn in it measures",
+        );
     }
 
     /// A re-read is a file the PREDECESSOR had read: the same file the

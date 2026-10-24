@@ -572,10 +572,15 @@ impl From<&PendingAsk> for PendingAskWire {
 
 /// The handoff row a record carries.
 ///
-/// **The live copy answers first and the store covers what it cannot.** A
-/// forge restart seeds the successor's conversation from its connect, which
-/// carries no handoff with it - so a copy with no row is one the store still
-/// has, and the read is lazy because the ordinary case is the copy's own.
+/// **The live copy answers first, and a copy with none asks the store** -
+/// `stored` runs in the `or_else`, so the store is read only when the copy
+/// cannot answer, which is the ordinary case never. A forge restart seeds
+/// the successor's conversation from its connect, which carries no handoff
+/// with it, and that is the copy this covers.
+///
+/// **The store is asked by occupant, not by recency**: a later handoff that
+/// never reached its successor must not hide the row of the session that is
+/// running.
 ///
 /// **Only the occupant the record names draws it.** A `/new` or a resume
 /// under the same seat leaves a row describing a session this record no
@@ -583,10 +588,11 @@ impl From<&PendingAsk> for PendingAskWire {
 fn handoff_row(
     occupant: Option<&forge_primitives::SessionId>,
     held: Option<forge_primitives::HandoffRecord>,
-    stored: impl FnOnce() -> Option<forge_primitives::HandoffRecord>,
+    stored: impl FnOnce(&str) -> Option<forge_primitives::HandoffRecord>,
 ) -> Option<forge_primitives::HandoffRecord> {
-    let record = held.or_else(stored)?;
-    (record.to == occupant?.as_str()).then_some(record)
+    let occupant = occupant?;
+    let record = held.or_else(|| stored(occupant.as_str()))?;
+    (record.to == occupant.as_str()).then_some(record)
 }
 
 /// The conversation a session's transcript replayed, and how many times it
@@ -2107,7 +2113,9 @@ async fn session(
         }
         None => (Vec::new(), None, 0, 0.0, 0, None),
     };
-    let handoff = handoff_row(header.session_id.as_ref(), handoff, || surface.handoff_record(slot));
+    let handoff = handoff_row(header.session_id.as_ref(), handoff, |occupant| {
+        surface.handoff_record(slot, occupant)
+    });
     timings.page_ms = page_ms;
     // **The answer's number is the copy's own**, not catch_up's pass: a seal
     // can reseed the copy after that check, and a pre-seal number would have
@@ -2314,11 +2322,15 @@ mod tests {
 
     /// **The defect the scratch stack found**: a forge restart seeds the
     /// successor's conversation from its connect, which carries no row - so
-    /// a copy with none must not blind the record to the store that has it.
+    /// a copy with none must not blind the record to the store that has it,
+    /// and the store is asked by the occupant's id.
     #[test]
     fn the_store_answers_when_the_live_copy_has_no_row() {
         let occupant = forge_primitives::SessionId::new("new-id");
-        let drawn = handoff_row(Some(&occupant), None, || Some(a_handoff_record("new-id")));
+        let drawn = handoff_row(Some(&occupant), None, |asked| {
+            assert_eq!(asked, "new-id", "the store is asked by the occupant it must match");
+            Some(a_handoff_record("new-id"))
+        });
         assert_eq!(
             drawn.map(|record| record.to),
             Some("new-id".to_owned()),
@@ -2330,7 +2342,7 @@ mod tests {
     #[test]
     fn the_live_copy_answers_without_the_store() {
         let occupant = forge_primitives::SessionId::new("new-id");
-        let drawn = handoff_row(Some(&occupant), Some(a_handoff_record("new-id")), || {
+        let drawn = handoff_row(Some(&occupant), Some(a_handoff_record("new-id")), |_| {
             panic!("the store must not be read when the copy already has the row")
         });
         assert!(drawn.is_some(), "the copy's own row is the answer");
@@ -2342,11 +2354,11 @@ mod tests {
     fn a_row_is_drawn_only_for_the_occupant_it_names() {
         let occupant = forge_primitives::SessionId::new("current");
         assert!(
-            handoff_row(Some(&occupant), Some(a_handoff_record("old")), || None).is_none(),
+            handoff_row(Some(&occupant), Some(a_handoff_record("old")), |_| None).is_none(),
             "a row from before a later /new describes a session this record does not hold",
         );
         assert!(
-            handoff_row(None, Some(a_handoff_record("current")), || None).is_none(),
+            handoff_row(None, Some(a_handoff_record("current")), |_| None).is_none(),
             "a record naming no occupant has no join to draw",
         );
     }

@@ -1025,7 +1025,7 @@ export class Chat {
    * `handoff` frame and the `session_replaced` that lands the successor, and
    * taken by [`Self::replaced`].
    */
-  private carried: Turn[] | null = null;
+  private carried: { turns: Turn[]; to: string } | null = null;
   /** The frame a publish is waiting for, or `null`. */
   private queued: number | null = null;
   /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
@@ -2616,7 +2616,11 @@ export class Chat {
    */
   private holdHandoff(handoff: HandoffRecord): void {
     this.seedHandoffTurn(handoff);
-    this.carried = this.held.turns;
+    // **The successor's id rides with the turns.** A swap that never lands
+    // (a failed spawn, a dropped socket) leaves this set, and the next
+    // `session_replaced` from anything else - a plain `/new` - must not read
+    // it as its own continuation.
+    this.carried = { turns: this.held.turns, to: handoff.to };
   }
 
   /** Put the row in the conversation once, wherever it is missing: the live
@@ -2628,8 +2632,13 @@ export class Chat {
     this.fold((held) => ({ ...held, turns: [...held.turns, turn] }));
   }
 
-  private replaced(): void {
-    const carried = this.carried;
+  private replaced(occupant: string | null): void {
+    // Only the session the handoff named continues the conversation above
+    // the row; any other replacement is a plain occupant change and clears.
+    const carried =
+      this.carried !== null && occupant !== null && this.carried.to === occupant
+        ? this.carried.turns
+        : null;
     this.carried = null;
     const held = this.inFlight !== null;
     if (held) this.abandoned += 1;
@@ -2825,7 +2834,7 @@ export class Chat {
     // The seat changed occupant under this column - a `/new`, a `/resume`, a
     // login or a logout - so what is drawn is another session's conversation.
     if (variant === 'session_replaced') {
-      this.replaced();
+      this.replaced(textIn(update, 'session_replaced', 'session_id'));
       return;
     }
     // A process that is gone takes its queue with it: no lifecycle frame is
@@ -2840,6 +2849,8 @@ export class Chat {
       this.waiting.clear();
       this.drained.clear();
       this.plainDrawn.clear();
+      // A fresh connect is its own occupant, not a handoff's successor.
+      this.carried = null;
       return;
     }
     // The answer to the row's own ask, kept where the row reads it: by the
@@ -2863,6 +2874,9 @@ export class Chat {
       this.waiting.clear();
       this.drained.clear();
       this.plainDrawn.clear();
+      // A handoff whose spawn failed has no successor: the conversation is
+      // not carried by whatever replacement comes next.
+      this.carried = null;
       const failed = (update as { connection_failed?: { message?: unknown } }).connection_failed;
       const why = failed?.message;
       if (typeof why === 'string' && why !== '') {

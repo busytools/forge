@@ -54,12 +54,6 @@ pub fn put(db: &Db, record: &HandoffRecord, predecessor_reads: &[String]) -> any
     Ok(())
 }
 
-/// The seat's newest handoff, which is what a view opening on the seat draws
-/// as the row between the two conversations.
-pub fn latest_for_slot(db: &Db, slot: &SessionSlot) -> anyhow::Result<Option<HandoffRecord>> {
-    Ok(rows_for_slot(db, slot)?.pop().map(|stored| stored.record))
-}
-
 /// The handoff `occupant` was the successor of, with what its predecessor
 /// had read. `None` when this occupant did not arrive by a handoff.
 pub fn for_successor(
@@ -168,20 +162,6 @@ mod tests {
         }
     }
 
-    /// The newest row is what a view opening on the seat draws, and the
-    /// instant is what orders them.
-    #[test]
-    fn the_newest_handoff_of_a_seat_is_the_one_read() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = open_db(dir.path());
-        let slot = record("a", "2026-10-24T08:00:00Z").slot;
-        put(&db, &record("a", "2026-10-24T08:00:00Z"), &[]).expect("put a");
-        put(&db, &record("b", "2026-10-24T09:00:00Z"), &[]).expect("put b");
-
-        let latest = latest_for_slot(&db, &slot).expect("read").expect("a row");
-        assert_eq!(latest.to, "b", "the newest swap is the seat's handoff");
-    }
-
     /// A successor is found by the id it runs under, and the readings its
     /// predecessor had done ride with it.
     #[test]
@@ -214,9 +194,11 @@ mod tests {
         let counts = HandoffSuccessor { turns: 10, reread_files: 2, questions: 1, corrections: 0 };
         set_successor(&db, &written.slot, "new-id", counts).expect("write");
 
-        let latest = latest_for_slot(&db, &written.slot).expect("read").expect("a row");
-        assert_eq!(latest.successor, Some(counts), "the measurement is kept");
-        assert_eq!(latest.fill_percent, Some(85), "and the firing numbers are untouched");
+        let (measured, _) = for_successor(&db, &written.slot, "new-id")
+            .expect("read")
+            .expect("the handoff this occupant arrived by");
+        assert_eq!(measured.successor, Some(counts), "the measurement is kept");
+        assert_eq!(measured.fill_percent, Some(85), "and the firing numbers are untouched");
     }
 
     #[test]
@@ -224,7 +206,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = open_db(dir.path());
         let slot = SessionSlot::lead("Busytools", "forge");
-        assert!(latest_for_slot(&db, &slot).expect("read").is_none());
+        assert!(for_successor(&db, &slot, "anyone").expect("read").is_none());
     }
 
     /// One seat's rows never leak into another's, label included.
@@ -236,8 +218,27 @@ mod tests {
         put(&db, &worker, &[]).expect("put");
 
         assert!(
-            latest_for_slot(&db, &SessionSlot::lead("Busytools", "forge")).expect("read").is_none(),
+            for_successor(&db, &SessionSlot::lead("Busytools", "forge"), "w-new")
+                .expect("read")
+                .is_none(),
             "the lead's seat holds no row of its worker's",
         );
+    }
+
+    /// A later handoff that never reached its successor does not hide the
+    /// row of the one running: the lookup is by occupant, not by recency.
+    #[test]
+    fn an_earlier_successors_row_survives_a_later_attempt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let reached = record("reached-id", "2026-10-24T08:00:00Z");
+        put(&db, &reached, &[]).expect("put reached");
+        let never = record("never-id", "2026-10-24T09:00:00Z");
+        put(&db, &never, &[]).expect("put never");
+
+        let (found, _) = for_successor(&db, &reached.slot, "reached-id")
+            .expect("read")
+            .expect("the running occupant's own handoff");
+        assert_eq!(found.to, "reached-id");
     }
 }

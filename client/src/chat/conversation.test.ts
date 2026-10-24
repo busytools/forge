@@ -4121,6 +4121,39 @@ describe('the conversation the chat draws', () => {
     stop();
   });
 
+  it('draws the record’s handoff row above the successor turns a page carries', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    server.send(record([turn('t1', 'picked up')], null, handoffRecord('old', 'new')));
+
+    const keys = get(chat.value).turns.map((held) => held.key);
+    expect(keys, 'the row leads the work that came after it').toContain('handoff:old:new');
+    expect(keys[0], 'and it is the head of the conversation, not its tail').toBe('handoff:old:new');
+    expect(keys).toContain('t1');
+    stop();
+  });
+
+  it('carries the conversation only onto the successor the row names', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t1', 'the work so far')]));
+
+    // A swap that never lands: the handoff row is drawn, then the socket
+    // drops, and a plain /new lands later.
+    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new') } });
+    server.update({ connection_failed: { key: LEAD, message: 'the child exited', fatal: false } });
+    server.update({ session_replaced: { key: LEAD, session_id: 'someone-else' } });
+
+    expect(
+      get(chat.value).turns,
+      'a conversation is not carried onto a successor the row never named',
+    ).toHaveLength(0);
+    stop();
+  });
+
   it('asks a refused page again while the column is live, and stops once one lands', () => {
     vi.useFakeTimers();
     const server = fakeConnection();

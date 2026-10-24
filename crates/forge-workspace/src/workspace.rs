@@ -4236,7 +4236,12 @@ impl Workspace {
         // Gotify, Slack - comes through here, so one gate holds them all.
         if self.hold_prompt(
             key,
-            crate::handoff::HeldPrompt { text: text.clone(), attachments: Vec::new(), source },
+            crate::handoff::HeldPrompt {
+                text: text.clone(),
+                attachments: Vec::new(),
+                source,
+                sender: None,
+            },
         ) {
             return Ok(());
         }
@@ -4323,6 +4328,27 @@ impl Workspace {
         uuid: String,
     ) -> Result<(), DispatchError> {
         self.dispatch_forged_prompt_held(key, text, uuid, true)
+    }
+
+    /// The brief a handoff's successor runs as its first turn.
+    ///
+    /// **No conversation row.** The brief is already drawn, whole, inside the
+    /// handoff row; forging a second row for the prompt that carried it would
+    /// be the same text twice - and on a reload the transcript's own copy
+    /// would be a third.
+    pub(crate) fn dispatch_handoff_brief(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        uuid: String,
+    ) -> Result<(), DispatchError> {
+        self.route(Command::PromptUnder {
+            key: key.clone(),
+            text,
+            attachments: Vec::new(),
+            uuid,
+            source: crate::protocol::PromptSource::Forge,
+        })
     }
 
     /// The handoff's own judgment prompt.
@@ -4746,7 +4772,7 @@ impl Workspace {
     }
 
     /// Route a command that carries no frame of its own.
-    fn route(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
+    pub(crate) fn route(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
         // A spawn a caller could not complete is completed here, ahead of
         // routing: a client has no config to read, so what it sends carries no
         // settings, and a spawn that ran on those alone would carry no

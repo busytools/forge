@@ -47,9 +47,11 @@
     return parts.join(' \u{b7} ');
   });
 
-  /** The chip a closed row wears: the fill when the reading exists, the
-   * reason otherwise. */
-  const chip = $derived(handoff.fill_percent !== null ? `${handoff.fill_percent}%` : why);
+  /** The chip a closed row wears: the fill for a fill trigger, the reason
+   * for any other - a compaction backstop must not read as a percentage. */
+  const chip = $derived(
+    handoff.reason === 'fill' && handoff.fill_percent !== null ? `${handoff.fill_percent}%` : why,
+  );
 
   function reasonText(record: HandoffRecord): string {
     switch (record.reason) {

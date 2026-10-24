@@ -68,9 +68,13 @@ pub struct HandoffGitState {
     /// `HEAD` in short form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
-    /// `git status --porcelain` lines.
+    /// `git status --porcelain` lines, capped.
     #[serde(default)]
     pub dirty: Vec<String>,
+    /// How many dirty paths there were before the cap, so the brief can say
+    /// what it is not showing.
+    #[serde(default)]
+    pub dirty_total: u32,
     /// `git diff --stat` lines.
     #[serde(default)]
     pub diff: Vec<String>,

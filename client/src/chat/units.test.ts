@@ -3427,6 +3427,15 @@ describe('a page seam that re-serves a result', () => {
     expect(kinds(stray), 'an unpaired result is drawn nowhere at all').toEqual([]);
   });
 
+  it('draws the handoff brief nowhere but the handoff row', () => {
+    const brief = fold([
+      heard([{ type: 'text', text: 'HANDOFF - old -> new\n\nPART 1: GROUND TRUTH\nseat: x' }]),
+    ]);
+    expect(kinds(brief), 'the brief reaches the page through the handoff row').toEqual([]);
+    const real = fold([heard([{ type: 'text', text: 'a real prompt' }])]);
+    expect(kinds(real), 'and a person’s own words still draw').toEqual(['user']);
+  });
+
   it('folds a handoff frame into the row that joins two sessions', () => {
     const units = fold([
       said([{ type: 'text', text: 'the work so far' }]),

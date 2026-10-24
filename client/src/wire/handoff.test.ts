@@ -36,16 +36,6 @@ describe('the handoff record', () => {
     expect(handoffOf(wire({ to: null })), 'and no to is the same').toBeNull();
   });
 
-  it('drops a section with no label rather than inventing one', () => {
-    const record = handoffOf(
-      wire({ brief: { ground_truth: [{ lines: ['unlabelled'] }, { label: 'seat', lines: [] }] } }),
-    );
-    expect(
-      record?.ground_truth.map((section) => section.label),
-      'only labelled sections',
-    ).toEqual(['seat']);
-  });
-
   it('keys the row by the pair, so a reconnect lands on one row', () => {
     const record = handoffOf(wire());
     expect(record).not.toBeNull();

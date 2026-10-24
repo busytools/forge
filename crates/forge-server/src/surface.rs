@@ -369,6 +369,19 @@ impl ViewSurface {
         .map_err(|refusal| refusal.to_string())
     }
 
+    /// The handoff row a seat's occupant arrived by, for a record built
+    /// where the transport holds no live copy of the conversation.
+    ///
+    /// Looked up by the occupant, not by recency: a later handoff that never
+    /// reached its successor must not hide the row of the session running.
+    pub fn handoff_record(
+        &self,
+        slot: &SessionSlot,
+        occupant: &str,
+    ) -> Option<forge_primitives::HandoffRecord> {
+        self.workspace.handoff_record_for(slot, occupant)
+    }
+
     /// The conversation the session at `slot` holds, read from its own
     /// transcript on disk: the same read a resume performs, for a view
     /// that arrived after the session was already running or one opening a
@@ -413,12 +426,6 @@ impl ViewSurface {
     /// A view keeps its own copy in session state. The verb's other
     /// callers are the surface's own tests and the measurement harness, which
     /// is what a surface test is for rather than a sign it is unused.
-    /// The seat's newest handoff record, for a record built where the
-    /// transport holds no live copy of the conversation.
-    pub fn handoff_record(&self, slot: &SessionSlot) -> Option<forge_primitives::HandoffRecord> {
-        self.workspace.latest_handoff_for(slot)
-    }
-
     pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
         let Some((session_id, cwd)) = self.transcript_place(slot, cwd_raw) else {
             return ConversationHistory::default();

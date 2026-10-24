@@ -149,7 +149,10 @@ the pair and the fill it fired at, and opens onto the brief the successor
 was given: the ground truth forge read off the transcript, git and the
 board, then the judgment the handing-over session wrote. The previous
 conversation stays above it, so a swap reads as a seam in the page rather
-than a seat that emptied, and the old session is one `/resume` away.
+than a seat that emptied, and the old session is one `/resume` away. A
+client that attaches after the swap draws the row from the seat's record:
+it sees where the work continues, not the closed turns above it, which
+belong to the client that watched them.
 
 **A row is drawn before the list has measured it.** The virtualised list
 places a row on an estimate-derived offset and corrects it the moment the

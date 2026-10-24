@@ -2319,6 +2319,12 @@ details.handoff[open] > summary .arw { color: var(--accent); }
   color: var(--text); }
 .handoff .fact .k { flex: 0 0 88px; color: var(--muted); }
 .handoff .fact .v { flex: 1; white-space: pre-wrap; word-break: break-word; }
+/* Touch: the summary is the row's only control, so it takes a finger's
+   target. Keyed on the pointer, not the width - a tablet is wide and still
+   finger-driven. */
+@media (pointer: coarse) {
+  details.handoff > summary { min-height: 44px; }
+}
 .cpoint .cpbody { margin: 6px 0 2px; color: var(--muted); }
 .cpoint .cpbody b { color: var(--text); font-weight: 500; }
 /* The continuation summary under the facts, as prose rather than the body's
