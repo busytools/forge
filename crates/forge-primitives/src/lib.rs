@@ -42,6 +42,8 @@
 //! - [`session_meta`] - `PromptChunk`.
 //! - [`project_key`] - `ProjectKey`, the canonical on-disk project
 //!   identity.
+//! - [`handoff`] - one session swap: the record a row draws, the brief a
+//!   successor is given, and the numbers kept for tuning the trigger.
 //!
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.
@@ -60,6 +62,7 @@ pub mod error;
 pub mod git;
 pub mod git_diff;
 pub mod gotify;
+pub mod handoff;
 pub mod hooks;
 pub mod ids;
 pub mod image;
@@ -94,6 +97,9 @@ pub use content::ContentBlock;
 pub use cron::{CronEntry, CronId, CronKind};
 pub use error::AppError;
 pub use gotify::{GotifyConfig, GotifyMessage, GotifySubscription};
+pub use handoff::{
+    HandoffBrief, HandoffCycle, HandoffReason, HandoffRecord, HandoffSection, HandoffSuccessor,
+};
 pub use hooks::{
     BaseHookInput, HookContext, HookKind, NotificationInput, PermissionRequestInput,
     PostToolUseFailureInput, PostToolUseInput, PreCompactInput, PreToolUseHookSpecificOutput,

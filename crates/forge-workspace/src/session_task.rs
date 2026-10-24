@@ -1693,10 +1693,13 @@ pub(crate) fn execute_command_via_handle(
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
         // Answered by the task before it reaches here: the conversation is
-        // the task's own and never crosses to the agent. A caller reading
-        // this as dead code should note the arm in `SessionTask::execute_command`
-        // is what returns early - the match here is exhaustive, not a route.
-        Command::ReplayConversation { key: _ } | Command::ReadCallOutput { .. } => Ok(()),
+        // the task's own and never crosses to the agent, and a handoff runs
+        // the task's own state machine. A caller reading this as dead code
+        // should note the arms in `SessionTask::execute_command` are what
+        // handle them - the match here is exhaustive, not a route.
+        Command::ReplayConversation { key: _ }
+        | Command::ReadCallOutput { .. }
+        | Command::Handoff { .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
