@@ -161,6 +161,42 @@ pub struct AccountLoadingRow {
     pub auth: AccountAuth,
 }
 
+/// The account pool as a view draws it: the rows the home's snapshot carries
+/// and the state an `AccountsChanged` frame pushes.
+///
+/// **One shape for both paths.** The snapshot field and the frame's payload
+/// are built by [`crate::Workspace::account_pool`], so a client folding a
+/// frame and a client reading the snapshot cannot disagree (rule 25).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AccountPoolView {
+    pub loading: Vec<AccountLoadingRow>,
+    /// Every account has settled and the inference listener is bound.
+    pub all_loaded: bool,
+    pub gateway: AccountGatewayView,
+    /// What each account has left, one row per configured account.
+    pub usage: Vec<AccountUsageView>,
+}
+
+/// The inference listener's bind state.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AccountGatewayView {
+    pub ready: bool,
+    pub port: u16,
+    /// Set when the listener could not bind its port.
+    pub bind_error: Option<String>,
+}
+
+/// One account's cached usage snapshot.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AccountUsageView {
+    pub display_name: String,
+    /// `None` until the poller first succeeds.
+    pub snapshot: Option<forge_primitives::usage::UsageSnapshot>,
+}
+
 /// One session under a project.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SessionView {

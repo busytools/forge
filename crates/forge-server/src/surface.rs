@@ -27,7 +27,6 @@ use std::sync::Arc;
 use forge_primitives::SessionSlot;
 use forge_workspace::{Command, DispatchError, Workspace};
 
-pub use accounts::{AccountsView, GatewayView};
 pub use agents::{AgentRow, Agents, PendingKind};
 pub use dictate::DictateView;
 pub use extensions::{ExtensionsView, LspServerCheck};

@@ -242,7 +242,7 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // The account pool, which the band's own card draws and no row does.
         // A page that read it once drew `0 ready, probing` until the next
         // unrelated redraw.
-        | SessionUpdate::AccountsChanged
+        | SessionUpdate::AccountsChanged { .. }
         | SessionUpdate::DictateAvailability
         | SessionUpdate::ConnectionFailed { .. }
         | SessionUpdate::AuthRequired { .. }
@@ -305,6 +305,23 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pool's frame with an empty pool, which is all these classifications
+    /// read of it.
+    fn accounts_changed() -> SessionUpdate {
+        SessionUpdate::AccountsChanged {
+            accounts: forge_workspace::AccountPoolView {
+                loading: Vec::new(),
+                all_loaded: false,
+                gateway: forge_workspace::AccountGatewayView {
+                    ready: false,
+                    port: 0,
+                    bind_error: None,
+                },
+                usage: Vec::new(),
+            },
+        }
+    }
 
     fn result_message(subtype: &str, is_error: bool) -> Message {
         serde_json::from_value(serde_json::json!({
@@ -744,7 +761,7 @@ mod tests {
             SessionUpdate::CatalogLoaded,
             SessionUpdate::DictateAvailability,
             SessionUpdate::CliVersionChanged,
-            SessionUpdate::AccountsChanged,
+            accounts_changed(),
         ] {
             assert!(fleet_news(&update).any(), "{update:?} is exactly a render wake-up");
         }

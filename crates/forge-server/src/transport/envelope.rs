@@ -561,6 +561,38 @@ impl ClientSettings {
 mod tests {
     use super::*;
 
+    /// The pool's frame with an empty pool, which is all these routing tests
+    /// read of it.
+    fn accounts_changed() -> SessionUpdate {
+        SessionUpdate::AccountsChanged {
+            accounts: forge_workspace::AccountPoolView {
+                loading: Vec::new(),
+                all_loaded: false,
+                gateway: forge_workspace::AccountGatewayView {
+                    ready: false,
+                    port: 0,
+                    bind_error: None,
+                },
+                usage: Vec::new(),
+            },
+        }
+    }
+
+    /// **The pool's fields are inline, not nested.** The client narrows the
+    /// frame's payload with the same function it narrows a home snapshot's
+    /// `accounts` field with, so `accounts_changed.loading` has to be the
+    /// row list itself rather than an `accounts` object one level down.
+    #[test]
+    fn the_pools_frame_carries_the_pool_inline() {
+        let json = serde_json::to_value(accounts_changed()).expect("encode");
+        let body = json.get("accounts_changed").expect("the variant tag is the frame's key");
+        assert!(body.get("loading").is_some(), "the pool's rows are inline: {body}");
+        assert!(body.get("all_loaded").is_some(), "and its settled flag: {body}");
+        assert!(body.get("accounts").is_none(), "the payload is not nested twice: {body}");
+        let back: SessionUpdate = serde_json::from_value(json).expect("decode");
+        assert!(matches!(back, SessionUpdate::AccountsChanged { .. }), "and it round-trips");
+    }
+
     /// The seats frame a capable client is sent for its profile sweep: the
     /// live set crosses whole, a seat keeping the three names a slot is.
     #[test]
@@ -805,7 +837,7 @@ mod tests {
              state chips instead of drawing `pending` until the next check",
         );
         assert!(
-            !Subject::DictateModels.covers(&SessionUpdate::AccountsChanged),
+            !Subject::DictateModels.covers(&accounts_changed()),
             "another machine-level update is not the models page's to redraw",
         );
         assert!(
@@ -827,7 +859,7 @@ mod tests {
     /// leave every other subscriber drawing a card that never moves.
     #[test]
     fn the_pools_announcement_reaches_home_and_no_seat() {
-        let update = SessionUpdate::AccountsChanged;
+        let update = accounts_changed();
         let seat = SessionSlot::lead("TestOrg", "proj");
 
         assert!(update.slot().is_none(), "the pool addresses no seat, which is what routes it");
@@ -1065,7 +1097,7 @@ mod tests {
         }
 
         assert!(
-            !Subject::Board.covers(&SessionUpdate::AccountsChanged),
+            !Subject::Board.covers(&accounts_changed()),
             "and nothing outside the board's own three reaches it",
         );
     }

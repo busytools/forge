@@ -2707,6 +2707,32 @@ impl Workspace {
             .collect()
     }
 
+    /// The account pool as a view draws it: the rows the home snapshot
+    /// carries, and the payload [`SessionUpdate::AccountsChanged`] pushes.
+    ///
+    /// **One builder for both paths**, so a client folding the frame and a
+    /// client reading the snapshot draw the same pool.
+    pub fn account_pool_view(&self) -> crate::views::AccountPoolView {
+        let loading = self.account_loading_snapshot();
+        let usage = loading
+            .iter()
+            .map(|row| crate::views::AccountUsageView {
+                display_name: row.display_name.clone(),
+                snapshot: self.usage_for(&row.display_name),
+            })
+            .collect();
+        crate::views::AccountPoolView {
+            loading,
+            all_loaded: self.all_accounts_loaded(),
+            gateway: crate::views::AccountGatewayView {
+                ready: self.gateway_ready(),
+                port: self.gateway_port(),
+                bind_error: self.gateway_bind_error(),
+            },
+            usage,
+        }
+    }
+
     /// How the account called `display_name` authenticates - the input
     /// the auth-repair hints branch on. `None` when the name isn't a
     /// configured account.
@@ -3888,7 +3914,9 @@ impl Workspace {
     /// them belongs to a seat and the pool's state is a snapshot field with no
     /// stream of its own.
     pub(crate) fn announce_accounts_changed(&self) {
-        let _ = self.update_tx.send(SessionUpdate::AccountsChanged);
+        let _ = self
+            .update_tx
+            .send(SessionUpdate::AccountsChanged { accounts: self.account_pool_view() });
     }
 
     /// The cwd a project lead's slot runs in: its project's path.
@@ -20849,9 +20877,25 @@ provider = "anthropic"
 
         workspace.record_usage_success(&AccountKey("Stargate".to_owned()), usage_at(10.0));
 
-        let announced = std::iter::from_fn(|| updates.try_recv().ok())
-            .any(|frame| matches!(frame.update, SessionUpdate::AccountsChanged));
-        assert!(announced, "a probe that wrote the pool announced nothing");
+        let frame = std::iter::from_fn(|| updates.try_recv().ok())
+            .find(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .expect("a probe that wrote the pool announced nothing");
+        let SessionUpdate::AccountsChanged { accounts } = frame.update else {
+            unreachable!("the predicate above selected this variant")
+        };
+        // The frame and the snapshot's field are one builder, so a client that
+        // folds it draws what a client that reads the home draws.
+        assert_eq!(
+            accounts,
+            workspace.account_pool_view(),
+            "the announcement carried a different pool than the snapshot states",
+        );
+        assert_eq!(accounts.loading.len(), 1, "the pool's configured account is in the frame");
+        assert_eq!(accounts.loading[0].display_name, "Stargate");
+        assert!(
+            accounts.usage[0].snapshot.is_some(),
+            "the usage row carries the snapshot the poll wrote",
+        );
     }
 
     /// A poll that found the pool as it already stood announces nothing.
@@ -20865,7 +20909,7 @@ provider = "anthropic"
     async fn a_probe_announces_only_a_pool_that_moved() {
         fn announced(updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>) -> usize {
             std::iter::from_fn(|| updates.try_recv().ok())
-                .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged))
+                .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
                 .count()
         }
 
@@ -20915,7 +20959,7 @@ provider = "anthropic"
         workspace.record_usage_success(&key, same);
 
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
-            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged))
+            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
             .count();
         assert_eq!(announced, 1, "the Loading -> Ready move was not announced");
     }
@@ -20951,7 +20995,7 @@ provider = "anthropic"
         workspace.record_usage_success(&key, same);
 
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
-            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged))
+            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
             .count();
         assert_eq!(announced, 1, "the cleared probe failure was not announced");
     }

@@ -28,7 +28,7 @@ use forge_workspace::env::git_diff::resolver::{
     AnchorPlacement, OutdatedReason, place_anchor_in_content, place_anchor_in_lines_with,
 };
 use forge_workspace::env::processes::ProcessSnapshot;
-use forge_workspace::{AccountLoadingRow, Command, McpServers, ProjectView};
+use forge_workspace::{Command, McpServers, ProjectView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -90,7 +90,9 @@ pub struct HomeWire {
     /// leaves nothing in the transcript to say it went unwatched, so a client
     /// reading only the records would draw every row as settled.
     pub unseen: Vec<SessionSlot>,
-    pub accounts: AccountsWire,
+    /// The pool as both the snapshot and `AccountsChanged` state it; see
+    /// [`forge_workspace::AccountPoolView`].
+    pub accounts: forge_workspace::AccountPoolView,
     pub connectors: ConnectorsWire,
     pub dictate: DictateWire,
     /// The claude CLI versions the core holds, as the core's own snapshot
@@ -286,33 +288,6 @@ impl From<&AgentRow> for AgentWire {
             work: None,
         }
     }
-}
-
-/// The account pool's state.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct AccountsWire {
-    pub loading: Vec<AccountLoadingRow>,
-    pub all_loaded: bool,
-    pub gateway: GatewayWire,
-    pub usage: Vec<AccountUsageWire>,
-}
-
-/// The inference listener's bind state.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct GatewayWire {
-    pub ready: bool,
-    pub port: u16,
-    pub bind_error: Option<String>,
-}
-
-/// One account's cached usage snapshot, absent until the poller succeeds.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct AccountUsageWire {
-    pub display_name: String,
-    pub snapshot: Option<Value>,
 }
 
 /// What the inbound connectors are watching, server-wide.
@@ -1860,23 +1835,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
 
     HomeWire {
         fleet: surface.fleet(),
-        accounts: AccountsWire {
-            loading: accounts.loading,
-            all_loaded: accounts.all_loaded,
-            gateway: GatewayWire {
-                ready: accounts.gateway.ready,
-                port: accounts.gateway.port,
-                bind_error: accounts.gateway.bind_error,
-            },
-            usage: accounts
-                .usage
-                .into_iter()
-                .map(|row| AccountUsageWire {
-                    display_name: row.display_name,
-                    snapshot: row.snapshot.and_then(|snapshot| serde_json::to_value(snapshot).ok()),
-                })
-                .collect(),
-        },
+        accounts,
         connectors: ConnectorsWire {
             gotify: GotifyWire { connected: connectors.gotify.connected },
             slack: SlackWire {
