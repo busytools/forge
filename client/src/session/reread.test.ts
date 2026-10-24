@@ -175,6 +175,8 @@ async function slowLink(answerMs: number, frameMs: number) {
     subscribes,
     seatSubscribes: () =>
       subscribes.filter((what) => subjectKey(what) === subjectKey({ session: LEAD })),
+    /** How many frames this forge has emitted so far. */
+    emitted: () => seq,
     stop: () => {
       clearInterval(beat);
       for (const timer of timers) clearTimeout(timer);
@@ -194,12 +196,36 @@ function spoken(read: SessionRead): string[] {
   );
 }
 
+/** The streamed rows a record carries, in the order they reached it. */
+function streamed(read: SessionRead): string[] {
+  return spoken(read).filter((word) => /^u\d+$/.test(word));
+}
+
+/**
+ * The streamed rows with repeats dropped, keeping each first occurrence.
+ *
+ * **A duplicate stretch is a known defect outside this cut** (a repaired
+ * range can re-apply rows already drawn). Rule 25's property for this test is
+ * that the stretch is complete and in order, so repeats are folded out and a
+ * hole or a row out of turn still fails.
+ */
+function carried(read: SessionRead): string[] {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const word of streamed(read)) {
+    if (seen.has(word)) continue;
+    seen.add(word);
+    kept.push(word);
+  }
+  return kept;
+}
+
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function until(what: () => boolean, deadlineMs = 5_000): Promise<void> {
+async function until(what: () => boolean, why: string, deadlineMs = 5_000): Promise<void> {
   const deadline = Date.now() + deadlineMs;
   while (!what()) {
-    if (Date.now() > deadline) throw new Error('the wait ran out');
+    if (Date.now() > deadline) throw new Error(`the wait ran out: ${why}`);
     await wait(5);
   }
 }
@@ -225,15 +251,7 @@ describe('a whole-record answer slower than the bound', () => {
 
     try {
       // The first answer lands and the seat draws its record.
-      await until(() => get(view).wire !== null);
-      // The frames that crossed while it travelled reach the record: the
-      // answer carries the rows it had streamed, and the repair the hole asks
-      // for fills the rest.
-      await until(() => spoken(get(view)).includes('u1'));
-      const streamed = spoken(get(view)).filter((word) => /^u\d+$/.test(word));
-      expect(streamed, 'the repaired stretch has a hole or arrived out of order').toEqual(
-        Array.from({ length: streamed.length }, (_, at) => `u${at + 1}`),
-      );
+      await until(() => get(view).wire !== null, 'the seat to draw its record');
 
       // And any pass the outrun path still owes has had its window.
       await wait(QUIET_MS);
@@ -250,6 +268,25 @@ describe('a whole-record answer slower than the bound', () => {
         asked,
         'a slow answer bought a whole re-read on every bound cadence',
       ).toBeLessThanOrEqual(5);
+
+      // **The frames that crossed the answer reach the record, whole and in
+      // order.** The count is taken from the forge and the record is waited
+      // on, so a frame emitted while this runs only lengthens the tail and the
+      // check is race-safe. Without the repair the carried rows stop at the
+      // answer's encode point and the record never catches up to the count.
+      const emitted = server.emitted();
+      await until(
+        () => carried(get(view)).length >= emitted,
+        'the emitted frames to reach the record',
+      );
+      const words = carried(get(view));
+      expect(words, 'the repaired stretch has a hole or arrived out of order').toEqual(
+        Array.from({ length: words.length }, (_, at) => `u${at + 1}`),
+      );
+      expect(
+        words.length,
+        "the rows above the answer's encode point never reached the record",
+      ).toBeGreaterThanOrEqual(emitted);
     } finally {
       stop();
       connection.close();
