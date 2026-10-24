@@ -428,6 +428,47 @@ function newestStampMs(messages: readonly unknown[]): number | null {
   return newest;
 }
 
+/**
+ * A wire stamp in milliseconds, with its fraction kept whole.
+ *
+ * `Date.parse` drops sub-millisecond digits and the CLI stamps frames with
+ * six, so two counters inside one millisecond would compare equal and a page
+ * cut between them could not be told from one after it.
+ */
+function wireStampMs(stamp: unknown): number | null {
+  if (typeof stamp !== 'string' || stamp === '') return null;
+  const at = Date.parse(stamp);
+  if (!Number.isFinite(at)) return null;
+  const fraction = /\.(\d+)/.exec(stamp);
+  if (fraction === null) return at;
+  return Math.trunc(at / 1000) * 1000 + Number(`0.${fraction[1]}`) * 1000;
+}
+
+/**
+ * A counter frame's own stamp, in ms, or `null` when it is not a counter or
+ * carries no stamp this client can place it by.
+ */
+function counterStampMs(message: unknown): number | null {
+  const frame = message as { type?: unknown; subtype?: unknown; timestamp?: unknown } | null;
+  if (frame?.type !== 'system' || frame.subtype !== 'thinking_tokens') return null;
+  return wireStampMs(frame.timestamp);
+}
+
+/**
+ * The instant a page's folded counter run covers, when `message` is one.
+ *
+ * A page serves a turn's counter storm as one frame carrying the summed
+ * growth, and `folded_frames` says how many frames the one stands for. A
+ * counter with no such count is a live frame (the stream folds a flush's run
+ * but not a page's turn), which covers only itself.
+ */
+function foldedThroughMs(message: unknown): number | null {
+  const frame = message as { type?: unknown; subtype?: unknown; folded_frames?: unknown } | null;
+  if (frame?.type !== 'system' || frame.subtype !== 'thinking_tokens') return null;
+  if (typeof frame.folded_frames !== 'number' || frame.folded_frames < 2) return null;
+  return counterStampMs(message);
+}
+
 /** A frame's own id, or `null` when it carries none. */
 function uuidOf(message: unknown): string | null {
   // **A delivered mid-turn prompt is carried by its attachment, and the id on
@@ -566,6 +607,17 @@ export class Frames {
    * because two tasks can end with the same words.
    */
   private readonly endings = new Set<string>();
+  /**
+   * The newest instant a folded counter run in this list covers, in ms.
+   *
+   * A page serves a counter storm as one frame, so a held row's raw counters
+   * are frames the page already accounts for - and a merge that read them as
+   * missing would put their growth back beside the page's total and double
+   * it. The stamp is the boundary: a counter stamped after this instant
+   * arrived after the page's cut and still owes the running figure its
+   * growth.
+   */
+  private foldedThrough: number | null = null;
 
   constructor(messages: unknown[]) {
     for (const message of messages) this.add(message);
@@ -575,7 +627,8 @@ export class Frames {
    * Take one more frame into the index, for a list that has grown.
    *
    * All three faces - id, ending and words - so an id-bearing frame still
-   * answers an id-less copy's ending or words question.
+   * answers an id-less copy's ending or words question; and a folded counter
+   * run's boundary, which a merge reads beside them.
    */
   add(message: unknown): void {
     const id = uuidOf(message);
@@ -584,10 +637,18 @@ export class Frames {
     if (ending !== null) this.endings.add(ending);
     const words = wordsOf(message);
     if (words.length > 0) this.said.add(JSON.stringify(words));
+    const folded = foldedThroughMs(message);
+    if (folded !== null && (this.foldedThrough === null || folded > this.foldedThrough)) {
+      this.foldedThrough = folded;
+    }
   }
 
   /** Whether the list this indexes holds `message`. */
   carries(message: unknown, prose = true): boolean {
+    const stamped = counterStampMs(message);
+    if (stamped !== null && this.foldedThrough !== null && stamped <= this.foldedThrough) {
+      return true;
+    }
     const id = uuidOf(message);
     if (id !== null) return this.ids.has(id);
     if (!prose) return false;
@@ -630,6 +691,18 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
       if (!byWords.has(key)) byWords.set(key, index);
     }
   });
+  /**
+   * The newest instant a folded counter run on this page covers.
+   *
+   * A held counter at or before it is a frame the page's total already
+   * carries, and one placed beside that total would draw the growth twice.
+   * It is not a frame the held copy uniquely has, so it is placed nowhere. A
+   * counter stamped after the cut is genuinely newer and stays.
+   */
+  const covers = pageRows.reduce<number | null>((newest, message) => {
+    const at = foldedThroughMs(message);
+    return at === null || (newest !== null && at <= newest) ? newest : at;
+  }, null);
   const whereOf = (message: unknown): number | undefined => {
     const id = uuidOf(message);
     if (id !== null) return byId.get(id);
@@ -642,6 +715,10 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
   const after = new Map<number, unknown[]>();
   let anchor = -1;
   for (const message of heldRows) {
+    if (covers !== null) {
+      const stamped = counterStampMs(message);
+      if (stamped !== null && stamped <= covers) continue;
+    }
     const where = whereOf(message);
     if (where !== undefined) {
       // **Never backwards**: a frame whose copy sits earlier than the last

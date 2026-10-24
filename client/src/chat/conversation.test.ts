@@ -161,6 +161,29 @@ const counted = (tokens: number): unknown => ({
   uuid: `thinking-${tokens}`,
 });
 
+/**
+ * A counter under its own clock.
+ *
+ * A folded run's stamp is the boundary that keeps older held counters out and
+ * lets a newer one through, so a test about the merge needs the clocks.
+ */
+const clocked = (at: number, tokens: number): unknown => ({
+  type: 'system',
+  subtype: 'thinking_tokens',
+  estimated_tokens: tokens,
+  estimated_tokens_delta: tokens,
+  uuid: `thinking-${at}`,
+  timestamp: `2026-10-24T09:00:00.${String(at).padStart(6, '0')}Z`,
+});
+
+/** The running figure the first held turn folds to. */
+const figure = (chat: Chat): number | null => {
+  const held = get(chat.value).turns[0];
+  if (held === undefined) return null;
+  const report = fold(held.messages, null, true, false).find((unit) => unit.kind === 'report');
+  return report?.info.thinking_tokens ?? null;
+};
+
 /** Another `system` subtype, which the fold draws nothing for either. */
 const progressed = (): unknown => ({
   type: 'system',
@@ -435,6 +458,113 @@ describe('the conversation the chat draws', () => {
 
     chat.showing();
     expect(words(chat), 'and the return draws it').toContain('while away');
+    stop();
+  });
+
+  /**
+   * **A page's folded run is the copy of every counter it covers.** The page
+   * serves a turn's storm as one frame carrying the summed growth, so the raw
+   * counters a held row still has are frames that page already accounts for -
+   * and a merge that kept them beside the page's total would draw the sum
+   * twice. The page's copy replaces them, exactly as it replaces a raw
+   * counter it names.
+   */
+  it('a page whose counters are folded replaces the raw run it covers', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              promptRow('work'),
+              clocked(0, 10),
+              clocked(1, 10),
+              clocked(2, 10),
+              clocked(3, 10),
+              clocked(4, 10),
+            ],
+          },
+        ],
+        'above',
+      ),
+    );
+    expect(figure(chat), 'the raw page sums its counters').toBe(50);
+
+    // The reconnect's page, cut two counters later than what the client saw:
+    // the run arrives as one frame, and the raw copy the row holds is covered.
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [promptRow('work'), { ...(clocked(7, 80) as object), folded_frames: 8 }],
+          },
+        ],
+        'above',
+      ),
+    );
+
+    expect(names(chat), 'the page copy replaced the raw run it covers').toEqual([
+      'u-work',
+      'thinking-7',
+    ]);
+    expect(figure(chat), 'and the total is counted once, not once per copy').toBe(80);
+    stop();
+  });
+
+  /**
+   * **The stamp is the boundary.** A page read while the turn was still
+   * moving carries a folded run that stops short of the counters the client
+   * has since seen: those are newer than the cut, so the page does not cover
+   * them and they still move the figure. The covered ones are dropped, the
+   * newer ones stay, and the total is the page's plus the newer growth -
+   * never the page's total plus a run it already counts.
+   */
+  it('a counter newer than the page cut still moves the figure', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // The first read saw the run through counter 4; 5-7 were missed while the
+    // socket was down, and 8-9 arrived after the reconnect.
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [promptRow('work'), { ...(clocked(4, 40) as object), folded_frames: 5 }],
+          },
+        ],
+        'above',
+      ),
+    );
+    for (const at of [8, 9]) {
+      server.update({ chat_appended: { key: LEAD, msg: clocked(at, 10) } });
+    }
+    expect(figure(chat), 'the first page plus the two frames after it').toBe(60);
+
+    // The reconnect's page was cut through counter 7; 8 and 9 are newer.
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [promptRow('work'), { ...(clocked(7, 80) as object), folded_frames: 8 }],
+          },
+        ],
+        'above',
+      ),
+    );
+
+    expect(figure(chat), 'the page total plus the two counters past its cut').toBe(100);
+    expect(names(chat), 'the covered counters are gone and the newer two stay').toEqual([
+      'u-work',
+      'thinking-8',
+      'thinking-9',
+      'thinking-7',
+    ]);
     stop();
   });
 
