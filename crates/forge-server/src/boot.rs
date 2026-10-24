@@ -61,8 +61,211 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
     }
 
     start_subsystems(&workspace);
+    install_browser(&workspace)?;
 
     Ok(workspace)
+}
+
+/// Install the server's browser fleet: constructed here, one host and one
+/// driver per profile spawned on first use.
+///
+/// **A missing app-support directory fails the boot**, the same resolution
+/// the durable store needs; the vendored driver stack is not required at
+/// boot, so a server without it boots and its browser calls name what is
+/// missing instead of the whole server refusing to start.
+#[cfg(target_os = "macos")]
+fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
+    let fleet = Arc::new(
+        forge_browser::service::BrowserService::installed()
+            .map_err(|why| anyhow::anyhow!("forge: {why}"))?,
+    );
+    // **The encoding and the idle clock are the `[browser]` keys**: a
+    // profile no viewer has touched closes after the bound, and the
+    // workspace phrases the one warning a named profile's owner gets.
+    let browser = workspace.browser_settings();
+    fleet.configure_encoding(browser.fps, browser.quality);
+    fleet.configure_idle(
+        browser.idle_minutes,
+        browser.grace_minutes,
+        Arc::new(IdleWarnings { workspace: Arc::downgrade(workspace) }),
+    );
+    fleet.start_idle();
+    // **A host an unclean exit left behind is reaped before any profile is
+    // used.** It still holds the profile's singleton lock, and the first
+    // call would wedge on it; the reaper checks the process is really this
+    // bundle's host before it signals anything.
+    let reaper = Arc::clone(&fleet);
+    tokio::spawn(async move { reaper.reap_stale().await });
+    workspace.install_browser_host(Arc::new(HostedBrowser(fleet)));
+    Ok(())
+}
+
+/// The idle warning, delivered through the workspace: it phrases the sentence
+/// and puts it in the seat's session, and answers whether it landed, whether
+/// a parked hand-off holds the profile, or that there is no seat to tell.
+#[cfg(target_os = "macos")]
+struct IdleWarnings {
+    workspace: std::sync::Weak<Workspace>,
+}
+
+#[cfg(target_os = "macos")]
+#[async_trait::async_trait]
+impl forge_browser::idle::IdleWarn for IdleWarnings {
+    async fn warn(
+        &self,
+        seat: Option<&forge_primitives::SessionSlot>,
+        name: &str,
+        idle_minutes: u64,
+        grace_minutes: u64,
+        at_close: bool,
+    ) -> forge_browser::idle::Verdict {
+        use forge_browser::idle::Verdict;
+        let Some(workspace) = self.workspace.upgrade() else { return Verdict::Unanswered };
+        let (verdict, answer) = tokio::sync::oneshot::channel();
+        let command = forge_workspace::Command::BrowserIdleWarning {
+            key: seat.cloned(),
+            profile: name.to_owned(),
+            idle_minutes,
+            grace_minutes,
+            at_close,
+            verdict: Some(verdict),
+        };
+        if workspace.dispatch(command).is_err() {
+            return Verdict::Unanswered;
+        }
+        // **Delivery is a send into the seat's session, not a wait on the
+        // person**, so the answer is immediate; the bound is a wedge-breaker.
+        match tokio::time::timeout(std::time::Duration::from_secs(5), answer).await {
+            Ok(Ok(forge_workspace::IdleVerdict::Delivered)) => Verdict::Delivered,
+            Ok(Ok(forge_workspace::IdleVerdict::Held)) => Verdict::Held,
+            Ok(Ok(forge_workspace::IdleVerdict::NoSession)) => Verdict::NoSession,
+            Ok(Ok(forge_workspace::IdleVerdict::Clear)) => Verdict::Clear,
+            _ => Verdict::Unanswered,
+        }
+    }
+}
+
+/// A platform with no CEF host: the browser tools answer the no-host refusal
+/// rather than a server that pretends to have a fleet.
+#[cfg(not(target_os = "macos"))]
+fn install_browser(_workspace: &Arc<Workspace>) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// The fleet behind the workspace's port.
+#[cfg(target_os = "macos")]
+struct HostedBrowser(Arc<forge_browser::service::BrowserService>);
+
+#[cfg(target_os = "macos")]
+#[async_trait::async_trait]
+impl forge_workspace::browser::BrowserHost for HostedBrowser {
+    async fn call(
+        &self,
+        seat: &forge_primitives::SessionSlot,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<Vec<forge_primitives::browser::BrowserPart>, String> {
+        self.0.call(seat, tool, args).await
+    }
+
+    async fn attach(
+        &self,
+        viewer: u64,
+        seat: &forge_primitives::SessionSlot,
+        profile: Option<&str>,
+    ) -> Result<forge_workspace::browser::BrowserAttachment, String> {
+        let attachment = self.0.attach(viewer, seat, profile).await?;
+        Ok(forge_workspace::browser::BrowserAttachment {
+            key: attachment.key,
+            id: attachment.id,
+            frames: attachment.frames,
+            view: attachment.view,
+            nav: attachment.nav,
+            failures: attachment.failures,
+            files: attachment.files,
+            downloads: attachment.downloads,
+            audio: attachment.audio,
+        })
+    }
+
+    async fn answer_files(
+        &self,
+        profile: &str,
+        id: u64,
+        files: Vec<forge_primitives::browser::BrowserUpload>,
+    ) -> Result<(), String> {
+        self.0.answer_files(profile, id, files).await
+    }
+
+    async fn detach(&self, viewer: u64) {
+        self.0.detach(viewer).await;
+    }
+
+    async fn input(
+        &self,
+        profile: &str,
+        viewer: u64,
+        seq: u64,
+        event: &forge_primitives::browser::BrowserInputEvent,
+    ) -> Result<(), String> {
+        self.0.input(profile, viewer, seq, event).await
+    }
+
+    async fn take_control(&self, profile: &str, viewer: u64) -> Result<(), String> {
+        self.0.take_control(profile, viewer).await
+    }
+
+    async fn release_control(&self, profile: &str, viewer: u64) {
+        self.0.release_control(profile, viewer).await;
+    }
+
+    async fn resize(&self, profile: &str, viewer: u64, width: u32, height: u32, scale: f64) {
+        self.0.resize(profile, viewer, width, height, scale).await;
+    }
+
+    async fn nav(
+        &self,
+        profile: &str,
+        viewer: u64,
+        back: bool,
+    ) -> Result<forge_primitives::browser::BrowserNavState, String> {
+        self.0.nav(profile, viewer, back).await
+    }
+
+    async fn nav_state(&self, profile: &str) -> Option<forge_primitives::browser::BrowserNavState> {
+        self.0.nav_state(profile).await
+    }
+
+    async fn profiles(
+        &self,
+        seat: &forge_primitives::SessionSlot,
+    ) -> Result<Vec<forge_primitives::browser::BrowserProfileRow>, String> {
+        self.0.profiles(seat).await
+    }
+
+    async fn close_profile(
+        &self,
+        seat: &forge_primitives::SessionSlot,
+        name: &str,
+    ) -> Result<(), String> {
+        self.0.close(seat, Some(name)).await
+    }
+
+    async fn delete_profile(
+        &self,
+        seat: &forge_primitives::SessionSlot,
+        name: &str,
+    ) -> Result<(), String> {
+        self.0.delete_profile(seat, name).await
+    }
+
+    async fn sweep_seats(&self, seats: &[forge_primitives::SessionSlot]) {
+        self.0.sweep_seats(seats).await;
+    }
+
+    async fn stop(&self) -> Vec<String> {
+        self.0.stop_all().await
+    }
 }
 
 /// The subsystem wave the boot starts, in the order it has always started it.
@@ -174,9 +377,9 @@ pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketSe
         return Ok(SocketServing::Disabled);
     }
     let addr = std::net::SocketAddr::new(server.bind, server.port);
-    // Built from the workspace so every piece the socket needs is
-    // derived where the workspace is in hand - the browser relay above
-    // all, which must be the one the sessions ask through.
+    // Built from the workspace so every piece the socket needs is derived
+    // where the workspace is in hand - the browser fleet above all, which
+    // must be the one the sessions' own tools drive.
     let state = Arc::new(crate::transport::TransportState::for_workspace(
         workspace,
         workspace.client_config(),

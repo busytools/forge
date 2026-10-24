@@ -1,5 +1,5 @@
 //! The browser family: the core `@playwright/mcp` tools, forwarded to the
-//! one client connection that holds the browser role.
+//! server's browser fleet.
 //!
 //! **Names and shapes are upstream's, exactly.** A prompt written against a
 //! Playwright MCP server names `browser_navigate` and passes a snapshot's
@@ -11,15 +11,14 @@
 //! here.
 //!
 //! **The family is any-caller, and it is not a toggleable one.** The browser
-//! is one machine-global client, not a scope like reviews or crons: every
-//! session may drive it, and with no browser-capable client connected each
-//! tool answers the named error rather than pretending the surface is
-//! absent.
+//! is one machine-global one, not a scope like reviews or crons: every
+//! session may drive it, and a workspace with no fleet answers the no-host
+//! refusal rather than pretending the surface is absent.
 //!
-//! **The tool carries no logic.** It forwards the call to the host and hands
-//! back what the host returned - refs only mean something inside the client's
-//! page state, so a server-side implementation of any of these is impossible
-//! by construction, which is why the relay exists at all.
+//! **The tool carries no logic.** It forwards the call to the fleet and
+//! hands back the parts it returned - refs only mean something inside that
+//! browser's own page state, so the server drives the page rather than
+//! answering for it.
 
 use std::sync::Arc;
 
@@ -308,12 +307,12 @@ mod tests {
         );
     }
 
-    /// No client holding the role is a tool error naming the reason, not an
-    /// empty result or a hang.
+    /// A refused call is a tool error naming the reason, not an empty result
+    /// or a hang.
     #[tokio::test]
     async fn a_refused_call_is_a_tool_error_naming_the_reason() {
         let mock = Arc::new(MockBrowserFacade::new());
-        *mock.answer.lock() = Err(crate::browser::NO_BROWSER_CLIENT.to_owned());
+        *mock.answer.lock() = Err(crate::browser::NO_BROWSER_HOST.to_owned());
         let tool = BrowserTool {
             spec: spec_named("browser_navigate"),
             facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
@@ -325,7 +324,7 @@ mod tests {
         assert!(out.is_error, "the refusal is the call's failure");
         assert_eq!(
             out.blocks,
-            vec![ToolOutputBlock::Text { text: crate::browser::NO_BROWSER_CLIENT.to_owned() }],
+            vec![ToolOutputBlock::Text { text: crate::browser::NO_BROWSER_HOST.to_owned() }],
             "and it carries the reason a session can act on",
         );
     }
@@ -358,14 +357,13 @@ mod tests {
         );
     }
 
-    /// **The whole seam, from a tool call to the channel the workspace hands
-    /// out.** A tool driven through the built server is answered by a host
-    /// registered through `Workspace::browser_relay()` - the same accessor the
-    /// spawn builds its facade from - so a facade wired to a relay of its own
-    /// fails here rather than shipping as every browser tool answering "no
-    /// browser-capable client connected" while a client sits attached.
+    /// **The whole seam, from a tool call to the fleet the server installs.**
+    /// A tool driven through the built server is answered by the host
+    /// installed on the workspace, so a facade reading a fleet of its own
+    /// fails here rather than shipping as every browser tool answering the
+    /// no-host refusal while a fleet runs beside it.
     #[tokio::test]
-    async fn a_tool_driven_through_the_server_asks_the_relay_the_workspace_hands_out() {
+    async fn a_tool_driven_through_the_server_reaches_the_installed_host() {
         use crate::mcp::browser::facade::ProdBrowserFacade;
         use crate::mcp::cron::facade::MockCronFacade;
         use crate::mcp::gotify::facade::MockGotifyFacade;
@@ -377,12 +375,9 @@ mod tests {
         use tokio::sync::mpsc;
 
         let (workspace, _updates) = crate::workspace::Workspace::testing_stub();
-        let (to_host, mut asks) = mpsc::unbounded_channel();
-        let (notices, _notice_rx) = mpsc::unbounded_channel();
-        assert!(
-            workspace.browser_relay().register(1, to_host, notices),
-            "precondition: the role is free on a fresh workspace",
-        );
+        let (calls, mut heard) = mpsc::unbounded_channel();
+        workspace
+            .install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
 
         let server = crate::mcp::build_forge_server(
             crate::mcp::ForgeServerFacades {
@@ -405,12 +400,6 @@ mod tests {
             crate::mcp::SessionKind::Worker,
         );
 
-        let host = tokio::spawn(async move {
-            let request = asks.recv().await.expect("the ask reached the registered host");
-            assert_eq!(request.tool, "browser_close", "and names the tool that was called");
-            request.reply.send(Ok(vec![BrowserPart::Text { text: "closed".to_owned() }])).ok();
-        });
-
         let answer = server
             .dispatch(&forge_sdk::mcp::protocol::JsonRpcRequest {
                 jsonrpc: "2.0".to_owned(),
@@ -420,18 +409,14 @@ mod tests {
             })
             .await
             .expect("a tools/call is answered");
-        // Bounded, so a facade wired to a relay of its own fails here -
-        // naming what never happened - rather than holding the run open.
-        tokio::time::timeout(std::time::Duration::from_secs(5), host)
-            .await
-            .expect(
-                "the ask reached the registered host rather than the tool answering without one",
-            )
-            .expect("the host task ran");
 
+        let heard = heard.try_recv().expect(
+            "the call reached the installed host rather than the tool answering without one",
+        );
+        assert_eq!(heard.0, "browser_close", "and names the tool that was called");
         let encoded = format!("{answer:?}");
         assert!(
-            encoded.contains("closed"),
+            encoded.contains("clicked"),
             "the tool's answer is the host's parts, so the call reached it: {encoded}",
         );
         assert!(!encoded.contains("no browser-capable client"), "{encoded}");
@@ -458,7 +443,7 @@ mod tests {
         assert!(!out.is_error, "{:?}", out.blocks);
         assert!(
             mock.calls.lock().is_empty(),
-            "the hand-off never reaches the relay: the person is the ask, not the browser",
+            "the hand-off never reaches the browser: the person is the ask, not the tool",
         );
         assert_eq!(
             mock.hand_offs.lock().as_slice(),

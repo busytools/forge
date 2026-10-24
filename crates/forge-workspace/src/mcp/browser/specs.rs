@@ -9,10 +9,11 @@
 //! family carries beyond upstream are marked as such, and each names an
 //! argument upstream does not have - `force`, `expression` - or stands as a
 //! tool of its own: built from the same driver, or - `browser_profile_delete`
-//! alone - answered by the client's host and never reaching a driver.
+//! alone - answered by the server's browser fleet and never reaching a
+//! driver.
 //!
 //! Kept apart from the tools themselves so the surface a model reads is one
-//! table rather than twenty-nine structs: a shape is edited here and nowhere
+//! table rather than a struct apiece: a shape is edited here and nowhere
 //! else.
 
 use serde_json::{Value, json};
@@ -28,12 +29,10 @@ pub(crate) struct ToolSpec {
 /// The whole surface, in upstream's own order.
 ///
 /// Every tool carries the optional `profile` name: a session says which
-/// profile a call drives, and the client routes on it - an omitted name is
+/// profile a call drives, and the server routes on it - an omitted name is
 /// the calling seat's own, and the shared browser is named `@shared` - except
 /// `browser_profile_delete`, which names the profile to remove in `name` and
-/// is answered by the client's host. **The phone is one browser**: every
-/// call there drives it, and a named profile, `@shared` included, is
-/// refused.
+/// is answered by the server's browser fleet.
 pub(crate) fn specs() -> Vec<ToolSpec> {
     let mut specs = vec![
         ToolSpec {
@@ -746,11 +745,34 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         },
-        // **Answered by the client's host, not the driver**: a profile's
-        // delete never drives a page, so this one addition rides the relay
-        // and stops at the host. It is a seat's own door - only the profile
-        // this seat opened can go through it; the person's wider door is the
-        // browser strip.
+        // **A take is the host's, not the driver's.** The page is laid out
+        // at the file's own size for the duration, and the host's encoder
+        // writes the viewport; the controller's view comes back on stop.
+        ToolSpec {
+            name: "browser_record_start",
+            description: "Record the page's viewport into a silent 1280x720 MP4 at 30 frames a second, laying the page out at that size for the take. The file stays on the machine the browser runs on. Call browser_record_stop to finish it; the recording stops itself at 180 seconds.",
+            schema: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        ToolSpec {
+            name: "browser_record_stop",
+            description: "Stop the running recording, answer the file it wrote with its length and size, and put the controller's own view back.",
+            schema: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        // **Answered by the server's fleet, not the driver**: a profile's
+        // delete never drives a page, so this one addition stops at the
+        // service. It is a seat's own door - only the profile this seat
+        // opened can go through it; the person's wider door is the browser
+        // strip.
         ToolSpec {
             name: "browser_profile_delete",
             description: "Delete one of this seat's own browser profiles, removing its saved logins, cookies and sessions for good. Only a profile this seat opened can be deleted; the shared browser and another seat's profiles are refused.",
@@ -780,26 +802,21 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         if spec.name == "browser_profile_delete" {
             continue;
         }
-        // **The phone is one browser.** Its shell refuses every name,
-        // `@shared` included, so a description that said an omitted profile
-        // drives the seat's own would be false there this cut ships.
-        let phone = " The phone has one browser: every call drives it there, and a named profile, \
-                     `@shared` included, is refused.";
         let description = if spec.name == "browser_hand_off" {
             "Name of the browser profile to raise for the person. **Omit it to raise this \
-             seat's own profile**; name `@shared` to raise the browser's own profile. Only this \
-             seat's own profile can be raised; another seat's is refused. The raise is on the \
-             client's host, never the person's own browser or its tabs."
+             seat's own profile**; name `@shared` to raise the browser's own profile, the one \
+             every seat shares. A named profile belongs to the seat that opened it, and another \
+             seat's is refused. The raise is on the server's browser, never the person's own \
+             browser or its tabs."
         } else {
             "Name of the browser profile to drive. **Omit it to drive this seat's own \
                 profile**, named after its project and label and opened on its first call. Name \
                 `@shared` to drive the browser's own profile, the one every seat shares - its \
                 tabs are whatever the person or another seat left there, so name it \
-                deliberately. A call reaches the client's host, never the person's own browser \
+                deliberately. A call reaches the server's browser, never the person's own browser \
                 or its tabs. A named profile belongs to the SEAT that first names it; another \
                 seat naming it is refused."
         };
-        let description = format!("{description}{phone}");
         properties
             .insert("profile".to_owned(), json!({ "type": "string", "description": description }));
     }
@@ -810,13 +827,13 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
 mod tests {
     use super::*;
 
-    /// The surface is twenty-nine tools: the 25 upstream published and the
-    /// four this family adds. A count is the cheap half; the shape of each
-    /// is pinned below.
+    /// The surface is thirty-one tools: the 25 upstream published and the
+    /// six this family adds. A count is the cheap half; the shape of each is
+    /// pinned below.
     #[test]
     fn the_surface_is_the_captures_tools_and_the_additions() {
         let names: Vec<&str> = specs().iter().map(|spec| spec.name).collect();
-        assert_eq!(names.len(), 29, "25 upstream tools and four additions: {names:?}");
+        assert_eq!(names.len(), 31, "25 upstream tools and six additions: {names:?}");
         for upstream in [
             "browser_close",
             "browser_resize",
@@ -850,8 +867,10 @@ mod tests {
             names.contains(&"browser_click_and_capture")
                 && names.contains(&"browser_form_state")
                 && names.contains(&"browser_hand_off")
+                && names.contains(&"browser_record_start")
+                && names.contains(&"browser_record_stop")
                 && names.contains(&"browser_profile_delete"),
-            "the four beyond-upstream tools are on the surface: {names:?}",
+            "the six beyond-upstream tools are on the surface: {names:?}",
         );
     }
 
@@ -911,7 +930,7 @@ mod tests {
             let described =
                 spec.schema["properties"]["profile"]["description"].as_str().unwrap_or_default();
             assert!(
-                described.contains("the client's host, never the person's own browser or its tabs"),
+                described.contains("server's browser, never the person's own browser or its tabs"),
                 "{} does not say which browser a call reaches: {}",
                 spec.name,
                 spec.schema,
@@ -928,14 +947,6 @@ mod tests {
             assert!(
                 described.contains("this seat's own profile"),
                 "{} does not say what an omitted profile drives: {described}",
-                spec.name,
-            );
-            // **The phone is one browser and refuses every name**, so a
-            // description that stopped at the desktop rule would be false on
-            // a platform this cut ships.
-            assert!(
-                described.contains("The phone has one browser"),
-                "{} does not state the phone's single browser: {described}",
                 spec.name,
             );
             let required = &spec.schema["required"];

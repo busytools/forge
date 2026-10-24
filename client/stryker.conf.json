@@ -9,7 +9,6 @@
     "node_modules",
     "dist",
     "src-tauri/target",
-    "src-tauri/browser-stack",
     "src-tauri/gen",
     "reports",
     ".stryker-tmp"

@@ -100,15 +100,15 @@
 <div class="page">
 
   <h1>The browser surface</h1>
-  <p class="sub">The client's own Chromium as a full-window takeover: the page fills the window
+  <p class="sub">The server's Chromium as a full-window takeover: the page fills the window
   under a slim client bar, and the bar carries the hand-off's actions. No window, no tab strip and
   no browser chrome - the page is the surface. A hand-off's <b>Open</b> and the strip's browser row
   both open it; the sessions drive the same page while it is closed.</p>
   <div class="legend">
-    <span>engine: the app's own Chromium</span>
+    <span>engine: the server's CEF host</span>
     <span>one host per profile</span>
-    <span>the picture is the host's own buffer</span>
-    <span>Android keeps its system WebView</span>
+    <span>the server relays the picture</span>
+    <span>the phone is a viewer too</span>
   </div>
 
   <h2>The takeover</h2>
@@ -123,6 +123,7 @@
         </span>
         <span class="btitle">browser hand-off</span>
         <span class="bacts">
+          <span class="bt">take control</span>
           <span class="bt">Done</span>
           <span class="bt d">something's wrong&hellip;</span>
           <span class="bt d">Not now</span>
@@ -142,10 +143,52 @@
         <div class="cursor" aria-hidden="true"></div>
       </div>
     </div>
-    <div class="tnote">clicks, keys and the wheel land on the page as trusted input; the person's
-    own cursor is drawn by the page, not by the client. The two arrows are the page's own history:
-    back was enabled by the link that reached this page, forward has nowhere to go yet, and Cmd+[
-    and Cmd+] are their keys.</div>
+    <div class="tnote">take control makes this surface the one viewer whose clicks, keys, wheel
+    and history arrows reach the page; a watcher's arrows are drawn disabled, and the server
+    refuses a move from anyone but the holder. The server pushes who holds the role, so another
+    surface says take control rather than guessing. The gestures land as trusted input, and the person's own cursor is
+    drawn by the page, not by the client. The two arrows are the page's own history: back was
+    enabled by the link that reached this page, forward has nowhere to go yet, and Cmd+[ and
+    Cmd+] are their keys.</div>
+  </div>
+
+  <h2>The phone</h2>
+  <div class="tile">
+    <div class="tcap"><b>the same page on the phone</b> - the same bar, a canvas instead of a native layer</div>
+    <div style="display:flex; justify-content:center;">
+      <div class="takeover" style="width:300px; min-height:0;">
+        <div class="bar" style="padding:5px 8px; gap:6px; flex-wrap:wrap; row-gap:4px;">
+          <span class="bt d">back to chat</span>
+          <span class="bnav">
+            <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
+            <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+          </span>
+          <span class="btitle" style="flex:1 1 auto;">shared</span>
+          <span class="bacts" style="margin-left:0; flex-basis:100%; flex-wrap:wrap; justify-content:flex-end;">
+            <span class="bt">take control</span>
+            <span class="bt">Done</span>
+            <span class="bt d">something's wrong&hellip;</span>
+            <span class="bt d">Not now</span>
+          </span>
+        </div>
+        <div class="stage" style="min-height:400px;">
+          <div class="pagetop" style="padding:20px 18px 0;">
+            <span class="kicker">example domain</span>
+            <h3 style="font-size:20px;">This domain is for use in documentation examples</h3>
+            <p style="font-size:var(--fs-data);">The server encoded this frame; the phone painted it
+            on a canvas at the phone's own size.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="tnote">the phone's shell has no native overlay, so each relayed frame is a WebP still
+    the page draws on a canvas. The picture keeps its own shape - a wide page in a portrait phone is
+    letterboxed, and taking control lays it out at the phone's shape. The bar over it is the same
+    bar, and a hand-off's row is wider than the phone in portrait: its actions wrap to a line of
+    their own, so <b>Done</b>, <b>something's wrong&hellip;</b> and <b>Not now</b> stay on screen
+    and under the finger at the narrowest width. take control makes the phone the one viewer whose
+    taps, keys and swipes reach the page, the bar clears the status band with its own safe-area
+    padding, and the newest frame is kept for a canvas that mounts after it arrived.</div>
   </div>
 
   <h2>The bar's other two doors</h2>
@@ -191,7 +234,7 @@
     <div class="strip" style="margin-top:12px">
       <span class="dot" aria-hidden="true"></span>
       <span>browser</span><span class="n">2</span>
-      <span class="engine">the app's own Chromium</span>
+      <span class="engine">the server's own Chromium</span>
     </div>
     <div class="tnote">the strip's row opens the same takeover outside a hand-off; hide returns to
     the chat and the sessions keep driving the page.</div>

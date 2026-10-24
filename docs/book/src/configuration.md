@@ -578,6 +578,19 @@ from here.** A client is its own program and draws everything itself; the
 socket hands it data. A bind that fails is fatal on the headless binary:
 with no view of its own it would serve nothing.
 
+## `[browser]`
+
+The server's browser: how often a host encodes frames, how good they
+are, and how long a profile nobody watches stays up. Absent means every
+default.
+
+| Key             | Type    | Default | Notes                                                                                                                                                                                                                                                                                                                             |
+| --------------- | ------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fps`           | integer | `30`    | Frames encoded per second, between `1` and `120`. CEF paints at its own cadence and faster paints are coalesced to this rate before the encoder runs, so the key bounds the encode cost a watching viewer causes. A paused host - one with no viewer attached - encodes nothing whatever this is. A value outside the range fails the load (`[browser] fps must be 1 to 120`). |
+| `quality`       | integer | `75`    | Lossy WebP quality for the frames between key frames, `0` to `100`. A key frame is lossless regardless: the first frame of a surface and every frame after a resize or a pause. A value over `100` fails the load (`[browser] quality must be 0 to 100`). |
+| `idle_minutes`  | integer | `20`    | The idle release, on the server's clock: after this many minutes with no browser call or viewer attach, a named profile's owner is sent a heads-up. (A lower does not reset the clock; the next call or attach does.) A live session gets the heads-up as a turn; a seat with no live session has nobody to tell, and its browser closes quietly instead. **The shared browser is never announced** - it closes quietly at the grace. **A hand-off waiting on the person always holds the profile** - it is neither warned about nor closed, and neither is a profile a viewer is attached to. |
+| `grace_minutes` | integer | `10`    | How long the browser lives past its idle bound unless it is used - for a named profile, after its heads-up. The close is a real close: logins and the profile stay, and the next call brings the browser back on the page you last saw - the CEF host keeps one page target, so there are no Brave-era tabs to restore - but a filled form does not survive it. **The clocks live in the server's memory**, so a server restart grants every browser a fresh window. |
+
 ## `[client]`
 
 Which of the sets forge ships a client draws with. Absent means every
@@ -588,8 +601,6 @@ name unset, which is the built-in.
 | `mark`  | string | unset, drawing panes                              | The mark a client draws, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn.                                |
 | `theme` | string | unset, drawing dark                               | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background.                                                                                               |
 | `font`  | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, bundled with the client and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
-| `browser_idle_minutes` | integer | unset, meaning 20                      | The idle release: after this many minutes with no browser call, raise or lower, a named profile's creator is sent a heads-up over the socket's prompt channel. A live session gets the heads-up as a turn; a seat with no live session has nobody to tell, and its browser closes quietly instead. **The shared browser is never announced** - it closes quietly at the grace. **A hand-off waiting on the person always holds the profile** - it is neither warned about nor closed, and neither is a profile whose window is up. |
-| `browser_grace_minutes` | integer | unset, meaning 10                     | How long the browser lives past its idle bound unless it is used - for a named profile, after its heads-up. The close is a real close: logins and the profile stay, and the next call brings the browser back on the page you last saw - the CEF host keeps one page target, so there are no Brave-era tabs to restore - but a filled form does not survive it. **The clocks live in the client's memory**, so a client restart grants every browser a fresh window. |
 
 ## `[documents]`
 
@@ -614,8 +625,8 @@ nothing forge ships; this key picks by name, never by path`), because a
 setting that is quietly ignored reads as the key not working. Like the
 port checks, none of them run while the socket is disabled.
 
-`mark`, `theme`, `font` and the idle pair are a client's settings rather
-than the server's, and the socket carries them to a client on connect, so a
+`mark`, `theme` and `font` are a client's settings rather than the
+server's, and the socket carries them to a client on connect, so a
 client never reads `forge.toml` for itself and the file stays the one
 source of truth. The server draws none of them: the socket serves no page.
 
@@ -635,8 +646,8 @@ and names itself rather than parsing clean and meaning something else -
 a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[[accounts]]`, `[models."<name>"]`, `[[slack]]`, `[gotify]`,
-`[systemone]`, `[gateway]`, `[dictate]`, `[plugins]`, `[server]` and
-`[client]`.
+`[systemone]`, `[gateway]`, `[dictate]`, `[plugins]`, `[server]`,
+`[browser]` and `[client]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
@@ -645,7 +656,10 @@ device`. In the tables above a stray key is a typo and is refused; a
 ghost is the exception,
 because its whole job is to accept what a live config still carries - so
 what a retired section holds is unconstrained and only the section
-itself warns.
+itself warns. The retired `[client]` keys `browser_idle_minutes` and
+`browser_grace_minutes` are ghosts in the same way: the server reads
+`[browser] idle_minutes` and `grace_minutes` now, and an old config's pair
+is accepted with a warning rather than failing the load.
 
 **`[web]` is the one retired section that fails the load.** It is a
 declared ghost too, but a hard stop rather than a warning

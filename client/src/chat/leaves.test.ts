@@ -538,7 +538,7 @@ describe('a server-side call on its row', () => {
   });
 
   /** **A browser call says `browser`, not `playwright`.** The sessions drive
-   *  the client's own browser; the driver's server name is plumbing, and the
+   *  the server's own browser; the driver's server name is plumbing, and the
    *  verb names the call where nothing else does. */
   it('names a browser call for what it drives, not the server that carried it', () => {
     const bare = leafOf('t1', 'mcp__playwright__browser_snapshot', {}, undefined);

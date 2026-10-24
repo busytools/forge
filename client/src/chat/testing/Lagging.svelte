@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { Connection } from '../../socket';
   import type { TurnInfo } from '../units';
   import Pinned from '../Pinned.svelte';
 
@@ -12,8 +11,6 @@
    * The record is `Pinned.test.ts`'s running fixture, so the clock starts at
    * the same instant and only the slip is under test.
    */
-  let { connection }: { connection: Connection } = $props();
-
   let info = $state<TurnInfo>({
     running: true,
     failed: false,
@@ -35,4 +32,4 @@
   }
 </script>
 
-<Pinned {info} {connection} />
+<Pinned {info} />

@@ -218,11 +218,6 @@ export interface Wire {
     | 'subscribe'
     | 'unsubscribe'
     | 'refresh'
-    | 'browserRole'
-    | 'browserRoleKnown'
-    | 'onBrowserRole'
-    | 'onProfilesChanged'
-    | 'takeBrowserRole'
   >;
   /** Say something to every composer attached, as the server would. */
   say(message: ServerMessage): void;
@@ -261,16 +256,6 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
         return () => listeners.delete(fn);
       },
       store: (what) => stores.get(what),
-      // The strip lane's browser segment, which registers a role listener and
-      // reads the role as it draws; these tests never press its override, and
-      // nothing here sweeps a profile. **A lone client holds the role**, and
-      // the relay has said so, which is the ordinary single-client page; a
-      // test about two clients overrides either read.
-      browserRole: () => true,
-      browserRoleKnown: () => true,
-      onBrowserRole: () => () => {},
-      onProfilesChanged: () => () => {},
-      takeBrowserRole: () => {},
       // The take's own three: a page that starts one streams frames here,
       // and the fixtures answer as a live socket does.
       frame(bytes: Uint8Array) {

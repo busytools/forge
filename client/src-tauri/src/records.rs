@@ -760,9 +760,9 @@ fn clear_ask(record: &mut Map<String, Value>, id: Option<&Value>, prefix: &str) 
 /// answer with a snapshot rather than a delta. **The declaration is the
 /// caller's**: a refresh with flags of its own would escalate a seat watched
 /// without them, and the core parks turns on whatever answered.
-pub fn refresh(socket: &Socket, subject: &Value, answering: bool, browser: bool) {
+pub fn refresh(socket: &Socket, subject: &Value, answering: bool) {
     socket.unsubscribe(subject.clone());
-    socket.subscribe(subject.clone(), answering, browser);
+    socket.subscribe(subject.clone(), answering);
 }
 
 #[cfg(test)]

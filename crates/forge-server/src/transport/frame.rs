@@ -1,21 +1,32 @@
-//! The binary frames a client streams in.
+//! The binary frames on the socket.
 //!
 //! One WebSocket binary message per frame: a one-byte kind tag, then the
 //! payload. Two kinds, and what tells them apart is the tag alone:
 //!
-//! - [`Kind::Dictation`] - mono PCM at [`SAMPLE_RATE`], the rate the dictation
-//!   models read.
-//! - [`Kind::BrowserImage`] - one browser answer's image bytes, under the
-//!   answer's own id. The mime type crossed on the answer's own message, so
-//!   this frame is the id and the bytes and nothing else.
+//! - [`Kind::Dictation`] - a client's mono PCM at [`SAMPLE_RATE`], the rate
+//!   the dictation models read. The server decodes this one.
+//! - [`Kind::BrowserFrame`] - the server's relay of one encoded browser
+//!   frame: the profile id, sequence, view size, format, key flag and the
+//!   WebP payload, exactly as the host encoded it. **The bytes are never
+//!   re-encoded or decoded here**; the server only moves them.
 //!
 //! **The kind tag is why the shape can grow**: a third kind is a variant here
 //! plus a line in the recorded contract, not a new message type.
 //!
-//! **The server only decodes.** Encoding lives with the client that captures
-//! or answers, and a message this server cannot decode is dropped with a
-//! record rather than answered - a take's audio has no reply channel, and an
-//! image frame carries its own id.
+//! **The server decodes what clients send and encodes what it sends.** A
+//! browser frame arriving from a client is refused: the host is the only
+//! encoder.
+//!
+//! **A frame leaves the server through one interface.** [`FrameTransport`]
+//! is what the connection asks to deliver a viewer's frame; the socket is its
+//! only implementation today, and a WebRTC backend later is another
+//! implementation rather than a change to input, tools or the draw path.
+
+use axum::extract::ws::Message;
+use forge_primitives::browser::{BrowserAudio, BrowserFrame};
+use futures_util::SinkExt as _;
+
+use super::{WRITE_BOUND, write_within};
 
 /// The rate every dictation frame's samples are at. Pinned against the
 /// dictation crate's own constant by a test rather than imported: the wire's
@@ -31,24 +42,18 @@ pub const HEADER_BYTES: usize = 1;
 /// the server hold a large allocation per message.
 pub const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
 
-/// One image frame's header: the kind tag, then the answer's id as a
-/// big-endian u64.
-pub const IMAGE_HEADER_BYTES: usize = 1 + 8;
-
-/// The largest image payload a frame may carry. A screenshot of a full page
-/// is a few megabytes; the cap is a bound on what a client can make this
-/// server hold, not a budget a real capture comes close to. The socket's own
-/// frame limit is raised to this plus a header at the upgrade.
-pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
-
 /// What a binary frame is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// Mono 16-bit little-endian PCM: what a browser's own i16 conversion
     /// produces, with no encoder on either side.
     Dictation,
-    /// One browser answer's image bytes.
-    BrowserImage,
+    /// One encoded browser frame, relayed from the host.
+    BrowserFrame,
+    /// One packet of the viewed page's audio, relayed to the controlling
+    /// client: the profile id, sequence, sample rate and channels, then
+    /// interleaved 16-bit samples.
+    BrowserAudio,
 }
 
 impl Kind {
@@ -56,16 +61,70 @@ impl Kind {
     pub const fn tag(self) -> u8 {
         match self {
             Self::Dictation => 0,
-            Self::BrowserImage => 1,
+            Self::BrowserFrame => 1,
+            Self::BrowserAudio => 2,
         }
     }
 
     const fn from_tag(tag: u8) -> Option<Self> {
         match tag {
             0 => Some(Self::Dictation),
-            1 => Some(Self::BrowserImage),
+            1 => Some(Self::BrowserFrame),
+            2 => Some(Self::BrowserAudio),
             _ => None,
         }
+    }
+}
+
+/// How one viewer receives a browser's frames.
+///
+/// **The connection never formats a frame itself**: it hands one to this
+/// and the transport decides how the person sees it. The socket transport
+/// below is the only implementation now.
+#[async_trait::async_trait]
+pub trait FrameTransport: Send {
+    /// Deliver one encoded frame to this viewer. `Err` is a connection that
+    /// is gone, and the caller ends it.
+    async fn deliver(&mut self, frame: &BrowserFrame) -> anyhow::Result<()>;
+
+    /// Deliver one packet of the page's audio to this viewer.
+    async fn deliver_audio(&mut self, audio: &BrowserAudio) -> anyhow::Result<()>;
+}
+
+/// The socket's own transport: one tagged binary message per frame.
+pub struct SocketFrames<'a, S> {
+    pub socket: &'a mut S,
+}
+
+#[async_trait::async_trait]
+impl<S> FrameTransport for SocketFrames<'_, S>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+{
+    async fn deliver(&mut self, frame: &BrowserFrame) -> anyhow::Result<()> {
+        let mut bytes = Vec::with_capacity(HEADER_BYTES + frame.encoded.len());
+        bytes.push(Kind::BrowserFrame.tag());
+        bytes.extend_from_slice(&frame.encoded);
+        write_within(WRITE_BOUND, async {
+            self.socket.send(Message::Binary(bytes.into())).await.map_err(anyhow::Error::from)
+        })
+        .await
+    }
+
+    async fn deliver_audio(&mut self, audio: &BrowserAudio) -> anyhow::Result<()> {
+        let mut bytes = Vec::with_capacity(12 + audio.samples.len() * 2);
+        bytes.push(Kind::BrowserAudio.tag());
+        bytes.extend_from_slice(&audio.profile.to_le_bytes());
+        bytes.extend_from_slice(&audio.seq.to_le_bytes());
+        bytes.extend_from_slice(&audio.sample_rate.to_le_bytes());
+        bytes.push(audio.channels);
+        for sample in &audio.samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        write_within(WRITE_BOUND, async {
+            self.socket.send(Message::Binary(bytes.into())).await.map_err(anyhow::Error::from)
+        })
+        .await
     }
 }
 
@@ -80,31 +139,11 @@ pub enum Refusal {
     Oversized(usize),
     /// A dictation payload that is not a whole number of samples.
     UnevenPayload(usize),
-    /// An image frame shorter than its own header.
-    ShortImageHeader(usize),
-    /// An image payload past [`MAX_IMAGE_BYTES`].
-    OversizedImage(usize),
+    /// A browser frame, which only the server sends.
+    ServerOnly(u8),
 }
 
 impl Refusal {
-    /// Whether this refusal could have been an IMAGE frame's.
-    ///
-    /// A header too short to say, a kind nobody knows, a truncated image
-    /// header and an oversized image are all things an image frame can be.
-    /// A dictation refusal - an oversized or uneven payload - belongs to the
-    /// audio stream, and failing asks that are waiting for images on it would
-    /// hand a session an image-error sentence over a microphone frame, which
-    /// is a reason that names the wrong thing.
-    pub fn concerns_images(self) -> bool {
-        match self {
-            Self::ShortHeader
-            | Self::UnknownKind(_)
-            | Self::ShortImageHeader(_)
-            | Self::OversizedImage(_) => true,
-            Self::Oversized(_) | Self::UnevenPayload(_) => false,
-        }
-    }
-
     /// One line for the debug record.
     pub fn reason(self) -> String {
         match self {
@@ -114,11 +153,8 @@ impl Refusal {
             Self::UnevenPayload(bytes) => {
                 format!("{bytes} bytes is not a whole number of samples")
             }
-            Self::ShortImageHeader(bytes) => {
-                format!("{bytes} bytes is shorter than an image frame's own header")
-            }
-            Self::OversizedImage(bytes) => {
-                format!("{bytes} bytes of image is past the image frame cap")
+            Self::ServerOnly(tag) => {
+                format!("kind tag {tag} is a frame the server sends, not one a client does")
             }
         }
     }
@@ -129,11 +165,9 @@ impl Refusal {
 pub enum Frame {
     /// A dictation frame: the samples its bytes carry.
     Audio(Vec<f32>),
-    /// One browser answer's image bytes, under the answer's id.
-    Image { id: u64, bytes: Vec<u8> },
 }
 
-/// Decode one binary message.
+/// Decode one binary message a client sent.
 pub fn decode(bytes: &[u8]) -> Result<Frame, Refusal> {
     let Some((&tag, payload)) = bytes.split_first() else {
         return Err(Refusal::ShortHeader);
@@ -157,21 +191,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, Refusal> {
                 .collect();
             Ok(Frame::Audio(samples))
         }
-        Kind::BrowserImage => {
-            if bytes.len() < IMAGE_HEADER_BYTES {
-                return Err(Refusal::ShortImageHeader(bytes.len()));
-            }
-            // The header's own length is checked first, so the id's eight
-            // bytes are there to copy.
-            let mut id = [0_u8; 8];
-            id.copy_from_slice(&bytes[1..IMAGE_HEADER_BYTES]);
-            let id = u64::from_be_bytes(id);
-            let payload = &bytes[IMAGE_HEADER_BYTES..];
-            if payload.len() > MAX_IMAGE_BYTES {
-                return Err(Refusal::OversizedImage(payload.len()));
-            }
-            Ok(Frame::Image { id, bytes: payload.to_vec() })
-        }
+        Kind::BrowserFrame | Kind::BrowserAudio => Err(Refusal::ServerOnly(tag)),
     }
 }
 
@@ -188,14 +208,6 @@ mod tests {
         bytes
     }
 
-    /// An image frame built at the wire's shape.
-    fn image_frame(id: u64, bytes: &[u8]) -> Vec<u8> {
-        let mut frame = vec![Kind::BrowserImage.tag()];
-        frame.extend_from_slice(&id.to_be_bytes());
-        frame.extend_from_slice(bytes);
-        frame
-    }
-
     /// The dictation wire shape: little-endian i16, scaled by 2^15. The two
     /// ends pin byte order and scaling together - a big-endian read of the
     /// same bytes trades 0.5 for 128.0, and a /32767 scale moves the
@@ -210,21 +222,14 @@ mod tests {
         );
     }
 
-    /// An image frame is its id and its bytes: the id is what pairs it with
-    /// the answer that declared the image, and the bytes are the bytes.
+    /// **A browser frame is the server's to send, never a client's.** The
+    /// host is the only encoder, so a client sending one is refused rather
+    /// than read as something the server could have produced.
     #[test]
-    fn a_browser_image_frame_decodes_to_its_id_and_bytes() {
-        let frame = decode(&image_frame(0x0102_0304_0506_0708, &[0x89, 0x50, 0x4e, 0x47]))
-            .expect("a well-formed image frame");
-        assert_eq!(
-            frame,
-            Frame::Image { id: 0x0102_0304_0506_0708, bytes: vec![0x89, 0x50, 0x4e, 0x47] },
-            "the id big-endian, then the bytes, and nothing else",
-        );
-
-        // The mime crossed on the answer, so an empty image is a shape the
-        // frame can carry rather than a malformed one.
-        assert_eq!(decode(&image_frame(9, &[])), Ok(Frame::Image { id: 9, bytes: Vec::new() }));
+    fn a_browser_frame_from_a_client_is_refused() {
+        assert_eq!(decode(&[Kind::BrowserFrame.tag(), 1, 2, 3]), Err(Refusal::ServerOnly(1)));
+        assert_eq!(Kind::BrowserFrame.tag(), 1, "the tag the client decodes as a frame");
+        assert_eq!(Kind::Dictation.tag(), 0, "and the audio stream keeps its own");
     }
 
     #[test]
@@ -254,49 +259,6 @@ mod tests {
         assert_eq!(decode(&[Kind::Dictation.tag(), 1, 2, 3]), Err(Refusal::UnevenPayload(3)));
     }
 
-    /// An image frame cut inside its own header names the length it had: the
-    /// id cannot be read, so there is no answer to give the bytes to.
-    ///
-    /// A message holding the whole header and no payload is NOT this case: it
-    /// names an answer, and an image of nothing is a shape the frame may
-    /// carry.
-    #[test]
-    fn an_image_frame_short_of_its_header_is_refused_with_its_length() {
-        for body in 0..IMAGE_HEADER_BYTES - 1 {
-            let mut bytes = vec![Kind::BrowserImage.tag()];
-            bytes.extend(std::iter::repeat_n(0u8, body));
-            assert_eq!(
-                decode(&bytes),
-                Err(Refusal::ShortImageHeader(bytes.len())),
-                "a {}-byte image frame names no answer",
-                bytes.len(),
-            );
-        }
-    }
-
-    /// The same bound as dictation, at the image's own size: what a client
-    /// can make the server hold is capped.
-    #[test]
-    fn an_oversized_image_is_refused_with_its_length() {
-        let mut bytes = image_frame(1, &[]);
-        bytes.extend(std::iter::repeat_n(0u8, MAX_IMAGE_BYTES + 1));
-        assert_eq!(decode(&bytes), Err(Refusal::OversizedImage(MAX_IMAGE_BYTES + 1)));
-    }
-
-    /// **The cap is a ceiling, not a shape the largest real image is under.**
-    /// A payload of exactly the cap is a frame this server takes, which is
-    /// what makes the refusal above a boundary rather than an off-by-one.
-    #[test]
-    fn an_image_payload_of_exactly_the_cap_is_taken() {
-        let mut frame = image_frame(3, &[]);
-        frame.extend(std::iter::repeat_n(0u8, MAX_IMAGE_BYTES));
-        assert_eq!(
-            decode(&frame),
-            Ok(Frame::Image { id: 3, bytes: vec![0; MAX_IMAGE_BYTES] }),
-            "exactly the cap crosses; one byte more is refused",
-        );
-    }
-
     /// The wire's rate is the one the models read. Not imported, because
     /// the transport states its own contract - so a drift between the two
     /// has to fail here rather than ride a shared constant.
@@ -309,22 +271,52 @@ mod tests {
         );
     }
 
-    /// **Who a refusal can fail.** Only the kinds an image frame can be may
-    /// fail asks that are waiting for images; a dictation refusal belongs to
-    /// the audio stream, and failing image waits on it would hand a session
-    /// an image-error sentence over a microphone frame.
+    /// **A frame crosses the seam whole, and the seam needs no socket.**
+    /// The connection's only coupling to delivery is this trait, so another
+    /// backend implements one method; the frame it receives is the host's
+    /// own bytes, untouched.
+    struct Memory {
+        frames: Vec<BrowserFrame>,
+        audio: Vec<BrowserAudio>,
+    }
+
+    #[async_trait::async_trait]
+    impl FrameTransport for Memory {
+        async fn deliver(&mut self, frame: &BrowserFrame) -> anyhow::Result<()> {
+            self.frames.push(frame.clone());
+            Ok(())
+        }
+
+        async fn deliver_audio(&mut self, audio: &BrowserAudio) -> anyhow::Result<()> {
+            self.audio.push(audio.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_frame_crosses_the_transport_seam_whole() {
+        let mut transport = Memory { frames: Vec::new(), audio: Vec::new() };
+        let frame = BrowserFrame { profile: 5, seq: 3, encoded: vec![9, 8, 7] };
+        transport.deliver(&frame).await.expect("a memory transport never fails");
+        assert_eq!(
+            transport.frames,
+            vec![frame],
+            "the transport receives the whole frame: the profile id, sequence and the host's own bytes"
+        );
+    }
+
+    /// Every refusal has its own sentence, so a log line says what the
+    /// frame was rather than that something was wrong.
     #[test]
-    fn only_image_possible_refusals_concern_image_waits() {
+    fn every_refusal_names_what_it_refused() {
         for refusal in [
             Refusal::ShortHeader,
             Refusal::UnknownKind(9),
-            Refusal::ShortImageHeader(3),
-            Refusal::OversizedImage(MAX_IMAGE_BYTES + 1),
+            Refusal::ServerOnly(1),
+            Refusal::Oversized(MAX_PAYLOAD_BYTES + 1),
+            Refusal::UnevenPayload(3),
         ] {
-            assert!(refusal.concerns_images(), "{refusal:?} could be an image frame's");
-        }
-        for refusal in [Refusal::Oversized(MAX_PAYLOAD_BYTES + 1), Refusal::UnevenPayload(3)] {
-            assert!(!refusal.concerns_images(), "{refusal:?} is the dictation stream's own");
+            assert!(!refusal.reason().is_empty(), "{refusal:?} has no line");
         }
     }
 }

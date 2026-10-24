@@ -11,84 +11,6 @@ use tauri_plugin_updater::UpdaterExt;
 #[cfg(desktop)]
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long the exit reap is given before the quit goes on without it. The
-/// normal reap is a kill by port per profile, well inside this; a close
-/// waiting out a launch in flight is cut here rather than hanging the quit,
-/// and the next boot's sweep reaps whatever the bound left.
-#[cfg(desktop)]
-const EXIT_REAP_BOUND: Duration = Duration::from_secs(10);
-
-/// The signal that asked the client to stop, `0` while none has. A signal
-/// handler may only store an atomic; the thread below does the reaping.
-///
-/// Unix desktops only: the phone has no host processes to reap, and Windows
-/// has no `SIGTERM` to catch (`libc` is a unix dependency).
-#[cfg(all(desktop, unix))]
-static SHUTDOWN_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-
-/// How often the reaper thread looks at the flag.
-#[cfg(all(desktop, unix))]
-const SHUTDOWN_POLL: Duration = Duration::from_millis(25);
-
-#[cfg(all(desktop, unix))]
-extern "C" fn mark_shutdown(signal: i32) {
-    SHUTDOWN_SIGNAL.store(signal, std::sync::atomic::Ordering::Release);
-}
-
-/// A host this client can reap: the real browser host, or a test double whose
-/// reap is observed without a browser stack.
-#[cfg(all(desktop, unix))]
-trait Reaps {
-    fn reap_owned_blocking(&self) -> Vec<String>;
-}
-
-#[cfg(all(desktop, unix))]
-impl Reaps for browser::BrowserHost {
-    fn reap_owned_blocking(&self) -> Vec<String> {
-        tauri::async_runtime::block_on(async {
-            tokio::time::timeout(EXIT_REAP_BOUND, self.reap_owned()).await.unwrap_or_default()
-        })
-    }
-}
-
-/// **A SIGTERM is a shutdown, not a death.** `RunEvent::Exit` runs no handler
-/// for a signal, so the browsers this client claimed would outlive it and hold
-/// the bundle the next install replaces. This is the same reap the exit event
-/// runs, from a thread the signal wakes; a SIGKILL runs neither, and the
-/// host's own parent watch is its backstop.
-#[cfg(all(desktop, unix))]
-fn install_shutdown_reaper<H: Reaps + Send + Sync + 'static>(host: std::sync::Arc<H>) {
-    // SAFETY: the handler stores an atomic and does nothing else.
-    unsafe {
-        libc::signal(libc::SIGTERM, mark_shutdown as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGINT, mark_shutdown as *const () as libc::sighandler_t);
-    }
-    drop(watch_shutdown_signal(&SHUTDOWN_SIGNAL, move |signal| {
-        // **The exit is unconditional.** A panic in the reap would otherwise
-        // swallow the signal and leave the client running with no handler.
-        let reaping = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            drop(host.reap_owned_blocking());
-        }));
-        drop(reaping);
-        std::process::exit(128 + signal);
-    }));
-}
-
-/// Wait for a shutdown signal and answer it. The answer is a seam, so a test
-/// can watch the bridge fire without ending the test process.
-#[cfg(all(desktop, unix))]
-fn watch_shutdown_signal<T: Send + 'static>(
-    signal: &'static std::sync::atomic::AtomicI32,
-    act: impl FnOnce(i32) -> T + Send + 'static,
-) -> std::thread::JoinHandle<Option<T>> {
-    std::thread::spawn(move || {
-        while signal.load(std::sync::atomic::Ordering::Acquire) == 0 {
-            std::thread::sleep(SHUTDOWN_POLL);
-        }
-        Some(act(signal.load(std::sync::atomic::Ordering::Acquire)))
-    })
-}
-
 /// The stages that finish an install, named by the platform that needs them.
 /// The client's line draws its words per stage, so this is a fact rather than
 /// copy: the desktop restarts into the swapped bundle, the phone's install is
@@ -107,9 +29,12 @@ fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, Stri
 // every target, the phone included.
 use tauri::Manager as _;
 
-pub mod asks;
 pub mod bridge;
 pub mod browser;
+#[cfg(test)]
+mod log_capture;
+#[cfg(all(target_os = "macos", feature = "look-driver"))]
+mod look;
 pub mod mic;
 #[cfg(target_os = "android")]
 pub mod micstate;
@@ -147,31 +72,22 @@ mod commands {
                     ClientEvent::Refused { key, why } => {
                         app.emit("client://refused", serde_json::json!({ "key": key, "why": why }))
                     }
-                    ClientEvent::Role { hosting } => app.emit("client://role", hosting),
-                    ClientEvent::Asks { inflight } => app.emit("client://asks", inflight),
-                    ClientEvent::Profiles => app.emit("client://profiles", ()),
                     ClientEvent::Mic(bytes) => app.emit("client://mic", bytes),
                 };
             }
         });
     }
 
-    /// Build the bridge over whatever browser host this target has, manage
-    /// it, and start its pump. Both arms call this; a target with no host
-    /// yet still gets a bridge, and it answers asks with that reason.
+    /// Build the bridge, manage it, and start its pump. Both arms call this.
     pub fn init(app: &tauri::AppHandle) {
-        let host = app
-            .try_state::<Arc<crate::browser::BrowserHost>>()
-            .map(|state| Arc::clone(state.inner()));
         let (events, rx) = tokio::sync::mpsc::unbounded_channel();
-        let bridge = Bridge::new(host, events);
-        // **The idle release starts with the bridge**: its clock is the
-        // host's, its warning rides the bridge's socket, and a client with
-        // no host or no connection simply has nothing to sweep.
-        #[cfg(desktop)]
-        crate::browser::idle::start(&bridge);
+        let bridge = Bridge::new(Some(app.clone()), events);
         app.manage(Arc::clone(&bridge));
         app.manage(Arc::new(crate::mic::Mic::default()));
+        // **The viewer is the desktop's**, and so is the native layer it
+        // draws into: the phone paints the same frames in its page instead.
+        #[cfg(target_os = "macos")]
+        app.manage(crate::browser::Viewer::new(app.clone()));
         pump(app.clone(), rx);
     }
 
@@ -190,13 +106,8 @@ mod commands {
     }
 
     #[tauri::command]
-    pub fn client_subscribe(
-        bridge: tauri::State<'_, Arc<Bridge>>,
-        what: Value,
-        answering: bool,
-        browser: bool,
-    ) {
-        bridge.subscribe(what, answering, browser);
+    pub fn client_subscribe(bridge: tauri::State<'_, Arc<Bridge>>, what: Value, answering: bool) {
+        bridge.subscribe(what, answering);
     }
 
     #[tauri::command]
@@ -408,9 +319,77 @@ mod commands {
         bridge.read_document(&session, path, reviewable)
     }
 
+    /// Attach this connection to a profile's browser as a viewer, answering
+    /// the profile it attached: a raise that named none is the asking seat's
+    /// own, and the page lowers that name on Done.
     #[tauri::command]
-    pub fn client_take_role(bridge: tauri::State<'_, Arc<Bridge>>) {
-        bridge.take_role();
+    pub async fn client_browser_view(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        seat: Value,
+        profile: Option<String>,
+    ) -> Result<String, String> {
+        bridge.browser_view(seat, profile).await
+    }
+
+    /// Take the controller role, or give it back.
+    #[tauri::command]
+    pub fn client_browser_control(bridge: tauri::State<'_, Arc<Bridge>>, take: bool) {
+        bridge.browser_control(take);
+    }
+
+    /// Move through the viewed page's history.
+    #[tauri::command]
+    pub fn client_browser_nav(bridge: tauri::State<'_, Arc<Bridge>>, back: bool) {
+        bridge.browser_nav(back);
+    }
+
+    /// The controller's surface changed size: device pixels and the ratio.
+    #[tauri::command]
+    pub fn client_browser_resize(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) {
+        bridge.browser_resize(width, height, scale);
+    }
+
+    /// The profiles this server holds, for the strip's rows.
+    #[tauri::command]
+    pub async fn client_browser_profiles(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        seat: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        bridge.browser_profiles(seat).await
+    }
+
+    /// Close a named profile's browser, keeping its logins.
+    #[tauri::command]
+    pub async fn client_browser_profile_close(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        seat: serde_json::Value,
+        name: String,
+    ) -> Result<(), String> {
+        bridge.browser_profile_close(seat, &name).await
+    }
+
+    /// Delete a named profile and its logins.
+    #[tauri::command]
+    pub async fn client_browser_profile_delete(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        seat: serde_json::Value,
+        name: String,
+    ) -> Result<(), String> {
+        bridge.browser_profile_delete(seat, &name).await
+    }
+
+    /// One input event from the controlling viewer.
+    #[tauri::command]
+    pub fn client_browser_input(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        event: forge_primitives::browser::BrowserInputEvent,
+    ) {
+        bridge.browser_input(event);
     }
 
     #[tauri::command]
@@ -429,23 +408,6 @@ mod commands {
 /// the desktop binary in `main.rs` runs the same builder.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // **The same executable is also CEF's host and its subprocesses.** Both
-    // exits happen before any Tauri work: the client's UI process never
-    // initializes CEF, and a helper's whole life is `execute_process`.
-    #[cfg(target_os = "macos")]
-    {
-        match browser::cef::launch(std::env::args().skip(1)) {
-            browser::cef::Launch::Host(args) => browser::cef::host_main(args),
-            browser::cef::Launch::Refused(why) => {
-                eprintln!("{why}");
-                std::process::exit(2);
-            }
-            browser::cef::Launch::Client => {}
-        }
-        if browser::cef::is_subprocess() {
-            browser::cef::run_subprocess();
-        }
-    }
     let context = tauri::generate_context!();
     let log_file = log_file(&context.config().identifier);
 
@@ -456,25 +418,40 @@ pub fn run() {
     // The updater plugin stops at the desktop; the phone's fetch, download,
     // signer check and installer handoff live in its own Kotlin plugin. Both
     // platforms answer the same commands, so the client's update line is one
-    // surface either way. The browser's commands are the desktop arm's here
-    // because the desktop host is built in this arm's setup; the phone serves
-    // the same set from its own host, `browser::android::init()`'s engine
-    // bridge (its engine is the system WebView, its driver runs under
-    // libnode in-process).
+    // surface either way. The viewer's commands exist on both: the desktop's
+    // draw a native overlay, the phone's draw nothing and its page paints
+    // the frames on a canvas.
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(
+    let builder = builder
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // **A native resize settles the webview's frame after the page has
+        // measured it**, and full screen's exit is the case that leaves the
+        // overlay over the bar. The page is asked for one fresh measure once
+        // the window's own resize has settled.
+        .on_window_event(|window, event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+            ) {
+                browser::remeasure_soon(window.app_handle());
+            }
+        })
+        .invoke_handler(
         tauri::generate_handler![
-            browser::browser_call,
-            browser::browser_profile_close,
-            browser::browser_profile_delete,
-            browser::browser_profiles,
-            browser::browser_windowed,
-            browser::browser_show,
-            browser::browser_hide,
-            browser::browser_nav,
-            browser::browser_surface_rect,
+            browser::viewer::browser_attached,
+            browser::viewer::browser_surface_rect,
             browser::browser_takeover,
-            browser::browser_used,
+            browser::browser_kept_frame,
+            commands::client_browser_view,
+            commands::client_browser_control,
+            commands::client_browser_nav,
+            commands::client_browser_resize,
+            commands::client_browser_profiles,
+            commands::client_browser_profile_close,
+            commands::client_browser_profile_delete,
+            commands::client_browser_input,
             check_update,
             install_update,
             restart_app,
@@ -496,39 +473,40 @@ pub fn run() {
             commands::client_read_document,
             commands::client_file_content,
             commands::client_commit_diff,
-            commands::client_take_role,
             commands::client_heartbeat,
             commands::client_close,
             perf::client_perf
         ],
     );
-    // iOS lands here too, and it registers nothing: no host exists there to
-    // serve either set (the update commands are the Kotlin plugin's, which
-    // is Android's own, and the browser's engine is the phone's system
-    // WebView). Android passes through this arm and then REPLACES the
-    // handler below, with both sets real.
+    // iOS lands here too, and it registers nothing: the update commands are
+    // the Kotlin plugin's, which is Android's own. Android passes through
+    // this arm and then REPLACES the handler below.
     #[cfg(not(desktop))]
     let builder = builder;
 
     // **`invoke_handler` REPLACES the handler, it does not add to it** - so
-    // the Android arm carries every command the desktop arm does. The
-    // browser's host is real on the phone now (its system WebView for the
-    // engine, in-app libnode for the driver), so its command set is the
-    // desktop's, served by `browser::android`'s engine bridge.
+    // the Android arm carries every command the desktop arm does, the
+    // viewer's included (its stubs draw nothing: the phone's page paints the
+    // frames itself).
     #[cfg(target_os = "android")]
     let builder = builder
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(android::init())
         .plugin(micstate::init())
-        .plugin(browser::android::init())
         .invoke_handler(tauri::generate_handler![
-            browser::browser_call,
-            browser::browser_profile_close,
-            browser::browser_profile_delete,
-            browser::browser_profiles,
-            browser::browser_windowed,
-            browser::browser_show,
-            browser::browser_hide,
-            browser::browser_used,
+            browser::viewer::browser_attached,
+            browser::viewer::browser_surface_rect,
+            browser::browser_takeover,
+            browser::browser_kept_frame,
+            commands::client_browser_view,
+            commands::client_browser_control,
+            commands::client_browser_nav,
+            commands::client_browser_resize,
+            commands::client_browser_profiles,
+            commands::client_browser_profile_close,
+            commands::client_browser_profile_delete,
+            commands::client_browser_input,
             check_update,
             install_update,
             commands::client_connect,
@@ -549,7 +527,6 @@ pub fn run() {
             commands::client_read_document,
             commands::client_file_content,
             commands::client_commit_diff,
-            commands::client_take_role,
             commands::client_heartbeat,
             commands::client_close,
             perf::client_perf
@@ -560,31 +537,15 @@ pub fn run() {
             tauri_plugin_log::log::info!("forge client started");
             #[cfg(not(desktop))]
             let _ = &app;
-            // **The desktop host, built and started here.** The phone's own
-            // host is `browser::android::init()`'s (its setup builds it
-            // around the Kotlin engine handle and brings the WebView up), so
-            // this block and its macOS-shaped start stay desktop-only.
-            #[cfg(desktop)]
-            {
-                // The whole browser act is one call (spam-control A4): the
-                // boot brings no browser up, and `boot_browser` is what the
-                // pin drives, so a launch moved back in here is the closure's
-                // own diff rather than a silent regression.
-                let host = browser::BrowserHost::boot_browser(
-                    browser::StackPaths::resolve(app.handle()),
-                    Some(app.handle().clone()),
-                );
-                // **The signal path holds the same host the exit event does.**
-                // A quit runs `RunEvent::Exit`; a SIGTERM runs this instead.
-                #[cfg(unix)]
-                install_shutdown_reaper(std::sync::Arc::clone(&host));
-                app.manage(host);
-            }
-            // The bridge, over whatever host this target has: the desktop's
-            // managed just above, the phone's in its own plugin's setup. It
-            // is what the page's commands reach, and its events are the
-            // only way the socket and the records reach the page.
+            // The bridge, the viewer and the pump: the socket lives here, and
+            // its events are the only way the server reaches the page.
             commands::init(app.handle());
+            // **A built bundle can be driven for a look from this machine's
+            // agent**, which has neither Accessibility nor Screen Recording:
+            // the driver is the app's own door to those (feature-gated; the
+            // shipping bundle never compiles it).
+            #[cfg(all(target_os = "macos", feature = "look-driver"))]
+            look::init(app.handle());
             Ok(())
         })
         .build(context);
@@ -600,18 +561,6 @@ pub fn run() {
     };
 
     app.run(|handle, event| {
-        // **A host must not outlive its client.** Every browser this client
-        // claimed dies with it. `RunEvent::Exit` covers a quit and `exit()`;
-        // a crash, a SIGKILL and the update restart's main-thread path run no
-        // exit handler at all, and the next boot's sweep is what reaps those.
-        #[cfg(desktop)]
-        if let tauri::RunEvent::Exit = event
-            && let Some(host) = handle.try_state::<std::sync::Arc<browser::BrowserHost>>()
-        {
-            tauri::async_runtime::block_on(async {
-                let _ = tokio::time::timeout(EXIT_REAP_BOUND, host.reap_owned()).await;
-            });
-        }
         // The held microphone goes with the client too, so the indicator is
         // out the moment the window is; a crash and a SIGKILL release it the
         // way the OS releases any process's device.
@@ -708,6 +657,14 @@ mod android {
     /// install a release the line never named.
     pub struct Updater<R: Runtime>(pub PluginHandle<R>, pub Mutex<Option<Found>>);
 
+    /// The Kotlin handle for a picked content URI's document name.
+    pub struct FileName<R: Runtime>(pub PluginHandle<R>);
+
+    #[derive(serde::Serialize)]
+    pub struct UriArgs {
+        pub uri: String,
+    }
+
     #[derive(serde::Serialize)]
     pub struct CheckArgs {
         pub version: String,
@@ -731,6 +688,8 @@ mod android {
             .setup(|app, api| {
                 let handle = api.register_android_plugin("dev.vedhavyas.forge", "UpdatePlugin")?;
                 app.manage(Updater(handle, Mutex::new(None)));
+                let names = api.register_android_plugin("dev.vedhavyas.forge", "FileNamePlugin")?;
+                app.manage(FileName(names));
                 Ok(())
             })
             .build()
@@ -819,119 +778,6 @@ fn record(log_file: Option<&std::path::Path>, line: &str) {
         }
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{line}");
-        }
-    }
-}
-
-#[cfg(all(test, desktop, unix))]
-mod tests {
-    use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    use super::watch_shutdown_signal;
-
-    /// **A raised flag reaches the watcher with the signal it carries.** The
-    /// answer is the seam: production's reaps the hosts and exits, this one
-    /// records the number it was handed, so the test process lives to assert.
-    #[test]
-    fn a_shutdown_flag_reaches_the_watcher_with_its_signal() {
-        static RAISED: AtomicI32 = AtomicI32::new(0);
-        let seen = Arc::new(Mutex::new(0));
-        let record = Arc::clone(&seen);
-        let watcher = watch_shutdown_signal(&RAISED, move |signal| {
-            *record.lock().expect("the recorder") = signal;
-        });
-        RAISED.store(libc::SIGTERM, Ordering::Release);
-        watcher.join().expect("the watcher thread");
-        assert_eq!(
-            *seen.lock().expect("the recorder"),
-            libc::SIGTERM,
-            "the watcher records the signal the flag carried",
-        );
-        RAISED.store(0, Ordering::Release);
-    }
-
-    /// **The path a signal takes through production.** A child process runs
-    /// the shipping installer over a double, raises a real signal, and is
-    /// ended by the installer's own exit; the parent asserts the reap and the
-    /// exit code. Both signals are driven, and a reap that panics must still
-    /// exit for its signal rather than swallowing it. Only the host behind
-    /// the reap is a double.
-    #[test]
-    fn a_signal_runs_the_production_reaper_and_exits_for_it() {
-        const CHILD: &str = "FORGE_TEST_REAPER_CHILD";
-        const SIGNAL: &str = "FORGE_TEST_REAPER_SIGNAL";
-        const PANIC: &str = "FORGE_TEST_REAPER_PANIC";
-        // The libtest filter is the bare test name, not the module path.
-        let name = "a_signal_runs_the_production_reaper_and_exits_for_it";
-
-        if let Some(record) = std::env::var_os(CHILD) {
-            struct Double(std::path::PathBuf, bool);
-            impl super::Reaps for Double {
-                fn reap_owned_blocking(&self) -> Vec<String> {
-                    std::fs::write(&self.0, b"reaped\n").expect("the reap record");
-                    assert!(!self.1, "the reap panicked");
-                    vec!["recorded".to_owned()]
-                }
-            }
-            let signal: i32 =
-                std::env::var(SIGNAL).expect("the signal").parse().expect("a signal number");
-            super::install_shutdown_reaper(Arc::new(Double(
-                std::path::PathBuf::from(record),
-                std::env::var_os(PANIC).is_some(),
-            )));
-            // SAFETY: raising `signal` at this process, which handles it now.
-            let raised = unsafe { libc::raise(signal) };
-            assert_eq!(raised, 0, "the signal was raised");
-            // **The installer ends this process from the watcher's thread**,
-            // so this thread waits for that rather than returning to the
-            // harness, whose own exit would hide the answer.
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        }
-
-        // Both signals the installer answers, and a reap that panics: the
-        // exit must still name the signal, which is what the catch_unwind
-        // guard in the installer buys.
-        for (signal, panic) in
-            [(libc::SIGTERM, false), (libc::SIGINT, false), (libc::SIGTERM, true)]
-        {
-            let dir = tempfile::tempdir().expect("a temp dir");
-            let record = dir.path().join("reap.txt");
-            let mut child =
-                std::process::Command::new(std::env::current_exe().expect("the test binary"))
-                    .args([name, "--nocapture"])
-                    .env(CHILD, &record)
-                    .env(SIGNAL, signal.to_string())
-                    .envs(panic.then_some((PANIC, "1")))
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                    .expect("the child runs the test");
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            let status = loop {
-                match child.try_wait().expect("the child is waited") {
-                    Some(status) => break status,
-                    None if std::time::Instant::now() < deadline => {
-                        std::thread::sleep(std::time::Duration::from_millis(20));
-                    }
-                    None => {
-                        let _ = child.kill();
-                        panic!("the child never answered signal {signal}");
-                    }
-                }
-            };
-            assert_eq!(
-                status.code(),
-                Some(128 + signal),
-                "signal {signal} (panicking reap: {panic}) exits 128+signal, not by a signal death",
-            );
-            assert_eq!(
-                std::fs::read_to_string(&record).expect("the reap ran in the child"),
-                "reaped\n",
-                "the production installer's reap ran for signal {signal}",
-            );
         }
     }
 }

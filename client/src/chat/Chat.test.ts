@@ -78,13 +78,6 @@ function stub() {
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
-    // The browser segment of the strip registers a role listener and reads
-    // the role as it draws, so those two answer; override is never pressed
-    // here and stays out.
-    browserRole: () => false,
-    onBrowserRole: () => () => undefined,
-    onProfilesChanged: () => () => undefined,
-    takeBrowserRole: () => undefined,
     store: (what: Parameters<Connection['store']>[0]) => stores.get(what),
     settings: () => null,
     status: () => 'open' as const,

@@ -21,13 +21,10 @@ stands on, not a proxy in front of a public bind.
 **The connection is kept alive by a ping.** The server pings every 15
 seconds and ends a connection whose ping has gone unanswered for 60: a
 peer that vanished without closing would otherwise read nothing for ever,
-and the browser role a capable client holds would sit with it. The pair
-is chosen rather than measured, and the dead bound is what caps how long
-a browser call on a paused host waits before it fails: between 60 and 90
-seconds from the last answer, because the next ping can be up to 15
-seconds later and the reap lands at the first beat at or past 60. The
-ask's own bound is longer. Every WebSocket client answers a ping itself, so a
-client needs no code for this; one that stops answering is disconnected,
+and the viewer it attached as would stay counted on its profile. The pair
+is chosen rather than measured. Every WebSocket client answers a ping
+itself, so a client needs no code for this; one that stops answering is
+disconnected,
 and its reconnect declares its subscriptions again like any other.
 
 **One frame write is bounded too.** The server ends a connection when a
@@ -46,15 +43,13 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 9,
-  "forge_version": "1.0.115 · abc1234",
-  "forge_version_short": "1.0.115+abc1234",
+  "version": 10,
+  "forge_version": "1.1.25 · abc1234",
+  "forge_version_short": "1.1.25+abc1234",
   "settings": {
     "mark": null,
     "theme": null,
     "font": null,
-    "browser_idle_minutes": null,
-    "browser_grace_minutes": null,
     "dictate": {
       "styling": "semi_formal",
       "structure": "prose",
@@ -84,13 +79,13 @@ its `server` build. They ride here because the greeting is the only channel
 both halves are guaranteed to have, so a skew that could name only a number
 would name nothing a person can act on.
 
-`settings` carries `forge.toml`'s `[client]` keys: the three names -
-`mark`, `theme` and `font` - and the idle release's pair,
-`browser_idle_minutes` and `browser_grace_minutes`. They are a client's
-settings rather than this server's. They
-arrive on connect so a client is configured before it draws anything and
-never reads `forge.toml` itself, which keeps the file the one source of
-truth. A `null` is not a failure: it means the built-in.
+`settings` carries `forge.toml`'s `[client]` keys: the three names
+`mark`, `theme` and `font`. They are a client's settings rather than this
+server's. They arrive on connect so a client is configured before it draws
+anything and never reads `forge.toml` itself, which keeps the file the one
+source of truth. A `null` is not a failure: it means the built-in. The
+browser's idle clocks are the server's and live under `[browser]`; they are
+not carried here.
 
 `settings.dictate` is `[dictate]`'s three prompt axes, and it is a
 DEFAULT rather than a state: a client that captures its own audio holds
@@ -129,8 +124,8 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 58
-variants, 54 of them struct variants; the four unit variants,
+A command's variant is its name around its field bag - `Command` has 60
+variants, 56 of them struct variants; the four unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `plugin_update_all` and
 `plugin_check_updates`, cross as the name alone. An update is the same
 shape one level in,
@@ -142,10 +137,10 @@ as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 
 ## What a client sends
 
-**`subscribe {what, answering, browser, declare}`** - answered with a
-`snapshot` of the whole subject. The subscription this opens is the one
-updates arrive on; a frame carrying `declare` opens no subscription and is
-described below.
+**`subscribe {what, answering}`** - answered with a `snapshot` of the whole
+subject. The subscription this opens is the one updates arrive on. The
+browser is not a capability a client declares: it lives on the server, and a
+client attaches to it as a viewer (`browser_view` below).
 
 **`answering` declares whether this client can answer a prompt, and it is
 off unless you say otherwise.** The core parks a turn on the reply of
@@ -166,40 +161,86 @@ is what the core counts when it decides whether a prompt can be answered,
 and a client that has drawn a dock once is not made an observer again by a
 second message. So say it on the first subscribe and expect it to stand.
 
-**`browser` declares whether this client can host the browser, and it is
-off unless you say otherwise.** One connection holds that role at a time -
-the first capable one to declare it - and every browser tool call a session
-makes is routed to that connection as a `browser_ask`. **Declaring it is a
-claim about what the client can DO**: a client that declares the capability
-it does not have is sent asks it can only answer with a failure, and that
-arrives at the far end as a session's tool call failing rather than as the
-client's mistake. A second capable client changes nothing about the first -
-it stays a view like any other, and the role is not an error to be second
-for; it WAITS. The role moves on by itself when its holder goes: the oldest
-waiter is promoted, without declaring anything again, so a client attached
-and capable is never left beside a `no browser-capable client connected`
-that is false about the machine. With no capable client attached at all, a
-browser tool answers that named error rather than waiting for one to
-appear.
+**`browser_view {seat, profile, reply_to}`** - attach this connection to a
+profile's browser as a viewer. `profile` names the profile to drive; omit it
+for the shared browser. The answer is a `browser_view` naming the profile's
+wire id, then a `browser_nav_state`, then frames as they paint. **A client
+that waits for the answer sends `reply_to`**: the attach's own reply carries
+`{"ok": true}` when it attached and `{"ok": false, "why": ...}` when the
+server refused it, so a surface that could not open draws the reason instead
+of a dark page. Attaching again replaces what this connection was viewing,
+and a connection that goes is detached with it.
 
-**`declare` says the frame is a role DECLARE rather than a subscription,
-and it is off unless you say otherwise.** A client re-states its browser
-capability as it claims the role (`browser_take_role` below): the relay
-answers a host down the channel a declaration created, and a connection
-displaced by an earlier take is no longer registered - so the claim
-re-declares first, or it would come back `false` with the click visibly
-doing nothing. A declare rides a subject the connection ALREADY watches,
-and it is answered with that subject's snapshot like any `subscribe` -
-**but it holds nothing**: no watch entry, no "showing" count for the seat,
-and no working-tree scan behind it. The client never counts the declare,
-so there is nothing it could give one back with: the entry would outlive
-the page that made it. Sent on a subject nothing watches yet, a
-declare leaves it unwatched: the plain frame is the one that opens a
-subscription.
+**`browser_detach`** - stop viewing the attached profile. Lowering the
+takeover sends this: an attached viewer counts as a use, so a lowered
+surface gives its viewer up rather than keeping the profile warm, and a
+connection that switches profiles detaches from the old one first.
 
-Neither capability declaration takes the pre-attach backlog: it goes to the
-first subscriber, which is whichever view attached first. A
-client reads what it missed from the subject's snapshot.
+**`browser_resize {width, height, scale}`** - lay the viewed page out to the
+controller's surface: device pixels and the ratio they draw at. **Only the
+controller's size applies**; a watcher's window never moves the page under
+the person driving it. The host adopts the size on its next pump and the
+next frame is a key frame at it.
+
+**`browser_input {seq, event}`** - one input event from the controlling
+viewer. **The wire carries the person's gesture, not CDP**: a press, a
+wheel, a key or inserted text, with the modifier keys held; the server is
+what turns it into `Input.dispatchMouseEvent` and its siblings. `seq` is the
+viewer's own ordering - the server drops an event at or below the last one
+the role carried, so a superseded gesture never lands late. Input from a
+viewer without the controller role is refused with an `error` naming
+`browser_input`.
+
+**`browser_control {take}`** - take the controller role, or give it back.
+There is no default controller and no override machinery: a surface starts
+controller-less, any attached client takes the role with an explicit
+control, and exactly one holds it at a time. A take moves the role to the
+caller; the previous holder becomes a watcher and its input is refused from
+that moment. Every viewer of the profile is sent the new state
+(`browser_view`), so the same truth is drawn everywhere.
+
+**`browser_nav {back}`** - move through the page's history, the takeover
+bar's arrows. **Only the controller's move lands**: a watcher's is refused
+with an `error` naming `browser_nav`, the same rule input follows. The answer
+is a `browser_nav_state` for the profile, and the same frame is pushed
+whenever the page navigates on its own.
+
+**`browser_file_answer {id, files}`** - the files a person chose for a
+page's file chooser, each `{name, data}` with the bytes base64. **The bytes
+cross the wire**: the host is a windowless process on the server, so the
+server writes the chosen files beside the profile and hands them to the
+driver's captured chooser (or CEF's own dialog when no driver is attached).
+**Only the controller may answer, and only the id the page's outstanding ask
+names**; anything else is refused before a byte is written.
+An empty list is a dismiss; past 16 files or 8 MiB the whole answer is a
+dismiss - 8 because base64 of more than that lands past the 16 MiB inbound
+bound, and a cap that tears the connection is worse than a dismiss.
+
+**`browser_profiles {seat, reply_to}`** - the strip's rows for one seat: the
+shared browser, the seat's own named profiles, and the ownerless ones a
+legacy tree left behind. **The answer rides the reply**, so a client that
+draws the rows sends `reply_to`: `{"ok": true, "rows": [...]}`, where each
+row is `{name, owner, up, windowed, busy, closed, unreadable}`. `owner` is
+`{org, project, label}` or null; `up` is whether its host is running;
+`windowed` is whether ANY client has it as the takeover - the strip's marks
+are the fleet's, while its show/hide is each client's own; `busy` is whether
+a call is running; `closed` is whether it is known only on disk; and
+`unreadable` is a row whose ownership record could not be read - it is drawn
+and carries no verb. A refusal answers `{"ok": false, "why": ...}`; with no
+`reply_to`, a refusal is an `error` frame and a success is silent.
+
+**`browser_profile_close {seat, name, reply_to}`** - end a named profile's
+browser and keep its logins. **The seat must own the name when the profile
+has an owner**; an ownerless legacy profile has nobody to refuse, so any seat
+may close it, and the shared browser is not a profile to close. The answer is
+the reply: `{"ok": true}` or `{"ok": false, "why": ...}` - a client that omits
+`reply_to` has no other way to learn what happened.
+
+**`browser_profile_delete {seat, name, reply_to}`** - delete the profile and
+its logins, for the seat that owns it (an ownerless legacy profile likewise);
+this is the one act that takes them. The reply is `{"ok": true}` or
+`{"ok": false, "why": ...}`, and `reply_to` is what carries it for the same
+reason.
 
 **`unsubscribe {what}`** - nothing comes back, because the client asked to
 stop hearing. Note that a second plain `subscribe` to one subject adds a
@@ -280,43 +321,6 @@ that row starts at, and what either is made of is the server's business.
 `null` means there is nothing above the page it came with, and that is where
 a walk backwards ends.
 
-**`browser_answer {id, parts, error}`** - the host's answer to one
-`browser_ask`, under that ask's own id. `parts` are what the tool returned,
-in order; `error` is the reason the call failed, and a failed answer carries
-no parts. **An image part's bytes do NOT cross here** - the part names its
-`mime_type` and the bytes ride a binary frame of their own (below), because
-base64 inside this JSON would pay a third again for a screenshot. Every
-answer is sent by the connection that holds the browser role and by no
-other; an answer naming an ask the connection was never sent is dropped with
-a debug record.
-
-**The order is part of the contract: the answer FIRST, then one frame per
-image part, in the order the parts are listed.** A frame that arrives before
-the answer that declares its image is a malformed pair rather than slowness,
-and the ask FAILS naming that - it is not left waiting for parts nothing has
-declared. A frame whose bytes cannot be taken fails every ask on that
-connection waiting for an image, with the refusal as the reason: the part it
-was for can never be filled, and a session reading a failure can act where a
-session waiting forever cannot. **Only the refusals an image frame can be do
-that** - a short header, an unknown kind, a truncated image header, an
-oversized image. The dictation stream's own refusals (an oversized or uneven
-audio payload) belong to the microphone and name nothing about a screenshot,
-so they leave the image waits standing.
-
-**A partial answer has no timeout of its own, and that is the contract.**
-Nothing here waits out a host that stops mid-answer; the ask ends when the
-host's connection goes, and the tool call fails naming that. A host that
-sends an answer and then dies between frames is therefore a failure the
-session reads at disconnect time, not after a clock nobody set.
-
-**`browser_take_role`** - take the browser role from whoever holds it. The
-claimant must have declared itself capable on a `subscribe` first; the server
-answers with a `browser_role` frame either way, so a refused take is visible
-rather than silent. The displaced holder is TOLD (the same frame with
-`hosting: false`), stops reading asks, and the calls it was carrying fail as
-if its connection had gone - a take-over is loud on both sides rather than
-half-done.
-
 **`document_read {session, path, reviewable}`** - one document out of a
 seat's own working tree or its project's `vault_roots` in `forge.toml`,
 for the client's viewer. `path` resolves against that tree, and nothing
@@ -355,8 +359,8 @@ client that captures sends one dictation frame per 20 ms of speech:
 
 | bytes | field   | value                                                   |
 | ----- | ------- | ------------------------------------------------------- |
-| 1     | kind    | `0` = dictation; other values reserved but `1` is taken |
-| rest  | samples | i16 little-endian, mono, 16 kHz                         |
+| 1     | kind    | `0` = dictation; `1` = browser frame; `2` = browser audio |
+| rest  | samples | i16 little-endian, mono, 16 kHz (kind `0`)              |
 
 A dictation frame carries no seat. It addresses the take its own CONNECTION
 started: one connection streams one take at a time and its messages are
@@ -366,34 +370,49 @@ payload past 16 KiB - or one that arrives with no take to hold it is dropped
 with a debug record and no answer, because a take's audio has no reply
 channel and the take's own outcome is what a reader sees either way.
 
-**`1` is a browser image part's bytes**, and it belongs to an answer rather
-than to a take:
+**`1` is a browser frame, and only the server sends one.** A viewer's
+frames are relayed exactly as the host encoded them:
 
-| bytes | field | value                                              |
-| ----- | ----- | -------------------------------------------------- |
-| 1     | kind  | `1` = browser image                                |
-| 8     | id    | the `browser_ask`'s id, big-endian u64             |
-| rest  | bytes | the image, whose mime type the answer's part named |
+| bytes | field | value                                                 |
+| ----- | ----- | ----------------------------------------------------- |
+| 1     | kind  | `1` = browser frame                                   |
+| 2     | profile | the profile's wire id, little-endian u16            |
+| 4     | seq   | monotonic per profile, little-endian u32              |
+| 2     | width | device pixels, little-endian u16                      |
+| 2     | height | device pixels, little-endian u16                     |
+| 1     | format | `1` = WebP                                           |
+| 1     | key   | `1` = full quality (a surface's first frame, a resize, an attach) |
+| rest  | bytes | the encoded pixels, untouched by the server           |
 
-A client sends one per image part, **after** the answer that declares them
-and in the order the parts are listed: the first frame fills the first image
-part, the second the second. The id is what says which answer the bytes
-belong to, so two sessions asking at once cannot be handed each other's
-picture. The payload cap is 16 MiB, and the socket's own frame limit is that
-cap plus one byte, set at the upgrade - so an image a shade too big is
-refused by the decoder, which fails the ask it belongs to, rather than
-tearing the connection down at the socket layer where the asker would only
-be told its host went away.
+**The server never re-encodes a frame.** The host encodes once and the
+bytes reach every viewer as they left it. A viewer that falls behind is
+served the newest frame rather than a queue, and a stale frame is only ever
+superseded by a newer one for the same profile. A browser frame arriving
+from a client is refused: the host is the only encoder.
 
-**What a frame that cannot be delivered does depends on whether anything is
-waiting for it**, and the two cases are worth telling apart when reading a
-debug record. A frame this server refuses - an unknown kind, a payload past
-the cap - fails every ask on that connection that is waiting for an image,
-because the part it was for can never be filled. A frame that matches NO ask
-in flight is a record and nothing else: one for an image part that is
-already filled, or one naming an ask that was never sent on this connection.
-Neither is answered - a binary frame has no reply channel - so the record is
-what makes it legible.
+**`2` is the page's own sound, and only the server sends one.** A page the
+browser host is playing crosses the wire as interleaved PCM, so a person at a
+client hears it from their own device rather than the server's:
+
+| bytes | field | value                                                 |
+| ----- | ----- | ----------------------------------------------------- |
+| 1     | kind  | `2` = browser audio                                   |
+| 2     | profile | the profile's wire id, little-endian u16            |
+| 4     | seq   | monotonic per profile, little-endian u32              |
+| 4     | rate  | samples a second, little-endian u32                   |
+| 1     | channels | interleaved channels                               |
+| rest  | samples | i16 little-endian, interleaved                        |
+
+A profile's packets go to its controller alone: a watcher is looking at the
+page, not driving its sound. A packet that arrives after the player has fallen
+behind is dropped rather than queued, so the sound stays beside the picture.
+
+**A binary frame from a client is audio or it is not a frame this server
+takes.** The browser frames and the page's sound are the server's alone, so
+one arriving from a client is refused by its kind tag; nothing is waiting on
+it and no ask is failed by it. A refused frame is answered by nothing - a
+binary frame has no reply channel - so the debug record is what makes it
+legible.
 
 **`dictate_stream {key, options, surface}`** - begin a take the CLIENT
 captures. The connection that sends it feeds the audio as the binary frames
@@ -426,12 +445,12 @@ writes it at all - because the command is fire-and-forget: its effect
 arrives through the subscription, which is why a client subscribes before
 it acts.
 
-**`reply_to` is required on exactly six of them**: a worker spawn, a
-despawn, the three review writes, and an idle warning (whose verdict rides
-the reply - the prompt it may deliver is separate). Their outcome rides the
-reply and no update carries it, so a client that omitted `reply_to` would
-not be declining a reply - it would be declining to learn whether the work
-happened.
+**`reply_to` is required on exactly eight of them**: a worker spawn, a
+despawn, the three review writes, an idle warning (whose verdict rides the
+reply - the prompt it may deliver is separate), and a profile's close or
+delete. Their outcome rides the reply and no update carries it, so a client
+that omitted `reply_to` would not be declining a reply - it would be
+declining to learn whether the work happened.
 
 **Both mismatches are refused, with a sentence naming the field**, and
 refused before the command runs: a required field left off, and a
@@ -439,13 +458,14 @@ refused before the command runs: a required field left off, and a
 for the same reason the first does - a client that set it is waiting on a
 channel nothing will ever come down.
 
-**Each of the six answers with its own type**: a spawn with a
+**Each of the eight answers with its own type**: a spawn with a
 worker-spawn reply, a despawn with a despawn result, the review writes
-with a `bool` and a review set, and an idle warning with an idle verdict.
-One channel cannot carry six different
+with a `bool` and a review set, an idle warning with an idle verdict, and a
+profile's close or delete with a `Result<(), String>`.
+One channel cannot carry eight different
 answers, so the reply type follows the command. A refusal arrives in that
 same reply, as the body of the answer rather than as an `error` - which is
-what the six are for. A command that is _not_ one of the six refuses as
+what the eight are for. A command that is _not_ one of the eight refuses as
 an `error` like anything else the core declines, whether or not a reply
 was asked for.
 
@@ -522,30 +542,34 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   "truncated": bool}` for a read, `{"state": "failed", "why": ...}` for one
   that could not run. There is no `error` arm.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
-- **`browser_ask {id, seat, tool, args}`** - one browser tool call, sent to
-  the client that holds the browser role. **This is the socket's only
-  request in the direction a client answers**: `id` is what pairs it with
-  the `browser_answer` that settles it, `seat` is the session whose turn is
-  waiting, `tool` is upstream's own unprefixed name, and `args` is what the
-  CLI sent verbatim. Nothing else pairs the two, so an ask left unanswered
-  is a session's tool call waiting - a client that cannot serve it answers
-  with the reason rather than with silence.
-- **`browser_role {hosting}`** - whether THIS connection holds the browser
-  role, sent on every change of it: when a capable declare is granted, when
-  a waiter is promoted because the holder went, and when a force-take takes
-  the role away (`browser_take_role`, above). A client's own browser row
-  reads it to say which client drives - before this frame, "could host" and
-  "does host" looked the same from the client's side.
-- **`browser_seats {seats}`** - the seats that exist (every project's lead,
-  plus every worker the store holds, running or not), sent to every
-  browser-capable connection: as it declares, and again after a worker
-  despawns. **It is for the client's profile sweep** - the client deletes
-  the named browser profiles whose owning seat is not in the set, so a
-  despawned worker's profiles do not outlive it - and the set crosses WHOLE
-  rather than as a delta: it is authoritative at the moment it is sent, and
-  the sweep that reads it is idempotent. A store that cannot be read sends
-  no set at all, because a client reading "no seats" would delete every
-  profile it holds.
+- **`browser_view {id, profile, controller, viewers, viewer}`** - a
+  profile's viewer state: the wire id the binary frames carry, the
+  profile's key, the controller's viewer id when one holds the role, how
+  many clients are attached, and **this connection's own viewer id** - the
+  number `controller` names when the bar is this client's to draw a
+  release on. Sent on attach and whenever either changes, so every viewer
+  draws the same truth about who is driving.
+- **`browser_nav_state {id, can_back, can_forward}`** - where the viewed
+  page's history sits: what the takeover bar's arrows may do. Sent on attach,
+  in answer to a move, and whenever the PAGE navigates on its own - a link
+  click, a redirect or a same-document move - so the arrows do not wait for
+  the next open.
+- **`browser_surface_failed {id, reason}`** - the viewed profile's browser
+  stopped. **Said out loud**, because a frozen last frame reads as a slow
+  page and the person has no way to tell the two apart.
+- **`browser_file_dialog {id, multiple}`** - a page asked for a file. The
+  shell opens this machine's picker and answers `browser_file_answer` under
+  the same id; `multiple` is whether the page accepts more than one file.
+  **Only the controller is asked** - a watcher is sent nothing and does not
+  cancel it. With no controller the chooser waits for the agent's own
+  `browser_file_upload`; CEF's own dialog is the fallback when no driver is
+  attached.
+- **`browser_download {name, data, error}`** - a page's download finished on
+  the server. The shell opens this machine's save door and writes `data`
+  (base64), or says `error` and writes nothing; a file past 32 MiB is
+  refused in words rather than handed over. **Only the controller is sent
+  one**, and the server's own copy is removed once it has crossed, whether
+  or not a viewer took it.
 - **`error {what, why, seat, dispatch_id}`** - `what` failed and `why`, in
   the core's own words. `seat` names the conversation a refusal belongs to
   where it belongs to one - a refused `subscribe` names the seat it refused
