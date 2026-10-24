@@ -1929,6 +1929,28 @@ impl SessionTask {
             (from, model, mode, fill)
         };
         let Some(from) = from else {
+            // Nothing to hand over: close the gate this beginning opened and
+            // answer what it was holding, or the seat holds prompts for a
+            // successor nothing is bringing.
+            let held = workspace.end_swap(&self.key);
+            for prompt in held {
+                if let Some(sender) = &prompt.sender {
+                    workspace.notice_undelivered_message(
+                        sender,
+                        &self.key,
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                    );
+                } else {
+                    let first = prompt.text.lines().next().unwrap_or_default();
+                    self.emit(SessionUpdate::Notice {
+                        key: self.key.clone(),
+                        severity: NoticeSeverity::Error,
+                        text: format!(
+                            "the handoff did not run; this prompt waits no longer: {first}"
+                        ),
+                    });
+                }
+            }
             self.emit(SessionUpdate::Notice {
                 key: self.key.clone(),
                 severity: NoticeSeverity::Error,
@@ -3830,6 +3852,47 @@ mod tests {
             stored.as_deref(),
             Some("old-session-id"),
             "the successor id is not on the slot's row before it has run: {record:?}",
+        );
+    }
+
+    /// A swap that finds no session on the seat closes the gate its beginning
+    /// opened: a hold left open would keep every later prompt for a successor
+    /// nothing is bringing.
+    #[tokio::test]
+    async fn a_handoff_that_loses_its_session_closes_the_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let key = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, mut update_rx, _agent_rx) = nudge_task_for(&workspace, &key);
+        workspace.begin_swap(&key);
+        workspace.hold_prompt(
+            &key,
+            crate::handoff::HeldPrompt {
+                text: "held".to_owned(),
+                attachments: Vec::new(),
+                source: crate::protocol::PromptSource::You,
+                sender: None,
+            },
+        );
+
+        task.swap(forge_primitives::HandoffReason::Manual, Vec::new());
+
+        assert!(!workspace.swap_in_progress(&key), "the gate is closed with the swap");
+        let mut said = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::Notice { text, .. } = frame.update {
+                said.push(text);
+            }
+        }
+        assert!(
+            said.iter().any(|text| text.contains("needs a connected session")),
+            "the seat is told why: {said:?}",
+        );
+        assert!(
+            said.iter().any(|text| text.contains("this prompt waits no longer")),
+            "and the held prompt is accounted for: {said:?}",
         );
     }
 
