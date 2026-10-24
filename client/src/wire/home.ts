@@ -381,6 +381,61 @@ export interface AccountsWire {
   usage: { display_name: string; snapshot: unknown }[];
 }
 
+/**
+ * The account pool, narrowed where it enters.
+ *
+ * **One narrowing for two paths**: a home snapshot's `accounts` field and the
+ * payload an `accounts_changed` frame carries are the same shape from the
+ * server's one builder (`AccountPoolView`), so a client folding a frame and a
+ * client reading the snapshot cannot draw different pools (rule 25).
+ *
+ * A piece this client cannot read defaults to its empty value rather than
+ * failing the whole home: a missing `accounts` is a home with no pool stated,
+ * exactly as the snapshot path has always read it.
+ */
+export function accountsFrom(value: unknown): AccountsWire {
+  const data = (value ?? {}) as {
+    all_loaded?: unknown;
+    gateway?: unknown;
+    usage?: unknown;
+    loading?: unknown;
+  };
+  const gateway = (data.gateway ?? {}) as Record<string, unknown>;
+  return {
+    all_loaded: data.all_loaded === true,
+    gateway: {
+      ready: gateway['ready'] === true,
+      port: typeof gateway['port'] === 'number' ? gateway['port'] : 0,
+      bind_error: typeof gateway['bind_error'] === 'string' ? gateway['bind_error'] : null,
+    },
+    usage: Array.isArray(data.usage) ? (data.usage as AccountsWire['usage']) : [],
+    loading: (Array.isArray(data.loading) ? data.loading : []).map((row) => {
+      const state = (row as { state?: unknown }).state;
+      return {
+        ...(row as AccountLoadingRow),
+        state: narrow(typeof state === 'string' ? state : '', LOADING, 'loading'),
+      };
+    }),
+  };
+}
+
+/**
+ * The pool an `accounts_changed` frame carries, or `null` when this update is
+ * not one this client can fold.
+ *
+ * **A frame with no pool is an older server's wake-up.** The variant crossed as
+ * the bare name before it carried the state, and a client that folded that into
+ * an empty pool would draw "no accounts declared" over a live pool - so an
+ * absent or unreadable payload falls through to the read it always asked for.
+ */
+export function accountsPayload(update: SessionUpdate): AccountsWire | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as { accounts_changed?: unknown }).accounts_changed;
+  if (payload === null || typeof payload !== 'object') return null;
+  if (!Array.isArray((payload as { loading?: unknown }).loading)) return null;
+  return accountsFrom(payload);
+}
+
 export interface DictateModel {
   role: string;
   file: string;
@@ -672,15 +727,7 @@ export function homeFrom(data: HomeWire): HomeWire {
       rows: typeof row.rows === 'number' ? row.rows : 0,
       misses: (Array.isArray(row.misses) ? row.misses : []).map(missFrom),
     })),
-    accounts: {
-      all_loaded: data.accounts?.all_loaded === true,
-      gateway: data.accounts?.gateway ?? { ready: false, port: 0, bind_error: null },
-      usage: Array.isArray(data.accounts?.usage) ? data.accounts.usage : [],
-      loading: (Array.isArray(data.accounts?.loading) ? data.accounts.loading : []).map((row) => ({
-        ...row,
-        state: narrow(row.state, LOADING, 'loading'),
-      })),
-    },
+    accounts: accountsFrom(data.accounts),
     dictate: {
       ...data.dictate,
       snapshot: {

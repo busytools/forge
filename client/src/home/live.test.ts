@@ -14,6 +14,20 @@ const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 /** An update a home subscriber is sent, which is what it answers with a read. */
 const UPDATE: ServerMessage = { kind: 'update', update: { turn_cancelled: { key: LEAD } } };
 
+/** A home snapshot this client can read whole, with an empty pool. */
+const HOME_DATA = {
+  agents: [],
+  projects: [],
+  unseen: [],
+  accounts: {
+    loading: [],
+    all_loaded: false,
+    gateway: { ready: false, port: 0, bind_error: null },
+    usage: [],
+  },
+  dictate: { snapshot: { models: [] } },
+};
+
 /**
  * A connection a test drives by hand: what the home asked it to do, and a way
  * to hand it a frame.
@@ -503,6 +517,87 @@ describe('the home over a connection', () => {
       forge.refreshed,
       'a keyless frame the snapshot carries did not ask for one read',
     ).toEqual(['home']);
+    stop();
+  });
+
+  /**
+   * **The pool's frame is the pool.** `accounts_changed` carries the state a
+   * read would answer with, so folding it costs no encode; a frame with no
+   * payload is an older server's wake-up and still reads.
+   */
+  it('folds the pool an accounts frame carries, and reads for one that carries none', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+    forge.stores.get(HOME)?.set(HOME_DATA);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: HOME_DATA });
+    await settle();
+
+    forge.arrive({
+      kind: 'update',
+      update: {
+        accounts_changed: {
+          loading: [
+            {
+              display_name: 'A',
+              state: 'ready',
+              last_error: null,
+              retry_after: null,
+              auth: 'token',
+            },
+          ],
+          all_loaded: true,
+          gateway: { ready: true, port: 8787, bind_error: null },
+          usage: [],
+        },
+      },
+    } as unknown as ServerMessage);
+    await settle();
+    expect(forge.refreshed, 'a pool frame asked for a home read').toEqual([]);
+    expect(seen.at(-1)?.wire?.accounts.loading.map((row) => row.display_name)).toEqual(['A']);
+    expect(seen.at(-1)?.wire?.accounts.all_loaded, 'the frame did not replace the pool').toBe(true);
+
+    // An older server's unit variant: the wake-up it always was, so it reads.
+    forge.arrive({ kind: 'update', update: 'accounts_changed' });
+    await settle();
+    expect(forge.refreshed, 'a payloadless pool frame did not ask for a read').toEqual(['home']);
+    stop();
+  });
+
+  /**
+   * A pool that lands while a read is in flight is newer than the answer on
+   * its way, so it is applied after that answer rather than before it.
+   */
+  it('applies a pool that landed mid-read after the snapshot', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+
+    // A covered frame asks for a read; nothing has answered it yet.
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'the first update did not ask for a read').toEqual(['home']);
+
+    forge.arrive({
+      kind: 'update',
+      update: {
+        accounts_changed: {
+          loading: [],
+          all_loaded: true,
+          gateway: { ready: true, port: 8787, bind_error: null },
+          usage: [],
+        },
+      },
+    } as unknown as ServerMessage);
+    // The answer was encoded before the frame and still says the old pool.
+    forge.stores.get(HOME)?.set(HOME_DATA);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: HOME_DATA });
+    await settle();
+    expect(
+      seen.at(-1)?.wire?.accounts.all_loaded,
+      'the snapshot overwrote the pool the frame had carried',
+    ).toBe(true);
+    expect(forge.refreshed, 'the mid-read frame asked for another read').toEqual(['home']);
     stop();
   });
 

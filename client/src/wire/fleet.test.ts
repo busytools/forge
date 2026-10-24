@@ -593,7 +593,11 @@ describe('the variant census', () => {
  * following something or quietly reads for nothing.
  */
 describe('the home variant census', () => {
-  /** The variants that cross as a bare string, since they carry no payload. */
+  /**
+   * The samples that cross as a bare string: the three unit variants, and
+   * `accounts_changed` as a server older than its payload sends it - the
+   * wake-up a client must still read for.
+   */
   const UNIT = new Set([
     'catalog_loaded',
     'cli_version_changed',

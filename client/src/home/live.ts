@@ -1,8 +1,8 @@
 /**
- * The home over a live connection: the snapshot it is answered with, and the
- * read that follows an update the snapshot can carry.
+ * The home over a live connection: the snapshot it is answered with, the
+ * read that follows an update the snapshot can carry, and the one fold.
  *
- * **Nothing is folded here, and that is the point.** A row's state is the
+ * **Nothing is recomputed here, and that is the point.** A row's state is the
  * server's, folded from the core's own `Live` alongside the roster, so it
  * arrives in the row already decided - including the unseen marks. The only
  * states this client makes for itself are `stateOf`'s promotions: the cases
@@ -10,6 +10,10 @@
  * client replaced, silently, the first time one of them turned. So an
  * update whose change the snapshot can carry is answered with a fresh read
  * rather than with arithmetic, and one it cannot carry is no read at all.
+ *
+ * `accounts_changed` is the exception, and it is a replace rather than a
+ * fold: the frame carries the whole pool field, so the client draws what the
+ * server states without asking for an encode.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
@@ -19,7 +23,13 @@ import { subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
-import { homeFrom, tasksChanged, type HomeWire } from '../wire/home';
+import {
+  accountsPayload,
+  homeFrom,
+  tasksChanged,
+  type AccountsWire,
+  type HomeWire,
+} from '../wire/home';
 
 /**
  * How long an update waits before it is answered with a read.
@@ -133,6 +143,16 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   let report: ServiceReport | null = null;
   /** The tasks each project last announced, so an unchanged set is no read. */
   const lastTasks = new Map<string, string>();
+  /**
+   * The pool the last `accounts_changed` carried, waiting for the read in
+   * flight to land.
+   *
+   * **The snapshot in hand was encoded before the frame**, so applying the
+   * pool first would be undone by the answer; applying it after the answer
+   * keeps the newer state. It is also where a frame lands while the first
+   * snapshot is still owed.
+   */
+  let pendingAccounts: AccountsWire | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
@@ -147,7 +167,15 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     }, COALESCE_MS);
   }
 
-  function read(): void {
+  /**
+   * Publish the held snapshot, with `pool` replacing its accounts when a
+   * frame carried one.
+   *
+   * **One draw for both paths** - a snapshot's own field and a frame's
+   * payload - so every state (refused, empty, malformed, failed) words the
+   * same way whichever arrived.
+   */
+  function read(pool: AccountsWire | null = null): void {
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
@@ -171,12 +199,9 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // narrows every union member in it straight afterwards. The guard above
     // covers the collections; the catch covers an element shape neither saw.
     try {
-      view.set({
-        wire: homeFrom(data as unknown as HomeWire),
-        refused: null,
-        failed: null,
-        report,
-      });
+      const wire = homeFrom(data as unknown as HomeWire);
+      if (pool !== null) wire.accounts = pool;
+      view.set({ wire, refused: null, failed: null, report });
     } catch (why) {
       view.set({
         wire: null,
@@ -218,7 +243,11 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         }
         if (message.kind === 'error' || message.subject === 'home') {
           reading = false;
-          read();
+          // A pool that arrived mid-read is newer than the snapshot in hand,
+          // which was encoded before it.
+          const pool = pendingAccounts;
+          pendingAccounts = null;
+          read(pool);
           // The answer just landed was encoded before whatever arrived while
           // it was in flight, so that update is spent here rather than lost.
           if (stale) {
@@ -229,6 +258,16 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         return;
       }
       if (message.kind !== 'update' || !coversHome(message.update)) return;
+      // **The pool's frame carries the pool.** It is the whole field the read
+      // would answer with, so folding it spends no encode; a frame from an
+      // older server carries none, and falls through to the read it always
+      // asked for.
+      const pool = accountsPayload(message.update);
+      if (pool !== null) {
+        if (reading || held?.snapshot() === null) pendingAccounts = pool;
+        else read(pool);
+        return;
+      }
       // The line is kept BEFORE the read is asked for: the read that follows
       // is what publishes it, and a report dropped here would leave the page
       // re-reading with nothing to say why.
@@ -255,6 +294,9 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       if (next !== 'open') {
         reading = false;
         stale = false;
+        // The reconnect's own snapshot is newer than a pool held from before
+        // the drop.
+        pendingAccounts = null;
       }
     });
   }
