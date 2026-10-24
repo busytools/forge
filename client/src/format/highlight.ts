@@ -5,10 +5,17 @@
  * (`shiki/langs`), so a surface loads exactly the grammars it opens and the
  * full set is still available. Dynamically imported by the call panel and the
  * Files reader rather than carried in the main bundle.
+ *
+ * **The engine is Oniguruma, not shiki's JavaScript regex engine.** The JS
+ * engine backtracks catastrophically on some text a diff carries: one
+ * 833-character TypeScript hunk took 846 ms in the WKWebView rig and held the
+ * frame, against 40 ms here for the same hunk, with the same text in the same
+ * colours. The WASM is fetched on the first highlight, which the lazy import
+ * already covers.
  */
 
 import { createHighlighterCore, type HighlighterCore } from 'shiki/core';
-import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
+import { createOnigurumaEngine } from 'shiki/engine/oniguruma';
 import type { LanguageRegistration, ThemedToken } from 'shiki';
 import { bundledLanguages } from 'shiki/langs';
 import githubDark from '@shikijs/themes/github-dark';
@@ -26,7 +33,7 @@ function base(): Promise<HighlighterCore> {
     // Files reader keeps the shiki theme it has drawn with.
     themes: [githubDark, HLJS_GITHUB_DARK],
     langs: [],
-    engine: createJavaScriptRegexEngine(),
+    engine: createOnigurumaEngine(import('shiki/wasm')),
   });
   return shared;
 }
