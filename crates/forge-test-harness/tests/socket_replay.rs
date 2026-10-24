@@ -328,7 +328,7 @@ census!(Command,
         DictateStop struct,
         SetReviewThreadStatus struct,
         CloseSession struct, UpsertReviewThread struct, DeleteReviewThread struct,
-        SubmitReview struct, BrowserIdleWarning struct,
+        SubmitReview struct,
     ],
     command_census, COMMAND_VARIANTS);
 

@@ -25,7 +25,7 @@ use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
 use crate::protocol::{
-    Command, DispatchError, IdleVerdict, NoticeSeverity, PromptOrigin, PromptSource, SessionUpdate,
+    Command, DispatchError, NoticeSeverity, PromptOrigin, PromptSource, SessionUpdate,
 };
 use crate::session_task::SessionTask;
 use crate::spawn;
@@ -5659,57 +5659,6 @@ impl Workspace {
                             &thread_ids,
                             origin,
                         ));
-                    }
-                }
-                Command::BrowserIdleWarning {
-                    key,
-                    profile,
-                    idle_minutes,
-                    grace_minutes,
-                    at_close,
-                    verdict,
-                } => {
-                    let span = tracing::info_span!(
-                        "browser_idle_warning",
-                        seat = ?key,
-                        profile = %profile,
-                        at_close,
-                    );
-                    let _enter = span.enter();
-                    // **A parked hand-off's hold is the fleet's**, keyed to
-                    // the seat and tab that parked it, so this warning has no
-                    // hold to consult: the idle clock itself skips a held
-                    // profile. `at_close` asks the verdict alone: the warning
-                    // has landed, and a close must never re-nudge.
-                    let verdict_value = if at_close {
-                        IdleVerdict::Clear
-                    } else {
-                        match key {
-                            Some(key) => {
-                                let text = format!(
-                                    "the '{profile}' browser has sat idle for {idle_minutes} \
-                                     minutes; it closes in {grace_minutes} unless a browser call \
-                                     of yours uses it. A close ends the browser, not the page: the \
-                                     next call brings it back on the page you last saw, though a \
-                                     filled form does not survive.",
-                                );
-                                match self.dispatch_forged_prompt_under(
-                                    &key,
-                                    text,
-                                    forge_sdk::request_id::next_forged_prompt_id(),
-                                ) {
-                                    Ok(()) => IdleVerdict::Delivered,
-                                    Err(_) => IdleVerdict::NoSession,
-                                }
-                            }
-                            // No seat to warn: nothing to deliver, and the
-                            // hold above was still consulted - the close's
-                            // own call is the keyless `at_close` one.
-                            None => IdleVerdict::NoSession,
-                        }
-                    };
-                    if let Some(verdict) = verdict {
-                        let _ = verdict.send(verdict_value);
                     }
                 }
                 // The board's edits are the user's own moves: stamped
@@ -12203,84 +12152,6 @@ provider = "anthropic"
 
         let delivered: Vec<Command> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
         assert_eq!(delivered.len(), 3, "all three prompts still reached the seat");
-    }
-
-    /// Ask one idle warning and read the arm's own answer. `key` is the seat
-    /// to warn, `None` for the close's seatless question.
-    async fn warn(
-        ws: &Arc<Workspace>,
-        key: Option<&SessionSlot>,
-        profile: &str,
-        at_close: bool,
-    ) -> IdleVerdict {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        ws.dispatch(Command::BrowserIdleWarning {
-            key: key.cloned(),
-            profile: profile.to_owned(),
-            idle_minutes: 30,
-            grace_minutes: 10,
-            at_close,
-            verdict: Some(tx),
-        })
-        .expect("the warning dispatches");
-        rx.await.expect("the arm answers")
-    }
-
-    /// **The idle warning is the authored sentence, drawn as a turn**, with
-    /// the machinery's own id that a reloaded row keys on. A parked hand-off's
-    /// hold is the fleet's now, keyed to its seat and tab, so this command
-    /// consults none: the idle clock itself skips a held profile.
-    #[tokio::test]
-    async fn the_browser_idle_warning_delivers_its_authored_sentence() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        let key = SessionSlot::lead("TestOrg", "proj");
-        // The stub task plus a connected session id: what a forged prompt
-        // needs to land (the chase's own delivery machinery, unchanged).
-        let _stub = ws.install_testing_stub(&key);
-        ws.mark_session_connected_for_test(&key, "lead");
-
-        assert_eq!(
-            warn(&ws, Some(&key), "printables", false).await,
-            IdleVerdict::Delivered,
-            "a live seat is warned",
-        );
-        // **The delivered warning is the authored sentence, drawn as a
-        // turn**: the verdict alone would pass with any text at all.
-        let warned = std::iter::from_fn(|| rx.try_recv().ok())
-            .find_map(|update| match update.update {
-                SessionUpdate::ChatAppended { msg, .. } => {
-                    Some(serde_json::to_string(&msg).expect("the frame encodes"))
-                }
-                _ => None,
-            })
-            .expect("the warning's frame reached the stream");
-        assert!(
-            warned.contains(
-                "the 'printables' browser has sat idle for 30 minutes; it closes in 10 unless \
-                 a browser call of yours uses it. A close ends the browser, not the page: the \
-                 next call brings it back on the page you last saw, though a filled form does \
-                 not survive."
-            ),
-            "the authored sentence is what crosses: {warned}",
-        );
-        assert!(
-            warned.contains("\"uuid\":\"forge_nudge_"),
-            "the warning's id is the machinery's own, which is what a reloaded row keys on: \
-             {warned}",
-        );
-        assert_eq!(
-            warn(&ws, Some(&key), "hunt", true).await,
-            IdleVerdict::Clear,
-            "the close's own ask never delivers, only answers",
-        );
-
-        let quiet = SessionSlot::lead("TestOrg", "quiet");
-        assert_eq!(
-            warn(&ws, Some(&quiet), "hunt", false).await,
-            IdleVerdict::NoSession,
-            "a seat with no live session has nobody to tell",
-        );
     }
 
     /// **A `/new` is a replacement, not a sweep.** The slot stays and the

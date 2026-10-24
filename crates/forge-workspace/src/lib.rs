@@ -104,8 +104,8 @@ pub use domain_session::{ContextUsage, DomainSession, McpServers, TurnLiveness, 
 pub use error::WorkspaceError;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
 pub use protocol::{
-    Command, DictateOutcome, DispatchError, IdleVerdict, NoticeSeverity, PromptOrigin,
-    PromptSource, SessionUpdate, TurnErrorClass,
+    Command, DictateOutcome, DispatchError, NoticeSeverity, PromptOrigin, PromptSource,
+    SessionUpdate, TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use update_fanout::SeatUpdate;

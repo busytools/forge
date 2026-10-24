@@ -2675,7 +2675,6 @@ pub(crate) fn execute_command_via_handle(
         | Command::UpsertReviewThread { .. }
         | Command::DeleteReviewThread { .. }
         | Command::SubmitReview { .. }
-        | Command::BrowserIdleWarning { .. }
         | Command::TaskVerdict { .. }
         | Command::TaskAnswer { .. }
         | Command::TaskRank { .. }

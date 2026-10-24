@@ -2656,14 +2656,13 @@ fn dispatch_answering(
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
     //
-    // The eight reply-carrying commands take a sender the wire deliberately
+    // The five reply-carrying commands take a sender the wire deliberately
     // does not carry, and each carries its OWN reply type - a spawned worker
     // answers with a `WorkerSpawnReply`, a despawn with a `DespawnResult`,
-    // the review writes with a `bool` and a `ReviewSet`, an idle warning
-    // with an `IdleVerdict`, and a profile's close or delete with a
-    // `Result<(), String>`. So the channel is built per arm and handed to
-    // the shared helper with its own receiver: one channel cannot carry
-    // eight different answers. **A variant missing here hangs its caller**:
+    // and the review writes with a `bool` and a `ReviewSet`. So the channel
+    // is built per arm and handed to the shared helper with its own receiver:
+    // one channel cannot carry five different answers. **A variant missing
+    // here hangs its caller**:
     // it falls to the fire-and-forget arm below with no sender, the
     // workspace answers nobody, and the client waits for ever (measured live
     // on the delete, 2026-10-17).
@@ -2728,25 +2727,11 @@ fn dispatch_answering(
             };
             answered(state, command, to, rx, reply_tx);
         }
-        Command::BrowserIdleWarning {
-            key, profile, idle_minutes, grace_minutes, at_close, ..
-        } => {
-            let (tx, rx) = oneshot::channel();
-            let command = Command::BrowserIdleWarning {
-                key,
-                profile,
-                idle_minutes,
-                grace_minutes,
-                at_close,
-                verdict: Some(tx),
-            };
-            answered(state, command, to, rx, reply_tx);
-        }
         // Every other command is fire-and-forget: success sends nothing
         // extra, because the update arrives through the subscription the
         // client already has.
         other => {
-            // An eighth reply-carrying variant added without an arm lands
+            // A sixth reply-carrying variant added without an arm lands
             // here: a refusal is answered below, a success is not, so its
             // caller hangs (a despawn-shaped one has no client bound at all).
             // Caught in debug rather than allowed to pass.
@@ -2859,7 +2844,7 @@ fn dispatched(me: u64, command: &Command) {
 /// Whether a command reports its outcome through the reply rather than
 /// through an update on the subscription.
 ///
-/// These six are the ones with nothing behind them on the wire: a client
+/// These five are the ones with nothing behind them on the wire: a client
 /// that omits `reply_to` for one of them has no second way to learn what
 /// happened.
 fn answers_through_a_reply(command: &Command) -> bool {
@@ -2870,11 +2855,10 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::UpsertReviewThread { .. }
             | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
-            | Command::BrowserIdleWarning { .. }
     )
 }
 
-/// Dispatch one of those six, and answer the client that asked.
+/// Dispatch one of those five, and answer the client that asked.
 ///
 /// A client that asked for an answer always hears one - INCLUDING a refusal,
 /// so it is never left watching a channel that stays empty. The wait and the

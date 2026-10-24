@@ -99,7 +99,6 @@
   },
   "command": {
     "AnswerDocumentHandOff": "answer_document_hand_off",
-    "BrowserIdleWarning": "browser_idle_warning",
     "Cancel": "cancel",
     "CancelQueuedPrompt": "cancel_queued_prompt",
     "CloseSession": "close_session",
