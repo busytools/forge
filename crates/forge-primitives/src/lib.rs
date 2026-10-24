@@ -153,3 +153,5 @@ pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, Suba
 pub use tasks::{Task, TaskId, TaskStatus};
 pub use turn_error::TurnErrorClass;
 pub use workers::{FORGE_WORKER_TAG_PREFIX, LEAD_LABEL, WorkerLiveness, WorkerStatus, worker_tag};
+
+// path-filter proof: rust-only change against ci-speed
