@@ -4813,12 +4813,12 @@ mod tests {
             msg: result_message("success", false),
         });
 
-        assert!(!task.domain.lock().turn_in_flight(), "the shared Result ended the turn",);
+        assert!(!task.domain.lock().turn_in_flight(), "the shared Result ended the turn");
         assert!(
             !task.domain.lock().is_idle_for_handoff(),
             "but the queued prompt still holds the seat",
         );
-        assert!(agent_rx.try_recv().is_err(), "so no reading is asked for at this boundary",);
+        assert!(agent_rx.try_recv().is_err(), "so no reading is asked for at this boundary");
 
         // The CLI ran it; its lifecycle settles and its own Result serves the
         // boundary.
