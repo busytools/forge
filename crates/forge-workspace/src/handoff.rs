@@ -763,6 +763,14 @@ exactly. Do not restate what is on disk: forge's own half of the brief already \
 carries the seat, the asks, the constraints, the files, the git state, the gate \
 and the board. Keep the whole reply under 600 words.";
 
+/// A prompt held because the seat was swapping its occupant.
+#[derive(Debug, Clone)]
+pub(crate) struct HeldPrompt {
+    pub text: String,
+    pub attachments: Vec<forge_primitives::ImageAttachment>,
+    pub source: crate::protocol::PromptSource,
+}
+
 /// The handoff a session arrived by, while its first turns are measured.
 #[derive(Debug, Clone)]
 pub(crate) struct SuccessorWatch {
@@ -824,6 +832,33 @@ impl crate::Workspace {
     /// Forget a brief whose swap never reached its successor.
     pub(crate) fn clear_pending_brief(&self, slot: &SessionSlot) {
         self.pending_handoffs.lock().remove(slot);
+    }
+
+    /// Mark the seat as swapping its occupant: from the moment the brief is
+    /// built until the successor connects, a prompt aimed at it is held
+    /// rather than run by the session on its way out.
+    pub(crate) fn begin_swap(&self, slot: &SessionSlot) {
+        self.swapping.lock().insert(slot.clone());
+    }
+
+    /// Whether a swap is in flight on this seat.
+    pub(crate) fn swap_in_progress(&self, slot: &SessionSlot) -> bool {
+        self.swapping.lock().contains(slot)
+    }
+
+    /// Hold a prompt for the successor. `true` when a swap took it.
+    pub(crate) fn hold_prompt(&self, slot: &SessionSlot, prompt: HeldPrompt) -> bool {
+        if !self.swap_in_progress(slot) {
+            return false;
+        }
+        self.held_prompts.lock().entry(slot.clone()).or_default().push(prompt);
+        true
+    }
+
+    /// End the swap and take everything held for it, in arrival order.
+    pub(crate) fn end_swap(&self, slot: &SessionSlot) -> Vec<HeldPrompt> {
+        self.swapping.lock().remove(slot);
+        self.held_prompts.lock().remove(slot).unwrap_or_default()
     }
 
     /// Write one handoff to the store, which is what `at_percent` is tuned
@@ -938,6 +973,10 @@ impl crate::Workspace {
     }
 
     async fn run_handoff(self: Arc<Self>, request: SwapRequest) {
+        // The gate opens before the read: building the brief takes seconds on
+        // a long transcript, and a prompt arriving in that stretch is exactly
+        // the one the session on its way out would swallow.
+        self.begin_swap(&request.slot);
         let cwd = PathBuf::from(&request.cwd);
         let transcript_path = transcript_path(self.config_dir(), &cwd, &request.from);
         let board: Vec<Task> = self
@@ -988,6 +1027,16 @@ impl crate::Workspace {
             session_id: Some(request.to),
         }) {
             self.clear_pending_brief(&request.slot);
+            let held = self.end_swap(&request.slot);
+            if !held.is_empty() {
+                tracing::warn!(
+                    target: "forge_workspace::handoff",
+                    event_name = "handoff_prompts_dropped",
+                    slot = %request.slot.display(),
+                    held = held.len(),
+                    "the handoff could not start its successor; prompts held for it were dropped",
+                );
+            }
             let _ = self.update_tx.send(SessionUpdate::Notice {
                 key: request.slot.clone(),
                 severity: NoticeSeverity::Error,
@@ -1383,6 +1432,33 @@ mod tests {
         assert!(ground < judgment, "ground truth first: {text}");
         assert!(text.contains("seat: Busytools/forge/lead"), "the facts are rendered");
         assert!(text.contains("Next: the client row"), "and so is the judgment");
+    }
+
+    /// Every machinery delivery goes through one gate, so a cron, a peer
+    /// message, a Gotify push and a Slack message all wait for the successor
+    /// rather than starting a turn on the session that is leaving.
+    #[test]
+    fn a_machinery_prompt_waits_for_the_successor() {
+        use crate::protocol::PromptSource;
+
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        workspace.begin_swap(&slot);
+
+        workspace
+            .dispatch_workspace_prompt_under(
+                &slot,
+                "the cron fired".to_owned(),
+                PromptSource::Cron,
+                "cron-1".to_owned(),
+            )
+            .expect("a held prompt is an accepted prompt");
+
+        let held = workspace.end_swap(&slot);
+        assert_eq!(held.len(), 1, "the delivery is held, not run: {held:?}");
+        assert_eq!(held[0].text, "the cron fired");
+        assert_eq!(held[0].source, PromptSource::Cron, "and it keeps who sent it");
+        assert!(!workspace.swap_in_progress(&slot), "the gate closes with the take");
     }
 
     /// The successor's own first user row is the brief forge gave it, not a

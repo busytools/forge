@@ -596,6 +596,14 @@ pub struct Workspace {
     /// the impl block in [`crate::handoff`] can reach it.
     pub(crate) pending_handoffs:
         Mutex<std::collections::HashMap<SessionSlot, crate::handoff::PendingBrief>>,
+    /// Seats whose occupant is being swapped by a handoff: from the moment
+    /// the brief is built until the successor connects, a prompt aimed at one
+    /// is held rather than run by the session leaving.
+    pub(crate) swapping: Mutex<std::collections::HashSet<SessionSlot>>,
+    /// Prompts held for a swapping seat, delivered to its successor after the
+    /// brief, in arrival order.
+    pub(crate) held_prompts:
+        Mutex<std::collections::HashMap<SessionSlot, Vec<crate::handoff::HeldPrompt>>>,
     /// Active Gotify subscriptions (`mcp__forge__gotify`). The set the
     /// stream matches each inbound message against. Durable ones (lead /
     /// team-worker) are also persisted to `db` and reloaded here
@@ -1829,6 +1837,8 @@ impl Workspace {
             tasks: Mutex::new(tasks),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
+            swapping: Mutex::new(std::collections::HashSet::new()),
+            held_prompts: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(gotify_subs),
             db,
             catalog_loaded,
@@ -4220,6 +4230,16 @@ impl Workspace {
         source: PromptSource,
         uuid: String,
     ) -> Result<(), DispatchError> {
+        // A prompt arriving while the seat swaps its occupant waits for the
+        // successor: the session on its way out must not start a turn the new
+        // one would never carry. Every machinery delivery - peer, cron,
+        // Gotify, Slack - comes through here, so one gate holds them all.
+        if self.hold_prompt(
+            key,
+            crate::handoff::HeldPrompt { text: text.clone(), attachments: Vec::new(), source },
+        ) {
+            return Ok(());
+        }
         // `route` rather than `dispatch`: the delivery's frame is the
         // envelope one its own update forges, not a bare user turn.
         self.route(Command::PromptUnder {

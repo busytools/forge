@@ -536,7 +536,31 @@ impl SessionTask {
                         key: key.clone(),
                         overrides: crate::dictate::DictateOverrides::default(),
                     });
+                    // The swap's gate opens before the brief is delivered,
+                    // so the brief itself is not taken by it - and what
+                    // waited during the swap follows the brief, in arrival
+                    // order.
+                    let held = self.workspace.upgrade().map(|workspace| workspace.end_swap(&key));
                     self.deliver_pending_brief(&key, &session_id);
+                    if let (Some(workspace), Some(held)) = (self.workspace.upgrade(), held) {
+                        for prompt in held {
+                            let uuid = forge_sdk::request_id::next_forged_prompt_id();
+                            if let Err(error) = workspace.dispatch(Command::PromptUnder {
+                                key: key.clone(),
+                                text: prompt.text,
+                                attachments: prompt.attachments,
+                                uuid,
+                                source: prompt.source,
+                            }) {
+                                tracing::warn!(
+                                    target: "forge_workspace::session_task",
+                                    slot = %key.display(),
+                                    %error,
+                                    "a prompt held during the handoff could not be delivered",
+                                );
+                            }
+                        }
+                    }
                 } else {
                     self.connected_once = true;
                     // When the connecting session is a project's lead and
@@ -682,8 +706,20 @@ impl SessionTask {
                     );
                     // A handoff whose successor never came up has no
                     // occupant to give its brief to; the row stays and
-                    // `/resume <old-id>` is the recovery.
+                    // `/resume <old-id>` is the recovery. A prompt held for
+                    // that successor is told it did not run rather than
+                    // vanishing with the swap.
                     workspace.clear_pending_brief(&self.key);
+                    for prompt in workspace.end_swap(&self.key) {
+                        let first = prompt.text.lines().next().unwrap_or_default();
+                        self.emit(SessionUpdate::Notice {
+                            key: self.key.clone(),
+                            severity: NoticeSeverity::Error,
+                            text: format!(
+                                "the handoff failed before this prompt could run: {first}"
+                            ),
+                        });
+                    }
                     // Worker async spawn failure: classify the
                     // failure, dispatch a typed
                     // WorkerSpawnFailedNotice envelope to the lead's
@@ -1069,6 +1105,13 @@ impl SessionTask {
     const CALL_OUTPUT_MAX_LINES: usize = 12;
 
     fn execute_command(&mut self, cmd: Command) {
+        // A person's prompt arriving while the seat swaps its occupant waits
+        // for the successor, exactly as a peer or cron delivery does. It is
+        // held before its queued row is recorded, because no session is
+        // going to run it here.
+        if held_while_swapping(&cmd, &self.key, &self.workspace) {
+            return;
+        }
         // A prompt's queued row is recorded here, where its id is minted (or
         // is already the caller's) and its source is known: the lifecycle
         // frames that follow name only the id and the state, so this is the
@@ -1882,6 +1925,18 @@ impl Drop for SessionTask {
                 &self.key,
                 crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
+            // A task that ends mid-swap leaves its gate open; closing it
+            // here is what keeps a later prompt from being held for a
+            // successor nothing is bringing.
+            let held = workspace.end_swap(&self.key);
+            if !held.is_empty() {
+                tracing::warn!(
+                    target: "forge_workspace::session_task",
+                    slot = %self.key.display(),
+                    held = held.len(),
+                    "the session task ended during a handoff; prompts held for its successor were dropped",
+                );
+            }
         }
     }
 }
@@ -2138,6 +2193,36 @@ pub(crate) fn execute_command_via_handle(
 
 /// The words a permission answer carried, where it carried any: the box's own
 /// notes, the one field a dictation into the ask lands in (#1360).
+/// Hold a prompt aimed at a seat that is swapping its occupant, answering
+/// whether it went into the hold.
+///
+/// The machinery's own deliveries are gated in
+/// `Workspace::dispatch_workspace_prompt_under`; a person's prompt reaches
+/// the task directly, so this is the door it comes through.
+fn held_while_swapping(
+    cmd: &Command,
+    key: &SessionSlot,
+    workspace: &std::sync::Weak<crate::Workspace>,
+) -> bool {
+    let prompt = match cmd {
+        Command::Prompt { key: _, text, attachments } => crate::handoff::HeldPrompt {
+            text: text.clone(),
+            attachments: attachments.clone(),
+            source: PromptSource::You,
+        },
+        Command::PromptUnder { key: _, text, attachments, source, .. } => {
+            crate::handoff::HeldPrompt {
+                text: text.clone(),
+                attachments: attachments.clone(),
+                source: *source,
+            }
+        }
+        _ => return false,
+    };
+    let Some(workspace) = workspace.upgrade() else { return false };
+    workspace.hold_prompt(key, prompt)
+}
+
 /// The fill a reading states, against the CLI's own effective window.
 ///
 /// **Counted from the two numbers rather than taken from the reported
@@ -3345,6 +3430,44 @@ mod tests {
             workspace.handoff_for_successor(&slot, &record.to).is_some(),
             "and the record is written, so the successor is measurable",
         );
+    }
+
+    /// A prompt that arrives while the seat swaps its occupant waits for the
+    /// successor: the session on its way out is never handed a turn the new
+    /// one would not carry, and what waited follows the brief.
+    #[tokio::test]
+    async fn a_prompt_sent_mid_swap_waits_for_the_successor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        task.connected_once = true;
+        workspace.begin_swap(&slot);
+
+        task.execute_command(Command::Prompt {
+            key: slot.clone(),
+            text: "sent mid swap".to_owned(),
+            attachments: Vec::new(),
+        });
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "the session on its way out is not handed the prompt",
+        );
+
+        task.translate_event(connected_event("new-session-id", "/tmp/forge"));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == "sent mid swap"
+            )),
+            "the successor is handed it once it is here: {dispatched:?}",
+        );
+        assert!(!workspace.swap_in_progress(&slot), "and the gate is closed");
     }
 
     /// The successor's window closes at its tenth turn: a row that kept
