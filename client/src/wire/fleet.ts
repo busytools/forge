@@ -57,9 +57,9 @@ export const REDRAWS = new Set([
   'catalog_loaded',
   'cli_version_changed',
   // The account pool, which the band's own card draws and no row does. Its
-  // frame carries the pool's own state, so the home folds it instead of
-  // re-reading (`home/live.ts`); it stays in this set because it is news the
-  // home draws.
+  // frame carries the pool's own state, so a usage-only move is applied
+  // without a re-read (`home/live.ts`); a move in what a project row binds on
+  // still reads. It stays in this set because it is news the home draws.
   'accounts_changed',
   'dictate_availability',
   'connection_failed',
@@ -157,9 +157,11 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
  * update carries is the models page's own read.
  *
  * **`AccountsChanged` is the one of these that carries its state**, so the
- * home folds it instead of reading (`home/live.ts`); it is listed here
- * because the field it moves is the snapshot's, and a frame from a server
- * older than the payload is still the wake-up this table names.
+ * home applies a usage-only move without a read (`home/live.ts`) - while a
+ * move in the loading rows, the selection signal or a probe failure still
+ * reads. It is listed here because the field it moves is the snapshot's, and
+ * a frame from a server older than the payload is still the wake-up this
+ * table names.
  *
  * `fleet.test.ts` enumerates every declared variant and holds this table and
  * `HOME_IGNORES` to the enum, so a new variant is a red build rather than a

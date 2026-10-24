@@ -475,9 +475,10 @@ of prose on either side.
   life of the connection. The account pool is a home field as well, and its
   announcement is also a fleet redraw, so it arrives through the first arm
   too; **the frame carries the pool's own state**, so a usage-only move is
-  applied instead of read. A move in the loading rows, the settled flag or
-  the listener is still a read, because a project row's `would_bind` and its
-  chip derive from those. A card left at `0 ready, probing` looks like a
+  applied instead of read. A move in the loading rows, the settled flag, the
+  listener, a probe failure or the selection signal - `at_cap` and `cooling`
+  on each pool row - is still a read, because a project row's `would_bind`
+  and its chip derive from those. A card left at `0 ready, probing` looks like a
   slow probe rather than like a page that stopped listening, which is why
   the frame carries the state rather than staying a bare wake-up.
 

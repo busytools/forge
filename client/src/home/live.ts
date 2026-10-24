@@ -150,15 +150,23 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   /**
    * The newest pool a frame carried, kept across publishes.
    *
-   * **A reused snapshot is not a newer pool.** An unsubjected `error` frame
-   * re-draws what the store holds, and an in-flight read's answer was encoded
-   * before the frame; either would put the last snapshot's pool back on the
-   * page. So the folded pool rides every publish until a FRESH home snapshot
-   * lands.
+   * **A reused snapshot is not a newer pool.** A publish off the held
+   * snapshot - the empty/failed redraw, or a refusal - states a pool older
+   * than the fold, so the fold rides every publish until the snapshot it
+   * belongs to says otherwise.
    */
   let folded: AccountsWire | null = null;
-  /** Whether that fold arrived while a read (or the first snapshot) was owed. */
-  let foldedDuringRead = false;
+  /**
+   * Which read request the fold belongs to, or `null` when it is published.
+   *
+   * **A fold is newer than the read that was in flight when it arrived, and
+   * older than the next one.** Counting requests is what tells the two
+   * apart: the answer that lands compares its own number, so a fold from an
+   * earlier request cannot ride over a later, newer snapshot.
+   */
+  let foldRead: number | null = null;
+  /** Read requests made so far; the initial subscribe is 0. */
+  let reads = 0;
   /** The pool the drawn view holds, which a fresh frame is compared against. */
   let drawnPool: AccountsWire | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -170,6 +178,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     if (timer !== null) return;
     timer = setTimeout(() => {
       timer = null;
+      reads += 1;
       reading = true;
       connection.refresh('home');
     }, COALESCE_MS);
@@ -240,35 +249,35 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     held = connection.subscribe('home', { answering: true, browser: canHost() });
     reading = false;
     stopMessages = connection.onMessage((message) => {
-      if (message.kind === 'snapshot' || message.kind === 'error') {
-        // A refusal this side attributed to another subject says nothing
-        // about the home's read; one off the wire names no subject and is
-        // read against the home's own store.
-        if (
-          message.kind === 'error' &&
-          message.subject !== undefined &&
-          subjectKey(message.subject) !== 'home'
-        ) {
-          return;
-        }
-        if (message.kind === 'error' || message.subject === 'home') {
+      if (message.kind === 'error') {
+        // **An error is the home's answer only when it names the home or the
+        // store says the subscribe was refused.** Every other error - a
+        // dispatch, a read of a file - settles something else and leaves the
+        // home's read owed, so it must not redraw the held snapshot over a
+        // fold or free the next fold to ride that answer.
+        const named = message.subject !== undefined && subjectKey(message.subject) === 'home';
+        if (named || held?.state().kind === 'refused') {
           reading = false;
-          if (message.kind === 'snapshot' && message.subject === 'home') {
-            // A fresh snapshot states the pool itself. A fold that arrived
-            // while this read was in flight is newer than the answer, so it
-            // stays; any older fold goes.
-            if (!foldedDuringRead) folded = null;
-            foldedDuringRead = false;
-          }
-          // An error re-draws what the store holds, and that pool may be a
-          // snapshot older than the fold.
           read(folded);
-          // The answer just landed was encoded before whatever arrived while
-          // it was in flight, so that update is spent here rather than lost.
-          if (stale) {
-            stale = false;
-            schedule();
-          }
+        }
+        return;
+      }
+      if (message.kind === 'snapshot') {
+        // A refusal this side attributed to another subject says nothing
+        // about the home's read.
+        if (message.subject !== 'home') return;
+        reading = false;
+        // The answer states the pool itself. A fold that arrived while THIS
+        // read was in flight is newer than it and stays; a fold from an
+        // earlier request is older and goes.
+        if (foldRead !== reads) folded = null;
+        foldRead = null;
+        read(folded);
+        // The answer just landed was encoded before whatever arrived while
+        // it was in flight, so that update is spent here rather than lost.
+        if (stale) {
+          stale = false;
+          schedule();
         }
         return;
       }
@@ -281,13 +290,17 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       if (pool !== null) {
         // **Usage-only moves fold; anything a project row or the card is read
         // from keeps the read.** `would_bind` and the row's chip come off the
-        // pool's loading state and probe failures, so a bail, a heal or a
-        // cooling has to come back with a snapshot.
+        // pool's loading state, its probe failures and its selection signal
+        // (`at_cap`/`cooling`), so a bail, a heal, a settle or a cap has to
+        // come back with a snapshot.
         if (drawnPool !== null && poolFactsChanged(drawnPool, pool)) {
-          // Falls through to the read this update asks for.
+          // The read this asks for is the newer answer; a fold from an
+          // earlier request must not ride over it.
+          folded = null;
+          foldRead = null;
         } else {
           folded = pool;
-          if (reading || held?.snapshot() === null) foldedDuringRead = true;
+          if (reading || held?.snapshot() === null) foldRead = reads;
           else read(pool);
           return;
         }
@@ -318,9 +331,10 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       if (next !== 'open') {
         reading = false;
         stale = false;
-        // No read is owed across the drop, so the next snapshot is fresh and
-        // replaces the fold; the page keeps drawing the fold until it lands.
-        foldedDuringRead = false;
+        // No read is owed across the drop, so the reconnect's snapshot is
+        // fresh and replaces the fold; the page keeps drawing the fold until
+        // it lands.
+        foldRead = null;
       }
     });
   }

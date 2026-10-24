@@ -661,32 +661,53 @@ describe('the home over a connection', () => {
   });
 
   /**
-   * **A fact a project row is read from keeps the read.** `would_bind` and the
-   * row's chip come off the pool's loading state, so a bail, a heal or a
-   * settle must refresh the snapshot; folding it would leave the row naming a
-   * bind that no longer holds.
+   * **Every fact a project row, the card or the walk is read from keeps the
+   * read.** One case per compared field: a field the comparator stops reading
+   * is a row that keeps claiming a bind that no longer holds.
    */
-  it('reads when a pool frame moves the facts the project rows derive from', async () => {
-    const forge = fakeConnection();
-    const stop = watchHome(forge.connection).subscribe(() => {});
-    forge.stores.get(HOME)?.set(POOL_HOME_OLD);
-    forge.arrive({ kind: 'snapshot', subject: HOME, data: POOL_HOME_OLD });
-    await settle();
-
-    forge.arrive({
-      kind: 'update',
-      update: {
-        accounts_changed: {
-          loading: [{ ...POOL_FACTS.loading[0], state: 'bailed' }],
-          all_loaded: true,
-          gateway: POOL_FACTS.gateway,
-          usage: [poolUsage(7.25)],
-        },
-      },
-    } as unknown as ServerMessage);
-    await settle();
-    expect(forge.refreshed, 'a loading move folded instead of reading').toEqual(['home']);
-    stop();
+  it('reads when a pool frame moves any fact the project rows derive from', async () => {
+    const row = POOL_FACTS.loading[0];
+    const cases: [string, (pool: typeof POOL) => unknown][] = [
+      ['a row that bailed', (pool) => ({ ...pool, loading: [{ ...row, state: 'bailed' }] })],
+      [
+        'a probe failure',
+        (pool) => ({ ...pool, loading: [{ ...row, last_error: 'rate_limited' }] }),
+      ],
+      ['a probe landing at the cap', (pool) => ({ ...pool, loading: [{ ...row, at_cap: true }] })],
+      ['a rotation cooldown', (pool) => ({ ...pool, loading: [{ ...row, cooling: true }] })],
+      ['the settled flag', (pool) => ({ ...pool, all_loaded: false })],
+      [
+        'a listener that stopped',
+        (pool) => ({ ...pool, gateway: { ...pool.gateway, ready: false } }),
+      ],
+      [
+        'a listener on another port',
+        (pool) => ({ ...pool, gateway: { ...pool.gateway, port: 9 } }),
+      ],
+      [
+        'a bind failure',
+        (pool) => ({ ...pool, gateway: { ...pool.gateway, bind_error: 'in use' } }),
+      ],
+      ['an account that left the pool', (pool) => ({ ...pool, loading: [] })],
+      [
+        'an account that changed name',
+        (pool) => ({ ...pool, loading: [{ ...row, display_name: 'B' }] }),
+      ],
+    ];
+    for (const [what, moved] of cases) {
+      const forge = fakeConnection();
+      const stop = watchHome(forge.connection).subscribe(() => {});
+      forge.stores.get(HOME)?.set(POOL_HOME_OLD);
+      forge.arrive({ kind: 'snapshot', subject: HOME, data: POOL_HOME_OLD });
+      await settle();
+      forge.arrive({
+        kind: 'update',
+        update: { accounts_changed: moved(POOL) },
+      } as unknown as ServerMessage);
+      await settle();
+      expect(forge.refreshed, `${what} folded instead of reading`).toEqual(['home']);
+      stop();
+    }
   });
 
   /**
@@ -791,22 +812,24 @@ describe('the home over a connection', () => {
   });
 
   /**
-   * An unsubjected `error` re-draws what the store holds, and that snapshot is
-   * older than a fold: the fold has to survive it, or a refused dispatch would
-   * put the last read's pool back on the page.
+   * **A foreign error settles no read.** A dispatch refusal arriving while a
+   * home read is in flight used to free the read (and redraw the held
+   * snapshot); that both reverted a fold and let the fold ride over the
+   * answer it should have been replaced by. Here the error changes nothing,
+   * the fold belongs to the read in flight, and the answer keeps it.
    */
-  it('keeps a folded pool when an unsubjected error redraws the held snapshot', async () => {
+  it('keeps a folded pool across a foreign error that settles no read', async () => {
     const forge = fakeConnection();
     const seen: HomeRead[] = [];
     const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
     forge.stores.get(HOME)?.set(POOL_HOME_OLD);
     forge.arrive({ kind: 'snapshot', subject: HOME, data: POOL_HOME_OLD });
     await settle();
-    forge.arrive({
-      kind: 'update',
-      update: { accounts_changed: POOL },
-    } as unknown as ServerMessage);
+
+    // A covered frame asks for a read; the request is in flight.
+    forge.arrive(UPDATE);
     await settle();
+    expect(forge.refreshed, 'the first update did not ask for a read').toEqual(['home']);
 
     forge.arrive({
       kind: 'error',
@@ -814,10 +837,53 @@ describe('the home over a connection', () => {
       why: 'that command was refused',
     } as unknown as ServerMessage);
     await settle();
+    forge.arrive({
+      kind: 'update',
+      update: { accounts_changed: POOL },
+    } as unknown as ServerMessage);
+    await settle();
+
+    // The answer was encoded before the fold and lands after it.
+    forge.stores.get(HOME)?.set(POOL_HOME_OLD);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: POOL_HOME_OLD });
+    await settle();
     expect(
       balanceOf(seen.at(-1)),
-      'an unsubjected error reverted the pool to the held snapshot',
+      'a foreign error freed the fold to be overwritten by the answer',
     ).toBe(7.25);
+    expect(forge.refreshed, 'a foreign error asked for another read').toEqual(['home']);
+    stop();
+  });
+
+  /**
+   * A fold made during a read does not survive the drop: the reconnect's own
+   * snapshot is newer and replaces it.
+   */
+  it('drops a fold made mid-read when the connection reconnects', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+    forge.stores.get(HOME)?.set(POOL_HOME_OLD);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: POOL_HOME_OLD });
+    await settle();
+
+    forge.arrive(UPDATE);
+    await settle();
+    forge.arrive({
+      kind: 'update',
+      update: { accounts_changed: POOL },
+    } as unknown as ServerMessage);
+    await settle();
+
+    forge.status('closed');
+    const reconnected = { ...POOL_HOME, accounts: { ...POOL_FACTS, usage: [poolUsage(6.5)] } };
+    forge.stores.get(HOME)?.set(reconnected);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: reconnected });
+    await settle();
+    expect(
+      balanceOf(seen.at(-1)),
+      'a fold from before the drop rode over the reconnect snapshot',
+    ).toBe(6.5);
     stop();
   });
 
