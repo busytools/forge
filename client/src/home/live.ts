@@ -1,6 +1,6 @@
 /**
  * The home over a live connection: the snapshot it is answered with, and the
- * read that follows every update a home subscriber is sent.
+ * read that follows an update the snapshot can carry.
  *
  * **Nothing is folded here, and that is the point.** A row's state is the
  * server's, folded from the core's own `Live` alongside the roster, so it
@@ -8,8 +8,8 @@
  * states this client makes for itself are `stateOf`'s promotions: the cases
  * where the state read from the wire alone would disagree with the view this
  * client replaced, silently, the first time one of them turned. So an
- * update the home is sent is answered with a fresh read rather than with
- * arithmetic, and an update it is not sent is never seen.
+ * update whose change the snapshot can carry is answered with a fresh read
+ * rather than with arithmetic, and one it cannot carry is no read at all.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
