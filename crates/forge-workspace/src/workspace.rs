@@ -3348,7 +3348,6 @@ impl Workspace {
         let previous = self.accounts.usage(&key.0);
         let was_loading = self.accounts.loading_state(key);
         let was_error = self.accounts.usage_error(&key.0);
-        let was_probe_after = self.accounts.next_probe_after(key);
         let healed = was_loading == LoadingState::Bailed;
         // A window at the cap with a reset ahead is proven exhaustion:
         // the gateway cools the account until that reset and every
@@ -3374,14 +3373,14 @@ impl Workspace {
         // A poll that found the figures already held is no news, and
         // announcing it costs every home subscriber a full read for an
         // answer that cannot differ. Everything the wire carries is
-        // compared: the loading state, the last probe failure with its
-        // hold-down (a success after a transient failure clears both, and
-        // the figures can be identical), and the usage's own fields.
+        // compared: the loading state, the last probe failure (a success
+        // after a transient failure clears it, and the figures can be
+        // identical; its hold-down instant is cleared with it, so the error
+        // is the whole of that change), and the usage's own fields.
         // `fetched_at` is the one exclusion - it records when the reading
         // was taken rather than what it says, and it moves on every probe.
         let moved = was_loading != self.accounts.loading_state(key)
             || was_error != self.accounts.usage_error(&key.0)
-            || was_probe_after != self.accounts.next_probe_after(key)
             || match (&previous, &self.accounts.usage(&key.0)) {
                 (Some(before), Some(after)) => !before.same_usage(after),
                 (None, None) => false,
@@ -20892,10 +20891,11 @@ provider = "anthropic"
     /// A probe that moves only the pool's loading state is news, even when
     /// its figures match the ones already held.
     ///
-    /// This is the cold boot: the cache restores the last snapshot while the
-    /// account is still `Loading`, so the first clean probe finds the same
-    /// figures and the only thing it changes is `Ready`. Without the loading
-    /// clause the card keeps `0 ready, probing` until something else moves.
+    /// The pool can hold a snapshot while an account is still `Loading` -
+    /// the cache seeds usage before anything settles the state - and a poll
+    /// that is what moves it to `Ready` changes nothing else. Without the
+    /// loading clause the card keeps `0 ready, probing` until something else
+    /// moves.
     #[tokio::test]
     async fn a_probe_that_only_settles_the_loading_state_is_news() {
         use forge_gateway::LoadingState;
