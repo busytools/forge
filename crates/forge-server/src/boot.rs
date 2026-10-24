@@ -66,11 +66,6 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
     Ok(workspace)
 }
 
-/// What the deleted `[browser] grace_minutes` key used to supply, until the
-/// grace path itself goes.
-#[cfg(target_os = "macos")]
-const GRACE_MINUTES: u64 = 10;
-
 /// Install the server's browser fleet: constructed here, one host and one
 /// driver per profile spawned on first use.
 ///
@@ -89,9 +84,11 @@ fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
     // workspace phrases the one warning a named profile's owner gets.
     let browser = workspace.browser_settings();
     fleet.configure_encoding(browser.fps, browser.quality);
+    // A stand-in for the deleted `[browser] grace_minutes` key, until the
+    // grace path itself goes.
     fleet.configure_idle(
         browser.idle_minutes,
-        GRACE_MINUTES,
+        forge_browser::idle::GRACE_MINUTES,
         Arc::new(IdleWarnings { workspace: Arc::downgrade(workspace) }),
     );
     fleet.start_idle();
