@@ -5,6 +5,7 @@ import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
 import type { BoardRead } from '../wire/board';
+import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { watchBoard } from './live';
 
@@ -15,6 +16,19 @@ const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 const UPDATE: ServerMessage = {
   kind: 'update',
   update: { tasks_changed: { key: LEAD, tasks: [] } },
+};
+
+/** The same project's set with a task in it, which is news to the dedupe. */
+const NEWS: ServerMessage = {
+  kind: 'update',
+  update: {
+    tasks_changed: {
+      key: LEAD,
+      tasks: [
+        { id: 't1', project_name: 'proj', subject: 'a row', status: 'pending' } as unknown as Task,
+      ],
+    },
+  },
 };
 
 /** An update the board does not cover, and must not re-read for. */
@@ -173,6 +187,104 @@ describe('the board over a connection', () => {
     stop();
   });
 
+  /**
+   * **A re-announced task set is no read** (#2540). The chase used to send
+   * every project every 30 s with the set unchanged, and answering that with
+   * a full 628 KB board read was the loop the installed client was paying;
+   * only a moved set asks.
+   */
+  it('skips a task set that has not moved', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    const task = {
+      id: 't1',
+      project_name: 'proj',
+      subject: 'a row',
+      status: 'pending',
+    } as unknown as Task;
+    const same: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [task] } },
+    };
+    const moved: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [{ ...task, status: 'completed' }] } },
+    };
+
+    forge.arrive(same);
+    await settle();
+    expect(forge.refreshed, 'the first task set asked for a read').toEqual([BOARD]);
+
+    // The read in hand answers, so a later moved set can ask again.
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    await settle();
+
+    // A fresh deep-equal object, not the same reference: the dedupe must
+    // read the set, not the object identity.
+    forge.arrive({
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [{ ...task }] } },
+    });
+    await settle();
+    expect(forge.refreshed, 'an unchanged task set asked for another read').toEqual([BOARD]);
+
+    forge.arrive(moved);
+    await settle();
+    expect(forge.refreshed, 'a moved task set did not ask for a read').toEqual([BOARD, BOARD]);
+    stop();
+  });
+
+  /**
+   * An empty project is the case the first dedupe missed: an update can
+   * carry `[]` for a project with no tasks, so an `[]` that is `[]` again
+   * must not ask, while an `[]` after a set is a deletion and must.
+   */
+  it('skips an unchanged empty set and reads a deletion', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    const empty: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [] } },
+    };
+    const one: ServerMessage = {
+      kind: 'update',
+      update: {
+        tasks_changed: {
+          key: LEAD,
+          tasks: [
+            {
+              id: 't1',
+              project_name: 'proj',
+              subject: 'a row',
+              status: 'pending',
+            } as unknown as Task,
+          ],
+        },
+      },
+    };
+
+    forge.arrive(empty);
+    await settle();
+    expect(forge.refreshed, 'the first empty set asked for a read').toEqual([BOARD]);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    await settle();
+
+    forge.arrive(empty);
+    await settle();
+    expect(forge.refreshed, 'an unchanged empty set asked again').toEqual([BOARD]);
+
+    forge.arrive(one);
+    await settle();
+    expect(forge.refreshed, 'a task added did not ask for a read').toEqual([BOARD, BOARD]);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    await settle();
+
+    forge.arrive(empty);
+    await settle();
+    expect(forge.refreshed, 'a deletion did not ask for a read').toEqual([BOARD, BOARD, BOARD]);
+    stop();
+  });
+
   it('asks again when an update lands while a read is in flight', async () => {
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});
@@ -180,9 +292,10 @@ describe('the board over a connection', () => {
     forge.arrive(UPDATE);
     await settle();
     expect(forge.refreshed).toEqual([BOARD]);
-    // The answer is in flight and an update lands behind it: the read in hand
-    // was encoded before it, so the update is answered as soon as it lands.
-    forge.arrive(UPDATE);
+    // The answer is in flight and a NEWS update lands behind it: the read in
+    // hand was encoded before it, so the update is answered as soon as it
+    // lands.
+    forge.arrive(NEWS);
     forge.stores.get(BOARD)?.set({ projects: [] });
     forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
     await settle();

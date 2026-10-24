@@ -41,7 +41,7 @@
   const route = $derived($currentRoute);
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
   let address = $state(named ?? remembered ?? DEFAULT_ADDRESS);
-  let home = $state<HomeRead>({ wire: null, refused: null, report: null });
+  let home = $state<HomeRead>({ wire: null, refused: null, failed: null, report: null });
   // Raw, so the connection is handed around as the object it is rather than
   // as a reactive proxy of it.
   let connection = $state.raw<Connection | null>(null);

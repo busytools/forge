@@ -235,7 +235,14 @@ class RustConnection implements Connection {
     this.state = next;
     // A closed connection's holds die with it: the reconnect's answer is the
     // whole record, and the numbers start wherever it says.
-    if (next === 'closed') this.gate.reset();
+    if (next === 'closed') {
+      this.gate.reset();
+      this.bounds.stop();
+    }
+    // A connection that opens after a bound fired owes its loading subjects a
+    // fresh deadline: the subscribe went out when the socket opened, and a
+    // lost first answer would otherwise leave them loading forever.
+    if (next === 'open') this.bounds.rearmLoading();
     for (const fn of this.statuses) fn(next);
   }
 

@@ -19,7 +19,7 @@ import { subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
-import { homeFrom, type HomeWire } from '../wire/home';
+import { homeFrom, tasksChanged, type HomeWire } from '../wire/home';
 
 /**
  * How long an update waits before it is answered with a read.
@@ -36,6 +36,16 @@ export interface HomeRead {
   /** The server's own words for turning the subscription down, or `null`. */
   refused: string | null;
   /**
+   * Why the snapshot could not be read, in this client's words, or `null`.
+   *
+   * **A malformed read is its own state, not an empty home**: the store is
+   * already `ready` and its bound cleared before the page narrows it, so a
+   * healthy-empty drawing would stand forever with nothing saying why. The
+   * page draws this instead. Nothing periodic retries it: the next update
+   * that covers the home, or a reconnect, reads again.
+   */
+  failed: string | null;
+  /**
    * The core's last service report, or `null`.
    *
    * **It is carried rather than read off the snapshot**, because the reports
@@ -47,7 +57,52 @@ export interface HomeRead {
   report: ServiceReport | null;
 }
 
-const NOTHING: HomeRead = { wire: null, refused: null, report: null };
+const NOTHING: HomeRead = { wire: null, refused: null, failed: null, report: null };
+
+/**
+ * The collections a v9 home must carry, and the shapes the renderer reads
+ * out of them. **Absent is not the older-server shape here**: `homeFrom`
+ * defaults the fields an older server omits (a row's `misses`, a page's
+ * `unseen`), so a missing or wrong collection is a read this client cannot
+ * draw as healthy. The element checks are the ones the fleet rows
+ * dereference: a project's `sessions` and a seat's `slot`.
+ */
+function malformedOf(data: unknown): string | null {
+  if (data === null || typeof data !== 'object') return 'the snapshot was not an object';
+  const held = data as Record<string, unknown>;
+  const wrong: string[] = [];
+  const problem = (value: unknown): string | null =>
+    Array.isArray(value) ? null : value === undefined ? 'was missing' : 'was not a list';
+  for (const field of ['agents', 'projects', 'unseen']) {
+    const why = problem(held[field]);
+    if (why !== null) wrong.push(`${field} ${why}`);
+  }
+  if (held['fleet'] !== undefined) {
+    const why = problem(held['fleet']);
+    if (why !== null) wrong.push(`fleet ${why}`);
+  }
+  const accounts = held['accounts'] as { loading?: unknown } | undefined;
+  const accountsWhy = problem(accounts?.loading);
+  if (accountsWhy !== null) wrong.push(`accounts.loading ${accountsWhy}`);
+  const dictate = held['dictate'] as { snapshot?: { models?: unknown } } | undefined;
+  const dictateWhy = problem(dictate?.snapshot?.models);
+  if (dictateWhy !== null) wrong.push(`dictate.snapshot.models ${dictateWhy}`);
+  if (Array.isArray(held['projects'])) {
+    const broken = held['projects'].some((entry) => {
+      const project = (entry as { project?: { sessions?: unknown } | null } | null)?.project;
+      return project === undefined || project === null || !Array.isArray(project.sessions);
+    });
+    if (broken) wrong.push('projects[].project.sessions was not a list');
+  }
+  if (Array.isArray(held['agents'])) {
+    const broken = held['agents'].some((entry) => {
+      const slot = (entry as { slot?: unknown } | null)?.slot;
+      return slot === undefined || slot === null;
+    });
+    if (broken) wrong.push('agents[].slot was missing');
+  }
+  return wrong.length === 0 ? null : wrong.join('; ');
+}
 
 /**
  * Watch the home.
@@ -76,6 +131,8 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   let stale = false;
   /** The core's last service report, read off the update that carried it. */
   let report: ServiceReport | null = null;
+  /** The tasks each project last announced, so an unchanged set is no read. */
+  const lastTasks = new Map<string, string>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
@@ -94,17 +151,40 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
-      view.set({ wire: null, refused: state.why, report });
+      view.set({ wire: null, refused: state.why, failed: null, report });
       return;
     }
     const data = held.snapshot();
+    // A store that says `ready` and holds no snapshot is a read that lost its
+    // answer, not a read still owed: drawing it as loading would wait forever.
+    if (data === null) {
+      const failed = state.kind === 'ready' ? 'the snapshot was empty' : null;
+      view.set({ wire: null, refused: null, failed, report });
+      return;
+    }
+    const malformed = malformedOf(data);
+    if (malformed !== null) {
+      view.set({ wire: null, refused: null, failed: malformed, report });
+      return;
+    }
     // The snapshot is JSON the server wrote from its own type, and `homeFrom`
-    // narrows every union member in it straight afterwards.
-    view.set({
-      wire: data === null ? null : homeFrom(data as unknown as HomeWire),
-      refused: null,
-      report,
-    });
+    // narrows every union member in it straight afterwards. The guard above
+    // covers the collections; the catch covers an element shape neither saw.
+    try {
+      view.set({
+        wire: homeFrom(data as unknown as HomeWire),
+        refused: null,
+        failed: null,
+        report,
+      });
+    } catch (why) {
+      view.set({
+        wire: null,
+        refused: null,
+        failed: `the snapshot could not be read: ${why instanceof Error ? why.message : String(why)}`,
+        report,
+      });
+    }
   }
 
   function watch(): void {
@@ -154,6 +234,14 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       // re-reading with nothing to say why.
       const said = serviceReport(message.update);
       if (said !== null) report = said;
+      const tasks = tasksChanged(message.update);
+      if (tasks !== null) {
+        // An unchanged set is no news: the chase used to re-announce every
+        // project every 30 s, and a full home read for that was the loop
+        // #2540 removed.
+        if (lastTasks.get(tasks.project) === tasks.digest) return;
+        lastTasks.set(tasks.project, tasks.digest);
+      }
       if (reading) {
         stale = true;
         return;

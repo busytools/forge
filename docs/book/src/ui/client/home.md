@@ -5,9 +5,9 @@ declares, carrying the strongest state among its seats, its tree, its
 counts and its named misses. Nothing is mixed: a project's own world opens
 as its [board](./board.md), and the home stays the glance. It is drawn from
 one snapshot of the `home` subject, and redrawn from the update stream after
-it - the 30-second chase sweep announces the board, so time-derived marks
-move here too. The drawing it is held against is
-[web-home.html](./web-home.html), beside this page.
+it; the page's own 30-second tick moves the marks derived from the clock.
+The drawing it is held against is [web-home.html](./web-home.html), beside
+this page.
 
 The app opens here whenever it has an address that answers - the one it last
 connected to - and on the [connect screen](./connect.md) when it has none,
@@ -169,6 +169,11 @@ seat's conversation), so its line is the words `a turn failed`.
 - **The home was refused**: the server turned the subscription down and its
   own words are drawn. The address is not the thing that is wrong, so the
   door is not what is shown.
+- **A home this client could not read**: the snapshot arrived malformed, or
+  the store reports it ready and holds nothing. The page names the reason in
+  the fleet's place rather than drawing an empty fleet, which would read as
+  a forge with no projects. Nothing periodic retries it: the next update
+  that covers the home, or a reconnect, reads again.
 - **A connection that dropped**: the page keeps what it last read and says so
   above it, and the notice stays until a fresh read lands rather than clearing
   the moment the socket reopens - the window between those two is the one

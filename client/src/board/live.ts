@@ -15,6 +15,7 @@ import { subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { boardFrom, coversBoard, type BoardRead, type BoardWire } from '../wire/board';
+import { tasksChanged } from '../wire/home';
 
 /** How long an update waits before it is answered with a read. */
 const COALESCE_MS = 50;
@@ -51,6 +52,8 @@ function boardStore(connection: Connection): Readable<BoardRead> {
   let stale = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let beat: ReturnType<typeof setInterval> | null = null;
+  /** The tasks each project last announced, so an unchanged set is no read. */
+  const lastTasks = new Map<string, string>();
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
@@ -108,6 +111,14 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         return;
       }
       if (message.kind !== 'update' || !coversBoard(message.update)) return;
+      const tasks = tasksChanged(message.update);
+      if (tasks !== null) {
+        // An unchanged set is no news: the chase used to re-announce every
+        // project every 30 s, and a full board read for that was the loop
+        // #2540 removed.
+        if (lastTasks.get(tasks.project) === tasks.digest) return;
+        lastTasks.set(tasks.project, tasks.digest);
+      }
       if (reading) {
         stale = true;
         return;

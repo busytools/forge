@@ -7,6 +7,7 @@
  * read is its own subject. The row narrowing here is shared with that file.
  */
 
+import type { SessionUpdate } from '../protocol';
 import { reportFrom, type ServiceReport } from './fleet';
 import {
   modelStateFrom,
@@ -106,6 +107,53 @@ export interface Task {
   archived_at: WireTime | null;
   created_at: WireTime;
   updated_at: WireTime;
+}
+
+/**
+ * A `tasks_changed` update as its project and a digest of the tasks it
+ * carries, for a store that skips a re-read when the set has not moved.
+ *
+ * **The chase sweep used to announce every project every 30 s with the set
+ * unchanged** (#2540). A board that re-read 628 KB for that, or a home that
+ * re-read 72 KB, was a loop with no news in it; the sweep no longer sends
+ * them, and the skip stays because any re-announced set is still no read.
+ * The project comes from the update's key, so an empty set is comparable
+ * too: the store's last digest tells an unchanged empty set from a deletion
+ * that emptied the project.
+ */
+export function tasksChanged(update: SessionUpdate): { project: string; digest: string } | null {
+  const payload = (
+    update as {
+      tasks_changed?: { key?: { project?: unknown }; tasks?: unknown };
+    }
+  ).tasks_changed;
+  if (payload === undefined) return null;
+  const tasks = payload.tasks;
+  if (!Array.isArray(tasks)) return null;
+  const named = (tasks[0] as { project_name?: unknown } | undefined)?.project_name;
+  const project =
+    typeof payload.key?.project === 'string'
+      ? payload.key.project
+      : typeof named === 'string'
+        ? named
+        : null;
+  if (project === null || project === '') return null;
+  return { project, digest: digestOf(tasks) };
+}
+
+/**
+ * A short, stable digest of one project's task set. A hash rather than the
+ * encoded set: 16 projects of exact JSON is ~315 KB held for the loop the
+ * digest exists to stop.
+ */
+function digestOf(tasks: unknown[]): string {
+  const text = JSON.stringify(tasks);
+  let hash = 2166136261;
+  for (let at = 0; at < text.length; at += 1) {
+    hash ^= text.charCodeAt(at);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}:${(hash >>> 0).toString(16)}`;
 }
 
 /**
@@ -582,7 +630,7 @@ export function homeFrom(data: HomeWire): HomeWire {
     // draw a stopped line it cannot word.
     fatal_error:
       typeof data.fatal_error === 'string' && data.fatal_error !== '' ? data.fatal_error : null,
-    agents: data.agents.map((agent) => ({
+    agents: (Array.isArray(data.agents) ? data.agents : []).map((agent) => ({
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
@@ -603,27 +651,31 @@ export function homeFrom(data: HomeWire): HomeWire {
           ? null
           : { ...agent.work, gate: narrow(agent.work.gate, GATES, 'in_repo') },
     })),
-    projects: data.projects.map((row) => ({
+    projects: (Array.isArray(data.projects) ? data.projects : []).map((row) => ({
       ...row,
-      work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
+      work: { ...row.work, gate: narrow(row.work?.gate, GATES, 'in_repo') },
     })),
+    // The renderer calls `some` on this one, so a page handed no list reads
+    // as no unseen marks rather than throwing inside a draw.
+    unseen: Array.isArray(data.unseen) ? data.unseen : [],
     // The misses are the one member here that is a union of shapes rather
     // than a union of literals, so they are narrowed by `missFrom` rather
     // than by `narrow` - and a shape this client is older than survives as
     // `unknown` rather than vanishing.
-    // A server older than the board sends no `fleet`; an empty list draws
-    // no rows rather than failing the whole read. **A row's `rows` may be
-    // absent too** - a v8 server answers a v9 client's home without it - and
-    // a header that summed `undefined` would draw `NaN tasks`, so it reads as
-    // none.
-    fleet: (data.fleet ?? []).map((row) => ({
+    // A list this client cannot read draws no rows rather than failing the
+    // whole read. **A row's `rows` may be absent** - a v8 server answers a v9
+    // client's home without it - and a header that summed `undefined` would
+    // draw `NaN tasks`, so it reads as none.
+    fleet: (Array.isArray(data.fleet) ? data.fleet : []).map((row) => ({
       ...row,
       rows: typeof row.rows === 'number' ? row.rows : 0,
-      misses: (row.misses as unknown[]).map(missFrom),
+      misses: (Array.isArray(row.misses) ? row.misses : []).map(missFrom),
     })),
     accounts: {
-      ...data.accounts,
-      loading: data.accounts.loading.map((row) => ({
+      all_loaded: data.accounts?.all_loaded === true,
+      gateway: data.accounts?.gateway ?? { ready: false, port: 0, bind_error: null },
+      usage: Array.isArray(data.accounts?.usage) ? data.accounts.usage : [],
+      loading: (Array.isArray(data.accounts?.loading) ? data.accounts.loading : []).map((row) => ({
         ...row,
         state: narrow(row.state, LOADING, 'loading'),
       })),
@@ -631,8 +683,12 @@ export function homeFrom(data: HomeWire): HomeWire {
     dictate: {
       ...data.dictate,
       snapshot: {
-        ...data.dictate.snapshot,
-        models: data.dictate.snapshot.models.map((model) => ({
+        ...data.dictate?.snapshot,
+        failure: data.dictate?.snapshot?.failure ?? null,
+        models: (Array.isArray(data.dictate?.snapshot?.models)
+          ? data.dictate.snapshot.models
+          : []
+        ).map((model) => ({
           ...model,
           state: modelStateFrom(model.state),
         })),

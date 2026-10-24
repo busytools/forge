@@ -80,6 +80,25 @@ export class ReadBounds {
     this.timers.delete(key);
   }
 
+  /**
+   * Re-arm the bound for every subject still waiting for its first answer.
+   *
+   * **A connection that opens after the bound fired has nothing owed on it.**
+   * The subscribe was queued while the socket was down and goes out when it
+   * opens; if that first snapshot is lost, no timer remains to ask again. So
+   * the connection calls this on open: a subject still `loading` gets its
+   * read bounded again, and a subject already answered is left alone.
+   */
+  rearmLoading(): void {
+    for (const subject of this.stores.subjects()) {
+      const key = subjectKey(subject);
+      if (this.timers.has(key)) continue;
+      if (this.stores.get(subject)?.state().kind === 'loading') {
+        this.arm(subject);
+      }
+    }
+  }
+
   /** The connection is closed for good: nothing is owed on it any more. */
   stop(): void {
     for (const held of this.timers.values()) clearTimeout(held);

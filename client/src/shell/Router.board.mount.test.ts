@@ -134,7 +134,7 @@ function summon(sent: Record<string, unknown>[]): void {
       route: { name: 'board', org: 'TestOrg', project: 'proj' },
       settings: DEFAULT_SETTINGS,
       address: '127.0.0.1:8790',
-      home: { wire: homeWire, refused: null, report: null },
+      home: { wire: homeWire, refused: null, failed: null, report: null },
       failure: null,
       connected: true,
       connection,
@@ -182,7 +182,7 @@ describe('a board edit through the router', () => {
         route: { name: 'board', org: 'TestOrg', project: 'proj' },
         settings: DEFAULT_SETTINGS,
         address: '127.0.0.1:8790',
-        home: { wire: null, refused: 'not this client', report: null },
+        home: { wire: null, refused: 'not this client', failed: null, report: null },
         failure: null,
         connected: true,
         connection,
@@ -193,6 +193,38 @@ describe('a board edit through the router', () => {
     flushSync();
 
     expect(document.body.textContent).toContain('not this client');
+    expect(document.body.textContent, 'the page claimed a read was coming').not.toContain(
+      'Reading the fleet',
+    );
+  });
+});
+
+describe('a home read this client could not draw', () => {
+  /**
+   * The read landed and this client could not narrow it: its own state, not
+   * an empty fleet and not a wait. The page draws the reason in the fleet's
+   * place, because standing on "Reading the fleet..." waits for an answer
+   * that already arrived.
+   */
+  it('draws the reason in the fleet place rather than reading forever', () => {
+    const { connection } = recording([], boardWire);
+    app = mount(Router, {
+      target: document.body,
+      props: {
+        route: { name: 'home' },
+        settings: DEFAULT_SETTINGS,
+        address: '127.0.0.1:8790',
+        home: { wire: null, refused: null, failed: 'agents was missing', report: null },
+        failure: null,
+        connected: true,
+        connection,
+        notice: null,
+        onconnect: () => {},
+      },
+    });
+    flushSync();
+
+    expect(document.body.textContent).toContain('agents was missing');
     expect(document.body.textContent, 'the page claimed a read was coming').not.toContain(
       'Reading the fleet',
     );

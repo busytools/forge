@@ -289,6 +289,72 @@ describe('frames from the bridge', () => {
       what: subject,
     });
   });
+
+  /**
+   * **A read bound while the socket is still down owes a retry once it opens.**
+   * The bound fired before the connection did, so its refresh could not go and
+   * the timer died. The subscribe was queued in the Rust half and goes out when
+   * the socket opens; without a fresh bound a lost first answer leaves the store
+   * loading forever, which is the "reading the fleet" hang (#2540).
+   */
+  it('re-arms the bound when the connection opens after a read expired while connecting', async () => {
+    vi.useFakeTimers();
+    const connection = await opened({ status: 'connecting', greeting: null, role: false });
+    const store = connection.subscribe(subject);
+    expect(invoke, 'the first ask crossed').toHaveBeenCalledWith('client_subscribe', {
+      what: subject,
+      answering: false,
+      browser: false,
+    });
+
+    // The bound fires while connecting: the refresh cannot go, so the timer dies.
+    vi.advanceTimersByTime(5_000);
+    await vi.waitFor(() =>
+      expect(invoke).not.toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
+
+    // The connection opens: the bound must be re-armed for the still-loading subject.
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') {
+        return Promise.resolve({ status: 'open', greeting: null, role: false });
+      }
+      return Promise.resolve(undefined);
+    });
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+
+    // The re-armed bound asks again now that the socket is open.
+    vi.advanceTimersByTime(5_000);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
+    expect(store.state(), 'nothing has answered it').toEqual({ kind: 'loading' });
+  });
+
+  /**
+   * **A closed connection owes no read.** A page that goes closed keeps its
+   * loading store but must not keep its bound ticking: a refresh cannot go on
+   * a socket that is gone, and the next open is the one that re-arms (#2540).
+   */
+  it('stops the read bound when the connection closes', async () => {
+    vi.useFakeTimers();
+    const connection = await opened();
+    const store = connection.subscribe(subject);
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') {
+        return Promise.resolve({ status: 'closed', greeting: null, role: false });
+      }
+      return Promise.resolve(undefined);
+    });
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('closed'));
+
+    vi.advanceTimersByTime(5_000);
+    await vi.waitFor(() =>
+      expect(invoke).not.toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
+    expect(store.state(), 'nothing has answered it').toEqual({ kind: 'loading' });
+  });
 });
 
 describe("the connection's own facts", () => {

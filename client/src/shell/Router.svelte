@@ -144,6 +144,12 @@
     <main class="wrap">
       <p class="pending">This forge would not answer for the home: {home.refused}</p>
     </main>
+  {:else if home.failed}
+    <!-- The read landed and this client could not draw it: its own state,
+         not an empty home and not a wait. -->
+    <main class="wrap">
+      <p class="pending">This forge sent a home this client could not read: {home.failed}</p>
+    </main>
   {:else if connected}
     <!-- Connected, and the first read has not come back. It is its own
          state: handing the door back here re-renders a fresh form with the
@@ -176,6 +182,10 @@
          the same page as never having read. -->
     <main class="wrap">
       <p class="pending">This forge would not answer for the home: {home.refused}</p>
+    </main>
+  {:else if home.failed}
+    <main class="wrap">
+      <p class="pending">This forge sent a home this client could not read: {home.failed}</p>
     </main>
   {:else if connected}
     <main class="wrap"><p class="pending">Reading the fleet...</p></main>
@@ -219,6 +229,14 @@
         <Composer {...props} dictation={dictate} />
       {/snippet}
     </Session>
+  {:else if home.refused}
+    <main class="wrap">
+      <p class="pending">This forge would not answer for the home: {home.refused}</p>
+    </main>
+  {:else if home.failed}
+    <main class="wrap">
+      <p class="pending">This forge sent a home this client could not read: {home.failed}</p>
+    </main>
   {:else if connected}
     <!-- Connected, and the fleet has not been read yet. The session page's
          rail and four of its inspector sections are the home's, so handing it
@@ -269,6 +287,14 @@
       mark={settings.mark}
       projects={home.wire.projects.map((row) => row.project)}
     />
+  {:else if home.refused}
+    <main class="wrap">
+      <p class="pending">This forge would not answer for the home: {home.refused}</p>
+    </main>
+  {:else if home.failed}
+    <main class="wrap">
+      <p class="pending">This forge sent a home this client could not read: {home.failed}</p>
+    </main>
   {:else if connection !== null}
     <main class="wrap"><p class="pending">Reading the fleet...</p></main>
   {:else}
