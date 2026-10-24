@@ -2364,30 +2364,26 @@ export class Chat {
         // page's row opens on a counter, carries no prompt and no result, and
         // `nameOf` calls it after that counter - while the held turn is named
         // for its prompt. The counters' ranges are then the only identity the
-        // two copies share: the held turn's last frame is a counter whose run
-        // overlaps the page's leading counters or ends before they continue.
+        // two copies share, and **only an overlap is one**: the page's first
+        // counter has to fall INSIDE the held run, or a page cut after all the
+        // held content would swallow a gap the walk exists to fetch. Only the
+        // newest held turn can be the suffix, and a frame shared with any turn
+        // is a stronger match than a range, so this is a last resort.
         const continues = (turn: Turn): boolean => {
           const first = copy[0] === undefined ? null : counterStampMs(copy[0]);
           if (first === null) return false;
           const last = turn.messages[turn.messages.length - 1];
           if (last === undefined) return false;
           const held = foldedRunMs(last);
-          if (held !== null) return held.from <= first;
-          const prior = counterStampMs(last);
-          return prior !== null && prior <= first;
+          return held !== null && held.from <= first && first <= held.through;
         };
-        const continued = ((): Turn | undefined => {
-          for (let at = healed.turns.length - 1; at >= 0; at -= 1) {
-            const turn = healed.turns[at];
-            if (turn !== undefined && continues(turn)) return turn;
-          }
-          return undefined;
-        })();
+        const newest = healed.turns[healed.turns.length - 1];
+        const continued = newest !== undefined && continues(newest) ? newest : undefined;
         const match =
           byName ??
           healed.turns.find((turn) => turn.live && shares(carried, turn, !settledRow(index))) ??
-          continued ??
-          healed.turns.find((turn) => shares(carried, turn, false));
+          healed.turns.find((turn) => shares(carried, turn, false)) ??
+          continued;
         if (match === undefined) {
           drawn.push(row);
           continue;

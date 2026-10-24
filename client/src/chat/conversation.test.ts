@@ -646,6 +646,46 @@ describe('the conversation the chat draws', () => {
     server.send(page([{ key: null, messages: suffix }], 'above'));
 
     expect(totals(chat), 'one row: the held run plus the page growth above it').toEqual([130]);
+    // The figures alone cannot tell 10-12 from 4-6: the frames say which
+    // counters the merged row kept.
+    expect(names(chat), 'the held run and only the page counters above it').toEqual([
+      'u-work',
+      'thinking-9',
+      'thinking-10',
+      'thinking-11',
+      'thinking-12',
+    ]);
+    stop();
+  });
+
+  /**
+   * **A page cut after the held run is a gap, not the same exchange.** Its
+   * leading counter is outside the held run's range, so pairing it would hide
+   * the counters between the two - and would suppress the walk that fetches
+   * them. It draws as its own turn and the landing asks for the gap.
+   */
+  it('a page cut after the held run does not pair and walks the gap', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([{ key: null, messages: [promptRow('work'), folded(0, 9, 100)] }], 'above'));
+    expect(totals(chat), 'the held turn is the folded run').toEqual([100]);
+
+    const stale: unknown[] = [];
+    for (let at = 30; at <= 38; at += 1) stale.push(clocked(at, 10));
+    server.reach('closed');
+    server.reach('open');
+    const asked = server.more().length;
+    server.send(page([{ key: null, messages: stale }], 'above'));
+
+    expect(totals(chat), 'the page after the gap is its own turn').toEqual([100, 90]);
+    expect(
+      server
+        .more()
+        .slice(asked)
+        .map((ask) => ask.before),
+      'and the stretch between the held tail and the page is asked for',
+    ).toEqual(['above']);
     stop();
   });
 
