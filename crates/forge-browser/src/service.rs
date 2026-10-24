@@ -13,28 +13,49 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::{
     BrowserAudio, BrowserDownload, BrowserFileAsk, BrowserFrame, BrowserInputEvent,
-    BrowserNavState, BrowserPart, BrowserUpload, BrowserViewState, MAX_UPLOAD_BYTES,
-    MAX_UPLOAD_FILES, ProfileKey,
+    BrowserNavState, BrowserPart, BrowserTabList, BrowserUpload, BrowserViewState,
+    MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, ProfileKey,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, watch};
 
-use crate::driver::{self, Driver};
-use crate::idle::{self, IdleWarn, Step, Touch, Verdict};
+use crate::control::HostEvent;
+use crate::driver::{self, Driver, TabDriver};
+use crate::idle::{self, Step, Touch};
 use crate::input;
 use crate::profiles::Store;
 use crate::spawn::{self, ActiveHost};
+use crate::tabs::TabRegistry;
 use crate::window::Cdp;
-use crate::{channel, engine, host, osr, veto};
+use crate::{channel, engine, osr, veto};
 
-/// One profile's clock and shape, as one idle pass reads it.
+/// What one call knows about the browser it looked up, and the page it drives.
+struct Driven<'a> {
+    generation: u64,
+    pid: u32,
+    port: u16,
+    target: &'a str,
+}
+
+/// One browser call's tool, budget and the host it drives.
+struct Drive<'a> {
+    tool: &'a str,
+    args: Value,
+    retry_args: Value,
+    bound: Duration,
+    generation: u64,
+    pid: u32,
+    port: u16,
+}
+
+/// One profile's clock, as one idle pass reads it.
 struct Candidate {
     /// The profile's key, which names it in the calls that follow.
     key: String,
@@ -48,9 +69,18 @@ struct Candidate {
 pub const VIEW_WIDTH: u32 = 1440;
 pub const VIEW_HEIGHT: u32 = 900;
 
-/// The host's first tab, which every call drives until a profile's tabs are
-/// numbered on the wire.
-const FIRST_TAB: u16 = 1;
+/// How long a creation waits for the host's own `TabCreated` line.
+const TAB_EVENT_BOUND: Duration = Duration::from_secs(10);
+
+/// How long a creation waits for the page target its tab pairs with.
+const TAB_TARGET_BOUND: Duration = Duration::from_secs(5);
+
+/// How long a newly created tab's target is waited for the passkey veto.
+const TAB_ARM_BOUND: Duration = Duration::from_secs(3);
+
+/// How long a fresh host is given to report its boot tab. **Bounded**: a host
+/// that never reports one still serves, with the miss named.
+const BOOT_EVENT_BOUND: Duration = Duration::from_secs(5);
 
 /// How long a profile that just rebuilt its driver waits before another call
 /// tries a rebuild: long enough that a run of calls fails fast, short enough
@@ -76,9 +106,20 @@ pub struct BrowserService {
     /// removed, so another profile's entry is served while that work runs.
     gates: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     ids: AtomicU16,
-    /// The idle policy: the two minutes and the way the workspace is asked
-    /// to warn. `None` until the boot configures it, and no sweep runs then.
+    /// The idle policy: how many minutes an untouched profile may sit.
+    /// `None` until the boot configures it, and no sweep runs then.
     idle: Mutex<Option<Idle>>,
+    /// The rows each profile's strip subscribes to, created on demand so a
+    /// strip can attach before any call has opened the host.
+    rows: Mutex<HashMap<String, watch::Sender<BrowserTabList>>>,
+    /// Tabs a parked hand-off is waiting on the person in, by session.
+    holds: Mutex<HashSet<(SessionSlot, u16)>>,
+    /// The sessions a sweep last saw alive, so a hand-off resolving after its
+    /// owner went can tell the difference.
+    live: Mutex<HashSet<SessionSlot>>,
+    /// Which tab each attached viewer is looking at, so a detach knows what
+    /// to leave.
+    where_viewing: Mutex<HashMap<u64, (String, u16)>>,
     /// The `[browser]` encoding pair: frames per second and lossy quality.
     encoding: Mutex<(u16, u8)>,
     /// **One launch at a time**: the free-port probe cannot see a launch in
@@ -93,11 +134,9 @@ pub struct BrowserService {
 }
 
 /// The idle release's settings, as the boot configures them.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct Idle {
     minutes: u64,
-    grace: u64,
-    warn: Arc<dyn IdleWarn>,
 }
 
 /// The `browser_profile` names the config resolved, by org and by project.
@@ -119,6 +158,10 @@ impl BrowserService {
             gates: Mutex::new(HashMap::new()),
             ids: AtomicU16::new(1),
             idle: Mutex::new(None),
+            rows: Mutex::new(HashMap::new()),
+            holds: Mutex::new(HashSet::new()),
+            live: Mutex::new(HashSet::new()),
+            where_viewing: Mutex::new(HashMap::new()),
             encoding: Mutex::new((15, 75)),
             launch: Arc::new(AsyncMutex::new(())),
             stopped: Arc::new(AtomicBool::new(false)),
@@ -135,9 +178,8 @@ impl BrowserService {
     }
 
     /// Set the idle policy and, from this point, the sweep's clock.
-    pub fn configure_idle(&self, minutes: u64, grace: u64, warn: Arc<dyn IdleWarn>) {
-        *self.idle.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(Idle { minutes, grace, warn });
+    pub fn configure_idle(&self, minutes: u64) {
+        *self.idle.lock().unwrap_or_else(PoisonError::into_inner) = Some(Idle { minutes });
     }
 
     /// Run the idle sweep for the process's life, once.
@@ -232,6 +274,7 @@ impl BrowserService {
         let _held = gate.lock().await;
         let profile = self.entry_locked(seat).await?;
         profile.ensure(&self.root, self.stack()).await?;
+        self.publish_rows(key.as_str()).await;
         Ok(profile)
     }
 
@@ -241,7 +284,45 @@ impl BrowserService {
         let key = self.target(seat)?;
         let gate = self.gate(key.as_str());
         let _held = gate.lock().await;
-        self.entry_locked(seat).await
+        let profile = self.entry_locked(seat).await?;
+        self.publish_rows(key.as_str()).await;
+        Ok(profile)
+    }
+
+    /// A profile whose driver is a fake: the call path runs without a host.
+    #[cfg(test)]
+    pub(crate) async fn install_fake<D>(&self, seat: &SessionSlot, driver: D)
+    where
+        D: TabDriver + 'static,
+    {
+        let driver: Arc<dyn TabDriver> = Arc::new(driver);
+        let profile = self.entry(seat).await.expect("the profile entry");
+        let mut state = profile.state.lock().await;
+        state.driver = Some(driver);
+        drop(state);
+        // A test's re-install is a new fake host under the same entry, so an
+        // end from the previous test step does not refuse the next call.
+        profile.ended.store(false, Ordering::Release);
+        profile.touch.lock().unwrap_or_else(PoisonError::into_inner).touched();
+        profile.up.store(true, Ordering::Release);
+    }
+
+    /// The same seam with the host's boot tab seeded, for the boot-adoption
+    /// and stale-hand-off tests.
+    #[cfg(test)]
+    pub(crate) async fn install_fake_with_boot<D>(
+        &self,
+        seat: &SessionSlot,
+        driver: D,
+        boot: (u16, String),
+    ) where
+        D: TabDriver + 'static,
+    {
+        self.install_fake(seat, driver).await;
+        let key = self.profile_for(seat).expect("the key");
+        let profile =
+            self.profiles.lock().await.get(key.as_str()).cloned().expect("the profile entry");
+        *profile.boot.lock().unwrap_or_else(PoisonError::into_inner) = Some(boot);
     }
 
     /// The entry itself, with the key's gate already held.
@@ -250,9 +331,8 @@ impl BrowserService {
         let dir = self.profile_dir(&key);
         let mut profiles = self.profiles.lock().await;
         if let Some(profile) = profiles.get(key.as_str()) {
-            // **Every call and every raise is a use**: the idle clock starts
-            // again here, and the warning that stood over the streak goes
-            // with it.
+            // **Every call and every attach is a use**: the idle clock
+            // starts again here.
             profile.touch.lock().unwrap_or_else(PoisonError::into_inner).touched();
             return Ok(Arc::clone(profile));
         }
@@ -263,7 +343,6 @@ impl BrowserService {
             id: self.ids.fetch_add(1, Ordering::Relaxed),
             dir,
             frames: watch::channel(None).0,
-            view: watch::channel(BrowserViewState::default()).0,
             nav: watch::channel(None).0,
             failures: watch::channel(None).0,
             files: watch::channel(None).0,
@@ -281,27 +360,33 @@ impl BrowserService {
             encoding: self.encoding(),
             launch: Arc::clone(&self.launch),
             stopped: Arc::clone(&self.stopped),
-            viewers: Mutex::new(HashSet::new()),
+            tabs: Mutex::new(TabRegistry::default()),
+            boot: Mutex::new(None),
+            focused: Mutex::new(None),
+            controls: Mutex::new(HashMap::new()),
+            viewers: Mutex::new(HashMap::new()),
+            views: Mutex::new(HashMap::new()),
+            call_lock: AsyncMutex::new(()),
+            host_tab_events: AsyncMutex::new(None),
             state: AsyncMutex::new(State::default()),
-            control: Mutex::new(None),
             touch: Mutex::new(Touch::now()),
             ended: AtomicBool::new(false),
             up: AtomicBool::new(false),
-            busy: AtomicU32::new(0),
         });
         profiles.insert(key.as_str().to_owned(), Arc::clone(&profile));
         Ok(profile)
     }
 
-    /// One idle pass: every open profile's clock, and the questions the
-    /// workspace answers.
+    /// One idle pass: every open profile's clock.
     ///
-    /// **A viewer attached is a use**, so a surface the person is looking at
-    /// is never asked about or closed.
+    /// **Every touched profile is republished each pass**, so the strip's
+    /// "closing in Nm" is never older than one sweep.
+    ///
+    /// **A viewer attached is a use**, and **a held tab is a person being
+    /// asked to act**, so neither profile is closed under them.
     async fn idle_pass(&self) {
         let Some(settings) = self.idle_settings() else { return };
         let idle = Duration::from_secs(settings.minutes.saturating_mul(60));
-        let grace = Duration::from_secs(settings.grace.saturating_mul(60));
         let candidates = {
             let profiles = self.profiles.lock().await;
             profiles
@@ -313,125 +398,82 @@ impl BrowserService {
                         .viewers
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .is_empty(),
+                        .values()
+                        .all(HashSet::is_empty),
                 })
                 .collect::<Vec<_>>()
         };
         for candidate in candidates {
-            if candidate.viewed {
+            self.publish_rows(&candidate.key).await;
+            if candidate.viewed || !self.held_tabs(&candidate.key).is_empty() {
                 continue;
             }
-            match idle::step(
-                candidate.touch.at,
-                candidate.touch.warned,
-                Instant::now(),
-                idle,
-                grace,
-            ) {
-                Step::Nothing => {}
-                Step::Warn => {
-                    let verdict = settings
-                        .warn
-                        .warn(None, &candidate.key, settings.minutes, settings.grace, false)
-                        .await;
-                    match verdict {
-                        // **A warning that never went is never armed**: a
-                        // duplicate warning is acceptable, a close nobody was
-                        // warned about is not.
-                        Verdict::Delivered | Verdict::Held => self.note_warned(&candidate.key),
-                        // **Nobody to warn means no grace to serve**: the
-                        // idle bound alone closes it.
-                        Verdict::NoSession => self.close_idle(&candidate.key, true).await,
-                        Verdict::Clear | Verdict::Unanswered => {}
-                    }
-                }
-                Step::Close => {
-                    match settings
-                        .warn
-                        .warn(None, &candidate.key, settings.minutes, settings.grace, true)
-                        .await
-                    {
-                        Verdict::Clear => self.close_idle(&candidate.key, false).await,
-                        // Held: an abandoned hand-off closes once it is gone,
-                        // on a later pass.
-                        Verdict::Held => self.note_warned(&candidate.key),
-                        Verdict::Delivered | Verdict::NoSession | Verdict::Unanswered => {}
-                    }
-                }
+            if idle::step(candidate.touch.at, Instant::now(), idle) == Step::Close {
+                self.close_idle(&candidate.key).await;
             }
         }
     }
 
     fn idle_settings(&self) -> Option<Idle> {
-        self.idle.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        *self.idle.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn note_warned(&self, key: &str) {
-        // The touch is read by the sweep alone, so the map needs no lock here:
-        // the profile being gone is simply nothing to note.
-        let profiles = self.profiles.try_lock();
-        let Ok(profiles) = profiles else { return };
-        if let Some(profile) = profiles.get(key) {
-            profile.touch.lock().unwrap_or_else(PoisonError::into_inner).warned =
-                Some(Instant::now());
-        }
-    }
-
-    /// Close one profile's browser under the state lock, re-reading its clock
-    /// and its viewers: a call or a raise that landed while the verdict was
-    /// in flight wins, and a browser still in use is not closed.
-    ///
-    /// `quiet` is a close with nobody to warn: it may go at the idle bound,
-    /// where a warned one waits out its grace.
+    /// Close one profile's browser under the state lock, re-reading its clock,
+    /// its viewers and its held tabs: a call or a raise that landed while the
+    /// sweep was deciding wins, and a browser still in use is not closed.
     ///
     /// **The entry leaves the map before its host is ended, and the map lock
     /// is released with it**: a same-name call waits on the key's own gate,
     /// while every other profile keeps being served through the teardown.
-    async fn close_idle(&self, key: &str, quiet: bool) {
+    async fn close_idle(&self, key: &str) {
         let Some(settings) = self.idle_settings() else { return };
         let idle = Duration::from_secs(settings.minutes.saturating_mul(60));
-        let grace = Duration::from_secs(settings.grace.saturating_mul(60));
         let gate = self.gate(key);
         let _held = gate.lock().await;
         let Some(profile) = self.profiles.lock().await.get(key).map(Arc::clone) else { return };
-        if !profile.viewers.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
+        let viewed = !profile
+            .viewers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .all(HashSet::is_empty);
+        if viewed || !self.held_tabs(key).is_empty() {
             return;
         }
         let touch = *profile.touch.lock().unwrap_or_else(PoisonError::into_inner);
-        let close = match idle::step(touch.at, touch.warned, Instant::now(), idle, grace) {
-            Step::Close => true,
-            // **A quieter close may go at the bound itself**, and a use that
-            // landed meanwhile is still a fresh touch, which is `Nothing`.
-            Step::Warn => quiet,
-            Step::Nothing => false,
-        };
-        if !close {
+        if idle::step(touch.at, Instant::now(), idle) != Step::Close {
             return;
         }
         self.profiles.lock().await.remove(key);
+        self.forget_holds(key);
+        self.forget_viewing(key);
         // The state lock is taken after the entry is gone, so the teardown's
         // wait is never the map's.
         let mut state = profile.state.lock().await;
         profile.ended.store(true, Ordering::Release);
         profile.teardown(&mut state).await;
         drop(state);
+        self.publish_rows(key).await;
         tracing::debug!("an idle browser closed (event_name browser_idle_closed, profile {key})");
     }
 
     /// End every open profile's browser and driver. **The profiles stay on
-    /// disk**: a stop ends the run, never the logins, and the next boot
-    /// opens each browser on its carried page. Answers the profiles whose
-    /// host was still alive after its teardown, so a stop that leaves a
-    /// process behind cannot report success.
+    /// disk**: a stop ends the run, never the logins. Answers the profiles
+    /// whose host was still alive after its teardown, so a stop that leaves
+    /// a process behind cannot report success.
     pub async fn stop_all(&self) -> Vec<String> {
         // **A stop is final**: an attach that already held a profile cannot
         // start a host behind the drain.
         self.stopped.store(true, Ordering::Release);
         let profiles: Vec<(String, Arc<Profile>)> = self.profiles.lock().await.drain().collect();
+        self.holds.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        self.where_viewing.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        self.live.lock().unwrap_or_else(PoisonError::into_inner).clear();
         let mut left = Vec::new();
         for (key, profile) in profiles {
             let pid = { profile.state.lock().await.host.as_ref().map(|host| host.pid) };
             profile.end().await;
+            self.publish_rows(&key).await;
             if let Some(pid) = pid
                 && spawn::alive(pid)
             {
@@ -468,12 +510,122 @@ impl BrowserService {
         }
     }
 
-    /// A no-op until the tab registry exists: a seat's tabs, not its profile,
-    /// are what a sweep will close.
-    #[expect(clippy::unused_async, reason = "the port awaits it, and the tab sweep will too")]
-    pub async fn sweep_seats(&self, _seats: &[SessionSlot]) {}
+    /// Close the tabs of every session that is no longer live, except the
+    /// ones a parked hand-off is waiting on. **The profile stays**: only the
+    /// idle clock ends a host.
+    pub async fn sweep_sessions(&self, seats: &[SessionSlot]) {
+        *self.live.lock().unwrap_or_else(PoisonError::into_inner) = seats.iter().cloned().collect();
+        let held = self.holds.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let profiles: Vec<Arc<Profile>> = self.profiles.lock().await.values().cloned().collect();
+        for profile in profiles {
+            let doomed: Vec<u16> = {
+                let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+                tabs.numbers()
+                    .into_iter()
+                    .filter(|tab| {
+                        tabs.owner(*tab).is_some_and(|owner| {
+                            !seats.contains(owner) && !held.contains(&(owner.clone(), *tab))
+                        })
+                    })
+                    .collect()
+            };
+            for tab in doomed {
+                self.orphan_tab(&profile, tab).await;
+            }
+            self.publish_rows(&profile.key).await;
+        }
+    }
 
-    /// Run one browser tool through the profile the call names.
+    /// A `/new` or `/resume` keeps the slot and swaps the occupant, so the
+    /// inherited tabs close (except a held one) and the slot's current-tab
+    /// pointer clears.
+    pub async fn replace_seat(&self, seat: &SessionSlot) {
+        let Ok(key) = self.profile_for(seat) else { return };
+        let Ok(profile) = self.find(key.as_str()).await else { return };
+        let doomed: Vec<u16> = {
+            let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.numbers()
+                .into_iter()
+                .filter(|tab| tabs.owner(*tab) == Some(seat))
+                .filter(|tab| {
+                    !self
+                        .holds
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .contains(&(seat.clone(), *tab))
+                })
+                .collect()
+        };
+        for tab in doomed {
+            self.orphan_tab(&profile, tab).await;
+        }
+        profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).forget_current(seat);
+        self.publish_rows(key.as_str()).await;
+    }
+
+    /// A parked hand-off marks its tab held, so a sweep or the idle clock
+    /// leaves it alone until the resolution lands.
+    pub async fn hand_off_started(&self, seat: &SessionSlot, tab: u16) {
+        let Ok(key) = self.profile_for(seat) else { return };
+        let Ok(profile) = self.find(key.as_str()).await else {
+            tracing::debug!(
+                "a hand-off named a tab on a profile that is not open (event_name \
+                 browser_hand_off_started_stale, seat {}, tab {tab})",
+                seat.display()
+            );
+            return;
+        };
+        let owned =
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).owned(seat, tab).is_ok();
+        if !owned {
+            tracing::debug!(
+                "a hand-off named a tab the seat does not own (event_name \
+                 browser_hand_off_started_refused, seat {}, tab {tab})",
+                seat.display()
+            );
+            return;
+        }
+        self.holds.lock().unwrap_or_else(PoisonError::into_inner).insert((seat.clone(), tab));
+        self.publish_rows(key.as_str()).await;
+    }
+
+    /// A hand-off resolved. **Only a tab still held is acted on**: a
+    /// resolution for anything else is stale (its host ended, or it was
+    /// already resolved) and touches nothing.
+    pub async fn hand_off_finished(&self, seat: &SessionSlot, tab: u16) {
+        if !self.holds.lock().unwrap_or_else(PoisonError::into_inner).remove(&(seat.clone(), tab)) {
+            return;
+        }
+        let Ok(key) = self.profile_for(seat) else { return };
+        let Ok(profile) = self.find(key.as_str()).await else { return };
+        // **The numbers died with the old host**: a new host's tab carrying
+        // the same number belongs to someone else, so the pair's ownership is
+        // the second check the registry can still answer.
+        let owned =
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).owned(seat, tab).is_ok();
+        if !owned {
+            return;
+        }
+        let gone = !self.live.lock().unwrap_or_else(PoisonError::into_inner).contains(seat);
+        if gone {
+            self.orphan_tab(&profile, tab).await;
+        }
+        self.publish_rows(key.as_str()).await;
+    }
+
+    /// Create the seat's profile entry and start its host, with no tab. The
+    /// first call is what opens a tab.
+    pub async fn warm(&self, seat: &SessionSlot) {
+        if let Err(why) = self.open(seat).await {
+            tracing::warn!(
+                "a browser profile could not be warmed (event_name browser_warm_failed, seat {}): \
+                 {why}",
+                seat.display()
+            );
+        }
+    }
+
+    /// Run one browser tool through the tab the calling session drives.
     pub async fn call(
         &self,
         seat: &SessionSlot,
@@ -495,6 +647,19 @@ impl BrowserService {
         let upload =
             if tool == "browser_file_upload" { Some(upload_request(&args)?) } else { None };
         let profile = self.open(seat).await?;
+        // **A queued call is a call the session is waiting on.** The wait for
+        // the profile's turn is bounded by the driver's own call timeout, and
+        // a session that spent it in the queue is refused in words instead of
+        // silently running long.
+        let _serial = tokio::time::timeout(driver::CALL_TIMEOUT, profile.call_lock.lock())
+            .await
+            .map_err(|_| {
+                format!(
+                    "the browser is busy: this call waited {}s for its turn on profile '{}'",
+                    driver::CALL_TIMEOUT.as_secs(),
+                    profile.key,
+                )
+            })?;
         // **Every `browser_file_upload` is a chooser decision**, including
         // its cancel form with no paths: both answer the MCP's captured
         // chooser, so both take the lock, the refusal and the ledger. The
@@ -512,24 +677,24 @@ impl BrowserService {
             }
             Some(UploadRequest::Cancel) | None => args,
         };
-        // **The strip's work ring reads this mark**, and it comes off however
-        // the call ends.
-        profile.busy.fetch_add(1, Ordering::AcqRel);
-        let _busy = Busy(&profile.busy);
         // **The state lock is only for the lookup.** A call drives a page for
         // seconds, and holding it across that would block an attach, a
         // teardown or the idle sweep for the whole of it. **The call names
         // the host it drove**, so a failure is diagnosed against the browser
-        // that was there rather than whatever replaced it.
+        // that was there rather than whatever replaced it. A test profile has
+        // a driver and no host, and answers no host identity.
         let (driver, generation, pid, port) = {
             let state = profile.state.lock().await;
             let Some(driver) = state.driver.as_ref() else {
                 return Err(format!("the browser for '{}' is not up", profile.key));
             };
-            let Some(host) = state.host.as_ref() else {
-                return Err(format!("the browser for '{}' is not up", profile.key));
-            };
-            (Arc::clone(driver), captured_generation(&state), host.pid, host.port)
+            let host = state.host.as_ref();
+            (
+                Arc::clone(driver),
+                captured_generation(&state),
+                host.map_or(0, |host| host.pid),
+                host.map_or(0, |host| host.port),
+            )
         };
         // **The identity a tab-leak report reads**, so a call's browser is
         // answerable after the fact even when the profile name is not enough.
@@ -546,8 +711,23 @@ impl BrowserService {
         // **An agent's upload is bounded like the person's answer**: a wedged
         // driver must not hold the decision lock for the driver's own 150 s.
         let bound = if upload.is_some() { Duration::from_secs(10) } else { driver::CALL_TIMEOUT };
+        let (tab, created) = match tool {
+            "browser_tabs" => {
+                return self.tabs_tool(&profile, seat, &driver, args).await;
+            }
+            "browser_close" => return self.close_current_tab(&profile, seat).await,
+            _ => self.ensure_tab(&profile, seat, &driver, bound).await?,
+        };
         let retry_args = args.clone();
-        let outcome = driver.call_within(tool, args, bound).await;
+        let (tab, outcome) = self
+            .drive(
+                &profile,
+                seat,
+                &driver,
+                tab,
+                Drive { tool, args, retry_args, bound, generation, pid, port },
+            )
+            .await;
         // **The agent answered a chooser the driver had not reported yet.**
         // One event is owed to this answer, so it is consumed rather than
         // asking a person for a chooser that no longer exists.
@@ -557,17 +737,539 @@ impl BrowserService {
         // The who-answers decision is over; the failure is the driver's and
         // host's, and must not hold a role change out.
         drop(decision);
-        let outcome =
-            self.after_failure(&profile, generation, pid, port, tool, &retry_args, outcome).await;
-        // **A call that changed the page rewrites the carry**, so a restart
-        // opens where the session left it. A call that failed does not: the
-        // page it was reaching for is not a page the person was shown.
-        if outcome.is_ok()
-            && let Some(url) = spawn::page_url(port).await
-        {
-            crate::carry::record(&profile.dir, &url);
+        match outcome {
+            Ok(mut parts) => {
+                if created {
+                    parts.push(BrowserPart::Text { text: format!("tab {tab}") });
+                }
+                Ok(parts)
+            }
+            Err(why) => Err(why),
         }
-        outcome
+    }
+
+    /// The session's tab for a page call: its current one, else the profile's
+    /// own boot tab when nobody has adopted it, else a tab created through the
+    /// host. Answers the tab and whether it was made for this call.
+    async fn ensure_tab(
+        &self,
+        profile: &Arc<Profile>,
+        seat: &SessionSlot,
+        driver: &Arc<dyn TabDriver>,
+        bound: Duration,
+    ) -> Result<(u16, bool), String> {
+        if let Some(tab) = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).current(seat)
+        {
+            return Ok((tab, false));
+        }
+        let boot = profile.boot.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some((number, target)) = boot {
+            let adopted = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).adopt(
+                number,
+                seat.clone(),
+                &target,
+                "",
+                "about:blank",
+            );
+            return adopted.map(|number| (number, true));
+        }
+        let number = self.create_tab(profile, seat, driver, bound).await?;
+        Ok((number, true))
+    }
+
+    /// Create one tab, blank, through the host, and pair it with its page
+    /// target. **A URL is a navigation after the tab is armed**, never part of
+    /// its creation: the passkey veto must be in front of the first document.
+    async fn create_tab(
+        &self,
+        profile: &Arc<Profile>,
+        seat: &SessionSlot,
+        driver: &Arc<dyn TabDriver>,
+        bound: Duration,
+    ) -> Result<u16, String> {
+        let deadline = tokio::time::Instant::now() + bound;
+        if !driver.is_running() {
+            return Err(format!("the browser driver for '{}' is not running", profile.key));
+        }
+        // A test service has no host and no page targets; the fake driver is
+        // the tab source, and the test pushes the target it expects before
+        // calling.
+        #[cfg(test)]
+        if profile.state.lock().await.host.is_none() {
+            let tabs = driver.tabs_within(left(deadline)).await?;
+            let newest =
+                tabs.last().ok_or_else(|| "the fake driver has no tab to adopt".to_owned())?;
+            // The fake's listing order is its creation order, so the newest
+            // tab's host number is the list's length.
+            let number = u16::try_from(tabs.len())
+                .map_err(|_| "the fake driver has more tabs than a tab number holds".to_owned())?;
+            return profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).adopt(
+                number,
+                seat.clone(),
+                &newest.target,
+                &newest.title,
+                &newest.url,
+            );
+        }
+        let (port, input) = {
+            let state = profile.state.lock().await;
+            let host = state
+                .host
+                .as_ref()
+                .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
+            (host.port, host.input.clone())
+        };
+        let before: HashSet<String> =
+            spawn::page_targets(port).await.into_iter().map(|(id, _)| id).collect();
+        input
+            .send(input::host_line(&input::HostInput::TabNew { url: None }))
+            .map_err(|_| format!("the browser for '{}' is not taking a tab", profile.key))?;
+        let numbers = {
+            let mut queue = profile.host_tab_events.lock().await;
+            let events = queue.as_mut().ok_or_else(|| {
+                format!("the browser for '{}' is not reporting its tabs", profile.key)
+            })?;
+            let mut numbers: Vec<(u16, Option<u16>)> = Vec::new();
+            let event_deadline = tokio::time::Instant::now() + TAB_EVENT_BOUND;
+            let mut target_deadline: Option<tokio::time::Instant> = None;
+            loop {
+                while let Ok(event) = events.try_recv() {
+                    note_created(&event, &mut numbers);
+                }
+                if !numbers.is_empty() {
+                    let opened: Vec<(String, String)> = spawn::page_targets(port)
+                        .await
+                        .into_iter()
+                        .filter(|(id, _)| !before.contains(id))
+                        .collect();
+                    if opened.len() >= numbers.len() {
+                        break;
+                    }
+                    let deadline = *target_deadline
+                        .get_or_insert(tokio::time::Instant::now() + TAB_TARGET_BOUND);
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                } else if tokio::time::Instant::now() >= event_deadline {
+                    return Err(format!(
+                        "the browser did not open a tab within {} s",
+                        TAB_EVENT_BOUND.as_secs()
+                    ));
+                }
+                match tokio::time::timeout(Duration::from_millis(50), events.recv()).await {
+                    Ok(Some(event)) => note_created(&event, &mut numbers),
+                    Ok(None) => {
+                        return Err(format!(
+                            "the browser for '{}' stopped reporting its tabs",
+                            profile.key
+                        ));
+                    }
+                    Err(_) => {}
+                }
+            }
+            numbers
+        };
+        let opened: Vec<(String, String)> = spawn::page_targets(port)
+            .await
+            .into_iter()
+            .filter(|(id, _)| !before.contains(id))
+            .collect();
+        let mut requested = None;
+        {
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            for (index, (number, opener)) in numbers.iter().enumerate() {
+                let Some((target, url)) = opened.get(index) else { break };
+                if tabs.target(*number).is_some() {
+                    continue;
+                }
+                let owner = opener
+                    .and_then(|opener| tabs.owner(opener).cloned())
+                    .unwrap_or_else(|| seat.clone());
+                if tabs.adopt(*number, owner, target, "", url).is_ok()
+                    && opener.is_none()
+                    && requested.is_none()
+                {
+                    requested = Some(*number);
+                }
+            }
+        }
+        let Some(requested) = requested else {
+            return Err(format!(
+                "the browser's new tab did not appear in its page list (profile '{}')",
+                profile.key
+            ));
+        };
+        let target = profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .target(requested)
+            .map(str::to_owned);
+        if let Some(target) = target {
+            let arm_deadline = tokio::time::Instant::now() + left(deadline).min(TAB_ARM_BOUND);
+            while !veto::target_armed(port, &target) {
+                if tokio::time::Instant::now() >= arm_deadline {
+                    tracing::warn!(
+                        "a new tab was not armed before its navigation (event_name \
+                         cef_passkey_veto_unarmed_tab, port {port}, profile {}, tab {requested})",
+                        profile.key,
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+        self.publish_rows(&profile.key).await;
+        Ok(requested)
+    }
+
+    /// The `browser_tabs` tool, answered from the registry: **the host's
+    /// numbers are the tab names**, and no driver call is needed to list,
+    /// select or close one.
+    async fn tabs_tool(
+        &self,
+        profile: &Arc<Profile>,
+        seat: &SessionSlot,
+        driver: &Arc<dyn TabDriver>,
+        args: Value,
+    ) -> Result<Vec<BrowserPart>, String> {
+        let action = args.get("action").and_then(Value::as_str).unwrap_or("list");
+        match action {
+            "list" => {}
+            "new" => {
+                let number = self.create_tab(profile, seat, driver, driver::CALL_TIMEOUT).await?;
+                if let Some(url) =
+                    args.get("url").and_then(Value::as_str).filter(|url| !url.is_empty())
+                {
+                    let deadline = tokio::time::Instant::now() + driver::CALL_TIMEOUT;
+                    self.select_tab(profile, driver, number, left(deadline)).await?;
+                    driver
+                        .call_within("browser_navigate", json!({ "url": url }), left(deadline))
+                        .await?;
+                }
+            }
+            "select" => {
+                let tab = tool_tab(&args)?;
+                profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).select(seat, tab)?;
+                self.publish_rows(&profile.key).await;
+            }
+            "close" => {
+                let tab = tool_tab(&args)?;
+                self.close_owned_tab(profile, seat, tab).await?;
+            }
+            other => return Err(format!("browser_tabs does not know the action '{other}'")),
+        }
+        Ok(vec![BrowserPart::Text { text: self.render_tabs(profile, seat) }])
+    }
+
+    /// `browser_close`: the calling session's current tab.
+    async fn close_current_tab(
+        &self,
+        profile: &Arc<Profile>,
+        seat: &SessionSlot,
+    ) -> Result<Vec<BrowserPart>, String> {
+        let current =
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).current(seat).ok_or_else(
+                || format!("this session has no current tab on profile '{}'", profile.key),
+            )?;
+        self.close_owned_tab(profile, seat, current).await?;
+        Ok(vec![BrowserPart::Text { text: self.render_tabs(profile, seat) }])
+    }
+
+    async fn close_owned_tab(
+        &self,
+        profile: &Arc<Profile>,
+        seat: &SessionSlot,
+        tab: u16,
+    ) -> Result<(), String> {
+        profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).close_owned(seat, tab)?;
+        self.orphan_tab(profile, tab).await;
+        Ok(())
+    }
+
+    /// Close one tab from the host and forget it, whoever owned it. **Every
+    /// host-end path comes through here or through `teardown`**, so a number
+    /// that dies with its host never keeps a row.
+    async fn orphan_tab(&self, profile: &Arc<Profile>, tab: u16) {
+        let input = {
+            let state = profile.state.lock().await;
+            state.host.as_ref().map(|host| host.input.clone())
+        };
+        if let Some(input) = input {
+            let _ = input.send(input::host_line(&input::HostInput::TabClose { tab }));
+        }
+        profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).close(tab);
+        profile.forget_tab(tab);
+        let leaving: Vec<u64> = self
+            .where_viewing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(_, (key, viewing))| key == &profile.key && *viewing == tab)
+            .map(|(viewer, _)| *viewer)
+            .collect();
+        if !leaving.is_empty() {
+            let mut where_viewing =
+                self.where_viewing.lock().unwrap_or_else(PoisonError::into_inner);
+            for viewer in leaving {
+                where_viewing.remove(&viewer);
+            }
+        }
+        self.pause_unwatched(profile).await;
+        self.publish_rows(&profile.key).await;
+    }
+
+    /// The driver's own tab list is the index authority: a session's call
+    /// selects its tab first, then drives it.
+    async fn drive(
+        &self,
+        profile: &Arc<Profile>,
+        seat: &SessionSlot,
+        driver: &Arc<dyn TabDriver>,
+        tab: u16,
+        call: Drive<'_>,
+    ) -> (u16, Result<Vec<BrowserPart>, String>) {
+        let Drive { tool, args, retry_args, bound, generation, pid, port } = call;
+        let deadline = tokio::time::Instant::now() + bound;
+        let mut tab = tab;
+        let mut target = profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .target(tab)
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let listing = driver.tabs_within(left(deadline)).await;
+        let mut index = match listing {
+            Ok(listing) => Self::tab_index(profile, tab, &target, &listing),
+            Err(why) => return (tab, Err(why)),
+        };
+        if index.is_none() {
+            // **The target vanished under the session** (the page was closed
+            // outside the service): drop the dead tab and make a new one for
+            // this call, once.
+            self.orphan_tab(profile, tab).await;
+            let fresh = match self.create_tab(profile, seat, driver, left(deadline)).await {
+                Ok(fresh) => fresh,
+                Err(why) => return (tab, Err(why)),
+            };
+            tab = fresh;
+            target = profile
+                .tabs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .target(tab)
+                .map(str::to_owned)
+                .unwrap_or_default();
+            index = match driver.tabs_within(left(deadline)).await {
+                Ok(listing) => Self::tab_index(profile, tab, &target, &listing),
+                Err(why) => return (tab, Err(why)),
+            };
+        }
+        let Some(index) = index else {
+            return (tab, Err(format!("tab {tab}'s page is not in the driver's list any more")));
+        };
+        if let Err(why) = driver.select(index, left(deadline)).await {
+            return (tab, Err(why));
+        }
+        self.focus(profile, tab).await;
+        profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, true);
+        self.publish_rows(&profile.key).await;
+        let outcome = driver.call_within(tool, args, left(deadline)).await;
+        // A test service has no host to probe and no page targets to
+        // reconcile: the fake driver's answer is the whole of it.
+        #[cfg(test)]
+        if profile.state.lock().await.host.is_none() {
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, false);
+            self.publish_rows(&profile.key).await;
+            return (tab, outcome);
+        }
+        self.reconcile(profile, port).await;
+        profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, false);
+        self.publish_rows(&profile.key).await;
+        let outcome = self
+            .after_failure(
+                profile,
+                Driven { generation, pid, port, target: &target },
+                tool,
+                &retry_args,
+                outcome,
+            )
+            .await;
+        (tab, outcome)
+    }
+
+    /// The Playwright index of `tab` in one listing, updating the row's title
+    /// and url from what the driver sees.
+    fn tab_index(
+        profile: &Arc<Profile>,
+        tab: u16,
+        target: &str,
+        listing: &[crate::tabs::DriverTab],
+    ) -> Option<usize> {
+        let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+        let index = crate::tabs::index_of(listing, target);
+        if index.is_some()
+            && let Some(entry) = listing.iter().find(|entry| entry.target == target)
+        {
+            tabs.update(tab, &entry.title, &entry.url);
+        }
+        index
+    }
+
+    /// Adopt every popup the host opened during a call, then close the page
+    /// targets neither the registry nor the boot tab knows: **a page the
+    /// driver created on its own is not a host tab and must not shift the
+    /// indices**.
+    async fn reconcile(&self, profile: &Arc<Profile>, port: u16) {
+        let popups: Vec<(u16, Option<u16>)> = {
+            let mut queue = profile.host_tab_events.lock().await;
+            let mut popups = Vec::new();
+            if let Some(events) = queue.as_mut() {
+                while let Ok(event) = events.try_recv() {
+                    if let HostEvent::TabCreated { tab, opener, .. } = event
+                        && !popups.iter().any(|(number, _)| *number == tab)
+                    {
+                        popups.push((tab, opener));
+                    }
+                }
+            }
+            popups
+        };
+        let live = spawn::page_targets(port).await;
+        if !popups.is_empty() {
+            let mut known: HashSet<String> = {
+                let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+                tabs.numbers()
+                    .into_iter()
+                    .filter_map(|number| tabs.target(number).map(str::to_owned))
+                    .collect()
+            };
+            if let Some((_, target)) =
+                profile.boot.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+            {
+                known.insert(target.clone());
+            }
+            let mut used: HashSet<String> = HashSet::new();
+            for (number, opener) in popups {
+                let Some((target, url)) =
+                    live.iter().find(|(id, _)| !known.contains(id) && !used.contains(id))
+                else {
+                    break;
+                };
+                used.insert(target.clone());
+                let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+                if tabs.target(number).is_some() {
+                    continue;
+                }
+                if let Some(opener) = opener {
+                    let _ = tabs.create_under(opener, number, target, "", url);
+                }
+            }
+        }
+        let known: HashSet<String> = {
+            let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.numbers()
+                .into_iter()
+                .filter_map(|number| tabs.target(number).map(str::to_owned))
+                .collect()
+        };
+        let boot = profile
+            .boot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|(_, target)| target.clone());
+        for (target, _) in live {
+            if !known.contains(&target) && boot.as_deref() != Some(target.as_str()) {
+                spawn::close_target(port, &target).await;
+            }
+        }
+        self.publish_rows(&profile.key).await;
+    }
+
+    /// One tab's row list, in the words the tool returns.
+    fn render_tabs(&self, profile: &Profile, seat: &SessionSlot) -> String {
+        let held = self.held_tabs(&profile.key);
+        let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+        let current = tabs.current(seat);
+        let rows = tabs.rows(&held);
+        if rows.is_empty() {
+            return "no tabs are open".to_owned();
+        }
+        rows.iter()
+            .map(|row| {
+                let marker = if current == Some(row.number) { "(current) " } else { "" };
+                let owner = if row.owner == *seat { "you".to_owned() } else { row.owner.display() };
+                format!("- {}: {}[{}]({}) - {owner}", row.number, marker, row.title, row.url)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Select one tab in the driver by its target id.
+    async fn select_tab(
+        &self,
+        profile: &Arc<Profile>,
+        driver: &Arc<dyn TabDriver>,
+        tab: u16,
+        bound: Duration,
+    ) -> Result<(), String> {
+        let target = profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .target(tab)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("tab {tab} is not open"))?;
+        let listing = driver.tabs_within(bound).await?;
+        let index = Self::tab_index(profile, tab, &target, &listing)
+            .ok_or_else(|| format!("tab {tab}'s page is not in the driver's list any more"))?;
+        driver.select(index, bound).await?;
+        self.focus(profile, tab).await;
+        Ok(())
+    }
+
+    /// The profile's current page follows the tab the last call drove. **A
+    /// moved page restarts the history watch**, which is bound to the old
+    /// target's connection.
+    async fn focus(&self, profile: &Arc<Profile>, tab: u16) {
+        let changed = {
+            let mut focused = profile.focused.lock().unwrap_or_else(PoisonError::into_inner);
+            let changed = *focused != Some(tab);
+            *focused = Some(tab);
+            changed
+        };
+        if changed {
+            self.restart_nav(profile).await;
+        }
+    }
+
+    async fn restart_nav(&self, profile: &Arc<Profile>) {
+        let mut state = profile.state.lock().await;
+        if let Some(watch) = state.nav_watch.take() {
+            watch.abort();
+        }
+        if let Some(port) = state.host.as_ref().map(|host| host.port) {
+            state.nav_watch = Some(start_nav_watch(Arc::clone(profile), port));
+        }
+    }
+
+    /// The host encodes only while some tab has a viewer.
+    async fn pause_unwatched(&self, profile: &Arc<Profile>) {
+        let watched = !profile
+            .viewers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .all(HashSet::is_empty);
+        if watched {
+            return;
+        }
+        let state = profile.state.lock().await;
+        if let Some(host) = state.host.as_ref() {
+            host.ring.pause(true);
+        }
     }
 
     /// What a call that came back leaves behind, and what the session is
@@ -582,13 +1284,12 @@ impl BrowserService {
     async fn after_failure(
         &self,
         profile: &Arc<Profile>,
-        generation: u64,
-        pid: u32,
-        port: u16,
+        driven: Driven<'_>,
         tool: &str,
         args: &Value,
         outcome: Result<Vec<BrowserPart>, String>,
     ) -> Result<Vec<BrowserPart>, String> {
+        let Driven { generation, pid, port, target } = driven;
         let why = match outcome {
             Ok(parts) => {
                 let mut state = profile.state.lock().await;
@@ -616,7 +1317,9 @@ impl BrowserService {
             return Err(attach_failure(pid, port, &profile.dir, &tail, ended));
         }
         if driver::stale_page(&why) {
-            return self.rebuild_after_dead_page(profile, generation, tool, args, &why).await;
+            return self
+                .rebuild_after_dead_page(profile, generation, target, tool, args, &why)
+                .await;
         }
         // **A driver built against a browser that is gone is dropped.** The
         // probe is the browser's own liveness, not the driver's; a host that
@@ -650,9 +1353,8 @@ impl BrowserService {
                 return false;
             }
             state.driver = None;
-            state.cdp = None;
-            state.cdp_events = None;
-            state.cdp_path = None;
+            state.cdp.clear();
+            state.cdp_events.clear();
             if let Some(watch) = state.nav_watch.take() {
                 watch.abort();
             }
@@ -681,6 +1383,7 @@ impl BrowserService {
         &self,
         profile: &Arc<Profile>,
         generation: u64,
+        target: &str,
         tool: &str,
         args: &Value,
         why: &str,
@@ -734,7 +1437,22 @@ impl BrowserService {
             }));
         };
         if repeatable(tool, args) {
-            return match fresh.call(tool, args.clone()).await {
+            // **The fresh driver's current page is the host's**, so the
+            // tab's own target is selected again before the call is
+            // repeated; a retry that drove another tab would land twice in
+            // the wrong page.
+            let index = match fresh.tabs_within(driver::CALL_TIMEOUT).await {
+                Ok(listing) => crate::tabs::index_of(&listing, target),
+                Err(_) => None,
+            };
+            if let Some(index) = index
+                && let Err(cannot) = fresh.select(index, driver::CALL_TIMEOUT).await
+            {
+                profile.state.lock().await.stale_since = Some(Instant::now());
+                log_rebuild(profile, tool, "rebuilt, selection failed", why);
+                return Err(dead_page_answer(DeadPageOutcome::RetryFailed { why: &cannot }));
+            }
+            return match fresh.call_within(tool, args.clone(), driver::CALL_TIMEOUT).await {
                 Ok(parts) => {
                     profile.state.lock().await.stale_since = None;
                     log_rebuild(profile, tool, "rebuilt, call retried and answered", why);
@@ -758,15 +1476,37 @@ impl BrowserService {
         Err(dead_page_answer(DeadPageOutcome::NotRepeated { tool }))
     }
 
-    /// Attach a viewer to a profile: its newest frame, its viewer state, and
-    /// the profile's key for the calls that follow.
+    /// Attach a viewer to one tab: its newest frame, the tab's viewer state,
+    /// and the profile's key and tab for the calls that follow.
     ///
-    /// Attaching also asks the host for a full-quality frame, so a viewer
-    /// joining mid-run draws a crisp page first.
-    pub async fn attach(&self, viewer: u64, seat: &SessionSlot) -> Result<Attachment, String> {
+    /// `tab` of `None` is the asking seat's current tab, else the profile's
+    /// first. Attaching also asks the host for a full-quality frame, so a
+    /// viewer joining mid-run draws a crisp page first.
+    pub async fn attach(
+        &self,
+        viewer: u64,
+        seat: &SessionSlot,
+        tab: Option<u16>,
+    ) -> Result<Attachment, String> {
         let profile = self.open(seat).await?;
+        let tab = if let Some(tab) = tab {
+            tab
+        } else {
+            let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.current(seat).or_else(|| tabs.numbers().first().copied()).ok_or_else(|| {
+                format!("the browser profile '{}' has no tab to show yet", profile.key)
+            })?
+        };
+        let exists =
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).is_some();
+        if !exists {
+            return Err(format!("tab {tab} is not open"));
+        }
+        // **One tab at a time per viewer**: a surface that moved leaves the
+        // tab it was on, and a role it held there goes with it.
+        self.detach(viewer).await;
         let frames = profile.frames.subscribe();
-        let view = profile.view.subscribe();
+        let view = profile.view_for(tab).subscribe();
         let nav = profile.nav.subscribe();
         let failures = profile.failures.subscribe();
         let files = profile.files.subscribe();
@@ -774,10 +1514,14 @@ impl BrowserService {
         let audio = profile.audio.subscribe();
         {
             let mut viewers = profile.viewers.lock().unwrap_or_else(PoisonError::into_inner);
-            viewers.insert(viewer);
+            viewers.entry(tab).or_default().insert(viewer);
         }
-        profile.publish_view();
-        let port = {
+        self.where_viewing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(viewer, (profile.key.clone(), tab));
+        profile.publish_view(tab);
+        {
             let state = profile.state.lock().await;
             if let Some(host) = state.host.as_ref() {
                 // **A viewer is watching now**: resume encoding, ask for the
@@ -788,19 +1532,13 @@ impl BrowserService {
                 host.ring.key();
                 host.ring.show();
             }
-            state.host.as_ref().map(|host| host.port)
-        };
-        // **A raise is a read of the page too**: the page a restart reopens
-        // is the page the person was shown. A held carry releases only once
-        // this sees a real one.
-        if let Some(port) = port
-            && let Some(url) = spawn::page_url(port).await
-        {
-            crate::carry::record(&profile.dir, &url);
         }
+        self.publish_rows(&profile.key).await;
+        let tabs = self.rows_sender(&profile.key).subscribe();
         Ok(Attachment {
             key: profile.key.clone(),
             id: profile.id,
+            tab,
             frames,
             view,
             nav,
@@ -808,46 +1546,59 @@ impl BrowserService {
             files,
             downloads,
             audio,
+            tabs,
         })
     }
 
-    /// A viewer is gone: its count comes off every profile it was on, and a
-    /// role it held is released with it.
+    /// A viewer is gone: its count comes off the tab it was on, and a role it
+    /// held is released with it.
     pub async fn detach(&self, viewer: u64) {
+        self.where_viewing.lock().unwrap_or_else(PoisonError::into_inner).remove(&viewer);
         let profiles: Vec<Arc<Profile>> = self.profiles.lock().await.values().cloned().collect();
         for profile in profiles {
             // **The departure and the chooser it cancels are one decision**,
             // so a chooser event cannot publish an ask for a controller who
             // has already gone.
             let _decision = profile.file_decision.lock().await;
-            let removed = {
+            let mut left: HashSet<u16> = HashSet::new();
+            let mut removed = false;
+            {
                 let mut viewers = profile.viewers.lock().unwrap_or_else(PoisonError::into_inner);
-                viewers.remove(&viewer)
-            };
-            let held = {
-                let mut control = profile.control.lock().unwrap_or_else(PoisonError::into_inner);
-                let held = control.map(|(holder, _)| holder) == Some(viewer);
-                if held {
-                    *control = None;
+                for (tab, watchers) in viewers.iter_mut() {
+                    if watchers.remove(&viewer) {
+                        removed = true;
+                        left.insert(*tab);
+                    }
                 }
-                held
-            };
-            if held {
+                viewers.retain(|_, watchers| !watchers.is_empty());
+            }
+            let mut released = false;
+            {
+                let mut controls = profile.controls.lock().unwrap_or_else(PoisonError::into_inner);
+                let held: Vec<u16> = controls
+                    .iter()
+                    .filter(|(_, (holder, _))| *holder == viewer)
+                    .map(|(tab, _)| *tab)
+                    .collect();
+                for tab in held {
+                    controls.remove(&tab);
+                    left.insert(tab);
+                    released = true;
+                }
+            }
+            if released {
                 // **The person driving it is gone**: a chooser they were
                 // being asked is not the next viewer's to answer.
                 profile.cancel_files().await;
             }
-            if removed || held {
-                profile.publish_view();
+            for tab in left {
+                profile.publish_view(tab);
             }
-            if removed && profile.viewers.lock().unwrap_or_else(PoisonError::into_inner).is_empty()
-            {
-                let state = profile.state.lock().await;
-                if let Some(host) = state.host.as_ref() {
-                    // **Nobody is watching**: the host paints but stops
-                    // encoding, and the next viewer resumes it.
-                    host.ring.pause(true);
-                }
+            if removed || released {
+                self.publish_rows(&profile.key).await;
+            }
+            if removed {
+                self.pause_unwatched(&profile).await;
             }
         }
     }
@@ -866,52 +1617,73 @@ impl BrowserService {
         let Some(profile) = profile else {
             return Err(format!("no browser profile is open under '{}'", key.as_str()));
         };
+        self.forget_holds(key.as_str());
+        self.forget_viewing(key.as_str());
         profile.end().await;
+        self.publish_rows(key.as_str()).await;
         Ok(())
     }
 
-    /// Give `viewer` the controller role for a profile.
+    /// Give `viewer` the controller role for one tab.
     ///
-    /// **Exactly one controller.** A take moves the role to the caller and
-    /// the previous holder becomes a watcher; there is no default holder and
-    /// no override machinery - a surface starts controller-less.
-    pub async fn take_control(&self, profile: &str, viewer: u64) -> Result<(), String> {
+    /// **Exactly one controller per tab.** A take moves the role to the
+    /// caller and the previous holder becomes a watcher; there is no default
+    /// holder and no override machinery - a surface starts controller-less.
+    pub async fn take_control(&self, profile: &str, tab: u16, viewer: u64) -> Result<(), String> {
         let profile = self.find(profile).await?;
+        if profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).is_none() {
+            return Err(format!("tab {tab} is not open"));
+        }
         // **A role change and the chooser it cancels are one decision**: a
         // chooser event cannot read the old controller and publish after the
         // role has moved.
         let _decision = profile.file_decision.lock().await;
-        *profile.control.lock().unwrap_or_else(PoisonError::into_inner) = Some((viewer, 0));
+        profile.controls.lock().unwrap_or_else(PoisonError::into_inner).insert(tab, (viewer, 0));
         profile.cancel_files().await;
-        profile.publish_view();
+        profile.publish_view(tab);
+        self.focus(&profile, tab).await;
         Ok(())
     }
 
-    /// Release the role, when this viewer still holds it.
-    pub async fn release_control(&self, profile: &str, viewer: u64) {
+    /// Release the role, when this viewer still holds it on that tab.
+    pub async fn release_control(&self, profile: &str, tab: u16, viewer: u64) {
         if let Ok(profile) = self.find(profile).await {
             let _decision = profile.file_decision.lock().await;
             let released = {
-                let mut control = profile.control.lock().unwrap_or_else(PoisonError::into_inner);
-                let released = control.map(|(holder, _)| holder) == Some(viewer);
+                let mut controls = profile.controls.lock().unwrap_or_else(PoisonError::into_inner);
+                let released = controls.get(&tab).is_some_and(|(holder, _)| *holder == viewer);
                 if released {
-                    *control = None;
+                    controls.remove(&tab);
                 }
                 released
             };
             if released {
                 profile.cancel_files().await;
-                profile.publish_view();
+                profile.publish_view(tab);
             }
         }
     }
 
-    /// Lay the page out to the controller's surface. A resize from anyone
-    /// else is ignored: the page must not move under the person driving it.
-    pub async fn resize(&self, profile: &str, viewer: u64, width: u32, height: u32, scale: f64) {
+    /// Lay one tab out to its controller's surface. A resize from anyone else
+    /// is ignored: the page must not move under the person driving it.
+    pub async fn resize(
+        &self,
+        profile: &str,
+        tab: u16,
+        viewer: u64,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) {
         let Ok(profile) = self.find(profile).await else { return };
+        let controller = profile
+            .controls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&tab)
+            .map(|(holder, _)| *holder);
         let Some((width, height, scale)) =
-            controller_size(profile.controller(), viewer, width, height, scale)
+            controller_size(controller, viewer, width, height, scale)
         else {
             return;
         };
@@ -927,7 +1699,8 @@ impl BrowserService {
         }
     }
 
-    /// Inject one input event, and only for the viewer that holds the role.
+    /// Inject one input event into one tab, and only for the viewer that holds
+    /// its role.
     ///
     /// **The role is checked before the event is mapped or sent**, so input
     /// never reaches a page from a viewer that does not control it. An event
@@ -936,23 +1709,31 @@ impl BrowserService {
     pub async fn input(
         &self,
         profile: &str,
+        tab: u16,
         viewer: u64,
         seq: u64,
         event: &BrowserInputEvent,
     ) -> Result<(), String> {
         let profile = self.find(profile).await?;
         {
-            let mut control = profile.control.lock().unwrap_or_else(PoisonError::into_inner);
-            match *control {
-                Some((holder, last)) if holder == viewer => {
-                    if seq <= last {
+            let mut controls = profile.controls.lock().unwrap_or_else(PoisonError::into_inner);
+            match controls.get_mut(&tab) {
+                Some((holder, last)) if *holder == viewer => {
+                    if seq <= *last {
                         return Ok(());
                     }
-                    *control = Some((holder, seq));
+                    *last = seq;
                 }
                 _ => return Err("this viewer is not the browser's controller".to_owned()),
             }
         }
+        let target = profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .target(tab)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("tab {tab} is not open"))?;
         let (input, port) = {
             let state = profile.state.lock().await;
             let host = state
@@ -961,7 +1742,7 @@ impl BrowserService {
                 .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
             (host.input.clone(), host.port)
         };
-        match input::route(event, FIRST_TAB) {
+        match input::route(event, tab) {
             // **A pointer gesture is the host's**, whose own mouse calls are
             // what CEF routes into a windowless popup.
             input::Route::Host(line) => input
@@ -969,7 +1750,7 @@ impl BrowserService {
                 .map_err(|_| format!("the browser for '{}' is not taking input", profile.key)),
             input::Route::Page(method, params) => {
                 let mut state = profile.state.lock().await;
-                send_page(&mut state, port, method, params).await
+                send_page(&mut state, port, &target, method, params).await
             }
         }
     }
@@ -983,10 +1764,14 @@ impl BrowserService {
     pub async fn answer_files(
         &self,
         profile: &str,
+        tab: u16,
         id: u64,
         files: Vec<BrowserUpload>,
     ) -> Result<(), String> {
         let profile = self.find(profile).await?;
+        if profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).is_none() {
+            return Err(format!("tab {tab} is not open"));
+        }
         // **The answer is one chooser decision**, so a role change or an
         // agent's upload cannot interleave between the check and the driver
         // call that answers it.
@@ -1102,6 +1887,12 @@ impl BrowserService {
                 profile.key
             ));
         }
+        let tab = profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .current(seat)
+            .ok_or_else(|| "this session has no tab to record".to_owned())?;
         let dir = self.root.join("recordings");
         std::fs::create_dir_all(&dir)
             .map_err(|why| format!("the recordings directory cannot be made: {why}"))?;
@@ -1131,7 +1922,7 @@ impl BrowserService {
         // for the duration, and restored after the stop.
         ring.request(crate::record::WIDTH, crate::record::HEIGHT, 1.0);
         let line = input::host_line(&crate::input::HostInput::RecordStart {
-            tab: FIRST_TAB,
+            tab,
             path: path.to_string_lossy().into_owned(),
         });
         if let Err(why) = input.send(line) {
@@ -1226,55 +2017,80 @@ impl BrowserService {
         }])
     }
 
-    /// Where the page's history sits, or nothing when it cannot be read.
-    pub async fn nav_state(&self, profile: &str) -> Option<BrowserNavState> {
+    /// Where one tab's history sits, or nothing when it cannot be read.
+    pub async fn nav_state(&self, profile: &str, tab: u16) -> Option<BrowserNavState> {
         let profile = self.find(profile).await.ok()?;
+        let target =
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab)?.to_owned();
         let mut state = profile.state.lock().await;
         let port = state.host.as_ref().map(|host| host.port)?;
-        let reply =
-            call_page(&mut state, port, "Page.getNavigationHistory", json!({})).await.ok()?;
+        let reply = call_page(&mut state, port, &target, "Page.getNavigationHistory", json!({}))
+            .await
+            .ok()?;
         let nav = input::history_state(&reply)?;
         profile.publish_nav(nav);
         Some(nav)
     }
 
-    /// Move through the page's history, answering where it now sits.
+    /// Move one tab through its history, answering where it now sits.
     ///
-    /// **Only the controller moves the page.** The arrows are the same page
-    /// a watcher is looking at, so a watcher's move would move the person
+    /// **Only that tab's controller moves the page.** The arrows are the same
+    /// page a watcher is looking at, so a watcher's move would move the person
     /// driving it; the role is checked before the history is read.
     pub async fn nav(
         &self,
         profile: &str,
+        tab: u16,
         viewer: u64,
         back: bool,
     ) -> Result<BrowserNavState, String> {
         let profile = self.find(profile).await?;
-        if profile.controller() != Some(viewer) {
+        let holding = profile
+            .controls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&tab)
+            .is_some_and(|(holder, _)| *holder == viewer);
+        if !holding {
             return Err("this viewer is not the browser's controller".to_owned());
         }
+        let target = profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .target(tab)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("tab {tab} is not open"))?;
         let mut state = profile.state.lock().await;
         let port = state
             .host
             .as_ref()
             .map(|host| host.port)
             .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
-        let reply = call_page(&mut state, port, "Page.getNavigationHistory", json!({})).await?;
+        let reply =
+            call_page(&mut state, port, &target, "Page.getNavigationHistory", json!({})).await?;
         let (index, entries) = input::history_position(&reply)
             .ok_or_else(|| "the page's history could not be read".to_owned())?;
-        let target = if back {
+        let target_entry = if back {
             index.checked_sub(1)
         } else {
             (index + 1 < entries.len()).then_some(index + 1)
         };
-        if let Some(target) = target
+        if let Some(entry) = target_entry
             && let Some(id) =
-                entries.get(target).and_then(|entry| entry.get("id")).and_then(Value::as_i64)
+                entries.get(entry).and_then(|entry| entry.get("id")).and_then(Value::as_i64)
         {
-            call_page(&mut state, port, "Page.navigateToHistoryEntry", json!({ "entryId": id }))
-                .await?;
+            call_page(
+                &mut state,
+                port,
+                &target,
+                "Page.navigateToHistoryEntry",
+                json!({ "entryId": id }),
+            )
+            .await?;
         }
-        let reply = call_page(&mut state, port, "Page.getNavigationHistory", json!({})).await?;
+        let reply =
+            call_page(&mut state, port, &target, "Page.getNavigationHistory", json!({})).await?;
         let nav = input::history_state(&reply)
             .ok_or_else(|| "the page's history could not be read".to_owned())?;
         profile.publish_nav(nav);
@@ -1293,18 +2109,128 @@ impl BrowserService {
             .map(Arc::clone)
             .ok_or_else(|| format!("no browser profile is open under '{key}'"))
     }
+
+    /// A seat's tabs as its strip draws them.
+    pub async fn tabs(&self, seat: &SessionSlot) -> Result<BrowserTabList, String> {
+        let key = self.profile_for(seat)?;
+        self.publish_rows(key.as_str()).await;
+        Ok(self.rows_sender(key.as_str()).borrow().clone())
+    }
+
+    /// A stream of a seat's tab rows, for a strip that keeps it open.
+    pub async fn tab_stream(
+        &self,
+        seat: &SessionSlot,
+    ) -> Result<watch::Receiver<BrowserTabList>, String> {
+        let key = self.profile_for(seat)?;
+        self.publish_rows(key.as_str()).await;
+        Ok(self.rows_sender(key.as_str()).subscribe())
+    }
+
+    fn rows_sender(&self, key: &str) -> watch::Sender<BrowserTabList> {
+        self.rows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(key.to_owned())
+            .or_insert_with(|| {
+                watch::channel(BrowserTabList {
+                    profile: key.to_owned(),
+                    id: 0,
+                    up: false,
+                    connected: false,
+                    closing_at_ms: None,
+                    rows: Vec::new(),
+                })
+                .0
+            })
+            .clone()
+    }
+
+    /// Republish one profile's rows: its tabs, its connection and the idle
+    /// deadline. **A closed profile answers an empty list with no deadline**,
+    /// so a strip never draws a browser that is gone as one still running.
+    async fn publish_rows(&self, key: &str) {
+        let profile = self.profiles.lock().await.get(key).cloned();
+        let held = self.held_tabs(key);
+        let idle = self.idle_settings().map(|settings| Duration::from_secs(settings.minutes * 60));
+        let (id, up, connected, closing_at_ms, rows) = match &profile {
+            Some(profile) => {
+                let connected = {
+                    let state = profile.state.lock().await;
+                    state.driver.as_ref().is_some_and(|driver| driver.is_running())
+                };
+                let up = profile.up.load(Ordering::Acquire);
+                let touch = *profile.touch.lock().unwrap_or_else(PoisonError::into_inner);
+                let rows = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).rows(&held);
+                let closing_at_ms = idle.filter(|_| up).map(|idle| {
+                    let remaining = (touch.at + idle).saturating_duration_since(Instant::now());
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX));
+                    now.saturating_add(u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX))
+                });
+                (profile.id, up, connected, closing_at_ms, rows)
+            }
+            None => (0, false, false, None, Vec::new()),
+        };
+        self.rows_sender(key).send_replace(BrowserTabList {
+            profile: key.to_owned(),
+            id,
+            up,
+            connected,
+            closing_at_ms,
+            rows,
+        });
+    }
+
+    /// The tab numbers of one profile a parked hand-off holds.
+    fn held_tabs(&self, key: &str) -> HashSet<u16> {
+        let holds = self.holds.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        holds
+            .into_iter()
+            .filter_map(|(seat, tab)| {
+                let profile = self.profile_for(&seat).ok()?;
+                (profile.as_str() == key).then_some(tab)
+            })
+            .collect()
+    }
+
+    fn forget_holds(&self, key: &str) {
+        self.holds.lock().unwrap_or_else(PoisonError::into_inner).retain(|(seat, _)| {
+            self.profile_for(seat).is_ok_and(|profile| profile.as_str() != key)
+        });
+    }
+
+    fn forget_viewing(&self, key: &str) {
+        let leaving: Vec<u64> = self
+            .where_viewing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(_, (profile, _))| profile == key)
+            .map(|(viewer, _)| *viewer)
+            .collect();
+        let mut where_viewing = self.where_viewing.lock().unwrap_or_else(PoisonError::into_inner);
+        for viewer in leaving {
+            where_viewing.remove(&viewer);
+        }
+    }
 }
 
-/// A viewer's handle on one profile, as the transport keeps it.
+/// A viewer's handle on one tab, as the transport keeps it.
 pub struct Attachment {
     /// The profile's key, for the calls that follow (input, control, nav).
     pub key: String,
     /// The id the binary frames carry.
     pub id: u16,
+    /// The tab this viewer is on, for every call that follows.
+    pub tab: u16,
     /// The newest frame, and a way to follow it.
     pub frames: watch::Receiver<Option<BrowserFrame>>,
-    /// The controller and the viewer count, as they change.
+    /// The tab's controller and the viewer count, as they change.
     pub view: watch::Receiver<BrowserViewState>,
+    /// The profile's tabs, as they change.
+    pub tabs: watch::Receiver<BrowserTabList>,
     /// Where the page's history sits, as it moves.
     pub nav: watch::Receiver<Option<BrowserNavState>>,
     /// Why the browser stopped, when it stopped.
@@ -1347,7 +2273,7 @@ pub struct Profile {
     key: String,
     /// The id the frames and the wire carry for this profile.
     id: u16,
-    /// The profile's CEF cache root: cookies, storage and the carried page.
+    /// The profile's CEF cache root: cookies and storage.
     dir: PathBuf,
     /// The `[browser]` encoding pair, fixed at the profile's creation.
     encoding: (u16, u8),
@@ -1356,8 +2282,6 @@ pub struct Profile {
     /// The service's stop flag, shared by every profile.
     stopped: Arc<AtomicBool>,
     frames: watch::Sender<Option<BrowserFrame>>,
-    /// The controller and viewer count, republished on every change.
-    view: watch::Sender<BrowserViewState>,
     /// Where the page's history sits, published when it moves: a link click
     /// moves the bar's arrows without anyone asking.
     nav: watch::Sender<Option<BrowserNavState>>,
@@ -1396,12 +2320,29 @@ pub struct Profile {
     recording: Mutex<Option<PathBuf>>,
     /// The controller's last requested view, restored when a take ends.
     surface: Mutex<(u32, u32, f64)>,
-    /// The viewer ids attached right now.
-    viewers: Mutex<HashSet<u64>>,
+    /// The tab this profile's tabs are, keyed by the host's own numbers.
+    tabs: Mutex<TabRegistry>,
+    /// The host's boot tab, until a session's first page call adopts it.
+    boot: Mutex<Option<(u16, String)>>,
+    /// The tab the driver's current page is, so a chooser and the history
+    /// watch read the right one.
+    focused: Mutex<Option<u16>>,
+    /// Each tab's controller: its viewer id, and the last input sequence it
+    /// sent.
+    controls: Mutex<HashMap<u16, (u64, u64)>>,
+    /// The viewer ids attached to each tab right now.
+    viewers: Mutex<HashMap<u16, HashSet<u64>>>,
+    /// Each tab's viewer state, published when a role or the count moves.
+    views: Mutex<HashMap<u16, watch::Sender<BrowserViewState>>>,
+    /// **One call at a time per profile**, in arrival order: two calls that
+    /// both selected and drove would swap the driver's current page under
+    /// each other.
+    call_lock: AsyncMutex<()>,
+    /// The host's own tab births and ends, for the call path that pairs them
+    /// with page targets. `None` until a host starts.
+    host_tab_events: AsyncMutex<Option<mpsc::UnboundedReceiver<HostEvent>>>,
     state: AsyncMutex<State>,
-    /// The controller: its viewer id, and the last input sequence it sent.
-    control: Mutex<Option<(u64, u64)>>,
-    /// When a seat last used this profile, and when the idle bound asked.
+    /// When a seat last used this profile.
     touch: Mutex<Touch>,
     /// Whether this entry has been closed: **a caller that kept the handle
     /// from before the close is refused**, rather than starting a second
@@ -1410,8 +2351,6 @@ pub struct Profile {
     /// Whether the host is up, for the strip's read: a lock-free flag so the
     /// list never waits on a call in flight.
     up: AtomicBool,
-    /// Browser calls running on this profile now: the strip's work ring.
-    busy: AtomicU32,
 }
 
 /// The most a finished download may carry to a viewer.
@@ -1689,15 +2628,6 @@ fn death_cause(status: Option<std::process::ExitStatus>) -> String {
     "an unreadable status".to_owned()
 }
 
-/// One call's mark on its profile, taken off however the call ends.
-struct Busy<'a>(&'a AtomicU32);
-
-impl Drop for Busy<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 impl Profile {
     pub fn key(&self) -> &str {
         &self.key
@@ -1707,9 +2637,41 @@ impl Profile {
         self.id
     }
 
-    /// The controller, when one holds the role.
-    pub fn controller(&self) -> Option<u64> {
-        self.control.lock().unwrap_or_else(PoisonError::into_inner).map(|(holder, _)| holder)
+    /// One tab's controller, when a viewer holds its role.
+    fn controller(&self, tab: u16) -> Option<u64> {
+        self.controls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&tab)
+            .map(|(holder, _)| *holder)
+    }
+
+    /// The controller a chooser is put to: the focused tab's when one holds
+    /// it, else the first tab whose role someone took.
+    fn chooser_controller(&self) -> Option<u64> {
+        let focused = *self.focused.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(controller) = focused.and_then(|tab| self.controller(tab)) {
+            return Some(controller);
+        }
+        let controls = self.controls.lock().unwrap_or_else(PoisonError::into_inner);
+        controls.iter().min_by_key(|(tab, _)| **tab).map(|(_, (holder, _))| *holder)
+    }
+
+    fn view_for(&self, tab: u16) -> watch::Sender<BrowserViewState> {
+        self.views
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(tab)
+            .or_insert_with(|| watch::channel(BrowserViewState::default()).0)
+            .clone()
+    }
+
+    /// Forget everything one tab owned, **without touching the host or the
+    /// registry**: a closed tab's role, watchers and view stream go with it.
+    fn forget_tab(&self, tab: u16) {
+        self.controls.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
+        self.viewers.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
+        self.views.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
     }
 
     /// **A chooser outliving the person who could answer it is cancelled.**
@@ -1874,7 +2836,7 @@ impl Profile {
                 return;
             }
         }
-        let Some(controller) = self.controller() else {
+        let Some(controller) = self.chooser_controller() else {
             tracing::debug!(
                 "a page's file chooser is held for the agent (event_name \
                  browser_file_chooser_held, profile {})",
@@ -1905,13 +2867,19 @@ impl Profile {
         });
     }
 
-    /// Republish the viewer state: the controller and how many are attached.
-    fn publish_view(&self) {
-        let controller = self.controller();
-        let viewers =
-            u32::try_from(self.viewers.lock().unwrap_or_else(PoisonError::into_inner).len())
-                .unwrap_or(u32::MAX);
-        self.view.send_replace(BrowserViewState { controller, viewers });
+    /// Republish one tab's viewer state: its controller and how many are
+    /// attached to it.
+    fn publish_view(&self, tab: u16) {
+        let controller = self.controller(tab);
+        let viewers = u32::try_from(
+            self.viewers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&tab)
+                .map_or(0, HashSet::len),
+        )
+        .unwrap_or(u32::MAX);
+        self.view_for(tab).send_replace(BrowserViewState { controller, viewers });
     }
 
     /// Bring the profile's host and driver up, or keep the ones already up.
@@ -1935,6 +2903,12 @@ impl Profile {
         // behind the drain.
         if self.stopped.load(Ordering::Acquire) {
             return Err("the server is shutting down".to_owned());
+        }
+        // A test profile's driver is the whole browser: a fake host never
+        // exists, and a real one is never started for it.
+        #[cfg(test)]
+        if state.host.is_none() && state.driver.is_some() {
+            return Ok(());
         }
         // A host that died is replaced; a live one keeps its ring.
         if let Some(host) = state.host.as_ref()
@@ -1971,8 +2945,7 @@ impl Profile {
                     host.port,
                 );
                 why
-            })?
-            .serving(&self.dir);
+            })?;
         let driver = Arc::new(driver);
         // **A chooser answer rides this driver's MCP call**, and the race
         // tests replace this handle with a gated one.
@@ -2122,23 +3095,50 @@ impl Profile {
             );
         }
         // **A page is never armed by a driver alone.** The veto is installed
-        // before the profile serves any call, so the first document the
-        // driver navigates to starts behind it. **An accepted carry is HELD**:
-        // the host is still on `about:blank` for a moment, and a probe
-        // meeting that blank page must not erase the page the hold exists
-        // for.
-        let carried = host::carried_page(&self.dir);
-        match veto::install(port, &self.dir, Some(carried.clone())).await {
-            Ok(veto::Carried::Opened) => crate::carry::hold(&self.dir, &carried),
-            Ok(veto::Carried::Failed(why)) => tracing::warn!(
-                "the carried page did not open for {} (event_name browser_carry_failed): {why}",
-                self.key
-            ),
-            Ok(veto::Carried::None) => {}
-            Err(why) => tracing::warn!(
+        // before the profile serves any call, so every document a tab starts
+        // opens behind it.
+        if let Err(why) = veto::install(port, &self.dir).await {
+            tracing::warn!(
                 "the passkey veto did not install for {} (event_name browser_veto_failed): {why}",
                 self.key
-            ),
+            );
+        }
+        // **The host opens one blank boot tab**, and the first page call
+        // adopts it. Its number is the host's first, and its page target is
+        // the only one listed before the driver starts.
+        let (tab_sender, tab_receiver) = mpsc::unbounded_channel();
+        *self.host_tab_events.lock().await = Some(tab_receiver);
+        let boot_deadline = tokio::time::Instant::now() + BOOT_EVENT_BOUND;
+        let mut pending: Vec<HostEvent> = Vec::new();
+        let mut booted = false;
+        loop {
+            match tokio::time::timeout_at(boot_deadline, events.recv()).await {
+                Ok(Some(HostEvent::TabCreated { tab: 1, opener: None, .. })) => {
+                    booted = true;
+                    break;
+                }
+                Ok(Some(event)) => pending.push(event),
+                _ => break,
+            }
+        }
+        let mut boot_target = None;
+        if booted {
+            for _ in 0..20 {
+                if let Some((target, _)) = spawn::page_targets(port).await.into_iter().next() {
+                    boot_target = Some(target);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        if let Some(target) = boot_target {
+            *self.boot.lock().unwrap_or_else(PoisonError::into_inner) = Some((1, target));
+        } else {
+            tracing::warn!(
+                "a browser host reported no boot tab to adopt (event_name \
+                 browser_boot_tab_missing, profile {}, port {port})",
+                self.key
+            );
         }
         tracing::info!(
             "the browser host is up (event_name browser_host_up, profile {}, pid {pid}, port {port})",
@@ -2192,30 +3192,46 @@ impl Profile {
         // **A page's file chooser goes where a person is.** The host writes
         // the request on its stdout; the transport offers it to the viewer
         // that owns the role, and `answer_files` hands the host the paths.
+        //
+        // **The host's tab births and ends are the call path's**, queued for
+        // whichever creation or call is pairing them with page targets; a
+        // close is applied to the registry here, because a page can close
+        // its own tab with no call in flight.
         let profile = Arc::downgrade(self);
         let downloads = self.downloads.clone();
         let recorded = self.recorded.clone();
         let dir = self.dir.clone();
         let key = self.key.clone();
         tokio::spawn(async move {
-            while let Some(event) = events.recv().await {
+            let mut pending: std::collections::VecDeque<HostEvent> = pending.into();
+            loop {
+                let event = match pending.pop_front() {
+                    Some(event) => event,
+                    None => match events.recv().await {
+                        Some(event) => event,
+                        None => break,
+                    },
+                };
                 match event {
-                    // **The registry reads these in the call path**, where a
-                    // new tab is paired with its page target; until the
-                    // registry lands they are only the host's own news.
-                    crate::control::HostEvent::TabCreated { tab, opener, url } => {
+                    HostEvent::TabCreated { tab, opener, url } => {
                         tracing::debug!(
                             "a host tab opened (event_name browser_tab_created, profile {key}, \
                              tab {tab}, opener {opener:?}, url {url})"
                         );
+                        let _ = tab_sender.send(HostEvent::TabCreated { tab, opener, url });
                     }
-                    crate::control::HostEvent::TabClosed { tab } => {
+                    HostEvent::TabClosed { tab } => {
                         tracing::debug!(
                             "a host tab closed (event_name browser_tab_closed, profile {key}, \
                              tab {tab})"
                         );
+                        if let Some(profile) = profile.upgrade() {
+                            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).close(tab);
+                            profile.forget_tab(tab);
+                        }
+                        let _ = tab_sender.send(HostEvent::TabClosed { tab });
                     }
-                    crate::control::HostEvent::FileDialog { id, multiple } => {
+                    HostEvent::FileDialog { id, multiple } => {
                         // **The CEF fallback is a chooser decision too**: it
                         // takes the lock and checks the profile is up, so a
                         // dialog that arrives while the host goes is not
@@ -2233,7 +3249,7 @@ impl Profile {
                         );
                         profile.files.send_replace(Some(BrowserFileAsk { id, multiple }));
                     }
-                    crate::control::HostEvent::Download { name, path, size } => {
+                    HostEvent::Download { name, path, size } => {
                         let download = read_download(&dir, &name, &path, size);
                         if downloads.send(download).is_err() {
                             tracing::debug!(
@@ -2243,13 +3259,7 @@ impl Profile {
                             );
                         }
                     }
-                    crate::control::HostEvent::Recording {
-                        started,
-                        seconds,
-                        bytes,
-                        capped,
-                        error,
-                    } => {
+                    HostEvent::Recording { started, seconds, bytes, capped, error } => {
                         tracing::debug!(
                             "a recording answered (event_name browser_recording, profile {key}, \
                              started {started}, seconds {seconds}, bytes {bytes}, capped \
@@ -2283,6 +3293,15 @@ impl Profile {
         // event parked inside the driver's cancel resumes after this and must
         // see the profile down, or it would publish an ask for a dead host.
         self.up.store(false, Ordering::Release);
+        // **A host's tab numbers die with the host**: a new host starts again
+        // at tab 1, so nothing may point at the old numbering.
+        *self.tabs.lock().unwrap_or_else(PoisonError::into_inner) = TabRegistry::default();
+        *self.boot.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *self.focused.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.controls.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        self.viewers.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        self.views.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        *self.host_tab_events.lock().await = None;
         // **A driver or host going takes its chooser with it.** These are
         // cleared without the decision lock because teardown runs under the
         // state lock and the order is decision then state; a queued chooser
@@ -2293,9 +3312,8 @@ impl Profile {
             ChooserLedger::default();
         *self.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = None;
         state.driver = None;
-        state.cdp = None;
-        state.cdp_events = None;
-        state.cdp_path = None;
+        state.cdp.clear();
+        state.cdp_events.clear();
         if let Some(watch) = state.nav_watch.take() {
             watch.abort();
         }
@@ -2337,9 +3355,6 @@ impl Profile {
         let _decision = self.file_decision.lock().await;
         let mut state = self.state.lock().await;
         self.teardown(&mut state).await;
-        *self.control.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        self.viewers.lock().unwrap_or_else(PoisonError::into_inner).clear();
-        self.publish_view();
         self.frames.send_replace(None);
         self.nav.send_replace(None);
         // **Nothing of a gone browser's chooser or its staged files stays.**
@@ -2358,7 +3373,7 @@ const NAV_BOUND: Duration = Duration::from_secs(2);
 /// How long the watch waits for a page target that is not there yet.
 const NAV_RETRY: Duration = Duration::from_millis(500);
 
-/// Watch the page's own navigations and publish the bar's arrows.
+/// Watch the focused tab's own navigations and publish the bar's arrows.
 ///
 /// **The page navigates without anyone asking**: a link click, a redirect
 /// and a fragment change all move the history, so the bar reads this watch
@@ -2368,11 +3383,26 @@ const NAV_RETRY: Duration = Duration::from_millis(500);
 /// pair standing.
 fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        loop {
+        'watch: loop {
             if profile.ended.load(Ordering::Acquire) {
                 return;
             }
-            let Some(url) = spawn::page_websocket(port).await else {
+            let focused = *profile.focused.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(tab) = focused else {
+                tokio::time::sleep(NAV_RETRY).await;
+                continue;
+            };
+            let target = profile
+                .tabs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .target(tab)
+                .map(str::to_owned);
+            let Some(target) = target else {
+                tokio::time::sleep(NAV_RETRY).await;
+                continue;
+            };
+            let Some(url) = spawn::page_websocket_of(port, &target).await else {
                 tokio::time::sleep(NAV_RETRY).await;
                 continue;
             };
@@ -2390,7 +3420,7 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
             }
             // **Only the main frame speaks for the page.** A same-document
             // event names the frame it happened in, and an iframe's URL is
-            // not the page a restart reopens; the tree names the main frame
+            // not the page the bar describes; the tree names the main frame
             // before any navigation event arrives.
             let mut main_frame: Option<String> = cdp
                 .call("Page.getFrameTree", json!({}), None)
@@ -2401,24 +3431,18 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
             // arrows on the attach that led here.
             let mut last: Option<BrowserNavState> = None;
             while let Some(event) = events.recv().await {
+                // **The focused tab may have moved** under this connection;
+                // the watch follows it rather than publishing another tab's
+                // history.
+                if *profile.focused.lock().unwrap_or_else(PoisonError::into_inner) != Some(tab) {
+                    continue 'watch;
+                }
                 let method = event.get("method").and_then(Value::as_str).unwrap_or_default();
                 if let Some(frame) = input::navigated_frame_id(&event) {
                     main_frame = Some(frame.to_owned());
                 }
                 if !input::history_event(method, &event, main_frame.as_deref()) {
                     continue;
-                }
-                // **A page the person navigated to is the page a restart
-                // reopens.** A link click from a viewer is neither a call nor
-                // a raise, so without this the carry kept whatever the
-                // session last drove; only a main-frame web navigation is
-                // recorded, and a non-web one can never clear the marker from
-                // here. A same-document entry counts too: it moves the
-                // history and names its URL without navigating a frame.
-                if let Some(url) = input::navigation_url(method, &event, main_frame.as_deref())
-                    && crate::carry::is_web(url)
-                {
-                    crate::carry::record(&profile.dir, url);
                 }
                 let reply = tokio::time::timeout(
                     NAV_BOUND,
@@ -2437,7 +3461,7 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
                 profile.publish_nav(nav);
             }
             // The page's connection closed (a tab change, a dying renderer):
-            // follow the page target again.
+            // follow the focused page target again.
             if profile.ended.load(Ordering::Acquire) {
                 return;
             }
@@ -2446,58 +3470,63 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
     })
 }
 
-/// The page's input connection, (re)opened when the page target moved.
+/// One page's input connection, opened on demand by its target id.
 ///
-/// **One page, one connection.** The target's path changes when a driver
-/// opens a tab, and every input and history call follows it.
-async fn page_cdp(state: &mut State, port: u16) -> Result<&mut Cdp, String> {
-    let path = spawn::page_websocket(port)
-        .await
-        .ok_or_else(|| "the browser has no page to receive input".to_owned())?;
-    let Some(path) = path.strip_prefix(&spawn::ws_prefix(port)).map(str::to_owned) else {
-        return Err("the page's websocket is not on the host's port".to_owned());
-    };
-    if state.cdp_path.as_deref() != Some(path.as_str()) {
+/// **One target, one connection.** Each tab's page is its own target, and
+/// every input and history call follows the tab it names.
+async fn page_cdp<'a>(
+    state: &'a mut State,
+    port: u16,
+    target: &str,
+) -> Result<&'a mut Cdp, String> {
+    if !state.cdp.contains_key(target) {
+        let path = spawn::page_websocket_of(port, target)
+            .await
+            .ok_or_else(|| format!("the page target {target} is not on the host"))?;
+        let Some(path) = path.strip_prefix(&spawn::ws_prefix(port)).map(str::to_owned) else {
+            return Err("the page's websocket is not on the host's port".to_owned());
+        };
         let (cdp, events) = Cdp::connect_watch(port, &path).await?;
-        state.cdp = Some(cdp);
-        state.cdp_events = Some(events);
-        state.cdp_path = Some(path);
+        state.cdp.insert(target.to_owned(), cdp);
+        state.cdp_events.insert(target.to_owned(), events);
     }
     // **The page's events are drained and dropped.** Input and history are
     // send-and-reply paths; the channel exists because the reader task needs
     // a live one, and an unread backlog on a page that reports many events is
     // growth nobody would see.
-    if let Some(events) = state.cdp_events.as_mut() {
+    if let Some(events) = state.cdp_events.get_mut(target) {
         while events.try_recv().is_ok() {}
     }
-    state.cdp.as_mut().ok_or_else(|| "the page's input connection is not open".to_owned())
+    state.cdp.get_mut(target).ok_or_else(|| "the page's input connection is not open".to_owned())
 }
 
-/// Send one CDP call to the page without waiting for its reply.
+/// Send one CDP call to one page without waiting for its reply.
 async fn send_page(
     state: &mut State,
     port: u16,
+    target: &str,
     method: &'static str,
     params: Value,
 ) -> Result<(), String> {
-    page_cdp(state, port).await?.send(method, params).await
+    page_cdp(state, port, target).await?.send(method, params).await
 }
 
-/// One CDP call to the page, answered.
+/// One CDP call to one page, answered.
 async fn call_page(
     state: &mut State,
     port: u16,
+    target: &str,
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    page_cdp(state, port).await?.call(method, params, None).await
+    page_cdp(state, port, target).await?.call(method, params, None).await
 }
 
 /// What a profile holds once it is up.
 #[derive(Default)]
 struct State {
     host: Option<ActiveHost>,
-    driver: Option<Arc<Driver>>,
+    driver: Option<Arc<dyn TabDriver>>,
     /// Bumped whenever a driver is installed, so a call's dead-driver clear
     /// cannot wipe a newer driver's handle started in between.
     chooser_generation: u64,
@@ -2505,12 +3534,13 @@ struct State {
     /// the cooldown stops a browser that stays dead costing a driver start
     /// on every call.
     stale_since: Option<Instant>,
-    /// The input connection to the page target, and the path it was opened
-    /// on so a tab change reconnects.
-    cdp: Option<Cdp>,
-    cdp_events: Option<mpsc::UnboundedReceiver<Value>>,
-    cdp_path: Option<String>,
-    /// The page's navigation watch: the bar's arrows after a link click.
+    /// The input connection to each page target, keyed by the target id so a
+    /// tab switch opens the new target's connection rather than reusing the
+    /// old one.
+    cdp: HashMap<String, Cdp>,
+    cdp_events: HashMap<String, mpsc::UnboundedReceiver<Value>>,
+    /// The focused tab's navigation watch: the bar's arrows after a link
+    /// click.
     nav_watch: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -2737,6 +3767,32 @@ pub fn take_profile(mut args: Value) -> Result<(Option<String>, Value), String> 
     }
 }
 
+/// What is left of a call's budget - at least enough to send the call, so a
+/// spent budget answers a timeout rather than a silent skip.
+fn left(deadline: tokio::time::Instant) -> Duration {
+    deadline.saturating_duration_since(tokio::time::Instant::now()).max(Duration::from_millis(1))
+}
+
+/// Collect one host tab birth from the event queue.
+fn note_created(event: &HostEvent, numbers: &mut Vec<(u16, Option<u16>)>) {
+    if let HostEvent::TabCreated { tab, opener, .. } = event
+        && !numbers.iter().any(|(number, _)| number == tab)
+    {
+        numbers.push((*tab, *opener));
+    }
+}
+
+/// The tab's number from a `browser_tabs` call: the field keeps the upstream
+/// name `index`, and it is a forge tab number.
+fn tool_tab(args: &Value) -> Result<u16, String> {
+    let index = args
+        .get("index")
+        .ok_or_else(|| "browser_tabs needs the tab's number in `index`".to_owned())?;
+    let number =
+        index.as_u64().ok_or_else(|| "`index` is a tab number, not what was passed".to_owned())?;
+    u16::try_from(number).map_err(|_| format!("{number} is not a tab number"))
+}
+
 /// The view a resize asks for, when the caller holds the role: the role as a
 /// value, so a watcher's window is refused before any host is touched.
 fn controller_size(
@@ -2756,10 +3812,10 @@ fn controller_size(
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadPageOutcome, State,
-        UploadRequest, agent_upload_paths, agent_upload_refused, attach_failure, begin_upload,
-        captured_generation, clear_if_dead, controller_size, dead_page_answer, death_cause,
-        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadPageOutcome, Driven,
+        Profile, State, UploadRequest, agent_upload_paths, agent_upload_refused, attach_failure,
+        begin_upload, captured_generation, clear_if_dead, controller_size, dead_page_answer,
+        death_cause, file_name, installed_generation, note_agent_answered, note_surfaced_opened,
         note_upload_finished, stage_agent_uploads, take_profile, upload_request, write_uploads,
     };
     use forge_primitives::SessionSlot;
@@ -2796,7 +3852,6 @@ mod tests {
     }
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex, PoisonError};
-    use tokio::sync::mpsc;
 
     /// **A download is read once, from its own directory, or refused with a
     /// reason.** The happy path hands the bytes on and removes the server's
@@ -2849,15 +3904,16 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.files.send_replace(Some(BrowserFileAsk { id: 4, multiple: false }));
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         assert!(profile.files.borrow().is_none(), "the ask is cancelled with the take");
 
         profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
-        service.release_control("TestOrg/default", 7).await;
+        service.release_control("TestOrg/default", tab, 7).await;
         assert!(profile.files.borrow().is_none(), "and with the release");
 
-        service.take_control("TestOrg/default", 7).await.expect("the role moves back");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves back");
         profile.files.send_replace(Some(BrowserFileAsk { id: 6, multiple: false }));
         service.detach(7).await;
         assert!(profile.files.borrow().is_none(), "and when the controller detaches");
@@ -2874,6 +3930,7 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
 
         profile
@@ -2892,7 +3949,7 @@ mod tests {
             "and no person is asked",
         );
 
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -2913,7 +3970,7 @@ mod tests {
             Some(ask.id),
         );
 
-        service.release_control("TestOrg/default", 7).await;
+        service.release_control("TestOrg/default", tab, 7).await;
         assert!(profile.files.borrow().is_none(), "the ask leaves with the role it was asked for");
         assert!(
             profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner).is_none(),
@@ -2934,8 +3991,9 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
 
         profile
             .file_chooser(FileChooser {
@@ -2958,6 +4016,7 @@ mod tests {
         let refused = service
             .answer_files(
                 "TestOrg/default",
+                tab,
                 first.id,
                 vec![BrowserUpload { name: "old.txt".to_owned(), bytes: b"old".to_vec() }],
             )
@@ -2988,8 +4047,9 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -2999,7 +4059,7 @@ mod tests {
             .await;
 
         assert!(agent_upload_refused(&profile), "the person's picker is open");
-        service.release_control("TestOrg/default", 7).await;
+        service.release_control("TestOrg/default", tab, 7).await;
         assert!(!agent_upload_refused(&profile), "the release closes the refusal");
     }
 
@@ -3015,8 +4075,9 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
 
         note_agent_answered(&profile);
         profile
@@ -3053,6 +4114,7 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
 
         // No controller: the chooser is surfaced and held for the agent.
@@ -3073,7 +4135,7 @@ mod tests {
             assert_eq!((ledger.surfaced, ledger.pre_answered), (0, 0), "the surface is consumed");
         }
 
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3112,8 +4174,9 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3126,7 +4189,7 @@ mod tests {
             .await
             .expect_err("the cancel form is refused too");
         assert!(refused.contains("picker"), "{refused}");
-        service.release_control("TestOrg/default", 7).await;
+        service.release_control("TestOrg/default", tab, 7).await;
         let guard = begin_upload(&profile, Some(&UploadRequest::Cancel))
             .await
             .expect("the cancel form is allowed")
@@ -3154,11 +4217,12 @@ mod tests {
             Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
         let gate = Arc::new(GatedAnswer { entered: Notify::new(), release: Notify::new() });
         let calls: Arc<dyn ChooserAnswer> = gate.clone();
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3187,7 +4251,7 @@ mod tests {
         let mut answering = {
             let service = Arc::clone(&service);
             tokio::spawn(async move {
-                service.answer_files("TestOrg/default", first.id, Vec::new()).await
+                service.answer_files("TestOrg/default", tab, first.id, Vec::new()).await
             })
         };
         tokio::task::yield_now().await;
@@ -3218,11 +4282,12 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
         let gate = Arc::new(GatedAnswer { entered: Notify::new(), release: Notify::new() });
         let calls: Arc<dyn ChooserAnswer> = gate.clone();
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3271,10 +4336,11 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3287,13 +4353,13 @@ mod tests {
         // constant one would leave them behind and fail the assertion below.
         note_surfaced_opened(&profile, 2);
 
-        service.release_control("TestOrg/default", 7).await;
+        service.release_control("TestOrg/default", tab, 7).await;
         {
             let ledger = profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner);
             assert_eq!((ledger.surfaced, ledger.pre_answered), (0, 0), "the drain consumed it");
         }
 
-        service.take_control("TestOrg/default", 7).await.expect("the role moves back");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves back");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3353,10 +4419,11 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3367,7 +4434,7 @@ mod tests {
         let ask = profile.files.borrow().as_ref().copied().expect("the ask");
 
         service
-            .answer_files("TestOrg/default", ask.id, Vec::new())
+            .answer_files("TestOrg/default", tab, ask.id, Vec::new())
             .await
             .expect("the answer lands");
 
@@ -3512,7 +4579,13 @@ mod tests {
         profile.state.lock().await.chooser_generation = 2;
 
         let why = service
-            .after_failure(&profile, 1, 1, 9, "browser_click", &json!({}), Err(dead.to_owned()))
+            .after_failure(
+                &profile,
+                Driven { generation: 1, pid: 1, port: 9, target: "T1" },
+                "browser_click",
+                &json!({}),
+                Err(dead.to_owned()),
+            )
             .await
             .expect_err("a stale failure is not this call's to rebuild");
         assert_eq!(why, dead, "the call's own failure is handed back unchanged");
@@ -3527,7 +4600,13 @@ mod tests {
         // the profile is closed; the cooldown holds the next attempt off.
         profile.ended.store(true, Ordering::Release);
         let why = service
-            .after_failure(&profile, 2, 1, 9, "browser_click", &json!({}), Err(dead.to_owned()))
+            .after_failure(
+                &profile,
+                Driven { generation: 2, pid: 1, port: 9, target: "T1" },
+                "browser_click",
+                &json!({}),
+                Err(dead.to_owned()),
+            )
             .await
             .expect_err("a closed profile cannot rebuild");
         assert!(why.contains("could not be rebuilt"), "{why}");
@@ -3537,7 +4616,13 @@ mod tests {
             "and its handle with it",
         );
         let again = service
-            .after_failure(&profile, 2, 1, 9, "browser_click", &json!({}), Err(dead.to_owned()))
+            .after_failure(
+                &profile,
+                Driven { generation: 2, pid: 1, port: 9, target: "T1" },
+                "browser_click",
+                &json!({}),
+                Err(dead.to_owned()),
+            )
             .await
             .expect_err("the cooldown refuses a second rebuild");
         assert!(again.contains("not been rebuilt a second time yet"), "{again}");
@@ -3575,9 +4660,7 @@ mod tests {
         let (outcome, ()) = tokio::join!(
             service.after_failure(
                 &profile,
-                1,
-                1,
-                9,
+                Driven { generation: 1, pid: 1, port: 9, target: "T1" },
                 "browser_click",
                 &no_args,
                 Err(dead.to_owned()),
@@ -3630,8 +4713,9 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
             ChooserLedger { surfaced: 0, pre_answered: 1 };
 
@@ -3676,8 +4760,9 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3718,8 +4803,9 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
 
         profile
             .file_chooser(FileChooser {
@@ -3757,8 +4843,9 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         profile.up.store(true, Ordering::Release);
-        service.take_control("TestOrg/default", 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3771,6 +4858,7 @@ mod tests {
         let refused = service
             .answer_files(
                 "TestOrg/default",
+                tab,
                 ask.id,
                 vec![BrowserUpload { name: "cv.pdf".to_owned(), bytes: b"hi".to_vec() }],
             )
@@ -3897,6 +4985,7 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
         let uploads = profile.dir.join("uploads");
         std::fs::create_dir_all(&uploads).expect("the uploads dir");
         let kept = uploads.join("kept.txt");
@@ -3906,6 +4995,7 @@ mod tests {
         let refused = service
             .answer_files(
                 "TestOrg/default",
+                tab,
                 8,
                 vec![BrowserUpload { name: "other.txt".to_owned(), bytes: b"x".to_vec() }],
             )
@@ -4239,9 +5329,10 @@ mod tests {
         let service = BrowserService::at(root.clone(), root.join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("the profile");
-        service.take_control(&profile.key, 7).await.expect("the take");
+        let tab = seed_tab(&profile, &seat);
+        service.take_control(&profile.key, tab, 7).await.expect("the take");
 
-        let why = service.nav(&profile.key, 8, true).await.expect_err("a watcher is refused");
+        let why = service.nav(&profile.key, tab, 8, true).await.expect_err("a watcher is refused");
         assert!(why.contains("not the browser's controller"), "{why}");
     }
 
@@ -4283,118 +5374,39 @@ mod tests {
         assert_eq!(key("Personal", "forge"), "Personal/default", "no config is default");
     }
 
-    /// The workspace, as one idle pass asks it: a scripted verdict per call,
-    /// and every question recorded in order.
-    struct RecordingWarn {
-        answers: Mutex<std::collections::VecDeque<crate::idle::Verdict>>,
-        heard: mpsc::UnboundedSender<(Option<SessionSlot>, String, bool)>,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::idle::IdleWarn for RecordingWarn {
-        async fn warn(
-            &self,
-            seat: Option<&SessionSlot>,
-            name: &str,
-            _idle_minutes: u64,
-            _grace_minutes: u64,
-            at_close: bool,
-        ) -> crate::idle::Verdict {
-            let _ = self.heard.send((seat.cloned(), name.to_owned(), at_close));
-            self.answers
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .pop_front()
-                .unwrap_or(crate::idle::Verdict::Unanswered)
-        }
-    }
-
-    /// Every question one idle pass asked: the seat to warn, the profile's
-    /// name, and whether it was the close's own question.
-    type Heard = mpsc::UnboundedReceiver<(Option<SessionSlot>, String, bool)>;
-
-    /// A service with a scripted idle policy: zero minutes, so one pass is
-    /// the warn and the next is the close, exactly as a half hour of waiting
-    /// would be.
-    fn idle_service(
-        root: &std::path::Path,
-        answers: Vec<crate::idle::Verdict>,
-    ) -> (Arc<BrowserService>, Heard) {
+    /// A service whose idle bound has already passed: a profile an idle pass
+    /// reads is one the clock says closes.
+    fn idle_service(root: &std::path::Path) -> Arc<BrowserService> {
         let service = Arc::new(BrowserService::at(root.to_owned(), root.join("stack")));
-        let (heard, rx) = mpsc::unbounded_channel();
-        service.configure_idle(
-            0,
-            0,
-            Arc::new(RecordingWarn { answers: Mutex::new(answers.into_iter().collect()), heard }),
-        );
-        (service, rx)
+        service.configure_idle(0);
+        service
     }
 
-    /// **An idle profile is asked about, and the browser closes when the
-    /// grace is over.** The close asks its own question first, so a parked
-    /// hand-off still holds it.
+    /// **The clock closes the profile and the logins stay.** A profile nobody
+    /// touched is gone from the map on the first pass, and its directory is
+    /// still there for the next call.
     #[tokio::test]
-    async fn an_idle_profile_is_asked_about_and_closes_after_the_grace() {
+    async fn an_idle_profile_closes_at_the_bound_and_keeps_its_files() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
-        let (service, mut heard) =
-            idle_service(&root, vec![crate::idle::Verdict::Delivered, crate::idle::Verdict::Clear]);
+        let service = idle_service(&root);
         let seat = SessionSlot::lead("TestOrg", "proj");
         service.entry(&seat).await.expect("the profile opens");
 
         service.idle_pass().await;
-        assert_eq!(
-            heard.try_recv(),
-            Ok((None, "TestOrg/default".to_owned(), false)),
-            "the pass asks, and the grace arms",
-        );
-        assert!(
-            service.profiles.lock().await.contains_key("TestOrg/default"),
-            "the browser lives through its grace",
-        );
-
-        service.idle_pass().await;
-        assert_eq!(
-            heard.try_recv(),
-            Ok((None, "TestOrg/default".to_owned(), true)),
-            "the close asks whether anything holds it",
-        );
         assert!(
             !service.profiles.lock().await.contains_key("TestOrg/default"),
-            "and closes at the end of it",
-        );
-        assert!(
-            root.join("profiles/TestOrg/default").exists(),
-            "the profile's logins stay on disk",
-        );
-    }
-
-    /// **A profile whose warning learns there is no session closes quietly**:
-    /// no grace is owed, so the browser closes at the idle bound.
-    #[tokio::test]
-    async fn an_idle_profile_with_no_live_session_closes_quietly() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let (service, mut heard) = idle_service(&root, vec![crate::idle::Verdict::NoSession]);
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        service.entry(&seat).await.expect("the profile opens");
-
-        service.idle_pass().await;
-        assert_eq!(
-            heard.try_recv(),
-            Ok((None, "TestOrg/default".to_owned(), false)),
-            "the warning is what learns there is no one to tell",
-        );
-        assert!(
-            !service.profiles.lock().await.contains_key("TestOrg/default"),
-            "and the browser closes without a grace",
+            "the browser closes at its bound",
         );
         assert!(
             root.join("profiles/TestOrg/default").exists(),
             "the profile's logins stay on disk",
         );
         service.idle_pass().await;
-        assert!(heard.try_recv().is_err(), "a closed profile is not asked about again");
+        assert!(
+            !service.profiles.lock().await.contains_key("TestOrg/default"),
+            "a closed profile is not reopened by the next pass",
+        );
     }
 
     /// **A close takes the entry out from under any caller that kept it.**
@@ -4416,59 +5428,63 @@ mod tests {
         assert!(!Arc::ptr_eq(&profile, &again), "the next call answers a new entry");
     }
 
-    /// **A parked hand-off holds the close**, and the next pass asks again -
-    /// an abandoned hand-off closes later rather than never.
+    /// **A parked hand-off holds the close.** A person being asked to act in
+    /// the page must not have it closed under them; once the hold lifts, the
+    /// next pass closes it.
     #[tokio::test]
-    async fn a_held_profile_is_not_closed_and_is_asked_again() {
+    async fn a_held_profile_is_not_closed_until_the_hold_lifts() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
-        let (service, mut heard) = idle_service(
-            &root,
-            vec![
-                crate::idle::Verdict::Delivered,
-                crate::idle::Verdict::Held,
-                crate::idle::Verdict::Clear,
-            ],
-        );
-        service.entry(&SessionSlot::lead("TestOrg", "proj")).await.expect("the profile opens");
+        let service = idle_service(&root);
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab");
+        let tab = service.tabs(&seat).await.expect("rows").rows[0].number;
+        service.sweep_sessions(std::slice::from_ref(&seat)).await;
+        service.hand_off_started(&seat, tab).await;
 
         service.idle_pass().await;
-        assert!(heard.try_recv().is_ok(), "the profile is asked about");
-        service.idle_pass().await;
-        assert_eq!(
-            heard.try_recv().map(|(_, _, at_close)| at_close),
-            Ok(true),
-            "the first close question",
-        );
         assert!(
             service.profiles.lock().await.contains_key("TestOrg/default"),
             "a held profile is not closed",
         );
-        service.idle_pass().await;
+
+        service.hand_off_finished(&seat, tab).await;
         assert_eq!(
-            heard.try_recv().map(|(_, _, at_close)| at_close),
-            Ok(true),
-            "and the pass after the hold lifts asks again",
+            service.tabs(&seat).await.expect("rows").rows.len(),
+            1,
+            "a live owner keeps its tab after the hand-off",
         );
-        let closed = !service.profiles.lock().await.contains_key("TestOrg/default");
-        assert!(closed, "then closes it");
+        service.idle_pass().await;
+        assert!(
+            !service.profiles.lock().await.contains_key("TestOrg/default"),
+            "the pass after the hold lifts closes it",
+        );
     }
 
     /// **A viewer attached is a use**: the surface the person is looking at
-    /// is never asked about and never closed, however long it stays up.
+    /// is never closed, however long it stays up.
     #[tokio::test]
     async fn a_viewed_profile_is_never_idle() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
-        let (service, mut heard) = idle_service(&root, Vec::new());
+        let service = idle_service(&root);
         let profile =
             service.entry(&SessionSlot::lead("TestOrg", "proj")).await.expect("the profile opens");
-        profile.viewers.lock().unwrap_or_else(PoisonError::into_inner).insert(9);
+        profile
+            .viewers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(1)
+            .or_default()
+            .insert(9);
 
         service.idle_pass().await;
 
-        assert!(heard.try_recv().is_err(), "no question is asked about a viewed browser");
-        assert!(service.profiles.lock().await.contains_key("TestOrg/default"));
+        assert!(
+            service.profiles.lock().await.contains_key("TestOrg/default"),
+            "a viewed browser is not closed",
+        );
     }
 
     /// **Another profile is served while one is torn down.** The map lock is
@@ -4521,7 +5537,7 @@ mod tests {
     async fn another_profile_is_served_while_an_idle_close_tears_one_down() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
-        let (service, _heard) = idle_service(&root, Vec::new());
+        let service = idle_service(&root);
         let one = SessionSlot::lead("TestOrg", "proj");
         let two = SessionSlot::lead("OtherOrg", "proj");
         let a = service.entry(&one).await.expect("the first profile");
@@ -4533,7 +5549,7 @@ mod tests {
         let blocked = a.state.lock().await;
         let closing = tokio::spawn({
             let service = Arc::clone(&service);
-            async move { service.close_idle("TestOrg/default", true).await }
+            async move { service.close_idle("TestOrg/default").await }
         });
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -4587,5 +5603,282 @@ mod tests {
             service.profile_dir(&ProfileKey::of("Busytools", "work").expect("a key")),
             std::path::Path::new("/browser/profiles/Busytools/work/cef"),
         );
+    }
+
+    /// One tab on a profile a test made by hand, so the viewer and chooser
+    /// tests can name the tab their roles and asks belong to.
+    fn seed_tab(profile: &Arc<Profile>, seat: &SessionSlot) -> u16 {
+        let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+        if tabs.target(1).is_some() {
+            return 1;
+        }
+        tabs.adopt(1, seat.clone(), "T1", "", "about:blank").expect("the test's tab")
+    }
+
+    /// A driver the call path can be tested against: it records the indices
+    /// it selects and answers every tool with one text part.
+    #[derive(Clone, Default)]
+    struct FakeDriver {
+        tabs: Arc<Mutex<Vec<crate::tabs::DriverTab>>>,
+        selected: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl FakeDriver {
+        fn with_blank(target: &str) -> Self {
+            let fake = Self::default();
+            fake.tabs.lock().expect("the tabs").push(crate::tabs::DriverTab {
+                index: 0,
+                target: target.to_owned(),
+                title: String::new(),
+                url: "about:blank".to_owned(),
+                current: true,
+            });
+            fake
+        }
+
+        fn push_target(&self, target: &str) {
+            let mut tabs = self.tabs.lock().expect("the tabs");
+            let index = tabs.len();
+            tabs.push(crate::tabs::DriverTab {
+                index,
+                target: target.to_owned(),
+                title: String::new(),
+                url: "about:blank".to_owned(),
+                current: false,
+            });
+        }
+
+        fn selected(&self) -> Vec<usize> {
+            self.selected.lock().expect("the selections").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::driver::TabDriver for FakeDriver {
+        async fn tabs_within(
+            &self,
+            _bound: Duration,
+        ) -> Result<Vec<crate::tabs::DriverTab>, String> {
+            Ok(self.tabs.lock().expect("the tabs").clone())
+        }
+
+        async fn select(&self, index: usize, _bound: Duration) -> Result<(), String> {
+            self.selected.lock().expect("the selections").push(index);
+            Ok(())
+        }
+
+        async fn call_within(
+            &self,
+            _tool: &str,
+            _args: serde_json::Value,
+            _bound: Duration,
+        ) -> Result<Vec<forge_primitives::browser::BrowserPart>, String> {
+            Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "ok".to_owned() }])
+        }
+
+        fn is_running(&self) -> bool {
+            true
+        }
+    }
+
+    /// **A session's first page call creates its tab, and the answer names the
+    /// number.** The call then drives that tab and no other.
+    #[tokio::test]
+    async fn the_first_page_call_creates_a_named_tab() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::default();
+        driver.tabs.lock().expect("the tabs").push(crate::tabs::DriverTab {
+            index: 0,
+            target: "T1".into(),
+            title: String::new(),
+            url: "about:blank".into(),
+            current: true,
+        });
+        service.install_fake(&seat, driver).await;
+
+        let parts = service
+            .call(&seat, "browser_navigate", json!({"url": "http://a/"}))
+            .await
+            .expect("the call runs");
+        assert!(
+            parts
+                .iter()
+                .any(|part| matches!(part, forge_primitives::browser::BrowserPart::Text { text } if text.contains("tab 1"))),
+        );
+        let tabs = service.tabs(&seat).await.expect("the rows");
+        assert_eq!(tabs.rows.len(), 1);
+        assert_eq!(tabs.rows[0].owner, seat);
+    }
+
+    /// **Two sessions never drive each other's tab.** The second session's
+    /// call creates tab 2 and selects it; the first session's tab stays
+    /// current for its own next call.
+    #[tokio::test]
+    async fn two_sessions_drive_their_own_tabs() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let worker = SessionSlot::worker("O", "p", "w");
+        let driver = FakeDriver::with_blank("T1");
+        let seen = driver.clone();
+        service.install_fake(&lead, driver).await;
+
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the lead's call");
+        seen.push_target("T2");
+        service.call(&worker, "browser_snapshot", json!({})).await.expect("the worker's call");
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the lead's second call");
+
+        assert_eq!(seen.selected(), vec![0, 1, 0], "each call selected its caller's tab");
+        let rows = service.tabs(&lead).await.expect("the rows").rows;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].owner, lead);
+        assert_eq!(rows[1].owner, worker);
+    }
+
+    /// **A session that goes takes its tabs with it, except a parked hand-off's.**
+    #[tokio::test]
+    async fn a_sweep_closes_a_gone_session_tabs_but_not_a_held_one() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let worker = SessionSlot::worker("O", "p", "w");
+        let driver = FakeDriver::with_blank("T1");
+        service.install_fake(&lead, driver.clone()).await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the lead's tab");
+        let lead_tab = service.tabs(&lead).await.expect("rows").rows[0].number;
+        driver.push_target("T2");
+        service.call(&worker, "browser_snapshot", json!({})).await.expect("the worker's tab");
+        let worker_tab = service.tabs(&worker).await.expect("rows").rows[1].number;
+
+        service.hand_off_started(&worker, worker_tab).await;
+        service.sweep_sessions(std::slice::from_ref(&lead)).await;
+        let rows = service.tabs(&lead).await.expect("rows").rows;
+        assert!(rows.iter().any(|row| row.number == lead_tab));
+        assert!(rows.iter().any(|row| row.number == worker_tab), "the held tab survives its owner");
+        assert_eq!(
+            rows.iter().find(|row| row.number == worker_tab).map(|row| row.state),
+            Some(forge_primitives::browser::BrowserTabState::Held),
+        );
+
+        service.hand_off_finished(&worker, worker_tab).await;
+        let rows = service.tabs(&lead).await.expect("rows").rows;
+        assert!(
+            !rows.iter().any(|row| row.number == worker_tab),
+            "it closes once the owner is gone"
+        );
+    }
+
+    /// **The rows say how the profile is doing and when it closes.** A strip
+    /// drawing "connected" or "closing in Nm" reads these fields, so a missing
+    /// one is a row that lies.
+    #[tokio::test]
+    async fn the_rows_carry_connection_and_the_idle_deadline() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        service.configure_idle(30);
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the call");
+
+        let list = service.tabs(&lead).await.expect("rows");
+        assert!(list.up, "the host is up");
+        assert!(list.connected, "the fake driver is running");
+        let deadline = list.closing_at_ms.expect("a live profile has an idle deadline");
+        let now = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the clock")
+                .as_millis(),
+        )
+        .expect("the clock fits");
+        assert!(deadline > now + 29 * 60_000, "the deadline is the 30-minute bound");
+        assert!(deadline <= now + 30 * 60_000 + 5_000, "and not further out");
+    }
+
+    /// **A replacement keeps the slot and loses the tabs.** `/new` and `/resume`
+    /// are the same seat with a new occupant, so the previous occupant's tabs go
+    /// the way a despawn's do.
+    #[tokio::test]
+    async fn a_replacement_closes_the_inherited_tabs() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the call");
+        assert_eq!(service.tabs(&lead).await.expect("rows").rows.len(), 1);
+
+        service.replace_seat(&lead).await;
+        assert!(
+            service.tabs(&lead).await.expect("rows").rows.is_empty(),
+            "the old occupant's tab is gone",
+        );
+    }
+
+    /// **The boot tab is not a session's until one adopts it.** It is absent
+    /// from the list, cannot be selected or closed, and never reaches a row.
+    #[tokio::test]
+    async fn the_boot_tab_is_invisible_and_untouchable_until_adopted() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+
+        assert!(
+            service.tabs(&lead).await.expect("rows").rows.is_empty(),
+            "the boot tab is not a row",
+        );
+        let parts =
+            service.call(&lead, "browser_tabs", json!({"action": "list"})).await.expect("the list");
+        assert!(
+            parts.iter().all(|part| matches!(part, forge_primitives::browser::BrowserPart::Text { text } if !text.contains("tab 1"))),
+            "the list does not name the boot tab",
+        );
+        let refused =
+            service.call(&lead, "browser_tabs", json!({"action": "select", "index": 1})).await;
+        assert!(refused.is_err(), "a session cannot select the boot tab");
+
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the page call adopts it");
+        let rows = service.tabs(&lead).await.expect("rows").rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].number, 1);
+        assert_eq!(rows[0].owner, lead);
+    }
+
+    /// **A stale hand-off cannot close a new host's tab.** The old host's
+    /// numbers die with it; a resolution that arrives later finds nothing held.
+    #[tokio::test]
+    async fn a_stale_hand_off_never_closes_a_new_hosts_tab() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts tab 1");
+        service.hand_off_started(&worker, 1).await;
+
+        // The host ends; the registry and holds go with it.
+        let profile = service.find("O/default").await.expect("the profile");
+        profile.end().await;
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T2"), (1, "T2".to_owned()))
+            .await;
+        service
+            .call(&lead, "browser_snapshot", json!({}))
+            .await
+            .expect("the lead adopts the new tab 1");
+
+        service.hand_off_finished(&worker, 1).await;
+        let rows = service.tabs(&lead).await.expect("rows").rows;
+        assert_eq!(rows.len(), 1, "the new host's tab 1 is not the old hand-off's");
+        assert_eq!(rows[0].owner, lead);
     }
 }

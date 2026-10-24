@@ -178,6 +178,44 @@ pub struct BrowserFrame {
     pub encoded: Vec<u8>,
 }
 
+/// One tab as a client's browser strip draws it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserTabRow {
+    /// The host's tab number, which frames and input already speak.
+    pub number: u16,
+    pub title: String,
+    pub url: String,
+    /// The session whose calls drive it.
+    pub owner: crate::SessionSlot,
+    pub state: BrowserTabState,
+}
+
+/// What a tab is doing, as the strip's mark says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserTabState {
+    /// A call is driving it now.
+    InUse,
+    Idle,
+    /// A parked hand-off is waiting on the person in it.
+    Held,
+}
+
+/// One profile's tabs and how the profile itself is doing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserTabList {
+    pub profile: String,
+    /// The id the binary frames carry for the profile.
+    pub id: u16,
+    /// Whether its browser host is up.
+    pub up: bool,
+    /// Whether a driver is attached and running.
+    pub connected: bool,
+    /// When the idle clock closes it, as Unix epoch milliseconds.
+    pub closing_at_ms: Option<u64>,
+    pub rows: Vec<BrowserTabRow>,
+}
+
 /// One profile as a client's browser strip draws it.
 ///
 /// **The server owns every browser**, so the strip's rows are the server's

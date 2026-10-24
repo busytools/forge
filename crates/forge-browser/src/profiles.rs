@@ -84,54 +84,6 @@ fn remove_tree(path: &Path) -> Result<(), String> {
         .map_err(|why| format!("{} could not be deleted: {why}", path.display()))
 }
 
-/// Copy one directory tree, files and permissions included. **The live A/B
-/// test is its only caller**, so it exists only in a test build.
-#[cfg(test)]
-pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(to).map_err(|why| format!("{} cannot be made: {why}", to.display()))?;
-    for (entry, kind) in entries(from)? {
-        copy_entry(&entry, kind, &to.join(entry.file_name()))?;
-    }
-    Ok(())
-}
-
-/// One directory's entries with their kinds, read as a pair so a caller
-/// cannot forget to check the type before touching the path.
-#[cfg(test)]
-fn entries(from: &Path) -> Result<Vec<(std::fs::DirEntry, std::fs::FileType)>, String> {
-    let entries = std::fs::read_dir(from)
-        .map_err(|why| format!("{} cannot be read: {why}", from.display()))?;
-    let mut read = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|why| format!("{} cannot be read: {why}", from.display()))?;
-        let kind = entry
-            .file_type()
-            .map_err(|why| format!("{} cannot be read: {why}", entry.path().display()))?;
-        read.push((entry, kind));
-    }
-    Ok(read)
-}
-
-#[cfg(test)]
-fn copy_entry(
-    entry: &std::fs::DirEntry,
-    kind: std::fs::FileType,
-    target: &Path,
-) -> Result<(), String> {
-    if kind.is_dir() {
-        copy_tree(&entry.path(), target)
-    } else if kind.is_symlink() {
-        let link = std::fs::read_link(entry.path())
-            .map_err(|why| format!("{} cannot be read: {why}", entry.path().display()))?;
-        std::os::unix::fs::symlink(&link, target)
-            .map_err(|why| format!("{} cannot be copied: {why}", entry.path().display()))
-    } else {
-        std::fs::copy(entry.path(), target)
-            .map_err(|why| format!("{} cannot be copied: {why}", entry.path().display()))?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::Store;

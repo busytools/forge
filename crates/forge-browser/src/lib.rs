@@ -5,7 +5,6 @@
 //! the server never links CEF into its own process and nothing here needs
 //! the client installed.
 
-pub mod carry;
 #[cfg(unix)]
 pub mod channel;
 pub mod control;

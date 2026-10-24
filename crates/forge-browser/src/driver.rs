@@ -14,7 +14,6 @@
 //! it happens to have open chooses to expose.
 
 use std::path::{Path, PathBuf};
-use std::sync::PoisonError;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -29,7 +28,6 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::broadcast;
 
-use crate::spawn;
 use crate::tabs::DriverTab;
 
 /// The longest one tool call is given before the driver is presumed mute.
@@ -39,12 +37,6 @@ use crate::tabs::DriverTab;
 /// is the wedge-breaker, not a deadline the tools keep.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 
-/// How long one discovered tab's arm is waited for.
-const ARM_BOUND: Duration = Duration::from_secs(3);
-
-/// How long the created tab's target is looked for in `/json/list`.
-const DISCOVER_BOUND: Duration = Duration::from_secs(1);
-
 /// **The longest a driver start is given before it is presumed wedged.**
 /// Measured live 2026-10-07: a named profile's driver child spawned and sat
 /// idle on its stdin while the parent never wrote the handshake - and the
@@ -52,10 +44,50 @@ const DISCOVER_BOUND: Duration = Duration::from_secs(1);
 /// even [`CALL_TIMEOUT`]. A start that cannot answer names it instead.
 pub(super) const START_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// What is left of a call's budget - at least enough to send the call, so a
-/// spent budget answers a timeout rather than a silent skip.
-fn left(deadline: tokio::time::Instant) -> Duration {
-    deadline.saturating_duration_since(tokio::time::Instant::now()).max(Duration::from_millis(1))
+/// The driver's surface the call path drives, so a service test can put a
+/// fake in the profile's driver slot without a child process.
+#[async_trait::async_trait]
+pub trait TabDriver: Send + Sync {
+    /// The driver's tabs, with the target ids that name them.
+    async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String>;
+
+    /// Bring one tab to the front by its Playwright index.
+    async fn select(&self, index: usize, bound: Duration) -> Result<(), String>;
+
+    /// Run one tool under a bound of its own.
+    async fn call_within(
+        &self,
+        tool: &str,
+        args: Value,
+        bound: Duration,
+    ) -> Result<Vec<BrowserPart>, String>;
+
+    /// Whether the child is still there to answer.
+    fn is_running(&self) -> bool;
+}
+
+#[async_trait::async_trait]
+impl TabDriver for Driver {
+    async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String> {
+        Driver::tabs_within(self, bound).await
+    }
+
+    async fn select(&self, index: usize, bound: Duration) -> Result<(), String> {
+        Driver::select(self, index, bound).await
+    }
+
+    async fn call_within(
+        &self,
+        tool: &str,
+        args: Value,
+        bound: Duration,
+    ) -> Result<Vec<BrowserPart>, String> {
+        Driver::call_within(self, tool, args, bound).await
+    }
+
+    fn is_running(&self) -> bool {
+        Driver::is_running(self)
+    }
 }
 
 /// A page's file chooser, as the driver saw it open.
@@ -82,14 +114,6 @@ pub struct Driver {
     /// leave the old one holding the browser.
     _service: RunningService<rmcp::RoleClient, ()>,
     client: rmcp::Peer<rmcp::RoleClient>,
-    /// The host's DevTools port and the profile it serves: the endpoint
-    /// names the port, and a blank tab is held from navigation until the
-    /// installer has armed that very target.
-    port: Option<u16>,
-    profile: Option<PathBuf>,
-    /// The target of the last tab opened blank. A navigation that follows
-    /// the creation in a separate call still waits for that tab's arm.
-    opened_blank: std::sync::Mutex<Option<String>>,
     /// Every chooser the patched MCP surfaced, for the profile's own task.
     choosers: broadcast::Sender<FileChooser>,
     chooser_task: tokio::task::JoinHandle<()>,
@@ -219,9 +243,6 @@ impl Driver {
         Ok(Self {
             _service: service,
             client,
-            port: endpoint_port(cdp_endpoint),
-            profile: None,
-            opened_blank: std::sync::Mutex::new(None),
             choosers,
             chooser_task,
             _chooser_socket: ChooserSocket { path: chooser_socket.to_path_buf() },
@@ -231,12 +252,6 @@ impl Driver {
     /// Every file chooser the patched MCP has surfaced for this driver.
     pub fn file_choosers(&self) -> broadcast::Receiver<FileChooser> {
         self.choosers.subscribe()
-    }
-
-    /// The profile this driver serves, named in its own warnings.
-    pub fn serving(mut self, profile: &Path) -> Self {
-        self.profile = Some(profile.to_path_buf());
-        self
     }
 
     /// Whether the child is still there to answer.
@@ -268,32 +283,6 @@ impl Driver {
         args: Value,
         bound: Duration,
     ) -> Result<Vec<BrowserPart>, String> {
-        if let Some(port) = self.port {
-            // **The recorded blank belongs to the tab it was created for.** A
-            // select, a new tab or a close changes which tab a later
-            // navigation means, so the record goes before any of those is
-            // handled - a `new` that opens blank again records its own; a
-            // listing is a read and leaves the record alone.
-            let keeps_it = tool == "browser_tabs"
-                && args.get("action").and_then(Value::as_str) == Some("list");
-            if !keeps_it && (tool == "browser_tabs" || tool == "browser_close") {
-                *self.opened_blank.lock().unwrap_or_else(PoisonError::into_inner) = None;
-            }
-            if let Some(url) = blank_first_url(tool, &args) {
-                return self.blank_then_navigate(port, tool, &args, url, bound).await;
-            }
-            if is_blank_tab_open(tool, &args) {
-                return self.blank_and_remember(port, tool, args, bound).await;
-            }
-            if tool == "browser_navigate" {
-                // **A navigation that follows a blank creation still waits**
-                // for that tab's arm: the hole is one call wide, and this is
-                // the call.
-                if let Some(blank) = self.take_opened_blank() {
-                    wait_target_armed(port, &blank, self.profile.as_deref(), ARM_BOUND).await;
-                }
-            }
-        }
         self.call_raw(tool, args, bound).await
     }
 
@@ -328,113 +317,7 @@ impl Driver {
         .map(|_| ())
     }
 
-    /// **A tab opened at a URL opens blank first.** The engine answers no
-    /// page-domain command while a tab is paused, so a document that starts
-    /// with the tab itself runs before the veto can register; opening it
-    /// blank, waiting for the installer to arm THAT target, and only then
-    /// navigating puts the veto in front of the first real document.
-    async fn blank_then_navigate(
-        &self,
-        port: u16,
-        tool: &str,
-        args: &Value,
-        url: String,
-        bound: Duration,
-    ) -> Result<Vec<BrowserPart>, String> {
-        // **The whole rewrite keeps the one call's budget.** Its pieces share
-        // a deadline, so the pair cannot spend two call timeouts plus the
-        // waits inside a surface whose own ask budget is one call.
-        let deadline = tokio::time::Instant::now() + bound;
-        let before = blank_snapshot(port).await;
-        let mut blank = args.clone();
-        if let Value::Object(fields) = &mut blank {
-            fields.remove("url");
-        }
-        let answer = self.call_raw(tool, blank, left(deadline)).await?;
-        let target = created_blank(port, &before, left(deadline).min(DISCOVER_BOUND)).await;
-        if let Some(target) = &target {
-            wait_target_armed(port, target, self.profile.as_deref(), left(deadline).min(ARM_BOUND))
-                .await;
-        } else {
-            self.unidentified(port);
-        }
-        if let Err(why) = self
-            .call_raw("browser_navigate", serde_json::json!({ "url": url }), left(deadline))
-            .await
-        {
-            // **The blank tab it made is closed again**, so a failed call
-            // leaves nothing behind and a retry does not open a second one.
-            if let Some(target) = &target {
-                spawn::close_target(port, target).await;
-            }
-            return Err(why);
-        }
-        // **The reply is the tabs as they stand after the navigation**, not
-        // the blank creation's own listing.
-        match self
-            .call_raw("browser_tabs", serde_json::json!({ "action": "list" }), left(deadline))
-            .await
-        {
-            Ok(listing) => Ok(listing),
-            Err(why) => {
-                // **A failed refresh is said, not hidden behind the creation
-                // answer**: the tab exists, and the missing listing is the
-                // truth about this call.
-                tracing::warn!(
-                    "the tab list could not be refreshed after a navigation (event_name \
-                     cef_passkey_tab_list_failed, port {port}, profile {}): {why}",
-                    self.profile
-                        .as_deref()
-                        .map_or_else(|| "-".to_owned(), |profile| profile.display().to_string()),
-                );
-                let mut answer = answer;
-                answer.push(BrowserPart::Text {
-                    text: format!("the tab list could not be refreshed: {why}"),
-                });
-                Ok(answer)
-            }
-        }
-    }
-
-    /// A tab opened with no URL: record the target it created, so a later
-    /// `browser_navigate` can wait for that tab's arm.
-    async fn blank_and_remember(
-        &self,
-        port: u16,
-        tool: &str,
-        args: Value,
-        bound: Duration,
-    ) -> Result<Vec<BrowserPart>, String> {
-        let deadline = tokio::time::Instant::now() + bound;
-        let before = blank_snapshot(port).await;
-        let answer = self.call_raw(tool, args, left(deadline)).await?;
-        match created_blank(port, &before, left(deadline).min(DISCOVER_BOUND)).await {
-            Some(target) => {
-                *self.opened_blank.lock().unwrap_or_else(PoisonError::into_inner) = Some(target);
-            }
-            None => self.unidentified(port),
-        }
-        Ok(answer)
-    }
-
-    /// **A tab whose target never showed in `/json/list` is named**, not
-    /// navigated silently: the wait is skipped, and the skip is the record.
-    fn unidentified(&self, port: u16) {
-        tracing::warn!(
-            "a tab opened blank could not be identified before its navigation (event_name \
-             cef_passkey_tab_unidentified, port {port}, profile {})",
-            self.profile
-                .as_deref()
-                .map_or_else(|| "-".to_owned(), |profile| profile.display().to_string()),
-        );
-    }
-
-    fn take_opened_blank(&self) -> Option<String> {
-        self.opened_blank.lock().unwrap_or_else(PoisonError::into_inner).take()
-    }
-
-    /// The dispatch itself, unguarded: the guard's own tab list runs through
-    /// this, or the guard would recurse into itself.
+    /// The dispatch itself.
     async fn call_raw(
         &self,
         tool: &str,
@@ -548,73 +431,9 @@ fn parts_of(result: &rmcp::model::CallToolResult) -> Result<Vec<BrowserPart>, St
     Ok(parts)
 }
 
-/// The URL a `browser_tabs new` call names, when it names one. **The tab is
-/// opened without it**, so the veto can be registered before the document
-/// the URL starts exists.
-pub fn blank_first_url(tool: &str, args: &Value) -> Option<String> {
-    if tool != "browser_tabs" || args.get("action").and_then(Value::as_str) != Some("new") {
-        return None;
-    }
-    args.get("url").and_then(Value::as_str).filter(|url| !url.is_empty()).map(str::to_owned)
-}
-
-/// Whether the call opens a tab with no URL, which lands on the blank
-/// document the installer arms by itself.
-pub fn is_blank_tab_open(tool: &str, args: &Value) -> bool {
-    tool == "browser_tabs"
-        && args.get("action").and_then(Value::as_str) == Some("new")
-        && args.get("url").and_then(Value::as_str).is_none_or(str::is_empty)
-}
-
 /// The port in a host endpoint like `http://127.0.0.1:9411`.
 pub fn endpoint_port(endpoint: &str) -> Option<u16> {
     endpoint.strip_prefix("http://127.0.0.1:")?.trim_end_matches('/').parse().ok()
-}
-
-/// The page targets on the host before a creation, so the one it made can be
-/// told from the ones that were already there.
-async fn blank_snapshot(port: u16) -> std::collections::HashSet<String> {
-    spawn::page_targets(port).await.into_iter().map(|(id, _)| id).collect()
-}
-
-/// The about:blank target a creation added, found by diffing the target list
-/// against the snapshot. Bounded: a creation that never shows a blank target
-/// answers `None`, and the call proceeds unwaited rather than hanging.
-async fn created_blank(
-    port: u16,
-    before: &std::collections::HashSet<String>,
-    budget: Duration,
-) -> Option<String> {
-    let deadline = tokio::time::Instant::now() + budget;
-    loop {
-        for (id, url) in spawn::page_targets(port).await {
-            if url == "about:blank" && !before.contains(&id) {
-                return Some(id);
-            }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return None;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-/// Wait, bounded, for the installer to arm ONE target. **Bounded, not a
-/// guarantee**: a tab the installer could not arm still navigates, with the
-/// miss named by port and profile.
-async fn wait_target_armed(port: u16, target: &str, profile: Option<&Path>, budget: Duration) {
-    let deadline = tokio::time::Instant::now() + budget;
-    while !crate::veto::target_armed(port, target) {
-        if tokio::time::Instant::now() >= deadline {
-            tracing::warn!(
-                "a tab opened blank was not armed before its navigation (event_name \
-                 cef_passkey_veto_unarmed_tab, port {port}, profile {})",
-                profile.map_or_else(|| "-".to_owned(), |profile| profile.display().to_string()),
-            );
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
 }
 
 /// The tabs a `browser_tabs` list answer names, as (index, url) pairs. The
@@ -741,7 +560,6 @@ mod tests {
     use super::*;
     use crate::tabs::index_of;
     use rmcp::model::CallToolResult;
-    use serde_json::json;
 
     /// **An attach that never finished is the host's failure, not the
     /// tool's.** The measured line from #2534 is this class; a page's own
@@ -882,27 +700,6 @@ mod tests {
         let tabs = crate::tabs::parse_export(listing).expect("the export parses");
         assert_eq!(index_of(&tabs, "B"), Some(1));
         assert_eq!(index_of(&tabs, "C"), None);
-    }
-
-    /// **Only a new-tab call with a URL is rewritten.** A list, a select, or
-    /// a new tab with no URL keeps its single call, and navigation is not a
-    /// tab call at all.
-    #[test]
-    fn only_a_new_tab_with_a_url_opens_blank_first() {
-        let with_url = json!({ "action": "new", "url": "https://example.com/job" });
-        assert_eq!(
-            blank_first_url("browser_tabs", &with_url),
-            Some("https://example.com/job".to_owned())
-        );
-        assert_eq!(blank_first_url("browser_tabs", &json!({ "action": "new" })), None);
-        assert_eq!(blank_first_url("browser_tabs", &json!({ "action": "new", "url": "" })), None);
-        assert_eq!(blank_first_url("browser_tabs", &json!({ "action": "list" })), None);
-        assert_eq!(
-            blank_first_url("browser_navigate", &json!({ "url": "https://example.com" })),
-            None,
-        );
-        assert!(is_blank_tab_open("browser_tabs", &json!({ "action": "new" })));
-        assert!(!is_blank_tab_open("browser_tabs", &with_url));
     }
 
     #[test]

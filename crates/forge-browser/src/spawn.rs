@@ -412,6 +412,22 @@ pub async fn page_websocket(port: u16) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// One named page target's own websocket URL on a host's endpoint, from
+/// `/json/list`.
+pub async fn page_websocket_of(port: u16, target: &str) -> Option<String> {
+    let url = format!("{}/json/list", endpoint(port));
+    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
+    let body = answer.split_once("\r\n\r\n")?.1;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    parsed
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("id").and_then(serde_json::Value::as_str) == Some(target))
+        .and_then(|entry| entry.get("webSocketDebuggerUrl"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
 /// The browser's own DevTools endpoint, when it answers.
 ///
 /// **The browser target, not a page target**: its sessions are what reach

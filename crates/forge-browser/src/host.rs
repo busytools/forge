@@ -816,12 +816,8 @@ pub fn run(args: &Args) -> ExitCode {
         quality: args.quality,
         downloads: crate::download::handler(&args.profile),
     };
-    // **The host opens blank, and the driver navigates the carried page.**
-    // The page a hand-off or strip prepared is written beside the profile;
-    // opening it here would race the veto, because this document starts
-    // before the installer exists. The driver navigates to it once the veto
-    // is registered, and that navigation is the first document the page's
-    // own script runs in.
+    // **The host opens one blank boot tab.** It is the page the driver
+    // attaches to, and a call navigates it once the veto is registered.
     //
     // **A browser with no host is not a live host**: the state and the log
     // below are what the server reads to say this profile is up, so a
@@ -1052,16 +1048,6 @@ cef::wrap_life_span_handler! {
     }
 }
 
-/// The page the profile carries, when it names a web address.
-///
-/// **Beside the profile, like the server's own record**: the server writes
-/// `page` on every raise, and a host launched after a restart opens it. A
-/// missing, blank or non-web value opens `about:blank` - a carried
-/// `chrome://` or `javascript:` value is not a page to resurrect.
-pub fn carried_page(profile: &std::path::Path) -> String {
-    crate::carry::carried(profile).unwrap_or_else(|| "about:blank".to_owned())
-}
-
 /// The address a popup asked for, when it is a web page a tab can open.
 ///
 /// **Anything but a web page is blocked outright**: `about:blank` and a
@@ -1272,23 +1258,6 @@ mod tests {
         assert_eq!(popup_url("about:blank"), None);
         assert_eq!(popup_url("javascript:window.close()"), None);
         assert_eq!(popup_url(""), None);
-    }
-
-    /// **A restart reopens the page the raise showed, and only that.** The
-    /// marker is a web address or nothing; a missing, blank or scheme-less
-    /// value opens blank rather than resurrecting something a page wrote.
-    #[test]
-    fn a_carried_page_is_a_web_address_or_blank() {
-        use super::carried_page;
-        let dir = tempfile::tempdir().expect("a temp dir");
-        assert_eq!(carried_page(dir.path()), "about:blank", "no marker, no page");
-        std::fs::write(dir.path().join("page"), b" https://example.com/job \n")
-            .expect("the marker");
-        assert_eq!(carried_page(dir.path()), "https://example.com/job");
-        std::fs::write(dir.path().join("page"), b"javascript:alert(1)").expect("the marker");
-        assert_eq!(carried_page(dir.path()), "about:blank", "not a page to resurrect");
-        std::fs::write(dir.path().join("page"), b"").expect("the marker");
-        assert_eq!(carried_page(dir.path()), "about:blank", "blank carries nothing");
     }
 
     /// **A cue is acknowledged only when there is a host to show.** The

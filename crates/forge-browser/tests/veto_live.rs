@@ -15,7 +15,7 @@ use std::io::{Read as _, Write as _};
 use std::time::Duration;
 
 use forge_browser::osr::Ring;
-use forge_browser::veto::{self, Carried};
+use forge_browser::veto;
 use forge_browser::window::Cdp;
 
 /// One page served from loopback: a secure context, so `navigator.credentials`
@@ -66,35 +66,48 @@ async fn the_installed_veto_refuses_a_page_a_passkey_call() {
         .await
         .unwrap_or_else(|why| panic!("the host never came ready: {why} (log: {})", host.log()));
 
-    let installed = veto::install(port, &profile, Some(carried)).await;
-    assert!(
-        matches!(installed, Ok(Carried::Opened)),
-        "the veto installs and the carried page opens (log: {}): {:?}",
-        host.log(),
-        installed.err()
-    );
+    let installed = veto::install(port, &profile).await;
+    assert!(installed.is_ok(), "the veto installs (log: {}): {:?}", host.log(), installed.err());
 
-    // The page a person would see: ask it for a passkey and read the answer
-    // back. A page whose script was never reached would resolve, or throw a
-    // TypeError for a missing API.
+    // The page a person would see: navigate the boot tab to the served page
+    // behind the installed veto, then ask it for a passkey. A page whose
+    // script was never reached would resolve, or throw a TypeError for a
+    // missing API.
     let websocket = forge_browser::spawn::page_websocket(port).await.expect("the page's endpoint");
     let path = websocket
         .strip_prefix(&forge_browser::spawn::ws_prefix(port))
         .expect("the endpoint is on the host's port");
     let (mut cdp, _events) = Cdp::connect_watch(port, path).await.expect("a page connection");
-    let answer = cdp
-        .call(
-            "Runtime.evaluate",
-            serde_json::json!({
-                "expression": "navigator.credentials.get({ publicKey: { challenge: new Uint8Array([1]) } }) \
-                               .then(() => 'resolved', (why) => why.name)",
-                "awaitPromise": true,
-                "returnByValue": true,
-            }),
-            None,
-        )
+    let navigated = cdp
+        .call("Page.navigate", serde_json::json!({ "url": carried }), None)
         .await
-        .expect("the page answers");
+        .expect("the page navigates");
+    assert!(navigated.get("error").is_none(), "the served page is navigated to: {navigated}");
+    // **The new document's context is patched as it is reported**, so the
+    // evaluation is retried until that patch has landed rather than racing
+    // it once.
+    let mut answer = serde_json::Value::Null;
+    for _ in 0..50 {
+        answer = cdp
+            .call(
+                "Runtime.evaluate",
+                serde_json::json!({
+                    "expression": "navigator.credentials.get({ publicKey: { challenge: new Uint8Array([1]) } }) \
+                                   .then(() => 'resolved', (why) => why.name)",
+                    "awaitPromise": true,
+                    "returnByValue": true,
+                }),
+                None,
+            )
+            .await
+            .expect("the page answers");
+        if answer.pointer("/result/value").and_then(serde_json::Value::as_str)
+            == Some("NotAllowedError")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert_eq!(
         answer.pointer("/result/value").and_then(serde_json::Value::as_str),
         Some("NotAllowedError"),

@@ -80,17 +80,10 @@ fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
             .map_err(|why| anyhow::anyhow!("forge: {why}"))?,
     );
     // **The encoding and the idle clock are the `[browser]` keys**: a
-    // profile no viewer has touched closes after the bound, and the
-    // workspace phrases the one warning a named profile's owner gets.
+    // profile nobody has touched closes after the bound.
     let browser = workspace.browser_settings();
     fleet.configure_encoding(browser.fps, browser.quality);
-    // A stand-in for the deleted `[browser] grace_minutes` key, until the
-    // grace path itself goes.
-    fleet.configure_idle(
-        browser.idle_minutes,
-        forge_browser::idle::GRACE_MINUTES,
-        Arc::new(IdleWarnings { workspace: Arc::downgrade(workspace) }),
-    );
+    fleet.configure_idle(browser.idle_minutes);
     fleet.start_idle();
     // **A host an unclean exit left behind is reaped before any profile is
     // used.** It still holds the profile's singleton lock, and the first
@@ -100,51 +93,6 @@ fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
     tokio::spawn(async move { reaper.reap_stale().await });
     workspace.install_browser_host(Arc::new(HostedBrowser(fleet)));
     Ok(())
-}
-
-/// The idle warning, delivered through the workspace: it phrases the sentence
-/// and puts it in the seat's session, and answers whether it landed, whether
-/// a parked hand-off holds the profile, or that there is no seat to tell.
-#[cfg(target_os = "macos")]
-struct IdleWarnings {
-    workspace: std::sync::Weak<Workspace>,
-}
-
-#[cfg(target_os = "macos")]
-#[async_trait::async_trait]
-impl forge_browser::idle::IdleWarn for IdleWarnings {
-    async fn warn(
-        &self,
-        seat: Option<&forge_primitives::SessionSlot>,
-        name: &str,
-        idle_minutes: u64,
-        grace_minutes: u64,
-        at_close: bool,
-    ) -> forge_browser::idle::Verdict {
-        use forge_browser::idle::Verdict;
-        let Some(workspace) = self.workspace.upgrade() else { return Verdict::Unanswered };
-        let (verdict, answer) = tokio::sync::oneshot::channel();
-        let command = forge_workspace::Command::BrowserIdleWarning {
-            key: seat.cloned(),
-            profile: name.to_owned(),
-            idle_minutes,
-            grace_minutes,
-            at_close,
-            verdict: Some(verdict),
-        };
-        if workspace.dispatch(command).is_err() {
-            return Verdict::Unanswered;
-        }
-        // **Delivery is a send into the seat's session, not a wait on the
-        // person**, so the answer is immediate; the bound is a wedge-breaker.
-        match tokio::time::timeout(std::time::Duration::from_secs(5), answer).await {
-            Ok(Ok(forge_workspace::IdleVerdict::Delivered)) => Verdict::Delivered,
-            Ok(Ok(forge_workspace::IdleVerdict::Held)) => Verdict::Held,
-            Ok(Ok(forge_workspace::IdleVerdict::NoSession)) => Verdict::NoSession,
-            Ok(Ok(forge_workspace::IdleVerdict::Clear)) => Verdict::Clear,
-            _ => Verdict::Unanswered,
-        }
-    }
 }
 
 /// A platform with no CEF host: the browser tools answer the no-host refusal
