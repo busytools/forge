@@ -113,5 +113,15 @@ describe("a session start's row", () => {
     const open = /<details class="leaf hookgroup" open>[\s\S]*?<\/details>/.exec(PAGE)?.[0] ?? '';
     expect(open, 'and an open one').not.toBe('');
     expect(open, 'holding the hook rows it opens onto').toContain('class="leaf hookrow"');
+
+    // The failed state, which the component carries for a silent hook: a
+    // closed start marked in the failure tone, and an open one that keeps the
+    // silent failed hook as a row whose summary has no tail slot.
+    expect(PAGE, 'the book draws a failed start, marked while closed').toMatch(
+      /<details class="leaf hookgroup">\s*<summary>\s*<svg class="ic gl err"><use href="#i-hook"\/><\/svg>/,
+    );
+    expect(PAGE, 'and opens one onto the failure it kept').toMatch(
+      /<details class="leaf hookgroup" open>\s*<summary>\s*<svg class="ic gl err">[\s\S]*<svg class="ic gl err"><use href="#i-hook"\/><\/svg>\s*<span class="tn">notify\.sh \(SessionStart\)<\/span>\s*<svg class="ic arw">/,
+    );
   });
 });
