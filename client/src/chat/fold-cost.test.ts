@@ -695,3 +695,90 @@ describe('the carried fold draws what the whole fold draws', () => {
     );
   });
 });
+
+/** One counter as a page carries it, under its own clock. */
+const pageCounter = (at: number, delta: number): unknown => ({
+  type: 'system',
+  subtype: 'thinking_tokens',
+  uuid: `t-${at}`,
+  session_id: 's',
+  estimated_tokens: delta,
+  estimated_tokens_delta: delta,
+  timestamp: `2026-10-24T09:00:${String(Math.floor(at / 1000)).padStart(2, '0')}.${String(at % 1000).padStart(3, '0')}000Z`,
+});
+
+/** The page's cut: each run of consecutive counters is one frame. */
+function foldedPage(frames: readonly unknown[]): unknown[] {
+  const out: unknown[] = [];
+  let at = 0;
+  while (at < frames.length) {
+    const frame = frames[at] as { subtype?: unknown };
+    if (frame?.subtype !== 'thinking_tokens') {
+      out.push(frame);
+      at += 1;
+      continue;
+    }
+    const run: Array<{ estimated_tokens_delta?: unknown; uuid?: unknown; timestamp?: unknown }> =
+      [];
+    while ((frames[at] as { subtype?: unknown } | null)?.subtype === 'thinking_tokens') {
+      run.push(frames[at] as never);
+      at += 1;
+    }
+    if (run.length === 1) {
+      out.push(run[0]);
+      continue;
+    }
+    const last = run.at(-1);
+    const first = run.at(0);
+    if (last === undefined || first === undefined) continue;
+    out.push({
+      ...(last as object),
+      folded_from: first.timestamp,
+      estimated_tokens_delta: run.reduce(
+        (sum, one) => sum + Number(one.estimated_tokens_delta ?? 0),
+        0,
+      ),
+      folded_frames: run.length,
+    });
+  }
+  return out;
+}
+
+describe('a page whose counters are folded', () => {
+  /**
+   * A page serves each run of consecutive counters as one frame carrying the
+   * summed growth and the newest stamp. The fold reads a counter for exactly
+   * those two facts and draws no row for it, so the page must fold to the same
+   * rows and the same running figure as the raw run - smaller, not different.
+   */
+  it('draws the same rows and running figure as the raw counter run', () => {
+    const frames = [prompt('work'), said(1)];
+    for (let at = 0; at < 400; at += 1) frames.push(pageCounter(at, 12));
+
+    expect(foldedPage(frames).length, 'the run folded to one frame').toBe(3);
+    const raw = fold(frames, null, true, false);
+    const folded = fold(foldedPage(frames), null, true, false);
+
+    expect(folded).toEqual(raw);
+    const report = folded.find((unit) => unit.kind === 'report');
+    expect(report?.info.thinking_tokens, 'the running figure is the run summed once').toBe(4800);
+    expect(report?.info.ended_at_utc, 'and the span ends on the newest stamp').toBe(
+      (frames[frames.length - 1] as { timestamp?: string }).timestamp,
+    );
+  });
+
+  /**
+   * A live counter that arrived after the page's cut is not covered by its
+   * folded run. The fold sums it on top, so the figure the reader watches
+   * keeps moving after a landing.
+   */
+  it('adds a counter that arrived after the page was cut', () => {
+    const frames = [prompt('work')];
+    for (let at = 0; at < 20; at += 1) frames.push(pageCounter(at, 10));
+    const page = foldedPage(frames);
+    page.push(pageCounter(5000, 7));
+
+    const report = fold(page, null, true, false).find((unit) => unit.kind === 'report');
+    expect(report?.info.thinking_tokens, 'the page total plus the live counter').toBe(207);
+  });
+});

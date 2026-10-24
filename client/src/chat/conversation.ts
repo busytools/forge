@@ -428,6 +428,70 @@ function newestStampMs(messages: readonly unknown[]): number | null {
   return newest;
 }
 
+/**
+ * A wire stamp in milliseconds, with its fraction kept whole.
+ *
+ * `Date.parse` drops sub-millisecond digits and the CLI stamps frames with
+ * six, so two counters inside one millisecond would compare equal and a page
+ * cut between them could not be told from one after it.
+ */
+function wireStampMs(stamp: unknown): number | null {
+  if (typeof stamp !== 'string' || stamp === '') return null;
+  const at = Date.parse(stamp);
+  if (!Number.isFinite(at)) return null;
+  const fraction = /\.(\d+)/.exec(stamp);
+  if (fraction === null) return at;
+  return Math.trunc(at / 1000) * 1000 + Number(`0.${fraction[1]}`) * 1000;
+}
+
+/**
+ * A counter frame's own stamp, in ms, or `null` when it is not a counter or
+ * carries no stamp this client can place it by.
+ */
+function counterStampMs(message: unknown): number | null {
+  const frame = message as { type?: unknown; subtype?: unknown; timestamp?: unknown } | null;
+  if (frame?.type !== 'system' || frame.subtype !== 'thinking_tokens') return null;
+  return wireStampMs(frame.timestamp);
+}
+
+/** The stamps a page's folded counter run covers. */
+interface FoldedRun {
+  from: number;
+  through: number;
+}
+
+/**
+ * The stamps a page's folded counter run covers, when `message` is one.
+ *
+ * A page serves a turn's counter storm as one frame carrying the summed
+ * growth, `folded_frames` saying how many frames the one stands for and
+ * `folded_from` naming where the run starts. **Both ends are needed**: a page
+ * can open on a turn's suffix, so counters above its first one are ones it
+ * never carried and a client's held copy must keep them. A counter with no
+ * such count is a live frame (the stream folds a flush's run but not a page's
+ * turn), which covers only itself.
+ */
+function foldedRunMs(message: unknown): FoldedRun | null {
+  const frame = message as {
+    type?: unknown;
+    subtype?: unknown;
+    timestamp?: unknown;
+    folded_frames?: unknown;
+    folded_from?: unknown;
+  } | null;
+  if (frame?.type !== 'system' || frame.subtype !== 'thinking_tokens') return null;
+  if (typeof frame.folded_frames !== 'number' || frame.folded_frames < 2) return null;
+  const through = wireStampMs(frame.timestamp);
+  const from = wireStampMs(frame.folded_from);
+  if (from === null || through === null || from > through) return null;
+  return { from, through };
+}
+
+/** Whether a held counter's stamp falls inside one of the runs. */
+function withinRuns(runs: readonly FoldedRun[], stamped: number | null): boolean {
+  return stamped !== null && runs.some((run) => run.from <= stamped && stamped <= run.through);
+}
+
 /** A frame's own id, or `null` when it carries none. */
 function uuidOf(message: unknown): string | null {
   // **A delivered mid-turn prompt is carried by its attachment, and the id on
@@ -566,6 +630,17 @@ export class Frames {
    * because two tasks can end with the same words.
    */
   private readonly endings = new Set<string>();
+  /**
+   * The stamp ranges this list's folded counter runs cover.
+   *
+   * A page serves a counter storm as one frame, so a held row's raw counters
+   * are frames the page already accounts for - and a merge that read them as
+   * missing would put their growth back beside the page's total and double
+   * it. **A range, not one instant**: a page can open on a turn's suffix, so
+   * a counter below the page's run is one it never carried and the held copy
+   * keeps it.
+   */
+  private readonly covers: FoldedRun[] = [];
 
   constructor(messages: unknown[]) {
     for (const message of messages) this.add(message);
@@ -575,7 +650,8 @@ export class Frames {
    * Take one more frame into the index, for a list that has grown.
    *
    * All three faces - id, ending and words - so an id-bearing frame still
-   * answers an id-less copy's ending or words question.
+   * answers an id-less copy's ending or words question; and a folded counter
+   * run's stamp range, which a merge reads beside them.
    */
   add(message: unknown): void {
     const id = uuidOf(message);
@@ -584,10 +660,23 @@ export class Frames {
     if (ending !== null) this.endings.add(ending);
     const words = wordsOf(message);
     if (words.length > 0) this.said.add(JSON.stringify(words));
+    const run = foldedRunMs(message);
+    if (run !== null) this.covers.push(run);
   }
 
   /** Whether the list this indexes holds `message`. */
   carries(message: unknown, prose = true): boolean {
+    // **A folded copy is answered by containment, never by its end.** Its id
+    // is its newest counter's, which a page carrying that counter RAW would
+    // otherwise read as holding the whole run - so a folded frame is carried
+    // only by a run that covers all of it.
+    const folded = foldedRunMs(message);
+    if (folded !== null) {
+      return this.covers.some((run) => run.from <= folded.from && folded.through <= run.through);
+    }
+    if (this.covers.length > 0 && withinRuns(this.covers, counterStampMs(message))) {
+      return true;
+    }
     const id = uuidOf(message);
     if (id !== null) return this.ids.has(id);
     if (!prose) return false;
@@ -599,27 +688,57 @@ export class Frames {
 }
 
 /**
- * A page's rows with the frames it does not carry put back where the held copy
- * had them.
+ * `base`'s order with the frames only `other` has put back where `other` had
+ * them.
  *
  * **Appending them is a reorder the reader sees.** A page built from the
  * transcript can lack frames the live fold holds - a hook's own row is one the
  * file keeps as an attachment the read used to drop - and a landing that
  * parked the held-only rows at the end moved every row the page never carried
  * (measured: four SessionStart hook rows jump from the head of a turn to its
- * tail on one landing). The page's order is kept for what it carries; each
- * held-only frame goes back beside the frame that preceded it in the held
- * copy, so a row the page says nothing about does not move.
+ * tail on one landing). `base`'s order is kept for what it carries; each
+ * frame only `other` carries goes back beside the frame that preceded it in
+ * `other`, so a row the other side says nothing about does not move.
+ *
+ * **The two sides are symmetric where folded counters are concerned**, and
+ * either may be the page or the held row: a counter inside a folded run on
+ * the OTHER side is one that side already counts and is not offered, and a
+ * counter inside a run on the offered side is dropped from `other`. A folded
+ * run is matched by its stamp range, never by its id - its id is its newest
+ * counter's, which the other side may carry raw without carrying the run.
  */
-function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
-  // Where each page frame the held copy also carries sits. **The same three
-  // faces `Frames` answers by** - id, the ending's envelope, then the words -
-  // so a frame the page carries under an id-less copy is placed, not inserted
-  // beside itself.
+function interleave(base: unknown[], other: unknown[]): unknown[] {
+  /**
+   * The stamp ranges `other`'s folded runs cover.
+   *
+   * A base frame inside one is a counter `other` already counts - a page's
+   * front moving inside the same long run between two landings is the shape -
+   * and keeping it beside that run's sum would draw the growth twice. So it
+   * is not offered at all; a folded base frame is covered only when an
+   * `other` run covers all of it.
+   */
+  const otherCovers: FoldedRun[] = [];
+  for (const message of other) {
+    const run = foldedRunMs(message);
+    if (run !== null) otherCovers.push(run);
+  }
+  const offeredByOther = (message: unknown): boolean => {
+    if (otherCovers.length === 0) return false;
+    const folded = foldedRunMs(message);
+    if (folded !== null) {
+      return otherCovers.some((run) => run.from <= folded.from && folded.through <= run.through);
+    }
+    return withinRuns(otherCovers, counterStampMs(message));
+  };
+  const offered = base.filter((message) => !offeredByOther(message));
+  // Where each offered frame the other side also carries sits. **The same
+  // three faces `Frames` answers by** - id, the ending's envelope, then the
+  // words - so a frame the other side carries under an id-less copy is
+  // placed, not inserted beside itself.
   const byId = new Map<string, number>();
   const byEnding = new Map<string, number>();
   const byWords = new Map<string, number>();
-  pageRows.forEach((message, index) => {
+  offered.forEach((message, index) => {
     const id = uuidOf(message);
     if (id !== null && !byId.has(id)) byId.set(id, index);
     const ending = completionText(message);
@@ -630,6 +749,18 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
       if (!byWords.has(key)) byWords.set(key, index);
     }
   });
+  /**
+   * The stamp ranges the offered side's folded counter runs cover.
+   *
+   * An `other` counter inside one is a frame that side already counts, and
+   * one placed beside that sum would draw the growth twice. It is not a frame
+   * `other` uniquely has, so it is placed nowhere.
+   */
+  const covers: FoldedRun[] = [];
+  for (const message of offered) {
+    const run = foldedRunMs(message);
+    if (run !== null) covers.push(run);
+  }
   const whereOf = (message: unknown): number | undefined => {
     const id = uuidOf(message);
     if (id !== null) return byId.get(id);
@@ -638,10 +769,27 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
     const words = wordsOf(message);
     return words.length > 0 ? byWords.get(JSON.stringify(words)) : undefined;
   };
-  /** The held-only frames that follow the page frame at a given index. */
+  /** The other-only frames that follow the offered frame at a given index. */
   const after = new Map<number, unknown[]>();
   let anchor = -1;
-  for (const message of heldRows) {
+  const hold = (message: unknown): void => {
+    const bucket = after.get(anchor) ?? [];
+    bucket.push(message);
+    after.set(anchor, bucket);
+  };
+  for (const message of other) {
+    // **A folded run is placed by its range, never by its id.** Its id is its
+    // newest counter's, which the offered side may carry raw without carrying
+    // the run - reading that as a copy would drop the run's head. It is the
+    // offered side's only when one of its runs covers ALL of it; otherwise it
+    // is other-only and goes where the frames before it put it.
+    const folded = foldedRunMs(message);
+    if (folded !== null) {
+      if (covers.some((run) => run.from <= folded.from && folded.through <= run.through)) continue;
+      hold(message);
+      continue;
+    }
+    if (covers.length > 0 && withinRuns(covers, counterStampMs(message))) continue;
     const where = whereOf(message);
     if (where !== undefined) {
       // **Never backwards**: a frame whose copy sits earlier than the last
@@ -649,12 +797,10 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
       anchor = Math.max(anchor, where);
       continue;
     }
-    const bucket = after.get(anchor) ?? [];
-    bucket.push(message);
-    after.set(anchor, bucket);
+    hold(message);
   }
   const out: unknown[] = [...(after.get(-1) ?? [])];
-  pageRows.forEach((message, index) => {
+  offered.forEach((message, index) => {
     out.push(message);
     const bucket = after.get(index);
     if (bucket !== undefined) out.push(...bucket);
@@ -2213,10 +2359,31 @@ export class Chat {
         // its own clock on a later read. Matching by name alone drew that
         // exchange a second time, with the answer on the older copy.
         const byName = namedTurn[index] ?? undefined;
+        // **A front-cut row has neither the held turn's name nor a frame it
+        // shares.** The window's front cut inside the running turn, so the
+        // page's row opens on a counter, carries no prompt and no result, and
+        // `nameOf` calls it after that counter - while the held turn is named
+        // for its prompt. The counters' ranges are then the only identity the
+        // two copies share, and **only an overlap is one**: the page's first
+        // counter has to fall INSIDE the held run, or a page cut after all the
+        // held content would swallow a gap the walk exists to fetch. Only the
+        // newest held turn can be the suffix, and a frame shared with any turn
+        // is a stronger match than a range, so this is a last resort.
+        const continues = (turn: Turn): boolean => {
+          const first = copy[0] === undefined ? null : counterStampMs(copy[0]);
+          if (first === null) return false;
+          const last = turn.messages[turn.messages.length - 1];
+          if (last === undefined) return false;
+          const held = foldedRunMs(last);
+          return held !== null && held.from <= first && first <= held.through;
+        };
+        const newest = healed.turns[healed.turns.length - 1];
+        const continued = newest !== undefined && continues(newest) ? newest : undefined;
         const match =
           byName ??
           healed.turns.find((turn) => turn.live && shares(carried, turn, !settledRow(index))) ??
-          healed.turns.find((turn) => shares(carried, turn, false));
+          healed.turns.find((turn) => shares(carried, turn, false)) ??
+          continued;
         if (match === undefined) {
           drawn.push(row);
           continue;
