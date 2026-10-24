@@ -568,8 +568,7 @@ impl Workspace {
     }
 
     /// Spawn the chase sweep: a background pass every
-    /// [`CHASE_INTERVAL_SECS`] that delivers the crossings and announces
-    /// the board so time-derived marks move in a held client snapshot.
+    /// [`CHASE_INTERVAL_SECS`] that delivers the crossings.
     /// Idempotent; started once at boot. Mirrors
     /// [`Workspace::start_cron_scheduler`].
     pub fn start_chase_sweep(self: &Arc<Self>) {
@@ -600,7 +599,6 @@ impl Workspace {
                             "chase sweep delivered",
                         );
                     }
-                    workspace.announce_board_refresh();
                 }
             }
             .instrument(span),
@@ -1594,5 +1592,31 @@ mod tests {
             ),
             "the frame carries the prose the model received: {message:?}",
         );
+    }
+
+    /// **The chase no longer announces the board on a no-op pass** (#2540).
+    /// The client's 30 s board beat moves the time-derived marks; a
+    /// `TasksChanged` for an unchanged set made every board and home
+    /// subscriber re-read its whole subject. A pass with nothing to deliver
+    /// must put no task set on the stream.
+    #[tokio::test(start_paused = true)]
+    async fn a_noop_chase_pass_announces_no_tasks_changed() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project(PROJECT, "/tmp/tp-chase");
+        ws.start_chase_sweep();
+        tokio::time::advance(Duration::from_secs(CHASE_INTERVAL_SECS + 1)).await;
+        // The spawned sweep runs on the runtime; give it the tick and the
+        // updates it would have put on the stream.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        while let Ok(frame) = rx.try_recv() {
+            assert!(
+                !matches!(frame.update, SessionUpdate::TasksChanged { .. }),
+                "a no-op chase pass announced a task set: {:?}",
+                frame.update,
+            );
+        }
     }
 }
