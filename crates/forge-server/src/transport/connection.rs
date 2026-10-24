@@ -4296,12 +4296,16 @@ mod tests {
         );
     }
 
-    /// **The walk reaches the transcript's beginning, page after page.** Each
-    /// page's cursor is the byte of the row it stopped at - the page below
-    /// seeks to it - and the walk keeps descending through the result frames
-    /// the file never wrote until the transcript's own first row ends it. This
-    /// is the shape that died after six pages when the two sides counted
-    /// different things.
+    /// **A walk down a transcript holds the paging contract.** Each page's
+    /// cursor is the byte of the row it stopped at, the page below seeks to
+    /// it, and the walk keeps descending through the result frames the file
+    /// never wrote until the transcript's own first row ends it.
+    ///
+    /// **Support rather than a regression pin**: the wire contract allows
+    /// adjacent pages to overlap, so the assertions here are order, descent
+    /// and coverage - and they pass against the shape this replaced. What a
+    /// regression in the numbering would break is a page served above its own
+    /// floor or a gap between pages, and both show here.
     #[tokio::test]
     async fn a_walk_below_the_floor_reaches_the_transcripts_start() {
         const TURNS: usize = 2_600;
@@ -4342,24 +4346,87 @@ mod tests {
 
         let mut below = Some(boundary_of(&held.lock()).expect("the window carries rows"));
         let mut pages = 0_usize;
-        let reached = loop {
+        // **Every page, kept in the order the walk served them** (newest
+        // first). The wire contract lets adjacent pages OVERLAP - a page may
+        // repeat a turn the one above it drew - but never leave a hole, so the
+        // walk is checked on order, descent and coverage rather than on a
+        // turn appearing exactly once.
+        let mut served: Vec<Vec<usize>> = Vec::new();
+        loop {
             let BelowFloor::Page(page) = rows_below_floor(&state, &seat, &cwd, below, 20).await
             else {
                 panic!("the walk's page {pages} is answered from the transcript");
             };
             let texts = turn_texts(&page);
             assert!(!texts.is_empty(), "the walk's page {pages} holds turns");
+            // **Each page reads in conversation order.** A page whose turns
+            // arrived out of order shows here.
+            let numbers: Vec<usize> = texts
+                .iter()
+                .map(|text| text.trim_start_matches("turn ").parse().expect("a turn's own number"))
+                .collect();
+            assert!(
+                numbers.windows(2).all(|pair| pair[0] < pair[1]),
+                "the walk's page {pages} ascends: {numbers:?}",
+            );
+            // **No hole between one page and the page below it**: the next
+            // page's newest turn is at or above the one this page drew, and
+            // its oldest is below it - overlap is allowed, a gap is not.
+            if let Some(previous) = served.last() {
+                // Within a page the turns ascend: its first is the oldest.
+                let prev_oldest = *previous.first().unwrap_or(&0);
+                let next_newest = *numbers.last().unwrap_or(&0);
+                assert!(
+                    next_newest + 1 >= prev_oldest,
+                    "page {pages} leaves no hole below the page above: {previous:?} then \
+                     {numbers:?}",
+                );
+                assert!(
+                    next_newest < prev_oldest,
+                    "page {pages} sits below the page above: {previous:?} then {numbers:?}",
+                );
+            }
             pages += 1;
             assert!(pages < 200, "the walk reached the transcript's beginning");
+            served.push(numbers);
             match page.cursor.as_deref().and_then(row_cursor) {
                 Some(next) => below = Some(next),
-                None => break texts,
+                None => break,
             }
-        };
+        }
         assert_eq!(
-            reached.first().map(String::as_str),
-            Some("turn 0"),
+            served.last().and_then(|page| page.first()).copied(),
+            Some(0),
             "and the last page it served runs down to the transcript's own first turn",
         );
+        // **The window and the pages together cover the transcript's turns.**
+        // Every turn the file holds appears in the walk at least once; a turn
+        // never served is the hole this test exists for.
+        let messages = state.surface.conversation(&seat, &cwd).messages;
+        let rendered = crate::transcript::render(&messages, false);
+        let expected: Vec<usize> = turn_texts(&crate::transport::wire::Page {
+            turns: crate::transport::wire::all_turns(&messages, &rendered),
+            cursor: None,
+        })
+        .iter()
+        .map(|text| text.trim_start_matches("turn ").parse().expect("a turn's own number"))
+        .collect();
+        let window = held.lock();
+        let window_numbers: Vec<usize> = turn_texts(&crate::transport::wire::Page {
+            turns: crate::transport::wire::all_turns(
+                window.messages(),
+                &crate::transcript::render(window.messages(), false),
+            ),
+            cursor: None,
+        })
+        .iter()
+        .map(|text| text.trim_start_matches("turn ").parse().expect("a turn's own number"))
+        .collect();
+        drop(window);
+        let served: std::collections::HashSet<usize> =
+            served.into_iter().flatten().chain(window_numbers).collect();
+        for turn in &expected {
+            assert!(served.contains(turn), "the walk serves turn {turn}");
+        }
     }
 }
