@@ -199,6 +199,7 @@ mod tests {
         let examples = [
             ("/new", "/new"),
             ("/resume", "/resume 7f3a92e0"),
+            ("/handoff", "/handoff"),
             ("/mode", "/mode plan"),
             ("/model", "/model sonnet"),
             ("/effort", "/effort high"),

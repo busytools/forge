@@ -659,12 +659,13 @@ mod tests {
     ];
 
     #[test]
-    fn a_lead_sees_all_seven() {
+    fn a_lead_sees_all_eight() {
         assert_eq!(
             agents_tools(SessionKind::Lead),
             [
                 "agents__capacity",
                 "agents__despawn",
+                "agents__handoff",
                 "agents__list",
                 "agents__send_message",
                 "agents__spawn",
@@ -675,12 +676,13 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_sees_only_the_shared_three() {
+    fn a_worker_sees_only_the_shared_four() {
         // The role gate: a worker gains the cross-project reach the
-        // merge adds, and must NOT gain a lead-only verb with it.
+        // merge adds, and must NOT gain a lead-only verb with it. The
+        // handoff is shared because a seat is its own to hand over.
         assert_eq!(
             agents_tools(SessionKind::Worker),
-            ["agents__list", "agents__send_message", "agents__whoami"],
+            ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"],
         );
     }
 
@@ -756,7 +758,8 @@ mod tests {
             Some(MockSystemOneFacade::new().into_arc()),
         ));
         worker.sort();
-        let mut expected: Vec<String> = ["agents__list", "agents__send_message", "agents__whoami"]
+        let mut expected: Vec<String> =
+            ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"]
             .into_iter()
             .map(str::to_owned)
             .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
@@ -789,7 +792,8 @@ mod tests {
             [McpFamily::Cron].into_iter().collect();
         let mut names = names_of(&forge_server_families(SessionKind::Worker, &families, None));
         names.sort();
-        let mut expected: Vec<String> = ["agents__list", "agents__send_message", "agents__whoami"]
+        let mut expected: Vec<String> =
+            ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"]
             .into_iter()
             .map(str::to_owned)
             .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
