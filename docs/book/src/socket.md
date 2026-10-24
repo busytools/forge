@@ -474,10 +474,12 @@ of prose on either side.
   Read that arm as absent and a page keeps what it read at subscribe for the
   life of the connection. The account pool is a home field as well, and its
   announcement is also a fleet redraw, so it arrives through the first arm
-  too; **the frame carries the pool's own state**, so a client applies it
-  instead of reading for it. A card left at `0 ready, probing` looks like a
+  too; **the frame carries the pool's own state**, so a usage-only move is
+  applied instead of read. A move in the loading rows, the settled flag or
+  the listener is still a read, because a project row's `would_bind` and its
+  chip derive from those. A card left at `0 ready, probing` looks like a
   slow probe rather than like a page that stopped listening, which is why
-  the frame says so rather than staying a bare wake-up.
+  the frame carries the state rather than staying a bare wake-up.
 
   **The plugin records are keyless without being home fields.** They cross
   to a home subscriber for the same reason - they name no seat - but nothing

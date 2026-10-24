@@ -578,19 +578,49 @@ mod tests {
         }
     }
 
-    /// **The pool's fields are inline, not nested.** The client narrows the
-    /// frame's payload with the same function it narrows a home snapshot's
-    /// `accounts` field with, so `accounts_changed.loading` has to be the
-    /// row list itself rather than an `accounts` object one level down.
+    /// **The pool's fields are inline, not nested, and every field the client
+    /// narrows crosses.** The client reads the frame's payload with the same
+    /// function it reads a home snapshot's `accounts` field with, so
+    /// `accounts_changed.loading` has to be the row list itself, and the
+    /// gateway, the usage rows and their names have to be the same shapes.
     #[test]
     fn the_pools_frame_carries_the_pool_inline() {
-        let json = serde_json::to_value(accounts_changed()).expect("encode");
+        let mut update = accounts_changed();
+        let SessionUpdate::AccountsChanged { accounts } = &mut update else {
+            unreachable!("the helper builds this variant")
+        };
+        accounts.loading.push(forge_workspace::AccountLoadingRow {
+            display_name: "A".to_owned(),
+            state: forge_workspace::LoadingState::Ready,
+            last_error: None,
+            retry_after: Some(std::time::Duration::from_secs(30)),
+            auth: forge_primitives::account::AccountAuth::Token,
+        });
+        accounts.all_loaded = true;
+        accounts.gateway.ready = true;
+        accounts.gateway.port = 8787;
+        accounts.gateway.bind_error = Some("port in use".to_owned());
+        accounts
+            .usage
+            .push(forge_workspace::AccountUsageView { display_name: "A".to_owned(), snapshot: None });
+
+        let json = serde_json::to_value(&update).expect("encode");
         let body = json.get("accounts_changed").expect("the variant tag is the frame's key");
-        assert!(body.get("loading").is_some(), "the pool's rows are inline: {body}");
-        assert!(body.get("all_loaded").is_some(), "and its settled flag: {body}");
         assert!(body.get("accounts").is_none(), "the payload is not nested twice: {body}");
+        assert_eq!(body["all_loaded"], true);
+        assert_eq!(body["gateway"]["port"].as_u64(), Some(8787), "the port crosses: {body}");
+        assert_eq!(body["gateway"]["bind_error"], "port in use");
+        assert_eq!(body["loading"][0]["display_name"], "A");
+        assert_eq!(body["loading"][0]["state"], "ready");
+        assert_eq!(body["usage"][0]["display_name"], "A");
+        assert!(body["usage"][0]["snapshot"].is_null(), "an absent snapshot crosses as null");
         let back: SessionUpdate = serde_json::from_value(json).expect("decode");
-        assert!(matches!(back, SessionUpdate::AccountsChanged { .. }), "and it round-trips");
+        let SessionUpdate::AccountsChanged { accounts } = back else {
+            panic!("the frame decoded into another variant")
+        };
+        assert_eq!(accounts.loading.len(), 1, "the row survives the round trip");
+        assert_eq!(accounts.gateway.bind_error.as_deref(), Some("port in use"));
+        assert_eq!(accounts.usage.len(), 1);
     }
 
     /// The seats frame a capable client is sent for its profile sweep: the

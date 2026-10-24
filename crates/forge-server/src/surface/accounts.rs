@@ -1,4 +1,4 @@
-//! `account_pool()`: the account pool as a view draws it.
+//! `accounts()`: the account pool as a view draws it.
 
 use forge_workspace::AccountPoolView;
 
