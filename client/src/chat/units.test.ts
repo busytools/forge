@@ -1827,10 +1827,11 @@ describe('one turn folded into the units a view draws', () => {
     expect(runOf(running)?.body, 'with the output it has printed so far').toContain(
       'capture-line-2',
     );
+    expect(runOf(running)?.settled, 'and stays unsettled until its response lands').toBe(false);
 
-    expect(fold(frames), 'the response settles that row rather than opening a second').toHaveLength(
-      1,
-    );
+    const settled = fold(frames);
+    expect(settled, 'the response settles that row rather than opening a second').toHaveLength(1);
+    expect(runOf(settled)?.settled, 'which is what the response marks').toBe(true);
   });
 
   it('marks a hook that exited non-zero', () => {

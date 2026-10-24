@@ -33,6 +33,7 @@ const run = (extra: Partial<HookRun> = {}): HookRun => ({
   name: 'SessionStart:startup',
   event: null,
   failed: false,
+  settled: true,
   body: 'capture-line-1\ncapture-line-2\n',
   ...extra,
 });

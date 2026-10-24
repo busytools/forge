@@ -8,9 +8,9 @@ import { repoPath } from '../repo';
 import type { HookGroupLeaf, HookLeaf } from './units';
 
 /** One run of a session start, its output empty where `body` is null. */
-const run = (n: number, body: string | null = null, failed = false): HookLeaf => ({
+const run = (n: number, body: string | null = null, failed = false, settled = true): HookLeaf => ({
   key: `hook-${n}`,
-  run: { name: 'SessionStart:startup', event: null, failed, body },
+  run: { name: 'SessionStart:startup', event: null, failed, settled, body },
 });
 
 /** A start carrying `runs`, keyed by the first as the fold keys it. */
@@ -72,22 +72,41 @@ describe("a session start's row", () => {
     expect(open, 'while the count still says how many the firing carried').toContain('11 hooks');
   });
 
-  it('keeps a failed hook that printed nothing, and marks the closed row', () => {
+  it('keeps a failed hook that printed nothing, and says so in words on the closed row', () => {
     const failed = start([run(0, 'said\n'), run(1, null, true)]);
+    const summary = summaryOf(draw(failed));
 
-    expect(summaryOf(draw(failed)), 'the failure mark on the closed row').toContain(
-      'class="ic gl err"',
+    // Rule 22: the tone is one carrier, not the only one. A reader who cannot
+    // see the glyph reads the count in the label.
+    expect(summary, 'the failure mark on the closed row').toContain('class="ic gl err"');
+    expect(summary, 'and the failure in words beside the count').toContain(
+      'session start \u{b7} 2 hooks \u{b7} 1 failed',
     );
-    expect(summaryOf(draw(failed)), 'with no claim of failure beyond it').not.toContain('#i-x');
+    expect(summary, 'with no claim of failure beyond it').not.toContain('#i-x');
     expect(
       draw(failed, true).match(/class="leaf hookrow"/g),
       'and the silent failure stays as a row of its own',
     ).toHaveLength(2);
 
+    const clean = summaryOf(draw(start([run(0, 'said\n')])));
+    expect(clean, 'a clean start carries the passing tone').toContain('class="ic gl ok"');
+    expect(clean, 'and no failure in its words either').not.toContain('failed');
+  });
+
+  it('keeps a hook that has not settled, and says why the open holds nothing', () => {
+    // A run that has only started is still out: its name is the whole of what
+    // the reader can know, and hiding it would draw the firing as settled.
+    const running = start([run(0, null, false, false), run(1, 'said\n')]);
     expect(
-      summaryOf(draw(start([run(0, 'said\n')]))),
-      'a clean start carries no failure mark',
-    ).toContain('class="ic gl ok"');
+      draw(running, true).match(/class="leaf hookrow"/g),
+      'the running hook draws by its name beside the one that spoke',
+    ).toHaveLength(2);
+
+    // Every hook finished without a word: the row still opens, and says why it
+    // holds none rather than opening onto nothing.
+    const quiet = draw(start([run(0), run(1)]), true);
+    expect(quiet, 'a muted line in place of the rows').toContain('the hooks printed nothing');
+    expect(quiet.match(/class="leaf hookrow"/g), 'and no empty hook rows').toBeNull();
   });
 
   it('draws the row in both sheets, and the book draws it closed and open', () => {
@@ -106,22 +125,76 @@ describe("a session start's row", () => {
       );
     }
 
-    const closed = /<details class="leaf hookgroup">[\s\S]*?<\/details>/.exec(PAGE)?.[0] ?? '';
+    const drawn = starts(PAGE);
+    // The denominator: an extraction that read no start would report every
+    // shape missing, and one that stopped at a nested row would say nothing
+    // about what the start itself holds.
+    expect(drawn.length, 'the book draws every state of the start').toBeGreaterThanOrEqual(4);
+
+    const closed = drawn.find((start) => !start.open && !start.html.includes('gl err'))?.html ?? '';
     expect(closed, 'the book draws a closed start').not.toBe('');
     expect(closed, 'naming the event and its count').toMatch(/session start &#183; \d+ hooks/);
 
-    const open = /<details class="leaf hookgroup" open>[\s\S]*?<\/details>/.exec(PAGE)?.[0] ?? '';
+    const open = drawn.find((start) => start.open && !start.html.includes('gl err'))?.html ?? '';
     expect(open, 'and an open one').not.toBe('');
     expect(open, 'holding the hook rows it opens onto').toContain('class="leaf hookrow"');
 
     // The failed state, which the component carries for a silent hook: a
-    // closed start marked in the failure tone, and an open one that keeps the
-    // silent failed hook as a row whose summary has no tail slot.
-    expect(PAGE, 'the book draws a failed start, marked while closed').toMatch(
-      /<details class="leaf hookgroup">\s*<summary>\s*<svg class="ic gl err"><use href="#i-hook"\/><\/svg>/,
+    // closed start naming the failure in words as well as tone, and an open
+    // one keeping the silent failed hook as a row whose summary has no tail.
+    const failedShut = drawn.find((start) => !start.open && start.html.includes('gl err'))?.html;
+    expect(failedShut ?? '', 'the book draws a failed start, marked while closed').not.toBe('');
+    expect(failedShut ?? '', 'with the failure in words, not the tone alone').toMatch(
+      /session start &#183; \d+ hooks &#183; \d+ failed/,
     );
-    expect(PAGE, 'and opens one onto the failure it kept').toMatch(
-      /<details class="leaf hookgroup" open>\s*<summary>\s*<svg class="ic gl err">[\s\S]*<svg class="ic gl err"><use href="#i-hook"\/><\/svg>\s*<span class="tn">notify\.sh \(SessionStart\)<\/span>\s*<svg class="ic arw">/,
+
+    const failedOpen = drawn.find((start) => start.open && start.html.includes('gl err'))?.html;
+    expect(failedOpen ?? '', 'and opens one onto the failure it kept').not.toBe('');
+    expect(failedOpen ?? '', 'holding the silent failed hook as a row with no tail slot').toMatch(
+      /<svg class="ic gl err"><use href="#i-hook"\/><\/svg>\s*<span class="tn">notify\.sh \(SessionStart\)<\/span>\s*<svg class="ic arw">/,
     );
+
+    // And the all-silent state: the row opens onto a muted line rather than
+    // onto nothing.
+    expect(
+      drawn.find((start) => start.open && start.html.includes('the hooks printed nothing'))?.html ??
+        '',
+      'the book draws the start whose hooks all finished silent',
+    ).not.toBe('');
   });
 });
+
+/**
+ * A `<details>` block from its opener to its own close, nested rows included.
+ *
+ * **The non-greedy regex a drawing test reaches for first stops at the first
+ * nested row's close**, so an open start would be read as one hook and the
+ * rest of its body would go unchecked. Counting the nested openers is what
+ * makes the group's own body the thing that is read.
+ */
+function detailsFrom(page: string, from: number): string {
+  let depth = 0;
+  let at = from;
+  while (at < page.length) {
+    const open = page.indexOf('<details', at);
+    const close = page.indexOf('</details>', at);
+    if (close === -1) return '';
+    if (open !== -1 && open < close) {
+      depth += 1;
+      at = open + '<details'.length;
+      continue;
+    }
+    depth -= 1;
+    at = close + '</details>'.length;
+    if (depth === 0) return page.slice(from, at);
+  }
+  return '';
+}
+
+/** Every session-start row the drawing holds, with its own state. */
+function starts(page: string): { open: boolean; html: string }[] {
+  return [...page.matchAll(/<details class="leaf hookgroup"( open)?>/g)].map((match) => ({
+    open: match[1] !== undefined,
+    html: detailsFrom(page, match.index ?? 0),
+  }));
+}

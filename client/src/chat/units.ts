@@ -200,7 +200,10 @@ export interface NudgeLeaf {
   text: string;
 }
 
-/** One hook run, as a row of the work. */
+/**
+ * One hook run as the work's rows hold it: a row of its own, or a run inside a
+ * session start's row.
+ */
 export interface HookLeaf {
   /** The run's own id, or the frame it arrived on where the wire gave none. */
   key: string;
@@ -268,6 +271,14 @@ export interface HookRun {
    * the outcome is the whole of what says it did not succeed.
    */
   failed: boolean;
+  /**
+   * Whether the run's response has landed.
+   *
+   * A settled run that printed nothing draws no row of its own; one still
+   * running keeps its row even silent, because the work is under way and its
+   * name is all it has to say yet.
+   */
+  settled: boolean;
   /**
    * What the run printed, whole rather than clipped, and null where it printed
    * nothing - as whole as `hookRun` can make it, which is not as much as it
@@ -1552,6 +1563,7 @@ function hookRun(frame: Frame): HookRun {
     name,
     event: fired !== '' && !name.includes(fired) ? fired : null,
     failed: hookFailed(frame),
+    settled: frame.subtype === 'hook_response',
     body: hookOutput(frame),
   };
 }
@@ -1853,28 +1865,20 @@ export function fold(
     return false;
   };
 
-  /** The newest row drawn, which sits in `pending` while that is unflushed. */
-  const lastRow = (): WorkRow | undefined => {
-    const held = pending[pending.length - 1];
-    if (held !== undefined) return held;
-    const unit = units[units.length - 1];
-    return unit?.kind === 'leaves' ? unit.rows[unit.rows.length - 1] : undefined;
-  };
-
   /**
    * Draw one hook run: under the session start it belongs to, or on its own
    * row.
    *
-   * **The trailing row is the whole rule.** A start fires its hooks as one
-   * burst, so they arrive with nothing between them; a row that is not the
-   * start's own group ends the firing, and a later one opens a new row. That
-   * keeps a resumed session's second start a second row rather than folding
-   * every start the page holds into one.
+   * **The pending tail is the whole rule.** A start fires its hooks as one
+   * burst, so they arrive with nothing between them and the burst is still
+   * pending; a row that is not the start's own group ends the firing, and a
+   * later one opens a new row. That keeps a resumed session's second start a
+   * second row rather than folding every start the page holds into one.
    */
   const drawHook = (key: string, run: HookRun): void => {
     const start = run.event === 'SessionStart' || run.name.startsWith('SessionStart');
     if (start) {
-      const tail = lastRow();
+      const tail = pending[pending.length - 1];
       if (tail?.tag === 'hookgroup' && tail.event === 'SessionStart') {
         tail.runs.push({ key, run });
         return;
@@ -2094,10 +2098,12 @@ export function fold(
         lastCompaction = units.length - 1;
         continue;
       }
-      // A hook's own lifecycle: one row per RUN, because the frames are one
+      // A hook's own lifecycle: one row per run, because the frames are one
       // hook's start, its interim output and its ending - the later frames
-      // rewrite the run's own row rather than drawing beside it. The run lands
-      // where it fired, so a hook that fired between two calls sits among them.
+      // rewrite the run's own row rather than drawing beside it. A session
+      // start is the exception: its hooks arrive as one burst, so the firing
+      // is one row with the runs inside it. Either way the row lands where it
+      // fired, so a hook that fired between two calls sits among them.
       if (
         frame.subtype === 'hook_started' ||
         frame.subtype === 'hook_progress' ||

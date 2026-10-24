@@ -2598,7 +2598,7 @@ docs: The sprite a row draws, by the class it belongs to.</div>
 
       <div class="mine">
         <div class="prose">
-          <p>A session start is one row, closed on what fired and how many hooks it carried, and it opens onto the hooks that said anything - a hook that printed nothing draws no row of its own, save one that failed, which stays and marks the closed row.</p>
+          <p>A session start is one row, closed on what fired and how many hooks it carried, and it opens onto the hooks that said anything - a hook that finished without a word draws no row of its own, save one that failed or is still running. A failed start says so in words as well as tone: the label counts the hooks that failed.</p>
           <p>A hook's own row, under a start or on its own, is closed on the hook and its own words - the markdown it injects drawn with its block marks off and its inline marks rendered, a JSON envelope read through to the context it carries - clipped to the one line the row has, with the whole output behind the open. A failed one's mark rides the closed row the way the failed chip's does, and a name that carries no event draws its event beside it.</p>
         </div>
       </div>
@@ -2687,7 +2687,7 @@ branch main, nothing to commit</div>
 
       <div class="mine">
         <div class="prose">
-          <p>A start that failed marks its closed row: the hook glyph takes the failure tone, so the state shows before anything is opened. Inside, a hook that failed stays even where it printed nothing - its name and its mark are the whole of what it has to say.</p>
+          <p>A start that failed marks its closed row: the hook glyph takes the failure tone and the label counts the hooks that failed, so the state reads without the tone alone. Inside, a hook that failed stays even where it printed nothing - its name and its mark are the whole of what it has to say.</p>
         </div>
       </div>
 
@@ -2695,13 +2695,13 @@ branch main, nothing to commit</div>
         <details class="leaf hookgroup">
           <summary>
             <svg class="ic gl err"><use href="#i-hook"/></svg>
-            <span class="tn">session start &#183; 3 hooks</span>
+            <span class="tn">session start &#183; 3 hooks &#183; 1 failed</span>
             <svg class="ic arw"><use href="#i-chev"/></svg></summary>
         </details>
         <details class="leaf hookgroup" open>
           <summary>
             <svg class="ic gl err"><use href="#i-hook"/></svg>
-            <span class="tn">session start &#183; 3 hooks</span>
+            <span class="tn">session start &#183; 3 hooks &#183; 1 failed</span>
             <svg class="ic arw"><use href="#i-chev"/></svg></summary>
           <div class="body">
             <details class="leaf hookrow">
@@ -2716,6 +2716,24 @@ branch main, nothing to commit</div>
                 <span class="tn">notify.sh (SessionStart)</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
             </details>
+          </div>
+        </details>
+      </div>
+
+      <div class="mine">
+        <div class="prose">
+          <p>And a start whose hooks all finished without a word: the row opens onto a muted line rather than onto nothing.</p>
+        </div>
+      </div>
+
+      <div class="work">
+        <details class="leaf hookgroup" open>
+          <summary>
+            <svg class="ic gl ok"><use href="#i-hook"/></svg>
+            <span class="tn">session start &#183; 2 hooks</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="dim">the hooks printed nothing</div>
           </div>
         </details>
       </div>

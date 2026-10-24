@@ -22,12 +22,13 @@ const START: HookGroupLeaf = {
         name: 'SessionStart:startup',
         event: null,
         failed: false,
+        settled: true,
         body: 'repository is clean\n',
       },
     },
     {
       key: 'hook-1',
-      run: { name: 'SessionStart:startup', event: null, failed: false, body: null },
+      run: { name: 'SessionStart:startup', event: null, failed: false, settled: true, body: null },
     },
   ],
 };
