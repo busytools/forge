@@ -729,9 +729,11 @@ function foldedPage(frames: readonly unknown[]): unknown[] {
       continue;
     }
     const last = run.at(-1);
-    if (last === undefined) continue;
+    const first = run.at(0);
+    if (last === undefined || first === undefined) continue;
     out.push({
       ...(last as object),
+      folded_from: first.timestamp,
       estimated_tokens_delta: run.reduce(
         (sum, one) => sum + Number(one.estimated_tokens_delta ?? 0),
         0,

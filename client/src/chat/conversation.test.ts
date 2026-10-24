@@ -161,11 +161,15 @@ const counted = (tokens: number): unknown => ({
   uuid: `thinking-${tokens}`,
 });
 
+/** A wire stamp, at `at` microseconds past the same second. */
+const stampOf = (at: number): string => `2026-10-24T09:00:00.${String(at).padStart(6, '0')}Z`;
+
 /**
  * A counter under its own clock.
  *
- * A folded run's stamp is the boundary that keeps older held counters out and
- * lets a newer one through, so a test about the merge needs the clocks.
+ * A folded run's stamp range is what keeps older held counters out (or in,
+ * when the page opened on a suffix) and lets newer ones through, so a test
+ * about the merge needs the clocks.
  */
 const clocked = (at: number, tokens: number): unknown => ({
   type: 'system',
@@ -173,7 +177,22 @@ const clocked = (at: number, tokens: number): unknown => ({
   estimated_tokens: tokens,
   estimated_tokens_delta: tokens,
   uuid: `thinking-${at}`,
-  timestamp: `2026-10-24T09:00:00.${String(at).padStart(6, '0')}Z`,
+  timestamp: stampOf(at),
+});
+
+/**
+ * One page's folded run: the counters it covers, from `from` through
+ * `through`, and their summed growth.
+ */
+const folded = (from: number, through: number, tokens: number): unknown => ({
+  type: 'system',
+  subtype: 'thinking_tokens',
+  estimated_tokens: tokens,
+  estimated_tokens_delta: tokens,
+  uuid: `thinking-${through}`,
+  timestamp: stampOf(through),
+  folded_from: stampOf(from),
+  folded_frames: through - from + 1,
 });
 
 /** The running figure the first held turn folds to. */
@@ -494,18 +513,8 @@ describe('the conversation the chat draws', () => {
     expect(figure(chat), 'the raw page sums its counters').toBe(50);
 
     // The reconnect's page, cut two counters later than what the client saw:
-    // the run arrives as one frame, and the raw copy the row holds is covered.
-    server.send(
-      page(
-        [
-          {
-            key: 't1',
-            messages: [promptRow('work'), { ...(clocked(7, 80) as object), folded_frames: 8 }],
-          },
-        ],
-        'above',
-      ),
-    );
+    // the run arrives as one frame whose range covers the raw copy held.
+    server.send(page([{ key: 't1', messages: [promptRow('work'), folded(0, 7, 80)] }], 'above'));
 
     expect(names(chat), 'the page copy replaced the raw run it covers').toEqual([
       'u-work',
@@ -529,34 +538,14 @@ describe('the conversation the chat draws', () => {
     const stop = chat.start();
     // The first read saw the run through counter 4; 5-7 were missed while the
     // socket was down, and 8-9 arrived after the reconnect.
-    server.send(
-      page(
-        [
-          {
-            key: 't1',
-            messages: [promptRow('work'), { ...(clocked(4, 40) as object), folded_frames: 5 }],
-          },
-        ],
-        'above',
-      ),
-    );
+    server.send(page([{ key: 't1', messages: [promptRow('work'), folded(0, 4, 40)] }], 'above'));
     for (const at of [8, 9]) {
       server.update({ chat_appended: { key: LEAD, msg: clocked(at, 10) } });
     }
     expect(figure(chat), 'the first page plus the two frames after it').toBe(60);
 
     // The reconnect's page was cut through counter 7; 8 and 9 are newer.
-    server.send(
-      page(
-        [
-          {
-            key: 't1',
-            messages: [promptRow('work'), { ...(clocked(7, 80) as object), folded_frames: 8 }],
-          },
-        ],
-        'above',
-      ),
-    );
+    server.send(page([{ key: 't1', messages: [promptRow('work'), folded(0, 7, 80)] }], 'above'));
 
     expect(figure(chat), 'the page total plus the two counters past its cut').toBe(100);
     expect(names(chat), 'the covered counters are gone and the newer two stay').toEqual([
@@ -565,6 +554,75 @@ describe('the conversation the chat draws', () => {
       'thinking-9',
       'thinking-7',
     ]);
+    stop();
+  });
+
+  /**
+   * **A page that opens on a turn's suffix covers only its own run.** The
+   * held window's front can cut inside a running turn, so the page's first
+   * counter is not the turn's first one - and the counters a client holds
+   * above it are ones the page never carried. Their growth stays, so the
+   * figure cannot step backwards on the landing.
+   */
+  it('a page opening on a suffix does not drop the counters above it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              promptRow('work'),
+              clocked(0, 10),
+              clocked(1, 10),
+              clocked(2, 10),
+              clocked(3, 10),
+              clocked(4, 10),
+            ],
+          },
+        ],
+        'above',
+      ),
+    );
+    expect(figure(chat), 'the raw page sums its counters').toBe(50);
+
+    // The reconnect's page was cut at the window's front: it carries the run
+    // from counter 5 through 9 and nothing below it.
+    server.send(page([{ key: 't1', messages: [promptRow('work'), folded(5, 9, 50)] }], 'above'));
+
+    expect(figure(chat), 'the held counters below the page plus the page suffix').toBe(100);
+    expect(names(chat), 'the held counters stay and the folded suffix joins them').toEqual([
+      'u-work',
+      'thinking-0',
+      'thinking-1',
+      'thinking-2',
+      'thinking-3',
+      'thinking-4',
+      'thinking-9',
+    ]);
+    stop();
+  });
+
+  /**
+   * **A repeated page is the same page, not another grow.** The subscribe loop
+   * and the reconnect both re-ask, so the identical page can land twice; its
+   * folded run's delta is the copy of the counters already held and must not
+   * be added a second time.
+   */
+  it('a page sent twice does not add its folded run twice', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const landed = page([{ key: 't1', messages: [promptRow('work'), folded(0, 7, 80)] }], 'above');
+
+    server.send(landed);
+    expect(figure(chat), 'the first landing carries the run').toBe(80);
+
+    server.send(landed);
+    expect(figure(chat), 'the repeat is the same page, not another run').toBe(80);
+    expect(names(chat), 'and the run is still one copy').toEqual(['u-work', 'thinking-7']);
     stop();
   });
 

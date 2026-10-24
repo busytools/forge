@@ -965,16 +965,25 @@ fn turn_wire(
 /// and draws no row for it - so a turn that thinks for an hour is thousands of
 /// frames that all say the same running figure. One frame per run carries it
 /// exactly: the summed `estimated_tokens_delta`, the newest frame's own id and
-/// stamp, and `folded_frames` saying how many the one stands for. **The live
-/// stream already serves a flush's run this way** (`batch::merge`); this is
-/// that shape at the page's own cut.
+/// stamp, and the stamps the run covers (`folded_from` through its own
+/// `timestamp`) with `folded_frames` saying how many the one stands for. **The
+/// live stream already serves a flush's run this way** (`batch::merge`); this
+/// is that shape at the page's own cut.
 ///
-/// **A run is one dispatch's.** A sub-agent's counters are the subagents
-/// surface's and the chat fold skips them whole, so folding them into the
-/// parent's run would move its figure and its clock. **A folded frame has to
-/// be placeable too**: the merge that lands a page on a live turn keeps only
-/// the counters the page's run does not cover, and its stamp is that boundary,
-/// so a run with no stamp at all is served as itself.
+/// **The range is what a landing reads, not a single instant.** A page can
+/// open on a turn's SUFFIX - the held window's front cuts inside a running
+/// turn when no turn opener sits above the line - so a client holding the
+/// counters above the page's first one must keep them, and a run that recorded
+/// only where it ends would drop them.
+///
+/// **A run is one dispatch's, and the dispatch lives in the frame's extras
+/// rather than in its typed fields.** No captured baseline carries
+/// `parent_tool_use_id` on a counter, so the grouping is a guard rather than a
+/// live path: if the CLI ever stamps one, a sub-agent's counters are the
+/// subagents surface's and the chat fold skips them whole, and folding them
+/// into the parent's run would move its figure and its clock. **A folded run
+/// is stamped throughout**: a frame with no stamp breaks the run rather than
+/// being folded under a bound it cannot be placed by.
 ///
 /// It runs after the page is cut, so the budget still counts the bytes a page
 /// used to carry and keeps the same turns it always did.
@@ -986,18 +995,21 @@ fn compact_counters(frames: &mut Vec<Value>) {
             && is_counter(last)
             && is_counter(&frame)
             && same_run(last, &frame)
-            && (counter_stamp(&frame).is_some() || counter_stamp(last).is_some())
+            && counter_stamp(last).is_some()
+            && counter_stamp(&frame).is_some()
         {
             // The newest frame survives with its own id, session and extras,
-            // the same exchange `batch::merge` makes; only the growth and the
-            // count are the run's.
+            // the same exchange `batch::merge` makes; only the growth, the
+            // count and the range are the run's. The frame being replaced
+            // carries the range's start once it is itself a fold, and before
+            // that it is the run's opening frame.
             let previous = std::mem::replace(last, frame);
             let delta = grown(last).saturating_add(grown(&previous));
             let count = counted(&previous).saturating_add(1);
-            let stamp = counter_stamp(&previous).cloned();
+            let from = previous.get("folded_from").or_else(|| counter_stamp(&previous)).cloned();
             if let Some(object) = last.as_object_mut() {
-                if let Some(stamp) = stamp {
-                    object.entry("timestamp".to_owned()).or_insert(stamp);
+                if let Some(from) = from {
+                    object.insert("folded_from".to_owned(), from);
                 }
                 object.insert("estimated_tokens_delta".to_owned(), Value::from(delta));
                 object.insert("folded_frames".to_owned(), Value::from(count));
@@ -2559,6 +2571,10 @@ mod tests {
         let first = served.iter().find(|frame| frame["folded_frames"] == 3).expect("the first run");
         assert_eq!(first["uuid"], "t-3", "the surviving frame is the newest of its run");
         assert_eq!(
+            first["folded_from"], "2026-10-24T09:00:00.000001Z",
+            "and it names where its run starts, so a landing knows which counters it covers",
+        );
+        assert_eq!(
             first["timestamp"], "2026-10-24T09:00:00.000003Z",
             "so the turn's clock reads the newest stamp, as it did over the raw run",
         );
@@ -2601,27 +2617,40 @@ mod tests {
             .find(|frame| frame["folded_frames"] == 2)
             .expect("the first dispatch's run");
         assert_eq!(folded["parent_tool_use_id"], "tool-1", "under the dispatch it ran as");
+        assert_eq!(
+            folded["folded_from"], "2026-10-24T09:00:00.000001Z",
+            "and its range is its own run's, not the turn's",
+        );
     }
 
-    /// **A folded run has to be placeable.** The client keeps only the
-    /// counters a page's run does not cover, and the run's stamp is that
-    /// boundary, so a run with no stamp at all is served as itself.
+    /// **A frame with no stamp breaks a run.** A fold's coverage is a stamp
+    /// range, so a frame that cannot be placed is served as itself and the
+    /// stamped frames either side fold among themselves.
     #[test]
-    fn a_counter_run_with_no_stamp_is_served_raw() {
+    fn a_counter_frame_with_no_stamp_breaks_the_run() {
         let unstamped = |seq: u32, delta: i64| {
             a_frame(&format!(
                 r#"{{"type":"system","subtype":"thinking_tokens","estimated_tokens":{delta},"estimated_tokens_delta":{delta},"uuid":"t-{seq}","session_id":"s"}}"#
             ))
         };
-        let messages = vec![opens_turn(), unstamped(1, 10), unstamped(2, 20)];
+        let messages = vec![opens_turn(), unstamped(1, 10), counter(2, 20), counter(3, 5)];
         let rendered = crate::transcript::render(&messages, true);
 
         let page = page(&messages, &rendered, 0, None, u32::MAX);
 
         assert_eq!(
             counters_on(&page),
-            vec![(10, None), (20, None)],
-            "no stamp to place a fold by, so both frames are served",
+            vec![(10, None), (25, Some(2))],
+            "the unstamped frame is served, and the stamped pair after it folds",
+        );
+        let folded = page.turns[0]
+            .messages
+            .iter()
+            .find(|frame| frame["folded_frames"] == 2)
+            .expect("the stamped pair");
+        assert_eq!(
+            folded["folded_from"], "2026-10-24T09:00:00.000002Z",
+            "its range starts at the first frame it can place",
         );
     }
 

@@ -454,19 +454,42 @@ function counterStampMs(message: unknown): number | null {
   return wireStampMs(frame.timestamp);
 }
 
+/** The stamps a page's folded counter run covers. */
+interface FoldedRun {
+  from: number;
+  through: number;
+}
+
 /**
- * The instant a page's folded counter run covers, when `message` is one.
+ * The stamps a page's folded counter run covers, when `message` is one.
  *
  * A page serves a turn's counter storm as one frame carrying the summed
- * growth, and `folded_frames` says how many frames the one stands for. A
- * counter with no such count is a live frame (the stream folds a flush's run
- * but not a page's turn), which covers only itself.
+ * growth, `folded_frames` saying how many frames the one stands for and
+ * `folded_from` naming where the run starts. **Both ends are needed**: a page
+ * can open on a turn's suffix, so counters above its first one are ones it
+ * never carried and a client's held copy must keep them. A counter with no
+ * such count is a live frame (the stream folds a flush's run but not a page's
+ * turn), which covers only itself.
  */
-function foldedThroughMs(message: unknown): number | null {
-  const frame = message as { type?: unknown; subtype?: unknown; folded_frames?: unknown } | null;
+function foldedRunMs(message: unknown): FoldedRun | null {
+  const frame = message as {
+    type?: unknown;
+    subtype?: unknown;
+    timestamp?: unknown;
+    folded_frames?: unknown;
+    folded_from?: unknown;
+  } | null;
   if (frame?.type !== 'system' || frame.subtype !== 'thinking_tokens') return null;
   if (typeof frame.folded_frames !== 'number' || frame.folded_frames < 2) return null;
-  return counterStampMs(message);
+  const through = wireStampMs(frame.timestamp);
+  const from = wireStampMs(frame.folded_from);
+  if (from === null || through === null || from > through) return null;
+  return { from, through };
+}
+
+/** Whether a held counter's stamp falls inside one of the runs. */
+function withinRuns(runs: readonly FoldedRun[], stamped: number | null): boolean {
+  return stamped !== null && runs.some((run) => run.from <= stamped && stamped <= run.through);
 }
 
 /** A frame's own id, or `null` when it carries none. */
@@ -608,16 +631,16 @@ export class Frames {
    */
   private readonly endings = new Set<string>();
   /**
-   * The newest instant a folded counter run in this list covers, in ms.
+   * The stamp ranges this list's folded counter runs cover.
    *
    * A page serves a counter storm as one frame, so a held row's raw counters
    * are frames the page already accounts for - and a merge that read them as
    * missing would put their growth back beside the page's total and double
-   * it. The stamp is the boundary: a counter stamped after this instant
-   * arrived after the page's cut and still owes the running figure its
-   * growth.
+   * it. **A range, not one instant**: a page can open on a turn's suffix, so
+   * a counter below the page's run is one it never carried and the held copy
+   * keeps it.
    */
-  private foldedThrough: number | null = null;
+  private readonly covers: FoldedRun[] = [];
 
   constructor(messages: unknown[]) {
     for (const message of messages) this.add(message);
@@ -628,7 +651,7 @@ export class Frames {
    *
    * All three faces - id, ending and words - so an id-bearing frame still
    * answers an id-less copy's ending or words question; and a folded counter
-   * run's boundary, which a merge reads beside them.
+   * run's stamp range, which a merge reads beside them.
    */
   add(message: unknown): void {
     const id = uuidOf(message);
@@ -637,16 +660,13 @@ export class Frames {
     if (ending !== null) this.endings.add(ending);
     const words = wordsOf(message);
     if (words.length > 0) this.said.add(JSON.stringify(words));
-    const folded = foldedThroughMs(message);
-    if (folded !== null && (this.foldedThrough === null || folded > this.foldedThrough)) {
-      this.foldedThrough = folded;
-    }
+    const run = foldedRunMs(message);
+    if (run !== null) this.covers.push(run);
   }
 
   /** Whether the list this indexes holds `message`. */
   carries(message: unknown, prose = true): boolean {
-    const stamped = counterStampMs(message);
-    if (stamped !== null && this.foldedThrough !== null && stamped <= this.foldedThrough) {
+    if (this.covers.length > 0 && withinRuns(this.covers, counterStampMs(message))) {
       return true;
     }
     const id = uuidOf(message);
@@ -692,17 +712,19 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
     }
   });
   /**
-   * The newest instant a folded counter run on this page covers.
+   * The stamp ranges this page's folded counter runs cover.
    *
-   * A held counter at or before it is a frame the page's total already
-   * carries, and one placed beside that total would draw the growth twice.
-   * It is not a frame the held copy uniquely has, so it is placed nowhere. A
-   * counter stamped after the cut is genuinely newer and stays.
+   * A held counter inside one is a frame the page's total already carries,
+   * and one placed beside that total would draw the growth twice. It is not a
+   * frame the held copy uniquely has, so it is placed nowhere. A counter
+   * outside every range - newer than the cut, or below a run that opened on
+   * the turn's suffix - is genuinely the held copy's and stays.
    */
-  const covers = pageRows.reduce<number | null>((newest, message) => {
-    const at = foldedThroughMs(message);
-    return at === null || (newest !== null && at <= newest) ? newest : at;
-  }, null);
+  const covers: FoldedRun[] = [];
+  for (const message of pageRows) {
+    const run = foldedRunMs(message);
+    if (run !== null) covers.push(run);
+  }
   const whereOf = (message: unknown): number | undefined => {
     const id = uuidOf(message);
     if (id !== null) return byId.get(id);
@@ -715,10 +737,7 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
   const after = new Map<number, unknown[]>();
   let anchor = -1;
   for (const message of heldRows) {
-    if (covers !== null) {
-      const stamped = counterStampMs(message);
-      if (stamped !== null && stamped <= covers) continue;
-    }
+    if (covers.length > 0 && withinRuns(covers, counterStampMs(message))) continue;
     const where = whereOf(message);
     if (where !== undefined) {
       // **Never backwards**: a frame whose copy sits earlier than the last
