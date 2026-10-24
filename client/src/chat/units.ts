@@ -80,6 +80,9 @@ export const NO_STOPS: PageStops = { settled: new Map(), drawn: new Set() };
 interface StopFacts {
   /** The call a task belongs to, from `task_started` and launch results. */
   owners: Map<string, string>;
+  /** The tasks `task_started` linked itself: the CLI's own word, which wins
+   * over a launch sentence wherever either sits on the page. */
+  strong: Set<string>;
   /** The calls whose `tool_use` the turn holds. */
   held: Set<string>;
   /** The `TaskStop` calls the turn holds, by the task each names. */
@@ -90,7 +93,13 @@ interface StopFacts {
 
 /** A turn with no stop facts yet: the seed `carriedValue` builds on a miss. */
 function seedStopFacts(): StopFacts {
-  return { owners: new Map(), held: new Set(), asks: new Map(), answers: new Map() };
+  return {
+    owners: new Map(),
+    strong: new Set(),
+    held: new Set(),
+    asks: new Map(),
+    answers: new Map(),
+  };
 }
 
 /** Fold one frame into a turn's stop facts. */
@@ -120,7 +129,9 @@ function addStopFacts(facts: StopFacts, frame: unknown): void {
   if (held.type !== 'system' || held.subtype !== 'task_started') return;
   const task = str(held, 'task_id');
   const call = str(held, 'tool_use_id');
-  if (task !== null && call !== null) facts.owners.set(task, call);
+  if (task === null || call === null) return;
+  facts.owners.set(task, call);
+  facts.strong.add(task);
 }
 
 /**
@@ -132,12 +143,24 @@ function addStopFacts(facts: StopFacts, frame: unknown): void {
  * extended, and only by the frames it gained.
  */
 export function stopsOf(turns: readonly { messages: readonly unknown[] }[]): PageStops {
+  const pages = turns.map((turn) => carriedValue(turn, 'stops', seedStopFacts, addStopFacts));
   const owners = new Map<string, string>();
   const held = new Set<string>();
   const resolved: Array<{ stop: string; task: string }> = [];
-  for (const turn of turns) {
-    const facts = carriedValue(turn, 'stops', seedStopFacts, addStopFacts);
-    for (const [task, call] of facts.owners) owners.set(task, call);
+  // The CLI's own link first, then a launch sentence only where nothing has
+  // spoken: first-write-wins keeps a later tool result that merely QUOTES the
+  // sentence from stealing the task from the call that launched it.
+  for (const facts of pages) {
+    for (const [task, call] of facts.owners) {
+      if (facts.strong.has(task)) owners.set(task, call);
+    }
+  }
+  for (const facts of pages) {
+    for (const [task, call] of facts.owners) {
+      if (!facts.strong.has(task) && !owners.has(task)) owners.set(task, call);
+    }
+  }
+  for (const facts of pages) {
     for (const id of facts.held) held.add(id);
     for (const [stop, task] of facts.asks) {
       if (facts.answers.get(stop) === true) resolved.push({ stop, task });

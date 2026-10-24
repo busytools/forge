@@ -331,7 +331,7 @@
           ? null
           : page.background_tasks.flatMap(backgroundTaskFrom),
         false,
-        { calls: new Map(), owners: new Map() },
+        { calls: new Map(), owners: new Map(), stoppedTasks: new Set() },
       );
       // The record's connector subscriptions, seeded the same way: the
       // strip's third row reads this store, and nothing else here would fill

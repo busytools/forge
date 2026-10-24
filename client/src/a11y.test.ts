@@ -1013,7 +1013,7 @@ function seedStrip(on: boolean): void {
         ]
       : null,
     false,
-    { calls: new Map(), owners: new Map() },
+    { calls: new Map(), owners: new Map(), stoppedTasks: new Set() },
   );
   connectors.sync(on ? [{ kind: 'gotify', id: 'g-1', key: 'ci', value: 'any priority' }] : null);
   schedules.sync(on ? [{ id: 'c-1', key: 'rules sweep', value: 'in 27d \u{b7} recurring' }] : null);

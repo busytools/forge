@@ -29,7 +29,7 @@ export interface Outcome {
   stopped: boolean;
 }
 
-/** The conversation's task facts, in the two shapes a row needs them. */
+/** The conversation's task facts, in the shapes a row needs them. */
 export interface Outcomes {
   /** Verdicts and end times, by the call each names. */
   calls: Map<string, Outcome>;
@@ -38,6 +38,16 @@ export interface Outcomes {
    * CLI announces the task, then names the call), so a row reads its id from
    * here when its own is null. */
   owners: Map<string, string>;
+  /**
+   * The tasks a `TaskStop` ended, by the task id the stop itself names.
+   *
+   * **The stop's own id, because the launch can be out of the page's window.**
+   * The record holds the newest turns (`SUBSCRIBE_TURNS`), and a task started
+   * earlier in the session - a dev server, a long gate - has its launch result
+   * outside it, so `owners` cannot resolve the call. The registry row carries
+   * the task id, though, and that is enough to stop counting it.
+   */
+  stoppedTasks: Set<string>;
 }
 
 interface Frame {
@@ -58,6 +68,8 @@ export function outcomesFrom(turns: readonly { messages: readonly unknown[] }[])
   const results = new Map<string, Block>();
   /** The `TaskStop` calls the conversation holds, by the task each names. */
   const stopAsks: Array<{ call: string; task: string }> = [];
+  /** The tasks a stop ended, whether or not its launch is still on the page. */
+  const stoppedTasks = new Set<string>();
 
   for (const turn of turns) {
     for (const message of turn.messages) {
@@ -112,11 +124,14 @@ export function outcomesFrom(turns: readonly { messages: readonly unknown[] }[])
     }
   }
 
-  // **A stop's own answer ends the call it names**, wherever on the page the
-  // launch sits: the strip's rows are the registry's, and the registry keeps
-  // listing a task the tool stopped.
+  // **A stop's own answer ends the task it names**, wherever on the page its
+  // launch sits - or whether it sits there at all: the strip's rows are the
+  // registry's, a task started earlier in the session has its launch outside
+  // the record's turn window, and the stop's own task id is enough to settle
+  // it. The call-level outcome is the reveal link's, where the owner is known.
   for (const ask of stopAsks) {
     if (!stopSucceeded(results.get(ask.call))) continue;
+    stoppedTasks.add(ask.task);
     const call = owners.get(ask.task);
     if (call === undefined) continue;
     const prior = out.get(call);
@@ -126,5 +141,5 @@ export function outcomesFrom(turns: readonly { messages: readonly unknown[] }[])
       stopped: true,
     });
   }
-  return { calls: out, owners };
+  return { calls: out, owners, stoppedTasks };
 }

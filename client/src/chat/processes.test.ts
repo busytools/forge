@@ -146,6 +146,7 @@ describe('the batch rows', () => {
     store.sync(walk([]), [], true, {
       calls: new Map([['tu-1', { failed: true, ended_ms: 1_700_000_000_000, stopped: false }]]),
       owners: new Map(),
+      stoppedTasks: new Set(),
     });
     expect(store.rows()[0], 'the late outcome reaches the settled row').toMatchObject({
       failed: true,
@@ -242,6 +243,7 @@ describe('the batch rows', () => {
     store.sync(walk([]), [registryRow({ tool_use_id: null })], true, {
       calls: new Map(),
       owners: new Map([['t-1', 'tu-linked']]),
+      stoppedTasks: new Set(),
     });
 
     const rows = store.rows();
@@ -366,6 +368,55 @@ describe('the batch rows', () => {
       memory_bytes: 900,
     });
     expect(store.totalBytes(), 'and the stopped family no longer counts').toBe(900);
+  });
+
+  it('stops counting a task whose launch left the page window', () => {
+    // The record holds the newest turns only, so a dev server started earlier
+    // in the session has no launch result in them and no owner resolves its
+    // call. The stop's own task id is what settles the row.
+    const TASK = 'blong0001';
+    const STOP = 'call_stop_long';
+    const stop = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: STOP, name: 'TaskStop', input: { task_id: TASK } }],
+      },
+    };
+    const stopped = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: STOP,
+            content: JSON.stringify({
+              message: `Successfully stopped task: ${TASK}`,
+              task_id: TASK,
+            }),
+          },
+        ],
+      },
+    };
+    const row = registryRow({
+      task_id: TASK,
+      description: 'Serve the dev stack',
+      command: 'vite',
+      tool_use_id: null,
+    });
+
+    const store = new Processes();
+    store.sync(walk([]), [row], true, outcomesFrom([]));
+    expect(store.running(), 'the registry is the only voice before the stop').toBe(1);
+
+    store.sync(walk([]), [row], true, outcomesFrom([{ messages: [stop, stopped] }]));
+    expect(store.running(), "the stop's own task id ends a task the page cannot link").toBe(0);
+    expect(store.settledCount(), 'and the row it draws settled is counted').toBe(1);
+    expect(store.rows()[0], 'the row is kept, with no call to reveal').toMatchObject({
+      settled: true,
+      tool_use_id: null,
+    });
   });
 
   it("counts the matched process's whole family, not its own line", () => {

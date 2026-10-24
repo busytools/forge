@@ -3148,6 +3148,36 @@ describe('one turn folded into the units a view draws', () => {
       'the order they arrived in is not the link',
     ).toEqual([LAUNCH, 'killed', TASK]);
 
+    // **A later result that merely QUOTES the sentence does not steal the
+    // task.** The launch is in one turn; the next reads a log that printed the
+    // same words, then stops the task. First-write-wins keeps the link with
+    // the call that opened it.
+    const READ = 'call_read_quote';
+    const quoting = [
+      said([use(READ, 'Read', { file_path: '/tmp/gate.log' })]),
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: READ,
+          content: `Command running in background with ID: ${TASK}.`,
+        },
+      ]),
+    ];
+    const quoted = stopsOf([{ messages: first }, { messages: [...quoting, ...second] }]);
+    const [launchedTurn] = fold(first, null, false, false, quoted);
+    const stoppedLaunch = callsOf(launchedTurn)
+      .map((row) => row.leaf)
+      .find((leaf) => leaf.id === LAUNCH);
+    expect(
+      [stoppedLaunch?.status, stoppedLaunch?.stop],
+      'the call that launched it keeps the stop',
+    ).toEqual(['killed', TASK]);
+    const [quoteTurn] = fold([...quoting, ...second], null, false, false, quoted);
+    expect(
+      callsOf(quoteTurn).find((row) => row.leaf.id === READ)?.leaf.stop,
+      'the quoting read carries no stop',
+    ).toBeNull();
+
     // The result's content has two shapes on the wire, and both answer.
     const blocks = [
       asking,
@@ -3266,6 +3296,10 @@ describe('one turn folded into the units a view draws', () => {
       'killed',
       TASK,
     ]);
+    expect(
+      call?.backgrounded,
+      'the task_started fact survives the stop, so the output read still resolves',
+    ).toBe(true);
   });
 
   it('reads a Monitor as the backgrounded call its own task_started says it is', () => {

@@ -28,6 +28,9 @@ import type { BackgroundTask, ProcessSnapshot } from '../session/wire';
 import { processMatchesCommand } from './cmdline';
 import type { Outcome, Outcomes } from './outcomes';
 
+/** The verdict a task the conversation says stopped carries. */
+const STOPPED: Outcome = { failed: false, ended_ms: null, stopped: true };
+
 /** One row of the batch list: a registry row and the figure its process gave. */
 export interface ProcessRow {
   /** Stable across beats: the registry's task id. */
@@ -59,14 +62,22 @@ export class Processes {
   #settled = $state<BackgroundTask[]>([]);
   /** The conversation's task facts, handed in with each sync: verdicts by
    * call, and the call by task, which fills an id the registry row lacks. */
-  #outcomes: Outcomes = { calls: new SvelteMap(), owners: new SvelteMap() };
+  #outcomes: Outcomes = {
+    calls: new SvelteMap(),
+    owners: new SvelteMap(),
+    stoppedTasks: new SvelteSet(),
+  };
 
   /** Take the seat's pair whole: what the record holds is what a row reads. */
   sync(
     walk: ProcessSnapshot | null | undefined,
     registry: readonly BackgroundTask[] | null | undefined,
     turnLive: boolean,
-    outcomes: Outcomes = { calls: new SvelteMap(), owners: new SvelteMap() },
+    outcomes: Outcomes = {
+      calls: new SvelteMap(),
+      owners: new SvelteMap(),
+      stoppedTasks: new SvelteSet(),
+    },
   ): void {
     this.#outcomes = outcomes;
     const next = [...(registry ?? [])];
@@ -106,15 +117,21 @@ export class Processes {
   }
 
   /**
-   * The verdict the conversation has on a registry row's call, when it has one.
+   * The verdict the conversation has on a registry row, when it has one.
    *
    * **The registry is not always the whole truth.** A task stopped by the
    * `TaskStop` tool sends no `background_tasks_changed` (4b35ed0e: the strip
    * read "1 running" over a bash with no process behind it after the tool
    * answered "Successfully stopped task"), so the conversation's own answer
    * is what ends the row.
+   *
+   * **By the stop's own task id first.** The record holds the newest turns
+   * only, so a task started earlier in the session - a dev server, a long
+   * gate - has its launch outside the page and no owner to resolve; the stop
+   * still names the task, and that is what stops the count.
    */
   #verdictOf(task: BackgroundTask): Outcome | null {
+    if (this.#outcomes.stoppedTasks.has(task.task_id)) return STOPPED;
     const call = this.#callOf(task);
     return call === null ? null : (this.#outcomes.calls.get(call) ?? null);
   }
