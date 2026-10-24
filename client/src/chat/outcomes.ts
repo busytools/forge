@@ -7,7 +7,14 @@
  * are folded here by tool_use_id, so a settled row in the strip can say
  * whether its call failed and when it ended - the same frames the chat's own
  * row reads, joined at the same ids.
+ *
+ * **A `TaskStop` carries an ending of its own, and no frame follows it**
+ * (4b35ed0e): the tool path emits no `task_started` and no task frame at all,
+ * so the sentence the launch result wrote is the only link from the task to
+ * its call, and the tool's success answer is the only ending.
  */
+
+import { addJoinFrame, seedJoin, settleStops } from './join';
 
 /** What is known about a finished call, by its tool_use_id. */
 export interface Outcome {
@@ -16,63 +23,55 @@ export interface Outcome {
   failed: boolean;
   /** The end time the frame carried, unix ms; null when none arrived. */
   ended_ms: number | null;
+  /** Whether a `TaskStop` ended the call. A stopped task is not running even
+   * while the CLI's registry still lists it, because the tool path sends no
+   * registry change either. */
+  stopped: boolean;
 }
 
-/** The conversation's task facts, in the two shapes a row needs them. */
+/** The conversation's task facts, in the shapes a row needs them. */
 export interface Outcomes {
   /** Verdicts and end times, by the call each names. */
   calls: Map<string, Outcome>;
-  /** The call a task belongs to, from `task_started` - the registry row the
-   * wire sends often predates the link (the CLI announces the task, then
-   * names the call), so a row reads its id from here when its own is null. */
+  /** The call a task belongs to, from `task_started` or a launch result's own
+   * sentence - the registry row the wire sends often predates the link (the
+   * CLI announces the task, then names the call), so a row reads its id from
+   * here when its own is null. */
   owners: Map<string, string>;
-}
-
-interface Frame {
-  type?: unknown;
-  subtype?: unknown;
-  task_id?: unknown;
-  tool_use_id?: unknown;
-  status?: unknown;
-  patch?: unknown;
+  /**
+   * The tasks a `TaskStop` ended, by the task id the stop itself names.
+   *
+   * **The stop's own id, because the launch can be out of the page's window.**
+   * The record holds the newest turns (`SUBSCRIBE_TURNS`), and a task started
+   * earlier in the session - a dev server, a long gate - has its launch result
+   * outside it, so `owners` cannot resolve the call. The registry row carries
+   * the task id, though, and that is enough to stop counting it.
+   */
+  stoppedTasks: Set<string>;
 }
 
 export function outcomesFrom(turns: readonly { messages: readonly unknown[] }[]): Outcomes {
-  /** The call a task belongs to, recorded where `task_started` names both. */
-  const owners = new Map<string, string>();
-  const out = new Map<string, Outcome>();
+  const join = seedJoin();
   for (const turn of turns) {
-    for (const message of turn.messages) {
-      const frame = message as Frame | null;
-      if (frame === null || frame.type !== 'system') continue;
-      const task = typeof frame.task_id === 'string' ? frame.task_id : null;
-      if (frame.subtype === 'task_started') {
-        const call = frame.tool_use_id;
-        if (task !== null && typeof call === 'string') owners.set(task, call);
-        continue;
-      }
-      // task_updated names only the task; task_notification names the call.
-      const direct = typeof frame.tool_use_id === 'string' ? frame.tool_use_id : null;
-      const call = direct ?? (task === null ? null : (owners.get(task) ?? null));
-      if (call === null) continue;
-      const patch =
-        typeof frame.patch === 'object' && frame.patch !== null
-          ? (frame.patch as { status?: unknown; end_time?: unknown })
-          : null;
-      const status =
-        typeof patch?.status === 'string'
-          ? patch.status
-          : typeof frame.status === 'string'
-            ? frame.status
-            : null;
-      const ended = typeof patch?.end_time === 'number' ? patch.end_time : null;
-      const prior = out.get(call);
-      out.set(call, {
-        // Latched: a later frame cannot un-fail a call.
-        failed: (prior?.failed ?? false) || status === 'failed',
-        ended_ms: ended ?? prior?.ended_ms ?? null,
-      });
-    }
+    for (const message of turn.messages) addJoinFrame(join, message);
   }
-  return { calls: out, owners };
+
+  const calls = new Map<string, Outcome>();
+  for (const [call, ending] of join.calls) calls.set(call, { ...ending, stopped: false });
+
+  // **A stop's own answer ends the task it names**, wherever on the page its
+  // launch sits - or whether it sits there at all. The call-level outcome is
+  // the reveal link's, where the owner is known.
+  const stoppedTasks = new Set<string>();
+  for (const stopped of settleStops(join)) {
+    stoppedTasks.add(stopped.task);
+    if (stopped.call === null) continue;
+    const prior = calls.get(stopped.call);
+    calls.set(stopped.call, {
+      failed: prior?.failed ?? false,
+      ended_ms: prior?.ended_ms ?? null,
+      stopped: true,
+    });
+  }
+  return { calls, owners: join.owners, stoppedTasks };
 }

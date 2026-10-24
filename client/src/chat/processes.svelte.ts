@@ -16,7 +16,9 @@
  *
  * Held as the record is: one seat is on screen, so one pair, replaced whole
  * when either side moves. The registry carries only what is running - a
- * finished task leaves it - so a row's absence is the settlement.
+ * finished task leaves it - so a row's absence is the settlement. **A task the
+ * `TaskStop` tool stopped leaves no change behind**, so the conversation's own
+ * stop is what settles that row (`#verdictOf`).
  */
 
 import { untrack } from 'svelte';
@@ -24,7 +26,10 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 
 import type { BackgroundTask, ProcessSnapshot } from '../session/wire';
 import { processMatchesCommand } from './cmdline';
-import type { Outcomes } from './outcomes';
+import type { Outcome, Outcomes } from './outcomes';
+
+/** The verdict a task the conversation says stopped carries. */
+const STOPPED: Outcome = { failed: false, ended_ms: null, stopped: true };
 
 /** One row of the batch list: a registry row and the figure its process gave. */
 export interface ProcessRow {
@@ -57,14 +62,22 @@ export class Processes {
   #settled = $state<BackgroundTask[]>([]);
   /** The conversation's task facts, handed in with each sync: verdicts by
    * call, and the call by task, which fills an id the registry row lacks. */
-  #outcomes: Outcomes = { calls: new SvelteMap(), owners: new SvelteMap() };
+  #outcomes: Outcomes = {
+    calls: new SvelteMap(),
+    owners: new SvelteMap(),
+    stoppedTasks: new SvelteSet(),
+  };
 
   /** Take the seat's pair whole: what the record holds is what a row reads. */
   sync(
     walk: ProcessSnapshot | null | undefined,
     registry: readonly BackgroundTask[] | null | undefined,
     turnLive: boolean,
-    outcomes: Outcomes = { calls: new SvelteMap(), owners: new SvelteMap() },
+    outcomes: Outcomes = {
+      calls: new SvelteMap(),
+      owners: new SvelteMap(),
+      stoppedTasks: new SvelteSet(),
+    },
   ): void {
     this.#outcomes = outcomes;
     const next = [...(registry ?? [])];
@@ -103,14 +116,41 @@ export class Processes {
     return this.#registry.filter((task) => task.task_type === 'local_bash');
   }
 
-  /** How many batch calls are running: the registry holds only the living. */
-  running(): number {
-    return this.#batches().length;
+  /**
+   * The verdict the conversation has on a registry row, when it has one.
+   *
+   * **The registry is not always the whole truth.** A task stopped by the
+   * `TaskStop` tool sends no `background_tasks_changed` (4b35ed0e: the strip
+   * read "1 running" over a bash with no process behind it after the tool
+   * answered "Successfully stopped task"), so the conversation's own answer
+   * is what ends the row.
+   *
+   * **By the stop's own task id first.** The record holds the newest turns
+   * only, so a task started earlier in the session - a dev server, a long
+   * gate - has its launch outside the page and no owner to resolve; the stop
+   * still names the task, and that is what stops the count.
+   */
+  #verdictOf(task: BackgroundTask): Outcome | null {
+    if (this.#outcomes.stoppedTasks.has(task.task_id)) return STOPPED;
+    const call = this.#callOf(task);
+    return call === null ? null : (this.#outcomes.calls.get(call) ?? null);
   }
 
-  /** How many settled this turn and are still shown. */
+  /** The batches nothing has ended: what the row counts and meters. */
+  #live(): BackgroundTask[] {
+    return this.#batches().filter((task) => this.#verdictOf(task)?.stopped !== true);
+  }
+
+  /** How many batch calls are running: the registry holds the living, and a
+   * stopped task is not one of them however long the registry lags. */
+  running(): number {
+    return this.#live().length;
+  }
+
+  /** How many settled this turn and are still shown, a stopped-but-registered
+   * task among them. */
   settledCount(): number {
-    return this.#settled.length;
+    return this.#settled.length + this.#batches().length - this.#live().length;
   }
 
   /** Whether anything is out at all, a settled row included. */
@@ -163,12 +203,17 @@ export class Processes {
     const walk = this.#walk?.processes ?? [];
     const claimed = new SvelteSet<number>();
     const rows: ProcessRow[] = this.#batches().map((task) => {
-      const match = walk.find(
-        (entry) =>
-          task.command !== null &&
-          !claimed.has(entry.pid) &&
-          processMatchesCommand(entry.command, task.command),
-      );
+      // A stopped task adopts no process: the walk would be matching whatever
+      // took the command's name next, and the row is not running anything.
+      const stopped = this.#verdictOf(task)?.stopped === true;
+      const match = stopped
+        ? undefined
+        : walk.find(
+            (entry) =>
+              task.command !== null &&
+              !claimed.has(entry.pid) &&
+              processMatchesCommand(entry.command, task.command),
+          );
       if (match !== undefined) claimed.add(match.pid);
       return {
         key: `task:${task.task_id}`,
@@ -176,7 +221,7 @@ export class Processes {
         command: task.command ?? task.task_type,
         kind: task.task_type,
         tool_use_id: this.#callOf(task),
-        settled: false,
+        settled: stopped,
         failed: false,
         ended_ms: null,
         memory_bytes: match === undefined ? null : this.#subtreeBytes(match.pid),

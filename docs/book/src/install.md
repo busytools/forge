@@ -109,8 +109,10 @@ The gate is two commands: run this one before opening a pull request, and
 `just check-feature-configs` with it. `just check` runs with
 `--all-features`, so it deliberately leaves out the configuration
 `install.sh` builds; the second command is what compiles it. Beyond that
-this is CI's set with two differences: CI also runs
-`cargo check --release`, while `client-android-warnings` (the shell's
+this is CI's set with three differences: CI also runs
+`cargo check --release` and the client's production build with
+`scripts/check_client_wasm.py` (the wasm the highlighter imports, which
+`just check` never builds), while `client-android-warnings` (the shell's
 android step) is in `just check` alone - the vendoring its build needs
 refuses non-macOS hosts, so CI runs no such job yet (issue #1959, closed
 as an enhancement and tracked in #2258). The

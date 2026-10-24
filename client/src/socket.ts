@@ -454,9 +454,10 @@ export function connect(
    * One update into the stores it belongs to.
    *
    * A seat's update goes to that seat's store, and to the home store when the
-   * home's covering rule says a home subscriber would have been sent it -
-   * which is the server's own rule, mirrored in `wire/fleet.ts` and taken
-   * from there by every reader rather than decided here.
+   * home's covering rule (`wire/fleet.ts`) says the snapshot can carry its
+   * change. That rule is narrower than the server's delivery: a keyless
+   * update reaches every home subscriber, and only the ones with a home field
+   * are worth a read.
    */
   function route(update: SessionUpdate): void {
     const slot = slotOf(update);

@@ -323,8 +323,8 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
 
     let (subject, data, _) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home);
-    // `Roster`'s field is `projects`, not `orgs` - `orgs` belongs to `AccountsView`,
-    // which is the gateway's subject and a different record entirely. Asserting the
+    // `Roster`'s field is `projects`, not `orgs` - the gateway's org walk is its
+    // own record, and the home's account pool carries none of it. Asserting the
     // wrong key here would fail for a reason that looks like the encoder's fault.
     assert!(data.get("projects").is_some(), "the home snapshot carries its projects: {data}");
 }
@@ -5976,6 +5976,102 @@ async fn a_stale_store_is_re_read_by_the_record() {
     assert_eq!(data["work"]["changed"], 0, "with the count the read answered: {data}");
 }
 
+/// **The record never waits on the PR lookup, and the watch is where it runs.**
+/// The store's PR is past its refetch window, so a read that fetched would
+/// spawn `gh`; the snapshot must carry the stored PR with the shim untouched,
+/// and the correcting `work_changed` must arrive from the seat's own watch.
+#[tokio::test]
+async fn a_subscribe_serves_the_stored_pr_and_the_watch_pushes_the_lookup() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let shim = tempfile::tempdir().expect("the gh shim's own directory");
+    let marker = shim.path().join("gh-spawned");
+    let gh = shim.path().join("gh");
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\nprintf x > {marker}\ncase \"$*\" in\n  *commits/*pulls) printf '%s' \
+             '[{{\"number\":108,\"state\":\"open\",\"html_url\":\"https://example.test/pull/108\",\
+             \"updated_at\":\"2026-10-24T00:00:00Z\",\"draft\":false}}]' ;;\n  *\"pr view\"*) \
+             printf '%s' '{{\"closingIssuesReferences\":[]}}' ;;\n  *) printf '[]' ;;\nesac\n",
+            marker = marker.display(),
+        ),
+    )
+    .expect("write the shim");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = shim.path().to_string_lossy().into_owned();
+
+    let fleet = Fleet::in_dir_with_server_and_env(
+        root.path(),
+        &[("TestOrg", &["proj"])],
+        "",
+        &[("PATH", path.as_str()), ("GH_TOKEN", "t")],
+    )
+    .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    let tip = a_repo_with_a_pushed_branch(&repo);
+
+    let state = Arc::new(TransportState::for_workspace(
+        &fleet.workspace(),
+        forge_primitives::ClientConfig::default(),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    // The store holds a PR, its attempt is past the refetch window, and its
+    // tree read is past the record's - so the record re-reads the tree and the
+    // lookup is due.
+    let long_ago = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(60))
+        .expect("an instant a minute ago");
+    let mut stored = a_scan(&repo, long_ago, "work", 0, Some((7, 11)));
+    stored.diff.pushed_sha = Some(tip);
+    stored.diff.pr_fetched_at = Some(
+        std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(600))
+            .expect("a wall clock at least ten minutes past boot"),
+    );
+    state.surface.store_work_snapshot(&lead_seat(), stored);
+    state.surface.file_index_for_record(&lead_seat()).await;
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+
+    // The store's PR is what proves the read served rather than fetched: a
+    // lookup would have answered 108. **The marker is not checked here** - the
+    // watch's first poke is immediate and its fetch can reach the shim while
+    // the snapshot is still being assembled, so "no spawn yet" is a race
+    // rather than a property of the read. The check after the push is the one
+    // that belongs to the lookup.
+    assert_eq!(data["pr"]["number"], 7, "the record serves the PR its store holds: {data}");
+
+    // The watch's next pass is where the lookup runs; its push is what
+    // corrects the row a reader is looking at.
+    update_until(&mut socket, "the watch's PR correction", |update| {
+        matches!(update, SessionUpdate::WorkChanged { pr: Some(pr), .. } if pr.number == 108)
+    })
+    .await;
+    assert!(marker.exists(), "the lookup ran, off the read path");
+}
+
 /// **An open announces nothing its snapshot already carried** (#2506 review).
 /// The record's read is the first pass's baseline, so a still tree sends no
 /// second copy of the work row or the file index - the two the open's own
@@ -6073,6 +6169,30 @@ fn a_repo(dir: &std::path::Path) {
     git(&["commit", "-qm", "first"]);
 }
 
+/// [`a_repo`] with its tip already on a remote-tracking ref, so a scan
+/// resolves a pushed sha and its PR lookup is one `gh` run away. Answers the
+/// tip.
+fn a_repo_with_a_pushed_branch(dir: &std::path::Path) -> String {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    a_repo(dir);
+    let tip = git(&["rev-parse", "HEAD"]);
+    git(&["update-ref", "refs/remotes/origin/main", &tip]);
+    git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    tip
+}
+
 /// A subscription hears the updates its subject receives and no others.
 #[tokio::test]
 async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
@@ -6109,8 +6229,8 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
 
     // And so does an App-level one the fleet's own classification does not
     // name, because the home is not only the fleet region: the service status
-    // and the plugin records are fields of its snapshot, so a client that
-    // heard them once at subscribe and never again would draw a stale page.
+    // is a field of its snapshot, so a client that heard it once at subscribe
+    // and never again would draw a stale page.
     // `CatalogLoaded` is no use here - the classification DOES cover it, so it
     // passes over this hole. The wait matches the notice written below rather
     // than the variant, so nobody else's service status can stand in for it.
@@ -9563,9 +9683,38 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         "a session's own work is information, not a warning: {line}",
     );
     assert_eq!(parsed["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
-    for field in ["open_ms", "seed_ms", "conversation_ms", "page_ms", "encode_ms", "peer"] {
+    // **Every slice the open can spend time in is named.** The line
+    // exists to place a slow switch, and a read it does not carry is a second
+    // nobody can attribute - which is how 1.1 s sat in an unnamed remainder.
+    let slices = [
+        "prelude_ms",
+        "queued_ms",
+        "hold_ms",
+        "prologue_ms",
+        "header_ms",
+        "catch_up_ms",
+        "seed_ms",
+        "conversation_ms",
+        "page_ms",
+        "cards_ms",
+        "work_ms",
+        "content_ms",
+        "reviews_ms",
+        "tree_reviews_ms",
+        "state_ms",
+        "index_ms",
+        "tail_ms",
+        "encode_ms",
+    ];
+    for field in slices {
         assert!(parsed.get(field).is_some(), "the line carries {field}: {line}");
+        assert!(
+            parsed[field].as_f64().is_some_and(|ms| ms >= 0.0),
+            "{field} is a non-negative number: {line}",
+        );
     }
+    assert!(parsed.get("open_ms").is_some(), "the line carries open_ms: {line}");
+    assert!(parsed.get("peer").is_some(), "the line carries its peer: {line}");
     // **The peer is this client's own address (#2506).** The watch has
     // several attachments and no address to tell them apart by, so the open
     // itself has to name the client it served.
@@ -9577,7 +9726,7 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
     // **One record per open.** The write's numbers live on `frame_write`, so
     // the open must not repeat them: a field in both places is a field to
     // keep in step, and an open that doubled its debug volume for it.
-    for field in ["bytes", "write_ms", "waited"] {
+    for field in ["bytes", "prep_ms", "write_ms", "waited"] {
         assert!(
             parsed.get(field).is_none(),
             "the open does not repeat the write's {field}: {line}",
@@ -9593,7 +9742,7 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
     assert_eq!(write["event_name"], "frame_write");
     assert_eq!(write["level"], "DEBUG", "a frame's own cost is information: {line}");
     assert_eq!(write["slot"], "TestOrg/proj/lead", "the line names its slot: {line}");
-    for field in ["bytes", "write_ms", "waited", "peer"] {
+    for field in ["bytes", "prep_ms", "write_ms", "waited", "peer"] {
         assert!(write.get(field).is_some(), "the line carries {field}: {line}");
     }
     assert!(
@@ -9612,6 +9761,32 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
             < parsed["open_ms"].as_f64().expect("open_ms is a number"),
         "the write's number is smaller than the open's, which a whole-open value would not be: \
          {write} beside {parsed}",
+    );
+    // **The slices are disjoint, so they cannot exceed the open they split.**
+    // Every one is taken around one read in the order the path runs them, on
+    // the open's own clock; a slice measured from the wrong start (the whole
+    // open, or a span another slice already counted) pushes this sum past
+    // `open_ms`, which is the one thing the line's arithmetic has to hold to.
+    let accounted: f64 = slices
+        .iter()
+        .map(|field| parsed[field].as_f64().expect("a slice is a number"))
+        .sum::<f64>()
+        + write["prep_ms"].as_f64().expect("prep_ms is a number")
+        + write["write_ms"].as_f64().expect("write_ms is a number");
+    assert!(
+        accounted <= parsed["open_ms"].as_f64().expect("open_ms is a number") + 1e-6,
+        "the slices account for no more than the open they split: {accounted} against {parsed}",
+    );
+    // The sum is one-sided on its own: all-zero slices would satisfy it. The
+    // two reads the fixture actually takes must be work, or a slice wired to a
+    // constant zero would pass every assertion above.
+    assert!(
+        parsed["work_ms"].as_f64().is_some_and(|ms| ms > 0.0),
+        "the tree scan is work on the path: {line}",
+    );
+    assert!(
+        write["prep_ms"].as_f64().is_some_and(|ms| ms > 0.0),
+        "the frame's serialisation is work on the path: {write}",
     );
 
     // The attach's own record, beside them, for the clients that never open

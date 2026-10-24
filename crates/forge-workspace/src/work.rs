@@ -9,8 +9,10 @@
 //!
 //! A seat nobody holds is not scanned: the hold IS what looking means, so a
 //! fleet of unheld seats costs nothing. A HELD seat costs one scan per
-//! [`SNAPSHOT_STALENESS`] while its tree is still, and at most one per
-//! [`POKE_INTERVAL`] while it moves. And a seat whose row has not moved
+//! [`SNAPSHOT_STALENESS`] while its tree is still, at most one per
+//! [`POKE_INTERVAL`] while it moves, and one when its PR lookup is due - the
+//! record a read serves carries the PR the last scan knew, so this loop is
+//! where the refresh is paid. And a seat whose row has not moved
 //! announces nothing, however often it is scanned - the frame says the tree
 //! moved, never that time passed.
 
@@ -23,7 +25,7 @@ use forge_agent::env::file_index::start_change_watch;
 use forge_agent::env::processes::SCAN_STALENESS;
 use forge_primitives::SessionSlot;
 use forge_primitives::git::{GitIssueRef, GitPrInfo};
-use forge_primitives::git_diff::{GitDiffSnapshot, GitWorkView};
+use forge_primitives::git_diff::{GitDiffSnapshot, GitWorkView, PrRefresh};
 
 use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
@@ -560,13 +562,31 @@ impl Workspace {
         &self,
         slot: &SessionSlot,
         dirty: bool,
+        pr: PrRefresh,
     ) -> Result<WorkSnapshot, String> {
         let gate = self.held_work_seats.gate(slot);
         let _one_at_a_time = match &gate {
+            // **A read that must not wait does not queue behind a scan.**
+            // The watch's Fetch scan holds this gate across its PR lookup,
+            // so a second open (a phone beside the desktop, a re-subscribe)
+            // would otherwise wait a network round trip it never asked for.
+            // The store it already holds is what this read would carry
+            // anyway.
+            Some(gate) if pr == PrRefresh::ServeCached => {
+                if let Ok(held) = gate.try_lock() {
+                    Some(held)
+                } else if let Some(held) = self.work_snapshot(slot) {
+                    return Ok(held);
+                } else {
+                    // Nothing stored to serve: this is the seat's first read,
+                    // and the scan in flight is the one that will store it.
+                    Some(gate.lock().await)
+                }
+            }
             Some(gate) => Some(gate.lock().await),
             None => None,
         };
-        self.scan_work_locked(slot, dirty).await
+        self.scan_work_locked(slot, dirty, pr).await
     }
 
     /// [`Self::scan_work_if_stale`] with the seat's gate already held.
@@ -574,6 +594,7 @@ impl Workspace {
         &self,
         slot: &SessionSlot,
         dirty: bool,
+        pr: PrRefresh,
     ) -> Result<WorkSnapshot, String> {
         // A seat with no session has nowhere to store a scan, so the rule
         // would read "nothing has scanned this" on every poke. The loop's own
@@ -585,13 +606,21 @@ impl Workspace {
             return Err(format!("{} has no session to store a scan on", slot.display()));
         }
         let held = self.work_snapshot(slot);
-        if should_scan(held.as_ref(), dirty, Instant::now()) {
+        // **A scan that may look the PR up also runs when the PR is due.**
+        // The read path serves the stored PR and never waits, so
+        // the loop is what refreshes it; without this leg the correction
+        // would wait for the tree's own 10 s window instead of its own.
+        let pr_due = pr == PrRefresh::Fetch
+            && held.as_ref().is_some_and(|held| {
+                forge_agent::env::git_diff::pr_refresh_due(&held.diff, std::time::SystemTime::now())
+            });
+        if should_scan(held.as_ref(), dirty, Instant::now()) || pr_due {
             #[cfg(any(test, feature = "testing"))]
             self.pass_test_scan_gate().await;
             let Some(cwd) = self.cwd_for_session(slot) else {
                 return Err(format!("{} has no directory to read", slot.display()));
             };
-            return Ok(self.scan_work_at(slot, Path::new(&cwd)).await);
+            return Ok(self.scan_work_at(slot, Path::new(&cwd), pr).await);
         }
         self.work_snapshot(slot).ok_or_else(|| format!("{} has no stored scan", slot.display()))
     }
@@ -601,10 +630,23 @@ impl Workspace {
     ///
     /// One body for both entry points - the record's fallback and the loop -
     /// because a second scan path is a second answer about one tree.
-    pub async fn scan_work_at(&self, slot: &SessionSlot, cwd: &Path) -> WorkSnapshot {
+    pub async fn scan_work_at(
+        &self,
+        slot: &SessionSlot,
+        cwd: &Path,
+        pr: PrRefresh,
+    ) -> WorkSnapshot {
         let previous = self.work_snapshot(slot).map(|held| held.diff);
         let env = self.project_env(slot.project());
-        let diff = forge_agent::env::git_diff::scan(cwd, &env, previous.as_ref()).await;
+        let diff = match pr {
+            PrRefresh::Fetch => {
+                forge_agent::env::git_diff::scan(cwd, &env, previous.as_ref()).await
+            }
+            PrRefresh::ServeCached => {
+                forge_agent::env::git_diff::scan_serving_cached_pr(cwd, &env, previous.as_ref())
+                    .await
+            }
+        };
         let held = WorkSnapshot { diff, cwd: cwd.to_path_buf(), read_at: Instant::now() };
         self.store_work_snapshot(slot, held.clone());
         held
@@ -762,7 +804,10 @@ fn spawn_work_watch(
             // The tree's own row first: the cheapest read, and the one a
             // reader waits for. A refusal leaves the process and file walks
             // to run their own rules.
-            if let Ok(held) = workspace.scan_work_if_stale(&slot, dirty).await {
+            // **The loop is where the PR lookup is paid.** Nobody
+            // waits on this pass; the snapshot a client's open reads serves
+            // the stored PR instead, so the round trip lands here.
+            if let Ok(held) = workspace.scan_work_if_stale(&slot, dirty, PrRefresh::Fetch).await {
                 let row = Announced::of(&held);
                 if announced.as_ref() != Some(&row) {
                     workspace.update_tx.send(SessionUpdate::WorkChanged {
@@ -846,9 +891,27 @@ mod tests {
     fn a_declared_project(
         repo: &Path,
     ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>, tempfile::TempDir) {
+        a_declared_project_with_env(repo, &[])
+    }
+
+    /// [`a_declared_project`] with the project's own `[orgs.projects.env]`,
+    /// which is the identity a scan's `git` and `gh` children carry.
+    fn a_declared_project_with_env(
+        repo: &Path,
+        env: &[(&str, &str)],
+    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>, tempfile::TempDir) {
+        use std::fmt::Write as _;
+
         let dir = tempfile::tempdir().expect("tempdir");
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge dir");
+        let mut project_env = String::new();
+        if !env.is_empty() {
+            project_env.push_str("\n  [orgs.projects.env]\n");
+            for (key, value) in env {
+                writeln!(project_env, "  {key} = {value:?}").expect("the env block writes");
+            }
+        }
         std::fs::write(
             forge.join("forge.toml"),
             format!(
@@ -861,7 +924,7 @@ accounts = ["acct-a"]
 name = "forge"
 path = "{}"
 auto_start = true
-
+{project_env}
 [[accounts]]
 display_name = "acct-a"
 token = "t"
@@ -886,6 +949,113 @@ provider = "anthropic"
         let (workspace, updates, dir) = a_declared_project(repo);
         workspace.register_domain_session(seat(), None);
         (workspace, updates, dir)
+    }
+
+    /// [`a_workspace`] with the project's own env, which is where a scan's
+    /// `gh` children get their identity.
+    fn a_workspace_with_env(
+        repo: &Path,
+        env: &[(&str, &str)],
+    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>, tempfile::TempDir) {
+        let (workspace, updates, dir) = a_declared_project_with_env(repo, env);
+        workspace.register_domain_session(seat(), None);
+        (workspace, updates, dir)
+    }
+
+    /// A repo on a pushed `feature` branch, and a `gh` on a PATH of its own
+    /// that answers the scan's PR lookup with one open PR and records that it
+    /// ran. The push is simulated the way the scanner sees one: a
+    /// remote-tracking ref that already contains the tip.
+    struct PushedBranch {
+        repo: tempfile::TempDir,
+        tip: String,
+        /// The shim directory, as the project's `PATH`.
+        path: String,
+        marker: std::path::PathBuf,
+    }
+
+    /// One open PR, as GitHub's `commits/<sha>/pulls` answers it.
+    const PR_JSON: &str = r#"[{"number":108,"state":"open","html_url":"https://example.test/pull/108","updated_at":"2026-10-24T00:00:00Z","draft":false}]"#;
+
+    impl PushedBranch {
+        /// The fixture and the shim's directory, which the caller has to keep
+        /// alive for as long as `gh` may run.
+        fn new() -> (Self, tempfile::TempDir) {
+            use std::os::unix::fs::PermissionsExt;
+
+            let repo = a_repo();
+            git(repo.path(), &["checkout", "-q", "-b", "feature"]);
+            let tip = rev_parse(repo.path(), "HEAD");
+            git(repo.path(), &["update-ref", "refs/remotes/origin/main", &tip]);
+            git(
+                repo.path(),
+                &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+            );
+
+            let shim = tempfile::tempdir().expect("the gh shim's own directory");
+            let marker = shim.path().join("gh-spawned");
+            let gh = shim.path().join("gh");
+            std::fs::write(
+                &gh,
+                format!(
+                    "#!/bin/sh\nprintf x > {marker}\ncase \"$*\" in\n  *commits/*pulls) \
+                     printf '%s' '{pr}' ;;\n  *\"pr view\"*) printf '%s' \
+                     '{{\"closingIssuesReferences\":[]}}' ;;\n  *) printf '[]' ;;\nesac\n",
+                    marker = marker.display(),
+                    pr = PR_JSON,
+                ),
+            )
+            .expect("write the shim");
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            let path = shim.path().to_string_lossy().into_owned();
+            (Self { repo, tip, path, marker }, shim)
+        }
+
+        /// The project's env, which is the identity the scan's `gh` runs as.
+        fn env(&self) -> [(&str, &str); 2] {
+            [("PATH", self.path.as_str()), ("GH_TOKEN", "t")]
+        }
+
+        /// A stored scan of the branch, past the read window, carrying `pr`
+        /// with its attempt taken at `fetched_at`.
+        fn stored_scan(
+            &self,
+            pr: Option<forge_primitives::git::GitPrInfo>,
+            fetched_at: std::time::SystemTime,
+        ) -> WorkSnapshot {
+            WorkSnapshot {
+                read_at: Instant::now()
+                    .checked_sub(SNAPSHOT_STALENESS + Duration::from_secs(1))
+                    .expect("the test clock is past the read window"),
+                diff: GitDiffSnapshot {
+                    branch: GitBranch::Named("feature".to_owned()),
+                    default_branch: Some("origin/main".to_owned()),
+                    repo_gate: RepoGate::InRepo,
+                    pushed_sha: Some(self.tip.clone()),
+                    worktree: LayerState::Clean,
+                    branch_ahead: LayerState::Clean,
+                    pr,
+                    closes: Vec::new(),
+                    pr_fetched_at: Some(fetched_at),
+                },
+                cwd: self.repo.path().to_path_buf(),
+            }
+        }
+    }
+
+    /// The sha `rev` names in `dir`.
+    fn rev_parse(dir: &Path, rev: &str) -> String {
+        let out = Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", rev])
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git rev-parse {rev}");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
     /// Spawn git the way the product does, scrub included: the ambient
@@ -962,6 +1132,115 @@ provider = "anthropic"
         );
     }
 
+    /// **The record's read never waits on the PR lookup.** The lookup
+    /// is the scan's one piece of network - a TLS + API round trip measured at
+    /// 0.9 s - and it sat on the record a client's open waits for. The record
+    /// serves the PR its store holds and leaves the refresh to the seat's
+    /// loop, which nobody waits on. The control below proves the fixture can
+    /// see a spawn, so "no marker" is a policy and not a broken shim.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_records_scan_serves_the_stored_pr_without_spawning_gh() {
+        use forge_primitives::git::GitPrInfo;
+
+        let (branch, _shim) = PushedBranch::new();
+        let (workspace, _updates, _config) =
+            a_workspace_with_env(branch.repo.path(), &branch.env());
+
+        // The store's scan is past the read window, so the record re-reads the
+        // tree, and its PR attempt is past any refetch window - both reasons
+        // the lookup would run today.
+        let pr = GitPrInfo { number: 7, url: "https://example.test/pr/7".to_owned(), draft: false };
+        let fetched_at = std::time::SystemTime::now() - Duration::from_secs(600);
+        workspace.store_work_snapshot(&seat(), branch.stored_scan(Some(pr.clone()), fetched_at));
+
+        let served = workspace
+            .scan_work_if_stale(&seat(), false, PrRefresh::ServeCached)
+            .await
+            .expect("a live seat reads its tree");
+        assert!(
+            !branch.marker.exists(),
+            "the record's read answers without spawning the PR lookup",
+        );
+        assert_eq!(served.diff.pr, Some(pr), "and it serves the PR the store already held");
+        assert_eq!(
+            served.diff.pr_fetched_at,
+            Some(fetched_at),
+            "the stored attempt time stands, so the loop still finds the cache stale",
+        );
+
+        let fetched = workspace
+            .scan_work_if_stale(&seat(), true, PrRefresh::Fetch)
+            .await
+            .expect("a live seat reads its tree");
+        assert!(branch.marker.exists(), "the loop's policy does reach the lookup");
+        assert_eq!(
+            fetched.diff.pr.map(|found| found.number),
+            Some(108),
+            "and the shim's answer is what the scan then holds",
+        );
+    }
+
+    /// **The deferred lookup still reaches the viewer.** The record
+    /// serves the PR its store holds and never waits; the seat's watch is
+    /// where the lookup runs, and the row it moves is pushed - so the
+    /// correction a reader sees is a frame, not a second read.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_watch_pushes_the_pr_a_record_served_from_its_store() {
+        use forge_primitives::git::GitPrInfo;
+
+        let (branch, _shim) = PushedBranch::new();
+        let (workspace, mut updates, _config) =
+            a_workspace_with_env(branch.repo.path(), &branch.env());
+        let seat = seat();
+
+        // The store's row held a PR, and the attempt that found it is long
+        // past the refetch window: the lookup is due.
+        let held =
+            GitPrInfo { number: 7, url: "https://example.test/pr/7".to_owned(), draft: false };
+        workspace.store_work_snapshot(
+            &seat,
+            branch.stored_scan(
+                Some(held.clone()),
+                std::time::SystemTime::now() - Duration::from_secs(600),
+            ),
+        );
+
+        // The subscribe, as the transport runs it: hold, read the record (which
+        // serves the stored PR and starts no lookup), then mark the read so the
+        // watch's first pass begins from these stores.
+        workspace.hold_seat(&seat);
+        let served = workspace
+            .scan_work_if_stale(&seat, false, PrRefresh::ServeCached)
+            .await
+            .expect("a live seat reads its tree");
+        assert_eq!(served.diff.pr, Some(held), "the record serves what the store held");
+        assert!(!branch.marker.exists(), "and the read ran no lookup to answer");
+        workspace.note_record_read(&seat);
+
+        // **The correction is the watch's next pass, not the tree's own
+        // window.** The record's read left the store fresh, so a loop that
+        // only scanned on tree staleness would take a whole `SNAPSHOT_STALENESS`
+        // to push; the bound is derived from that window so the two cannot
+        // drift apart, and the PR-due leg is what keeps this inside a poke.
+        let deadline =
+            tokio::time::Instant::now() + SNAPSHOT_STALENESS.saturating_sub(Duration::from_secs(2));
+        loop {
+            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("the watch did not push the correction its lookup made within a poke");
+            };
+            let SessionUpdate::WorkChanged { key, pr, .. } = moved.update else {
+                continue;
+            };
+            assert_eq!(key, seat, "and the row is addressed to the seat that was held");
+            assert_eq!(
+                pr.map(|found| found.number),
+                Some(108),
+                "the pushed row carries the PR the deferred lookup found",
+            );
+            return;
+        }
+    }
+
     /// **A hold answers before its scans do** (#2506). The open used to pay
     /// three sequential stale reads before it could answer; the watch the hold
     /// starts takes them, so a slow read cannot hold a page.
@@ -999,7 +1278,7 @@ provider = "anthropic"
         workspace.seed_test_scan_gate(Arc::clone(&gate));
 
         let read = |workspace: Arc<Workspace>, seat: SessionSlot| async move {
-            workspace.scan_work_if_stale(&seat, false).await
+            workspace.scan_work_if_stale(&seat, false, PrRefresh::Fetch).await
         };
         let record = tokio::spawn(read(Arc::clone(&workspace), seat.clone()));
         let first_pass = tokio::spawn(read(Arc::clone(&workspace), seat.clone()));
@@ -1012,6 +1291,87 @@ provider = "anthropic"
         assert_eq!(
             record.read_at, first_pass.read_at,
             "one scan served both: the second answered the store the first wrote",
+        );
+    }
+
+    /// **A record read does not queue behind a scan somebody else is running.**
+    /// The watch's Fetch scan holds the seat's gate across its PR lookup, so a
+    /// second open (a phone beside the desktop, a re-subscribe) must answer the
+    /// store it already holds rather than wait a network round trip it never
+    /// asked for. The control below is the same read under the fetching policy,
+    /// which is the one that waits - so the fast answer is the policy and not a
+    /// gate nothing takes.
+    #[tokio::test]
+    async fn a_record_read_serves_the_store_while_a_scan_holds_the_gate() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat);
+        let stored = a_snapshot(Instant::now(), dir.path());
+        workspace.store_work_snapshot(&seat, stored.clone());
+
+        // The scan in flight: the seat's own gate, held for as long as this
+        // test keeps the guard.
+        let gate = workspace.held_work_seats.gate(&seat).expect("a held seat has a gate");
+        let _in_flight = gate.lock().await;
+
+        let served = tokio::time::timeout(
+            Duration::from_millis(500),
+            workspace.scan_work_if_stale(&seat, false, PrRefresh::ServeCached),
+        )
+        .await
+        .expect("a read that must not wait answers at once")
+        .expect("the store is there");
+        assert_eq!(served.read_at, stored.read_at, "and it answers the store's own scan");
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                workspace.scan_work_if_stale(&seat, true, PrRefresh::Fetch),
+            )
+            .await
+            .is_err(),
+            "a fetching scan is the one that queues on the gate in flight",
+        );
+    }
+
+    /// **Only a fetching scan is forced by a due PR.** The read path's policy
+    /// is to serve; a PR-due leg that ignored the policy would turn every
+    /// record read on a due branch into a tree scan, which is the cost the
+    /// serving policy exists to keep off the open.
+    #[tokio::test]
+    async fn a_due_pr_does_not_force_a_serving_read_to_scan() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        let read_at = Instant::now();
+        let mut stored = a_snapshot(read_at, dir.path());
+        // A feature branch past its refetch window: the PR is due.
+        stored.diff.branch = GitBranch::Named("feature".to_owned());
+        stored.diff.default_branch = Some("origin/main".to_owned());
+        stored.diff.pr_fetched_at = Some(
+            std::time::SystemTime::now()
+                .checked_sub(Duration::from_secs(600))
+                .expect("a wall clock at least ten minutes past boot"),
+        );
+        workspace.store_work_snapshot(&seat, stored.clone());
+
+        let served = workspace
+            .scan_work_if_stale(&seat, false, PrRefresh::ServeCached)
+            .await
+            .expect("a live seat reads its tree");
+        assert_eq!(
+            served.read_at, stored.read_at,
+            "a serving read answers the store even when the PR is due",
+        );
+
+        let fetched = workspace
+            .scan_work_if_stale(&seat, false, PrRefresh::Fetch)
+            .await
+            .expect("a live seat reads its tree");
+        assert_ne!(
+            fetched.read_at, stored.read_at,
+            "a fetching scan is the one the due leg forces",
         );
     }
 
@@ -1206,8 +1566,10 @@ provider = "anthropic"
         // A TRACKED file: the row counts the worktree layer, which is
         // uncommitted edits against HEAD, and an untracked file is not one.
         std::fs::write(dir.path().join("kept.txt"), "two").expect("write");
-        let held =
-            workspace.scan_work_if_stale(&seat, true).await.expect("the seat's tree is readable");
+        let held = workspace
+            .scan_work_if_stale(&seat, true, PrRefresh::Fetch)
+            .await
+            .expect("the seat's tree is readable");
 
         assert_eq!(
             work_from_scan(&held.diff, &held.cwd).changed,

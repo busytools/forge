@@ -5,8 +5,6 @@ use std::time::SystemTime;
 
 use crate::target::ProjectKey;
 
-pub use forge_primitives::usage::AccountBudget;
-
 /// One project from the catalog plus its sessions, sorted last-
 /// activity descending. `sessions[0]` is the lead. Empty `sessions`
 /// means the project has no on-disk history yet.
@@ -100,42 +98,6 @@ impl ProjectView {
     }
 }
 
-/// One account row for the account snapshots: a project-allowed
-/// account plus its live rate-limit state, snapshotted so a view
-/// renders without locking `AccountStateMap`. Produced by
-/// [`crate::Workspace::project_accounts_snapshot`] in allow-list order.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct AccountRow {
-    /// forge.toml `[[accounts]]` display name.
-    pub display_name: String,
-    /// `None` when the account is pickable now (not saturated, not
-    /// bailed); `Some` with the class `unusable_reason` reports for it.
-    pub unusable: Option<forge_gateway::Unusable>,
-    /// What this account has left, in whatever terms its backend bills.
-    pub budget: AccountBudget,
-    /// `true` when the account is in the org's `fallback_accounts` only.
-    /// Fallback rows follow every primary row in the snapshot.
-    pub fallback: bool,
-    /// The provider whose backend serves this account.
-    pub provider: forge_primitives::account::Provider,
-    /// Boot-time loading state, as the home band reads it.
-    pub loading: forge_gateway::LoadingState,
-}
-
-/// One org's block in the read-only accounts view: its walk order and
-/// the live state of every account it names.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct GatewayOrgView {
-    /// The `[[orgs]].name` from `forge.toml`.
-    pub org: String,
-    /// The org's primary pin, in walk order.
-    pub accounts: Vec<String>,
-    /// The org's fallback pin, in walk order.
-    pub fallback_accounts: Vec<String>,
-    /// One row per account the org names, primaries first.
-    pub rows: Vec<AccountRow>,
-}
-
 // The account auth classification is returned by the gateway's account
 // state, so it lives in forge-primitives now. Re-exported here so
 // `forge_workspace::AccountAuth` and `crate::views::AccountAuth` keep
@@ -159,6 +121,50 @@ pub struct AccountLoadingRow {
     pub retry_after: Option<std::time::Duration>,
     /// Which repair instruction a bailed row earns.
     pub auth: AccountAuth,
+    /// A cached usage window is at its cap with the reset still ahead, so a
+    /// spawn would not bind here until then. **Carried without the usage**:
+    /// it is the half of the usage that moves selection, and a client
+    /// comparing two pools needs it to know a frame moved a project row.
+    pub at_cap: bool,
+    /// The rotation is holding the account out after a probe wrote a limit.
+    /// The other selection input a usage move can take with it.
+    pub cooling: bool,
+}
+
+/// The account pool as a view draws it: the rows the home's snapshot carries
+/// and the state an `AccountsChanged` frame pushes.
+///
+/// **One shape for both paths.** The snapshot field and the frame's payload
+/// are built by [`crate::Workspace::account_pool_view`], so a client folding a
+/// frame and a client reading the snapshot cannot disagree (rule 25).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AccountPoolView {
+    pub loading: Vec<AccountLoadingRow>,
+    /// Every account has settled and the inference listener is bound.
+    pub all_loaded: bool,
+    pub gateway: AccountGatewayView,
+    /// What each account has left, one row per configured account.
+    pub usage: Vec<AccountUsageView>,
+}
+
+/// The inference listener's bind state.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AccountGatewayView {
+    pub ready: bool,
+    pub port: u16,
+    /// Set when the listener could not bind its port.
+    pub bind_error: Option<String>,
+}
+
+/// One account's cached usage snapshot.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AccountUsageView {
+    pub display_name: String,
+    /// `None` until the poller first succeeds.
+    pub snapshot: Option<forge_primitives::usage::UsageSnapshot>,
 }
 
 /// One session under a project.

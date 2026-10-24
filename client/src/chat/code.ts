@@ -146,8 +146,13 @@ export function codePanel(label: string | null, language: string | null, text: s
 }
 
 /**
- * The panel around an already-highlighted body, so the shiki path and the
- * highlight.js path draw one piece rather than two drawings of it.
+ * The panel a fenced block draws: the header strip and the `<pre>` around an
+ * already-highlighted body.
+ *
+ * **The chat's Read row draws its own** (`Code.svelte`): its plain and
+ * coloured passes must share one element, so the viewport observer has a
+ * stable node and only the `<pre>` body is replaced - a builder that returned
+ * the whole panel would swap the element itself.
  */
 export function panelHtml(label: string | null, body: string): string {
   const header = label === null ? '' : `<div class="lang">${escaped(label)}</div>`;

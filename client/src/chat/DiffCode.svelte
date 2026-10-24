@@ -4,6 +4,7 @@
   import { diffLineHtml, lineDiff, pairedTints, type ColourToken, type Span } from '../format/diff';
   import { formatOf } from '../format/policy';
   import type { CallBody } from './leaves';
+  import { whenVisible } from './visible';
 
   /**
    * A call's patch: the hunks with their line numbers and marks, GitHub's
@@ -142,40 +143,49 @@
   /** One token list per row of each block, or `null` while the plain pass stands. */
   let tokens = $state<(readonly ColourToken[] | null)[][] | null>(null);
 
+  /** The panel's own element, which is what the viewport observer watches. */
+  let panel = $state<HTMLElement | null>(null);
+
   $effect(() => {
     const id = language;
     void signature;
     const drawn = untrack(() => blocks);
+    const node = panel;
     tokens = null;
-    if (id === null) return;
+    if (id === null || node === null) return;
     let live = true;
     // A grammar that cannot load leaves the plain pass, which carries every
-    // word: a colouring failure is not a lost patch.
-    void import('../format/highlight')
-      .then(async ({ tokenisedLines }) => {
-        const held: (readonly ColourToken[] | null)[][] = [];
-        for (const block of drawn) {
-          const rowTokens: (readonly ColourToken[] | null)[] = Array.from(
-            { length: block.rows.length },
-            () => null,
-          );
-          const oldText = block.oldRows.map((at) => block.rows[at]?.text ?? '').join('\n');
-          const newText = block.newRows.map((at) => block.rows[at]?.text ?? '').join('\n');
-          const oldTokens = block.oldRows.length === 0 ? [] : await tokenisedLines(id, oldText);
-          const newTokens = block.newRows.length === 0 ? [] : await tokenisedLines(id, newText);
-          block.oldRows.forEach((at, index) => {
-            rowTokens[at] = oldTokens[index] ?? null;
-          });
-          block.newRows.forEach((at, index) => {
-            rowTokens[at] = newTokens[index] ?? null;
-          });
-          held.push(rowTokens);
-        }
-        if (live) tokens = held;
-      })
-      .catch(() => undefined);
+    // word: a colouring failure is not a lost patch. The pass also waits for
+    // the viewport: a patch nobody can see is not tokenised until it scrolls
+    // in, because a heavy turn mounts every one of its panels at once.
+    const stop = whenVisible(node, () => {
+      void import('../format/highlight')
+        .then(async ({ tokenisedLines }) => {
+          const held: (readonly ColourToken[] | null)[][] = [];
+          for (const block of drawn) {
+            const rowTokens: (readonly ColourToken[] | null)[] = Array.from(
+              { length: block.rows.length },
+              () => null,
+            );
+            const oldText = block.oldRows.map((at) => block.rows[at]?.text ?? '').join('\n');
+            const newText = block.newRows.map((at) => block.rows[at]?.text ?? '').join('\n');
+            const oldTokens = block.oldRows.length === 0 ? [] : await tokenisedLines(id, oldText);
+            const newTokens = block.newRows.length === 0 ? [] : await tokenisedLines(id, newText);
+            block.oldRows.forEach((at, index) => {
+              rowTokens[at] = oldTokens[index] ?? null;
+            });
+            block.newRows.forEach((at, index) => {
+              rowTokens[at] = newTokens[index] ?? null;
+            });
+            held.push(rowTokens);
+          }
+          if (live) tokens = held;
+        })
+        .catch(() => undefined);
+    });
     return () => {
       live = false;
+      stop();
     };
   });
 
@@ -220,7 +230,7 @@
 
 <!-- The patch box in the same panel a Read draws: border, panel ground and a
      label strip naming the format, with the diff's rows inside it. -->
-<div class="code panel">
+<div class="code panel" bind:this={panel}>
   {#if language !== null}<div class="lang">{language}</div>{/if}
   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
   <div class="dif" class:added class:bare>{@html html}</div>

@@ -115,8 +115,9 @@ export interface Task {
  *
  * **The chase sweep used to announce every project every 30 s with the set
  * unchanged** (#2540). A board that re-read 628 KB for that, or a home that
- * re-read 72 KB, was a loop with no news in it; the sweep no longer sends
- * them, and the skip stays because any re-announced set is still no read.
+ * re-read its snapshot, was a loop with no news in it; the sweep no longer
+ * sends them, and the skip stays because any re-announced set is still no
+ * read.
  * The project comes from the update's key, so an empty set is comparable
  * too: the store's last digest tells an unchanged empty set from a deletion
  * that emptied the project.
@@ -371,6 +372,10 @@ interface AccountLoadingRow {
   last_error: unknown;
   retry_after: unknown;
   auth: string;
+  /** A usage window is at its cap with the reset ahead: selection refuses it. */
+  at_cap: boolean;
+  /** The rotation holds the account out after a probe wrote a limit. */
+  cooling: boolean;
 }
 
 export interface AccountsWire {
@@ -378,6 +383,104 @@ export interface AccountsWire {
   all_loaded: boolean;
   gateway: GatewayWire;
   usage: { display_name: string; snapshot: unknown }[];
+}
+
+/**
+ * The account pool, narrowed where it enters.
+ *
+ * **One narrowing for two paths**: a home snapshot's `accounts` field and the
+ * payload an `accounts_changed` frame carries are the same shape from the
+ * server's one builder (`AccountPoolView`), so a client folding a frame and a
+ * client reading the snapshot cannot draw different pools (rule 25).
+ *
+ * A piece this client cannot read defaults to its empty value rather than
+ * failing the whole home: a missing `accounts` is a home with no pool stated,
+ * exactly as the snapshot path has always read it.
+ */
+export function accountsFrom(value: unknown): AccountsWire {
+  const data = (value ?? {}) as {
+    all_loaded?: unknown;
+    gateway?: unknown;
+    usage?: unknown;
+    loading?: unknown;
+  };
+  const gateway = (data.gateway ?? {}) as Record<string, unknown>;
+  return {
+    all_loaded: data.all_loaded === true,
+    gateway: {
+      ready: gateway['ready'] === true,
+      port: typeof gateway['port'] === 'number' ? gateway['port'] : 0,
+      bind_error: typeof gateway['bind_error'] === 'string' ? gateway['bind_error'] : null,
+    },
+    usage: Array.isArray(data.usage) ? (data.usage as AccountsWire['usage']) : [],
+    loading: (Array.isArray(data.loading) ? data.loading : []).map((row) => {
+      const held = row as { state?: unknown; at_cap?: unknown; cooling?: unknown };
+      return {
+        ...(row as AccountLoadingRow),
+        state: narrow(typeof held.state === 'string' ? held.state : '', LOADING, 'loading'),
+        at_cap: held.at_cap === true,
+        cooling: held.cooling === true,
+      };
+    }),
+  };
+}
+
+/**
+ * The pool an `accounts_changed` frame carries, or `null` when this update is
+ * not one this client can fold.
+ *
+ * **A frame with no pool is an older server's wake-up.** The variant crossed as
+ * the bare name before it carried the state, and a client that folded that into
+ * an empty pool would draw "no accounts declared" over a live pool - so an
+ * absent or unreadable payload falls through to the read it always asked for.
+ */
+export function accountsPayload(update: SessionUpdate): AccountsWire | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as { accounts_changed?: unknown }).accounts_changed;
+  if (payload === null || typeof payload !== 'object') return null;
+  if (!Array.isArray((payload as { loading?: unknown }).loading)) return null;
+  return accountsFrom(payload);
+}
+
+/**
+ * Whether two pools differ in the facts a project row, the band card or the
+ * listener's state are read from - the usage rows aside.
+ *
+ * **Why the fold is conditional.** `HomeWire.projects[].would_bind` and its
+ * `chip` derive from the pool, so a loading change, a settle, a probe failure
+ * or the selection signal moves them; only a read refreshes those. The usage
+ * rows are the drift the fold exists to stop paying for, and no row or card
+ * reads them beyond the rail chip's figures.
+ *
+ * **`at_cap` and `cooling` are the usage that moves selection**, carried on
+ * the row so a frame can be compared without its usage: a probe landing at a
+ * window's cap changes neither the loading state nor the failure, and a
+ * comparator without them folds a frame that just took the account out of the
+ * walk.
+ *
+ * `retry_after` is left out on purpose: it is a countdown that shrinks on
+ * every read and no view draws it, so comparing it would turn every frame
+ * during a backoff into a read.
+ */
+export function poolFactsChanged(before: AccountsWire, after: AccountsWire): boolean {
+  if (before.all_loaded !== after.all_loaded) return true;
+  if (
+    before.gateway.ready !== after.gateway.ready ||
+    before.gateway.port !== after.gateway.port ||
+    before.gateway.bind_error !== after.gateway.bind_error
+  ) {
+    return true;
+  }
+  if (before.loading.length !== after.loading.length) return true;
+  for (let at = 0; at < before.loading.length; at += 1) {
+    const was = before.loading[at];
+    const now = after.loading[at];
+    if (was === undefined || now === undefined) return true;
+    if (was.display_name !== now.display_name || was.state !== now.state) return true;
+    if (was.at_cap !== now.at_cap || was.cooling !== now.cooling) return true;
+    if (JSON.stringify(was.last_error) !== JSON.stringify(now.last_error)) return true;
+  }
+  return false;
 }
 
 export interface DictateModel {
@@ -671,15 +774,7 @@ export function homeFrom(data: HomeWire): HomeWire {
       rows: typeof row.rows === 'number' ? row.rows : 0,
       misses: (Array.isArray(row.misses) ? row.misses : []).map(missFrom),
     })),
-    accounts: {
-      all_loaded: data.accounts?.all_loaded === true,
-      gateway: data.accounts?.gateway ?? { ready: false, port: 0, bind_error: null },
-      usage: Array.isArray(data.accounts?.usage) ? data.accounts.usage : [],
-      loading: (Array.isArray(data.accounts?.loading) ? data.accounts.loading : []).map((row) => ({
-        ...row,
-        state: narrow(row.state, LOADING, 'loading'),
-      })),
-    },
+    accounts: accountsFrom(data.accounts),
     dictate: {
       ...data.dictate,
       snapshot: {

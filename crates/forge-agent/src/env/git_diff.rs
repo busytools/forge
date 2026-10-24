@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use super::git_command;
 use forge_primitives::git::{FileStatus, GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
-    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, RepoGate,
+    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, PrRefresh, RepoGate,
 };
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -384,7 +384,20 @@ pub async fn scan<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
     prev: Option<&GitDiffSnapshot>,
 ) -> GitDiffSnapshot {
-    scan_within(cwd, env, prev, COMMAND_TIMEOUT).await
+    scan_within(cwd, env, prev, PrRefresh::Fetch, COMMAND_TIMEOUT).await
+}
+
+/// [`scan`] for a read a client is waiting on: a PR cache past its window is
+/// served for the branch and sha it belongs to rather than looked up, so the
+/// read never waits on the network; a cache from another branch or push
+/// answers nothing. The seat's own loop scans with [`scan`] and pushes the
+/// refreshed row.
+pub async fn scan_serving_cached_pr<S: std::hash::BuildHasher>(
+    cwd: &Path,
+    env: &HashMap<String, String, S>,
+    prev: Option<&GitDiffSnapshot>,
+) -> GitDiffSnapshot {
+    scan_within(cwd, env, prev, PrRefresh::ServeCached, COMMAND_TIMEOUT).await
 }
 
 /// [`scan`] with the scan's command budget spelled: the shell gives every
@@ -403,6 +416,7 @@ async fn scan_within<S: std::hash::BuildHasher>(
     cwd: &Path,
     env: &HashMap<String, String, S>,
     prev: Option<&GitDiffSnapshot>,
+    pr_refresh: PrRefresh,
     budget: Duration,
 ) -> GitDiffSnapshot {
     let raw_branch = match rev_parse_gate(cwd, budget).await {
@@ -438,14 +452,7 @@ async fn scan_within<S: std::hash::BuildHasher>(
     // Keep origin/<default> fresh for the NEXT scan without blocking this
     // one - throttled, non-blocking, failure-tolerant.
     kick_background_fetch(cwd, default_branch.as_deref(), budget);
-    // `default_branch` may be a remote-tracking ref (`origin/main`); the
-    // on-default check compares plain branch names, so strip the
-    // `origin/` prefix - a checked-out `main` must still read as the
-    // default rather than a feature branch ahead of `origin/main`.
-    let on_default = default_branch
-        .as_deref()
-        .map(|d| d.strip_prefix("origin/").unwrap_or(d))
-        .is_some_and(|d| d == raw_branch);
+    let on_default = checked_out_on_default(&raw_branch, default_branch.as_deref());
     let dirty_probe = is_worktree_dirty(cwd, budget).await;
 
     // Layer 1: uncommitted edits vs HEAD. The three legal states
@@ -541,7 +548,8 @@ async fn scan_within<S: std::hash::BuildHasher>(
         GitBranch::Named(name) if !on_default => {
             let pushed_sha = resolve_pushed_sha(cwd, PUSHED_SHA_WALK_CAP, budget).await;
             let (pr, closes, pr_fetched_at) =
-                pr_for_head_within(cwd, env, name, pushed_sha.as_deref(), prev, budget).await;
+                pr_for_head_within(cwd, env, name, pushed_sha.as_deref(), prev, pr_refresh, budget)
+                    .await;
             (pr, closes, pr_fetched_at, pushed_sha)
         }
         _ => (None, Vec::new(), None, None),
@@ -907,6 +915,35 @@ fn parse_commit_marks(raw: &str) -> HashMap<String, HashMap<String, FileStatus>>
 /// what they count.
 const COMMITS_WALK_CAP: u32 = 20;
 
+/// Whether a scan's PR block is past its refetch window, so a scan that may
+/// reach the network would look it up again.
+///
+/// The seat's watch is the scan that refreshes it: the read path serves what
+/// the store holds, and this is the leg that makes the watch's next pass scan
+/// even when the tree itself is still - otherwise the correction would wait
+/// for the tree's own staleness window (10 s) rather than its own (~1 s).
+pub fn pr_refresh_due(diff: &GitDiffSnapshot, now: std::time::SystemTime) -> bool {
+    let GitBranch::Named(name) = &diff.branch else {
+        return false;
+    };
+    // The scan's own eligibility: a branch checked out ON the default has no
+    // PR against itself, and its block is never looked up - so its absent
+    // attempt time is "nothing to fetch", not "due".
+    !checked_out_on_default(name, diff.default_branch.as_deref())
+        && diff.pr_fetched_at.is_none_or(|at| {
+            !now.duration_since(at).is_ok_and(|elapsed| elapsed < PR_REFETCH_INTERVAL)
+        })
+}
+
+/// Whether `branch` is the default a scan measures against, compared as plain
+/// names: `default_branch` may be a remote-tracking ref (`origin/main`), and a
+/// checked-out `main` is the default rather than a feature branch ahead of it.
+fn checked_out_on_default(branch: &str, default: Option<&str>) -> bool {
+    default
+        .map(|default| default.strip_prefix("origin/").unwrap_or(default))
+        .is_some_and(|default| default == branch)
+}
+
 /// Whether the previous snapshot's PR block is still reusable: the
 /// branch name and pushed sha both match the current scan AND the
 /// last lookup attempt is less than [`PR_REFETCH_INTERVAL`] old.
@@ -958,6 +995,7 @@ async fn pr_for_head_within<S: std::hash::BuildHasher>(
     branch: &str,
     pushed_sha: Option<&str>,
     prev: Option<&GitDiffSnapshot>,
+    pr_refresh: PrRefresh,
     budget: Duration,
 ) -> (Option<GitPrInfo>, Vec<GitIssueRef>, Option<std::time::SystemTime>) {
     let now = std::time::SystemTime::now();
@@ -967,6 +1005,20 @@ async fn pr_for_head_within<S: std::hash::BuildHasher>(
     };
     if let Some(prev) = cached {
         return (prev.pr.clone(), prev.closes.clone(), prev.pr_fetched_at);
+    }
+    // **A read somebody waits on does not go to the network.** The
+    // PR is the one field a scan cannot answer locally, and its lookup is a
+    // TLS + API round trip - measured at 0.9 s, which was the whole warm
+    // open's remainder. The stored attempt time stands, so the seat's loop
+    // (which nobody waits on) finds the cache stale and refreshes it on its
+    // next pass.
+    if pr_refresh == PrRefresh::ServeCached {
+        return match prev {
+            Some(prev) if same_branch_and_sha(prev, branch, pushed_sha) => {
+                (prev.pr.clone(), prev.closes.clone(), prev.pr_fetched_at)
+            }
+            _ => (None, Vec::new(), None),
+        };
     }
     match fetch_pr_for_pushed_sha(cwd, env, pushed_sha, budget).await {
         PrLookup::Found(pr, closes) => (Some(pr), closes, Some(now)),
@@ -1427,7 +1479,7 @@ mod tests {
         env: &HashMap<String, String>,
         prev: Option<&GitDiffSnapshot>,
     ) -> GitDiffSnapshot {
-        scan_within(cwd, env, prev, TEST_GIT_BUDGET).await
+        scan_within(cwd, env, prev, PrRefresh::Fetch, TEST_GIT_BUDGET).await
     }
 
     fn init_repo(dir: &TempDir, initial_branch: &str) {
@@ -1564,7 +1616,8 @@ mod tests {
         let bin = tempfile::tempdir().expect("tempdir");
         stall_git_at(dir.path(), bin.path());
 
-        let refused = scan_within(dir.path(), &HashMap::new(), None, Duration::ZERO).await;
+        let refused =
+            scan_within(dir.path(), &HashMap::new(), None, PrRefresh::Fetch, Duration::ZERO).await;
         assert_eq!(
             refused.repo_gate,
             RepoGate::ScannerFailed,
@@ -1581,7 +1634,8 @@ mod tests {
         );
 
         crate::env::git_command::clear_git_point(dir.path());
-        let scanned = scan_within(dir.path(), &HashMap::new(), None, TEST_GIT_BUDGET).await;
+        let scanned =
+            scan_within(dir.path(), &HashMap::new(), None, PrRefresh::Fetch, TEST_GIT_BUDGET).await;
         assert_eq!(scanned.repo_gate, RepoGate::InRepo, "and the tests' budget scans the repo");
         assert!(
             matches!(scanned.branch, GitBranch::Named(ref name) if name == "feature"),
@@ -1751,6 +1805,30 @@ mod tests {
         assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
         assert!(matches!(snap.branch_ahead, LayerState::Clean), "on default → no layer 2");
         assert_eq!(snap.default_branch.as_deref(), Some("main"));
+    }
+
+    /// **A scan that answers "no PR" still stamps its attempt (#2536).** The
+    /// watch refreshes on `pr_refresh_due`, which reads that stamp: a lookup
+    /// that answered nothing (here, an unpushed branch) must not leave the
+    /// cache looking never-attempted, or every held seat on such a branch
+    /// would rescan and spawn `gh` on every poke.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_fetch_scan_stamps_an_attempt_when_there_is_no_pr() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "feature");
+        write_file(&dir, "README.md", "hello\n");
+        commit_all(&dir, "init");
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
+        assert!(
+            matches!(snap.branch, GitBranch::Named(ref name) if name == "feature"),
+            "the scan reads the feature branch",
+        );
+        assert_eq!(snap.pr, None, "an unpushed branch has no PR to show");
+        assert!(snap.pr_fetched_at.is_some(), "but the attempt is stamped");
+        assert!(
+            !pr_refresh_due(&snap, std::time::SystemTime::now()),
+            "so the cache is not due on every poke",
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2082,6 +2160,86 @@ mod tests {
         );
     }
 
+    /// **A serving lookup answers only what belongs to this branch and sha.**
+    /// The store's PR is served when it is this row's; another branch's or
+    /// another push's is not - the shape a branch switch or a push makes, and
+    /// serving it would put one seat's PR on another's row.
+    #[tokio::test(flavor = "current_thread")]
+    async fn serve_cached_answers_nothing_for_another_branch_or_sha() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prev = snapshot_with_pr_at(42, Some(600));
+        let budget = TEST_GIT_BUDGET;
+
+        let (pr, closes, at) = pr_for_head_within(
+            dir.path(),
+            &HashMap::new(),
+            "feat/y",
+            Some("aaaa"),
+            Some(&prev),
+            PrRefresh::ServeCached,
+            budget,
+        )
+        .await;
+        assert_eq!(pr, None, "another branch's PR is not this row's");
+        assert!(closes.is_empty(), "nor are its closing issues");
+        assert_eq!(at, None, "and no attempt time is claimed for it");
+
+        let (pr, _, at) = pr_for_head_within(
+            dir.path(),
+            &HashMap::new(),
+            "feat/x",
+            Some("bbbb"),
+            Some(&prev),
+            PrRefresh::ServeCached,
+            budget,
+        )
+        .await;
+        assert_eq!(pr, None, "another push's PR is not this row's");
+        assert_eq!(at, None, "and no attempt time is claimed for it");
+
+        let (pr, _, at) = pr_for_head_within(
+            dir.path(),
+            &HashMap::new(),
+            "feat/x",
+            Some("aaaa"),
+            Some(&prev),
+            PrRefresh::ServeCached,
+            budget,
+        )
+        .await;
+        assert_eq!(pr.map(|found| found.number), Some(42), "its own PR is served");
+        assert_eq!(at, prev.pr_fetched_at, "with the attempt time the store holds");
+    }
+
+    /// **The watch's PR-due leg follows the scan's own eligibility.**
+    /// A feature branch past the window is due; a fresh attempt is not; and a
+    /// checkout ON the default has no PR against itself, so its absent attempt
+    /// time reads "nothing to fetch" rather than "due" - the shape that had
+    /// every on-default fetch scan re-read the tree.
+    #[test]
+    fn pr_refresh_due_follows_the_scans_own_eligibility() {
+        // The attempts are stamped before `now`, so the fresh one is inside
+        // the window rather than a clock tick past it.
+        let fresh = snapshot_with_pr(42);
+        let stale = snapshot_with_pr_at(42, Some(600));
+        let mut on_default = snapshot_with_pr_at(42, None);
+        on_default.branch = GitBranch::Named("main".into());
+        let now = std::time::SystemTime::now();
+
+        assert!(pr_refresh_due(&stale, now), "a stale attempt on a feature branch is due");
+        assert!(!pr_refresh_due(&fresh, now), "an attempt inside the window is not due");
+        assert!(
+            !pr_refresh_due(&on_default, now),
+            "a branch checked out on the default has nothing to look up",
+        );
+        // A feature branch with no attempt on record is what a first open or a
+        // branch switch writes; it is due, or the cache would never fill.
+        assert!(
+            pr_refresh_due(&snapshot_with_pr_at(42, None), now),
+            "a feature branch never attempted is due",
+        );
+    }
+
     /// `pr_for_head_within` short-circuits the `gh` calls when the cache
     /// is fresh - even when the `cwd` would make a real `gh` invocation
     /// fail (tempdir has no github remote). The returned `pr` /
@@ -2109,6 +2267,7 @@ mod tests {
             "feat/x",
             Some("aaaa"),
             Some(&prev),
+            PrRefresh::Fetch,
             COMMAND_TIMEOUT,
         )
         .await;
@@ -2145,6 +2304,7 @@ mod tests {
             "feat/x",
             Some("aaaa"),
             Some(&prev),
+            PrRefresh::Fetch,
             COMMAND_TIMEOUT,
         )
         .await;
@@ -2183,6 +2343,7 @@ mod tests {
             "feat/y",
             Some("aaaa"),
             Some(&prev),
+            PrRefresh::Fetch,
             COMMAND_TIMEOUT,
         )
         .await;
@@ -2282,7 +2443,7 @@ mod tests {
             ("GH_TOKEN".to_owned(), "project-token".to_owned()),
         ]);
 
-        scan_within(dir.path(), &env, None, budget).await;
+        scan_within(dir.path(), &env, None, PrRefresh::Fetch, budget).await;
         // The scan also kicks a throttled background fetch; settle it so
         // the fixture directory is not removed under a live child.
         settle_background_fetches().await;

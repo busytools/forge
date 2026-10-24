@@ -359,6 +359,7 @@ mod tests {
             cwd,
             &std::collections::HashMap::new(),
             prev,
+            forge_primitives::git_diff::PrRefresh::Fetch,
             super::super::TEST_GIT_BUDGET,
         )
         .await

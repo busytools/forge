@@ -1781,15 +1781,22 @@ pub enum SessionUpdate {
     /// snapshot itself is not carried, so this is only the wake-up: a view
     /// re-reads through the surface's `cli_version` verb.
     CliVersionChanged,
-    /// The account pool moved: an account's loading state, its cached usage
-    /// snapshot, or the gateway listener's readiness.
+    /// The account pool moved: an account's loading state, its last probe
+    /// failure, its cached usage snapshot, or the gateway listener's
+    /// readiness.
     ///
-    /// **The pool's state is the snapshot's, and this carries none of it.** A
-    /// payload would be a second copy of what `HomeWire::accounts` already
-    /// states, and the two would drift; this is the wake-up, and a view
-    /// re-reads. It carries no seat because the pool belongs to none, which is
-    /// also what routes it to a home subscriber and to nobody else.
-    AccountsChanged,
+    /// **The frame carries the pool's drawn state**, flattened so its fields
+    /// are the ones `HomeWire::accounts` states - the same values, built by
+    /// [`crate::Workspace::account_pool_view`], so a client that folds the frame
+    /// and a client that reads the snapshot cannot disagree (rule 25). That
+    /// is what lets a usage move reach the badge without a home read.
+    ///
+    /// It carries no seat because the pool belongs to none, which is also
+    /// what routes it to a home subscriber and to nobody else.
+    AccountsChanged {
+        #[serde(flatten)]
+        accounts: crate::views::AccountPoolView,
+    },
     PluginsInventoryUpdated {
         cwd_raw: String,
         snapshot: PluginsInventorySnapshot,
@@ -2196,7 +2203,7 @@ impl SessionUpdate {
             Self::ServiceStatus { .. }
             | Self::CatalogLoaded
             | Self::CliVersionChanged
-            | Self::AccountsChanged
+            | Self::AccountsChanged { .. }
             | Self::PluginsInventoryUpdated { .. }
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
@@ -2510,7 +2517,10 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
-            Self::AccountsChanged => f.write_str("AccountsChanged"),
+            Self::AccountsChanged { accounts } => f
+                .debug_struct("AccountsChanged")
+                .field("loading", &accounts.loading.len())
+                .finish_non_exhaustive(),
         }
     }
 }

@@ -77,6 +77,14 @@ read as one system.
   does. The row is found by the id the machinery minted for the prompt,
   which survives into the transcript, so a reloaded row draws what the
   live one did.
+- **A session start** is one row, not one per hook: the firing says what
+  fired and how many hooks it carried, and opens onto them. A hook that
+  finished without a word draws no row of its own inside it; one that
+  failed or is still running stays, and a failed start counts its failed
+  hooks in the closed row's words as well as taking the failure tone.
+  Every hook still opens onto the whole of what it printed, a start whose
+  hooks all finished silent opens onto a line saying so, and a hook
+  outside a start keeps a row of its own.
 - **A read** draws by what the file is, from the same per-format policy the
   Files reader uses: markdown renders as prose, code stays coloured with the
   file's own grammar (a `Justfile` is `just`, a script's shebang names its
@@ -124,6 +132,13 @@ read as one system.
   lands, so the settled wording about a call that never recorded one would
   be a claim the row cannot make yet. Once the call settles the mark goes
   and the tail is the finished output.
+  **A call the `TaskStop` tool stopped has no ending frame of its own**:
+  the tool path sends no task frame and no registry change, so its own
+  success answer settles the call - in whichever held turn the call sits,
+  which is not always the turn the stop lands in - the row states `stopped`
+  beside its title, and the processes row stops counting it. A stop whose
+  call the page does not hold draws as a row of its own, named with the
+  task it stopped.
   **The box draws the command's own colours**: every terminal box reads the
   escape sequences a command wrote - colour, bold, dim, italic, underline -
   into the theme's palette, so a coloured compile looks like the terminal's.

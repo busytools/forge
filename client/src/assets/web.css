@@ -2353,6 +2353,10 @@ details.hookrow > summary .ev { color: var(--muted); flex: 1 1 0;
 /* The tail's own inline marks - a `**bold**` in the context a hook injected -
    take the prose tone the name's marks do, rather than the tail's muting. */
 details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color: var(--text); }
+/* A session start's hooks under one row, indented off the column the way a
+   thought's expansion is, so the hooks read as what the firing carried rather
+   than as rows beside it. */
+details.hookgroup > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
 /* An inbound row's tail line: the delivery's first line, at the warning tone
    where the wire said the delivery is elevated - clamped to its one line and
    taking the width the name leaves, the way the hook row's tail does. */
@@ -3316,11 +3320,11 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 
 /* ---------- a forge call's own card ---------- */
 
-/* The chips a forge row states, the figure at its right, and the reason a
-   failed one failed. Namespaced `fam-`, the same rule the dispatch row's
-   `sg-` fields follow, so no bare name of another surface catches them.
-   Every chip carries its own word: the tone colours it and never replaces
-   it. */
+/* The chips a row states, the figure at its right, and the reason a failed
+   one failed. Namespaced `fam-`, the same rule the dispatch row's `sg-`
+   fields follow, so no bare name of another surface catches them. Every chip
+   carries its own word: the tone colours it and never replaces it - a stopped
+   call's mark wears the same chip its card's chips do. */
 details.leaf > summary .fam-chip { font-family: var(--mono); font-size: var(--fs-label);
   border-radius: 99px; padding: 0 8px; flex: none; border: 1px solid var(--line);
   color: var(--muted); line-height: 1.7; white-space: nowrap; }

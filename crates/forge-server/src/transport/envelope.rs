@@ -72,13 +72,19 @@ impl Subject {
     /// conversation - so a second table of variants here would both drift and
     /// hand a home subscriber every token of every seat in the fleet.
     ///
-    /// **The fleet region is not the whole home.** The service status, the
-    /// fatal error and the plugin records carry no slot, are not fleet news,
-    /// and are fields of the home's own snapshot - so `fleet_news` alone
-    /// would drop them, leaving a client to draw what it read once at
-    /// subscribe for the life of the connection. They come with the
-    /// slot-less arm below, which the client mirrors in
-    /// `client/src/wire/fleet.ts`'s `coversHome`.
+    /// **The fleet region is not the whole home.** Two home fields carry no
+    /// slot and are not fleet news: the service status and the fatal error.
+    /// They come with the slot-less arm below, and without it a client would
+    /// draw what it read once at subscribe for the life of the connection.
+    /// The account pool is a home field too, but its announcement is also a
+    /// fleet redraw, so it arrives through the first arm.
+    ///
+    /// **That arm is wider than the client's read rule, by the plugin
+    /// family.** The plugin records cross to a home subscriber only because
+    /// they name no seat; no field of the home snapshot carries them, their
+    /// reader is the `extensions` subject, and `coversHome`
+    /// (`client/src/wire/fleet.ts`) declines the home read for them on
+    /// purpose. Delivery here is the superset.
     pub fn covers(&self, update: &SessionUpdate) -> bool {
         match self {
             // **The board's own variants are not the home's.** A cron or a
@@ -555,6 +561,73 @@ impl ClientSettings {
 mod tests {
     use super::*;
 
+    /// The pool's frame with an empty pool, which is all these routing tests
+    /// read of it.
+    fn accounts_changed() -> SessionUpdate {
+        SessionUpdate::AccountsChanged {
+            accounts: forge_workspace::AccountPoolView {
+                loading: Vec::new(),
+                all_loaded: false,
+                gateway: forge_workspace::AccountGatewayView {
+                    ready: false,
+                    port: 0,
+                    bind_error: None,
+                },
+                usage: Vec::new(),
+            },
+        }
+    }
+
+    /// **The pool's fields are inline, not nested, and every field the client
+    /// narrows crosses.** The client reads the frame's payload with the same
+    /// function it reads a home snapshot's `accounts` field with, so
+    /// `accounts_changed.loading` has to be the row list itself, and the
+    /// gateway, the usage rows and their names have to be the same shapes.
+    #[test]
+    fn the_pools_frame_carries_the_pool_inline() {
+        let mut update = accounts_changed();
+        let SessionUpdate::AccountsChanged { accounts } = &mut update else {
+            unreachable!("the helper builds this variant")
+        };
+        accounts.loading.push(forge_workspace::AccountLoadingRow {
+            display_name: "A".to_owned(),
+            state: forge_workspace::LoadingState::Ready,
+            last_error: None,
+            retry_after: Some(std::time::Duration::from_secs(30)),
+            auth: forge_primitives::account::AccountAuth::Token,
+            at_cap: true,
+            cooling: false,
+        });
+        accounts.all_loaded = true;
+        accounts.gateway.ready = true;
+        accounts.gateway.port = 8787;
+        accounts.gateway.bind_error = Some("port in use".to_owned());
+        accounts.usage.push(forge_workspace::AccountUsageView {
+            display_name: "A".to_owned(),
+            snapshot: None,
+        });
+
+        let json = serde_json::to_value(&update).expect("encode");
+        let body = json.get("accounts_changed").expect("the variant tag is the frame's key");
+        assert!(body.get("accounts").is_none(), "the payload is not nested twice: {body}");
+        assert_eq!(body["all_loaded"], true);
+        assert_eq!(body["gateway"]["port"].as_u64(), Some(8787), "the port crosses: {body}");
+        assert_eq!(body["gateway"]["bind_error"], "port in use");
+        assert_eq!(body["loading"][0]["display_name"], "A");
+        assert_eq!(body["loading"][0]["state"], "ready");
+        assert_eq!(body["loading"][0]["at_cap"], true, "the selection signal crosses");
+        assert_eq!(body["loading"][0]["cooling"], false);
+        assert_eq!(body["usage"][0]["display_name"], "A");
+        assert!(body["usage"][0]["snapshot"].is_null(), "an absent snapshot crosses as null");
+        let back: SessionUpdate = serde_json::from_value(json).expect("decode");
+        let SessionUpdate::AccountsChanged { accounts } = back else {
+            panic!("the frame decoded into another variant")
+        };
+        assert_eq!(accounts.loading.len(), 1, "the row survives the round trip");
+        assert_eq!(accounts.gateway.bind_error.as_deref(), Some("port in use"));
+        assert_eq!(accounts.usage.len(), 1);
+    }
+
     /// The seats frame a capable client is sent for its profile sweep: the
     /// live set crosses whole, a seat keeping the three names a slot is.
     #[test]
@@ -799,7 +872,7 @@ mod tests {
              state chips instead of drawing `pending` until the next check",
         );
         assert!(
-            !Subject::DictateModels.covers(&SessionUpdate::AccountsChanged),
+            !Subject::DictateModels.covers(&accounts_changed()),
             "another machine-level update is not the models page's to redraw",
         );
         assert!(
@@ -821,7 +894,7 @@ mod tests {
     /// leave every other subscriber drawing a card that never moves.
     #[test]
     fn the_pools_announcement_reaches_home_and_no_seat() {
-        let update = SessionUpdate::AccountsChanged;
+        let update = accounts_changed();
         let seat = SessionSlot::lead("TestOrg", "proj");
 
         assert!(update.slot().is_none(), "the pool addresses no seat, which is what routes it");
@@ -1059,7 +1132,7 @@ mod tests {
         }
 
         assert!(
-            !Subject::Board.covers(&SessionUpdate::AccountsChanged),
+            !Subject::Board.covers(&accounts_changed()),
             "and nothing outside the board's own three reaches it",
         );
     }

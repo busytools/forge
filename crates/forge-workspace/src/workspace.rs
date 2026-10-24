@@ -2730,9 +2730,37 @@ impl Workspace {
                     last_error,
                     retry_after,
                     auth: auth.unwrap_or(crate::views::AccountAuth::Token),
+                    at_cap: self.accounts.is_saturated(&key),
+                    cooling: self.gateway.is_cooling(&key),
                 }
             })
             .collect()
+    }
+
+    /// The account pool as a view draws it: the rows the home snapshot
+    /// carries, and the payload [`SessionUpdate::AccountsChanged`] pushes.
+    ///
+    /// **One builder for both paths**, so a client folding the frame and a
+    /// client reading the snapshot draw the same pool.
+    pub fn account_pool_view(&self) -> crate::views::AccountPoolView {
+        let loading = self.account_loading_snapshot();
+        let usage = loading
+            .iter()
+            .map(|row| crate::views::AccountUsageView {
+                display_name: row.display_name.clone(),
+                snapshot: self.usage_for(&row.display_name),
+            })
+            .collect();
+        crate::views::AccountPoolView {
+            loading,
+            all_loaded: self.all_accounts_loaded(),
+            gateway: crate::views::AccountGatewayView {
+                ready: self.gateway_ready(),
+                port: self.gateway_port(),
+                bind_error: self.gateway_bind_error(),
+            },
+            usage,
+        }
     }
 
     /// How the account called `display_name` authenticates - the input
@@ -3373,7 +3401,10 @@ impl Workspace {
         snapshot: forge_primitives::usage::UsageSnapshot,
     ) {
         use forge_gateway::LoadingState;
-        let healed = self.accounts.loading_state(key) == LoadingState::Bailed;
+        let previous = self.accounts.usage(&key.0);
+        let was_loading = self.accounts.loading_state(key);
+        let was_error = self.accounts.usage_error(&key.0);
+        let healed = was_loading == LoadingState::Bailed;
         // A window at the cap with a reset ahead is proven exhaustion:
         // the gateway cools the account until that reset and every
         // bound session re-selects. Read off the incoming snapshot -
@@ -3395,7 +3426,25 @@ impl Workspace {
                 "Bailed -> Ready on a clean usage poll; the walk serves it for new sessions",
             );
         }
-        self.announce_accounts_changed();
+        // A poll that found the figures already held is no news, and
+        // announcing it costs every home subscriber a full read for an
+        // answer that cannot differ. Everything the wire carries is
+        // compared: the loading state, the last probe failure (a success
+        // after a transient failure clears it, and the figures can be
+        // identical; its hold-down instant is cleared with it, so the error
+        // is the whole of that change), and the usage's own fields.
+        // `fetched_at` is the one exclusion - it records when the reading
+        // was taken rather than what it says, and it moves on every probe.
+        let moved = was_loading != self.accounts.loading_state(key)
+            || was_error != self.accounts.usage_error(&key.0)
+            || match (&previous, &self.accounts.usage(&key.0)) {
+                (Some(before), Some(after)) => !before.same_usage(after),
+                (None, None) => false,
+                _ => true,
+            };
+        if moved {
+            self.announce_accounts_changed();
+        }
     }
 
     /// Read the cached usage snapshot for an account by display
@@ -3487,83 +3536,6 @@ impl Workspace {
     /// when multiple forge instances poll the same Anthropic account).
     pub fn usage_error_for(&self, display_name: &str) -> Option<forge_gateway::UsageFetchStatus> {
         self.accounts.usage_error(display_name)
-    }
-
-    /// Snapshot the accounts a project may spawn under, in allow-list
-    /// order, each carrying its live rate-limit state for the gateway
-    /// view. `allowed_accounts` is the project's
-    /// forge.toml pin; empty falls back to every configured account.
-    /// `fallback_accounts`
-    /// is the org's fallback list: unioned in (deduped) even when the
-    /// pin does not name them, and flagged so a fallback-only row can
-    /// carry its dim `fallback` suffix. Returns owned
-    /// `crate::views::AccountRow`s so a view holds a snapshot rather than
-    /// the `AccountStateMap` lock.
-    pub fn project_accounts_snapshot(
-        &self,
-        allowed_accounts: &[String],
-        fallback_accounts: &[String],
-    ) -> Vec<crate::views::AccountRow> {
-        // Resolve the allow-list to concrete account names, falling
-        // back to every configured account when the project pins none.
-        // Fallback names then join (deduped) - usually accounts the pin
-        // does not name, since the org never rotates through them.
-        let mut names: Vec<String> = if allowed_accounts.is_empty() {
-            self.accounts.account_names()
-        } else {
-            allowed_accounts.to_vec()
-        };
-        for name in fallback_accounts {
-            if !names.contains(name) {
-                names.push(name.clone());
-            }
-        }
-        let mut rows: Vec<crate::views::AccountRow> = names
-            .into_iter()
-            .filter_map(|name| {
-                let key = AccountKey(name.clone());
-                let unusable = self.accounts.unusable_reason(&key);
-                // A dual-listed account is primary-tier: the pin's
-                // membership wins over the fallback list. An empty pin
-                // means every account is primary (the un-pinned shape).
-                let in_pin = allowed_accounts.is_empty() || allowed_accounts.contains(&name);
-                let fallback = fallback_accounts.contains(&name) && !in_pin;
-                let provider = self.accounts.provider(&key)?;
-                let budget = account_budget(&name, provider, self.accounts.usage(&name).as_ref());
-                Some(crate::views::AccountRow {
-                    display_name: name,
-                    unusable,
-                    budget,
-                    fallback,
-                    provider,
-                    loading: self.accounts.loading_state(&key),
-                })
-            })
-            .collect();
-        // Stable-sort the fallback group last, matching the gateway
-        // view's group order. `false` sorts before `true`, and the sort
-        // preserves within-group order.
-        rows.sort_by_key(|row| row.fallback);
-        rows
-    }
-
-    /// The gateway's own view, read-only: every org it holds, that
-    /// org's walk order, and the live state of each account in it. A
-    /// query refresh, not a `Command`.
-    pub fn gateway_view_snapshot(&self) -> Vec<crate::views::GatewayOrgView> {
-        self.gateway
-            .org_pins()
-            .into_iter()
-            .map(|(org, pin)| {
-                let rows = self.project_accounts_snapshot(&pin.accounts, &pin.fallback_accounts);
-                crate::views::GatewayOrgView {
-                    org,
-                    accounts: pin.accounts,
-                    fallback_accounts: pin.fallback_accounts,
-                    rows,
-                }
-            })
-            .collect()
     }
 
     /// Resolves a `SessionTarget` to the slot it names. A
@@ -3901,10 +3873,14 @@ impl Workspace {
     ///
     /// Called from the writes that move it - a boot probe settling, the usage
     /// poller landing or failing, and the listener binding - because none of
-    /// them belongs to a seat and the pool's state is a snapshot field with no
-    /// stream of its own.
+    /// them belongs to a seat. The frame carries the pool's drawn state, built
+    /// by [`Self::account_pool_view`], so a subscriber applies a usage-only
+    /// move without a home re-read; a move in what a project row binds on
+    /// still asks for the snapshot that refreshes it.
     pub(crate) fn announce_accounts_changed(&self) {
-        let _ = self.update_tx.send(SessionUpdate::AccountsChanged);
+        let _ = self
+            .update_tx
+            .send(SessionUpdate::AccountsChanged { accounts: self.account_pool_view() });
     }
 
     /// The cwd a project lead's slot runs in: its project's path.
@@ -8930,21 +8906,6 @@ fn auth_repair_hint(provider: forge_primitives::account::Provider) -> &'static s
     }
 }
 
-/// The [`crate::views::AccountBudget`] shape for an account, resolved
-/// through its provider's forge-gateway backend. The stale-cache
-/// refusal and its warn live on the backend's `budget`.
-fn account_budget(
-    account: &str,
-    provider: forge_primitives::account::Provider,
-    snapshot: Option<&forge_primitives::usage::UsageSnapshot>,
-) -> crate::views::AccountBudget {
-    let Some(backend) = forge_gateway::backend(provider) else {
-        debug_assert!(false, "no backend registered for {provider:?}");
-        return crate::views::AccountBudget::Unknown { spend_billed: false };
-    };
-    backend.budget(account, snapshot)
-}
-
 /// Map a failed probe to the [`forge_gateway::UsageFetchStatus`]
 /// bucket. Separates HTTP 429 (the common multi-instance throttle
 /// case) from the auth-related
@@ -9405,39 +9366,8 @@ fn warn_shutdown_expired(slots: &[SessionSlot], wait: std::time::Duration) {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use forge_gateway::AccountStateMap;
     use std::fs;
     use tempfile::tempdir;
-
-    /// Build a usage snapshot with 5h + shared-7d windows sharing one
-    /// `resets_at`. Enough for the account snapshot tests.
-    #[cfg(test)]
-    fn account_usage_snapshot(
-        five_hour: f64,
-        seven_day: f64,
-        resets_at: Option<std::time::SystemTime>,
-    ) -> forge_primitives::usage::UsageSnapshot {
-        use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
-        UsageSnapshot {
-            source: UsageSourceKind::Oauth,
-            fetched_at: std::time::SystemTime::UNIX_EPOCH,
-            five_hour: Some(UsageWindow {
-                utilization: five_hour,
-                resets_at,
-                reset_description: None,
-            }),
-            seven_day: Some(UsageWindow {
-                utilization: seven_day,
-                resets_at,
-                reset_description: None,
-            }),
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            extra_usage: None,
-            spend: None,
-            balance: None,
-        }
-    }
 
     /// A probe the test steers: a fixed snapshot, and a count of the calls
     /// it answered, so the scheduling around the probe is observable
@@ -9670,278 +9600,6 @@ mod tests {
              block (claude setup-token) and restart forge",
             "an anthropic account repairs through its setup token, token or not",
         );
-    }
-
-    /// `project_accounts_snapshot` returns one row per allow-list entry
-    /// in order, each carrying its unusable reason, budget, fallback
-    /// flag and boot loading state.
-    #[test]
-    fn project_accounts_snapshot_reports_allowlist_order_and_state() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
-        {
-            let mut map = AccountStateMap::new(&[
-                crate::config::LoadedAccount {
-                    display_name: "A".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-                crate::config::LoadedAccount {
-                    display_name: "B".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-            ]);
-            // A: 5h saturated (100%, future reset) -> rate limited; 7d 63%.
-            map.set_usage(
-                &AccountKey("A".to_owned()),
-                account_usage_snapshot(100.0, 63.0, Some(future)),
-            );
-            // B: usable (34% / 22%).
-            map.set_usage(
-                &AccountKey("B".to_owned()),
-                account_usage_snapshot(34.0, 22.0, Some(future)),
-            );
-            ws.accounts.replace_state_for_test(map);
-        }
-
-        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &[]);
-
-        assert_eq!(rows.len(), 2, "one row per allow-list entry");
-        assert_eq!(rows[0].display_name, "A", "allow-list order preserved");
-        assert_eq!(rows[1].display_name, "B");
-
-        // A: saturated -> unusable as Saturated, carries a reset ETA.
-        assert_eq!(
-            rows[0].unusable,
-            Some(forge_gateway::Unusable::Saturated),
-            "A saturated on 5h -> Saturated, not a probe failure",
-        );
-        match rows[0].budget {
-            crate::views::AccountBudget::Subscription {
-                five_hour_util,
-                seven_day_util,
-                resets_at,
-            } => {
-                assert_eq!(five_hour_util, Some(100.0));
-                assert_eq!(seven_day_util, Some(63.0));
-                assert_eq!(resets_at, Some(future), "capped account shows when it unlocks");
-            }
-            ref other => panic!("a window-billed account renders as a subscription, got {other:?}"),
-        }
-        // B: under cap -> usable, no reset ETA.
-        assert_eq!(rows[1].unusable, None, "B under cap on both windows");
-        match rows[1].budget {
-            crate::views::AccountBudget::Subscription { five_hour_util, resets_at, .. } => {
-                assert_eq!(five_hour_util, Some(34.0));
-                assert!(resets_at.is_none(), "usable account has no reset ETA");
-            }
-            ref other => panic!("a window-billed account renders as a subscription, got {other:?}"),
-        }
-    }
-
-    /// An empty allow-list (project pins no accounts) falls back to
-    /// every configured account in definition order; a `None`
-    /// current-account marks no row.
-    #[test]
-    fn project_accounts_snapshot_empty_allowlist_falls_back_to_all_accounts() {
-        let (ws, _rx) = Workspace::testing_stub();
-        {
-            let mut map = AccountStateMap::new(&[
-                crate::config::LoadedAccount {
-                    display_name: "One".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-                crate::config::LoadedAccount {
-                    display_name: "Two".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-            ]);
-            map.set_usage(&AccountKey("One".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            map.set_usage(&AccountKey("Two".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            ws.accounts.replace_state_for_test(map);
-        }
-
-        let rows = ws.project_accounts_snapshot(&[], &[]);
-        let names: Vec<&str> = rows.iter().map(|r| r.display_name.as_str()).collect();
-        assert_eq!(names, vec!["One", "Two"], "empty pin lists all accounts in order");
-        assert!(rows.iter().all(|r| r.unusable.is_none()), "both under cap -> usable");
-    }
-
-    /// Fallback rows are flagged against the org `fallback_accounts`
-    /// list the caller passes in.
-    #[test]
-    fn project_accounts_snapshot_flags_fallback_rows() {
-        let (ws, _rx) = Workspace::testing_stub();
-        {
-            let mut map = AccountStateMap::new(&[
-                crate::config::LoadedAccount {
-                    display_name: "A".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-                crate::config::LoadedAccount {
-                    display_name: "B".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-            ]);
-            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            map.set_usage(&AccountKey("B".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            ws.accounts.replace_state_for_test(map);
-        }
-
-        let rows = ws.project_accounts_snapshot(&["A".to_owned()], &["B".to_owned()]);
-
-        assert_eq!(rows[0].display_name, "A", "regular rows lead");
-        assert!(!rows[0].fallback, "a primary row is not flagged fallback");
-        let fallbacks: Vec<&str> =
-            rows.iter().filter(|r| r.fallback).map(|r| r.display_name.as_str()).collect();
-        assert_eq!(fallbacks, vec!["B"], "the fallback row is flagged");
-    }
-
-    /// An account sitting in BOTH the allow-list and the fallback list
-    /// renders once, flagged primary - the fallback list adds nothing
-    /// for an account the pin already names.
-    #[test]
-    fn project_accounts_snapshot_lists_a_dual_listed_fallback_once_as_primary() {
-        let (ws, _rx) = Workspace::testing_stub();
-        {
-            let mut map = AccountStateMap::new(&[
-                crate::config::LoadedAccount {
-                    display_name: "A".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-                crate::config::LoadedAccount {
-                    display_name: "B".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-            ]);
-            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            map.set_usage(&AccountKey("B".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            ws.accounts.replace_state_for_test(map);
-        }
-
-        let rows =
-            ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &["B".to_owned()]);
-
-        assert_eq!(rows.len(), 2, "no duplicate row for the dual-listed account");
-        assert_eq!(rows[1].display_name, "B");
-        assert!(!rows[1].fallback, "a dual-listed account stays primary-flagged");
-    }
-
-    /// The read-only gateway view: every published org with its walk
-    /// order and the live state of each account it names.
-    #[test]
-    fn gateway_view_reports_each_org_with_its_pins_and_account_state() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
-        {
-            let mut map = AccountStateMap::new(&[
-                crate::config::LoadedAccount {
-                    display_name: "Ready".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-                crate::config::LoadedAccount {
-                    display_name: "Capped".to_owned(),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    base_url: None,
-                    models: vec!["claude-sonnet-5".to_owned()],
-                    model_aliases: std::collections::HashMap::new(),
-                    model_slugs: std::collections::HashMap::new(),
-                    env: std::collections::HashMap::new(),
-                },
-            ]);
-            map.set_usage(
-                &AccountKey("Ready".to_owned()),
-                account_usage_snapshot(34.0, 22.0, Some(future)),
-            );
-            map.set_usage(
-                &AccountKey("Capped".to_owned()),
-                account_usage_snapshot(100.0, 63.0, Some(future)),
-            );
-            ws.accounts.replace_state_for_test(map);
-        }
-        ws.gateway.set_org_pins([(
-            "Default".to_owned(),
-            forge_gateway::selection::OrgPin {
-                accounts: vec!["Ready".to_owned()],
-                fallback_accounts: vec!["Capped".to_owned()],
-            },
-        )]);
-
-        let view = ws.gateway_view_snapshot();
-        assert_eq!(view.len(), 1, "one block per published org");
-        assert_eq!(view[0].org, "Default");
-        assert_eq!(view[0].accounts, vec!["Ready".to_owned()], "the primary pin, in order");
-        assert_eq!(view[0].fallback_accounts, vec!["Capped".to_owned()], "the fallback pin");
-        assert_eq!(view[0].rows.len(), 2, "one row per account the org names");
-
-        assert_eq!(view[0].rows[0].display_name, "Ready", "primaries read first");
-        assert_eq!(view[0].rows[0].provider, forge_primitives::account::Provider::Anthropic);
-        assert_eq!(view[0].rows[0].loading, forge_gateway::LoadingState::Ready);
-        assert_eq!(view[0].rows[0].unusable, None, "a healthy account carries no reason tag");
-        assert!(!view[0].rows[0].fallback);
-        match view[0].rows[0].budget {
-            crate::views::AccountBudget::Subscription {
-                five_hour_util, seven_day_util, ..
-            } => {
-                assert_eq!(five_hour_util, Some(34.0), "the healthy account's 5h figure");
-                assert_eq!(seven_day_util, Some(22.0), "and its 7d figure");
-            }
-            ref other => {
-                panic!("a subscription account carries a subscription budget; got {other:?}")
-            }
-        }
-
-        assert_eq!(view[0].rows[1].display_name, "Capped", "fallbacks read last");
-        assert_eq!(
-            view[0].rows[1].unusable,
-            Some(forge_gateway::Unusable::Saturated),
-            "a capped window is the why-not, not a probe failure",
-        );
-        assert!(view[0].rows[1].fallback, "the fallback list marks its rows");
     }
 
     /// The supersession guard that keeps a re-spawn intact: a stale
@@ -20979,9 +20637,188 @@ provider = "anthropic"
 
         workspace.record_usage_success(&AccountKey("Stargate".to_owned()), usage_at(10.0));
 
+        let frame = std::iter::from_fn(|| updates.try_recv().ok())
+            .find(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .expect("a probe that wrote the pool announced nothing");
+        let SessionUpdate::AccountsChanged { accounts } = frame.update else {
+            unreachable!("the predicate above selected this variant")
+        };
+        // The frame and the snapshot's field are one builder, so a client that
+        // folds it draws what a client that reads the home draws.
+        assert_eq!(
+            accounts,
+            workspace.account_pool_view(),
+            "the announcement carried a different pool than the snapshot states",
+        );
+        assert_eq!(accounts.loading.len(), 1, "the pool's configured account is in the frame");
+        assert_eq!(accounts.loading[0].display_name, "Stargate");
+        assert!(
+            accounts.usage[0].snapshot.is_some(),
+            "the usage row carries the snapshot the poll wrote",
+        );
+    }
+
+    /// The pool pairs each account's loading row with its own usage row.
+    ///
+    /// Two accounts with different figures: a builder keyed off the wrong
+    /// name would hand one account the other's usage, and the band card and
+    /// the rail chip would draw the wrong account's numbers.
+    #[tokio::test]
+    async fn the_pool_view_pairs_each_account_with_its_own_usage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["A", "B"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "A"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[[accounts]]
+display_name = "B"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+
+        workspace.record_usage_success(&AccountKey("A".to_owned()), usage_at(10.0));
+        workspace.record_usage_success(&AccountKey("B".to_owned()), usage_at(20.0));
+
+        let pool = workspace.account_pool_view();
+        let loading: Vec<&str> = pool.loading.iter().map(|row| row.display_name.as_str()).collect();
+        assert_eq!(loading, ["A", "B"], "the loading rows keep declaration order");
+        let usage: Vec<(&str, Option<f64>)> = pool
+            .usage
+            .iter()
+            .map(|row| {
+                (
+                    row.display_name.as_str(),
+                    row.snapshot
+                        .as_ref()
+                        .and_then(forge_primitives::usage::UsageSnapshot::five_hour_util),
+                )
+            })
+            .collect();
+        assert_eq!(
+            usage,
+            [("A", Some(10.0)), ("B", Some(20.0))],
+            "each account carries its own snapshot",
+        );
+    }
+
+    /// A poll that found the pool as it already stood announces nothing.
+    ///
+    /// **`fetched_at` moves on every probe**, so a comparison against the
+    /// whole snapshot makes every poll news: six idle accounts then send six
+    /// pool frames a minute for figures nobody changed. What is news is the
+    /// pool's loading state or its usage, and a probe that moved either still
+    /// announces.
+    #[tokio::test]
+    async fn a_probe_announces_only_a_pool_that_moved() {
+        fn announced(updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>) -> usize {
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+                .count()
+        }
+
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut updates = workspace.subscribe();
+        while updates.try_recv().is_ok() {}
+
+        let key = AccountKey("Stargate".to_owned());
+        let first = usage_at(10.0);
+        workspace.record_usage_success(&key, first.clone());
+        assert_eq!(announced(&mut updates), 1, "the loading transition is news");
+
+        let mut later = first.clone();
+        later.fetched_at = first.fetched_at + std::time::Duration::from_secs(60);
+        workspace.record_usage_success(&key, later);
+        assert_eq!(announced(&mut updates), 0, "an unchanged pool is no news");
+
+        workspace.record_usage_success(&key, usage_at(11.0));
+        assert_eq!(announced(&mut updates), 1, "a window that moved is news");
+    }
+
+    /// A probe that moves only the pool's loading state is news, even when
+    /// its figures match the ones already held.
+    ///
+    /// The pool can hold a snapshot while an account is still `Loading` -
+    /// the cache seeds usage before anything settles the state - and a poll
+    /// that is what moves it to `Ready` changes nothing else. Without the
+    /// loading clause the card keeps `0 ready, probing` until something else
+    /// moves.
+    #[tokio::test]
+    async fn a_probe_that_only_settles_the_loading_state_is_news() {
+        use forge_gateway::LoadingState;
+
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut updates = workspace.subscribe();
+        while updates.try_recv().is_ok() {}
+        let key = AccountKey("Stargate".to_owned());
+
+        let cached = usage_at(10.0);
+        workspace.accounts.set_usage(&key, cached.clone());
+        workspace.accounts.set_loading(&key, LoadingState::Loading);
+
+        let mut same = cached;
+        same.fetched_at += std::time::Duration::from_secs(60);
+        workspace.record_usage_success(&key, same);
+
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
-            .any(|frame| matches!(frame.update, SessionUpdate::AccountsChanged));
-        assert!(announced, "a probe that wrote the pool announced nothing");
+            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .count();
+        assert_eq!(announced, 1, "the Loading -> Ready move was not announced");
+    }
+
+    /// A success after a transient failure is news even when its figures
+    /// match the ones held.
+    ///
+    /// The loading row carries the last probe failure and its hold-down, and
+    /// a clean probe clears both. With the usage identical that is the only
+    /// change in the pool, so a comparison that looks at the figures alone
+    /// drops the read and leaves a client drawing a failure the pool no
+    /// longer holds.
+    #[tokio::test]
+    async fn a_probe_after_a_failure_is_news_even_when_the_figures_match() {
+        use forge_gateway::UsageFetchStatus;
+
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut updates = workspace.subscribe();
+        while updates.try_recv().is_ok() {}
+        let key = AccountKey("Stargate".to_owned());
+
+        let held = usage_at(10.0);
+        workspace.accounts.set_usage(&key, held.clone());
+        workspace.accounts.set_last_error(
+            &key,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(120)),
+        );
+
+        let mut same = held;
+        same.fetched_at += std::time::Duration::from_secs(60);
+        workspace.record_usage_success(&key, same);
+
+        let announced = std::iter::from_fn(|| updates.try_recv().ok())
+            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .count();
+        assert_eq!(announced, 1, "the cleared probe failure was not announced");
     }
 
     /// An org whose primaries cannot serve the project's model and whose

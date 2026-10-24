@@ -36,6 +36,7 @@ script-tests:
     python3 scripts/test_update_manifest.py
     python3 scripts/test_client_deps.py
     python3 scripts/test_check_groups.py
+    python3 scripts/test_check_client_wasm.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -822,6 +823,7 @@ client-web-release version: client-release-deps
     set -euo pipefail
 
     npm --prefix client run build
+    python3 scripts/check_client_wasm.py client/dist
 
     dist=client/dist
     if [ ! -e "$dist/index.html" ]; then

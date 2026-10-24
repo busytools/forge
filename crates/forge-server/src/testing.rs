@@ -100,9 +100,21 @@ impl Fleet {
         orgs: &[(&str, &[&str])],
         server: &str,
     ) -> Result<Self, FixtureError> {
+        Self::in_dir_with_server_and_env(config_dir, orgs, server, &[])
+    }
+
+    /// [`Self::in_dir_with_server`] with each project's own
+    /// `[orgs.projects.env]`, which is the identity a scan's `git` and `gh`
+    /// children carry - a fixture that pins a lookup needs its own `PATH`.
+    pub fn in_dir_with_server_and_env(
+        config_dir: &Path,
+        orgs: &[(&str, &[&str])],
+        server: &str,
+        env: &[(&str, &str)],
+    ) -> Result<Self, FixtureError> {
         let forge = config_dir.join("forge");
         std::fs::create_dir_all(&forge)?;
-        std::fs::write(forge.join("forge.toml"), config(config_dir, orgs, server))?;
+        std::fs::write(forge.join("forge.toml"), config(config_dir, orgs, server, env))?;
         // `new_for_test` opens the store under `config_dir`'s own
         // app-support base, so a fixture gets a durable layer without
         // opening a second handle on the same file.
@@ -621,7 +633,12 @@ impl Fleet {
 
 /// The `forge.toml` a fleet is built from: one `[[orgs]]` per entry, each
 /// project under its own directory so two projects never share a path.
-fn config(config_dir: &Path, orgs: &[(&str, &[&str])], server: &str) -> String {
+fn config(
+    config_dir: &Path,
+    orgs: &[(&str, &[&str])],
+    server: &str,
+    env: &[(&str, &str)],
+) -> String {
     let mut sections: Vec<String> = Vec::new();
     if !server.is_empty() {
         sections.push(server.to_owned());
@@ -631,9 +648,16 @@ fn config(config_dir: &Path, orgs: &[(&str, &[&str])], server: &str) -> String {
         for project in *projects {
             let path = config_dir.join(project);
             sections.push(format!(
-                "[[orgs.projects]]\nname = \"{project}\"\npath = \"{}\"\n\n",
+                "[[orgs.projects]]\nname = \"{project}\"\npath = \"{}\"\n",
                 path.display()
             ));
+            if !env.is_empty() {
+                sections.push("[orgs.projects.env]\n".to_owned());
+                for (key, value) in env {
+                    sections.push(format!("{key} = {value:?}\n"));
+                }
+            }
+            sections.push('\n'.to_string());
         }
     }
     sections.push(

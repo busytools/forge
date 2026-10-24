@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { panelHtml } from './code';
+  import { whenVisible } from './visible';
 
   /**
    * A source file a call read, as a panel with its grammar on the header and
@@ -12,47 +12,52 @@
    *
    * **Plain first, coloured when the grammar lands.** The escaped text draws
    * synchronously, so a row or a server render never waits on a grammar; the
-   * shiki pass replaces it a moment later. `language` of `null` draws with no
-   * language in the header and a caption saying why.
+   * shiki pass replaces it a moment later. **The colour also waits for the
+   * viewport**: a panel nobody can see is not tokenised until it scrolls in,
+   * because a heavy turn mounts every one of its panels at once. `language`
+   * of `null` draws with no language in the header and a caption saying why.
    */
   let { language, text }: { language: string | null; text: string } = $props();
 
-  /** The highlighted panel, once the grammar has loaded; `null` is the plain one. */
-  let html = $state<string | null>(null);
+  /** The coloured body, once the grammar has loaded and the panel was seen; `null` is the plain one. */
+  let body = $state<string | null>(null);
+
+  /** The panel's own element, which is what the viewport observer watches. */
+  let panel = $state<HTMLElement | null>(null);
 
   $effect(() => {
     const id = language;
-    const body = text;
-    html = null;
-    if (id === null) return;
+    const source = text;
+    const node = panel;
+    body = null;
+    if (id === null || node === null) return;
     let live = true;
     // A grammar that cannot load leaves the escaped panel, which already
     // carries every word: a colouring failure is not a lost file.
-    void import('../format/highlight')
-      .then(async ({ highlightedBody }) => {
-        const drawn = await highlightedBody(id, body);
-        if (live) html = panelHtml(id, drawn);
-      })
-      .catch(() => undefined);
+    const stop = whenVisible(node, () => {
+      void import('../format/highlight')
+        .then(async ({ highlightedBody }) => {
+          const drawn = await highlightedBody(id, source);
+          if (live) body = drawn;
+        })
+        .catch(() => undefined);
+    });
     return () => {
       live = false;
+      stop();
     };
   });
 </script>
 
-{#if html !== null}
-  <!--
-    The highlighter's own escaped output: it escapes the text it is given
-    whether or not it has a grammar for it.
-  -->
-  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-  {@html html}
-{:else}
-  <div class="code panel">
-    {#if language !== null}<div class="lang">{language}</div>{/if}
+<div class="code panel" bind:this={panel}>
+  {#if language !== null}<div class="lang">{language}</div>{/if}
+  {#if body !== null}
+    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+    <pre>{@html body}</pre>
+  {:else}
     <pre>{text}</pre>
-  </div>
-{/if}
+  {/if}
+</div>
 {#if language === null}
   <div class="code-note">plain text - no syntax for this file</div>
 {/if}

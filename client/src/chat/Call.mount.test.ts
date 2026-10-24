@@ -20,6 +20,7 @@ const backgrounded: ToolLeaf = {
   status: 'completed',
   backgrounded: true,
   note: null,
+  stop: null,
   body: [{ kind: 'text', text: 'Command running in background with ID: bj5g0t2kq.' }],
   mutation: null,
   decision: null,

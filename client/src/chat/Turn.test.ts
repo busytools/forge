@@ -205,27 +205,28 @@ describe('one turn, as the page draws it', () => {
   it("draws a hook's own run as the row the fold made, closed on its first line", () => {
     // The wiring is one line in this component's arm list, and nothing else
     // here covers it: the row's own tests render it directly, and axe sees it
-    // through the page rather than through this turn.
+    // through the page rather than through this turn. A hook outside a session
+    // start is the row on its own; the start's own arm is asserted below.
     const body = draw(
       {
         type: 'system',
         subtype: 'hook_started',
         hook_id: 'h1',
-        hook_name: 'SessionStart:startup',
-        hook_event: 'SessionStart',
+        hook_name: 'PostToolUse:Edit',
+        hook_event: 'PostToolUse',
         uuid: 'h1',
       },
       {
         type: 'system',
         subtype: 'hook_response',
         hook_id: 'h1',
-        hook_name: 'SessionStart:startup',
-        hook_event: 'SessionStart',
-        output: 'repository is clean',
-        stdout: 'repository is clean',
+        hook_name: 'PostToolUse:Edit',
+        hook_event: 'PostToolUse',
+        output: 'format check failed',
+        stdout: 'format check failed',
         stderr: '',
-        exit_code: 0,
-        outcome: 'success',
+        exit_code: 2,
+        outcome: 'error',
         uuid: 'h2',
       },
     );
@@ -237,13 +238,49 @@ describe('one turn, as the page draws it', () => {
     // the whole render passes whether or not the first line reached the row.
     const at = body.indexOf('<summary');
     const summary = body.slice(at, body.indexOf('</summary>', at));
-    expect(summary, 'the hook it matched, without opening it').toContain('SessionStart:startup');
+    expect(summary, 'the hook it matched, without opening it').toContain('PostToolUse:Edit');
     expect(summary, "with the output's first line on the closed row").toContain(
-      'repository is clean',
+      'format check failed',
     );
     expect(body, 'and the whole of what it printed behind the row').toContain(
-      'repository is clean',
+      'format check failed',
     );
+
+    // A session start reaches the page as the one row the fold made of it,
+    // rather than as the hook rows the individual arm draws.
+    const start = draw(
+      {
+        type: 'system',
+        subtype: 'hook_started',
+        hook_id: 's1',
+        hook_name: 'SessionStart:startup',
+        hook_event: 'SessionStart',
+        uuid: 's1',
+      },
+      {
+        type: 'system',
+        subtype: 'hook_response',
+        hook_id: 's1',
+        hook_name: 'SessionStart:startup',
+        hook_event: 'SessionStart',
+        output: 'memory index loaded',
+        stdout: 'memory index loaded',
+        stderr: '',
+        exit_code: 0,
+        outcome: 'success',
+        uuid: 's2',
+      },
+    );
+    expect(start, "the start's hooks draw as one row of the turn").toContain(
+      'class="leaf hookgroup"',
+    );
+    expect(start, 'closed on what fired and how many it carried').toContain(
+      'session start \u{b7} 1 hook',
+    );
+    expect(
+      start.match(/class="leaf hookrow"/g),
+      'and no row of its own for the hook the start gathered',
+    ).toBeNull();
   });
 
   it('draws a running row for a turn the frames built and no result has settled', () => {

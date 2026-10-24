@@ -11,7 +11,7 @@
   import Prose from './Prose.svelte';
   import Report from './Report.svelte';
   import Skill from './Skill.svelte';
-  import { turnFold, type Self, type Unit } from './units';
+  import { NO_STOPS, turnFold, type PageStops, type Self, type Unit } from './units';
 
   /**
    * One turn of the conversation, as the page draws it: what the reader said,
@@ -31,6 +31,7 @@
     turns = null,
     carried = null,
     onreadoutput = null,
+    stops = NO_STOPS,
   }: {
     turn: HeldTurn;
     slot?: Self | null;
@@ -59,9 +60,17 @@
     carried?: string | null;
     /** Passed straight through: a call row's ask for its own output. */
     onreadoutput?: ((callId: string) => void) | null;
+    /**
+     * The page's stops, resolved across every held turn.
+     *
+     * **The page's, not this turn's**: a stop issued in a later prompt opens a
+     * turn of its own, so the call it ends sits in an earlier one and this
+     * turn's frames never mention it.
+     */
+    stops?: PageStops;
   } = $props();
 
-  const folded = $derived(turnFold(turn, slot, beingWritten(turn), !beingWritten(turn)));
+  const folded = $derived(turnFold(turn, slot, beingWritten(turn), !beingWritten(turn), stops));
 
   /**
    * The fold's units, less the one row the pin is carrying.

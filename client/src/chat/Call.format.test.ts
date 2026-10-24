@@ -22,6 +22,7 @@ const leaf = (overrides: Partial<ToolLeaf>): ToolLeaf => ({
   status: 'completed',
   backgrounded: false,
   note: null,
+  stop: null,
   body: [],
   mutation: null,
   decision: null,
