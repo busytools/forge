@@ -927,14 +927,15 @@ describe('the connection', () => {
   });
 
   /**
-   * **A read that goes unanswered is asked again.** Every re-ask the client
-   * makes is driven by something ARRIVING - an update, a reconnect - so a
-   * first snapshot lost on a live socket left the store loading for the life
+   * **A read that goes unanswered is asked again, once.** Every re-ask the
+   * client makes is driven by something ARRIVING - an update, a reconnect - so
+   * a first snapshot lost on a live socket left the store loading for the life
    * of the connection: the page sat at "Reading the fleet..." over LAN and
    * WireGuard alike, and only exit-and-re-enter ever cleared it. The bound is
-   * what asks unprompted, and it re-arms with each ask.
+   * what asks unprompted - and past that one pass a read is a slow answer
+   * rather than a lost one, so the cadence stops (#2561).
    */
-  it('asks a read again when the bound runs out with nothing answered', async () => {
+  it('asks a read again when the bound runs out, then leaves it to the slow beat', async () => {
     const server = await stubServer();
     servers.push(server);
     // A short bound, injected: the shipping figure is five seconds, and the
@@ -944,10 +945,6 @@ describe('the connection', () => {
     const store = conn.subscribe(HOME);
     await until(() => server.received.length >= 1, 'the first subscribe');
 
-    // **The shape, not a count.** The bound is 40 ms here and the poll below
-    // is 10 ms, so a slower pass can have asked more than once by the time
-    // this runs: the prefix is what the retry is, and a floor is what says
-    // the loop continues.
     await until(() => server.received.length >= 3, 'the re-ask pair');
     expect(
       server.received.slice(0, 3).map((message) => message.kind),
@@ -956,9 +953,14 @@ describe('the connection', () => {
     expect(server.received[2], 'and it is the same subject').toMatchObject({ what: HOME });
     expect(store.state(), 'the store still waits for its answer').toEqual({ kind: 'loading' });
 
-    // The re-ask is bounded like the first read: a loss buys a retry loop,
-    // not one retry and then silence.
-    await until(() => server.received.length >= 6, 'the re-ask to be bounded too');
+    // **The cadence ends at that pass.** The slow beat is a minute at the
+    // shipping bound, so six cadences of quiet is the claim: a slow answer
+    // buys one retry, not a whole record per bound while it travels.
+    await new Promise((resolve) => setTimeout(resolve, 40 * 6));
+    expect(
+      server.received.length,
+      "the bound kept asking on its cadence past the read's one retry",
+    ).toBe(3);
   });
 
   it('asks nothing again for a read that was answered', async () => {
