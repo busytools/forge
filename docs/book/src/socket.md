@@ -469,16 +469,18 @@ of prose on either side.
 - **`update {update, seq, span}`** - one `SessionUpdate`, for whichever
   subjects the client is subscribed to. The subject decides, and a home
   subscription has **two** arms rather than one: an update a home row draws
-  something of, and an update belonging to no seat at all - the service
-  status, the fatal error, the account pool - which is a field of the home's
-  own snapshot and which only a home subscription could have carried. (The
-  plugin records are the one keyless family no home field carries: they are
-  the extensions subject's read, and they reach a home subscriber only
-  because they name no seat.) Read the second arm as absent and a page keeps
-  what it read at subscribe for the life of the connection. The pool is the
-  one that reads as a live state rather than as an event: a card left at
-  `0 ready, probing` looks like a slow probe rather than like a page that
-  stopped listening.
+  something of, and an update belonging to no seat at all. Of the second,
+  three are fields of the home's own snapshot and no other subscription
+  carries them: the service status, the fatal error and the account pool.
+  Read that arm as absent and a page keeps what it read at subscribe for the
+  life of the connection. The pool is the one that reads as a live state
+  rather than as an event: a card left at `0 ready, probing` looks like a
+  slow probe rather than like a page that stopped listening.
+
+  **The plugin records are keyless without being home fields.** They cross
+  to a home subscriber for the same reason - they name no seat - but nothing
+  in the home's snapshot carries them; their reader is the `extensions`
+  subject, and a client declines the home read for them on purpose.
 
   **`seq` and `span` are the frame's place in its seat's own sequence.**
   Every frame the workspace emits for a seat is numbered on that seat's

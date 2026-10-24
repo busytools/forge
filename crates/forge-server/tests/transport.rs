@@ -6109,8 +6109,8 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
 
     // And so does an App-level one the fleet's own classification does not
     // name, because the home is not only the fleet region: the service status
-    // and the plugin records are fields of its snapshot, so a client that
-    // heard them once at subscribe and never again would draw a stale page.
+    // is a field of its snapshot, so a client that heard it once at subscribe
+    // and never again would draw a stale page.
     // `CatalogLoaded` is no use here - the classification DOES cover it, so it
     // passes over this hole. The wait matches the notice written below rather
     // than the variant, so nobody else's service status can stand in for it.

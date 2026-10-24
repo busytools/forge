@@ -80,11 +80,11 @@ impl Subject {
     /// slot-less arm below.
     ///
     /// **That arm is wider than the client's read rule, by the plugin
-    /// family.** The plugin records belong to the `extensions` subject and
-    /// no field of the home snapshot carries them; a client spends a home
-    /// read only on facts its answer can carry
-    /// (`client/src/wire/fleet.ts`'s `coversHome`), so delivery here is the
-    /// superset.
+    /// family.** The plugin records cross to a home subscriber only because
+    /// they name no seat; no field of the home snapshot carries them, their
+    /// reader is the `extensions` subject, and `coversHome`
+    /// (`client/src/wire/fleet.ts`) declines the home read for them on
+    /// purpose. Delivery here is the superset.
     pub fn covers(&self, update: &SessionUpdate) -> bool {
         match self {
             // **The board's own variants are not the home's.** A cron or a
