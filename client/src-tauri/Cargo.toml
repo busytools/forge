@@ -4,8 +4,7 @@ version = "1.1.28"
 description = "The forge desktop client"
 edition = "2024"
 rust-version = "1.90"
-# Two binaries exist (the app and CEF's helper); the bundler needs to be told
-# which one the app is.
+# The app's own binary; the bundler needs to be told which one it is.
 default-run = "forge-client"
 
 # Its own workspace root, so the crate above is not a member of forge's: the
@@ -15,33 +14,26 @@ default-run = "forge-client"
 # `just client-tauri-check` builds it, `client-tauri-bundle` adds the bundles.
 [workspace]
 
-[features]
-# The ivar checks construct AppKit objects (an NSView, the application
-# object), which are main-thread-only and cannot be `#[test]` bodies;
-# `tests/overlay_ivars.rs` and `tests/app_ivars.rs` are harness-free targets
-# that run them from `main`. Production builds never enable this.
-testing = []
-
-[[test]]
-name = "overlay_ivars"
-harness = false
-required-features = ["testing"]
-
-[[test]]
-name = "app_ivars"
-harness = false
-required-features = ["testing"]
-
 [lib]
 # The Android target links the app as a native library; a binary-only crate
 # gives `tauri android build` no library target to build.
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# CEF's subprocesses are these, laid out by `scripts/stage-cef.sh` as the
-# `forge-client Helper*.app` bundles CEF looks for.
-[[bin]]
-name = "forge_client_helper"
-path = "src/bin/forge_client_helper.rs"
+[features]
+# **The overlay view's ivars are main-thread-only**, so its check is a
+# harness-free target whose `main` runs on the process main thread; this
+# feature carries the entry point there. Production builds never enable it.
+testing = []
+# **A look-only driver for the built bundle.** The agent testing this machine
+# has neither Accessibility nor Screen Recording, so the app drives itself
+# over a socket (full screen, its own page's JavaScript, its windows, a
+# screenshot of itself). Production bundles never enable it.
+look-driver = ["dep:block2", "dep:objc2-web-kit"]
+
+[[test]]
+name = "overlay_ivars"
+harness = false
+required-features = ["testing"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -50,11 +42,9 @@ tauri-build = { version = "2", features = [] }
 # `generate_context!` embeds the config's `plugins` section through serde_json.
 serde_json = "1"
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 tauri-plugin-log = "2"
-# The browser host: an MCP CLIENT for the first time on this side of forge.
-# rmcp carries the child-process transport, id correlation and cancellation
-# the driver needs, so the host speaks MCP rather than reimplementing it.
-rmcp = { version = "=3.5.0", features = ["client", "transport-child-process"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time", "fs", "net", "sync"] }
 # The client's socket, pinned here rather than by the workspace (this crate is
@@ -65,36 +55,34 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 # The driver's image parts cross as base64; the wire wants the raw bytes.
 base64 = "0.22"
-# The launch lock: flock, the same idiom the workspace's single-instance
-# guard uses.
-rustix = { version = "1", features = ["fs"] }
 # The desktop's own microphone: the server workspace's capture leaf, so a
 # take opens the device natively instead of through the webview's audio
 # pipeline. Deliberately NOT `forge-dictate`: that crate carries the speech
 # models, which this shell has no use for and Android cannot build.
 forge-capture = { path = "../../crates/forge-capture" }
+# The browser's wire shapes: a gesture, a frame, the viewer state. Pure data,
+# shared with the server that produces them.
+forge-primitives = { path = "../../crates/forge-primitives" }
 
 # Desktop-only: no plugin path exists for Android, where the APK updates
 # through the system installer instead (a Kotlin side of its own).
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
 
-# **Desktop signals, on the targets that have them.** The client reaps its
-# browser hosts on SIGTERM/SIGINT; the host's own parent watch and the macOS
-# CEF modules use the same crate.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-# **The app's own Chromium, macOS first.** Only the host process initializes
-# CEF; the client's UI process never does (see `browser::cef`). The framework
-# and the five helper apps are staged for the bundler by
-# `scripts/stage-cef.sh`.
+# **The desktop overlay.** The server owns the browser; this half draws its
+# frames in a native view over the takeover's page area (see `browser::cef`),
+# which is AppKit and CoreGraphics work.
 [target.'cfg(target_os = "macos")'.dependencies]
-cef = { version = "=154.5.0", features = ["build-util"] }
+# The takeover's frames arrive WebP-encoded from the server; the overlay
+# decodes each one and paints it.
+webp = { version = "0.3", default-features = false }
+libc = "0.2"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
     "NSArray",
+    "NSData",
     "NSDate",
+    "NSDictionary",
     "NSProcessInfo",
     "NSRunLoop",
     "NSString",
@@ -102,7 +90,9 @@ objc2-foundation = { version = "0.3", features = [
     "NSURL",
 ] }
 objc2-app-kit = { version = "0.3", features = [
+    "NSAlert",
     "NSApplication",
+    "NSBitmapImageRep",
     "NSEvent",
     "NSGraphics",
     "NSOpenPanel",
@@ -120,21 +110,28 @@ objc2-core-graphics = { version = "0.3", features = [
     "CGColorSpace",
     "CGDataProvider",
     "CGImage",
+    "CGWindow",
 ] }
 objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+block2 = { version = "0.6", optional = true }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKSnapshotConfiguration", "block2"], optional = true }
+objc2-avf-audio = { version = "0.3", features = [
+    "AVAudioBuffer",
+    "AVAudioEngine",
+    "AVAudioFormat",
+    "AVAudioNode",
+    "AVAudioPlayerNode",
+    "AVAudioTime",
+    "AVAudioTypes",
+    "block2",
+] }
 
 [dev-dependencies]
 tempfile = "3"
-# `start_paused`, for the launch lock's wait path under a clock the test drives.
-tokio = { version = "1", features = ["test-util"] }
-# The `test` feature is what carries `tauri::test::mock_builder`: the boot
-# pin drives the setup's browser act under a mock app. Dev-only; the shipped
-# build resolves the dependency without it.
+# `tauri::test::mock_context`, for the main-thread overlay check's real app.
 tauri = { version = "2", features = ["test"] }
-# The live tests print the host's own tracing: the `log` facade the host
-# writes through, uninitialised in a test run otherwise.
-log = "0.4"
-# The raise-path tests stand in for a browser's devtools endpoint - HTTP and
-# the CDP websocket both - so the window moves run without a window anywhere.
+# `start_paused`, for the microphone's hold under a clock the test drives.
+tokio = { version = "1", features = ["test-util"] }
+# The socket's tests speak to a stub forge over a real websocket.
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"

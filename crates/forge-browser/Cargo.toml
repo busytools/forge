@@ -1,0 +1,104 @@
+[package]
+name = "forge-browser"
+description = "The server-owned browser: one CEF host per profile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Deliberately not `[lints] workspace = true`: the workspace forbids unsafe,
+# and this crate is where forge calls CEF's C ABI and maps the frame ring's
+# shared memory. Everything else matches the workspace table.
+[lints.rust]
+unsafe_code = "deny"
+dead_code = "deny"
+unused_imports = "deny"
+unused_must_use = "deny"
+unused_variables = "deny"
+missing_docs = "allow"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+exit = "deny"
+todo = "deny"
+unimplemented = "deny"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+too_many_lines = "allow"
+unnecessary_wraps = "allow"
+struct_field_names = "allow"
+struct_excessive_bools = "allow"
+assert_is_empty = "allow"
+print_stdout = "allow"
+print_stderr = "allow"
+# CEF's callbacks hand raw planes and frame buffers by signature; the
+# dereference is bounded by the sizes those same callbacks carry.
+not_unsafe_ptr_arg_deref = "allow"
+
+[features]
+# **The host application's ivars are main-thread-only**, so its check is a
+# harness-free target whose `main` runs on the process main thread; this
+# feature carries the entry point there. Production builds never enable it.
+testing = []
+
+[dependencies]
+async-trait = { workspace = true }
+forge-primitives = { workspace = true }
+forge-sdk = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# The engine and everything that drives it. The server never links CEF into
+# its own process: this crate ships the executable that does.
+[target.'cfg(target_os = "macos")'.dependencies]
+base64 = { workspace = true }
+cef = { version = "=154.5.0", features = ["build-util"] }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+libc = "0.2"
+# The driver is an MCP client of the vendored Playwright package.
+rmcp = { version = "=3.5.0", features = ["client", "transport-child-process"] }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSProcessInfo", "NSString", "NSValue", "NSDictionary", "NSURL"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent"] }
+block2 = "0.6"
+objc2-av-foundation = { version = "0.3", features = [
+    "AVAssetWriter",
+    "AVAssetWriterInput",
+    "AVMediaFormat",
+    "AVVideoSettings",
+    "block2",
+    "objc2-core-media",
+    "objc2-core-video",
+] }
+objc2-core-media = "0.3"
+objc2-core-video = { version = "0.3", features = ["CVPixelBuffer", "CVPixelBufferPool"] }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+# Frame encoding: libwebp, lossy and lossless. The `image` bridge is a
+# dependency this crate has no use for.
+webp = { version = "0.3", default-features = false }
+
+[[test]]
+name = "app_ivars"
+harness = false
+required-features = ["testing"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# The live host tests signal their own child; the module is macOS-gated with
+# the engine it starts.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc = "0.2"

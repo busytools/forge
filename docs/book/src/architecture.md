@@ -1,6 +1,6 @@
 # Architecture
 
-Eleven crates, layered so the dependency graph stays acyclic.
+Twelve crates, layered so the dependency graph stays acyclic.
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
@@ -12,7 +12,8 @@ forge-connectors  ->  primitives
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
-forge-server      ->  primitives + workspace + sdk
+forge-browser     ->  primitives + sdk
+forge-server      ->  primitives + workspace + sdk + browser
 forge-test-harness->  primitives + sdk
 ```
 
@@ -26,7 +27,8 @@ forge-test-harness->  primitives + sdk
 | `forge-connectors`   | One module per inbound connector: the stream client, REST lookups, subscription matching and subsystem pump for one external integration (Gotify and Slack today). Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `forge-sdk`          | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `forge-agent`        | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `forge-workspace`    | The multi-session orchestrator and the server's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, the in-process MCP server forge exposes to every spawned session, and the output-tail reader a call's own read answers from.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `forge-workspace`    | The multi-session orchestrator and the server's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, the in-process MCP server forge exposes to every spawned session, and the output-tail reader a call's own read answers from. The browser tools it carries reach the fleet through the `BrowserHost` port this crate defines.                                                                                                                                                                                                                                                                                                                                                                                   |
+| `forge-browser`      | The server's browser. A CEF host process per profile, shipped as its own signed `Forge Browser.app` so the server never links CEF; the vendored Playwright driver it speaks MCP to; WebP frame encoding into a local socket; the profile store and its one-time copy from the client; the idle release; and the service the tool surface and every viewer call. Depends on primitives and sdk, and nothing above it knows CEF exists.                                                                                                                                                                                                                                                                                                                                                 |
 | `forge-server`       | The server: what a client reads of the core, and no view of its own. The read surface a client uses, the session records as a view sees them, the peer envelope parsing, forge's own slash commands, the transcript fold that says where a conversation's turns sit and the task endings it carries, the sub-agent instance list the session task's own fold keeps and pushes, the `ReadCallOutput` verb (with the workspace's tail reader re-exported for views), and the socket that carries all of it. It also ships the `forge` binary - the whole core booted through the one boot function (`forge_server::boot`). Nothing here draws, so another client attaches beside the one that exists rather than duplicating it. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
@@ -72,22 +74,27 @@ Work top-down; the first match wins.
 7. **Live state about the user's environment** (git watching, cwd
    resolution, environment probes, OAuth, plugins, settings I/O,
    plugin catalog scans) goes in `forge-agent`.
-8. **Orchestration across projects, sessions, accounts, `forge.toml`
+8. **The browser the sessions drive** (a host process, the driver, a frame,
+   a profile, the idle clock) goes in `forge-browser`, which the server
+   owns as a fleet and the workspace reaches through the `BrowserHost` port.
+   A frame's wire shape is a `forge-primitives` type; a viewer's drawing is
+   the client's.
+9. **Orchestration across projects, sessions, accounts, `forge.toml`
    or the command bus** goes in `forge-workspace`. A read a VIEW needs
    is a verb on the view surface below, not a bare method.
-9. **A session record as a view sees it, or a decision any view would
-   make over one** (the render-ready record, the reducer that derives
-   it, the transcript fold that says where a conversation's turns sit, the
-   peer envelope parsing) goes in `forge-server`. The
-   test is "does this render?" - if it does, it is the view's.
-10. **A widget, screen, layout or per-view presentation state** goes in
+10. **A session record as a view sees it, or a decision any view would
+    make over one** (the render-ready record, the reducer that derives
+    it, the transcript fold that says where a conversation's turns sit, the
+    peer envelope parsing) goes in `forge-server`. The
+    test is "does this render?" - if it does, it is the view's.
+11. **A widget, screen, layout or per-view presentation state** goes in
     the client: draw it in `client/src/`, and take anything that needs
     the OS, a process or the socket to the shell behind the typed invoke
     surface. A further Rust view is a crate of its own, built against
     the socket in `forge-server` rather than against the core, and a
     read of the core goes through the view surface in `forge-server`,
     never through `forge-workspace`.
-11. **A wire-conformance scenario** goes in `forge-test-harness`.
+12. **A wire-conformance scenario** goes in `forge-test-harness`.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
@@ -264,12 +271,11 @@ are registered for every session; `systemone` joins them when
 narrowed at spawn - `agents__spawn`'s `mcp_families` list, revised by
 `agents__update` and stored on the worker's durable record - and each
 withheld family is named in that worker's own prompt. The `agents` group
-is always on, and so are `browser` and `documents`: the browser is one
-machine-global client rather than a project's scope - the session asks
-the client that holds the browser role, and with none connected the tool
-answers the named error - and a hand-off reads the caller's own tree or
-its project's `vault_roots`, so there is nothing a project could withhold
-of either. Two groups vary by session kind: inside `agents`, any session
+is always on, and so are `browser` and `documents`: the browser is the
+server's own - a session drives a host the server runs, whether or not any
+client is watching - and a hand-off reads the caller's own tree or its
+project's `vault_roots`, so there is nothing a project could withhold of
+either. Two groups vary by session kind: inside `agents`, any session
 may `list`, `tell`, `ask` and read its own identity, while the four verbs
 that act on the caller's own project - `spawn`, `despawn`, `update` and
 `capacity` - are lead-only; and inside `tasks`, `tasks__approve` is the

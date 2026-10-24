@@ -373,11 +373,10 @@ pub struct Workspace {
     /// takes still awaiting a transcript. Driven by
     /// `Command::DictateStream` / `Command::DictateStop`.
     pub(crate) dictate_runtime: Mutex<crate::dictate::DictateRuntime>,
-    /// The browser relay: the one client connection that drives the browser.
-    /// The workspace owns it because both halves need the same one - the
-    /// tools in `mcp::browser` ask through it, and the transport registers
-    /// the connection that answers into it.
-    pub(crate) browser: Arc<crate::browser::BrowserRelay>,
+    /// The server's browser fleet, installed once at boot by forge-server.
+    /// `None` is a workspace with no browser host (tests, a view): the
+    /// browser tools then name their refusal.
+    pub(crate) browser_host: std::sync::OnceLock<Arc<dyn crate::browser::BrowserHost>>,
     /// How many client connections are attached, noted by the transport per
     /// connection. A document hand-off reads it before claiming an open: only
     /// a client that draws a document viewer is counted.
@@ -1797,7 +1796,7 @@ impl Workspace {
             gateway_bind_error: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
-            browser: Arc::new(crate::browser::BrowserRelay::new()),
+            browser_host: std::sync::OnceLock::new(),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs: parking_lot::Mutex::new(HashMap::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
@@ -1914,6 +1913,13 @@ impl Workspace {
         self.config.client.clone()
     }
 
+    /// The server browser's own knobs: `[browser]`'s encoding rate and
+    /// quality, and its idle release's two bounds. Absent section keeps the
+    /// defaults the struct carries.
+    pub fn browser_settings(&self) -> crate::BrowserSettings {
+        self.config.browser
+    }
+
     /// The ceiling on one handed document, in bytes: `[documents]
     /// max_size_mib` over the crate's own default. Read by the document
     /// read, which refuses a document over it.
@@ -1938,12 +1944,16 @@ impl Workspace {
         self.attached_clients.load(std::sync::atomic::Ordering::Relaxed) > 0
     }
 
-    /// The browser relay: the one client connection that drives the browser.
-    /// Read by the binary entry point, which hands it to the transport so a
-    /// capable connection can take the role, and by the browser family's
-    /// facade, which sends asks through it.
-    pub fn browser_relay(&self) -> Arc<crate::browser::BrowserRelay> {
-        Arc::clone(&self.browser)
+    /// Install the server's browser fleet. **Boot-time and once**: the fleet
+    /// outlives every session, and a second install would be two browsers
+    /// answering one tool surface.
+    pub fn install_browser_host(&self, host: Arc<dyn crate::browser::BrowserHost>) {
+        let _ = self.browser_host.set(host);
+    }
+
+    /// The browser fleet, when this workspace has one.
+    pub fn browser_host(&self) -> Option<Arc<dyn crate::browser::BrowserHost>> {
+        self.browser_host.get().cloned()
     }
 
     /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
@@ -5662,6 +5672,34 @@ impl Workspace {
                     if let Some(verdict) = verdict {
                         let _ = verdict.send(verdict_value);
                     }
+                }
+                // **The strip's close and delete are the user's own
+                // moves**, and they reach the fleet through this bus like
+                // every other: the host is the workspace's, the answer is
+                // its sentence.
+                Command::BrowserProfileClose { seat, name, verdict } => {
+                    let host = self.browser_host();
+                    tokio::spawn(async move {
+                        let outcome = match host {
+                            Some(host) => host.close_profile(&seat, &name).await,
+                            None => Err("this server has no browser to close".to_owned()),
+                        };
+                        if let Some(verdict) = verdict {
+                            let _ = verdict.send(outcome);
+                        }
+                    });
+                }
+                Command::BrowserProfileDelete { seat, name, verdict } => {
+                    let host = self.browser_host();
+                    tokio::spawn(async move {
+                        let outcome = match host {
+                            Some(host) => host.delete_profile(&seat, &name).await,
+                            None => Err("this server has no browser to delete".to_owned()),
+                        };
+                        if let Some(verdict) = verdict {
+                            let _ = verdict.send(outcome);
+                        }
+                    });
                 }
                 // The board's edits are the user's own moves: stamped
                 // `By::User` in the history, and no session routes them -
@@ -9889,25 +9927,6 @@ mod tests {
         assert!(!ws.pool.lock().contains_key(&key), "current owner removes the pool entry");
         assert!(!ws.command_senders.lock().contains_key(&key), "command sender removed");
         assert!(!ws.domain_handles.lock().contains_key(&key), "domain handle removed");
-    }
-
-    /// The relay is the workspace's and one per process, because two of them
-    /// are two roles: the transport would register a host into one while
-    /// every tool asked through the other, and every call would answer
-    /// "no browser-capable client connected" with a client connected.
-    #[test]
-    fn the_browser_relay_is_one_and_starts_free() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-
-        let first = ws.browser_relay();
-        assert!(
-            Arc::ptr_eq(&first, &ws.browser_relay()),
-            "every caller reaches the same relay, or the role and the asks live in different ones",
-        );
-        let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
-        let (notices, _notice_rx) = tokio::sync::mpsc::unbounded_channel();
-        assert!(first.register(1, to_host, notices), "no connection has taken the role at boot");
     }
 
     /// The board's reserve toggle reaches the store through the command bus

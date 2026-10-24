@@ -136,6 +136,10 @@ macro_rules! census {
         census!(@arms $enum, $census;
             [$($arms)* $enum::$v(..) => stringify!($v),] $($rest)*);
     };
+    (@arms $enum:ident, $census:ident; [$($arms:tt)*] $v:ident unit, $($rest:tt)*) => {
+        census!(@arms $enum, $census;
+            [$($arms)* $enum::$v => stringify!($v),] $($rest)*);
+    };
 }
 
 /// The wire names serde will accept, read out of the error it raises for a
@@ -249,10 +253,11 @@ census!(ServerMessage,
     [
         Greeting struct, Snapshot struct, Update struct, Page struct,
         SeatFrames struct,
-        CommitDiff struct, FileContent struct, Reply struct, BrowserRole struct, Error struct,
-        BrowserAsk struct,
+        CommitDiff struct, FileContent struct, Reply struct,
+        BrowserView struct, BrowserNavState struct, BrowserSurfaceFailed struct,
+        BrowserFileDialog struct, BrowserDownload struct,
+        Error struct,
         DocumentRead struct,
-        BrowserSeats struct,
     ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
@@ -323,6 +328,7 @@ census!(Command,
         SetReviewThreadStatus struct,
         CloseSession struct, UpsertReviewThread struct, DeleteReviewThread struct,
         SubmitReview struct, BrowserIdleWarning struct,
+        BrowserProfileClose struct, BrowserProfileDelete struct,
     ],
     command_census, COMMAND_VARIANTS);
 
@@ -333,8 +339,16 @@ census!(ClientMessage,
     [
         Subscribe struct, Unsubscribe struct, Command struct, More struct, SeatRange struct,
         CommitDiff struct,
-        BrowserAnswer struct,
-        BrowserTakeRole struct,
+        BrowserView struct,
+        BrowserFileAnswer struct,
+        BrowserDetach unit,
+        BrowserInput struct,
+        BrowserControl struct,
+        BrowserNav struct,
+        BrowserResize struct,
+        BrowserProfiles struct,
+        BrowserProfileClose struct,
+        BrowserProfileDelete struct,
         DocumentRead struct,
         FileContent struct,
     ],
@@ -747,8 +761,6 @@ fn frames_record() -> Value {
                 mark: None,
                 theme: None,
                 font: None,
-                browser_idle_minutes: None,
-                browser_grace_minutes: None,
                 dictate: forge_workspace::DictateAxes::default(),
             },
         },
@@ -769,12 +781,15 @@ fn frames_record() -> Value {
             seat: Some(seat.clone()),
             dispatch_id: Some(1),
         },
-        ServerMessage::BrowserAsk {
+        ServerMessage::BrowserView {
             id: 1,
-            seat: seat.clone(),
-            tool: "browser_navigate".to_owned(),
-            args: json!({ "url": "https://example.com" }),
+            profile: "shared".to_owned(),
+            controller: Some(9),
+            viewers: 2,
+            viewer: 9,
         },
+        ServerMessage::BrowserNavState { id: 1, can_back: true, can_forward: false },
+        ServerMessage::BrowserSurfaceFailed { id: 1, reason: "the browser host exited".to_owned() },
         ServerMessage::DocumentRead {
             session: seat.clone(),
             path: "/proj/docs/readme.md".to_owned(),
@@ -828,23 +843,24 @@ fn frames_record() -> Value {
     // All five, because they are cheap and the client writes these tags by
     // hand: nothing else in the tree would notice one moving.
     let client_messages = [
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: false,
-            browser: true,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Home, answering: false },
         ClientMessage::Unsubscribe { what: Subject::Home },
         ClientMessage::Command {
             command: Box::new(Command::Cancel { key: seat.clone() }),
             reply_to: None,
         },
         ClientMessage::More { conversation: seat.clone(), before: None, turns: 1 },
-        ClientMessage::BrowserAnswer {
-            id: 1,
-            parts: vec![forge_primitives::browser::BrowserPart::Text { text: "done".to_owned() }],
-            error: None,
+        ClientMessage::BrowserView {
+            seat: seat.clone(),
+            profile: Some("hunt".to_owned()),
+            reply_to: None,
         },
+        ClientMessage::BrowserInput {
+            seq: 1,
+            event: forge_primitives::browser::BrowserInputEvent::Text { text: "hi".to_owned() },
+        },
+        ClientMessage::BrowserControl { take: true },
+        ClientMessage::BrowserNav { back: true },
         ClientMessage::DocumentRead {
             session: seat.clone(),
             path: "docs/readme.md".to_owned(),
@@ -930,29 +946,39 @@ fn frames_record() -> Value {
                 mark: None,
                 theme: None,
                 font: None,
-                browser_idle_minutes: None,
-                browser_grace_minutes: None,
                 dictate: forge_workspace::DictateAxes::default(),
             },
         }),
     );
-    // The ask, whose fields a client writes by hand on the way back: the id it
-    // answers under, the seat it acts for, the tool, and the arguments it was
-    // given.
+    // The viewer's state frame, whose fields a client reads by name: the
+    // profile id the binary frames carry, the key it draws, who holds the
+    // controller role and how many are attached. A rename would move no
+    // census line, and the strip would read undefined for ever.
     payload_sampled.insert(
-        "BrowserAsk".to_owned(),
-        shape_of(&ServerMessage::BrowserAsk {
+        "BrowserView".to_owned(),
+        shape_of(&ServerMessage::BrowserView {
             id: 1,
-            seat: seat.clone(),
-            tool: "browser_navigate".to_owned(),
-            args: json!({ "url": "https://example.com" }),
+            profile: "shared".to_owned(),
+            controller: Some(9),
+            viewers: 2,
+            viewer: 9,
         }),
     );
-    // The role frame's one field, pinned for the same reason: a rename would
-    // move no census line, and the client's strip would read undefined for
-    // ever.
-    payload_sampled
-        .insert("BrowserRole".to_owned(), shape_of(&ServerMessage::BrowserRole { hosting: true }));
+    // The history frame the bar's arrows read.
+    payload_sampled.insert(
+        "BrowserNavState".to_owned(),
+        shape_of(&ServerMessage::BrowserNavState { id: 1, can_back: true, can_forward: false }),
+    );
+    // **The failure the surface draws**: the id picks which profile's page
+    // stopped, and the reason is the sentence under it. A rename here fails
+    // nothing in the census while a dead browser leaves no words.
+    payload_sampled.insert(
+        "BrowserSurfaceFailed".to_owned(),
+        shape_of(&ServerMessage::BrowserSurfaceFailed {
+            id: 1,
+            reason: "the browser host exited (pid 42); the next call brings it back".to_owned(),
+        }),
+    );
     // **The document read's answer, where a rename would leave the viewer
     // rendering nothing.** `document_kind` is what a route branches on to
     // pick its renderer and `bytes` is what it draws, and neither is a name
@@ -1453,31 +1479,28 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
 /// order for an image's id, together. The server only decodes, so the fixtures
 /// run that way.
 fn binary_frame_record() -> Value {
-    use forge_server::transport::frame::{
-        self, HEADER_BYTES, IMAGE_HEADER_BYTES, MAX_IMAGE_BYTES, MAX_PAYLOAD_BYTES,
-    };
+    use forge_server::transport::frame::{self, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 
     // The dictation fixture: one of each interesting sample, little-endian
     // i16 on the wire. A big-endian read of these bytes, or a /32767 scale,
     // moves the decoded samples and fails the assertion below.
     const AUDIO: &[i16] = &[0, 16384, -32768, 8192, -8192, 32767, -16384, 4096];
-    // The image fixture: the answer's id big-endian, then the bytes.
-    const ID: u64 = 0x0102_0304_0506_0708;
-    const IMAGE: &[u8] = &[0x89, 0x50, 0x4e, 0x47];
 
     // Every kind, one list expanded twice: the `match` has no wildcard arm,
     // so a kind added or removed is a compile error here before it is a
     // failing record.
-    let kinds: Vec<Value> = [frame::Kind::Dictation, frame::Kind::BrowserImage]
-        .into_iter()
-        .map(|kind| {
-            let name = match kind {
-                frame::Kind::Dictation => "Dictation",
-                frame::Kind::BrowserImage => "BrowserImage",
-            };
-            json!({ "name": name, "tag": kind.tag() })
-        })
-        .collect();
+    let kinds: Vec<Value> =
+        [frame::Kind::Dictation, frame::Kind::BrowserFrame, frame::Kind::BrowserAudio]
+            .into_iter()
+            .map(|kind| {
+                let name = match kind {
+                    frame::Kind::Dictation => "Dictation",
+                    frame::Kind::BrowserFrame => "BrowserFrame",
+                    frame::Kind::BrowserAudio => "BrowserAudio",
+                };
+                json!({ "name": name, "tag": kind.tag() })
+            })
+            .collect();
 
     let mut dictation = vec![frame::Kind::Dictation.tag()];
     for sample in AUDIO {
@@ -1490,24 +1513,27 @@ fn binary_frame_record() -> Value {
         "the recorded fixture's bytes must decode to the samples they carry"
     );
 
-    let mut image = vec![frame::Kind::BrowserImage.tag()];
-    image.extend_from_slice(&ID.to_be_bytes());
-    image.extend_from_slice(IMAGE);
+    // **The browser frame is the server's to send.** Its tag is recorded so a
+    // client decodes the right one, and a client SENDING one is refused - the
+    // host is the only encoder.
+    let mut browser = vec![frame::Kind::BrowserFrame.tag()];
+    browser.extend_from_slice(&[1, 2, 3]);
     assert_eq!(
-        frame::decode(&image).expect("the recorded fixture is a frame this server takes"),
-        frame::Frame::Image { id: ID, bytes: IMAGE.to_vec() },
-        "the recorded fixture's bytes must decode to the id and the bytes they carry"
+        frame::decode(&browser),
+        Err(frame::Refusal::ServerOnly(frame::Kind::BrowserFrame.tag())),
+        "a browser frame from a client is refused, not decoded"
     );
 
     json!({
         "header_bytes": HEADER_BYTES,
-        "image_header_bytes": IMAGE_HEADER_BYTES,
         "max_payload_bytes": MAX_PAYLOAD_BYTES,
-        "max_image_bytes": MAX_IMAGE_BYTES,
         "kinds": kinds,
         "fixtures": {
             "dictation": { "hex": hex_of(&dictation), "samples": samples },
-            "browser_image": { "hex": hex_of(&image), "id": ID.to_string(), "bytes": IMAGE },
+            "browser_frame": {
+                "hex": hex_of(&browser),
+                "refusal": frame::Refusal::ServerOnly(frame::Kind::BrowserFrame.tag()).reason(),
+            },
         },
     })
 }
@@ -1542,27 +1568,62 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
             .collect()
     };
     sampled.insert(
-        "BrowserAnswer".to_owned(),
-        sample(ClientMessage::BrowserAnswer {
-            id: 1,
-            parts: vec![
-                forge_primitives::browser::BrowserPart::Text { text: "done".to_owned() },
-                forge_primitives::browser::BrowserPart::Image {
-                    mime_type: "image/png".to_owned(),
-                    bytes: Vec::new(),
-                },
-            ],
-            error: Some("the driver is not running".to_owned()),
+        "BrowserView".to_owned(),
+        sample(ClientMessage::BrowserView {
+            seat: SessionSlot::lead("TestOrg", "proj"),
+            profile: Some("hunt".to_owned()),
+            reply_to: Some(1),
+        }),
+    );
+    sampled.insert("BrowserDetach".to_owned(), sample(ClientMessage::BrowserDetach));
+    // The controller's surface size: the page writes these fields by hand,
+    // so a rename fails nothing until a resize never lands.
+    sampled.insert(
+        "BrowserResize".to_owned(),
+        sample(ClientMessage::BrowserResize { width: 1600, height: 1200, scale: 2.0 }),
+    );
+    // The strip's asks: the page writes these fields by hand through the
+    // shell, so a rename fails nothing until a row never lists.
+    sampled.insert(
+        "BrowserProfiles".to_owned(),
+        sample(ClientMessage::BrowserProfiles {
+            seat: SessionSlot::lead("TestOrg", "proj"),
+            reply_to: Some(2),
+        }),
+    );
+    sampled.insert(
+        "BrowserProfileClose".to_owned(),
+        sample(ClientMessage::BrowserProfileClose {
+            seat: SessionSlot::lead("TestOrg", "proj"),
+            name: "hunt".to_owned(),
+            reply_to: Some(3),
+        }),
+    );
+    sampled.insert(
+        "BrowserProfileDelete".to_owned(),
+        sample(ClientMessage::BrowserProfileDelete {
+            seat: SessionSlot::lead("TestOrg", "proj"),
+            name: "hunt".to_owned(),
+            reply_to: Some(4),
+        }),
+    );
+    sampled.insert(
+        "BrowserInput".to_owned(),
+        sample(ClientMessage::BrowserInput {
+            seq: 1,
+            event: forge_primitives::browser::BrowserInputEvent::Mouse {
+                action: forge_primitives::browser::MouseAction::Press,
+                x: 1.0,
+                y: 2.0,
+                button: 0,
+                clicks: 1,
+                modifiers: forge_primitives::browser::InputModifiers::default(),
+            },
         }),
     );
     sampled.insert(
         "Subscribe".to_owned(),
-        sample(ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: false,
-            browser: true,
-            declare: false,
-        }),
+        sample(ClientMessage::Subscribe { what: Subject::Home, answering: false }),
     );
     // The repair ask, for the subscribe's reason: a client writes these fields
     // by hand, and a rename fails nothing until a gap is never filled.

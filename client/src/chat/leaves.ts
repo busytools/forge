@@ -679,7 +679,7 @@ function titleOf(name: string, input: unknown, record: unknown): string {
   const named = said === name ? toolName(name) : said;
   // **A browser call says `browser`, not the driver's server name.** These
   // come over the wire under `playwright`, which is plumbing: the browser is
-  // the client's own. The URL a navigate carries is its own headline; a call
+  // the server's. The URL a navigate carries is its own headline; a call
   // with nothing on it falls back to the verb, so a snapshot reads
   // `browser: snapshot` rather than repeating the tool's raw name.
   if (isBrowserTool(name)) {

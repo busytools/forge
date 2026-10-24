@@ -1875,25 +1875,18 @@ pub(crate) fn handle_close_worker(
     };
     let worktree = WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
     emit_worker_removed(workspace, project_key, &entry, worktree);
-    // **The close tears the seat down like a despawn does** - the row goes
-    // with the entry - so its named browser profiles go with it: without
-    // this they sat orphaned until some unrelated announce, the symptom
-    // this sweep exists to remove.
-    announce_live_seats(workspace);
+    sweep_browser_seats(workspace);
 }
 
-/// Tell every browser-capable client which seats remain, so each client's
-/// profile sweep runs.
-///
-/// **The seat is down, so its named browser profiles go with it** - the
-/// profiles live on the client, so this is its only word. Whole and
-/// idempotent (the client deletes the seats the set no longer holds and
-/// nothing else). A store that cannot answer sends NOTHING: a client
-/// reading "no seats" would delete every profile it holds.
-fn announce_live_seats(workspace: &Arc<Workspace>) {
-    if let Some(seats) = workspace.live_seats() {
-        workspace.browser_relay().announce_seats(&seats);
-    }
+/// Tell the browser fleet which seats remain: **the seat is down, so its
+/// named profiles go with it**. The sweep runs off the teardown path, which
+/// is reaping a child and can take minutes; a fleet that is not installed is
+/// a workspace with no browsers to sweep.
+fn sweep_browser_seats(workspace: &Arc<Workspace>) {
+    let (Some(host), Some(seats)) = (workspace.browser_host(), workspace.live_seats()) else {
+        return;
+    };
+    tokio::spawn(async move { host.sweep_seats(&seats).await });
 }
 
 /// Handle a `Command::DespawnWorker` (the `agents__despawn` MCP
@@ -2219,9 +2212,9 @@ pub(crate) fn handle_despawn_worker_within(
         );
     }
 
-    // **The seat is down, so its browser profiles go with it** - after
-    // teardown and before the worktree cleanup (which can run for minutes).
-    announce_live_seats(workspace);
+    // **The seat is down, so its browser profiles go with it** - here, after
+    // teardown and before the worktree cleanup, which can run for minutes.
+    sweep_browser_seats(workspace);
 
     // Everything from here runs `git` or walks the tree, and the removal
     // alone can take minutes: inline on a runtime worker it holds the
@@ -5313,67 +5306,6 @@ provider = "anthropic"
         );
     }
 
-    /// **The browser family the spawn composes asks through the WORKSPACE's
-    /// relay.** The server is built inside the spawn and handed to a call a
-    /// stand-in replaces, so its wiring is otherwise dropped unobserved - and
-    /// a spawn composing its browser facade over a relay of its own would
-    /// answer every browser tool "no browser-capable client connected" while
-    /// a capably client sat attached. This drives a tool through the server
-    /// the spawn actually built, so the facade's own construction is the
-    /// thing under test rather than a copy of it.
-    #[tokio::test]
-    async fn a_spawn_composes_the_browser_family_over_the_workspaces_own_relay() {
-        let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
-        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
-        ws.seed_test_ready_account("Stargate");
-        ws.seed_test_gateway_ready(true);
-
-        // A host registered through the accessor the transport registers
-        // through: the tool's ask lands here only if the spawn's server asks
-        // the same relay.
-        let (to_host, mut asks) = tokio::sync::mpsc::unbounded_channel();
-        let (notices, _notice_rx) = tokio::sync::mpsc::unbounded_channel();
-        assert!(ws.browser_relay().register(1, to_host, notices), "fixture: the role is free");
-
-        let (stand_in, _agent_rx) = Workspace::testing_stub_handle();
-        ws.install_test_spawn_handle(stand_in);
-        handle_spawn_project(&ws, "forge", SessionLaunchSettings::default());
-
-        let server = ws.test_spawn_server().expect("the spawn composed its MCP server");
-        let host = tokio::spawn(async move {
-            let request = asks.recv().await.expect("the ask reached the registered host");
-            assert_eq!(request.tool, "browser_close");
-            request
-                .reply
-                .send(Ok(vec![forge_primitives::browser::BrowserPart::Text {
-                    text: "closed".to_owned(),
-                }]))
-                .ok();
-        });
-        let answer = server
-            .dispatch(&forge_sdk::mcp::protocol::JsonRpcRequest {
-                jsonrpc: "2.0".to_owned(),
-                id: Some(serde_json::json!(1)),
-                method: "tools/call".to_owned(),
-                params: Some(serde_json::json!({ "name": "browser_close", "arguments": {} })),
-            })
-            .await
-            .expect("a tools/call is answered");
-        // Bounded, so a facade wired to a relay of its own fails here naming
-        // what never happened rather than holding the run open.
-        tokio::time::timeout(std::time::Duration::from_secs(5), host)
-            .await
-            .expect(
-                "the ask reached the registered host rather than the tool answering without one",
-            )
-            .expect("the host task ran");
-
-        let encoded = format!("{answer:?}");
-        assert!(encoded.contains("closed"), "the host's parts are the answer: {encoded}");
-        assert!(!encoded.contains("no browser-capable client"), "{encoded}");
-    }
-
     /// A spawn refused before it reaches the project leaves the caller's
     /// parked payload where it is, so the caller's own expiry still reaches
     /// it rather than the workspace having consumed it on the way past.
@@ -6626,106 +6558,39 @@ provider = "anthropic"
         assert_eq!(frames[0].1, frames[1].1, "and both name the seat that went");
     }
 
-    /// **A despawn announces the seats that remain, and nothing at all when
-    /// the store cannot answer.** The client's profile sweep reads the whole
-    /// set: the seat that went is gone from it, and every seat that still
-    /// exists - a project's lead, a persisted worker - stays, so the client
-    /// deletes exactly the gone seat's profiles. A workspace whose store
-    /// cannot be read announces NOTHING: a client reading "no seats" would
-    /// delete every profile it holds.
+    /// **A despawn sweeps the browsers to the seats that remain.** The seat
+    /// that went is not in the set and the project's lead is, which is the
+    /// whole of what the fleet needs to delete exactly the down seat's named
+    /// profiles.
     #[tokio::test]
-    async fn a_despawn_announces_the_seat_set() {
+    async fn a_despawn_sweeps_the_browsers_to_the_remaining_seats() {
         let (workspace, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
         let dir = tempfile::tempdir().expect("a temp dir");
         let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("the store");
         workspace.attach_store_for_test(db);
-        workspace.seed_test_project("forge", "/tmp/forge-seat-set-test");
-        workspace.seed_test_session_charter(
-            &SessionSlot::new("TestOrg", "forge", "kept"),
-            "a persisted worker",
-            false,
-        );
+        workspace.seed_test_project("forge", "/tmp/forge-seat-sweep-test");
         workspace.insert_live_worker(&project, fake_worker_entry("gone", "session-gone"));
 
-        let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
-        let (notices, mut heard) = tokio::sync::mpsc::unbounded_channel();
-        assert!(
-            workspace.browser_relay().register(7, to_host, notices),
-            "the only capable connection holds the role",
-        );
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        workspace.install_browser_host(Arc::new(crate::browser::testing::StubHost { calls }));
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project, "gone", false, tx);
         let _ = resp_rx.await.expect("despawn result");
 
-        let notice = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+        let (what, seats) = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
             .await
-            .expect("the seat set is announced")
+            .expect("the sweep is asked")
             .expect("the channel is fed");
-        let crate::browser::Notice::Seats(seats) = notice else {
-            panic!("a seat set, got {notice:?}");
-        };
-        let labels: Vec<&str> = seats.iter().map(SessionSlot::label).collect();
-        assert_eq!(
-            labels,
-            vec!["kept", "lead"],
-            "the seat that went is not in the set; the persisted worker and the project's lead \
-             are: {labels:?}",
-        );
-        assert!(
-            seats.iter().all(|seat| seat.org() == "TestOrg" && seat.project() == "forge"),
-            "and each carries its org and project: {seats:?}",
-        );
-
-        // The fail-closed arm: a storeless workspace announces nothing.
-        let (bare, _bare_rx) = Workspace::testing_stub();
-        let bare_project = ProjectKey::new("forge");
-        bare.insert_live_worker(&bare_project, fake_worker_entry("gone", "session-gone"));
-        let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
-        let (notices, mut heard) = tokio::sync::mpsc::unbounded_channel();
-        assert!(bare.browser_relay().register(8, to_host, notices), "capable");
-        let (tx, resp_rx) = tokio::sync::oneshot::channel();
-        handle_despawn_worker(&bare, &bare_project, "gone", false, tx);
-        let _ = resp_rx.await.expect("despawn result");
-        assert!(
-            heard.try_recv().is_err(),
-            "an unreadable store sends no set - a client reading none would sweep everything",
-        );
-    }
-
-    /// **The close path announces too.** The X-button tears the seat down
-    /// like a despawn does - the row goes with the entry - so a closed
-    /// worker's named browser profiles go with it; without the announce they
-    /// sat orphaned until some unrelated one.
-    #[tokio::test]
-    async fn a_close_announces_the_seat_set() {
-        let (workspace, _rx) = Workspace::testing_stub();
-        let project = ProjectKey::new("forge");
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("the store");
-        workspace.attach_store_for_test(db);
-        workspace.seed_test_project("forge", "/tmp/forge-seat-set-test");
-        workspace.insert_live_worker(&project, fake_worker_entry("shut", "session-shut"));
-
-        let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
-        let (notices, mut heard) = tokio::sync::mpsc::unbounded_channel();
-        assert!(
-            workspace.browser_relay().register(5, to_host, notices),
-            "the only capable connection holds the role",
-        );
-
-        handle_close_worker(&workspace, &project, "shut");
-
-        let notice = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
-            .await
-            .expect("the seat set is announced")
-            .expect("the channel is fed");
-        let crate::browser::Notice::Seats(seats) = notice else {
-            panic!("a seat set, got {notice:?}");
-        };
-        let labels: Vec<&str> = seats.iter().map(SessionSlot::label).collect();
-        assert_eq!(labels, vec!["lead"], "the closed seat is not in the set: {labels:?}");
+        assert_eq!(what, "sweep_seats", "the fleet is told the seats that remain");
+        let labels: Vec<&str> = seats
+            .as_array()
+            .expect("a seat set")
+            .iter()
+            .filter_map(|seat| seat.get("label").and_then(serde_json::Value::as_str))
+            .collect();
+        assert_eq!(labels, vec!["lead"], "the seat that went is not in the set");
     }
 
     /// Regression: closing ONE worker must NOT cascade to the others.

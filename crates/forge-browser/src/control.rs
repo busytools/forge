@@ -1,0 +1,59 @@
+//! The host's control lines to the server, on stdout.
+//!
+//! **The input pipe runs the other way.** The server writes pointer
+//! gestures on the host's stdin; the host writes the things a viewer has to
+//! answer here - a page's file chooser today - as one JSON line per event on
+//! its stdout, which the server reads beside the child's frames. The log
+//! stays on stderr, so neither stream is parsed for the other's content.
+
+use std::io::Write as _;
+
+use serde::{Deserialize, Serialize};
+
+/// One thing the host needs the server to route.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HostEvent {
+    /// A page's file chooser: the client's picker answers with the files'
+    /// bytes, and the host is handed server-local paths.
+    FileDialog { id: u64, multiple: bool },
+    /// A download finished on the server: the file's name, its path beside
+    /// the profile, and how many bytes it holds.
+    Download { name: String, path: String, size: u64 },
+    /// A recording answered: `started` says whether the writer opened, and a
+    /// later event with it false carries how the take ended.
+    Recording { started: bool, seconds: u64, bytes: u64, capped: bool, error: Option<String> },
+}
+
+/// Write one event line for the server.
+pub fn emit(event: &HostEvent) {
+    let Ok(line) = serde_json::to_string(event) else { return };
+    let mut out = std::io::stdout().lock();
+    // **A server that stopped reading is a broken pipe, not a panic.** The
+    // host keeps painting its ring for whoever is watching; the event is
+    // lost with the connection and the dialog is answered by its timeout.
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+}
+
+/// The event one line names, or `None` for a line the server cannot read.
+pub fn parse(line: &str) -> Option<HostEvent> {
+    serde_json::from_str(line).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The line and the reader agree.** A chooser's request carries the
+    /// dialog id the answer comes back under, or the client's files cannot
+    /// be matched to the dialog that asked.
+    #[test]
+    fn a_file_dialog_round_trips_its_line() {
+        let event = HostEvent::FileDialog { id: 7, multiple: true };
+        let line = serde_json::to_string(&event).expect("a line");
+        assert_eq!(parse(&line), Some(event));
+        assert!(parse("").is_none());
+        assert!(parse("{\"kind\":\"other\"}").is_none());
+    }
+}

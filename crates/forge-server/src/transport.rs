@@ -103,14 +103,22 @@ pub mod wire;
 /// `connectors` under its projects - it draws an empty board and a zero total
 /// until the greeting's version turns it into the notice.
 /// `baselines/socket/8/` is the record a v8 server emitted.
-pub const PROTOCOL_VERSION: u32 = 9;
+///
+/// **v10 is a bump for the browser's move to the server.** The browser role
+/// and its ask/answer pair are gone: a client attaches to a profile's
+/// browser as a viewer, sends gestures and takes the controller role, and
+/// receives encoded frames as binary messages. A v9 client would send
+/// `browser_answer` to a server that never asks, and the two would sit
+/// across the socket unable to drive a browser at all.
+/// `baselines/socket/9/` is the record a v9 server emitted.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.
 ///
 /// **The socket carried none**, so a peer that vanished without closing - a
 /// slept machine, a wedged process, a network that went away - left its
-/// browser role held and any companion waiting, with neither side told the
+/// viewer attached and any companion waiting, with neither side told the
 /// other was gone. A test shortens the pair rather than waiting the shipping
 /// one out.
 #[derive(Clone, Copy, Debug)]
@@ -190,11 +198,11 @@ pub struct TransportState {
     pub conversations: Arc<conversation::Conversations>,
     pub live: Mutex<Live>,
     pub client: ClientConfig,
-    /// The browser relay the core owns: a capable connection registers into
-    /// it, and the browser tools ask through it. Carried in rather than built
-    /// on the spot, because it has to be the SAME relay the sessions' tool
-    /// handlers hold - see [`Workspace::browser_relay`](forge_workspace::Workspace::browser_relay).
-    pub browser: Arc<forge_workspace::browser::BrowserRelay>,
+    /// The server's browser fleet, when one is installed: the connection
+    /// attaches viewers, routes input and takes the controller role through
+    /// it. `None` is a transport with no fleet (tests, a platform with no
+    /// CEF host), where a viewer's attach answers its refusal.
+    pub browser_host: Option<Arc<dyn forge_workspace::browser::BrowserHost>>,
     /// The socket's keepalive: how often a connection is asked to prove it
     /// is there, and how long it may stay silent before it is reaped.
     pub heartbeat: Heartbeat,
@@ -206,11 +214,7 @@ impl TransportState {
     ///
     /// **One place, so the pieces cannot drift apart.** Every field here is
     /// something the socket needs that the workspace owns or that is the
-    /// transport's own: the browser relay above all, which has to be the SAME
-    /// relay the sessions' browser tools ask through - a transport holding a
-    /// relay of its own would register a host into a role nothing routes to,
-    /// and every browser tool would answer "no browser-capable client
-    /// connected" while a client sat attached.
+    /// transport's own.
     pub fn for_workspace(
         workspace: &Arc<forge_workspace::Workspace>,
         client: ClientConfig,
@@ -224,7 +228,7 @@ impl TransportState {
             // process shows is one the reader watched.
             live: Mutex::new(Live::new()),
             client,
-            browser: workspace.browser_relay(),
+            browser_host: workspace.browser_host(),
             heartbeat: Heartbeat::default(),
         }
     }

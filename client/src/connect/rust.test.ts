@@ -44,7 +44,6 @@ vi.mock('../perf', async (importOriginal) => {
 });
 
 import { noteSnapshot, noteSubscribeWritten } from '../perf';
-import { browserInflight } from '../browser/inflight.svelte';
 import { subjectKey, type ServerMessage } from '../protocol';
 import { onRefusal, type Refusal } from '../refusals';
 import type { Connection } from '../socket';
@@ -72,9 +71,10 @@ async function opened(state: State = OPEN): Promise<Connection> {
     return Promise.resolve(undefined);
   });
   const connection = connectRust('ws://127.0.0.1:7777/socket');
-  // Eight: the connection, the frames, the refusals, the role, the asks, the
-  // sweep notices, and #2513's frame facts and subscribe writes.
-  await vi.waitFor(() => expect(handlers.size).toBe(8));
+  // Six: the connection, the server's frames, the refusals, the browser's own
+  // frames for the page's canvas, and #2513's frame facts and subscribe
+  // writes.
+  await vi.waitFor(() => expect(handlers.size).toBe(7));
   await vi.waitFor(() =>
     expect(invoke).toHaveBeenCalledWith('client_connect', { url: 'ws://127.0.0.1:7777/socket' }),
   );
@@ -85,19 +85,16 @@ afterEach(() => {
   invoke.mockReset();
   handlers.clear();
   listen.mockClear();
-  browserInflight.calls = 0;
-  browserInflight.visible = false;
   vi.useRealTimers();
 });
 
 describe('what the shell is told', () => {
   it('a subscribe, an unsubscribe and a refresh each cross as their own command', async () => {
     const connection = await opened();
-    connection.subscribe(subject, { answering: true, browser: true });
+    connection.subscribe(subject, { answering: true });
     expect(invoke).toHaveBeenCalledWith('client_subscribe', {
       what: subject,
       answering: true,
-      browser: true,
     });
     connection.unsubscribe(subject);
     expect(invoke).toHaveBeenCalledWith('client_unsubscribe', { what: subject });
@@ -271,7 +268,6 @@ describe('frames from the bridge', () => {
     expect(invoke, 'the first ask crossed').toHaveBeenCalledWith('client_subscribe', {
       what: subject,
       answering: false,
-      browser: false,
     });
 
     vi.advanceTimersByTime(1_000);
@@ -403,38 +399,21 @@ describe("the connection's own facts", () => {
     expect(noteSubscribeWritten).toHaveBeenCalledWith('Busytools/forge/lead', false, 12.5);
   });
 
-  it('a status move reaches onStatus, and the role reaches onBrowserRole once', async () => {
+  it('a status move reaches onStatus', async () => {
     let status = 'connecting';
     invoke.mockImplementation((command: string) => {
       if (command === 'client_state') {
-        return Promise.resolve({ status, greeting: null, role: false });
+        return Promise.resolve({ status, greeting: null });
       }
       return Promise.resolve(undefined);
     });
     const connection = connectRust('ws://127.0.0.1:7777/socket');
-    await vi.waitFor(() => expect(handlers.size).toBe(8));
+    await vi.waitFor(() => expect(handlers.size).toBe(7));
     const moves: string[] = [];
     connection.onStatus((next) => moves.push(next));
     status = 'open';
     fire('client://connection', undefined);
     await vi.waitFor(() => expect(moves).toEqual(['open']));
-    const roles: boolean[] = [];
-    connection.onBrowserRole((hosting) => roles.push(hosting));
-    fire('client://role', true);
-    expect(connection.browserRole(), "the role is the connection's own fact").toBe(true);
-    fire('client://role', true);
-    expect(roles, 'the same role twice is one move').toEqual([true]);
-  });
-
-  it("the ask count drives the strip's ring", async () => {
-    await opened();
-    fire('client://asks', 2);
-    expect(browserInflight.calls, 'two asks in flight').toBe(2);
-    expect(browserInflight.visible).toBe(true);
-    fire('client://asks', 1);
-    expect(browserInflight.calls, 'one landed').toBe(1);
-    fire('client://asks', 0);
-    expect(browserInflight.calls, 'and the last one').toBe(0);
   });
 
   it("the heartbeat runs on the page's own timer", async () => {

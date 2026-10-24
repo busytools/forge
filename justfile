@@ -37,6 +37,7 @@ script-tests:
     python3 scripts/test_client_deps.py
     python3 scripts/test_check_groups.py
     python3 scripts/test_check_client_wasm.py
+    python3 scripts/test_browser_stack_patch.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -302,9 +303,8 @@ client-test: client-deps
 #
 # **The default lint set, not the workspace's**: this crate carries no
 # `[lints]` table of its own, so nothing pedantic applies here and the denied
-# `unwrap`/`expect`/`panic`/`exit` do not either (#2321). One invocation
-# rather than the workspace's pair: `--all-features` covers the crate's one
-# feature, so there is no second configuration to compile.
+# `unwrap`/`expect`/`panic`/`exit` do not either (#2321). One invocation,
+# with `--all-targets`: the crate's tests are targets of its own crate.
 #
 # Lint the shell crate.
 client-tauri-clippy:
@@ -314,17 +314,19 @@ client-tauri-clippy:
 # workspace's `test-all` never reaches them, and this is the step that puts
 # them in the gate. `client-tauri-check` runs them beside the build.
 #
-# The cases needing the vendored stack, a scratch forge or a real window are
-# `#[ignore]`d, so a gate run touches neither the network nor the machine.
+# The case needing the machine's real microphone is `#[ignore]`d, so a gate
+# run touches no audio hardware.
 #
 # `RUSTFLAGS=-D warnings` mirrors CI's workflow-level env, as `test-all` does:
 # without it the test-target compile is less strict here than there.
 #
 # Run the shell crate's tests.
+#
+# `--all-features` turns on `testing`, which is what carries the main-thread
+# overlay ivar check (`tests/overlay_ivars.rs`); without it that target is
+# skipped and the segfault-on-open class is unpinned.
 client-tauri-test:
-    # `testing` carries the ivar checks' entry points to their harness-free
-    # targets, which must run on the main thread.
-    RUSTFLAGS="-D warnings" cargo nextest run --manifest-path client/src-tauri/Cargo.toml --features testing
+    RUSTFLAGS="-D warnings" cargo nextest run --manifest-path client/src-tauri/Cargo.toml --all-features
 
 # Compile the desktop shell in the configuration that ships. This is the routine
 # gate for anything under client/src-tauri/, and it is quiet.
@@ -366,22 +368,7 @@ client-tauri-check:
 # The dmg step mounts the image and runs AppleScript to lay the mounted volume
 # out, so it opens a Finder window and takes focus for a few seconds.
 #
-# **A window on every run is why this is not the routine gate.**
-# Stage the app's own Chromium where the macOS bundler copies it: the
-# framework and the five helper apps CEF re-enters for its subprocesses.
-# **Before `tauri build`, not after it**: `bundle.macOS.files` carries the
-# staged tree into Contents/Frameworks while the bundler builds the app, so
-# the signature, the update tarball and the dmg all carry the engine. Laying
-# it in after the build left the tarball browser-less - the install worked
-# and the next auto-update installed a client with no browser. The host
-# binary is built here too: `tauri build` builds the default binary alone.
-stage-cef identifier="dev.vedhavyas.forge":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo build --release --locked --manifest-path client/src-tauri/Cargo.toml --bin forge_client_helper
-    ./client/src-tauri/scripts/stage-cef.sh "{{identifier}}"
-
-client-tauri-bundle: vendor-browser-stack
+client-tauri-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -398,28 +385,7 @@ client-tauri-bundle: vendor-browser-stack
         exit 1
     fi
 
-    "{{just_executable()}}" --justfile "{{justfile()}}" stage-cef
     npm --prefix client run tauri -- build --ci -- --locked
-
-# Fetch, verify and unpack the driver stack the client bundles: node and
-# @playwright/mcp, into the client's gitignored `browser-stack/` directory.
-# **The driver, not the browser**: the engine is the app's own Chromium,
-# staged for the bundler by `stage-cef`; this stack only speaks CDP to it.
-# Idempotent at its pins, and it prints both pins so a release log names the
-# stack it shipped.
-#
-# The bundling recipes run it themselves - a release must not ship without
-# it - and `client-tauri-check` does not, because it passes `--no-bundle`
-# and copies no resources.
-vendor-browser-stack:
-    ./scripts/vendor_browser_stack.sh
-
-# The Android engine: libnode (gmaclennan/nodejs-mobile, Node 24, one ABI)
-# into the Gradle project's gitignored jniLibs and cpp headers. Idempotent at
-# its pin; the android build recipes run it themselves, so a fresh clone that
-# runs them gets the engine without a separate step.
-vendor-browser-stack-android:
-    ./scripts/vendor_browser_stack.sh --android
 
 
 # The android target's own warnings check: the shell crate compiled for
@@ -430,17 +396,10 @@ vendor-browser-stack-android:
 # compiles this target (measured: a desktop-only helper whose sole caller
 # was gated reached a review exactly that way). Cheap enough to gate: measured about
 # a second warm and 14 s into a fresh target dir, so `just check` runs it
-# beside the other client steps. **CI runs no such step yet**: the vendoring
-# this build needs refuses non-macOS hosts, so an ubuntu job cannot pass it
+# beside the other client steps. **CI runs no such step yet**: the NDK this
+# build needs refuses non-macOS hosts, so an ubuntu job cannot pass it
 # and the CI side is filed as #1959 rather than patched here.
-#
-# **The vendored stack is a prerequisite** (as it is for
-# `client-android-check`): the shell crate's build script resolves the
-# android config's `browser-stack` resource glob, and a checkout without
-# the vendoring fails the build with "glob pattern ... did not match any
-# files" - on a fresh clone and on a fresh CI runner alike. The vendoring
-# is idempotent, so a machine that has it pays nothing here.
-client-android-warnings: vendor-browser-stack
+client-android-warnings:
     #!/usr/bin/env bash
     set -euo pipefail
     rustup target add aarch64-linux-android
@@ -452,7 +411,7 @@ client-android-warnings: vendor-browser-stack
 # Kotlin compile and its unit tests - which need the SDK and a JDK - stay
 # here, so they are compiled only when this runs. A device and the release
 # keystore are not needed.
-client-android-check: vendor-browser-stack vendor-browser-stack-android client-android-warnings
+client-android-check: client-android-warnings
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -479,23 +438,7 @@ client-android-check: vendor-browser-stack vendor-browser-stack-android client-a
     # none of it and gradle alone dies at settings evaluation. The CLI's own
     # build generates it (and compiles the Kotlin and the Rust); the unit
     # tests then run alone, because a build success prints no test count.
-    # **The renderer-death claim is INJECTED, and a dropped config would
-    # regenerate the client silently WITHOUT it** - wry reads the env hook
-    # from client/.cargo/config.toml (the tauri CLI chain runs from client/),
-    # so a move of that file, or a wry bump that renames the class extension,
-    # produces an app that dies when any WebView's renderer is killed. The
-    # generated file is the proof, and it is build output: remove it FIRST, or
-    # a stale copy left by an earlier build could pass the grep on old bytes
-    # (a fresh clone fails safely, a warm one would not).
-    generated_client="client/src-tauri/gen/android/app/src/main/java/dev/vedhavyas/forge/generated/RustWebViewClient.kt"
-    rm -f "$generated_client"
     npm --prefix client run tauri -- android build --debug --apk --ci --target aarch64
-    for marker in onRenderProcessGone rendererDied; do
-        if ! grep -q "$marker" "$generated_client"; then
-            echo "[ERROR] the generated RustWebViewClient is missing '$marker' - the renderer-gone claim did not inject; check client/.cargo/config.toml (WRY_RUSTWEBVIEWCLIENT_CLASS_EXTENSION)" >&2
-            exit 1
-        fi
-    done
     # Universal is the variant `--target aarch64` builds (the release APK too).
     (cd client/src-tauri/gen/android && ./gradlew --console=plain :app:testUniversalDebugUnitTest)
 
@@ -518,12 +461,11 @@ client-android-check: vendor-browser-stack vendor-browser-stack-android client-a
 #
 # Install the client: app-only bundle, refused while in use, swapped in.
 #
-# The browser stack is vendored first (a dependency, so it happens before
-# the bundle is built): a release without it is an app whose browser host
-# cannot start. The install is refreshed first too (`client-release-deps`),
-# unconditionally: the bundle is built from the lockfile, never from whatever
-# `node_modules` the checkout happens to hold.
-client-release version: vendor-browser-stack client-release-deps
+# The install is refreshed first (`client-release-deps`), unconditionally:
+# the bundle is built from the lockfile, never from whatever `node_modules`
+# the checkout happens to hold. The browser belongs to the server now, so a
+# client release carries no engine and no driver stack.
+client-release version: client-release-deps
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -573,7 +515,6 @@ client-release version: vendor-browser-stack client-release-deps
         exit 1
     fi
 
-    "{{just_executable()}}" --justfile "{{justfile()}}" stage-cef
     npm --prefix client run tauri -- build --bundles app --ci -- --locked
 
     if [ ! -e "$built" ]; then
@@ -657,7 +598,7 @@ client-release version: vendor-browser-stack client-release-deps
 # clean afterwards, so a Cargo.lock rewrite cannot ride out of a release.
 #
 # Build and stage the Android release APK.
-client-android-release version: vendor-browser-stack vendor-browser-stack-android client-release-deps
+client-android-release version: client-release-deps
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -766,19 +707,23 @@ client-android-release version: vendor-browser-stack vendor-browser-stack-androi
         exit 1
     fi
 
-    # **What the APK packs, not just that it built.** The Android bundle's
-    # assets are the driver tree alone; a stale browser/ or node/ under the
-    # generated assets once shipped a 516MB APK with every other check
-    # green (2026-10-08), so the readback asserts the shape here, every
-    # release.
-    packed=$(unzip -l "$built" | awk '{print $4}' | grep '^assets/browser-stack/' || true)
-    if echo "$packed" | grep -qE '^assets/browser-stack/(browser|node)/'; then
-        echo "[ERROR] the APK packs the desktop stack (node/browser) into Android assets:" >&2
-        echo "$packed" | grep -E '^assets/browser-stack/(browser|node)/' | head -5 >&2
+    # **What the APK packs, not just that it built.** The phone is a viewer:
+    # the browser and its driver live on the server now, so the APK must
+    # carry neither the vendored driver tree nor a libnode. A 516MB APK once
+    # shipped with every other check green (2026-10-08), which is why the
+    # readback asserts the shape here, every release.
+    packed=$(unzip -l "$built" | awk '{print $4}')
+    if echo "$packed" | grep -qE '^assets/browser-stack/'; then
+        echo "[ERROR] the APK packs the old client-side driver tree:" >&2
+        echo "$packed" | grep -E '^assets/browser-stack/' | head -5 >&2
         exit 1
     fi
-    if ! echo "$packed" | grep -q '^assets/browser-stack/playwright-mcp/'; then
-        echo "[ERROR] the APK carries no driver tree under assets/browser-stack/playwright-mcp" >&2
+    # The ABI's directory sits between `lib/` and the file, so the pattern has
+    # to allow one path segment: `lib/arm64-v8a/libnode.so` is what a packed
+    # driver actually looked like.
+    if echo "$packed" | grep -qE 'lib/([^/]+/)?lib(node|nodehost)'; then
+        echo "[ERROR] the APK carries a libnode:" >&2
+        echo "$packed" | grep -E 'lib/([^/]+/)?lib(node|nodehost)' | head -5 >&2
         exit 1
     fi
 
@@ -976,6 +921,9 @@ client-preview:
 # build leaving `test-helpers` off, or `testing` having to forward it.
 check-feature-configs:
     RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-server --bin forge
+    # The host executable `install.sh` builds on its own, in the configuration
+    # the server's build never reaches.
+    RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-browser --bin forge-browser
     RUSTFLAGS="-D warnings" cargo check --locked -p forge-server --features testing
 
 # The gate's steps, in the order a verdict reports them, and the four

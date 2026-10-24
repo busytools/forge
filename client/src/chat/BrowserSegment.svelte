@@ -3,51 +3,38 @@
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Icon from '../components/Icon.svelte';
   import {
-    browserUsed,
     canHost,
     closeProfile,
     deleteProfile,
     listProfiles,
-    profileWindowed,
     whyText,
     type ProfileRow,
   } from '../browser/host';
-  import { browserInflight } from '../browser/inflight.svelte';
-  import { closeSurface, openSurface } from '../browser/surface.svelte';
-  import type { Connection } from '../socket';
+  import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import { panelStyle, portal } from './strip-panel';
   import type { SessionSlot } from '../wire/types';
 
   /**
-   * The browser row in the strip above the composer: how many named profiles
-   * this client holds, and - opened - who owns each, which client drives
-   * them, and the controls the person has.
+   * The browser row in the strip above the composer: how many profiles the
+   * SERVER holds, and - opened - who owns each, whether a client has it up
+   * as the takeover, and the controls the person has.
    *
    * **A segment beside the agents row, not a page of its own.** The inspector
    * is going, and this is the shape its survivors take: a row in the strip,
    * its list opening in place (the mockup Ved settled, 2026-10-06). When the
    * surviving strip lands, this mounts into it unchanged.
    *
-   * Two controls live here and each is the person's, never a session's:
-   * **Override** (the force override, where a click can honestly serve it)
-   * and a profile row's **close** (which is what makes a profile whose
-   * owning session is gone recoverable).
+   * The controls are the person's, never a session's: a profile row's
+   * **close** (which ends the run and keeps the logins), its **delete**
+   * (which takes them), and **show** / **hide** (the takeover).
    *
-   * The profiles are the CLIENT's own state - it owns the drivers - so the
-   * row reads them from the host it runs in, never from the server.
+   * **The profiles are the SERVER's state** - it owns the hosts, the drivers
+   * and the profile directories - so the row reads them from the server
+   * through the shell, for this seat.
    */
-  let {
-    connection,
-    slot = null,
-  }: {
-    connection: Pick<
-      Connection,
-      'browserRole' | 'onBrowserRole' | 'takeBrowserRole' | 'onProfilesChanged'
-    >;
-    slot?: SessionSlot | null;
-  } = $props();
+  let { slot = null }: { slot?: SessionSlot | null } = $props();
 
-  /** Whether this page runs in a shell that owns a browser host. */
+  /** Whether this page runs in a shell that can show the server's browser. */
   const capable = canHost();
 
   let open = $state(false);
@@ -80,8 +67,7 @@
     if (row.closed) {
       return `${row.owner === '' ? '' : `${row.owner} · `}closed · its logins are still here`;
     }
-    const tail = row.running ? '' : row.opened ? ' · its driver is gone' : ' · not opened yet';
-    return `${row.owner}${tail}`;
+    return `${row.owner}${row.up ? '' : ' · not running'}`;
   }
   /**
    * The row whose delete is confirming, and the row a delete is running for:
@@ -111,13 +97,29 @@
    * a refusal's words must not live there.
    */
   let bulkFailed = new SvelteMap<string, string>();
-  /** Whether the SHARED browser is up as the takeover: its row's button says
-   *  hide where it is, and the collapsed row marks it without opening. */
-  let sharedUp = $state(false);
+  /** The shared browser's own row, from the last read. */
+  const sharedRow = $derived(profiles.find((row) => row.name === '@shared') ?? null);
+  /** The named rows: the shared browser has its own row above them. */
+  const named = $derived(profiles.filter((row) => row.name !== '@shared'));
+  /**
+   * **This client's own takeover**, which is what its show/hide says. The
+   * server's `windowed` is fleet-wide - any client may have a profile up -
+   * so a row read from it offered hide on a client that was not showing it
+   * (measured on the dev stack: the phone said hide while the desktop held
+   * the picture).
+   */
+  const ownUp = $derived(surface.phase !== 'closed');
+  /** Whether the SHARED browser is this client's own takeover. */
+  const sharedMine = $derived(ownUp && surface.profile === '@shared');
   /** Whether any of the lines this slot reads is up as the takeover. */
-  const anyUp = $derived(sharedUp || profiles.some((row) => row.windowed));
-  /** Whether the browser has been driven this session up - Ved's activity mark. */
-  let used = $state(false);
+  const anyUp = $derived(ownUp || profiles.some((row) => row.windowed));
+  /** Whether THIS client has `name` up as the takeover. */
+  function fronting(name: string): boolean {
+    return ownUp && surface.profile === name;
+  }
+  /** Whether any profile's host is up: the driven mark, from the server's
+   *  own rows (the phone has no attachment of its own to read it from). */
+  const used = $derived(profiles.some((row) => row.up));
   /**
    * What the last read answered. "No profiles yet" is a claim about this
    * client's own state, and a read that never answered has no state to claim,
@@ -125,16 +127,11 @@
    */
   let read = $state<'loading' | 'ready' | 'failed'>('loading');
   let why = $state<string | null>(null);
-  // The role is read ONCE here and kept live by the subscription below: the
-  // connection's identity does not change over this segment's life, so the
-  // initial read is the truth the subscription then maintains.
-  // svelte-ignore state_referenced_locally
-  let hosting = $state(connection.browserRole());
-  /** The engine this client draws with: the desktop's own Chromium, the
-   *  phone's system WebView. Both are the app's; the line says which. */
-  const engineLine = /Android/i.test(navigator.userAgent)
-    ? "the app's own WebView"
-    : "the app's own Chromium";
+  /** Whether the shared browser's host is up, from the server's own row. */
+  const hosting = $derived(sharedRow?.up ?? false);
+  /** The engine behind the page: the server's own Chromium. The phone draws
+   *  the same page's frames in its own view. */
+  const engineLine = "the server's own Chromium";
   let segEl = $state<HTMLElement | null>(null);
   /** The panel, portaled to the body, so the leave guards can see it. */
   let panelEl = $state<HTMLElement | null>(null);
@@ -156,16 +153,6 @@
     });
     return () => cancelAnimationFrame(raf);
   });
-
-  $effect(() => connection.onBrowserRole((now) => (hosting = now)));
-
-  /**
-   * **The host swept.** A seat despawned, or the live-seat set arrived and
-   * rows went with it; the sweep runs in the shell, so this is the only
-   * word the page gets. Every notice re-reads - the panel open or not, the
-   * resting count is a claim about the same rows.
-   */
-  $effect(() => connection.onProfilesChanged(() => void readProfiles()));
 
   /**
    * What each read was issued as, so a read that lands after a newer one -
@@ -190,20 +177,6 @@
       read = 'failed';
       why = whyText(error);
     }
-    // The use mark reads on the same beat, and its own failure keeps the
-    // last truth rather than claiming either state.
-    void browserUsed()
-      .then((now) => (used = now))
-      .catch(() => undefined);
-    // And the shared line's own window state, which its row's button and the
-    // collapsed mark both speak for - a read that failed says so rather than
-    // pinning the button to "show".
-    void profileWindowed()
-      .then((now) => (sharedUp = now))
-      .catch((error: unknown) => {
-        read = 'failed';
-        why = whyText(error);
-      });
   }
 
   $effect(() => {
@@ -211,11 +184,10 @@
   });
 
   /**
-   * The phone's takeover bar moving - its back, its Done, the hardware Back,
-   * a raise: nothing in THIS page acted, and the bar's UI body runs on the
-   * UI thread, so a read made by a caller can land before it (measured: the
-   * row kept saying "hide" over a surface already down). Every bar word
-   * re-reads - see `installTakeoverHook`.
+   * The takeover moving - the hardware Back on the phone, or a raise - says
+   * nothing in THIS page acted, so every word re-reads the strip's rows; a
+   * read made by a caller can land before the takeover did (measured: the
+   * row kept saying "hide" over a surface already down).
    */
   $effect(() => {
     const onTakeover = (event: Event): void => {
@@ -426,7 +398,10 @@
    * door Ved asked for (2026-10-07), and closing the window disturbs nothing.
    */
   function show(profile: string | null = null): void {
-    void openSurface(profile).then((reason) => {
+    // **The seat rides the raise**: the server attaches the viewer to a slot's
+    // browser, and a raise that named none would be refused with the surface
+    // left dark. This row is the seat's own, so it is the one to name.
+    void openSurface(profile, slot).then((reason) => {
       if (reason !== null) {
         // A read in flight was issued before this failure and must not
         // erase it when it lands.
@@ -443,8 +418,12 @@
   /** The person's own lower: the surface goes, the browser keeps serving, and
    *  the row's button says show again. A refusal is drawn, not swallowed. */
   function lower(profile: string | null = null): void {
-    void closeSurface(profile).then((reason) => {
+    void closeSurface(profile, slot).then((reason) => {
       if (reason !== null) {
+        // **A read in flight was issued before this refusal and must not
+        // erase it when it lands**, the same guard the close and the delete
+        // carry.
+        readToken += 1;
         read = 'failed';
         why = reason;
         return;
@@ -455,11 +434,14 @@
 
   /** The person's close: saves, frees the name, and the row falls away. */
   function close(row: ProfileRow): void {
-    void closeProfile(row.name).then(
+    void closeProfile(row.name, slot).then(
       () => readProfiles(),
       (error: unknown) => {
         // A close the shell refused leaves the profile open, and the row says
-        // so rather than vanishing over a name that is still held.
+        // so rather than vanishing over a name that is still held. **A read
+        // already in flight is made stale**: an opening's read landing after
+        // the refusal cleared the words the person is owed.
+        readToken += 1;
         read = 'failed';
         why = whyText(error);
       },
@@ -542,7 +524,7 @@
   function runDelete(row: ProfileRow, done: (error: string | null) => void): void {
     bulkFailed.delete(row.name);
     deleting.add(row.name);
-    void deleteProfile(row.name).then(
+    void deleteProfile(row.name, slot).then(
       () => {
         deleting.delete(row.name);
         void readProfiles();
@@ -573,6 +555,9 @@
         outcome = `deleted the '${row.name}' profile and its saved logins`;
         return;
       }
+      // **A read already in flight is made stale** for the same reason the
+      // close's is: the opening's read would land over the refusal.
+      readToken += 1;
       read = 'failed';
       why = error;
     });
@@ -632,11 +617,6 @@
     onkeydown={esc}
   >
     <Icon name="web" />
-    {#if browserInflight.visible}
-      <!-- The work-in-flight mark, the same ring the conversation draws: a
-           call is running through this browser right now. -->
-      <span class="ring" title="the browser is working"></span>
-    {/if}
     {#if anyUp}
       <!-- A window is up on one of this slot's lines; the list says which,
            and that row's own button takes it down. -->
@@ -666,28 +646,17 @@
       }}
       onfocusout={release}
     >
-      <div class="bz-role">
+      <div class="bz-state">
         <span class="tx">
-          {hosting ? 'browser connected' : 'browser not connected'}
+          {hosting ? "the server's browser is up" : 'no browser is up'}
         </span>
-        <!-- **The engine line** (Ved's cut, 2026-10-18): the desktop draws
-             the app's own Chromium as a full-window takeover; the phone keeps
-             its system WebView. Which one is not something the person should
-             have to infer. -->
+        <!-- **The engine line** (Ved's cut, 2026-10-18): the page is the
+             server's own Chromium, drawn by a native overlay on the desktop
+             and painted on a canvas on the phone. Which one is not something
+             the person should have to infer. -->
         <span class="tx bz-engine">
-          {hosting ? engineLine : 'no engine to run a page'}
+          {hosting ? engineLine : 'nothing to run a page'}
         </span>
-        {#if capable && !hosting}
-          <button
-            type="button"
-            class="bz-take bz-override"
-            aria-label="override the browser to this client"
-            onclick={() => connection.takeBrowserRole()}
-            onkeydown={esc}
-          >
-            override
-          </button>
-        {/if}
       </div>
 
       <!-- **The shared profile is always there**, and a session reaches it
@@ -697,24 +666,28 @@
            here rather than drawing a bare mark (#1839: absent is visible
            and explained). -->
       <div class="bz-it">
-        {#if capable}
+        {#if !capable}
+          <Icon name="x" class="bad" />
+        {:else if sharedRow?.busy}
           <span class="ring"></span>
+        {:else if sharedRow?.up}
+          <span class="dot ok"></span>
         {:else}
           <Icon name="x" class="bad" />
         {/if}
         <span class="nm">shared</span>
         <span class="tx">
-          {capable ? "@shared · the browser's own profile" : 'this client cannot host the browser'}
+          {capable ? "@shared · the browser's own profile" : 'this client cannot show the browser'}
         </span>
         {#if capable}
           <button
             type="button"
             class="bz-take bz-show"
-            aria-label={sharedUp ? 'hide the browser surface' : 'show the browser'}
-            onclick={() => (sharedUp ? lower() : show(null))}
+            aria-label={sharedMine ? 'hide the browser surface' : 'show the browser'}
+            onclick={() => (sharedMine ? lower('@shared') : show('@shared'))}
             onkeydown={esc}
           >
-            {sharedUp ? 'hide' : 'show'}
+            {sharedMine ? 'hide' : 'show'}
           </button>
         {/if}
       </div>
@@ -772,7 +745,7 @@
         </div>
       {/if}
 
-      {#each profiles as row (row.name)}
+      {#each named as row (row.name)}
         {#if armed === row.name}
           <!-- **The confirm happens in the row itself** (Ved's pick,
                2026-10-11): the warning takes the row's own text line and the
@@ -808,10 +781,23 @@
             <span class="nm">{row.name}</span>
             <span class="tx">deleting...</span>
           </div>
+        {:else if row.unreadable}
+          <!-- **A row this page cannot act on is drawn as itself** (rule 25),
+               and carries no verbs: either the server sent it in a form this
+               page cannot read, or the owner record it carries could not be
+               read, so no owner can be named for the verb. -->
+          <div class="bz-it">
+            <Icon name="x" class="bad" />
+            <span class="nm">{row.name}</span>
+            <span class="tx bad">its owner record could not be read</span>
+          </div>
         {:else}
           <div class="bz-it">
-            {#if row.running}
+            {#if row.busy}
+              <!-- The work spinner: a call is running on this profile now. -->
               <span class="ring"></span>
+            {:else if row.up}
+              <span class="dot ok"></span>
             {:else}
               <Icon name="x" class="bad" />
             {/if}
@@ -828,15 +814,18 @@
             <button
               type="button"
               class="bz-take bz-show"
-              aria-label={row.windowed
+              aria-label={fronting(row.name)
                 ? `hide the ${row.name} profile's browser`
                 : `show the ${row.name} profile's browser`}
-              onclick={() => (row.windowed ? lower(row.name) : show(row.name))}
+              onclick={() => (fronting(row.name) ? lower(row.name) : show(row.name))}
               onkeydown={esc}
             >
-              {row.windowed ? 'hide' : 'show'}
+              {fronting(row.name) ? 'hide' : 'show'}
             </button>
-            {#if row.owner !== ''}
+            <!-- **A closed profile has no run to close**: it is known only
+                 on disk, and close would ask the server to end a browser
+                 that is not there. -->
+            {#if row.owner !== '' && !row.closed}
               <button
                 type="button"
                 class="bz-take bz-close"
@@ -875,7 +864,7 @@
         <div class="bz-it"><span class="tx">reading the profiles…</span></div>
       {:else if read === 'failed'}
         <div class="bz-it"><span class="tx bad">{why}</span></div>
-      {:else if profiles.length === 0 && outcome === null}
+      {:else if named.length === 0 && outcome === null}
         <div class="bz-it">
           <span class="tx"
             >{mine === null ? 'no named profiles yet' : 'no profiles for this session'}</span

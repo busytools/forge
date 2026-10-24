@@ -18,13 +18,11 @@ pub struct ClientConfig {
     /// face - Fira Code for prose and code alike - shipped beside the view
     /// rather than left to whatever the OS has.
     pub font: Option<String>,
-    /// The idle release: how many minutes a named profile may sit untouched
-    /// before its creator is warned (the shared browser is never warned; it
-    /// closes at the same total, quietly). `None` is the built-in twenty
-    /// minutes.
+    /// Ghosts of the idle pair `[browser]` owns now: read only so a config
+    /// written before the move still boots, never carried to a client, and
+    /// safe to delete.
     pub browser_idle_minutes: Option<u64>,
-    /// How long the browser lives past that bound unless it is used. `None`
-    /// is the built-in ten minutes.
+    /// See [`ClientConfig::browser_idle_minutes`].
     pub browser_grace_minutes: Option<u64>,
 }
 
