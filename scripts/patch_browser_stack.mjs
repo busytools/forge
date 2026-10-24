@@ -70,11 +70,12 @@ const TAB_NEEDLE = readFileSync(
 ).replace(/\n$/, "");
 
 const TAB_REPLACEMENT = [
-  "        const tabHeaders = await Promise.all(context.tabs().map((tab2) => tab2.headerSnapshot()));",
+  "        const forgeOpenTabs = context.tabs();",
+  "        const tabHeaders = await Promise.all(forgeOpenTabs.map((tab2) => tab2.headerSnapshot()));",
   "        const result2 = renderTabsMarkdown(tabHeaders);",
   "        // FORGE_TAB_IDS_PATCH 1: forge's service needs a stable name per tab;",
   "        // Playwright's index renumbers on every close.",
-  "        const forgeTabs = context.tabs().map((tab2, i) => ({",
+  "        const forgeTabs = forgeOpenTabs.map((tab2, i) => ({",
   "          i,",
   '          id: (tab2.page && tab2.page.delegate && tab2.page.delegate._targetId) || "",',
   "          title: tabHeaders[i].title,",

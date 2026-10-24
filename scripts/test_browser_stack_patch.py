@@ -128,6 +128,9 @@ class BrowserStackPatchTest(unittest.TestCase):
         self.assertEqual(patched.count(TABS_MARKER), 1, "the tab patch marker appears once")
         self.assertEqual(patched.count("FORGE-TABS "), 1, "the export line appears once")
         self.assertEqual(patched.count("_targetId"), 1, "one borrowed private field")
+        self.assertEqual(
+            patched.count("context.tabs()"), 1, "the tab list is captured once, before the awaits"
+        )
         self.assertEqual(patched.count("FORGE_FILE_CHOOSER_PATCH 2"), 1)
         self.assertIn('JSON.stringify(forgeTabs)', patched)
         self.assertIn('"FORGE-TABS " + JSON.stringify(forgeTabs) + "\\n"', patched)
