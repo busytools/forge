@@ -83,6 +83,11 @@ pub struct HandoffState {
     pub parked: Option<ParkedHandoff>,
     /// Why this handoff runs, which the row and the record both state.
     pub reason: Option<forge_primitives::HandoffReason>,
+    /// A fill reading was asked for at the last turn boundary, and the
+    /// trigger is waiting to judge it.
+    pub probing: bool,
+    /// The reading that fired this handoff, carried to the row.
+    pub fill: Option<crate::handoff::FillReading>,
     /// The judgment turn forge sent is running.
     pub awaiting: bool,
     /// The last assistant text seen while that turn ran.

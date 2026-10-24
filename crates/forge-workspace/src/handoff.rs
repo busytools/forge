@@ -660,7 +660,7 @@ pub(crate) struct PendingBrief {
 
 /// The fill reading a handoff fired on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FillReading {
+pub struct FillReading {
     pub percent: u8,
     pub total_tokens: u64,
     pub max_tokens: u64,

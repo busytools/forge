@@ -153,12 +153,18 @@ pub enum AgentEvent {
     },
     ContextUsage {
         session_id: String,
+        /// The share the CLI itself reports, against its effective window.
         percentage: Option<u8>,
         /// Raw model context-window size in tokens (e.g. 200_000 for
         /// Sonnet's default cap, 1_000_000 for the 1M-context variant).
         /// `None` when the upstream probe hasn't reported it yet.
         /// Sourced from `ContextUsageResponse.raw_max_tokens`.
         max_tokens: Option<u64>,
+        /// The tokens the model actually read on its last request.
+        total_tokens: Option<u64>,
+        /// The effective window after any lowered auto-compact window,
+        /// which is the denominator a fill trigger has to use.
+        effective_max_tokens: Option<u64>,
     },
     McpSnapshot {
         session_id: String,

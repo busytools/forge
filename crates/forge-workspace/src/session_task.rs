@@ -835,12 +835,19 @@ impl SessionTask {
                     terminal_reason: None,
                 });
             }
-            AgentEvent::ContextUsage { percentage, max_tokens, .. } => {
+            AgentEvent::ContextUsage {
+                percentage,
+                max_tokens,
+                total_tokens,
+                effective_max_tokens,
+                ..
+            } => {
                 self.emit(SessionUpdate::ContextUsageSnapshot {
                     key: self.key.clone(),
                     percentage,
                     max_tokens,
                 });
+                self.evaluate_handoff_trigger(percentage, total_tokens, effective_max_tokens);
             }
             AgentEvent::McpSnapshot { servers, error, .. } => {
                 self.emit(SessionUpdate::McpSnapshot { key: self.key.clone(), servers, error });
@@ -1486,7 +1493,87 @@ impl SessionTask {
         }
         if let Some(parked) = parked {
             self.begin_handoff(parked.supplied());
+            return;
         }
+        self.maybe_trigger_handoff();
+    }
+
+    /// The automatic trigger: at a turn boundary with no handoff running,
+    /// ask the CLI for this seat's own fill reading.
+    ///
+    /// **Asked at every boundary, page or no page.** A view refreshes the
+    /// reading, but an unattended worker has no view, so a trigger that read
+    /// only what a page had asked for would never fire on exactly the
+    /// sessions that run longest. A failed ask skips this boundary and says
+    /// so at debug; the denominator is never guessed.
+    fn maybe_trigger_handoff(&mut self) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        if !workspace.handoff_policy_for(&self.key).enabled {
+            return;
+        }
+        {
+            let mut domain = self.domain.lock();
+            if domain.handoff.in_progress() {
+                return;
+            }
+            // Re-armed rather than skipped when a probe is already out: a
+            // reading that never came (the bridge's own timeout swallows it)
+            // would otherwise leave the trigger stuck off for the life of
+            // the session.
+            domain.handoff.probing = true;
+        }
+        let Some(session_id) = self.session_id_string() else {
+            self.domain.lock().handoff.probing = false;
+            return;
+        };
+        if let Err(error) = self.handle.get_context_usage(session_id) {
+            self.domain.lock().handoff.probing = false;
+            tracing::debug!(
+                target: "forge_workspace::session_task",
+                slot = %self.key.display(),
+                %error,
+                "the fill reading could not be asked for; no handoff trigger this turn",
+            );
+        }
+    }
+
+    /// Judge a reading the trigger asked for: a fill at or over the
+    /// configured share, or a compaction the fill trigger did not stop.
+    fn evaluate_handoff_trigger(
+        &mut self,
+        reported: Option<u8>,
+        total_tokens: Option<u64>,
+        effective_max_tokens: Option<u64>,
+    ) {
+        {
+            let mut domain = self.domain.lock();
+            if !std::mem::take(&mut domain.handoff.probing) {
+                return;
+            }
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let policy = workspace.handoff_policy_for(&self.key);
+        if !policy.enabled {
+            return;
+        }
+        let fill = fill_of(reported, total_tokens, effective_max_tokens);
+        let compaction_count = self.conversation.as_ref().map_or(0, |(_, count)| *count);
+        let reason = if compaction_count >= policy.after_compactions {
+            // The backstop: a huge turn crossed the window and the CLI
+            // compacted before a boundary could carry the handoff.
+            Some(forge_primitives::HandoffReason::Compaction)
+        } else if fill.is_some_and(|fill| fill.percent >= policy.at_percent) {
+            Some(forge_primitives::HandoffReason::Fill)
+        } else {
+            None
+        };
+        let Some(reason) = reason else { return };
+        {
+            let mut domain = self.domain.lock();
+            domain.handoff.reason = Some(reason);
+            domain.handoff.fill = fill;
+        }
+        self.begin_handoff(None);
     }
 
     /// Replace this seat's occupant with a new session that continues from
@@ -1497,16 +1584,17 @@ impl SessionTask {
         judgment: Vec<forge_primitives::HandoffSection>,
     ) {
         let Some(workspace) = self.workspace.upgrade() else { return };
-        let (from, model, permission_mode) = {
+        let (from, model, permission_mode, fill) = {
             let mut domain = self.domain.lock();
-            domain.handoff = crate::domain_session::HandoffState::default();
             let from = domain.session_id.as_ref().map(std::string::ToString::to_string);
             let model = domain.current_model.as_ref().map(|model| model.display_name_short.clone());
             let mode = domain
                 .observed_permission_mode
                 .or(domain.configured_permission_mode)
                 .map(|mode| mode.as_wire().to_owned());
-            (from, model, mode)
+            let fill = domain.handoff.fill;
+            domain.handoff = crate::domain_session::HandoffState::default();
+            (from, model, mode, fill)
         };
         let Some(from) = from else {
             self.emit(SessionUpdate::Notice {
@@ -1540,7 +1628,7 @@ impl SessionTask {
             from,
             to,
             reason,
-            fill: None,
+            fill,
             compaction_count,
             at_percent: policy.at_percent,
             role,
@@ -2014,6 +2102,31 @@ pub(crate) fn execute_command_via_handle(
 
 /// The words a permission answer carried, where it carried any: the box's own
 /// notes, the one field a dictation into the ask lands in (#1360).
+/// The fill a reading states, against the CLI's own effective window.
+///
+/// **Counted from the two numbers rather than taken from the reported
+/// share** when both are there: the denominator has to be the effective
+/// window after any lowered auto-compact window, so a reading that names
+/// only its share is the fallback rather than the truth. `None` when
+/// neither says anything, so nothing fires on a guess.
+fn fill_of(
+    reported: Option<u8>,
+    total_tokens: Option<u64>,
+    effective_max_tokens: Option<u64>,
+) -> Option<crate::handoff::FillReading> {
+    if let (Some(total), Some(max)) = (total_tokens, effective_max_tokens)
+        && max > 0
+    {
+        let percent = total.saturating_mul(100).saturating_add(max / 2) / max;
+        return Some(crate::handoff::FillReading {
+            percent: u8::try_from(percent).unwrap_or(u8::MAX),
+            total_tokens: total,
+            max_tokens: max,
+        });
+    }
+    reported.map(|percent| crate::handoff::FillReading { percent, total_tokens: 0, max_tokens: 0 })
+}
+
 fn permission_words(outcome: &forge_primitives::PermissionOutcome) -> Option<String> {
     match outcome {
         forge_primitives::PermissionOutcome::Selected { notes_text, .. } => notes_text.clone(),
@@ -3258,6 +3371,184 @@ mod tests {
         assert!(task.domain.lock().handoff.awaiting, "the reply is waited for");
     }
 
+    /// A turn boundary in a fresh task with a session id, a window and the
+    /// stub workspace: the shape the trigger reads.
+    fn trigger_task(
+        workspace: &Arc<crate::Workspace>,
+        compaction_count: u32,
+    ) -> (SessionTask, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, agent_rx) = command_task_for(workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        let (window, _) = crate::conversation_window::Window::tail_of(&[]);
+        task.conversation = Some((window, compaction_count));
+        (task, agent_rx)
+    }
+
+    fn reading(reported: Option<u8>, total: Option<u64>, effective: Option<u64>) -> AgentEvent {
+        AgentEvent::ContextUsage {
+            session_id: "old-session-id".to_owned(),
+            percentage: reported,
+            max_tokens: Some(1_000_000),
+            total_tokens: total,
+            effective_max_tokens: effective,
+        }
+    }
+
+    /// At the configured share the trigger asks for the judgment half in a
+    /// turn of its own, and the row later says why it fired.
+    #[tokio::test]
+    async fn the_trigger_fires_at_the_configured_share() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 0);
+
+        task.maybe_trigger_handoff();
+        assert!(
+            matches!(
+                agent_rx.try_recv(),
+                Ok(forge_primitives::AgentCommand::GetContextUsage { .. })
+            ),
+            "the reading is asked of the CLI at the boundary",
+        );
+
+        task.translate_event(reading(Some(85), Some(850_000), Some(1_000_000)));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "at 85% the judgment half is asked for: {dispatched:?}",
+        );
+        assert_eq!(
+            task.domain.lock().handoff.reason,
+            Some(forge_primitives::HandoffReason::Fill),
+            "and the reason rides to the row",
+        );
+        let fill = task.domain.lock().handoff.fill.expect("the reading that fired");
+        assert_eq!(fill.percent, 85);
+        assert_eq!((fill.total_tokens, fill.max_tokens), (850_000, 1_000_000));
+    }
+
+    /// One point under the share is not a handoff: the trigger fires at the
+    /// line, not near it.
+    #[tokio::test]
+    async fn a_reading_under_the_share_does_not_fire() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+
+        task.maybe_trigger_handoff();
+        task.translate_event(reading(Some(84), Some(840_000), Some(1_000_000)));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "84% is under the default share and asks for nothing",
+        );
+        assert!(!task.domain.lock().handoff.probing, "and the boundary is spent");
+    }
+
+    /// The denominator is the CLI's effective window, not the share it
+    /// reports: a window lowered for auto-compact fires earlier, which is
+    /// the whole reason the trigger is a percentage rather than a count.
+    #[tokio::test]
+    async fn the_effective_window_is_the_denominator() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+
+        task.maybe_trigger_handoff();
+        // 900k of an effective 1M is 90%, though the CLI's share of the raw
+        // 2M window reads 45%.
+        task.translate_event(reading(Some(45), Some(900_000), Some(1_000_000)));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "the effective window's 90% fires even though the reported share does not",
+        );
+    }
+
+    /// A compaction the fill trigger did not stop arms the backstop: the
+    /// session hands over at the next boundary whatever its fill reads.
+    #[tokio::test]
+    async fn the_count_backstop_fires_when_a_compaction_came_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 1);
+
+        task.maybe_trigger_handoff();
+        task.translate_event(reading(Some(10), Some(100_000), Some(1_000_000)));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "a session that compacted hands over even at a low fill",
+        );
+        assert_eq!(
+            task.domain.lock().handoff.reason,
+            Some(forge_primitives::HandoffReason::Compaction),
+            "and the row says a compaction came first",
+        );
+    }
+
+    /// `enabled = false` is the one off switch: not even a reading is asked
+    /// for, so a project that must not be interrupted pays nothing.
+    #[tokio::test]
+    async fn the_trigger_is_off_when_the_table_says_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.handoff = crate::config::HandoffSettings {
+            enabled: Some(false),
+            ..crate::config::HandoffSettings::default()
+        };
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 3);
+
+        task.maybe_trigger_handoff();
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "a disabled trigger does not even ask for the reading",
+        );
+        assert!(!task.domain.lock().handoff.probing, "and nothing is left half-armed");
+    }
+
+    /// A reading that says nothing fires nothing: the trigger never guesses
+    /// a denominator.
+    #[tokio::test]
+    async fn a_reading_with_no_numbers_does_not_fire() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+
+        task.maybe_trigger_handoff();
+        task.translate_event(reading(None, None, None));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "an empty reading is not a full one",
+        );
+    }
+
     /// The brief is given only to the occupant it was written for: a connect
     /// under any other id is a different session, and the brief describes a
     /// history it does not carry.
@@ -4241,10 +4532,25 @@ mod tests {
             key: key.clone(),
             text,
             attachments: Vec::new(),
-            uuid,
+            uuid: uuid.clone(),
             source: crate::protocol::PromptSource::Forge,
         });
-        to_agent.try_recv().is_ok()
+        // **The continuation is the command under test, not whatever arrives
+        // next.** The turn boundary also asks the CLI for a fill reading, so
+        // "something was sent" would answer a different question - and a
+        // dropped continuation would read as delivered on the strength of a
+        // probe.
+        loop {
+            match to_agent.try_recv() {
+                Ok(forge_primitives::AgentCommand::PromptWithImages { uuid: sent, .. })
+                    if sent == uuid =>
+                {
+                    return true;
+                }
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
     }
 
     /// The continuation speaks for the occupant that failed. A `/new` or
@@ -7926,6 +8232,8 @@ provider = "anthropic"
                 session_id: "s".to_owned(),
                 percentage: Some(62),
                 max_tokens: Some(1_000_000),
+                total_tokens: Some(620_000),
+                effective_max_tokens: Some(1_000_000),
             },
         );
 

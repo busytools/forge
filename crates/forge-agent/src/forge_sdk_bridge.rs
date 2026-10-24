@@ -814,8 +814,16 @@ impl ForgeSdkBridge {
             // shows the model's headline capacity (1M / 200K / …)
             // rather than a fluctuating effective number.
             let max_tokens = Some(usage.raw_max_tokens);
+            let effective_max_tokens = Some(usage.max_tokens);
+            let total_tokens = Some(usage.total_tokens);
             if event_tx
-                .send(AgentEvent::ContextUsage { session_id, percentage, max_tokens })
+                .send(AgentEvent::ContextUsage {
+                    session_id,
+                    percentage,
+                    max_tokens,
+                    total_tokens,
+                    effective_max_tokens,
+                })
                 .is_err()
             {
                 tracing::warn!(
