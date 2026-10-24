@@ -635,7 +635,18 @@ impl DomainSession {
     }
 
     /// A prompt was committed as a turn.
+    ///
+    /// **A prompt queued into a turn already running joins that turn.** The
+    /// CLI runs it inside the same turn and emits one Result for both, so
+    /// counting it as another turn would leave the outstanding count
+    /// permanently ahead and close the handoff's idle gate for the life of
+    /// the seat. A prompt sent while the task still reads a turn in flight
+    /// but the CLI has started a new one is held busy by `prompt_queue`
+    /// until its own Result serves the boundary.
     pub fn commit_turn(&mut self) {
+        if self.turn_in_flight() {
+            return;
+        }
         self.turn_commits = self.turn_commits.saturating_add(1);
         self.turn_pending = true;
     }
@@ -818,6 +829,22 @@ mod tests {
             None,
             "no pin is no answer, rather than a mode forged from nothing",
         );
+    }
+
+    /// **A prompt the CLI queues inside a running turn shares that turn's
+    /// one Result.** Counting it as another turn leaves the outstanding
+    /// count permanently ahead, which closes the handoff's idle gate for the
+    /// life of the seat.
+    #[test]
+    fn a_prompt_queued_into_a_running_turn_joins_its_single_result() {
+        let mut domain = DomainSession::new(SessionSlot::lead("Org", "proj"), None);
+        domain.commit_turn();
+        domain.commit_turn();
+
+        assert_eq!(domain.turn_commits, 1, "the queued prompt joins the running turn");
+        domain.serve_turn();
+        assert!(!domain.turns_outstanding(), "the one Result serves both prompts");
+        assert!(!domain.turn_pending, "and the seat reads idle at the boundary");
     }
 
     /// A mode forge cannot name is a mode it cannot report.

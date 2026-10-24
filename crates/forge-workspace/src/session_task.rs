@@ -4754,11 +4754,43 @@ mod tests {
         assert!(workspace.swap_in_progress(&task.key), "with its gate open");
     }
 
-    /// A prompt committed before the boundary's Result is the NEXT turn. The
-    /// seat is not idle, so no handoff fires into it - and the reading is not
-    /// even asked for until the seat really has nothing running.
+    /// **A handoff parked by a prompt queued inside a running turn begins at
+    /// the shared Result.** One turn ended, so the seat is idle and the
+    /// judgment prompt goes out as its own turn rather than the handoff
+    /// sitting parked forever.
     #[tokio::test]
-    async fn a_prompt_committed_before_the_result_keeps_the_seat_busy() {
+    async fn a_handoff_parked_by_a_queued_prompt_begins_at_the_shared_result() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        {
+            let mut domain = task.domain.lock();
+            domain.commit_turn();
+            domain.commit_turn();
+            domain.handoff.reason = Some(forge_primitives::HandoffReason::Manual);
+            domain.handoff.parked = Some(crate::domain_session::ParkedHandoff::Ask);
+        }
+
+        task.after_turn_ended();
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "the judgment prompt goes out once the shared turn ends: {dispatched:?}",
+        );
+        assert!(workspace.swap_in_progress(&task.key), "and the swap gate opens with it");
+    }
+
+    /// A prompt queued behind the boundary is not a second turn, and the
+    /// seat stays busy while it waits: no handoff fires into it, and the
+    /// reading is asked only once the queue is clear.
+    #[tokio::test]
+    async fn a_prompt_queued_behind_the_boundary_keeps_the_seat_busy() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (workspace, _rx) =
             crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
@@ -4767,7 +4799,13 @@ mod tests {
         {
             let mut domain = task.domain.lock();
             domain.commit_turn();
+            // The prompt the CLI queued inside that turn, before its Result.
             domain.commit_turn();
+            domain.record_queued_prompt(
+                "queued-2",
+                crate::protocol::PromptSource::You,
+                "the next ask",
+            );
         }
 
         task.translate_event(AgentEvent::SdkMessage {
@@ -4775,17 +4813,16 @@ mod tests {
             msg: result_message("success", false),
         });
 
-        assert!(task.domain.lock().turns_outstanding(), "the second prompt's turn is still open");
+        assert!(!task.domain.lock().turn_in_flight(), "the shared Result ended the turn",);
         assert!(
             !task.domain.lock().is_idle_for_handoff(),
-            "so the seat is not idle at this boundary",
+            "but the queued prompt still holds the seat",
         );
-        assert!(
-            agent_rx.try_recv().is_err(),
-            "and no reading is asked for while a turn is outstanding",
-        );
+        assert!(agent_rx.try_recv().is_err(), "so no reading is asked for at this boundary",);
 
-        // Its own Result closes the second turn, and the real boundary asks.
+        // The CLI ran it; its lifecycle settles and its own Result serves the
+        // boundary.
+        task.domain.lock().advance_queued_prompt("queued-2", "completed");
         task.translate_event(AgentEvent::SdkMessage {
             session_id: "old-session-id".to_owned(),
             msg: result_message("success", false),
@@ -4795,7 +4832,7 @@ mod tests {
                 agent_rx.try_recv(),
                 Ok(forge_primitives::AgentCommand::GetContextUsage { .. })
             ),
-            "the boundary after both turns is the one that asks",
+            "the clear boundary is the one that asks",
         );
     }
 
