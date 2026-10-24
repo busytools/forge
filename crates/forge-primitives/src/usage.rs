@@ -186,14 +186,28 @@ impl UsageSnapshot {
     /// reading was taken, not what it says, and it is the only one excluded
     /// here - a new usage field belongs in the comparison below.
     pub fn same_usage(&self, other: &Self) -> bool {
-        self.source == other.source
-            && self.five_hour == other.five_hour
-            && self.seven_day == other.seven_day
-            && self.seven_day_opus == other.seven_day_opus
-            && self.seven_day_sonnet == other.seven_day_sonnet
-            && self.extra_usage == other.extra_usage
-            && self.spend == other.spend
-            && self.balance == other.balance
+        // Destructured without `..` on purpose: a field added to the
+        // snapshot is a compile error here rather than a comparison that
+        // silently ignores it, which would make every poll news again.
+        let Self {
+            source,
+            fetched_at: _,
+            five_hour,
+            seven_day,
+            seven_day_opus,
+            seven_day_sonnet,
+            extra_usage,
+            spend,
+            balance,
+        } = self;
+        source == &other.source
+            && five_hour == &other.five_hour
+            && seven_day == &other.seven_day
+            && seven_day_opus == &other.seven_day_opus
+            && seven_day_sonnet == &other.seven_day_sonnet
+            && extra_usage == &other.extra_usage
+            && spend == &other.spend
+            && balance == &other.balance
     }
 }
 
@@ -290,26 +304,43 @@ mod tests {
     /// clock, so a quiet account bought a full home read every poll.
     #[test]
     fn same_usage_ignores_when_the_reading_was_taken() {
-        let snapshot = |fetched_at: SystemTime, utilization: f64| UsageSnapshot {
+        // Every field populated, so deleting a comparison below is a red
+        // test rather than a line no case reaches.
+        let snapshot = |fetched_at: SystemTime| UsageSnapshot {
             source: UsageSourceKind::Oauth,
             fetched_at,
-            five_hour: Some(window(utilization, None)),
-            seven_day: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            extra_usage: None,
-            spend: None,
-            balance: None,
+            five_hour: Some(window(42.0, None)),
+            seven_day: Some(window(43.0, None)),
+            seven_day_opus: Some(window(44.0, None)),
+            seven_day_sonnet: Some(window(45.0, None)),
+            extra_usage: Some(ExtraUsage {
+                monthly_limit: Some(10.0),
+                used_credits: Some(1.0),
+                utilization: Some(10.0),
+                currency: Some("USD".to_owned()),
+            }),
+            spend: Some(ApiSpend {
+                daily: 1.0,
+                weekly: 2.0,
+                monthly: 3.0,
+                limit: Some(5.0),
+                limit_remaining: Some(2.0),
+                limit_reset: Some("monthly".to_owned()),
+                expires_at: None,
+            }),
+            balance: Some(7.5),
         };
         let at = SystemTime::UNIX_EPOCH;
 
         assert!(
-            snapshot(at, 42.0).same_usage(&snapshot(at + Duration::from_secs(60), 42.0)),
+            snapshot(at).same_usage(&snapshot(at + Duration::from_secs(60))),
             "a later probe that found the same figures is the same usage",
         );
-        assert!(
-            !snapshot(at, 42.0).same_usage(&snapshot(at + Duration::from_secs(60), 43.0)),
-            "a window that moved is a change to announce",
-        );
+        let mut moved = snapshot(at + Duration::from_secs(60));
+        moved.seven_day_opus = Some(window(46.0, None));
+        assert!(!snapshot(at).same_usage(&moved), "a window that moved is a change to announce",);
+        let mut moved = snapshot(at + Duration::from_secs(60));
+        moved.balance = Some(7.25);
+        assert!(!snapshot(at).same_usage(&moved), "a balance that moved is a change to announce",);
     }
 }
