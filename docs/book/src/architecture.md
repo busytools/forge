@@ -312,21 +312,29 @@ change as the surface.
 
 The client under `client/` is a Svelte app that connects to a running
 forge and draws it. It is gated like the Rust side rather than beside
-it: `just check` runs the shell crate's rustfmt check
-(`client-tauri-fmt`), Prettier, ESLint on typescript-eslint's
-type-checked configs, `svelte-check`, `tsc --noEmit`, then vitest, then
-the shell crate's clippy and tests (`client-tauri-clippy` and
-`client-tauri-test`), then its android warnings check
-(`client-android-warnings`: the
-crate compiled for `aarch64-linux-android` with warnings denied, which is
-what catches desktop-only code going dead on Android),
-so one command decides both stacks and its verdict line names the first
-failing step whichever side it is on.
+it: `just check` runs the client web steps (Prettier, ESLint on
+typescript-eslint's type-checked configs, `svelte-check`, `tsc --noEmit`
+and then vitest) and the shell crate's steps (its rustfmt check
+`client-tauri-fmt`, its clippy and tests `client-tauri-clippy` and
+`client-tauri-test`, and its android warnings check
+`client-android-warnings`: the crate compiled for
+`aarch64-linux-android` with warnings denied, which is what catches
+desktop-only code going dead on Android) as two of its four independent
+groups, so one command decides both stacks and its verdict line names the
+first failing step whichever side it is on. The four groups run
+concurrently, capped by `FORGE_CHECK_JOBS` (default 4), and
+`just check-serial` runs the same steps one at a time.
 
 The shell under `client/src-tauri/` is its own workspace root, so
 `just check`'s workspace-side steps never reach it; CI compiles it in the
 `client-tauri` job (its clippy and tests), and the `cargo fmt --check`
-job's second invocation carries its rustfmt check.
+job's second invocation carries its rustfmt check. Both jobs run when the
+shell, `crates/forge-capture`, `clippy.toml`, the root `Cargo.toml` or the
+toolchain changes. Every build and
+test job in `ci.yml` is path-filtered, and the ruleset requires two
+checks: `ci-required`, that workflow's aggregate, which always runs and
+fails if a job whose paths changed was skipped, and the docs workflow's
+`build site`, which runs on every pull request.
 `client-tauri-fmt`, `client-tauri-clippy`, `client-tauri-test`
 and `client-android-warnings` are the steps of `just check` that do, and
 the shipping build is still outside both gates. The Unicode punctuation

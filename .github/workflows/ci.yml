@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
 
+# `pull-requests: read` is what lets `changes` read a pull request's
+# changed-file list over the REST API. Everything else here reads the
+# checkout alone.
+permissions:
+  contents: read
+  pull-requests: read
+
 # A pull request's next push supersedes its run. A push to main keeps a group
 # of its own: cancelling one leaves that commit with no run of this workflow
 # to point at, and its verdict should not wait on the next merge. Keyed on the
@@ -18,8 +25,77 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # **Each build and test job below runs only for the paths it serves**, and
+  # one aggregate decides the pull request. `changes` names the path groups,
+  # each job is conditional on its own group, and `ci-required` always runs,
+  # depends on every job, and fails when a job that ran failed or when a job
+  # whose paths changed was skipped. A skipped job therefore means "nothing it
+  # covers moved", never "the gate passed without looking". Only the `changes`
+  # job, the Unicode gate and the aggregate itself are unfiltered: the first
+  # names the paths, the gate scans every file type, and the aggregate reports
+  # when everything else skipped.
+  #
+  # `gate` is the fail-safe group: a change to the gate's own definition
+  # (this file, the composite action, the justfile) runs everything.
+  #
+  # **A new job is invisible to the aggregate unless it is also listed in
+  # `ci-required`'s `needs`**: that check reads only what it depends on.
+  changes:
+    name: changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      client: ${{ steps.filter.outputs.client }}
+      client_tauri: ${{ steps.filter.outputs.client_tauri }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+      gate: ${{ steps.filter.outputs.gate }}
+    steps:
+      # A pull request reads its changed-file list from the REST API and
+      # needs no checkout; a push compares against the previous commit,
+      # which a default shallow clone does not carry.
+      - uses: actions/checkout@v7
+        if: github.event_name != 'pull_request'
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # The `client` filter excludes the shell directory, and under the
+          # default 'some' quantifier a negated rule is ignored, so a
+          # `client/src-tauri` change would match it and run the client job.
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'rustfmt.toml'
+              - 'clippy.toml'
+              - '.config/nextest.toml'
+              - 'scripts/install.sh'
+            client:
+              - 'client/**'
+              - '!client/src-tauri/**'
+            client_tauri:
+              - 'client/src-tauri/**'
+              - 'crates/forge-capture/**'
+              # The shell's clippy reads the repo-root config, and
+              # forge-capture inherits its workspace fields from here.
+              - 'clippy.toml'
+              - 'Cargo.toml'
+              - 'rust-toolchain.toml'
+            scripts:
+              - 'scripts/**'
+            gate:
+              - 'justfile'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
+
   fmt:
     name: cargo fmt --check
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.client_tauri == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -39,18 +115,25 @@ jobs:
       - run: ./scripts/check_no_unicode_punctuation.sh
 
   script-tests:
+    # The display name stays `release script tests` until the ruleset stops
+    # requiring it: renaming it now leaves a pull request waiting for a
+    # check that no longer reports.
     name: release script tests
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The recipe is what runs both scripts, so the step's composition has one
-      # home; `just` is here for it and for the client-dependency pin, which
-      # drives the recipe the gate runs.
+      # The recipe is what runs the scripts' tests, so the step's composition
+      # has one home; `just` is here for it and for the client-dependency pin,
+      # which drives the recipe the gate runs.
       - uses: taiki-e/install-action@just
       - run: just script-tests
 
   clippy:
     name: cargo clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -70,6 +153,8 @@ jobs:
 
   test:
     name: cargo nextest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -94,6 +179,8 @@ jobs:
 
   release:
     name: cargo check --release
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -116,6 +203,8 @@ jobs:
   # forward it.
   feature-configs:
     name: cargo check (install.sh + testing configs)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -133,6 +222,8 @@ jobs:
 
   docs:
     name: cargo doc
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings
@@ -159,6 +250,8 @@ jobs:
   # and tracked in #2258).
   client:
     name: client format, lint, build, typecheck and tests
+    needs: changes
+    if: needs.changes.outputs.client == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -190,6 +283,8 @@ jobs:
   # every case that does is `#[ignore]`d.
   client-tauri:
     name: client shell clippy and tests
+    needs: changes
+    if: needs.changes.outputs.client_tauri == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -220,9 +315,31 @@ jobs:
   # platform the framework ships on.
   client-tauri-macos:
     name: client shell (macOS, CEF)
+    needs: changes
+    if: needs.changes.outputs.client_tauri == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: macos-14
+    env:
+      # cef-dll-sys unpacks the distribution under CEF_PATH/<version> and
+      # downloads it only when that directory is missing.
+      CEF_PATH: ${{ github.workspace }}/.cef-cache
     steps:
       - uses: actions/checkout@v7
+      # The distribution is what this job downloads: cef-dll-sys fetches a
+      # 307 MB archive on a cold build. Keyed on the pinned cef-dll-sys
+      # version rather than the lockfile, so an unrelated dependency move
+      # does not pay for the download again. The wrapper's cmake/ninja build
+      # stays in rust-cache below: that is target-dir output keyed by the
+      # lockfile, which is what rust-cache covers.
+      - name: Read the pinned CEF version
+        id: cef
+        run: |
+          version=$(awk '/^name = "cef-dll-sys"$/{getline; sub(/^version = "/, ""); sub(/"$/, ""); print}' client/src-tauri/Cargo.lock)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: .cef-cache
+          key: cef-${{ runner.os }}-${{ runner.arch }}-${{ steps.cef.outputs.version }}-${{ github.workflow }}
       - uses: ./.github/actions/rust
         with:
           components: clippy
@@ -235,3 +352,103 @@ jobs:
       - uses: taiki-e/install-action@just
       - run: just client-tauri-clippy
       - run: just client-tauri-test
+
+  # **This workflow's required check**, beside the docs workflow's
+  # `build site`. GitHub treats a skipped job as a passing required check,
+  # which is the hole a path filter opens: a typo in a filter, a renamed job
+  # or a pattern that stopped matching would report green having run nothing.
+  # This job always runs, reads every job's result
+  # and the paths its group covers, and fails unless each job either passed
+  # or was skipped with its paths unchanged. That is what makes a skip a
+  # statement about paths rather than about the job.
+  ci-required:
+    name: ci-required
+    if: always()
+    needs:
+      - changes
+      - fmt
+      - unicode-punct
+      - script-tests
+      - clippy
+      - test
+      - release
+      - feature-configs
+      - docs
+      - client
+      - client-tauri
+      - client-tauri-macos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job ran or was skipped with its paths unchanged
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["NEEDS"])
+
+          # Each job's path group. `gate` short-circuits every group, and an
+          # empty tuple is a job with no filter, which must always run.
+          groups = {
+              "fmt": ("rust", "client_tauri"),
+              "unicode-punct": (),
+              "script-tests": ("scripts",),
+              "clippy": ("rust",),
+              "test": ("rust",),
+              "release": ("rust",),
+              "feature-configs": ("rust",),
+              "docs": ("rust",),
+              "client": ("client",),
+              "client-tauri": ("client_tauri",),
+              "client-tauri-macos": ("client_tauri",),
+          }
+
+          problems = []
+
+          changes = needs.get("changes", {})
+          if changes.get("result") != "success":
+              problems.append(f"changes: {changes.get('result', 'missing')}")
+
+          outputs = changes.get("outputs") or {}
+
+          # A filter renamed in `changes` and not here would leave an empty
+          # output, and an empty output reads as "nothing moved": the skip
+          # would pass. Every output this job reads must say true or false.
+          expected_outputs = {"gate"}
+          for names in groups.values():
+              expected_outputs.update(names)
+          for name in sorted(expected_outputs):
+              if outputs.get(name) not in ("true", "false"):
+                  problems.append(f"changes: output {name} missing or not true/false")
+
+          def moved(*names):
+              return any(outputs.get(name) == "true" for name in names)
+
+          for job, names in groups.items():
+              job_result = needs.get(job)
+              if job_result is None:
+                  problems.append(f"{job}: missing from needs")
+                  continue
+              expected = moved("gate", *names) if names else True
+              result = job_result["result"]
+              if result == "success":
+                  continue
+              if result == "skipped" and not expected:
+                  continue
+              suffix = ", but the paths it serves changed" if expected else ""
+              problems.append(f"{job}: {result}{suffix}")
+
+          for job in sorted(set(needs) - set(groups) - {"changes"}):
+              problems.append(f"{job}: in needs with no path group here")
+
+          if problems:
+              print("ci-required failed:")
+              for problem in problems:
+                  print(f"  - {problem}")
+              sys.exit(1)
+
+          print("ci-required: every job ran or was skipped with its paths unchanged")
+          PY

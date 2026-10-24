@@ -1,6 +1,12 @@
 # forge workspace task runner.
 # Most recipes are thin wrappers over cargo; see CLAUDE.md for policy.
 
+# sccache, when installed, shares compiled objects across worktrees and
+# branches. Empty is what cargo treats as no wrapper, so a machine without
+# it builds normally.
+sccache := `command -v sccache || true`
+export RUSTC_WRAPPER := sccache
+
 # Default: show the available recipes.
 default:
     @just --list
@@ -18,16 +24,18 @@ fmt-check:
 unicode-punct-check:
     ./scripts/check_no_unicode_punctuation.sh
 
-# The release scripts' own tests. `update_manifest.py` writes the one file
-# every installed client reads for updates, and nothing else in the gate
-# exercises it: a hash taken from the wrong archive, or a block dropped
-# outright, would otherwise ship silently. Stdlib python, like the Unicode
+# The scripts' own tests. `update_manifest.py` writes the one file every
+# installed client reads for updates, and nothing else in the gate exercises
+# it: a hash taken from the wrong archive, or a block dropped outright, would
+# otherwise ship silently. `check_groups.sh` decides what a red gate says and
+# whether a dead group counts as a pass. Stdlib python, like the Unicode
 # gate's own script.
 #
-# Run the release scripts' tests and the client-dependency bootstrap's.
+# Run the scripts' own tests.
 script-tests:
     python3 scripts/test_update_manifest.py
     python3 scripts/test_client_deps.py
+    python3 scripts/test_check_groups.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -968,34 +976,77 @@ check-feature-configs:
     RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-server --bin forge
     RUSTFLAGS="-D warnings" cargo check --locked -p forge-server --features testing
 
-# Full pre-commit / pre-PR verification loop.
+# The gate's steps, in the order a verdict reports them, and the four
+# independent groups `check` runs concurrently. Every step belongs to
+# exactly one group; `check` refuses to start if the two disagree.
+check_steps := "fmt-check unicode-punct-check script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-tauri-clippy client-tauri-test client-android-warnings clippy test-all doctest doc"
+check_groups := "fast|fmt-check unicode-punct-check script-tests;rust|clippy test-all doctest doc;client|client-format client-lint client-typecheck client-test;shell|client-tauri-fmt client-tauri-clippy client-tauri-test client-android-warnings"
+
+# Full pre-commit / pre-PR verification loop, in four independent groups run
+# concurrently: the fast checks, the Rust workspace, the client web steps
+# and the shell crate's steps. `FORGE_CHECK_JOBS` caps how many run at once
+# (default 4); a smaller machine sets it lower.
 #
-# A script rather than a recipe with these as dependencies, because
-# a failing dependency aborts just before any recipe body runs, and the
-# verdict is printed by the body.
+# A script rather than a recipe with these as dependencies, because a
+# failing dependency aborts just before any recipe body runs, and the
+# verdict is printed by the body. The orchestrator is
+# `scripts/check_groups.sh`, so its parity guard, verdict and dead-worker
+# handling are covered by `script-tests`.
+#
+# **Parallel groups cannot turn a red gate green.** Every group runs to its
+# own first failure while the others keep going, each failing group's log
+# tail is printed, and the verdict names the first failing step in
+# `check_steps` order and the steps its group did not reach, or names a
+# group that reported nothing. The exit status
+# is the failing step's. A group that dies before writing its report is a
+# failure, not a pass: the report file exists before its worker starts. A
+# step list and group list that disagree are a refusal before anything
+# runs: a step in no group would never run at all.
 #
 # The verdict line is the point. A caller piping this through `tail -N`
 # reads the pipe's exit status, not this recipe's, so a red gate can read
 # green; leaving the result on the last line means a truncated read still
-# carries it. `[no-exit-message]` keeps just's own error line from
-# landing after the verdict, and the EXIT trap covers an interrupted run,
-# so the last line is a verdict on that path too. That line carries no
-# exit status: bash's EXIT trap sees 0 for a signal death, where the
-# process's real status is 128 plus the signal.
+# carries it. `[no-exit-message]` keeps just's own error line from landing
+# after the verdict, and the EXIT trap covers an interrupted run, so the
+# last line is a verdict on that path too. That line carries no exit
+# status: bash's EXIT trap sees 0 for a signal death, where the process's
+# real status is 128 plus the signal.
 #
-# Fail-fast and exit-code preserving, as the dependency form was: the
-# failing step's own status is what this recipe exits with. Both verdict
-# lines are built from `steps`, so the list of them has one home.
+# Every run gets its own `target/check-logs/run.XXXXXX/` directory, printed
+# as `logs: ...` before the verdict, so two runs in one checkout never
+# delete each other's reports.
 #
 # The steps are re-invoked through just's own executable, not a bare
 # `just`, which a caller who invoked it by absolute path does not have on
 # PATH.
+#
+# The full gate, four groups at once; `FORGE_CHECK_JOBS` caps how many.
 [no-exit-message]
 check:
     #!/usr/bin/env bash
+    set -uo pipefail
+
+    root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
+    export CHECK_LOG_ROOT="$root/target/check-logs"
+    exec "$root/scripts/check_groups.sh" \
+        "{{just_executable()}}" "{{justfile()}}" \
+        "{{check_steps}}" "{{check_groups}}"
+
+# The same gate one step at a time, in `check_steps` order. `check` runs the
+# four groups concurrently; this is the recipe for debugging a step or
+# running on a machine that should not carry them together.
+#
+# Fail-fast and exit-code preserving: the failing step's own status is what
+# this recipe exits with, and the verdict names the failing step and the
+# steps after it that it did not reach.
+#
+# The full gate one step at a time, for debugging.
+[no-exit-message]
+check-serial:
+    #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-tauri-clippy client-tauri-test client-android-warnings clippy test-all doctest doc)
+    read -ra steps <<< "{{check_steps}}"
     verdict=""
 
     on_exit() {
@@ -1023,6 +1074,109 @@ check:
     done
 
     verdict="[OK] check: all green (${steps[*]})"
+    echo "$verdict"
+
+# A fast slice of the gate for one review round, on the packages a change
+# touches. Each named workspace crate gets its rustfmt check, both clippy
+# feature sets and its own nextest run; `client` adds the client's format,
+# lint, typecheck and test steps, and `client-tauri` adds the shell crate's
+# rustfmt check, clippy and tests. The Unicode gate runs once either way.
+#
+# **Not the pre-merge gate.** The final head still runs `just check` and
+# `just check-feature-configs` whole: this skips every crate the change did
+# not name, the doctests and the rustdoc, and nothing here stands in for
+# them.
+#
+#   just check-delta forge-gateway
+#   just check-delta forge-workspace forge-primitives
+#   just check-delta client
+#   just check-delta client-tauri
+#
+# Ends on `[OK] check-delta: ...` or `[ERROR] check-delta: <step> failed` as
+# its last line.
+#
+# Delta gate for one review round; the final head runs the full `just check`.
+[no-exit-message]
+check-delta *packages:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    # just does not hand a shebang recipe's arguments to the script, so the
+    # variadic parameter is substituted here instead of read from `$@`.
+    read -ra packages <<< "{{packages}}" || true
+    if [ "${#packages[@]}" -eq 0 ]; then
+        echo "[ERROR] check-delta: name at least one crate, client or client-tauri" >&2
+        exit 1
+    fi
+
+    verdict=""
+
+    on_exit() {
+        if [ -z "$verdict" ]; then
+            echo "[ERROR] check-delta: no verdict, the run ended early"
+        fi
+    }
+    trap on_exit EXIT
+
+    run_just() {
+        "{{just_executable()}}" --justfile "{{justfile()}}" "$@"
+    }
+
+    # One failing step stops the run and its name lands on the last line, so
+    # a caller piping this through `tail` reads the verdict, not tail's
+    # status.
+    run_step() {
+        local label="$1"
+        shift
+        echo "[..] check-delta: $label"
+        local status=0
+        "$@" || status=$?
+        if [ "$status" -ne 0 ]; then
+            verdict="[ERROR] check-delta: $label failed"
+            echo "$verdict"
+            exit "$status"
+        fi
+    }
+
+    for package in "${packages[@]}"; do
+        case "$package" in
+            client) echo "[..] check-delta: client/ (format, lint, typecheck, test)" ;;
+            client-tauri) echo "[..] check-delta: client/src-tauri/ (fmt, clippy, test)" ;;
+            *) echo "[..] check-delta: $package (fmt, clippy, nextest)" ;;
+        esac
+    done
+
+    for package in "${packages[@]}"; do
+        case "$package" in
+            client) ;;
+            client-tauri) run_step "client-tauri-fmt" run_just client-tauri-fmt ;;
+            *) run_step "fmt $package" cargo fmt -p "$package" --check ;;
+        esac
+    done
+
+    run_step "unicode-punct-check" run_just unicode-punct-check
+
+    for package in "${packages[@]}"; do
+        case "$package" in
+            client)
+                run_step "client-format" run_just client-format
+                run_step "client-lint" run_just client-lint
+                run_step "client-typecheck" run_just client-typecheck
+                run_step "client-test" run_just client-test
+                ;;
+            client-tauri)
+                run_step "client-tauri-clippy" run_just client-tauri-clippy
+                run_step "client-tauri-test" run_just client-tauri-test
+                ;;
+            *)
+                run_step "clippy $package" env RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets -- -D warnings
+                run_step "clippy $package (all features)" env RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets --all-features -- -D warnings
+                run_step "nextest $package" env RUSTFLAGS="-D warnings" cargo nextest run -p "$package" --all-features
+                ;;
+        esac
+    done
+
+    verdict="[OK] check-delta: all green (${packages[*]})"
     echo "$verdict"
 
 # Deliberately not a bare `gh run watch`. Piping it masks the exit code

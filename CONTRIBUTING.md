@@ -17,8 +17,8 @@ we can agree the direction before you write it.
 just check
 ```
 
-That is `cargo fmt --check`, the Unicode punctuation gate, the release
-scripts' tests and the client-dependency bootstrap's, the shell crate's
+That is `cargo fmt --check`, the Unicode punctuation gate, the scripts' own
+tests, the shell crate's
 rustfmt check (`client-tauri-fmt`), the
 client's Prettier check, ESLint, `svelte-check` and
 `tsc --noEmit` and then its vitest run, the shell crate's clippy and tests
@@ -44,13 +44,36 @@ are `just client-tauri-check`, `just client-android-check` and `just
 web-image-check`.
 
 The gate is two commands, not one. Get `just check` green before you open
-a pull request, and `just check-feature-configs` too: it compiles the two
-server configurations nothing else builds - the release one `just install`
-and `install.sh` produce, with the test-only features off, and `testing`
+a pull request, and `just check-feature-configs` too. `just check` runs its
+four independent groups concurrently - the fast checks, the Rust workspace,
+the client web steps and the shell crate's steps - capped by
+`FORGE_CHECK_JOBS` (default 4; set it lower on a smaller machine). Every
+group runs to its own first failure, a failing group's log tail is printed,
+and the verdict names the first failing step; each run's per-step logs stay
+in their own `target/check-logs/run.XXXXXX/` directory, printed as
+`logs: ...` before the verdict. `just check-serial` is the same gate one step at a
+time, for debugging. When `sccache` is on `PATH`, the recipes export
+`RUSTC_WRAPPER=sccache` so compiled objects are shared across worktrees and
+branches; without it they build normally.
+`just check-feature-configs` compiles the two server configurations nothing
+else builds - the release one `just install` and `install.sh` produce, with
+the test-only features off, and `testing`
 on its own. `just check` runs with `--all-features`, which turns every
 feature on regardless and so never catches what that configuration leaves
 out. `just check` alone decides both stacks, so its verdict line names the
 first failing step whichever side it is on.
+
+For a review round, `just check-delta <crate>...` runs the fast slice on
+the crates a change touches: their rustfmt check, the Unicode gate, both
+clippy feature sets and nextest, plus the client's steps or the shell
+crate's clippy and tests when `client` or `client-tauri` is named. It does
+not replace the gate; the final head runs the full two commands.
+
+CI runs each build and test job in `ci.yml` only for the paths it serves,
+and one job, `ci-required`, always runs, depends on every job in that
+workflow, and fails when a job that ran failed or when a job whose paths
+changed was skipped. The ruleset requires two checks: that aggregate and
+`build site`, the docs workflow's build, which runs on every pull request.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
 workspace's cargo steps do not reach it; in CI its clippy and tests are the
@@ -67,11 +90,13 @@ or `just client-tauri-bundle` (plus the bundles), and the first is the one
 to run before handing over a change there.
 
 The last line it prints is its verdict, `[OK] check: ...` or
-`[ERROR] check: <step> failed`, the latter with a `; not run: <later
-steps>` clause when the step that failed was not the last one. The run
-stops at the first failing step. Read that line rather than a pipeline's
-exit status: piping `just check` through `tail` reports tail's status,
-not the recipe's.
+`[ERROR] check: <step> failed`, or `[ERROR] check: group reported nothing
+(<group>)` when a group died without a report. A failing group stops at
+its own first failure; the other groups still run; every failing group's
+log tail is printed before the verdict; and the verdict names the first
+failing step and the later steps in that group that did not run. Read that line rather
+than a pipeline's exit status: piping `just check` through `tail` reports
+tail's status, not the recipe's.
 
 A client page root is named for its page - `files-page`, `board-page` -
 never a bare noun: the sheet is shared by every surface, and

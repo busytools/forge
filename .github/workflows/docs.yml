@@ -25,9 +25,11 @@ concurrency:
 jobs:
   build:
     name: build site
-    # A pull request from a fork cannot deploy and has nothing to gain
-    # from running here, so it is skipped outright.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # **Every pull request is built, forks included.** This job is a
+    # required check, and a skipped required check counts as a pass: a fork
+    # PR that never built would otherwise satisfy the gate without running
+    # it. The deploy stays main-only, and `configure-pages` and the artifact
+    # upload are skipped off main.
     runs-on: ubuntu-latest
     # `configure-pages` reads the Pages config over the API, which the
     # workflow-level `contents: read` alone would deny. A job-level

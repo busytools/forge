@@ -64,7 +64,7 @@ compiler, `cmake`, `libclang`, and ALSA headers on Linux. The
 [install page](docs/book/src/install.md) has the per-platform packages.
 
 ```bash
-just check                  # fmt + unicode gate + clippy + nextest + docs
+just check                  # fast checks, Rust, client web and shell, in parallel
 just check-feature-configs  # the configuration `just check` leaves out
 just install                # build and install the `forge` binary
 ```
