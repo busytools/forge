@@ -14,6 +14,7 @@ pub mod host_bundle;
 pub mod idle;
 pub mod input;
 pub mod profiles;
+pub mod tabs;
 
 #[cfg(target_os = "macos")]
 pub mod audio;

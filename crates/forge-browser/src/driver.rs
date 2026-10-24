@@ -30,6 +30,7 @@ use tokio::net::UnixListener;
 use tokio::sync::broadcast;
 
 use crate::spawn;
+use crate::tabs::DriverTab;
 
 /// The longest one tool call is given before the driver is presumed mute.
 ///
@@ -294,6 +295,37 @@ impl Driver {
             }
         }
         self.call_raw(tool, args, bound).await
+    }
+
+    /// The driver's tabs under the call budget.
+    pub async fn tabs(&self) -> Result<Vec<DriverTab>, String> {
+        self.tabs_within(CALL_TIMEOUT).await
+    }
+
+    /// The driver's tabs, with the target ids that name them.
+    pub async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String> {
+        let parts =
+            self.call_raw("browser_tabs", serde_json::json!({ "action": "list" }), bound).await?;
+        let text = parts
+            .iter()
+            .filter_map(|part| match part {
+                BrowserPart::Text { text } => Some(text.as_str()),
+                BrowserPart::Image { .. } => None,
+            })
+            .collect::<String>();
+        let tabs = crate::tabs::parse_export(&text)?;
+        Ok(tabs)
+    }
+
+    /// Bring one tab to the front by its Playwright index.
+    pub async fn select(&self, index: usize, bound: Duration) -> Result<(), String> {
+        self.call_raw(
+            "browser_tabs",
+            serde_json::json!({ "action": "select", "index": index }),
+            bound,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// **A tab opened at a URL opens blank first.** The engine answers no
@@ -707,6 +739,7 @@ pub fn node_path(stack: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tabs::index_of;
     use rmcp::model::CallToolResult;
     use serde_json::json;
 
@@ -837,6 +870,18 @@ mod tests {
         );
 
         assert!(browser_tabs_of("no tabs here").is_empty());
+    }
+
+    /// **A page call selects the session's tab first.** The index comes from a
+    /// fresh listing, so a close by another session since the last call cannot
+    /// leave the selection one tab off.
+    #[test]
+    fn a_listing_gives_the_index_of_a_known_target() {
+        let listing = "FORGE-TABS [{\"i\":0,\"id\":\"A\",\"title\":\"x\",\"url\":\"u\",\"current\":false},\
+                       {\"i\":1,\"id\":\"B\",\"title\":\"y\",\"url\":\"v\",\"current\":true}]\n";
+        let tabs = crate::tabs::parse_export(listing).expect("the export parses");
+        assert_eq!(index_of(&tabs, "B"), Some(1));
+        assert_eq!(index_of(&tabs, "C"), None);
     }
 
     /// **Only a new-tab call with a URL is rewritten.** A list, a select, or

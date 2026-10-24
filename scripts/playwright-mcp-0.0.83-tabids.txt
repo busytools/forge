@@ -1,0 +1,3 @@
+        const tabHeaders = await Promise.all(context.tabs().map((tab2) => tab2.headerSnapshot()));
+        const result2 = renderTabsMarkdown(tabHeaders);
+        response2.addTextResult(result2.join("\n"));
