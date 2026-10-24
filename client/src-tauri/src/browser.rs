@@ -182,10 +182,26 @@ impl StackPaths {
 #[cfg(desktop)]
 const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(75);
 
+/// The driver handshake budget under test: a test that spawns a real child
+/// must not race the production wall-clock constant for a reason unrelated
+/// to what it checks.
+#[cfg(all(desktop, any(test, feature = "testing")))]
+fn driver_handshake() -> std::time::Duration {
+    std::time::Duration::from_secs(60)
+}
+
+#[cfg(all(desktop, not(any(test, feature = "testing"))))]
+fn driver_handshake() -> std::time::Duration {
+    driver::START_TIMEOUT
+}
+
 /// The host: the browser's own profile, the named ones, and where everything
 /// lives.
 pub struct BrowserHost {
     paths: Result<StackPaths, String>,
+    /// The driver handshake budget this client starts drivers with.
+    #[cfg(desktop)]
+    handshake: std::time::Duration,
     /// Every host ensure runs under this, whichever profile asks for one: a
     /// burst of first calls launches ONE host rather than two onto one
     /// profile, and a hand-off's `show` racing a first call cannot leave two
@@ -261,6 +277,8 @@ impl BrowserHost {
         Self {
             paths: Ok(paths),
             #[cfg(desktop)]
+            handshake: driver_handshake(),
+            #[cfg(desktop)]
             launch: Mutex::new(()),
             shared: Mutex::new(None),
             #[cfg(desktop)]
@@ -310,6 +328,8 @@ impl BrowserHost {
     pub fn unavailable(why: String) -> Self {
         Self {
             paths: Err(why),
+            #[cfg(desktop)]
+            handshake: driver_handshake(),
             #[cfg(desktop)]
             launch: Mutex::new(()),
             shared: Mutex::new(None),
@@ -560,6 +580,7 @@ impl BrowserHost {
                         identity: &identity,
                         output: &paths.output,
                         profile: &cache,
+                        handshake: self.handshake,
                     };
                     match shared.call(&start, tool, args).await {
                         Ok(parts) => {
@@ -610,6 +631,7 @@ impl BrowserHost {
                         identity: &identity,
                         output: &paths.output,
                         profile: &cache,
+                        handshake: self.handshake,
                     };
                     match named.profile.call(&start, tool, args).await {
                         Ok(parts) => {

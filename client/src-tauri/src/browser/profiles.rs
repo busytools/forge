@@ -77,6 +77,11 @@ pub(super) struct DriverStart<'a> {
     /// the page the profile last carried rather than the driver's tab.
     #[cfg(desktop)]
     pub profile: &'a Path,
+    /// The driver handshake budget. Production passes its constant; a test
+    /// build passes a larger one, because a spawned child's scheduling is
+    /// not what the test checks.
+    #[cfg(desktop)]
+    pub handshake: Duration,
     /// The unix socket the in-app driver dials (phone only).
     #[cfg(target_os = "android")]
     pub socket: &'a Path,
@@ -93,7 +98,14 @@ impl DriverStart<'_> {
     async fn start(&self) -> Result<Driver, String> {
         #[cfg(desktop)]
         {
-            let driver = Driver::start(self.node, self.cli, self.endpoint, self.output).await?;
+            let driver = Driver::start_within(
+                self.node,
+                self.cli,
+                self.endpoint,
+                self.output,
+                self.handshake,
+            )
+            .await?;
             #[cfg(target_os = "macos")]
             let driver = driver.serving(self.profile);
             Ok(driver)

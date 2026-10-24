@@ -392,7 +392,11 @@ inspected.
    being accurate rather than asking for a marker.
 8. **`cargo nextest run`, not `cargo test`.** `just check` runs fmt,
    the unicode-punctuation gate, clippy, nextest and docs in one shot,
-   ending on a verdict line that names the first failing step. It must
+   ending on a verdict line that names the first failing step. Its four
+   independent groups run concurrently, capped by `FORGE_CHECK_JOBS`
+   (default 4); `just check-serial` runs the same steps one at a time,
+   for debugging. When `sccache` is on `PATH` the recipes export
+   `RUSTC_WRAPPER=sccache`; without it they build normally. It must
    be green before a PR, and so must `just check-feature-configs`, which
    compiles the configuration `install.sh` builds: `just check` runs
    with `--all-features`, so it turns every feature on regardless and
@@ -733,7 +737,10 @@ inspected.
     invocation carries its rustfmt check. `just check`'s
     `client-tauri-fmt`, `client-tauri-clippy`, `client-tauri-test` and
     `client-android-warnings` reach it, and the Unicode punctuation gate
-    and the client's Prettier step reach it too.
+    and the client's Prettier step reach it too. **CI runs each build and
+    test job only when the paths it serves change**, and its single
+    required check is the `ci-required` aggregate, which fails when a job
+    whose paths changed was skipped.
     `just client-tauri-check` builds it in the shipping configuration
     and `just client-tauri-bundle` adds the bundles. **Denied as errors**, the
     analogue of the denied Rust lints: `any`, non-null assertion,

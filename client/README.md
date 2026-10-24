@@ -34,7 +34,10 @@ bundle built.
 its own cargo workspace root, so the repo's cargo gates and CI's other
 cargo jobs do not reach it: CI's `client-tauri` job runs its clippy and
 tests, and the `cargo fmt --check` job runs the rustfmt check against its
-manifest. `just check` reaches it through
+manifest. Both run when the shell, `crates/forge-capture` or the
+toolchain changes; `ci-required` is the single check the ruleset requires,
+and it fails if a job whose paths changed was skipped. `just check`
+reaches it through
 `client-tauri-fmt` (the shell's own `cargo fmt --check`, which `just fmt`
 runs too), `client-tauri-clippy` and `client-tauri-test` (the crate's own
 clippy and nextest run) and `client-android-warnings` (the crate compiled for
