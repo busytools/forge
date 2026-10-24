@@ -244,7 +244,9 @@ jobs:
   # it: without this the client's steps run only when a person types them,
   # and a gate that does not run reports what a gate that passes does. The
   # steps are `just check`'s frontend client recipes, in its order, plus the
-  # build. The shell's own Rust steps live in the `client-tauri` job below
+  # build and `scripts/check_client_wasm.py` - a CI-only step, because the
+  # local gate builds no frontend for it to ride. The shell's own Rust steps
+  # live in the `client-tauri` job below
   # and in the `fmt` job above; the android warnings step has no job, because
   # its vendoring refuses non-macOS hosts (#1959, closed as an enhancement
   # and tracked in #2258).
@@ -267,6 +269,11 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run build
+      # The highlighter's Oniguruma engine ships as a wasm chunk, and a build
+      # that lost it draws every code panel plain. The check reads the
+      # reference out of the highlight chunk; a loose `wasm-*.js` glob would
+      # pass on the unrelated chunk the build also emits.
+      - run: python3 ../scripts/check_client_wasm.py dist
       - run: npm run typecheck:markup
       - run: npm run typecheck
       - run: npm test

@@ -63,8 +63,10 @@ snapshot, never rewritten under the reader's eyes while a worker edits it.
 (`client/src/format/policy.ts`): the extension, then a filename (`Justfile`
 is `just`, `Makefile` is `make`, `Dockerfile` is `docker`, a `.env` file is
 `dotenv`), then a shebang, then whether the bytes decode as UTF-8. Markdown,
-code and text draw in a read-only CodeMirror instance, coloured by shiki's
-github-dark family over the JS regex engine, with no wasm. Each language has
+code and text draw in a read-only CodeMirror instance, coloured by the same
+shiki highlighter the chat's code panels use, in the github-dark family
+(Oniguruma; the wasm loads when a code file is first opened, and that open
+waits on it rather than colouring in after a plain draw). Each language has
 two layers, neither guessed: structure and folding from the CodeMirror org's
 own package where one exists, and the colouring from shiki's grammar either
 way; `.svelte` and `.toml` are colour-only. A text file no grammar names

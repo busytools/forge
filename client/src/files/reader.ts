@@ -1,7 +1,9 @@
 /**
  * The files page's reader: a read-only CodeMirror instance over one file's
- * text, coloured by `@cmshiki/shiki` in the chat's github-dark family, with
- * the JS regex engine (no wasm).
+ * text, coloured by `@cmshiki/shiki` in the chat's github-dark family. It
+ * takes the chat's own highlighter, so it shares its grammar set and its
+ * Oniguruma engine - the wasm loads when the reader first opens a code file,
+ * and that open waits on it rather than colouring in after a plain draw.
  *
  * **This module is dynamically imported by the page** (`Reader.svelte`), so
  * CodeMirror and the bridge land in one lazy chunk and the main bundle keeps
@@ -247,7 +249,6 @@ export async function buildReader(
     themes: { dark: 'github-dark' },
     defaultColor: 'dark',
     themeStyle: 'cm',
-    engine: 'javascript',
     highlighter: await highlighterFor(language),
   });
 
