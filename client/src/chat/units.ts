@@ -44,8 +44,10 @@ import { taskStatus, type CallStatus } from './families';
 import {
   blocksOf,
   bodyOf,
+  launchedTask,
   leafOf,
   omittedRecord,
+  stopSucceeded,
   type Block,
   type TaskFact,
   type ToolLeaf,
@@ -1653,6 +1655,16 @@ export function fold(
   const tasks = new Map<string, TaskFact>();
   /** The call a task belongs to, which the frames that carry one name. */
   const owners = new Map<string, string>();
+  /** The call each backgrounded launch opened, by the task its result named. */
+  const launches = new Map<string, string>();
+  /** The `TaskStop` calls this turn holds, by the task each asked to stop. */
+  const stopAsks: Array<{ call: string; task: string }> = [];
+  /** The task a stop ended, by the call it settled. */
+  const stopOf = new Map<string, string>();
+  /** The stop calls drawn onto a call this turn holds rather than as rows. */
+  const settledStops = new Set<string>();
+  /** The call ids whose `tool_use` this turn holds, which is where a stop may land. */
+  const heldCalls = new Set<string>();
   /**
    * The `Skill` calls this turn holds, by the name each asked for and with the
    * row each drew, so a body arriving behind its call still finds the row that
@@ -1714,6 +1726,16 @@ export function fold(
       }
       continue;
     }
+    if (frame.type === 'assistant') {
+      for (const block of blocksOf(frame.message?.content)) {
+        if (block.type !== 'tool_use' || typeof block.id !== 'string' || block.id === '') continue;
+        heldCalls.add(block.id);
+        if (block.name !== 'TaskStop') continue;
+        const task = str(block.input, 'task_id');
+        if (task !== null) stopAsks.push({ call: block.id, task });
+      }
+      continue;
+    }
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
       // The transcript's own ending for a backgrounded call, which arrives as
@@ -1742,6 +1764,11 @@ export function fold(
         continue;
       }
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+        // The sentence a backgrounded launch answers with names the task it
+        // opened, which is the only link a `TaskStop` has when the CLI sent no
+        // `task_started`.
+        const task = launchedTask(block.content);
+        if (task !== null) launches.set(task, block.tool_use_id);
         results.set(block.tool_use_id, block);
         // The result's own record rides beside the block, keyed the same way:
         // a question is drawn from it rather than from the result's text -
@@ -1752,6 +1779,22 @@ export function fold(
         }
       }
     }
+  }
+
+  // **A stop's own answer settles the call it ended.** The tool path sends no
+  // `task_started` for the task and no ending after the stop, so nothing else
+  // would ever walk that call off its launch result. It lands only where the
+  // target's row is held here: a stop whose call this page does not carry
+  // draws as a row of its own below, named with the task (rule 25).
+  for (const ask of stopAsks) {
+    if (!stopSucceeded(results.get(ask.call))) continue;
+    const target = launches.get(ask.task) ?? owners.get(ask.task) ?? null;
+    if (target === null || !heldCalls.has(target)) continue;
+    // Not `backgrounded`: that flag makes the row ask for the command's own
+    // output, and the task link the server resolves that through never fired.
+    tasks.set(target, { status: 'killed', backgrounded: false, note: null });
+    stopOf.set(target, ask.task);
+    settledStops.add(ask.call);
   }
 
   /** What names a unit for the list: the frame it came from, and the part in it. */
@@ -2484,6 +2527,10 @@ export function fold(
         const name = typeof block.name === 'string' ? block.name : 'tool';
         const id = typeof block.id === 'string' ? block.id : '';
 
+        // A stop that settled a call this turn holds draws as that call's own
+        // mark rather than as a second row beside it.
+        if (name === 'TaskStop' && id !== '' && settledStops.has(id)) continue;
+
         const card = outbound(
           name,
           block.input,
@@ -2519,6 +2566,7 @@ export function fold(
           records.get(id),
           tasks.get(id),
           abandoned,
+          stopOf.get(id) ?? null,
         );
         if (name.toLowerCase() === 'skill') {
           // A skill's body follows its call as a user frame; the claim is

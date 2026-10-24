@@ -21,7 +21,7 @@ describe('the outcome join', () => {
       },
     ]);
 
-    expect(calls.get('tu1')).toEqual({ failed: false, ended_ms: 1000 });
+    expect(calls.get('tu1')).toEqual({ failed: false, ended_ms: 1000, stopped: false });
     expect(owners.get('t1'), 'and the link is kept for a row that lacks its own').toBe('tu1');
   });
 

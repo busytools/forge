@@ -3291,11 +3291,11 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 
 /* ---------- a forge call's own card ---------- */
 
-/* The chips a forge row states, the figure at its right, and the reason a
-   failed one failed. Namespaced `fam-`, the same rule the dispatch row's
-   `sg-` fields follow, so no bare name of another surface catches them.
-   Every chip carries its own word: the tone colours it and never replaces
-   it. */
+/* The chips a row states, the figure at its right, and the reason a failed
+   one failed. Namespaced `fam-`, the same rule the dispatch row's `sg-`
+   fields follow, so no bare name of another surface catches them. Every chip
+   carries its own word: the tone colours it and never replaces it - a stopped
+   call's mark wears the same chip its card's chips do. */
 details.leaf > summary .fam-chip { font-family: var(--mono); font-size: var(--fs-label);
   border-radius: 99px; padding: 0 8px; flex: none; border: 1px solid var(--line);
   color: var(--muted); line-height: 1.7; white-space: nowrap; }

@@ -19,6 +19,7 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
   status: 'completed',
   backgrounded: true,
   note,
+  stop: null,
   body: [{ kind: 'text', text: 'Command running in background with ID: bj5g0t2kq.' }],
   mutation: null,
   decision: null,
@@ -42,6 +43,7 @@ const mcp = (name: string, text: string): ToolLeaf => ({
   status: 'completed',
   backgrounded: false,
   note: null,
+  stop: null,
   body: [{ kind: 'text', text }],
   mutation: null,
   decision: null,
@@ -241,6 +243,7 @@ describe('the row one call draws', () => {
           status: 'completed',
           backgrounded: false,
           note: null,
+          stop: null,
           body: [],
           mutation: null,
           decision: null,
@@ -414,6 +417,7 @@ describe('the row one call draws', () => {
       status: 'completed',
       backgrounded: false,
       note: null,
+      stop: null,
       body: [],
       mutation: null,
       decision: {
@@ -461,6 +465,7 @@ describe('the forge card row', () => {
     status: 'completed',
     backgrounded: false,
     note: null,
+    stop: null,
     body: [],
     mutation: null,
     decision: null,
@@ -706,6 +711,7 @@ describe('the dispatch row, joined to its instance', () => {
     status: 'completed',
     backgrounded: false,
     note: null,
+    stop: null,
     body: [{ kind: 'text', text: 'Report: **closed**.' }],
     mutation: null,
     decision: null,
@@ -1074,6 +1080,23 @@ describe('the output a backgrounded row reads back', () => {
 
     const settled = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
     expect(settled, 'and a settled tail draws none').not.toContain('>live<');
+  });
+
+  /**
+   * **The stop is the row's mark, and a stopped call is not live.** The CLI
+   * sends no ending for a task the `TaskStop` tool stopped, so this mark is
+   * the only thing on screen that says it ended - and a row carrying it must
+   * not still read as work in flight.
+   */
+  it('states the task a TaskStop stopped, and draws no live mark for it', () => {
+    const TASK = 'bwhz36mlt';
+    const stopped: ToolLeaf = { ...backgrounded(null), status: 'killed', stop: TASK };
+
+    const closed = render(Call, { props: { k: 's1', call: stopped } }).body;
+    expect(closed, 'the stop rides the closed row').toContain('>stopped<');
+    expect(closed, 'and names the task it stopped').toContain(`stopped task ${TASK}`);
+    expect(closed, 'a stopped call does not read as live').not.toContain('class="leaf running"');
+    expect(closed, 'and carries no running ring').not.toContain('class="ring"');
   });
 
   /**

@@ -3057,6 +3057,94 @@ describe('one turn folded into the units a view draws', () => {
     expect(dead?.note).toEqual({ text: 'Run slow counting loop \u{b7} stopped', tone: 'fail' });
   });
 
+  it('settles the call a TaskStop tool stopped, which sends no frame of its own', () => {
+    // The transcript's own shape (session 4b35ed0e, 2026-10-24): a
+    // backgrounded Bash launch whose result names task `bwhz36mlt`, the
+    // `TaskStop` tool naming that id, and a result saying it was stopped. NO
+    // `task_started`, `task_updated` or `task_notification` names the task -
+    // the tool path emits none - so the launch result's own sentence is the
+    // only link from the stop back to the call it ended.
+    const LAUNCH = 'call_33a76dda7de84b5698ade3cafe64ddce';
+    const STOP = 'call_6bab1bdfaa0c4c7785c2774040aa92a5';
+    const TASK = 'bwhz36mlt';
+    const command =
+      'nice -n 10 just check-feature-configs > /tmp/dev-stack-server-browser/gate-feature-merged.log 2>&1; ' +
+      'echo "exit=$?"; tail -4 /tmp/dev-stack-server-browser/gate-feature-merged.log';
+    const launch = said([
+      use(LAUNCH, 'Bash', {
+        command,
+        description: 'Run the feature-config gate',
+        run_in_background: true,
+      }),
+    ]);
+    const launched = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: LAUNCH,
+        is_error: false,
+        content:
+          `Command running in background with ID: ${TASK}. Output is being written to: ` +
+          `/private/tmp/claude-501/tasks/${TASK}.output. You will be notified when it completes.`,
+      },
+    ]);
+    const stop = said([use(STOP, 'TaskStop', { task_id: TASK })]);
+    const stopped = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: STOP,
+        content: JSON.stringify({
+          message: `Successfully stopped task: ${TASK} (${command})`,
+          task_id: TASK,
+          task_type: 'local_bash',
+          command,
+        }),
+      },
+    ]);
+
+    const [group] = fold([launch, launched, stop, stopped]);
+    const calls = callsOf(group);
+    expect(calls, 'the stop draws on the call it ended, not as a row of its own').toHaveLength(1);
+    expect(calls[0]?.leaf.id, 'and that row is the launch').toBe(LAUNCH);
+    expect(calls[0]?.leaf.status, 'a stopped task is the kill it is').toBe('killed');
+    expect(calls[0]?.leaf.stop, 'the row carries the task it stopped').toBe(TASK);
+
+    // Rule 25: a stop whose target row this page does not hold still draws,
+    // named with the task it stopped - a message is never dropped.
+    const [alone] = fold([stop, stopped]);
+    const stray = callsOf(alone);
+    expect(stray, 'the stop draws when its call is not held').toHaveLength(1);
+    expect(stray[0]?.leaf.title, 'named with the task it stopped').toContain(TASK);
+
+    // And a page cut through the turn can carry the launch's RESULT without
+    // its call: the link still finds the task, but there is no row here to
+    // hang the stop on, so the stop draws rather than vanishing.
+    const [cut] = fold([launched, stop, stopped]);
+    const carried = callsOf(cut);
+    expect(carried, 'a stop whose call the page does not hold draws').toHaveLength(1);
+    expect(carried[0]?.leaf.title, 'named the same way').toContain(TASK);
+
+    // And a stop that stopped nothing settles nothing: its own row draws with
+    // the reason it gave, and the call it named is left where it was.
+    const refused = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: STOP,
+        is_error: true,
+        content: `<tool_use_error>No task found with ID: ${TASK}</tool_use_error>`,
+      },
+    ]);
+    const [kept] = fold([launch, launched, stop, refused]);
+    const both = callsOf(kept);
+    expect(both, 'a failed stop draws its own row').toHaveLength(2);
+    expect(both[0]?.leaf.status, 'and settles nothing').toBe('completed');
+    expect(both[0]?.leaf.stop, 'so the call carries no stop').toBeNull();
+    expect(both[1]?.leaf.body, 'the reason rides the failed stop').toContainEqual({
+      kind: 'error',
+      message: `No task found with ID: ${TASK}`,
+      detail: '',
+    });
+  });
+
   it('reads a Monitor as the backgrounded call its own task_started says it is', () => {
     // The watched command and its task frames as the capture has them
     // (crates/forge-test-harness/baselines/sdk/2.1.280/monitor_stream.jsonl).

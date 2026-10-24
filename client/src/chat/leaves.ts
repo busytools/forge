@@ -123,6 +123,16 @@ export interface ToolLeaf {
    * line of the box the call's result drew, and `null` for every other call.
    */
   note: { text: string; tone: 'sum' | 'fail' | null } | null;
+  /**
+   * The task a `TaskStop` ended on this call, or null for every call no stop
+   * touched.
+   *
+   * **The tool path sends no ending of its own** - no `task_updated`, no
+   * `task_notification`, and no registry change (measured: session
+   * 4b35ed0e) - so the tool's own answer is the only thing that settles the
+   * call, and the row states it by this task id.
+   */
+  stop: string | null;
   /** What the row opens on. Empty for a call that has not come back yet. */
   body: CallBody[];
   /**
@@ -301,6 +311,38 @@ function toolUseError(text: string): { message: string; detail: string } | null 
   return at === -1
     ? { message: inner, detail: '' }
     : { message: inner.slice(0, at).trim(), detail: inner.slice(at + 1).trim() };
+}
+
+/** A result's content as plain text: the string it answered with, or its text blocks. */
+function plainText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  return blocksOf(content)
+    .map((block) => (typeof block.text === 'string' ? block.text : ''))
+    .join('\n');
+}
+
+/**
+ * The task a backgrounded launch opened, when its result names one.
+ *
+ * **The tool path's only link.** A task stopped by the `TaskStop` tool gets no
+ * `task_started` at all (measured: session 4b35ed0e), so the sentence the
+ * launch result carries is what joins the task to its call.
+ */
+export function launchedTask(content: unknown): string | null {
+  const found = /Command running in background with ID: ([A-Za-z0-9_-]+)/.exec(plainText(content));
+  return found?.[1] ?? null;
+}
+
+/**
+ * Whether a `TaskStop` result reports the stop it was asked for.
+ *
+ * The tool answers "Successfully stopped task: <id> (<command>)", as a JSON
+ * record on both carriers; anything else - an `is_error` refusal or a clean
+ * answer about a task already finished - settles nothing.
+ */
+export function stopSucceeded(result: Block | undefined): boolean {
+  if (result === undefined || result.is_error === true) return false;
+  return plainText(result.content).includes('Successfully stopped task');
 }
 
 /**
@@ -616,6 +658,12 @@ function titleOf(name: string, input: unknown, record: unknown): string {
   // same fallback every other family's row has.
   const word = decisionWord(name);
   if (word !== null) return decisionTitle(input) ?? word;
+  // A stop's row names the task it stopped: the tool's own name alone would
+  // leave a reader without the one id the row is about.
+  if (name === 'TaskStop') {
+    const task = field(input, 'task_id');
+    return task === null ? name : `${name} ${task}`;
+  }
   // **A CAPPED question that reaches a leaf is titled by the question it
   // asked** (#2374): the fold draws a capped question as its card, and this is
   // the fallback for a leaf built without one (a dispatch timeline's row), so
@@ -659,6 +707,10 @@ function titleOf(name: string, input: unknown, record: unknown): string {
  * failed is a turn whose open calls never get a result, and they draw as
  * failed rather than as still running - which is what the view this client
  * replaced did with them on the same frame.
+ *
+ * `stop` is the task a successful `TaskStop` ended on this call: the tool path
+ * sends no task frame, so the call that would otherwise settle at its launch
+ * result settles as the kill the tool reported.
  */
 export function leafOf(
   id: string,
@@ -668,6 +720,7 @@ export function leafOf(
   record: unknown = undefined,
   task: TaskFact | undefined = undefined,
   abandoned = false,
+  stop: string | null = null,
 ): ToolLeaf {
   const body = mutationBody(name, input, record);
   // A backgrounded call is held open by its TASK fact and nothing else: the
@@ -712,6 +765,7 @@ export function leafOf(
     status: settled,
     backgrounded: task?.backgrounded === true,
     note: task?.backgrounded === true ? task.note : null,
+    stop,
     body: shown,
     mutation: marksOf(name, input, body, record),
     decision: decisionOf(name, input, result),
