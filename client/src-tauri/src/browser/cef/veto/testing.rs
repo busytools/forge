@@ -26,8 +26,8 @@ pub struct Stub {
     /// When set, the first script registration is refused: a page whose arm
     /// registered nothing must not be navigated.
     pub refuse_script_once: Arc<std::sync::atomic::AtomicBool>,
-    /// When set, the first context patch answers `failed ...`, so the
-    /// installer's frozen-prototype arm is exercised.
+    /// When set, the first context patch answers `failed ...`, so the frozen
+    /// prototype's verdict is exercised through the watcher that reads it.
     pub fail_verdict_once: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -64,11 +64,11 @@ impl Stub {
 
 /// The endpoint a test host answers on.
 ///
-/// **It is not a well-behaved host on purpose**: `Page.enable` and
-/// `Runtime.runIfWaitingForDebugger` refuse, so a patch that failed still has
-/// to be resumed and both failures have to be logged; every report is sent
-/// twice, so a repeated attach or context is visible rather than assumed
-/// away.
+/// **It is not a well-behaved host on purpose**: `Page.enable` refuses, so a
+/// failed arm still has to be named, and every report is sent twice, so a
+/// repeated attach or context is visible rather than assumed away. The
+/// release is one-way in production, so its refusal is never read here
+/// either.
 pub async fn endpoint() -> Result<Stub, String> {
     serve(true).await
 }
@@ -356,13 +356,13 @@ async fn answer(
                 }},
             });
             let _ = ws.send(Message::Text(other_world.to_string().into())).await;
-            // **A worker is not a page**: it must be skipped, not armed.
+            // **A worker is not a page**: it must be released, never armed.
             let worker = json!({
                 "method": "Target.attachedToTarget",
                 "params": {
                     "sessionId": "SW1",
                     "targetInfo": { "targetId": "W1", "type": "service_worker" },
-                    "waitingForDebugger": false,
+                    "waitingForDebugger": paused,
                 },
             });
             let _ = ws.send(Message::Text(worker.to_string().into())).await;

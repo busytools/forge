@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./host', () => ({
   canHost: vi.fn(() => true),
   drawsSurface: vi.fn(() => true),
-  showBrowser: vi.fn(() => Promise.resolve(null)),
+  showBrowser: vi.fn(() => Promise.resolve({ profile: '@shared' })),
   hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
 }));

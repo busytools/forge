@@ -690,11 +690,12 @@
         {/if}
       </div>
 
-      <!-- **The shared profile is always there**, and it is the one most
-           sessions drive - listing only named ones read as "no profile"
-           while a session was plainly using the browser. Incapable clients
-           say that here rather than drawing a bare mark (#1839: absent is
-           visible and explained). -->
+      <!-- **The shared profile is always there**, and a session reaches it
+           only by naming `@shared` - its calls drive the seat's own profile
+           otherwise. Listing only named ones read as "no profile" while a
+           session was plainly using the browser. Incapable clients say that
+           here rather than drawing a bare mark (#1839: absent is visible
+           and explained). -->
       <div class="bz-it">
         {#if capable}
           <span class="ring"></span>
@@ -703,9 +704,7 @@
         {/if}
         <span class="nm">shared</span>
         <span class="tx">
-          {capable
-            ? "every session · the browser's own profile"
-            : 'this client cannot host the browser'}
+          {capable ? "@shared · the browser's own profile" : 'this client cannot host the browser'}
         </span>
         {#if capable}
           <button

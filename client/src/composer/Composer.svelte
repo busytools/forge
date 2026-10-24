@@ -507,7 +507,7 @@
       // touches this shell. Through the store, so the page's phase follows
       // the shell's answer instead of staying live over a closed surface.
       if (surface.hand_off?.id === id) clearHandOff(id);
-      void closeSurface(held.shownHandOffProfile);
+      void closeSurface(held.shownHandOffProfile, at);
     });
   });
 
@@ -1103,7 +1103,7 @@
     } catch (error) {
       report('the answer was not sent', error);
     }
-    void closeSurface(profile);
+    void closeSurface(profile, slot);
     clearHandOff(id);
   }
 

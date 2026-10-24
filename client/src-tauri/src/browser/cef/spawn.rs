@@ -255,7 +255,7 @@ pub async fn wait_ready_for(pid: u32, port: u16, profile: &Path) -> Result<(), S
 }
 
 /// The host log's last few lines, for a launch that failed.
-fn log_tail(profile: &Path) -> String {
+pub(crate) fn log_tail(profile: &Path) -> String {
     let Ok(body) = std::fs::read_to_string(profile.join("cef-host.log")) else {
         return String::new();
     };

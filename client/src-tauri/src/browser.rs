@@ -193,7 +193,7 @@ pub struct BrowserHost {
     #[cfg(desktop)]
     launch: Mutex<()>,
     /// The shared profile: the browser's own profile, one driver for every
-    /// session that names none.
+    /// call that names it `@shared`. An omitted profile is the seat's own.
     shared: Mutex<Option<Arc<Profile>>>,
     /// The named profiles, by name. The phone holds none (its call refuses a
     /// name), so the map exists only where profiles do.
@@ -245,11 +245,6 @@ pub struct BrowserHost {
     /// left.
     #[cfg(desktop)]
     boot: std::time::Instant,
-    /// The seats whose auto-profile refusal this run has already told a
-    /// session about: the create is retried on every unnamed call, and the
-    /// note belongs on the first one, not on each.
-    #[cfg(desktop)]
-    auto_refused: Mutex<std::collections::HashSet<Seat>>,
     /// Whether any session has driven this client's browser since it came up,
     /// which the strip's row marks (Ved, 2026-10-07).
     used: std::sync::atomic::AtomicBool,
@@ -292,8 +287,6 @@ impl BrowserHost {
             touches: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
             boot: std::time::Instant::now(),
-            #[cfg(desktop)]
-            auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "android")]
             engine: None,
@@ -344,8 +337,6 @@ impl BrowserHost {
             touches: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
             boot: std::time::Instant::now(),
-            #[cfg(desktop)]
-            auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "android")]
             engine: None,
@@ -399,9 +390,10 @@ impl BrowserHost {
 
     /// Run one browser tool for a session.
     ///
-    /// No `profile` argument drives the browser's own profile. A name drives
-    /// the named profile under it, opened on first use by the asking session;
-    /// a name another session already holds is refused with the owner's name.
+    /// No `profile` argument drives the asking seat's own profile. A name
+    /// drives the named profile under it, opened on first use by the asking
+    /// session; `@shared` drives the browser's own profile; a name another
+    /// session already holds is refused with the owner's name.
     ///
     /// **Every call resolves the browser first**, so the endpoint it hands the
     /// profile is the one the browser answers on NOW. On the desktop a browser
@@ -436,7 +428,7 @@ impl BrowserHost {
                 "a browser tool call reached the host (event_name browser_call_entered, seat \
                  {seat}, tool {tool}, profile None, name {name:?})"
             );
-            if name.is_empty() {
+            if name.is_empty() || name == profiles::SHARED_PROFILE {
                 return Err(
                     "the shared browser is not a profile, so there is nothing to delete; name \
                      the profile"
@@ -485,19 +477,35 @@ impl BrowserHost {
             }
         }
         let (profile, args) = take_profile(args)?;
+        // **Which browser this call drives is decided here, not implied.**
+        // An omitted profile is the calling seat's own; the shared browser is
+        // reachable only by naming it `@shared` (see [`profile_target`]).
+        #[cfg(desktop)]
+        let target = profile_target(profile.as_deref(), seat);
         // **The shell's own entry, so a parked ask and a never-arrived one
         // stop looking alike.** Measured live 2026-10-07: a call parked with
         // no line like this on every inspected build, and nothing in the
         // client said whether the ask had reached the Rust side at all. This
         // is the host's own routing, not the session's work - the level is
-        // INFO for the same reason "the browser is up on port" is.
+        // INFO for the same reason "the browser is up on port" is. **It names
+        // the resolved profile**, which is what a tab-leak report reads to
+        // see which browser a call actually drove.
+        #[cfg(desktop)]
+        let entered = match &target {
+            ProfileTarget::Shared => profiles::SHARED_PROFILE.to_owned(),
+            ProfileTarget::Named(name) => name.clone(),
+        };
+        #[cfg(target_os = "android")]
+        let entered = profile.clone().unwrap_or_else(|| profiles::SHARED_PROFILE.to_owned());
         tauri_plugin_log::log::info!(
             "a browser tool call reached the host (event_name browser_call_entered, seat {seat}, \
-             tool {tool}, profile {profile:?})"
+             tool {tool}, profile {entered})"
         );
         // A name that cannot be a profile is decided before anything else: no
-        // directory, no lock and no browser is consulted to answer it.
+        // directory, no lock and no browser is consulted to answer it. The
+        // reserved shared name is resolved above and is not a profile.
         if let Some(name) = profile.as_deref()
+            && name != profiles::SHARED_PROFILE
             && let Some(refusal) = profiles::name_refusal(name)
         {
             return Err(refusal);
@@ -507,8 +515,8 @@ impl BrowserHost {
         {
             let node = driver::node_path(&paths.stack);
             let cli = driver::cli_path(&paths.stack);
-            match profile {
-                None => {
+            match target {
+                ProfileTarget::Shared => {
                     // **The shared browser is in use from here on**: the touch
                     // is the idle release's clock, and it lands before any
                     // work that can fail - a slow call is not an idle one.
@@ -522,13 +530,6 @@ impl BrowserHost {
                         let _launching = self.launch.lock().await;
                         self.touch(&paths.cef_shared()).await;
                     }
-                    // **The seat's auto profile is ensured on its first
-                    // unnamed reach**, before anything is driven: the record
-                    // is what keeps the name the seat's across restarts. The
-                    // call itself still targets the shared browser - the
-                    // ensure never changes it - and a refused create is said
-                    // once on the answer below.
-                    let auto = self.ensure_auto_profile(seat).await;
                     let active = self.start().await?;
                     // **The browser has been driven**, which the strip's row
                     // draws: a session's call is the only way a browser of this
@@ -542,6 +543,15 @@ impl BrowserHost {
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
                     let identity = active.identity();
                     let cache = paths.cef_shared();
+                    tauri_plugin_log::log::info!(
+                        "a browser call drives a profile's own host (event_name \
+                         browser_call_host, seat {seat}, tool {tool}, profile {}, pid {}, port \
+                         {}, cache {})",
+                        profiles::SHARED_PROFILE,
+                        active.pid,
+                        active.port,
+                        cache.display(),
+                    );
                     let shared = self.shared_profile().await;
                     let start = DriverStart {
                         node: &node,
@@ -551,29 +561,21 @@ impl BrowserHost {
                         output: &paths.output,
                         profile: &cache,
                     };
-                    let outcome = shared.call(&start, tool, args).await;
-                    self.forget_a_dead_browser(
-                        &paths.cef_shared(),
-                        &shared,
-                        active.port,
-                        outcome.is_err(),
-                    )
-                    .await;
-                    match outcome {
-                        Ok(mut parts) => {
-                            if let Err(why) = auto {
-                                self.note_auto_failure(seat, why, &mut parts).await;
-                            }
+                    match shared.call(&start, tool, args).await {
+                        Ok(parts) => {
                             // **A call that changed the page rewrites the
                             // carry**, so a restart opens where the session
                             // left it and not where the last raise did.
-                            self.refresh_carry(&paths.cef_shared()).await;
+                            self.refresh_carry(&cache).await;
                             Ok(parts)
                         }
-                        Err(why) => Err(note_stat_missing(seat, None, tool, why)),
+                        Err(why) => {
+                            let why = self.after_a_failure(&cache, &shared, &active, why).await;
+                            Err(note_stat_missing(seat, None, tool, why))
+                        }
                     }
                 }
-                Some(name) => {
+                ProfileTarget::Named(name) => {
                     let named = self.named_profile(seat, &name).await?;
                     let cache = profiles::cef_cache(&named.dir);
                     // The idle release's clock: the named profile is in use -
@@ -593,6 +595,14 @@ impl BrowserHost {
                     active.show().await;
                     let endpoint = format!("http://127.0.0.1:{}", active.port);
                     let identity = active.identity();
+                    tauri_plugin_log::log::info!(
+                        "a browser call drives a profile's own host (event_name \
+                         browser_call_host, seat {seat}, tool {tool}, profile {name}, pid {}, \
+                         port {}, cache {})",
+                        active.pid,
+                        active.port,
+                        cache.display(),
+                    );
                     let start = DriverStart {
                         node: &node,
                         cli: &cli,
@@ -601,20 +611,16 @@ impl BrowserHost {
                         output: &paths.output,
                         profile: &cache,
                     };
-                    let outcome = named.profile.call(&start, tool, args).await;
-                    self.forget_a_dead_browser(
-                        &cache,
-                        &named.profile,
-                        active.port,
-                        outcome.is_err(),
-                    )
-                    .await;
-                    match outcome {
+                    match named.profile.call(&start, tool, args).await {
                         Ok(parts) => {
                             self.refresh_carry(&cache).await;
                             Ok(parts)
                         }
-                        Err(why) => Err(note_stat_missing(seat, Some(&name), tool, why)),
+                        Err(why) => {
+                            let why =
+                                self.after_a_failure(&cache, &named.profile, &active, why).await;
+                            Err(note_stat_missing(seat, Some(&name), tool, why))
+                        }
                     }
                 }
             }
@@ -684,19 +690,40 @@ impl BrowserHost {
     /// the driver in place; only a host that stopped answering on the port
     /// this driver was built for is dropped, so the next call rebuilds
     /// against a relaunched host.
+    ///
+    /// **An attach that never finished is the HOST's failure.** Playwright
+    /// creates its backend on the first tool call and waits 30 s for the
+    /// browser's protocol handshake with no words from the host; measured
+    /// 2026-10-23, a wedged page reported only `initializeServer: Timeout
+    /// 30000ms exceeded` while the HTTP endpoint kept answering. That host
+    /// is ended, so the next call starts a fresh one, and the answer carries
+    /// the host's own identity and last words (#2534).
     #[cfg(desktop)]
-    async fn forget_a_dead_browser(
+    async fn after_a_failure(
         &self,
         cache: &Path,
         profile: &Profile,
-        port: u16,
-        failed: bool,
-    ) {
-        if !failed || cef::spawn::probe(port).await {
-            return;
+        host: &cef::spawn::ActiveHost,
+        why: String,
+    ) -> String {
+        if driver::attach_timed_out(&why) {
+            tauri_plugin_log::log::warn!(
+                "the driver could not attach to its browser host (event_name \
+                 browser_host_attach_timeout, profile {}, pid {}, port {}): {why}",
+                cache.display(),
+                host.pid,
+                host.port,
+            );
+            profile.drop_driver().await;
+            let ended = self.end_host(cache).await;
+            return attach_failure(host, ended);
+        }
+        if cef::spawn::probe(host.port).await {
+            return why;
         }
         profile.drop_driver().await;
         self.hosts.lock().await.remove(cache);
+        why
     }
 
     /// Close a named profile, whoever opened it: the client's own UI acting on
@@ -740,10 +767,10 @@ impl BrowserHost {
     /// End the host on one cache root: the process, its record and its ring.
     /// A `surface` drawing it closes first, so no frame outlives the host.
     #[cfg(desktop)]
-    async fn end_host(&self, cache: &Path) {
+    async fn end_host(&self, cache: &Path) -> bool {
         let _launching = self.launch.lock().await;
         let _lock = profiles::LaunchLock::acquire(cache).await.ok();
-        self.end_host_locked(cache).await;
+        self.end_host_locked(cache).await
     }
 
     /// [`BrowserHost::end_host`] with the launch mutex and the directory's
@@ -751,7 +778,8 @@ impl BrowserHost {
     /// about to write - and so a delete, which holds both, does not take its
     /// own lock again.
     #[cfg(desktop)]
-    async fn end_host_locked(&self, cache: &Path) {
+    async fn end_host_locked(&self, cache: &Path) -> bool {
+        let mut ended = true;
         {
             let mut surface = self.surface.lock().await;
             let lowered = surface.as_ref().is_some_and(|open| open.dir == cache);
@@ -783,6 +811,7 @@ impl BrowserHost {
                 cef::osr::Ring::unlink(&record.ring);
                 cef::spawn::remove_record(cache);
             } else {
+                ended = false;
                 tauri_plugin_log::log::warn!(
                     "a browser record was left alone: its port answers but its pid is not this \
                      app's host (event_name cef_end_refused, profile {}, pid {})",
@@ -795,6 +824,7 @@ impl BrowserHost {
         // A lock the host's own directory held is released with it; the
         // client's claim stays until this client exits or deletes.
         let _ = self.reconcile_surface().await;
+        ended
     }
 
     /// **A host with no record is still a host.** The record is the client's
@@ -1527,12 +1557,7 @@ impl BrowserHost {
     pub async fn windowed(&self, profile: Option<&str>) -> Result<bool, String> {
         let paths = self.paths.clone()?;
         let cache = match profile {
-            Some(name) => {
-                if let Some(refusal) = profiles::name_refusal(name) {
-                    return Err(refusal);
-                }
-                paths.cef_named(name)
-            }
+            Some(name) => cache_of(&paths, name)?,
             None => paths.cef_shared(),
         };
         Ok(self.surface_is(&cache).await)
@@ -1557,10 +1582,16 @@ impl BrowserHost {
     /// window is raised over its own browser, on its own page, which is what
     /// a CAPTCHA hand-off on a named profile needs.
     ///
+    /// **A session's hand-off with no profile raises that seat's own
+    /// profile**, exactly as its calls drive it; the shared browser is raised
+    /// for the person's own show (no seat) or by naming it `@shared`.
     /// **A hand-off raises only the profile of the seat that asked.** The
     /// dock passes the asking seat down, and another seat's name is refused
     /// where the name resolves to a browser; the person's own show carries no
     /// seat and reaches any of them.
+    ///
+    /// Answers the profile it actually raised, so the page's Done lowers the
+    /// browser that came up rather than a name it guessed.
     ///
     /// Serialized with every other launch, so a show racing a first call
     /// cannot leave two browsers on one profile. This is the client's own
@@ -1572,9 +1603,14 @@ impl BrowserHost {
         profile: Option<&str>,
         seat: Option<&Seat>,
         epoch: u64,
-    ) -> Result<Arc<cef::spawn::ActiveHost>, String> {
+    ) -> Result<String, String> {
         let paths = self.paths.clone()?;
-        let (name, dir) = match profile {
+        let wanted = profile.map(str::to_owned).or_else(|| seat.map(auto_name));
+        let (name, cache) = match wanted.as_deref() {
+            None => (None, paths.cef_shared()),
+            Some(profiles::SHARED_PROFILE) => {
+                (Some(profiles::SHARED_PROFILE.to_owned()), paths.cef_shared())
+            }
             Some(name) => {
                 if let Some(refusal) = profiles::name_refusal(name) {
                     return Err(refusal);
@@ -1582,16 +1618,18 @@ impl BrowserHost {
                 if let Some(seat) = seat {
                     profiles::raise_refusal(name, &paths.profiles.join(name), seat)?;
                 }
-                (Some(name.to_owned()), paths.profiles.join(name))
+                (Some(name.to_owned()), profiles::cef_cache(&paths.profiles.join(name)))
             }
-            None => (None, paths.cef_shared()),
         };
-        let cache = if profile.is_some() { profiles::cef_cache(&dir) } else { dir };
         tauri_plugin_log::log::info!(
             "the browser surface is asked to open (event_name browser_show_entered, profile \
-             {profile:?}, cache {})",
+             {name:?}, cache {})",
             cache.display(),
         );
+        // **The answer is the profile actually raised**, read before the
+        // surface takes its name: a session's hand-off with no profile
+        // resolves to the seat's own, and the page lowers this name on Done.
+        let raised = name.clone().unwrap_or_else(|| profiles::SHARED_PROFILE.to_owned());
         // **The launch and the surface claim are one act under the lock**, so
         // a close racing Open cannot leave a live surface over a dead host.
         // **Bounded**, because a launch that never answers must become the
@@ -1641,7 +1679,7 @@ impl BrowserHost {
         if let Some(url) = cef::spawn::page_url(host.port).await {
             self.record_carry(&cache, &url).await;
         }
-        Ok(host)
+        Ok(raised)
     }
 
     /// The raise's and the browsing call's write: a non-web read on a held
@@ -1902,20 +1940,18 @@ impl BrowserHost {
     /// same browser. **The hand-off is not answered by this** - Done or Not
     /// now is.
     #[cfg(desktop)]
-    pub async fn hide(&self, profile: Option<&str>) -> Result<bool, String> {
+    pub async fn hide(&self, profile: Option<&str>, seat: Option<&Seat>) -> Result<bool, String> {
         let paths = self.paths.clone()?;
-        let cache = match profile {
-            Some(name) => {
-                // **The same refusal show makes.** A name that cannot be a
-                // profile resolves to no directory at all, and without this a
-                // `profile: "../user-data"` would close the SHARED surface
-                // while the answer claimed the named one came down.
-                if let Some(refusal) = profiles::name_refusal(name) {
-                    return Err(refusal);
-                }
-                paths.cef_named(name)
-            }
+        // **The same resolution show makes.** A hand-off that named no
+        // profile was raised as the asking seat's own, so its Done lowers
+        // that browser and not the shared one. The refusal is show's own: a
+        // name that cannot be a profile resolves to no directory at all, and
+        // without this a `profile: "../user-data"` would close the SHARED
+        // surface while the answer claimed the named one came down.
+        let wanted = profile.map(str::to_owned).or_else(|| seat.map(auto_name));
+        let cache = match wanted.as_deref() {
             None => paths.cef_shared(),
+            Some(name) => cache_of(&paths, name)?,
         };
         // **The same launch lock show takes, waited on with a bound.** A show
         // holds it until the host answers; a hide racing it would no-op
@@ -1961,7 +1997,7 @@ impl BrowserHost {
     /// WebView stays exactly where the session left it, which is what the
     /// next Open shows again.
     #[cfg(target_os = "android")]
-    pub async fn hide(&self, profile: Option<&str>) -> Result<bool, String> {
+    pub async fn hide(&self, profile: Option<&str>, _seat: Option<&Seat>) -> Result<bool, String> {
         self.paths.clone()?;
         if let Some(name) = profile {
             return Err(phone_profile_refusal(name));
@@ -2145,43 +2181,6 @@ impl BrowserHost {
         reaped
     }
 
-    /// The seat's own profile, named after the seat, ensured on the seat's
-    /// first reach for the browser that names no profile.
-    ///
-    /// **The call that creates it still drives the shared browser** - "the
-    /// unnamed shared browser stays exactly as it is" - so this reserves the
-    /// seat's own name and gives its logins somewhere to start, it does not
-    /// change a call's target. A name another seat holds is refused with the
-    /// reason and never suffixed: a name that means "this seat" must not
-    /// silently mean something else, and the caller falls back to the shared
-    /// browser.
-    #[cfg(desktop)]
-    async fn ensure_auto_profile(&self, seat: &Seat) -> Result<(), String> {
-        self.named_profile(seat, &auto_name(seat)).await.map(|_| ())
-    }
-
-    /// Say a failed auto create once per seat per run. The create is retried
-    /// on every unnamed call, so a note on each would be noise; the refusal
-    /// is a fact about the seat's environment rather than forge's health, so
-    /// the answer carries it once and the retries stay quiet.
-    #[cfg(desktop)]
-    async fn note_auto_failure(&self, seat: &Seat, why: String, parts: &mut Vec<ReplyPart>) {
-        if !self.auto_refused.lock().await.insert(seat.clone()) {
-            return;
-        }
-        tauri_plugin_log::log::debug!(
-            "a seat's auto browser profile was not created (event_name \
-             browser_auto_profile_refused, seat {seat}, {why})"
-        );
-        parts.push(ReplyPart::Text {
-            text: format!(
-                "Note: this seat's browser profile '{}' could not be created - {why}. This call \
-                 drove the shared browser.",
-                auto_name(seat),
-            ),
-        });
-    }
-
     /// The named profile under `name`, opened when it is not there.
     ///
     /// The map's lock is held across an open, so two sessions naming one fresh
@@ -2231,24 +2230,6 @@ impl BrowserHost {
     }
 }
 
-/// The name a seat's own profile takes: its project and label folded into
-/// the profile charset.
-///
-/// **The label alone is not unique.** Every project's lead carries `lead`,
-/// and two workers in different projects may share a label, so a
-/// label-only name would let the first seat to reach the browser hold it
-/// against every other seat of that label for good - "every seat gets one"
-/// false for all but one. The project qualifies it.
-///
-/// **And the project name is not the profile charset** - it may carry a
-/// space or reach past the length cap - so every character outside the
-/// charset folds to a dash and the result is capped at the name bound
-/// ("my app" plus label `lead` becomes `my-app-lead`). The promise is that
-/// every seat GETS one, so the derivation must always produce a name the
-/// registry accepts; a fold that still cannot is the create's own refusal
-/// and the once-per-seat note, the last resort rather than the path. The
-/// collision refusal stays the backstop for a hand-made name that takes an
-/// auto name first.
 /// The sentence a client without its engine answers, named rather than a
 /// timeout: a shipped bundle missing its framework is a reinstall.
 #[cfg(target_os = "macos")]
@@ -2265,6 +2246,23 @@ fn cef_unavailable() -> String {
     cef::REFUSAL.to_owned()
 }
 
+/// The name a seat's own profile takes: its project and label folded into
+/// the profile charset.
+///
+/// **The label alone is not unique.** Every project's lead carries `lead`,
+/// and two workers in different projects may share a label, so a
+/// label-only name would let the first seat to reach the browser hold it
+/// against every other seat of that label for good - "every seat gets one"
+/// false for all but one. The project qualifies it.
+///
+/// **The fold is lossy, and a collision is a refusal, never a share.** The
+/// project name may carry a space or reach past the length cap, so every
+/// character outside the charset folds to a dash and the result is capped at
+/// the name bound: "my app" and "my-app" both derive `my-app-lead`, and two
+/// long projects can meet after the cap. The first seat to reach the name
+/// holds it; the second seat's unnamed calls are refused with the owner's
+/// name - loud, and never the shared browser. A hand-made profile that took
+/// the name first is the same refusal.
 #[cfg(desktop)]
 fn auto_name(seat: &Seat) -> String {
     let mut folded = String::with_capacity(seat.project.len() + seat.label.len() + 1);
@@ -2279,6 +2277,45 @@ fn auto_name(seat: &Seat) -> String {
     // tail is dropped rather than the whole derivation.
     folded.truncate(64);
     folded
+}
+
+/// Which browser a tool call drives.
+#[cfg(desktop)]
+#[derive(Debug, PartialEq, Eq)]
+enum ProfileTarget {
+    /// The browser's own profile, reachable only by naming it `@shared`.
+    Shared,
+    /// A named profile, owned by the seat that opened it.
+    Named(String),
+}
+
+/// **An omitted profile is the calling seat's own, never the shared
+/// browser.** The shared browser's tabs are whatever the person or another
+/// seat left there - measured 2026-10-23: a call that omitted `profile`
+/// returned the person's HiringCafe tab - so the shared browser is reachable
+/// only by naming it. Pure, so the routing is pinned without a browser.
+#[cfg(desktop)]
+fn profile_target(profile: Option<&str>, seat: &Seat) -> ProfileTarget {
+    match profile {
+        Some(profiles::SHARED_PROFILE) => ProfileTarget::Shared,
+        Some(name) => ProfileTarget::Named(name.to_owned()),
+        None => ProfileTarget::Named(auto_name(seat)),
+    }
+}
+
+/// The cache root an explicitly named browser resolves to: the reserved
+/// `@shared` is the browser's own profile, any other name is that profile's
+/// directory, and a name that cannot be a profile is refused with the rule
+/// rather than reaching for a directory it names.
+#[cfg(desktop)]
+fn cache_of(paths: &StackPaths, name: &str) -> Result<PathBuf, String> {
+    if name == profiles::SHARED_PROFILE {
+        return Ok(paths.cef_shared());
+    }
+    if let Some(refusal) = profiles::name_refusal(name) {
+        return Err(refusal);
+    }
+    Ok(paths.cef_named(name))
 }
 
 /// Write the page a restart should reopen beside the profile.
@@ -2404,6 +2441,39 @@ fn note_stat_missing(seat: &Seat, profile: Option<&str>, tool: &str, why: String
     why
 }
 
+/// The answer for a driver that never attached.
+///
+/// **A bare `initializeServer` timeout names nothing**: not the browser, not
+/// the profile, not why. The host's pid, port and its own log's last words
+/// are what a recurrence is diagnosed by, and the outcome says what actually
+/// happened to the host so the next call is understood: a fresh browser when
+/// it was ended, or a host left alone because the record was not this app's
+/// to end (#2534).
+#[cfg(desktop)]
+fn attach_failure(host: &cef::spawn::ActiveHost, ended: bool) -> String {
+    let tail = cef::spawn::log_tail(&host.profile);
+    let words = if tail.is_empty() {
+        "its log is empty".to_owned()
+    } else {
+        format!("its log ends: {tail}")
+    };
+    let outcome = if ended {
+        "The host was ended through its SIGTERM path, which closes the browser and lets CEF \
+         flush the profile, so the next call starts a fresh one with the data intact."
+    } else {
+        "The host could not be ended: its endpoint answers while its pid is not this app's host, \
+         so it was left alone."
+    };
+    format!(
+        "the browser host (pid {}, port {}, profile {}) answered its DevTools endpoint but the \
+         driver could not attach within its 30 s bound: the host's page did not answer. {outcome} \
+         {words}",
+        host.pid,
+        host.port,
+        host.profile.display(),
+    )
+}
+
 #[cfg(test)]
 mod stat_note_tests {
     use super::*;
@@ -2510,16 +2580,20 @@ pub async fn browser_show(
     profile: Option<String>,
     seat: Option<Seat>,
     epoch: u64,
-) -> Result<(), String> {
+) -> Result<String, String> {
     #[cfg(desktop)]
     {
-        host.show(profile.as_deref(), seat.as_ref(), epoch).await.map(|_| ())
+        // **The profile it actually raised**, so the page's Done lowers that
+        // very browser: a session's hand-off with no profile raises the
+        // seat's own, and the page never has to guess the name.
+        host.show(profile.as_deref(), seat.as_ref(), epoch).await
     }
     #[cfg(not(desktop))]
     {
         // The phone's takeover is the native one and its page reports no rect.
         let _ = epoch;
-        host.show(profile.as_deref(), seat.as_ref()).await
+        host.show(profile.as_deref(), seat.as_ref()).await?;
+        Ok(profiles::SHARED_PROFILE.to_owned())
     }
 }
 
@@ -2529,8 +2603,9 @@ pub async fn browser_show(
 pub async fn browser_hide(
     host: tauri::State<'_, Arc<BrowserHost>>,
     profile: Option<String>,
+    seat: Option<Seat>,
 ) -> Result<bool, String> {
-    host.hide(profile.as_deref()).await
+    host.hide(profile.as_deref(), seat.as_ref()).await
 }
 
 /// Take the client window full screen for the browser takeover, or give the
@@ -3396,6 +3471,48 @@ mod tests {
         );
     }
 
+    /// **An omitted profile is the seat's own; the shared browser has to be
+    /// named.** The shared browser's tabs belong to the person and to other
+    /// work - measured 2026-10-23, an omitted profile returned the person's
+    /// HiringCafe tab - so the default can never resolve to it, and an empty
+    /// name is not a quiet spelling of it either.
+    #[test]
+    fn an_omitted_profile_is_the_seats_own_and_the_shared_browser_is_named() {
+        let mine = seat();
+        assert_eq!(profile_target(None, &mine), ProfileTarget::Named("forge-lead".to_owned()));
+        assert_eq!(profile_target(Some("hunt"), &mine), ProfileTarget::Named("hunt".to_owned()),);
+        assert_eq!(profile_target(Some(profiles::SHARED_PROFILE), &mine), ProfileTarget::Shared);
+        assert_eq!(
+            profile_target(Some(""), &mine),
+            ProfileTarget::Named(String::new()),
+            "an empty name is refused by the registry, never read as the shared browser",
+        );
+        assert_eq!(
+            profile_target(None, &Seat { project: "my app".to_owned(), ..mine.clone() }),
+            ProfileTarget::Named("my-app-lead".to_owned()),
+            "the seat's name is the same fold every auto profile uses",
+        );
+    }
+
+    /// **`@shared` is the one explicit name for the browser's own profile**,
+    /// and a name that cannot be a profile never resolves to a directory -
+    /// the resolution `hide` and `windowed` share with the call path.
+    #[cfg(desktop)]
+    #[test]
+    fn the_shared_token_resolves_to_the_shared_cache_root() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        assert_eq!(cache_of(&paths, profiles::SHARED_PROFILE), Ok(paths.cef_shared()));
+        assert_eq!(cache_of(&paths, "hunt"), Ok(paths.cef_named("hunt")));
+        let refused = cache_of(&paths, "../user-data").expect_err("a traversing name is refused");
+        assert!(refused.contains("1 to 64"), "{refused}");
+    }
+
     /// **A stale held host must not deadlock the map that holds it.** The
     /// probe runs after the map's guard is released and the removal takes the
     /// lock afresh; the old order held the map across the probe and then
@@ -3439,11 +3556,15 @@ mod tests {
     struct StubHost {
         dir: tempfile::TempDir,
         host: Arc<BrowserHost>,
+        /// The calling seat's own cache root: what an unnamed call drives.
         cache: std::path::PathBuf,
         pid: u32,
         port: u16,
         ring: String,
         ring_value: Arc<cef::osr::Ring>,
+        /// The browser's own profile's ring, which an explicit `@shared`
+        /// call or the person's own raise drives.
+        shared_ring: Arc<cef::osr::Ring>,
         named_ring: Option<Arc<cef::osr::Ring>>,
         /// The host's `/json/list` and `/json/version`, which a test can
         /// script read by read so a created tab appears when it should.
@@ -3584,8 +3705,13 @@ for line in sys.stdin:
             std::fs::create_dir_all(&paths.output).expect("the output dir");
 
             let host = Arc::new(BrowserHost::new(paths.clone()));
-            let cache = paths.cef_shared();
-            std::fs::create_dir_all(&cache).expect("the cache root");
+            // **The seat's own profile is what an unnamed call drives**, so
+            // the fixture's primary host stands behind that cache root; the
+            // shared browser gets its own host and ring beside it.
+            let cache = profiles::cef_cache(&paths.profiles.join(auto_name(&seat())));
+            std::fs::create_dir_all(&cache).expect("the seat's cache root");
+            let shared_cache = paths.cef_shared();
+            std::fs::create_dir_all(&shared_cache).expect("the shared cache root");
             let stub_host = dir.path().join("stub-host.sh");
             std::fs::write(&stub_host, "#!/bin/sh\nexec sleep 30\n").expect("the stub host");
             std::fs::set_permissions(&stub_host, std::fs::Permissions::from_mode(0o755))
@@ -3613,6 +3739,25 @@ for line in sys.stdin:
                     profile: cache.clone(),
                 }),
             );
+            // **The shared browser stands beside it**, with a ring of its
+            // own: an explicit `@shared` call or the person's own raise must
+            // cue the shared host's page, not the seat's. Named by the
+            // process, because macOS caps a POSIX shm name at 31 characters
+            // and two parallel test processes must never map each other's
+            // segment.
+            let shared_ring_name = format!("/forge-cef-shared-{}", std::process::id());
+            let shared_ring =
+                Arc::new(cef::osr::Ring::create(&shared_ring_name, 64, 64).expect("a ring"));
+            acknowledge_cues(Arc::clone(&shared_ring));
+            host.hosts.lock().await.insert(
+                shared_cache.clone(),
+                Arc::new(cef::spawn::ActiveHost {
+                    pid,
+                    port,
+                    ring: Arc::clone(&shared_ring),
+                    profile: shared_cache.clone(),
+                }),
+            );
             // **A host that applies every cue**, as the host loop does:
             // without it each call's bounded wait burns its full 100 ms.
             acknowledge_cues(Arc::clone(&ring_value));
@@ -3624,6 +3769,7 @@ for line in sys.stdin:
                 port,
                 ring: ring_name,
                 ring_value,
+                shared_ring,
                 named_ring: None,
                 list,
             }
@@ -3637,8 +3783,11 @@ for line in sys.stdin:
         async fn adopt_named(&mut self, name: &str) {
             let cache = profiles::cef_cache(&self.dir.path().join("profiles").join(name));
             std::fs::create_dir_all(&cache).expect("the named cache root");
+            // Named by the process: a fixed name collides across parallel
+            // test processes, and macOS caps a POSIX shm name at 31 chars.
             let ring = Arc::new(
-                cef::osr::Ring::create("/forge-cef-named-profile-ring", 64, 64).expect("a ring"),
+                cef::osr::Ring::create(&format!("/forge-cef-named-{}", std::process::id()), 64, 64)
+                    .expect("a ring"),
             );
             acknowledge_cues(Arc::clone(&ring));
             std::fs::write(self.dir.path().join("ring"), &ring.name)
@@ -3658,6 +3807,50 @@ for line in sys.stdin:
         /// Whether the named profile's own ring acknowledged `seq`.
         fn named_shown(&self, seq: u64) -> bool {
             self.named_ring.as_ref().is_some_and(|ring| ring.shown(seq))
+        }
+
+        /// Whether the shared browser's ring acknowledged `seq`.
+        fn shared_shown(&self, seq: u64) -> bool {
+            self.shared_ring.shown(seq)
+        }
+
+        /// Point the stub driver's cue read at the shared browser's ring, so
+        /// a `@shared` call's cue is observed on the shared host.
+        fn adopt_shared(&self) {
+            self.point_at(&self.shared_ring);
+        }
+
+        /// Point the stub driver's cue read at `ring`, so the next call's cue
+        /// is observed on the host that ring belongs to.
+        fn point_at(&self, ring: &cef::osr::Ring) {
+            std::fs::write(self.dir.path().join("ring"), &ring.name)
+                .expect("the ring name for the stub");
+        }
+
+        /// A second seat's own profile, behind the same stub host process
+        /// with a ring of its own: the fixture's proof that two seats resolve
+        /// to two hosts. Answers that profile's ring.
+        async fn adopt_seat(&self, seat: &Seat) -> Arc<cef::osr::Ring> {
+            let cache =
+                profiles::cef_cache(&self.dir.path().join("profiles").join(auto_name(seat)));
+            std::fs::create_dir_all(&cache).expect("the seat's cache root");
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let ring = Arc::new(
+                cef::osr::Ring::create(&format!("/forge-cef-s{}-{n}", std::process::id()), 64, 64)
+                    .expect("a ring"),
+            );
+            acknowledge_cues(Arc::clone(&ring));
+            self.host.hosts.lock().await.insert(
+                cache.clone(),
+                Arc::new(cef::spawn::ActiveHost {
+                    pid: self.pid,
+                    port: self.port,
+                    ring: Arc::clone(&ring),
+                    profile: cache,
+                }),
+            );
+            ring
         }
 
         /// Each tool call's name and the ring's cue state at the moment the
@@ -3713,6 +3906,7 @@ for line in sys.stdin:
                 cef::osr::Ring::unlink(&ring.name);
             }
             cef::osr::Ring::unlink(&self.ring);
+            cef::osr::Ring::unlink(&self.shared_ring.name);
         }
     }
 
@@ -4075,6 +4269,237 @@ for line in sys.stdin:
         stub.shutdown().await;
     }
 
+    /// **An unnamed call drives the calling seat's own host; the shared
+    /// browser is reachable only by naming it.** This is the tab-leak fix at
+    /// the call seam: the seat's ring takes the cue, the shared ring stays
+    /// untouched, and `@shared` is what drives the shared browser (#2535).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn an_unnamed_call_drives_the_seats_own_host_and_shared_is_named() {
+        let stub = StubHost::start("/forge-cef-route-test", &json!({})).await;
+
+        stub.host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://example.com/own" }))
+            .await
+            .expect("the seat's own browser answers");
+        assert!(stub.ring_value.shown(1), "the seat's own profile took the cue");
+        assert!(!stub.shared_shown(1), "the default never drives the shared browser");
+
+        // **The shared browser answers only the explicit name.**
+        stub.adopt_shared();
+        stub.host
+            .call(
+                &seat(),
+                "browser_navigate",
+                json!({ "url": "https://example.com/shared", "profile": profiles::SHARED_PROFILE }),
+            )
+            .await
+            .expect("the shared browser answers when named");
+        assert!(stub.shared_shown(1), "the named shared browser took the cue");
+
+        // Each driver call cued the page of the browser it was routed to,
+        // and the profile argument never crossed into the driver.
+        let cues = stub.call_cues();
+        assert_eq!(cues.len(), 2, "{cues:?}");
+        assert!(
+            cues.iter().all(|(_, sent, applied)| *sent >= 1 && applied >= sent),
+            "both calls cued the page of their own browser: {cues:?}",
+        );
+        let args = stub.call_args();
+        assert!(
+            args.iter().all(|(_, args)| args.get("profile").is_none()),
+            "the profile is the host's to consume, not the driver's: {args:?}",
+        );
+        assert_eq!(stub.calls().len(), 2, "one driver call each");
+
+        stub.shutdown().await;
+    }
+
+    /// **Two seats and the shared browser each drive their own host.** The
+    /// cue is per profile: each call's cue lands on the ring of the browser
+    /// it was routed to, so a default that slipped to the shared browser -
+    /// or to the other seat's - shows as a cue on the wrong ring (#2535).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn two_seats_and_the_shared_browser_each_drive_their_own_host() {
+        let stub = StubHost::start("/forge-cef-two-seats-test", &json!({})).await;
+        let other = Seat {
+            org: "Other".to_owned(),
+            project: "elsewhere".to_owned(),
+            label: "lead".to_owned(),
+        };
+        let other_ring = stub.adopt_seat(&other).await;
+
+        // The first seat's own profile takes its call's cue.
+        stub.point_at(&stub.ring_value);
+        stub.host
+            .call(&seat(), "browser_snapshot", json!({}))
+            .await
+            .expect("the first seat's own browser answers");
+        assert!(stub.ring_value.shown(1), "the first seat's own profile took the cue");
+
+        // The second seat's own profile takes its own, not the first's.
+        stub.point_at(&other_ring);
+        stub.host
+            .call(&other, "browser_snapshot", json!({}))
+            .await
+            .expect("the second seat's own browser answers");
+        assert!(other_ring.shown(1), "the second seat's own profile took the cue");
+        assert!(!other_ring.shown(2), "no second cue landed on the wrong host");
+
+        // The shared browser takes a cue only when it is named.
+        stub.point_at(&stub.shared_ring);
+        stub.host
+            .call(&seat(), "browser_snapshot", json!({ "profile": profiles::SHARED_PROFILE }))
+            .await
+            .expect("the shared browser answers when named");
+        assert!(stub.shared_shown(1), "the named shared browser took the cue");
+        assert!(!stub.shared_shown(2), "and no unnamed call reached it");
+
+        assert_eq!(
+            stub.calls().iter().filter(|tool| *tool == "browser_snapshot").count(),
+            3,
+            "one snapshot per browser, on the browser each call named",
+        );
+        cef::osr::Ring::unlink(&other_ring.name);
+        stub.shutdown().await;
+    }
+
+    /// **The log names the host a call drives**, which is what a tab-leak
+    /// report reads: the profile, the host's pid and port, and its cache
+    /// root. A routing change that sent the call elsewhere moves these and
+    /// goes red (#2535, "prove tab identity in the host log").
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_call_names_the_host_it_drives_in_the_log() {
+        static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        struct Capture;
+        impl tauri_plugin_log::log::Log for Capture {
+            fn enabled(&self, _metadata: &tauri_plugin_log::log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &tauri_plugin_log::log::Record<'_>) {
+                LOGGED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(record.args().to_string());
+            }
+            fn flush(&self) {}
+        }
+        static CAPTURE: Capture = Capture;
+        if tauri_plugin_log::log::set_logger(&CAPTURE).is_ok() {
+            tauri_plugin_log::log::set_max_level(tauri_plugin_log::log::LevelFilter::Trace);
+        }
+        if let Ok(mut lines) = LOGGED.lock() {
+            lines.clear();
+        }
+
+        let stub = StubHost::start("/forge-cef-route-log-test", &json!({})).await;
+        stub.host
+            .call(&seat(), "browser_snapshot", json!({}))
+            .await
+            .expect("the seat's own browser answers");
+        stub.host
+            .call(&seat(), "browser_snapshot", json!({ "profile": profiles::SHARED_PROFILE }))
+            .await
+            .expect("the shared browser answers when named");
+
+        let lines = LOGGED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let named = |profile: &str| {
+            let wanted = format!("profile {profile}");
+            let found = lines
+                .iter()
+                .find(|line| {
+                    line.contains("event_name browser_call_host") && line.contains(&wanted)
+                })
+                .unwrap_or_else(|| panic!("no host line for {profile}: {lines:?}"));
+            found.clone()
+        };
+        let own = named("forge-lead");
+        assert!(own.contains(&format!("pid {}", stub.pid)), "{own}");
+        assert!(own.contains(&format!("port {}", stub.port)), "{own}");
+        assert!(own.contains("profiles/forge-lead/cef"), "the seat's own cache root: {own}");
+        let shared = named(profiles::SHARED_PROFILE);
+        assert!(shared.contains("cef-profile"), "the shared browser's cache root: {shared}");
+
+        stub.shutdown().await;
+    }
+
+    /// **A driver that never attached is answered with the host's own
+    /// identity, and the wedged host is ended** - not handed back as a bare
+    /// 30 s `initializeServer` timeout that names nothing (#2534). The next
+    /// call then starts a fresh browser instead of serving a wedge.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn an_attach_timeout_names_the_host_and_ends_it() {
+        let stub = StubHost::start(
+            "/forge-cef-attach-timeout-test",
+            &json!({
+                "browser_navigate": {
+                    "isError": true,
+                    "content": [{ "type": "text", "text": "### Error\nTimeoutError: async \
+                        initializeServer: Timeout 30000ms exceeded.\nCall log:\n  - <ws \
+                        connected> ws://127.0.0.1:9413/devtools/browser/x" }],
+                },
+            }),
+        )
+        .await;
+
+        let why = stub
+            .host
+            .call(&seat(), "browser_navigate", json!({ "url": "https://example.com/" }))
+            .await
+            .expect_err("the attach never finished");
+        assert!(why.contains(&format!("pid {}", stub.pid)), "the host's pid: {why}");
+        assert!(why.contains(&format!("port {}", stub.port)), "the host's port: {why}");
+        assert!(why.contains(&stub.cache.display().to_string()), "the profile: {why}");
+        assert!(why.contains("could not attach within its 30 s bound"), "{why}");
+        assert!(
+            why.contains("was ended through its SIGTERM path"),
+            "the outcome is the one that happened, and the profile is flushed: {why}",
+        );
+        assert!(why.contains("data intact"), "the profile survives the kill: {why}");
+        assert!(why.contains("its log"), "the host's own last words ride the answer: {why}",);
+        assert!(
+            !why.contains("initializeServer"),
+            "the driver's bare timeout is not what a session reads: {why}",
+        );
+        assert!(!cef::spawn::alive(stub.pid), "the wedged host was ended");
+        assert!(
+            stub.host.hosts.lock().await.get(&stub.cache).is_none(),
+            "and it is not held as this profile's live host",
+        );
+
+        stub.shutdown().await;
+    }
+
+    /// **The answer says what actually happened to the host.** An end the
+    /// client had to refuse (a port that answers with a pid that is not this
+    /// app's host) is never reported as a host that was ended.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_attach_failure_names_the_outcome_that_happened() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let ring_name = "/forge-cef-attach-words";
+        let ring = Arc::new(cef::osr::Ring::create(ring_name, 4, 4).expect("a ring"));
+        let host = cef::spawn::ActiveHost {
+            pid: 4242,
+            port: 9499,
+            ring,
+            profile: dir.path().to_path_buf(),
+        };
+
+        let ended = attach_failure(&host, true);
+        assert!(ended.contains("was ended through its SIGTERM path"), "{ended}");
+        assert!(ended.contains("data intact"), "{ended}");
+        assert!(ended.contains("pid 4242") && ended.contains("port 9499"), "{ended}");
+
+        let refused = attach_failure(&host, false);
+        assert!(refused.contains("could not be ended"), "{refused}");
+        assert!(!refused.contains("starts a fresh one"), "an ended promise is not made: {refused}",);
+        cef::osr::Ring::unlink(ring_name);
+    }
+
     /// **A raise cues the page.** Open would otherwise draw a takeover over a
     /// page that went hidden while nothing drove it; the fixture's host
     /// applies the cue, so the ring proves it was sent.
@@ -4084,8 +4509,30 @@ for line in sys.stdin:
         let stub = StubHost::start("/forge-cef-raise-cue-test", &json!({})).await;
 
         let raised = stub.host.show(None, None, 1).await;
-        assert!(raised.is_ok(), "the raise opened the surface: {raised:?}");
-        assert!(stub.ring_value.shown(1), "the raise cued the page");
+        assert_eq!(
+            raised.as_deref(),
+            Ok(profiles::SHARED_PROFILE),
+            "the seatless raise is the shared browser, and the page is told its name: {raised:?}",
+        );
+        assert!(stub.shared_shown(1), "the raise cued the shared browser's page");
+
+        stub.shutdown().await;
+    }
+
+    /// **A session's hand-off with no profile raises the seat's own
+    /// browser**, answered with the profile it actually raised and cued on
+    /// that profile's ring - not the shared browser's. **The name is
+    /// re-derived at the lower**: the page's Done passes the ask's null
+    /// profile and the asking seat, and the shell resolves that seat to the
+    /// same name - so the pair lands on one browser.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_hand_off_with_no_profile_raises_and_names_the_seats_own() {
+        let stub = StubHost::start("/forge-cef-raise-seat-test", &json!({})).await;
+        let raised = stub.host.show(None, Some(&seat()), 1).await.expect("the raise opens");
+        assert_eq!(raised, auto_name(&seat()), "the answer is the seat's own profile");
+        assert!(stub.ring_value.shown(1), "the seat's own profile took the cue");
+        assert!(!stub.shared_shown(1), "the shared browser was not raised");
 
         stub.shutdown().await;
     }
@@ -4283,7 +4730,11 @@ for line in sys.stdin:
             .await
             .expect_err("a click is not repeated");
         assert!(why.contains("has been rebuilt"), "the rebuild is named: {why}");
-        assert!(why.contains("reading '_page'"), "and the dead context is still the reason: {why}");
+        assert!(
+            why.contains("the browser's page context died"),
+            "and the dead context is named in the client's words: {why}",
+        );
+        assert!(!why.contains("reading '_page'"), "never the driver's internal reading: {why}");
         let clicks = stub.calls().into_iter().filter(|tool| tool == "browser_click").count();
         assert_eq!(clicks, 1, "the click ran once and was not repeated");
         assert_eq!(stub.starts(), 2, "and the rebuild still started a fresh driver");
@@ -4302,8 +4753,9 @@ for line in sys.stdin:
 
     /// **A failed retry is named, and the next call does not pay another
     /// driver start.** The browser stays dead, so the rebuild's own repeat
-    /// fails too; both reasons come back, and the cooldown keeps the next
-    /// call from starting a third driver against a browser that is not
+    /// fails too; the answer says the dead context met the rebuilt driver
+    /// again (never the driver's `_page` line), and the cooldown keeps the
+    /// next call from starting a third driver against a browser that is not
     /// recovering.
     #[cfg(target_os = "macos")]
     #[tokio::test]
@@ -4326,8 +4778,12 @@ for line in sys.stdin:
             .call(&seat(), "browser_navigate", json!({ "url": "https://x.test/" }))
             .await
             .expect_err("the retried call fails too");
-        assert!(first.contains("reading '_page'"), "the original reason is kept: {first}");
-        assert!(first.contains("the repeated call failed too"), "{first}");
+        assert!(
+            first.contains("the browser's page context died"),
+            "the dead context is named: {first}",
+        );
+        assert!(first.contains("met the same dead context"), "{first}");
+        assert!(!first.contains("reading '_page'"), "not the driver's internal reading: {first}");
         assert_eq!(stub.starts(), 2, "one rebuild was tried");
 
         let second = stub
@@ -4341,12 +4797,11 @@ for line in sys.stdin:
         stub.shutdown().await;
     }
 
-    /// **A rebuild that cannot start keeps the original reason.** The fresh
-    /// driver's handshake fails, and the session still learns what the page
-    /// context did.
+    /// **A rebuild that cannot start names the dead page and the start's
+    /// own failure** - not the driver's `_page` line.
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn a_rebuild_that_cannot_start_keeps_the_original_reason() {
+    async fn a_rebuild_that_cannot_start_names_the_dead_page_and_why() {
         let dead = "### Error TypeError: browserBackend.callTool: Cannot read properties of \
                     undefined (reading '_page')";
         let stub = StubHost::start(
@@ -4369,8 +4824,12 @@ for line in sys.stdin:
             .call(&seat(), "browser_navigate", json!({ "url": "https://x.test/" }))
             .await
             .expect_err("the rebuild cannot start");
-        assert!(why.contains("reading '_page'"), "the original reason is kept: {why}");
+        assert!(
+            why.contains("the browser's page context died"),
+            "the dead context is named: {why}",
+        );
         assert!(why.contains("could not be rebuilt"), "{why}");
+        assert!(!why.contains("reading '_page'"), "not the driver's internal reading: {why}");
         assert_eq!(stub.starts(), 2, "the second start was attempted");
 
         stub.shutdown().await;
@@ -4533,7 +4992,7 @@ for line in sys.stdin:
         let launching = host.launch.lock().await;
         let hiding = tokio::spawn({
             let host = Arc::clone(&host);
-            async move { host.hide(None).await }
+            async move { host.hide(None, None).await }
         });
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
@@ -4620,11 +5079,52 @@ for line in sys.stdin:
         let resource = tempfile::tempdir().expect("a temp dir");
         let data = tempfile::tempdir().expect("a temp dir");
         let host = BrowserHost::new(StackPaths::from_dirs(resource.path(), data.path()));
-        let refused = host.hide(Some("../user-data")).await;
+        let refused = host.hide(Some("../user-data"), None).await;
         let Err(why) = refused else {
             panic!("a traversing name is refused");
         };
         assert!(why.contains("1 to 64"), "{why}");
+    }
+
+    /// **A hand-off that named no profile lowers the seat's own browser**,
+    /// the one its raise actually opened. The page passes the seat with its
+    /// Done, so the same fold the raise used resolves the hide - without it
+    /// the shared surface was asked to come down and the seat's stayed up
+    /// over the chat.
+    #[tokio::test]
+    async fn hide_with_no_profile_and_a_seat_lowers_the_seats_own_browser() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let mine = seat();
+        let cache = profiles::cef_cache(&paths.profiles.join(auto_name(&mine)));
+        std::fs::create_dir_all(&cache).expect("the seat's cache root");
+        let ring_name = "/forge-cef-hide-seat";
+        let ring = Arc::new(cef::osr::Ring::create(ring_name, 8, 8).expect("a ring"));
+        *host.surface.lock().await = Some(OpenSurface {
+            profile: Some(auto_name(&mine)),
+            dir: cache.clone(),
+            host: Arc::new(cef::spawn::ActiveHost {
+                pid: 0,
+                port: 0,
+                ring,
+                profile: cache.clone(),
+            }),
+            epoch: 1,
+        });
+
+        assert_eq!(
+            host.hide(None, Some(&mine)).await,
+            Ok(true),
+            "the seat's own surface comes down",
+        );
+        assert!(host.surface.lock().await.is_none(), "and nothing is left drawing");
+        cef::osr::Ring::unlink(ring_name);
     }
 
     /// A host nothing has named holds no profiles, and answers the strip with
@@ -4870,16 +5370,14 @@ for line in sys.stdin:
     }
 
     /// **The auto profile is created on the seat's first unnamed reach, and
-    /// the call still drives the shared browser.** Afterwards the directory
-    /// and the record exist - the name is the seat's from now on - while the
-    /// profile's own browser was never started: only a call that NAMES it
-    /// does that. **No browser is launched by this test**: the shared
-    /// directory is a FILE, so the launch refuses before spawning anything,
-    /// and the call's failure lands past the ensure, which is the act under
-    /// test - whether or not the machine has one of the two browsers to
-    /// discover, which is all the refusal's wording varies with. A unit test
-    /// that drives the real launch belongs only in the deliberate, ignored
-    /// live suite.
+    /// that reach drives it.** Afterwards the directory and the record exist
+    /// - the name is the seat's from now on - and the launch it attempted is
+    /// its own cache root's, never the shared browser's.
+    ///
+    /// **No browser is launched by this test**: a FILE sits where the auto
+    /// profile's cache root goes, so the launch refuses at its lock before
+    /// spawning anything, and the refusal names that path - which is the
+    /// proof the call was routed to the seat's own profile.
     #[tokio::test]
     async fn the_auto_profile_is_created_on_the_first_unnamed_reach() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -4889,39 +5387,39 @@ for line in sys.stdin:
             output: dir.path().join("output"),
             profiles: dir.path().join("profiles"),
         };
-        // A file where the shared host's cache root should be: the launch
-        // cannot make its directory or take its lock, so nothing spawns, and
-        // the failure is past the ensure.
-        std::fs::write(paths.cef_shared(), b"").expect("a file where the shared cache goes");
+        let auto = paths.profiles.join("forge-lead");
+        std::fs::create_dir_all(&auto).expect("the seat's profile directory");
+        // A file where the profile's cache root should be: the launch cannot
+        // make its directory or take its lock, so nothing spawns.
+        std::fs::write(profiles::cef_cache(&auto), b"").expect("a file where the cache goes");
         let host = BrowserHost::new(paths.clone());
         let who = seat();
 
         let why = host
             .call(&who, "browser_navigate", json!({ "url": "https://example.com" }))
             .await
-            .expect_err("the call cannot drive a shared directory that is a file");
-        // The reason is the machine's: where a browser is installed, the
-        // launch refuses at the shared directory, and where none is, at the
-        // discovery before it. Both are past the ensure, which is what the
-        // assertions below pin.
+            .expect_err("the call cannot launch a cache root that is a file");
         assert!(
-            why.contains("cannot be made")
-                || why.contains("cannot be opened")
-                // A platform without the engine refuses by name before the
-                // directory is touched; the ensure above still ran.
-                || why.contains("packaged for macOS"),
+            why.contains("cannot be opened") || why.contains("packaged for macOS"),
             "the call failed for some other reason: {why}",
         );
-
-        let auto = paths.profiles.join("forge-lead");
+        // **The refusing stage is the machine's own.** On a platform with no
+        // engine it refuses at "packaged for macOS" before the cache root is
+        // touched; on macOS it refuses at the file this test planted. The
+        // routing claim below holds either way.
+        #[cfg(target_os = "macos")]
+        assert!(
+            why.contains(&profiles::cef_cache(&auto).display().to_string()),
+            "the refusal names the seat's own cache root, not the shared browser's: {why}",
+        );
         assert_eq!(
             profiles::owner_of(&auto),
             Ok(Some(who)),
             "the seat's own name is recorded, its project qualifying its label",
         );
         assert!(
-            cef::spawn::read_record(&profiles::cef_cache(&auto)).is_none(),
-            "and nothing was driven through it - the host waits for a call that names it",
+            cef::spawn::read_record(&paths.cef_shared()).is_none(),
+            "and nothing was driven through the shared browser",
         );
     }
 
@@ -5049,8 +5547,10 @@ for line in sys.stdin:
         let two =
             Seat { org: "Org".to_owned(), project: "two".to_owned(), label: "lead".to_owned() };
 
-        host.ensure_auto_profile(&one).await.expect("the first lead's own");
-        host.ensure_auto_profile(&two).await.expect("the second lead's own, not a collision");
+        host.named_profile(&one, &auto_name(&one)).await.expect("the first lead's own");
+        host.named_profile(&two, &auto_name(&two))
+            .await
+            .expect("the second lead's own, not a collision");
 
         assert_eq!(
             profiles::owner_of(&paths.profiles.join("one-lead")),
@@ -5081,7 +5581,7 @@ for line in sys.stdin:
         let who =
             Seat { org: "Org".to_owned(), project: "my app".to_owned(), label: "lead".to_owned() };
 
-        host.ensure_auto_profile(&who).await.expect("the folded name is a profile");
+        host.named_profile(&who, &auto_name(&who)).await.expect("the folded name is a profile");
         assert_eq!(
             profiles::owner_of(&paths.profiles.join("my-app-lead")),
             Ok(Some(who)),
@@ -5089,11 +5589,13 @@ for line in sys.stdin:
         );
     }
 
-    /// **A taken auto name is refused with the reason, never suffixed**, and
-    /// the refusal is said once per seat - the create is retried on every
-    /// unnamed call, and a note on each would be noise.
+    /// **A taken auto name is refused with the reason, never suffixed, and
+    /// the call never falls back to the shared browser.** The unnamed call
+    /// drives the seat's own profile, so a name another seat already holds is
+    /// the call's refusal - the shipped fall-through to the shared browser
+    /// is exactly the tab leak #2535 names.
     #[tokio::test]
-    async fn a_taken_auto_name_is_refused_without_a_suffix_or_a_repeated_note() {
+    async fn a_taken_auto_name_refuses_the_call_without_a_suffix_or_a_fallback() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let paths = StackPaths {
             stack: dir.path().join("stack"),
@@ -5106,8 +5608,10 @@ for line in sys.stdin:
         let host = BrowserHost::new(paths.clone());
         let who = seat();
 
-        let why =
-            host.ensure_auto_profile(&who).await.expect_err("the name belongs to another seat");
+        let why = host
+            .call(&who, "browser_snapshot", json!({}))
+            .await
+            .expect_err("the name belongs to another seat");
         assert!(why.contains("belongs to Other/forge/lead"), "{why}");
         let dirs: Vec<String> = std::fs::read_dir(&paths.profiles)
             .expect("the profiles root")
@@ -5120,17 +5624,10 @@ for line in sys.stdin:
             Ok(Some(other)),
             "and the name did not change hands",
         );
-
-        let mut parts = vec![ReplyPart::Text { text: "navigated".to_owned() }];
-        host.note_auto_failure(&who, why.clone(), &mut parts).await;
-        assert_eq!(parts.len(), 2, "the first failure rides the answer");
-        let said = match &parts[1] {
-            ReplyPart::Text { text } => text.clone(),
-            ReplyPart::Image { .. } => panic!("the note is text"),
-        };
-        assert!(said.contains("could not be created"), "{said}");
-        host.note_auto_failure(&who, why, &mut parts).await;
-        assert_eq!(parts.len(), 2, "the retry is quiet - the seat has been told");
+        assert!(
+            !host.used().await.expect("the mark reads"),
+            "nothing was driven: a refused name is not the shared browser",
+        );
     }
 
     /// **A restart does not free the name.** The in-memory lease dies with

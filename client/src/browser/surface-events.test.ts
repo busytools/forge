@@ -7,7 +7,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('./host', () => ({
   canHost: () => true,
   drawsSurface: () => true,
-  showBrowser: () => Promise.resolve(null),
+  showBrowser: () => Promise.resolve({ profile: '@shared' }),
   hideBrowser: () => Promise.resolve({ lowered: true }),
   reportSurfaceRect: () => Promise.resolve(),
 }));

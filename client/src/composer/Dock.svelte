@@ -647,7 +647,7 @@
     const profile = ask.request.profile;
     onanswer(id);
     answer({ respond_browser_hand_off: { key: slot, id, done } });
-    void closeSurface(profile);
+    void closeSurface(profile, slot);
     clearHandOff(id);
   }
 

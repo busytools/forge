@@ -164,6 +164,11 @@ pub mod spawn {
         false
     }
 
+    /// No host runs in this build, so a launch failure has no words of its own.
+    pub(crate) fn log_tail(_profile: &Path) -> String {
+        String::new()
+    }
+
     pub async fn end(_pid: u32) {}
 
     pub fn running(_pid: u32) -> bool {

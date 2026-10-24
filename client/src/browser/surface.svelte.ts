@@ -109,8 +109,10 @@ export function failSurface(reason: string): void {
 }
 
 /**
- * Open the takeover for `profile` (`null` is shared). Answers why it could
- * not open, or `null` when it did.
+ * Open the takeover for `profile` (`null` is the asking seat's own when a
+ * seat rides along, and the shared browser for the person's own door; the
+ * shared one is named `@shared`). Answers why it could not open, or `null`
+ * when it did.
  */
 export async function openSurface(
   profile: string | null,
@@ -134,21 +136,27 @@ export async function openSurface(
     // first open already has the listeners a refusal asks through.
     void installSurfaceEvents();
   }
-  const why = await showBrowser(profile, seat, mine);
+  const answer = await showBrowser(profile, seat, mine);
+  const why = typeof answer === 'string' ? answer : null;
   // **The phone's takeover is the native one**: its shell raised it, and the
   // page's components are the desktop's.
   if (!here) return why;
   if (mine !== generation) {
     // A stale open that landed after a close still has a surface up in the
     // shell; it is taken down rather than left drawing under a closed store.
-    if (why === null && surface.phase === 'closed') void hideBrowser(profile);
+    if (typeof answer !== 'string' && surface.phase === 'closed') {
+      void hideBrowser(answer.profile);
+    }
     return why;
   }
-  if (why !== null) {
+  if (typeof answer === 'string') {
     surface.phase = 'failed';
-    surface.reason = why;
-    return why;
+    surface.reason = answer;
+    return answer;
   }
+  // **The shell's answer is the profile it raised**, which a hand-off with no
+  // profile resolves to the asking seat's own; Done lowers that one.
+  surface.profile = answer.profile;
   surface.phase = 'live';
   return null;
 }
@@ -156,14 +164,17 @@ export async function openSurface(
 /**
  * Take the surface away; the browser keeps running. `profile` names the one
  * to lower - a row knows its own name even when this page's store was reset
- * by a reload while the shell's surface stayed up. Answers why it could not,
- * or `null` when it is closed.
+ * by a reload while the shell's surface stayed up. **`seat` is the asking
+ * hand-off's when `profile` is null**: the raise resolved it to that seat's
+ * own profile, and Done must lower the same browser. Answers why it could
+ * not, or `null` when it is closed.
  */
 export async function closeSurface(
   profile: string | null = surface.profile,
+  seat: SessionSlot | null = null,
 ): Promise<string | null> {
   ++generation;
-  const answer = await hideBrowser(profile);
+  const answer = await hideBrowser(profile, seat);
   if (typeof answer === 'string') {
     surface.phase = 'failed';
     surface.reason = answer;

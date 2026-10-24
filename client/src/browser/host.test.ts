@@ -126,6 +126,14 @@ describe('the shell command names', () => {
       epoch: 8,
     });
 
+    // **The shell's answer is the profile it raised**, and the page keeps
+    // that name for its Done: a raise with no profile resolves to the seat's
+    // own, and the page must not go on guessing `null`.
+    invoke.mockResolvedValueOnce('forge-lead');
+    expect(await showBrowser(null, seat, 9), 'the raised profile comes back').toEqual({
+      profile: 'forge-lead',
+    });
+
     // **A report carries the open it belongs to.** A dropped argument here
     // refuses every report at the shell, which is #2470 with no band to see.
     await reportSurfaceRect({ x: 0, y: 40, width: 2048, height: 1112 }, 2, 7);
@@ -139,11 +147,24 @@ describe('the shell command names', () => {
     });
 
     await hideBrowser();
-    expect(invoke, 'the lower').toHaveBeenLastCalledWith('browser_hide', { profile: null });
+    expect(invoke, 'the lower').toHaveBeenLastCalledWith('browser_hide', {
+      profile: null,
+      seat: null,
+    });
 
     await hideBrowser('hunt');
     expect(invoke, 'a named lower names its profile').toHaveBeenLastCalledWith('browser_hide', {
       profile: 'hunt',
+      seat: null,
+    });
+
+    // **A hand-off's Done carries its seat**: a hand-off that named no
+    // profile was raised as that seat's own, and the lower resolves it the
+    // same way the raise did.
+    await hideBrowser(null, seat);
+    expect(invoke, "a hand-off's lower carries its seat").toHaveBeenLastCalledWith('browser_hide', {
+      profile: null,
+      seat,
     });
 
     await browserUsed();

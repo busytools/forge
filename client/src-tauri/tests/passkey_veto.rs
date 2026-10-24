@@ -65,8 +65,8 @@ async fn the_veto_patches_and_resumes_every_attached_target() {
     let logs = capture_logs();
     logs.lock().unwrap_or_else(PoisonError::into_inner).clear();
     let stub = endpoint().await.expect("the stub endpoint");
-    // **A frozen prototype surfaces as a failure.** The stub's first context
-    // patch answers `failed ...`, and the installer has to name it.
+    // **A frozen prototype's verdict is read out of band** - the patch is
+    // sent, and its reply watched from a task so the loop stays free.
     stub.fail_verdict_once.store(true, std::sync::atomic::Ordering::Relaxed);
     let profile = Path::new("/tmp/veto-stub");
     let carried = Some("http://localhost/carried".to_owned());
@@ -167,9 +167,16 @@ async fn the_veto_patches_and_resumes_every_attached_target() {
     assert!(veto::target_armed(stub.port, "T1"), "the running page is armed");
     assert!(veto::target_armed(stub.port, "T2"), "the fresh tab is armed by its own id");
 
-    // **Once each, whatever the stub reported twice** - and one context, one
-    // patch.
-    assert_eq!(stub.count("Runtime.runIfWaitingForDebugger"), 1, "released exactly once");
+    // **The arm is once each, whatever the stub reported twice.** The release
+    // is per paused REPORT, not per target: a repeated attach is a fresh
+    // session with its own wait, and the guard below the release only stops a
+    // second arm (measured 2026-10-23: a skipped report left a page paused,
+    // #2534).
+    assert_eq!(
+        stub.count("Runtime.runIfWaitingForDebugger"),
+        3,
+        "every paused report is released: the fresh tab twice and the worker once",
+    );
     assert_eq!(stub.count("Target.attachToTarget"), 1, "one page session");
     assert_eq!(stub.count("Page.addScriptToEvaluateOnNewDocument"), 2, "each target armed once",);
     assert_eq!(stub.count("Runtime.evaluate"), 2, "two contexts, one patch each");
@@ -186,40 +193,63 @@ async fn the_veto_patches_and_resumes_every_attached_target() {
     );
     let patched = &calls[evaluate];
     assert_eq!(patched["params"]["contextId"], 7, "the reported context is the one patched");
-    assert_eq!(patched["params"]["returnByValue"], true, "its verdict is read back");
+    assert_eq!(
+        patched["params"]["returnByValue"], true,
+        "the verdict is asked for, watched out of band",
+    );
     assert_eq!(
         patched["params"]["expression"].as_str(),
         Some(source),
         "the same veto script runs in the existing context",
     );
 
-    // **The two failures are named, with their stage**: a patch that failed
-    // must not read as a veto that installed, and a failed resume is a page
-    // nobody can use.
-    let logged = captured();
+    // **The failures are named, with their stage**: a patch that failed must
+    // not read as a veto that installed, and a failed resume is a page nobody
+    // can use. Both replies are watched out of band, so the assertions wait
+    // for the watchers rather than a sleep.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let logged = loop {
+        let logged = captured();
+        let resume_failed = logged.iter().any(|line| {
+            line.contains("cef_passkey_veto_failed")
+                && line.contains("Runtime.runIfWaitingForDebugger")
+        });
+        let verdict_failed = logged.iter().any(|line| {
+            line.contains("cef_passkey_veto_failed") && line.contains("failed TypeError")
+        });
+        let page_failed = logged
+            .iter()
+            .any(|line| line.contains("cef_passkey_veto_failed") && line.contains("Page.enable"));
+        if resume_failed && verdict_failed && page_failed {
+            break logged;
+        }
+        assert!(Instant::now() < deadline, "the watched failures are logged: {logged:?}",);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     assert!(
         logged
             .iter()
             .any(|line| line.contains("cef_passkey_veto_failed") && line.contains("Page.enable")),
         "the refused Page.enable is logged: {logged:?}",
     );
-    assert!(
-        logged.iter().any(|line| line.contains("cef_passkey_veto_failed")
-            && line.contains("Runtime.runIfWaitingForDebugger")),
-        "the refused resume is logged: {logged:?}",
-    );
-    assert!(
-        logged.iter().any(|line| line.contains("cef_passkey_veto_failed")
-            && line.contains("Runtime.evaluate")
-            && line.contains("failed TypeError")),
-        "a frozen prototype's failed verdict is logged: {logged:?}",
-    );
 
-    // **A worker is not a page.** It is reported by the engine and must be
-    // skipped: arming one earns a refused Page.enable per domain.
+    // **A worker is not a page: released, never armed.** Leaving its pause
+    // in place is what wedged the carried page for good (#2534), and arming
+    // one earns a refused Page.enable per domain.
     assert!(
-        !calls.iter().any(|call| call["session"] == "SW1"),
-        "no command goes to a service worker's session: {calls:?}",
+        calls
+            .iter()
+            .any(|call| call["method"] == "Runtime.runIfWaitingForDebugger"
+                && call["session"] == "SW1"),
+        "the paused worker is released: {calls:?}",
+    );
+    assert!(
+        !calls.iter().any(|call| call["session"] == "SW1"
+            && matches!(
+                call["method"].as_str(),
+                Some("Page.enable" | "Runtime.enable" | "Page.addScriptToEvaluateOnNewDocument")
+            )),
+        "no arm command goes to a service worker's session: {calls:?}",
     );
     assert!(stub.index("Target.setDiscoverTargets").is_none(), "no discovery fallback");
     assert!(stub.index("Page.reload").is_none(), "no page is reloaded");
