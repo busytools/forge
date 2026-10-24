@@ -36,6 +36,9 @@
   /** The hooks that failed, whose count the closed row carries in words. */
   const failed = $derived(group.runs.filter((held) => held.run.failed).length);
 
+  /** Whether every hook in the firing has answered, which the glyph's tone says. */
+  const answered = $derived(group.runs.every((held) => held.run.settled));
+
   /** What fired, how many hooks it carried and how many failed, closed. */
   const label = $derived(
     `${event} \u{b7} ${group.runs.length} ${group.runs.length === 1 ? 'hook' : 'hooks'}` +
@@ -63,7 +66,7 @@
 
 <details class="leaf hookgroup" bind:open={opened}>
   <summary>
-    <Icon name="hook" class={`gl${failed > 0 ? ' err' : ' ok'}`} />
+    <Icon name="hook" class={`gl${failed > 0 ? ' err' : answered ? ' ok' : ''}`} />
     <span class="tn">{label}</span>
     <Chevron />
   </summary>

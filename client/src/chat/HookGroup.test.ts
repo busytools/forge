@@ -101,6 +101,10 @@ describe("a session start's row", () => {
       draw(running, true).match(/class="leaf hookrow"/g),
       'the running hook draws by its name beside the one that spoke',
     ).toHaveLength(2);
+    expect(
+      summaryOf(draw(running)),
+      'and the start carries no passing tone while a hook is still out',
+    ).toMatch(/class="ic gl"/);
 
     // Every hook finished without a word: the row still opens, and says why it
     // holds none rather than opening onto nothing.
@@ -138,6 +142,9 @@ describe("a session start's row", () => {
     const open = drawn.find((start) => start.open && !start.html.includes('gl err'))?.html ?? '';
     expect(open, 'and an open one').not.toBe('');
     expect(open, 'holding the hook rows it opens onto').toContain('class="leaf hookrow"');
+    expect(open, 'and not the line that stands in for hooks').not.toContain(
+      'the hooks printed nothing',
+    );
 
     // The failed state, which the component carries for a silent hook: a
     // closed start naming the failure in words as well as tone, and an open
@@ -155,12 +162,18 @@ describe("a session start's row", () => {
     );
 
     // And the all-silent state: the row opens onto a muted line rather than
-    // onto nothing.
-    expect(
+    // onto nothing, and holds no hook row.
+    const quiet =
       drawn.find((start) => start.open && start.html.includes('the hooks printed nothing'))?.html ??
-        '',
-      'the book draws the start whose hooks all finished silent',
-    ).not.toBe('');
+      '';
+    expect(quiet, 'the book draws the start whose hooks all finished silent').not.toBe('');
+    expect(quiet, 'with no hook rows to list').not.toContain('class="leaf hookrow"');
+
+    // And the start still out: neutral until every hook has answered.
+    expect(
+      drawn.some((start) => start.html.includes('<svg class="ic gl">')),
+      'the book draws a start whose hook has not settled, with no passing tone',
+    ).toBe(true);
   });
 });
 

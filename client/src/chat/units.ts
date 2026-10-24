@@ -274,9 +274,10 @@ export interface HookRun {
   /**
    * Whether the run's response has landed.
    *
-   * A settled run that printed nothing draws no row of its own; one still
-   * running keeps its row even silent, because the work is under way and its
-   * name is all it has to say yet.
+   * Inside a session start's row, a settled run that printed nothing draws no
+   * line; one still running keeps its line even silent, because the work is
+   * under way and its name is all it has to say yet. A run with a row of its
+   * own draws either way.
    */
   settled: boolean;
   /**
