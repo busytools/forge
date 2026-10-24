@@ -666,6 +666,14 @@ export class Frames {
 
   /** Whether the list this indexes holds `message`. */
   carries(message: unknown, prose = true): boolean {
+    // **A folded copy is answered by containment, never by its end.** Its id
+    // is its newest counter's, which a page carrying that counter RAW would
+    // otherwise read as holding the whole run - so a folded frame is carried
+    // only by a run that covers all of it.
+    const folded = foldedRunMs(message);
+    if (folded !== null) {
+      return this.covers.some((run) => run.from <= folded.from && folded.through <= run.through);
+    }
     if (this.covers.length > 0 && withinRuns(this.covers, counterStampMs(message))) {
       return true;
     }
@@ -693,6 +701,29 @@ export class Frames {
  * copy, so a row the page says nothing about does not move.
  */
 function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
+  /**
+   * The stamp ranges the HELD side's folded runs cover.
+   *
+   * A page can carry counters a held fold already counts - its front moved
+   * inside the same long run between two landings. Those page frames are the
+   * held copy's, not news, and keeping them beside the held fold's sum would
+   * draw the growth twice; so they are not offered at all. A folded page
+   * frame is the held copy's only when the held run covers all of it.
+   */
+  const heldCovers: FoldedRun[] = [];
+  for (const message of heldRows) {
+    const run = foldedRunMs(message);
+    if (run !== null) heldCovers.push(run);
+  }
+  const offeredByHeld = (message: unknown): boolean => {
+    if (heldCovers.length === 0) return false;
+    const folded = foldedRunMs(message);
+    if (folded !== null) {
+      return heldCovers.some((run) => run.from <= folded.from && folded.through <= run.through);
+    }
+    return withinRuns(heldCovers, counterStampMs(message));
+  };
+  const page = pageRows.filter((message) => !offeredByHeld(message));
   // Where each page frame the held copy also carries sits. **The same three
   // faces `Frames` answers by** - id, the ending's envelope, then the words -
   // so a frame the page carries under an id-less copy is placed, not inserted
@@ -700,7 +731,7 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
   const byId = new Map<string, number>();
   const byEnding = new Map<string, number>();
   const byWords = new Map<string, number>();
-  pageRows.forEach((message, index) => {
+  page.forEach((message, index) => {
     const id = uuidOf(message);
     if (id !== null && !byId.has(id)) byId.set(id, index);
     const ending = completionText(message);
@@ -721,7 +752,7 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
    * the turn's suffix - is genuinely the held copy's and stays.
    */
   const covers: FoldedRun[] = [];
-  for (const message of pageRows) {
+  for (const message of page) {
     const run = foldedRunMs(message);
     if (run !== null) covers.push(run);
   }
@@ -736,7 +767,23 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
   /** The held-only frames that follow the page frame at a given index. */
   const after = new Map<number, unknown[]>();
   let anchor = -1;
+  const hold = (message: unknown): void => {
+    const bucket = after.get(anchor) ?? [];
+    bucket.push(message);
+    after.set(anchor, bucket);
+  };
   for (const message of heldRows) {
+    // **A folded held run is placed by its range, never by its id.** Its id
+    // is its newest counter's, which a page carrying that counter raw would
+    // otherwise read as the page's copy of the whole run - dropping the held
+    // head. It is the page's only when a page run covers ALL of it; otherwise
+    // it is held-only and goes where the frames before it put it.
+    const folded = foldedRunMs(message);
+    if (folded !== null) {
+      if (covers.some((run) => run.from <= folded.from && folded.through <= run.through)) continue;
+      hold(message);
+      continue;
+    }
     if (covers.length > 0 && withinRuns(covers, counterStampMs(message))) continue;
     const where = whereOf(message);
     if (where !== undefined) {
@@ -745,12 +792,10 @@ function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
       anchor = Math.max(anchor, where);
       continue;
     }
-    const bucket = after.get(anchor) ?? [];
-    bucket.push(message);
-    after.set(anchor, bucket);
+    hold(message);
   }
   const out: unknown[] = [...(after.get(-1) ?? [])];
-  pageRows.forEach((message, index) => {
+  page.forEach((message, index) => {
     out.push(message);
     const bucket = after.get(index);
     if (bucket !== undefined) out.push(...bucket);

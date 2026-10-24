@@ -606,6 +606,37 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **Two landings of one long run must still equal its unfolded sum.** The
+   * phone re-subscribes on every snapshot, and the record's window front can
+   * move inside a running turn between two landings: the first page folds
+   * counters 0-9, the next carries 4-12 raw because it opened on the run's
+   * suffix. The held fold cannot split its sum, so it is kept whole and only
+   * the page's growth above its end is added - never the page's copy of the
+   * counters the held fold already counts, and never a lost head.
+   */
+  it('a page whose front moved inside one run keeps the held fold whole', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([{ key: 't1', messages: [promptRow('work'), folded(0, 9, 100)] }], 'above'));
+    expect(figure(chat), 'the first landing carries the whole run').toBe(100);
+
+    const suffix: unknown[] = [];
+    for (let at = 4; at <= 12; at += 1) suffix.push(clocked(at, 10));
+    server.send(page([{ key: 't1', messages: [promptRow('work'), ...suffix] }], 'above'));
+
+    expect(figure(chat), 'the unfolded sum: the held run plus the page growth above it').toBe(130);
+    expect(names(chat), 'the covered page counters are not added beside the held fold').toEqual([
+      'u-work',
+      'thinking-9',
+      'thinking-10',
+      'thinking-11',
+      'thinking-12',
+    ]);
+    stop();
+  });
+
+  /**
    * **A repeated page is the same page, not another grow.** The subscribe loop
    * and the reconnect both re-ask, so the identical page can land twice; its
    * folded run's delta is the copy of the counters already held and must not

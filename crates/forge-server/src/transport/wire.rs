@@ -976,6 +976,14 @@ fn turn_wire(
 /// counters above the page's first one must keep them, and a run that recorded
 /// only where it ends would drop them.
 ///
+/// **A run that may start mid-turn is never folded.** When a turn's first
+/// carried frame is itself a counter, the window's front cut inside that
+/// running turn, and the run's true start is not in the page - so its leading
+/// counters are served as themselves. Every fold a page carries therefore
+/// starts at the first counter after a frame that is no counter, which is a
+/// boundary any earlier page of the same run shares; a later page's fold then
+/// nests inside or around an earlier one instead of crossing it.
+///
 /// **A run is one dispatch's, and the dispatch lives in the frame's extras
 /// rather than in its typed fields.** No captured baseline carries
 /// `parent_tool_use_id` on a counter, so the grouping is a guard rather than a
@@ -990,8 +998,15 @@ fn turn_wire(
 fn compact_counters(frames: &mut Vec<Value>) {
     let held = std::mem::take(frames);
     let mut out: Vec<Value> = Vec::with_capacity(held.len());
+    // The turn's first frame opens it unless the page cut the turn, and only
+    // a proven opening lets the leading run fold.
+    let mut leading = held.first().is_some_and(is_counter);
     for frame in held {
+        if !is_counter(&frame) {
+            leading = false;
+        }
         if let Some(last) = out.last_mut()
+            && !leading
             && is_counter(last)
             && is_counter(&frame)
             && same_run(last, &frame)
@@ -2620,6 +2635,32 @@ mod tests {
         assert_eq!(
             folded["folded_from"], "2026-10-24T09:00:00.000001Z",
             "and its range is its own run's, not the turn's",
+        );
+    }
+
+    /// **A leading run with no proven start is never folded.** A turn whose
+    /// first carried frame is a counter is the window's front cutting inside
+    /// a running turn, so the run's true start is not in the page - its
+    /// counters are served as themselves, and a later run still folds.
+    #[test]
+    fn a_leading_counter_run_of_a_cut_turn_is_not_folded() {
+        let messages = vec![
+            counter(1, 10),
+            counter(2, 20),
+            says(3),
+            counter(4, 7),
+            counter(5, 3),
+            answers(6),
+            counter(7, 5),
+        ];
+        let rendered = crate::transcript::render(&messages, true);
+
+        let page = page(&messages, &rendered, 0, None, u32::MAX);
+
+        assert_eq!(
+            counters_on(&page),
+            vec![(10, None), (20, None), (10, Some(2)), (5, None)],
+            "the leading pair stays raw and the run after the assistant folds",
         );
     }
 
