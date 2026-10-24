@@ -132,6 +132,13 @@ read as one system.
   lands, so the settled wording about a call that never recorded one would
   be a claim the row cannot make yet. Once the call settles the mark goes
   and the tail is the finished output.
+  **A call the `TaskStop` tool stopped has no ending frame of its own**:
+  the tool path sends no task frame and no registry change, so its own
+  success answer settles the call - in whichever held turn the call sits,
+  which is not always the turn the stop lands in - the row states `stopped`
+  beside its title, and the processes row stops counting it. A stop whose
+  call the page does not hold draws as a row of its own, named with the
+  task it stopped.
   **The box draws the command's own colours**: every terminal box reads the
   escape sequences a command wrote - colour, bold, dim, italic, underline -
   into the theme's palette, so a coloured compile looks like the terminal's.

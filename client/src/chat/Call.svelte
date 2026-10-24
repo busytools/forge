@@ -556,6 +556,11 @@
       <span class="st"><span class="ring"></span></span>
     {/if}
     <span class="tn">{call.title}</span>
+    {#if call.stop !== null}
+      <!-- The task a `TaskStop` ended, stated on the row: the CLI sends no
+           ending for it, so this is the stop's only mark without opening. -->
+      <span class="fam-chip bad" title={`stopped task ${call.stop}`}>stopped</span>
+    {/if}
     {#if card !== undefined && card.agent_type !== null}
       <span class="sg-ty">{card.agent_type}</span>
     {/if}

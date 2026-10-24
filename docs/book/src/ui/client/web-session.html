@@ -2180,13 +2180,24 @@ Command running in background with ID: bj5g0t2kq.
             </div>
           </details>
           <!-- The other ending a backgrounded call gets, in the tone the
-               harness's own word earns. -->
+               harness's own word earns: a killed bash keeps its terminal
+               glyph in the failure tone - the cross is a dispatch card's. -->
           <details class="leaf">
-            <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">Run slow counting loop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl err"><use href="#i-square-terminal"/></svg><span class="tn">Run slow counting loop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="panel bodytext"><span class="pfx">$</span> for i in $(seq 1 10000); do echo $i; sleep 1; done
 Command running in background with ID: a69098eff5f5d405a.
 <span class="fail">Run slow counting loop &middot; stopped</span></div>
+            </div>
+          </details>
+          <!-- A task the TaskStop tool stopped: the tool sends no ending
+               frame of its own, so its answer settles the call and the row
+               states the stop beside the title. -->
+          <details class="leaf">
+            <summary><svg class="ic gl err"><use href="#i-square-terminal"/></svg><span class="tn">Run the feature-config gate</span><span class="fam-chip bad">stopped</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="panel bodytext"><span class="pfx">$</span> just check-feature-configs
+Command running in background with ID: bwhz36mlt. Output is being written to: /private/tmp/claude-501/tasks/bwhz36mlt.output.</div>
             </div>
           </details>
 

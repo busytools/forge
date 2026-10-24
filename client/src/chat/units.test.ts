@@ -6,6 +6,8 @@ import { runningMs } from './report';
 import {
   carriedValue,
   fold,
+  stopsOf,
+  turnFold,
   type HookLeaf,
   type HookRun,
   type InboundLeaf,
@@ -3055,6 +3057,335 @@ describe('one turn folded into the units a view draws', () => {
     const dead = callsOf(second[0])[0]?.leaf;
     expect(dead?.status, 'a stopped task draws as the kill it is').toBe('killed');
     expect(dead?.note).toEqual({ text: 'Run slow counting loop \u{b7} stopped', tone: 'fail' });
+  });
+
+  it('settles a TaskStop stop from the page that holds its launch, turn or not', () => {
+    // A prompt opens a turn, so the common shape is a job started in one prompt
+    // and stopped in the next: the stop's turn holds no launch at all, and the
+    // join is the PAGE's held turns (`stopsOf`), not the turn being folded.
+    // Session 4b35ed0e is the same shape inside one prompt - the tool path
+    // sends no task frame, so the launch result's sentence is the only link.
+    const LAUNCH = 'call_33a76dda7de84b5698ade3cafe64ddce';
+    const STOP = 'call_6bab1bdfaa0c4c7785c2774040aa92a5';
+    const TASK = 'bwhz36mlt';
+    const OTHER = 'call_0a1b2c3d4e5f60718293a4b5';
+    const OTHER_TASK = 'bz9k1m2nq';
+    const command = 'nice -n 10 just check-feature-configs > /tmp/gate.log 2>&1';
+    /** A backgrounded Bash launch, and the result that opened its task. */
+    const started = (call: string, text: string, task: string): unknown[] => [
+      said([
+        use(call, 'Bash', { command: text, description: 'Run the gate', run_in_background: true }),
+      ]),
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: call,
+          is_error: false,
+          content: `Command running in background with ID: ${task}. Output is being written to: /tmp/${task}.output.`,
+        },
+      ]),
+    ];
+    const asking = said([use(STOP, 'TaskStop', { task_id: TASK })]);
+    const answered = (content: unknown): unknown =>
+      heard([{ type: 'tool_result', tool_use_id: STOP, content }]);
+    const stopped = answered(
+      JSON.stringify({
+        message: `Successfully stopped task: ${TASK} (${command})`,
+        task_id: TASK,
+        task_type: 'local_bash',
+        command,
+      }),
+    );
+
+    const first = [...started(LAUNCH, command, TASK), ...started(OTHER, 'sleep 60', OTHER_TASK)];
+    const second = [asking, stopped];
+    const holds = stopsOf([{ messages: first }, { messages: second }]);
+
+    const [earlier] = fold(first, null, false, false, holds);
+    const calls = callsOf(earlier).map((row) => row.leaf);
+    expect(
+      calls.map((leaf) => [leaf.id, leaf.status, leaf.stop]),
+      'the stopped call is the one the stop named, and the other is untouched',
+    ).toEqual([
+      [LAUNCH, 'killed', TASK],
+      [OTHER, 'completed', null],
+    ]);
+    expect(
+      calls[0]?.backgrounded,
+      'the row asks for no output through a task link the frames never sent',
+    ).toBe(false);
+
+    const [later] = fold(second, null, false, false, holds);
+    expect(callsOf(later), 'the stop draws in its own turn, not as a row').toHaveLength(0);
+
+    // The turn's fold is CARRIED between frames, so the page's stops must
+    // invalidate that carry: folded before the stop landed and after it, the
+    // same turn differs by the mark.
+    const carried = { messages: first };
+    const [before] = [turnFold(carried, null, false, false)];
+    expect(callsOf(before[0])[0]?.leaf.status, 'a page with no stop marks nothing').toBe(
+      'completed',
+    );
+    const [after] = [turnFold(carried, null, false, false, holds)];
+    expect(callsOf(after[0])[0]?.leaf.status, 'and the stop re-folds the turn it marks').toBe(
+      'killed',
+    );
+    // And a VALUE-EQUAL page is the same page: a fresh object carrying the same
+    // stops is answered from the carry, not folded again. Identity comparison
+    // would miss here, since the derive rebuilds the object per frame.
+    const sameContent = { settled: new Map(holds.settled), drawn: new Set(holds.drawn) };
+    const [again] = [turnFold(carried, null, false, false, sameContent)];
+    expect(again, 'a value-equal stop page keeps the carry').toBe(after);
+
+    // Rule 25: the same stop folded as its own page - no held launch - draws,
+    // named with the task it stopped.
+    const [alone] = fold(second);
+    const stray = callsOf(alone);
+    expect(stray, 'the stop draws when the page does not hold its call').toHaveLength(1);
+    expect(stray[0]?.leaf.title, 'named with the task it stopped').toContain(TASK);
+
+    // Frame order within a page is not what joins them: the stop ahead of its
+    // launch settles the same call.
+    const reversed = [asking, stopped, ...started(LAUNCH, command, TASK)];
+    const [backwards] = fold(reversed, null, false, false, stopsOf([{ messages: reversed }]));
+    const [held] = callsOf(backwards).map((row) => row.leaf);
+    expect(
+      [held?.id, held?.status, held?.stop],
+      'the order they arrived in is not the link',
+    ).toEqual([LAUNCH, 'killed', TASK]);
+
+    // **A later result that merely QUOTES the sentence does not steal the
+    // task.** The launch is in one turn; the next reads a log that printed the
+    // same words, then stops the task. First-write-wins keeps the link with
+    // the call that opened it.
+    const READ = 'call_read_quote';
+    const quoting = [
+      said([use(READ, 'Read', { file_path: '/tmp/gate.log' })]),
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: READ,
+          content: `Command running in background with ID: ${TASK}.`,
+        },
+      ]),
+    ];
+    const quoted = stopsOf([{ messages: first }, { messages: [...quoting, ...second] }]);
+    const [launchedTurn] = fold(first, null, false, false, quoted);
+    const stoppedLaunch = callsOf(launchedTurn)
+      .map((row) => row.leaf)
+      .find((leaf) => leaf.id === LAUNCH);
+    expect(
+      [stoppedLaunch?.status, stoppedLaunch?.stop],
+      'the call that launched it keeps the stop',
+    ).toEqual(['killed', TASK]);
+    const [quoteTurn] = fold([...quoting, ...second], null, false, false, quoted);
+    expect(
+      callsOf(quoteTurn).find((row) => row.leaf.id === READ)?.leaf.stop,
+      'the quoting read carries no stop',
+    ).toBeNull();
+
+    // The result's content has two shapes on the wire, and both answer.
+    const blocks = [
+      asking,
+      answered([{ type: 'text', text: `Successfully stopped task: ${TASK}` }]),
+    ];
+    const textBlocks = [...started(LAUNCH, command, TASK), ...blocks];
+    const [asBlocks] = fold(textBlocks, null, false, false, stopsOf([{ messages: textBlocks }]));
+    expect(callsOf(asBlocks)[0]?.leaf.status, 'a text-block answer settles it too').toBe('killed');
+  });
+
+  it('draws a stop that ends nothing as its own row, and leaves the call alone', () => {
+    // Three answers mean the stop did not end anything, and each draws its own
+    // row rather than settling the call it names: the CLI's error envelope, a
+    // clean answer about a task already finished, and a stop the turn never
+    // answered.
+    const LAUNCH = 'call_33a76dda7de84b5698ade3cafe64ddce';
+    const STOP = 'call_6bab1bdfaa0c4c7785c2774040aa92a5';
+    const TASK = 'bwhz36mlt';
+    const launch = said([use(LAUNCH, 'Bash', { command: 'just check', run_in_background: true })]);
+    const launched = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: LAUNCH,
+        is_error: false,
+        content: `Command running in background with ID: ${TASK}.`,
+      },
+    ]);
+    const asking = said([use(STOP, 'TaskStop', { task_id: TASK })]);
+    const arms: [string, unknown[]][] = [
+      [
+        'a refusal',
+        [
+          heard([
+            {
+              type: 'tool_result',
+              tool_use_id: STOP,
+              is_error: true,
+              content: `<tool_use_error>No task found with ID: ${TASK}</tool_use_error>`,
+            },
+          ]),
+        ],
+      ],
+      [
+        'a task already finished',
+        [
+          heard([
+            {
+              type: 'tool_result',
+              tool_use_id: STOP,
+              content: JSON.stringify({
+                message: `Task ${TASK} is already finished`,
+                task_id: TASK,
+              }),
+            },
+          ]),
+        ],
+      ],
+      ['no answer at all', []],
+    ];
+
+    for (const [why, tail] of arms) {
+      const frames = [launch, launched, asking, ...tail];
+      const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+      const calls = callsOf(group).map((row) => row.leaf);
+      expect(calls, `${why}: the launch keeps its row and the stop draws its own`).toHaveLength(2);
+      expect(calls[0]?.status, `${why}: nothing settled the launch`).toBe('completed');
+      expect(calls[0]?.stop, `${why}: and it carries no stop`).toBeNull();
+      expect(calls[1]?.title, `${why}: the stop row names the task`).toContain(TASK);
+    }
+
+    // The reason the refused stop gave rides its row.
+    const [refused] = fold([launch, launched, asking, ...(arms[0]?.[1] ?? [])]);
+    expect(callsOf(refused)[1]?.leaf.body, "the refusal is the row's own words").toContainEqual({
+      kind: 'error',
+      message: `No task found with ID: ${TASK}`,
+      detail: '',
+    });
+  });
+
+  it('does not let a quoting read take a task whose launch is out of the page', () => {
+    // The real launch is paged out and a Read quotes its sentence. First write
+    // wins alone would hand the task to the Read, paint it with a false stop
+    // and drop the stop row; only a launching tool's answer may claim one.
+    const READ = 'call_read_quote';
+    const STOP = 'call_stop_quote';
+    const TASK = 'bwhz36mlt';
+    const frames = [
+      said([use(READ, 'Read', { file_path: '/tmp/gate.log' })]),
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: READ,
+          content: `Command running in background with ID: ${TASK}.`,
+        },
+      ]),
+      said([use(STOP, 'TaskStop', { task_id: TASK })]),
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: STOP,
+          content: JSON.stringify({ message: `Successfully stopped task: ${TASK}`, task_id: TASK }),
+        },
+      ]),
+    ];
+
+    const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+    const calls = callsOf(group).map((row) => row.leaf);
+    expect(calls, 'the read keeps its row and the stop draws its own').toHaveLength(2);
+    expect(
+      calls.find((leaf) => leaf.id === READ)?.stop,
+      'the quoting read takes nothing',
+    ).toBeNull();
+    expect(calls.find((leaf) => leaf.id === STOP)?.title, 'the stop row names the task').toContain(
+      TASK,
+    );
+  });
+
+  it('draws a stop whose launch came from a dispatched agent, which the fold skips', () => {
+    // A sub-agent's frames belong to the dispatch timeline and the fold skips
+    // them whole. A parent's TaskStop of a task the sub-agent launched has no
+    // row here to mark, so it must draw as its own row - the join reads the
+    // same skip the drawing does, or the stop would vanish (rule 25).
+    const TASK = 'b4f1ow726';
+    const subLaunch = said(
+      [
+        use('toolu_sub_bg', 'Bash', {
+          command: 'sleep 60',
+          run_in_background: true,
+        }),
+      ],
+      { parent_tool_use_id: 'toolu_dispatch' },
+    );
+    const subResult = heard(
+      [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_sub_bg',
+          content: `Command running in background with ID: ${TASK}.`,
+        },
+      ],
+      { parent_tool_use_id: 'toolu_dispatch' },
+    );
+    const asking = said([use('toolu_stop', 'TaskStop', { task_id: TASK })]);
+    const stopped = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_stop',
+        content: JSON.stringify({ message: `Successfully stopped task: ${TASK}`, task_id: TASK }),
+      },
+    ]);
+
+    const frames = [subLaunch, subResult, asking, stopped];
+    const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+    const calls = callsOf(group);
+    expect(calls, 'the sub-agent call is not folded here, so the stop draws').toHaveLength(1);
+    expect(calls[0]?.leaf.title, 'named with the task it stopped').toContain(TASK);
+    expect(calls[0]?.leaf.id, 'and the row is the stop itself').toBe('toolu_stop');
+  });
+
+  it('settles a stopped Monitor through the task_started link the frames carry', () => {
+    // A Monitor's launch result does not carry the background-bash sentence,
+    // and the CLI's own `task_started` names both the task and the call - the
+    // fallback link, and the one a Monitor stop arrives through.
+    const TASK = 'b4f1ow726';
+    const launch = said([
+      use('toolu_mon', 'Monitor', { command: 'sleep 60', description: 'watch the run' }),
+    ]);
+    const launched = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_mon',
+        content: `Monitor started (task ${TASK}, expires in 1m).`,
+      },
+    ]);
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: TASK,
+      tool_use_id: 'toolu_mon',
+      is_backgrounded: true,
+    };
+    const asking = said([use('toolu_stop', 'TaskStop', { task_id: TASK })]);
+    const stopped = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_stop',
+        content: JSON.stringify({ message: `Successfully stopped task: ${TASK}`, task_id: TASK }),
+      },
+    ]);
+
+    const frames = [launch, launched, started, asking, stopped];
+    const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+    const [call] = callsOf(group).map((row) => row.leaf);
+    expect([call?.id, call?.status, call?.stop], 'the stop draws on the Monitor').toEqual([
+      'toolu_mon',
+      'killed',
+      TASK,
+    ]);
+    expect(
+      call?.backgrounded,
+      'the task_started fact survives the stop, so the output read still resolves',
+    ).toBe(true);
   });
 
   it('reads a Monitor as the backgrounded call its own task_started says it is', () => {

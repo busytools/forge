@@ -28,7 +28,7 @@
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
   import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
-  import { turnFold, type TurnInfo } from './units';
+  import { stopsOf, turnFold, type TurnInfo } from './units';
 
   /**
    * The conversation: whole turns, virtualised.
@@ -153,6 +153,12 @@
   const newestTurn = $derived(
     held.turns.length === 0 ? null : (held.turns[held.turns.length - 1] ?? null),
   );
+  /**
+   * The stops the page's turns carry, resolved once and handed to every turn's
+   * fold: a job started in one prompt and stopped in the next has its stop in
+   * a LATER turn than the call it ends, so no single turn can see both.
+   */
+  const stops = $derived(stopsOf(held.turns));
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
   /**
@@ -860,7 +866,7 @@
   const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
     const turn = newestTurn;
     if (turn === null) return null;
-    const units = turnFold(turn, slot, beingWritten(turn), !beingWritten(turn));
+    const units = turnFold(turn, slot, beingWritten(turn), !beingWritten(turn), stops);
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };
@@ -1607,6 +1613,7 @@
           {turn}
           {slot}
           turns={held.turns}
+          {stops}
           carried={turn.key === newest ? (pinned?.key ?? null) : null}
           onreadoutput={readOutput}
         />

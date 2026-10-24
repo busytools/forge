@@ -21,7 +21,7 @@ describe('the outcome join', () => {
       },
     ]);
 
-    expect(calls.get('tu1')).toEqual({ failed: false, ended_ms: 1000 });
+    expect(calls.get('tu1')).toEqual({ failed: false, ended_ms: 1000, stopped: false });
     expect(owners.get('t1'), 'and the link is kept for a row that lacks its own').toBe('tu1');
   });
 
@@ -64,5 +64,47 @@ describe('the outcome join', () => {
     ]);
 
     expect(map.calls.get('tu3')?.failed, 'only failed paints the cross').toBe(false);
+  });
+
+  it('names a stopped task even when its launch is not on the page', () => {
+    // The record holds the newest turns only, so a task launched earlier in
+    // the session has no owner to resolve. The stop's own task id is enough to
+    // stop the strip counting it, and no call outcome is invented without one.
+    const map = outcomesFrom([
+      {
+        messages: [
+          {
+            type: 'assistant',
+            message: {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'call_stop',
+                  name: 'TaskStop',
+                  input: { task_id: 't-long' },
+                },
+              ],
+            },
+          },
+          {
+            type: 'user',
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'call_stop',
+                  content: JSON.stringify({ message: 'Successfully stopped task: t-long' }),
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(map.stoppedTasks.has('t-long'), 'the stop names the task it ended').toBe(true);
+    expect(map.calls.size, 'and no call outcome is invented without a link').toBe(0);
   });
 });

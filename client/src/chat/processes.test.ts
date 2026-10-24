@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { BackgroundTask, ProcessSnapshot } from '../session/wire';
+import { outcomesFrom } from './outcomes';
 import { Processes } from './processes.svelte';
 
 const walk = (processes: ProcessSnapshot['processes'], tick = 0): ProcessSnapshot => ({
@@ -143,8 +144,9 @@ describe('the batch rows', () => {
 
     // The verdict arrives a sync later and lands on the row already held.
     store.sync(walk([]), [], true, {
-      calls: new Map([['tu-1', { failed: true, ended_ms: 1_700_000_000_000 }]]),
+      calls: new Map([['tu-1', { failed: true, ended_ms: 1_700_000_000_000, stopped: false }]]),
       owners: new Map(),
+      stoppedTasks: new Set(),
     });
     expect(store.rows()[0], 'the late outcome reaches the settled row').toMatchObject({
       failed: true,
@@ -241,11 +243,180 @@ describe('the batch rows', () => {
     store.sync(walk([]), [registryRow({ tool_use_id: null })], true, {
       calls: new Map(),
       owners: new Map([['t-1', 'tu-linked']]),
+      stoppedTasks: new Set(),
     });
 
     const rows = store.rows();
 
     expect(rows[0]?.tool_use_id, 'the link fills the row').toBe('tu-linked');
+  });
+
+  it('stops counting a task the TaskStop tool stopped, which the registry still lists', () => {
+    // The tool path emits no `background_tasks_changed` and no task frame:
+    // on the live seat (4b35ed0e) the strip read `1 running` over a bash with
+    // no process behind it minutes after `TaskStop` answered "Successfully
+    // stopped task". The conversation's own stop is the only thing that says
+    // the task ended, and the launch result's sentence is the only link from
+    // that task id to the call - no `task_started` fired.
+    const LAUNCH = 'call_33a76dda7de84b5698ade3cafe64ddce';
+    const STOP = 'call_6bab1bdfaa0c4c7785c2774040aa92a5';
+    const TASK = 'bwhz36mlt';
+    const command = 'nice -n 10 just check-feature-configs > /tmp/gate.log 2>&1';
+    const launch = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: LAUNCH,
+            name: 'Bash',
+            input: { command, description: 'Run the feature-config gate', run_in_background: true },
+          },
+        ],
+      },
+    };
+    const launched = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: LAUNCH,
+            is_error: false,
+            content: `Command running in background with ID: ${TASK}. Output is being written to: /tmp/${TASK}.output.`,
+          },
+        ],
+      },
+    };
+    const stop = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: STOP, name: 'TaskStop', input: { task_id: TASK } }],
+      },
+    };
+    const stopped = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: STOP,
+            content: JSON.stringify({
+              message: `Successfully stopped task: ${TASK} (${command})`,
+              task_id: TASK,
+              task_type: 'local_bash',
+              command,
+            }),
+          },
+        ],
+      },
+    };
+    const row = registryRow({
+      task_id: TASK,
+      description: 'Run the feature-config gate',
+      command,
+      tool_use_id: null,
+    });
+    const other = registryRow({ task_id: 't-other', description: 'Watch the release' });
+    // Both calls' processes are in the walk, and stay there after the stop:
+    // a stopped row must not adopt the process its command names, while a
+    // live one beside it still does.
+    const scanned = walk([
+      { pid: 8842, parent_pid: 1, name: 'nice', command, memory_bytes: 512 },
+      {
+        pid: 9001,
+        parent_pid: 1,
+        name: 'cargo',
+        command: 'cargo nextest run',
+        memory_bytes: 900,
+      },
+    ]);
+    const rowOf = (store: Processes, task: string) =>
+      store.rows().find((held) => held.key === `task:${task}`);
+
+    const store = new Processes();
+    store.sync(scanned, [row, other], true, outcomesFrom([{ messages: [launch, launched] }]));
+    expect(store.running(), 'the registry is the only voice before the stop').toBe(2);
+    expect(rowOf(store, TASK), 'and the running row adopts its process').toMatchObject({
+      pid: 8842,
+      memory_bytes: 512,
+      settled: false,
+    });
+
+    store.sync(
+      scanned,
+      [row, other],
+      true,
+      outcomesFrom([{ messages: [launch, launched, stop, stopped] }]),
+    );
+    expect(store.running(), 'and the conversation ends the one it stopped').toBe(1);
+    expect(store.settledCount(), 'the row it draws settled is counted as one').toBe(1);
+    expect(rowOf(store, TASK), 'the stopped row is kept, saying what happened').toMatchObject({
+      settled: true,
+      failed: false,
+      tool_use_id: LAUNCH,
+      memory_bytes: null,
+      pid: null,
+    });
+    expect(rowOf(store, 't-other'), 'a live row beside it still adopts its own').toMatchObject({
+      settled: false,
+      pid: 9001,
+      memory_bytes: 900,
+    });
+    expect(store.totalBytes(), 'and the stopped family no longer counts').toBe(900);
+  });
+
+  it('stops counting a task whose launch left the page window', () => {
+    // The record holds the newest turns only, so a dev server started earlier
+    // in the session has no launch result in them and no owner resolves its
+    // call. The stop's own task id is what settles the row.
+    const TASK = 'blong0001';
+    const STOP = 'call_stop_long';
+    const stop = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: STOP, name: 'TaskStop', input: { task_id: TASK } }],
+      },
+    };
+    const stopped = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: STOP,
+            content: JSON.stringify({
+              message: `Successfully stopped task: ${TASK}`,
+              task_id: TASK,
+            }),
+          },
+        ],
+      },
+    };
+    const row = registryRow({
+      task_id: TASK,
+      description: 'Serve the dev stack',
+      command: 'vite',
+      tool_use_id: null,
+    });
+
+    const store = new Processes();
+    store.sync(walk([]), [row], true, outcomesFrom([]));
+    expect(store.running(), 'the registry is the only voice before the stop').toBe(1);
+
+    store.sync(walk([]), [row], true, outcomesFrom([{ messages: [stop, stopped] }]));
+    expect(store.running(), "the stop's own task id ends a task the page cannot link").toBe(0);
+    expect(store.settledCount(), 'and the row it draws settled is counted').toBe(1);
+    expect(store.rows()[0], 'the row is kept, with no call to reveal').toMatchObject({
+      settled: true,
+      tool_use_id: null,
+    });
   });
 
   it("counts the matched process's whole family, not its own line", () => {
