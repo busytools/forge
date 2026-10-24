@@ -34,6 +34,12 @@ function base(): Promise<HighlighterCore> {
     themes: [githubDark, HLJS_GITHUB_DARK],
     langs: [],
     engine: createOnigurumaEngine(import('shiki/wasm')),
+  }).catch((why: unknown) => {
+    // **A failed engine load is not the session's answer.** The grammar map
+    // beside this clears a rejected entry the same way; a rejection kept here
+    // would leave every code panel plain until restart.
+    shared = null;
+    throw why;
   });
   return shared;
 }

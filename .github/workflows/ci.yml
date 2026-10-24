@@ -267,6 +267,11 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run build
+      # The highlighter's Oniguruma engine ships as a wasm chunk, and a build
+      # that lost it draws every code panel plain. The check reads the
+      # reference out of the highlight chunk; a loose `wasm-*.js` glob would
+      # pass on the unrelated chunk the build also emits.
+      - run: python3 ../scripts/check_client_wasm.py dist
       - run: npm run typecheck:markup
       - run: npm run typecheck
       - run: npm test
