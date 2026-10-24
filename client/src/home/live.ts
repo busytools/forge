@@ -13,7 +13,10 @@
  *
  * `accounts_changed` is the exception, and it is a replace rather than a
  * fold: the frame carries the whole pool field, so the client draws what the
- * server states without asking for an encode.
+ * server states without asking for an encode - **when the move is usage
+ * only.** The loading state, the settled flag, the listener and a probe
+ * failure all feed the project rows' `would_bind` and chip, so a change in
+ * any of those still asks for the snapshot that refreshes them.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
@@ -26,6 +29,7 @@ import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
 import {
   accountsPayload,
   homeFrom,
+  poolFactsChanged,
   tasksChanged,
   type AccountsWire,
   type HomeWire,
@@ -144,15 +148,19 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   /** The tasks each project last announced, so an unchanged set is no read. */
   const lastTasks = new Map<string, string>();
   /**
-   * The pool the last `accounts_changed` carried, waiting for the read in
-   * flight to land.
+   * The newest pool a frame carried, kept across publishes.
    *
-   * **The snapshot in hand was encoded before the frame**, so applying the
-   * pool first would be undone by the answer; applying it after the answer
-   * keeps the newer state. It is also where a frame lands while the first
-   * snapshot is still owed.
+   * **A reused snapshot is not a newer pool.** An unsubjected `error` frame
+   * re-draws what the store holds, and an in-flight read's answer was encoded
+   * before the frame; either would put the last snapshot's pool back on the
+   * page. So the folded pool rides every publish until a FRESH home snapshot
+   * lands.
    */
-  let pendingAccounts: AccountsWire | null = null;
+  let folded: AccountsWire | null = null;
+  /** Whether that fold arrived while a read (or the first snapshot) was owed. */
+  let foldedDuringRead = false;
+  /** The pool the drawn view holds, which a fresh frame is compared against. */
+  let drawnPool: AccountsWire | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
@@ -177,6 +185,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
    */
   function read(pool: AccountsWire | null = null): void {
     if (held === null) return;
+    drawnPool = null;
     const state = held.state();
     if (state.kind === 'refused') {
       view.set({ wire: null, refused: state.why, failed: null, report });
@@ -201,6 +210,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     try {
       const wire = homeFrom(data as unknown as HomeWire);
       if (pool !== null) wire.accounts = pool;
+      drawnPool = wire.accounts;
       view.set({ wire, refused: null, failed: null, report });
     } catch (why) {
       view.set({
@@ -243,11 +253,16 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         }
         if (message.kind === 'error' || message.subject === 'home') {
           reading = false;
-          // A pool that arrived mid-read is newer than the snapshot in hand,
-          // which was encoded before it.
-          const pool = pendingAccounts;
-          pendingAccounts = null;
-          read(pool);
+          if (message.kind === 'snapshot' && message.subject === 'home') {
+            // A fresh snapshot states the pool itself. A fold that arrived
+            // while this read was in flight is newer than the answer, so it
+            // stays; any older fold goes.
+            if (!foldedDuringRead) folded = null;
+            foldedDuringRead = false;
+          }
+          // An error re-draws what the store holds, and that pool may be a
+          // snapshot older than the fold.
+          read(folded);
           // The answer just landed was encoded before whatever arrived while
           // it was in flight, so that update is spent here rather than lost.
           if (stale) {
@@ -264,9 +279,18 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       // asked for.
       const pool = accountsPayload(message.update);
       if (pool !== null) {
-        if (reading || held?.snapshot() === null) pendingAccounts = pool;
-        else read(pool);
-        return;
+        // **Usage-only moves fold; anything a project row or the card is read
+        // from keeps the read.** `would_bind` and the row's chip come off the
+        // pool's loading state and probe failures, so a bail, a heal or a
+        // cooling has to come back with a snapshot.
+        if (drawnPool !== null && poolFactsChanged(drawnPool, pool)) {
+          // Falls through to the read this update asks for.
+        } else {
+          folded = pool;
+          if (reading || held?.snapshot() === null) foldedDuringRead = true;
+          else read(pool);
+          return;
+        }
       }
       // The line is kept BEFORE the read is asked for: the read that follows
       // is what publishes it, and a report dropped here would leave the page
@@ -294,9 +318,9 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       if (next !== 'open') {
         reading = false;
         stale = false;
-        // The reconnect's own snapshot is newer than a pool held from before
-        // the drop.
-        pendingAccounts = null;
+        // No read is owed across the drop, so the next snapshot is fresh and
+        // replaces the fold; the page keeps drawing the fold until it lands.
+        foldedDuringRead = false;
       }
     });
   }

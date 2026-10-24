@@ -436,6 +436,40 @@ export function accountsPayload(update: SessionUpdate): AccountsWire | null {
   return accountsFrom(payload);
 }
 
+/**
+ * Whether two pools differ in the facts a project row, the band card or the
+ * listener's state are read from - the usage rows aside.
+ *
+ * **Why the fold is conditional.** `HomeWire.projects[].would_bind` and its
+ * `chip` derive from the pool, so a loading change, a settle or a probe
+ * failure moves them; only a read refreshes those. The usage rows are the
+ * drift the fold exists to stop paying for, and no row or card reads them
+ * beyond the rail chip's figures.
+ *
+ * `retry_after` is left out on purpose: it is a countdown that shrinks on
+ * every read and no view draws it, so comparing it would turn every frame
+ * during a backoff into a read.
+ */
+export function poolFactsChanged(before: AccountsWire, after: AccountsWire): boolean {
+  if (before.all_loaded !== after.all_loaded) return true;
+  if (
+    before.gateway.ready !== after.gateway.ready ||
+    before.gateway.port !== after.gateway.port ||
+    before.gateway.bind_error !== after.gateway.bind_error
+  ) {
+    return true;
+  }
+  if (before.loading.length !== after.loading.length) return true;
+  for (let at = 0; at < before.loading.length; at += 1) {
+    const was = before.loading[at];
+    const now = after.loading[at];
+    if (was === undefined || now === undefined) return true;
+    if (was.display_name !== now.display_name || was.state !== now.state) return true;
+    if (JSON.stringify(was.last_error) !== JSON.stringify(now.last_error)) return true;
+  }
+  return false;
+}
+
 export interface DictateModel {
   role: string;
   file: string;
