@@ -225,7 +225,8 @@
       }
     ],
     "cursor": null,
-    "compaction_count": 0
+    "compaction_count": 0,
+    "handoff": null
   },
   "slash_commands": [],
   "subagents": [],

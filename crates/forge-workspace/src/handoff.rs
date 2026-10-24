@@ -843,6 +843,28 @@ impl crate::Workspace {
         }
     }
 
+    /// The seat's newest handoff record, read from the store.
+    ///
+    /// This is what a view attaching after the swap - or after a forge
+    /// restart - draws the row from, where the transport holds no live copy.
+    pub fn latest_handoff_for(&self, slot: &SessionSlot) -> Option<HandoffRecord> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        match crate::store::handoffs::latest_for_slot(db, slot) {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::handoff",
+                    event_name = "handoff_record_unreadable",
+                    slot = %slot.display(),
+                    %error,
+                    "the seat's newest handoff could not be read",
+                );
+                None
+            }
+        }
+    }
+
     /// The handoff `occupant` arrived by, if it arrived by one.
     pub(crate) fn handoff_for_successor(
         &self,

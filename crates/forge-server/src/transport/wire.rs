@@ -589,6 +589,15 @@ pub struct ConversationWire {
     /// is the conversation's first page: there is nothing above it.
     pub cursor: Option<String>,
     pub compaction_count: u32,
+    /// The row between the two conversations, when this seat's occupant
+    /// arrived by a handoff.
+    ///
+    /// It crosses here rather than as a turn so a client attaching after
+    /// the swap draws the same row a client that watched it draw: the row
+    /// describes the join, and the transcript the successor writes never
+    /// contains it.
+    #[serde(default)]
+    pub handoff: Option<forge_primitives::HandoffRecord>,
 }
 
 /// The review reads for one branch, each carrying its own answer.
@@ -2027,7 +2036,7 @@ async fn session(
     // itself: a mailbox seat's structured records made one page 70 MB (#2374).
     let cap = surface.tool_record_cap_bytes();
     let first_frame = surface.first_frame_cap_bytes();
-    let (turns, cursor, compaction_count, page_ms, covered) = match conversation {
+    let (turns, cursor, compaction_count, page_ms, covered, handoff) = match conversation {
         Some(held) => {
             let seat = slot.clone();
             let capped = seat.clone();
@@ -2037,7 +2046,7 @@ async fn session(
                 // (#2420): a client seeds its conversation from this answer
                 // instead of asking `more` for the same page, and the handle
                 // is what names the history above it.
-                let (mut page, count, covered) = held.read(|held| {
+                let (mut page, count, covered, handoff) = held.read(|held| {
                     let mut page = page_within(
                         held.messages(),
                         held.rendered(),
@@ -2048,7 +2057,7 @@ async fn session(
                         Some((cap, &capped)),
                     );
                     floor_cursor(&mut page, held.dropped());
-                    (page, held.compaction_count(), held.watermark())
+                    (page, held.compaction_count(), held.watermark(), held.handoff().cloned())
                 });
                 // **A page cut to a byte budget was capped as it was
                 // measured**, turn by turn, so this pass would walk every
@@ -2057,7 +2066,14 @@ async fn session(
                 if first_frame == usize::MAX {
                     cap_tool_records(&mut page.turns, cap, &capped);
                 }
-                (page.turns, page.cursor, count, at.elapsed().as_secs_f64() * 1000.0, covered)
+                (
+                    page.turns,
+                    page.cursor,
+                    count,
+                    at.elapsed().as_secs_f64() * 1000.0,
+                    covered,
+                    handoff,
+                )
             })
             .await
             .unwrap_or_else(|error| {
@@ -2067,11 +2083,19 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), None, 0, 0.0, 0)
+                (Vec::new(), None, 0, 0.0, 0, None)
             })
         }
-        None => (Vec::new(), None, 0, 0.0, 0),
+        // A seat this transport holds nothing for: the store's newest
+        // handoff is read, so a row that outlived a forge restart still
+        // draws for the client that attaches after it.
+        None => (Vec::new(), None, 0, 0.0, 0, surface.handoff_record(slot)),
     };
+    // Only the occupant the record names draws it: a `/new` or a resume
+    // under the same seat leaves a record describing a session this record
+    // does not hold.
+    let handoff = handoff
+        .filter(|record| header.session_id.as_ref().is_some_and(|id| record.to == id.as_str()));
     timings.page_ms = page_ms;
     // **The answer's number is the copy's own**, not catch_up's pass: a seal
     // can reseed the copy after that check, and a pre-seal number would have
@@ -2173,7 +2197,7 @@ async fn session(
         monitors: surface.monitors(slot),
         pending_ask: asks.first().map(PendingAskWire::from),
         pending_asks: asks.iter().map(PendingAskWire::from).collect(),
-        conversation: ConversationWire { turns, cursor, compaction_count },
+        conversation: ConversationWire { turns, cursor, compaction_count, handoff },
         header: SessionHeaderWire {
             session_id: header.session_id.clone(),
             seq,

@@ -413,6 +413,12 @@ impl ViewSurface {
     /// A view keeps its own copy in session state. The verb's other
     /// callers are the surface's own tests and the measurement harness, which
     /// is what a surface test is for rather than a sign it is unused.
+    /// The seat's newest handoff record, for a record built where the
+    /// transport holds no live copy of the conversation.
+    pub fn handoff_record(&self, slot: &SessionSlot) -> Option<forge_primitives::HandoffRecord> {
+        self.workspace.latest_handoff_for(slot)
+    }
+
     pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
         let Some((session_id, cwd)) = self.transcript_place(slot, cwd_raw) else {
             return ConversationHistory::default();
