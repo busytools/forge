@@ -861,7 +861,9 @@
         "ready"
       ],
       "/data/accounts/loading[]": [
+        "at_cap",
         "auth",
+        "cooling",
         "display_name",
         "last_error",
         "retry_after",
