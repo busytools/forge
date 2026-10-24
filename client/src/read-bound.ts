@@ -50,9 +50,10 @@ export const READ_BOUND_MS = 5_000;
  * How long an unanswered read waits between checks after its one pass.
  *
  * Sixty is more than three times the slowest whole-record answer measured on
- * the link behind #2561 (2-18 s), so a real answer is never beaten by a retry,
- * and a read that is genuinely wedged costs one whole record a minute - a
- * rounding error beside the storm it replaces.
+ * the link behind #2561 (2-18 s), so the beat never lands on an answer still
+ * travelling - the one pass at five seconds can - and a read that is genuinely
+ * wedged costs one whole record a minute, a rounding error beside the storm it
+ * replaces.
  *
  * **The trade is recovery time for a lost pass.** A lost answer is still found
  * by the pass at five seconds; if that pass is lost too, the next check is up
