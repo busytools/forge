@@ -325,6 +325,11 @@ pub enum Command {
         key: SessionSlot,
         cwd: String,
         launch_settings: SessionLaunchSettings,
+        /// The id the new occupant must run under. `None` mints one, which
+        /// is what `/new` wants; a handoff supplies the id it already
+        /// recorded, because its row names the pair before the spawn.
+        #[serde(default)]
+        session_id: Option<String>,
     },
     ResumeSession {
         key: SessionSlot,

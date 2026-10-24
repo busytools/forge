@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::session_slot::SessionSlot;
 
 /// Why a session handed over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffReason {
     /// The seat's context fill crossed its configured share of the window.
@@ -14,6 +14,7 @@ pub enum HandoffReason {
     /// A compaction fired before a turn boundary could carry the handoff.
     Compaction,
     /// A person, or the session itself, asked for one.
+    #[default]
     Manual,
 }
 
@@ -56,6 +57,23 @@ pub struct HandoffSuccessor {
     pub questions: u32,
     /// User messages that corrected or repeated an instruction.
     pub corrections: u32,
+}
+
+/// The working tree as the brief reads it, from three cheap git probes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffGitState {
+    /// The current branch, `None` outside a repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// `HEAD` in short form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// `git status --porcelain` lines.
+    #[serde(default)]
+    pub dirty: Vec<String>,
+    /// `git diff --stat` lines.
+    #[serde(default)]
+    pub diff: Vec<String>,
 }
 
 /// One handoff, as the row draws it and as the store keeps it for tuning.

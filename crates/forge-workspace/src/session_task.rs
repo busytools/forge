@@ -20,6 +20,7 @@ use tracing::Instrument;
 
 use crate::SessionSlot;
 use crate::domain_session::{DomainSession, PendingAutoContinue};
+use crate::handoff;
 use crate::protocol::{
     Command, NoticeSeverity, PendingInteractionSlot, PromptSource, SessionUpdate,
 };
@@ -255,10 +256,15 @@ impl SessionTask {
         }
         // First, update DomainSession in-place.
         let nudge_armed;
+        // Whether this event closed a turn normally, which is the one
+        // boundary a handoff may act on. Captured here because the domain
+        // lock is released before the handoff runs.
+        let turn_completed;
         {
             let mut guard = self.domain.lock();
             let moved = apply_event_to_domain(&mut guard, &event);
             nudge_armed = moved.nudge;
+            turn_completed = matches!(moved.turn_ended, Some(MovedTurnEnd::Complete { .. }));
             // The two sets that move whole are announced from the scope the
             // fold wrote in, so what goes out is what the core now holds -
             // and only when the fold moved it.
@@ -316,6 +322,11 @@ impl SessionTask {
                     }
                 }
             }
+        }
+        // A handoff acts only on a turn boundary: never mid-turn, and never
+        // on a cancelled or transport-died one.
+        if turn_completed {
+            self.after_turn_ended();
         }
 
         // Mirror Connected into the project catalog so the Projects
@@ -515,6 +526,7 @@ impl SessionTask {
                         key: key.clone(),
                         overrides: crate::dictate::DictateOverrides::default(),
                     });
+                    self.deliver_pending_brief(&key, &session_id);
                 } else {
                     self.connected_once = true;
                     // When the connecting session is a project's lead and
@@ -648,6 +660,10 @@ impl SessionTask {
                         &self.key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
+                    // A handoff whose successor never came up has no
+                    // occupant to give its brief to; the row stays and
+                    // `/resume <old-id>` is the recovery.
+                    workspace.clear_pending_brief(&self.key);
                     // Worker async spawn failure: classify the
                     // failure, dispatch a typed
                     // WorkerSpawnFailedNotice envelope to the lead's
@@ -830,6 +846,9 @@ impl SessionTask {
                 self.emit(SessionUpdate::McpSnapshot { key: self.key.clone(), servers, error });
             }
             AgentEvent::SdkMessage { msg, .. } => {
+                // The judgment turn is forge's own prompt, so the last
+                // assistant text before it ends is the half it wrote.
+                self.capture_judgment(&msg);
                 // A rate-limit window that is not `allowed` proves the
                 // bound account exhausted: report it so the gateway
                 // cools the account down and drops this session's
@@ -1022,7 +1041,7 @@ impl SessionTask {
     /// doing, not a transcript of everything it printed.
     const CALL_OUTPUT_MAX_LINES: usize = 12;
 
-    fn execute_command(&self, cmd: Command) {
+    fn execute_command(&mut self, cmd: Command) {
         // A prompt's queued row is recorded here, where its id is minted (or
         // is already the caller's) and its source is known: the lifecycle
         // frames that follow name only the id and the state, so this is the
@@ -1192,15 +1211,23 @@ impl SessionTask {
                 };
                 self.emit(SessionUpdate::CallOutput { key: self.key.clone(), call_id, output });
             }
+            // Answered by this task's own state machine: a handoff asks for
+            // its brief in a turn of its own and only swaps at a turn end.
+            Command::Handoff { key: _, brief } => {
+                self.request_handoff(brief);
+            }
             other => {
                 let sid = self.session_id_string();
                 // `/new` starts under an id minted here, so the row this
                 // session belongs to names the new session from the moment
                 // it starts rather than the one it replaces.
-                let fresh = if matches!(other, Command::NewSession { .. }) {
-                    self.fresh_session_id()
-                } else {
-                    None
+                // A handoff supplies the id it wrote into its row; `/new`
+                // mints one here.
+                let fresh = match &other {
+                    Command::NewSession { session_id, .. } => {
+                        session_id.clone().or_else(|| self.fresh_session_id())
+                    }
+                    _ => None,
                 };
                 // The id the respawned child runs under: the one minted
                 // above for `/new`, the transcript's own for `/resume`.
@@ -1356,6 +1383,175 @@ impl SessionTask {
     /// row to record against, which leaves the CLI to pick its own id.
     fn fresh_session_id(&self) -> Option<String> {
         Some(self.workspace.upgrade()?.fresh_session_id_for(&self.key))
+    }
+
+    /// Give a successor the brief its swap wrote, as its first turn. The row
+    /// went out before this connect, so the brief lands below it.
+    fn deliver_pending_brief(&mut self, key: &SessionSlot, occupant: &str) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let Some(pending) = workspace.take_pending_brief(key) else { return };
+        if pending.to != occupant {
+            tracing::debug!(
+                target: "forge_workspace::session_task",
+                slot = %key.display(),
+                written_for = %pending.to,
+                occupant = %occupant,
+                "the handoff brief was written for another occupant; it is not given",
+            );
+            return;
+        }
+        let uuid = forge_sdk::request_id::next_forged_prompt_id();
+        if let Err(error) = workspace.dispatch_forged_prompt_under(key, pending.text, uuid) {
+            tracing::warn!(
+                target: "forge_workspace::session_task",
+                slot = %key.display(),
+                %error,
+                "the handoff brief could not be delivered to its successor",
+            );
+        }
+    }
+
+    /// A handoff was asked for. A turn already running means it waits for
+    /// that turn to end: a handoff is never injected into one.
+    fn request_handoff(&mut self, brief: Option<String>) {
+        let mut domain = self.domain.lock();
+        if domain.handoff.in_progress() {
+            tracing::debug!(
+                target: "forge_workspace::session_task",
+                slot = %self.key.display(),
+                "a handoff is already running; this request is dropped",
+            );
+            return;
+        }
+        if domain.turn_in_flight() {
+            domain.handoff.parked = Some(brief.map_or(
+                crate::domain_session::ParkedHandoff::Ask,
+                crate::domain_session::ParkedHandoff::Supplied,
+            ));
+            return;
+        }
+        drop(domain);
+        self.begin_handoff(brief);
+    }
+
+    /// Start the handoff's own turn when the caller supplied no judgment
+    /// half, or swap straight away when it did.
+    fn begin_handoff(&mut self, supplied: Option<String>) {
+        if let Some(text) = supplied {
+            self.swap(forge_primitives::HandoffReason::Manual, handoff::parse_judgment(&text));
+            return;
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        self.domain.lock().handoff.awaiting = true;
+        let uuid = forge_sdk::request_id::next_forged_prompt_id();
+        let text = handoff::JUDGMENT_PROMPT.to_owned();
+        if let Err(error) = workspace.dispatch_forged_prompt_under(&self.key, text, uuid) {
+            self.domain.lock().handoff = crate::domain_session::HandoffState::default();
+            self.emit(SessionUpdate::TurnError {
+                key: self.key.clone(),
+                message: format!("the handoff could not ask for its brief: {error}"),
+                class: None,
+                terminal_reason: None,
+            });
+        }
+    }
+
+    /// Hold the assistant text of a running judgment turn.
+    fn capture_judgment(&self, message: &forge_primitives::Message) {
+        let forge_primitives::Message::Assistant { message: envelope, .. } = message else {
+            return;
+        };
+        let mut domain = self.domain.lock();
+        if !domain.handoff.awaiting {
+            return;
+        }
+        if let Some(text) = handoff::assistant_text(&envelope.content) {
+            domain.handoff.judgment = Some(text);
+        }
+    }
+
+    /// Act on a turn that ended normally: finish a running handoff, or start
+    /// one that arrived while the turn was running.
+    fn after_turn_ended(&mut self) {
+        let (awaiting, parked, reason) = {
+            let mut domain = self.domain.lock();
+            let awaiting = domain.handoff.awaiting;
+            let parked = if awaiting { None } else { domain.handoff.parked.take() };
+            (awaiting, parked, domain.handoff.reason.unwrap_or_default())
+        };
+        if awaiting {
+            let judgment = self.domain.lock().handoff.judgment.take().unwrap_or_default();
+            self.swap(reason, handoff::parse_judgment(&judgment));
+            return;
+        }
+        if let Some(parked) = parked {
+            self.begin_handoff(parked.supplied());
+        }
+    }
+
+    /// Replace this seat's occupant with a new session that continues from
+    /// the brief, on the same order `/new` uses.
+    fn swap(
+        &mut self,
+        reason: forge_primitives::HandoffReason,
+        judgment: Vec<forge_primitives::HandoffSection>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let (from, model, permission_mode) = {
+            let mut domain = self.domain.lock();
+            domain.handoff = crate::domain_session::HandoffState::default();
+            let from = domain.session_id.as_ref().map(std::string::ToString::to_string);
+            let model = domain.current_model.as_ref().map(|model| model.display_name_short.clone());
+            let mode = domain
+                .observed_permission_mode
+                .or(domain.configured_permission_mode)
+                .map(|mode| mode.as_wire().to_owned());
+            (from, model, mode)
+        };
+        let Some(from) = from else {
+            self.emit(SessionUpdate::Notice {
+                key: self.key.clone(),
+                severity: NoticeSeverity::Error,
+                text: "a handoff needs a connected session; this seat has none yet".to_owned(),
+            });
+            return;
+        };
+        let compaction_count = self.conversation.as_ref().map_or(0, |(_, count)| *count);
+        let policy = workspace.handoff_policy_for(&self.key);
+        let cwd = workspace.cwd_for_session(&self.key).unwrap_or_default();
+        let to = workspace.fresh_session_id_for(&self.key);
+        // The base settings alone: the NewSession arm re-delivers the
+        // charter, rebuilds the lead's blocks and stamps the new occupant's
+        // gateway binding, exactly as it does for `/new`.
+        let launch_settings = workspace.launch_settings_for(&self.key, &cwd);
+        let charter = workspace.stored_charter_for(&self.key);
+        let role = if self.key.is_lead() {
+            handoff::Role::Lead
+        } else {
+            handoff::Role::Worker {
+                charter_opening: charter
+                    .as_deref()
+                    .and_then(|charter| charter.lines().next())
+                    .map(|line| line.chars().take(200).collect()),
+            }
+        };
+        let request = handoff::SwapRequest {
+            slot: self.key.clone(),
+            from,
+            to,
+            reason,
+            fill: None,
+            compaction_count,
+            at_percent: policy.at_percent,
+            role,
+            account: self.handle.display_name(),
+            model,
+            permission_mode,
+            judgment,
+            cwd,
+            launch_settings,
+        };
+        workspace.start_handoff(request);
     }
 
     /// Drain everything parked for this session's slot on its first
@@ -1741,7 +1937,7 @@ pub(crate) fn execute_command_via_handle(
             };
             handle.set_model(sid.to_owned(), model)
         }
-        Command::NewSession { key: _, cwd, launch_settings } => {
+        Command::NewSession { key: _, cwd, launch_settings, .. } => {
             handle.new_session(new_session_id, cwd, launch_settings)
         }
         Command::ResumeSession { key: _, session_id, cwd, launch_settings } => {
@@ -2267,6 +2463,10 @@ fn clear_runtime_identity(domain: &mut DomainSession) {
     domain.current_model = None;
     domain.mcp_servers = None;
     domain.context_usage = None;
+    // A handoff belongs to the occupant that was running it: its reply, its
+    // parked request and its judgment describe a conversation the new one
+    // does not carry.
+    domain.handoff = crate::domain_session::HandoffState::default();
     domain.monitors.clear();
 }
 
@@ -2925,6 +3125,170 @@ mod tests {
         (task, cmds)
     }
 
+    /// A handoff swaps under the id its row names, leaves the brief where
+    /// the successor takes it, and dispatches a spawn under that same id -
+    /// the pair on the row and the occupant that runs are one.
+    #[tokio::test]
+    async fn a_handoff_swaps_under_the_id_its_row_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+
+        task.execute_command(Command::Handoff {
+            key: slot.clone(),
+            brief: Some("Now: the cut is half in.".to_owned()),
+        });
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+
+        assert_eq!(record.from, "old-session-id", "the row names the session that handed over");
+        assert_eq!(
+            record.reason,
+            forge_primitives::HandoffReason::Manual,
+            "a supplied brief is a handoff asked for",
+        );
+        assert!(
+            record.brief.ground_truth.iter().any(|section| section.label == "record"),
+            "the ground truth is built at the swap: {:?}",
+            record.brief.ground_truth,
+        );
+        assert_eq!(
+            record.brief.judgment.first().map(|section| section.label.as_str()),
+            Some("Now"),
+            "the caller's brief is the judgment half",
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let spawn = dispatched.iter().find_map(|command| match command {
+            Command::NewSession { session_id, .. } => Some(session_id.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            spawn,
+            Some(Some(record.to.clone())),
+            "the spawn runs under the id the row names",
+        );
+
+        let pending =
+            workspace.take_pending_brief(&slot).expect("the brief waits for its successor");
+        assert_eq!(pending.to, record.to, "and it names the same occupant");
+        assert!(pending.text.starts_with("HANDOFF - "), "the successor is given the brief");
+    }
+
+    /// A judgment turn that ends swaps the seat, and the row's judgment is
+    /// the reply that turn wrote.
+    #[tokio::test]
+    async fn the_judgment_turn_swaps_when_it_ends() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        {
+            let mut domain = task.domain.lock();
+            domain.handoff.awaiting = true;
+            domain.handoff.judgment = Some("Next: the client row.".to_owned());
+        }
+
+        task.after_turn_ended();
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+        assert_eq!(
+            record.brief.judgment.first().map(|section| section.label.as_str()),
+            Some("Next"),
+            "the judgment is the reply, parsed by its heading",
+        );
+    }
+
+    /// A handoff asked for while a turn runs sends nothing into that turn:
+    /// it waits, and the judgment prompt goes out as its own turn after.
+    #[test]
+    fn a_handoff_asked_mid_turn_waits_for_the_turn_to_end() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        task.domain.lock().turn_pending = true;
+
+        task.execute_command(Command::Handoff { key: slot.clone(), brief: None });
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "a running turn is never handed a prompt in the middle",
+        );
+        assert!(
+            task.domain.lock().handoff.parked.is_some(),
+            "the request waits for the boundary instead",
+        );
+
+        task.domain.lock().turn_pending = false;
+        task.after_turn_ended();
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let Some(Command::PromptUnder { text, source, .. }) = dispatched.first() else {
+            panic!("the judgment prompt was never sent: {dispatched:?}");
+        };
+        assert_eq!(text, crate::handoff::JUDGMENT_PROMPT, "forge's own text, which names no skill");
+        assert_eq!(*source, PromptSource::Forge, "and it is forge's turn, not the user's");
+        assert!(task.domain.lock().handoff.awaiting, "the reply is waited for");
+    }
+
+    /// The brief is given only to the occupant it was written for: a connect
+    /// under any other id is a different session, and the brief describes a
+    /// history it does not carry.
+    #[test]
+    fn the_brief_goes_to_the_occupant_it_was_written_for() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+
+        let brief = || crate::handoff::PendingBrief {
+            to: "new-id".to_owned(),
+            text: "HANDOFF - 9cfe315c -> 4b21e0a7".to_owned(),
+        };
+        workspace.set_pending_brief(&slot, brief());
+        task.deliver_pending_brief(&slot, "someone-else");
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "another occupant is not given a brief written for this one",
+        );
+
+        workspace.set_pending_brief(&slot, brief());
+        task.deliver_pending_brief(&slot, "new-id");
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let Some(Command::PromptUnder { text, source, .. }) = dispatched.first() else {
+            panic!("the brief was never delivered: {dispatched:?}");
+        };
+        assert!(text.starts_with("HANDOFF - "), "the successor is given the brief itself");
+        assert_eq!(*source, PromptSource::Forge, "as forge's own first turn");
+    }
+
     /// A worker's mission lives in its conversation, so `/new` has to
     /// re-deliver the charter the store holds for its slot. A view
     /// builds the launch settings for a `/new` and knows nothing of the
@@ -2941,12 +3305,13 @@ mod tests {
         );
         let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
         workspace.seed_test_session_charter(&slot, "mind the queues", false);
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         task.execute_command(Command::NewSession {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
@@ -2990,7 +3355,7 @@ mod tests {
             },
         );
         workspace.gateway.bindings.bind("Busytools", "forge", "spawn-id", account.clone());
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         let stamped_base_url = |launch_settings: &serde_json::Value| -> Option<String> {
             launch_settings
@@ -3021,6 +3386,7 @@ mod tests {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession {
@@ -3111,12 +3477,13 @@ mod tests {
         );
         let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
         workspace.seed_test_session_charter(&slot, "review the diff", false);
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         task.execute_command(Command::NewSession {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
@@ -3147,12 +3514,13 @@ mod tests {
         );
         let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
         workspace.seed_test_session_charter(&slot, "review the diff", true);
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         task.execute_command(Command::NewSession {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
@@ -3179,12 +3547,13 @@ mod tests {
     fn a_respawned_lead_keeps_its_own_surface() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
         let slot = SessionSlot::lead("TestOrg", "forge");
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         task.execute_command(Command::NewSession {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
@@ -6637,7 +7006,7 @@ provider = "anthropic"
         });
         while update_rx.try_recv().is_ok() {}
 
-        let read = |task: &SessionTask| {
+        let read = |task: &mut SessionTask| {
             task.execute_command(crate::protocol::Command::ReadCallOutput {
                 key: session_key.clone(),
                 call_id: "tu-absent".to_owned(),
@@ -6653,7 +7022,7 @@ provider = "anthropic"
             answered
         };
 
-        read(&task);
+        read(&mut task);
         assert_eq!(
             take_answer(),
             Some(forge_primitives::CallOutput::NoPath),
@@ -6666,7 +7035,7 @@ provider = "anthropic"
         std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
         std::fs::write(tasks.join(format!("{task_id}.output")), "first line\n")
             .expect("write the file");
-        read(&task);
+        read(&mut task);
         assert_eq!(
             take_answer(),
             Some(forge_primitives::CallOutput::Lines(vec!["first line".to_owned()])),
@@ -8222,7 +8591,7 @@ provider = "anthropic"
         let (handle, mut agent_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let task = SessionTask {
+        let mut task = SessionTask {
             key: key.clone(),
             handle: Arc::new(handle),
             command_rx,

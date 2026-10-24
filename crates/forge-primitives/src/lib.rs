@@ -98,7 +98,8 @@ pub use cron::{CronEntry, CronId, CronKind};
 pub use error::AppError;
 pub use gotify::{GotifyConfig, GotifyMessage, GotifySubscription};
 pub use handoff::{
-    HandoffBrief, HandoffCycle, HandoffReason, HandoffRecord, HandoffSection, HandoffSuccessor,
+    HandoffBrief, HandoffCycle, HandoffGitState, HandoffReason, HandoffRecord, HandoffSection,
+    HandoffSuccessor,
 };
 pub use hooks::{
     BaseHookInput, HookContext, HookKind, NotificationInput, PermissionRequestInput,

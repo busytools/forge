@@ -163,7 +163,7 @@ const DEFAULT_LEAD_CHARTER: &str = include_str!("spawn/lead_charter.md");
 /// Stamp [`DEFAULT_LEAD_CHARTER`] onto the launch settings so every lead
 /// session carries one. No-op when a charter is already set - worker
 /// spawns supply their own and we never overwrite it.
-fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
+pub(crate) fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
     if settings.charter.is_some() {
         return;
     }

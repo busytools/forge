@@ -53,6 +53,49 @@ pub struct PendingAutoContinue {
     pub reason: String,
 }
 
+/// The handoff this session is running, if any.
+///
+/// The request is parked rather than acted on while a turn runs: a handoff
+/// never interrupts one. The judgment turn is forge's own prompt, so the
+/// reply it captures is the last assistant text before that turn ends.
+/// A handoff request that arrived while a turn was running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParkedHandoff {
+    /// The caller supplied its own judgment half.
+    Supplied(String),
+    /// The judgment half is asked of the session at the boundary.
+    Ask,
+}
+
+impl ParkedHandoff {
+    /// The caller's own half, when it supplied one.
+    pub fn supplied(self) -> Option<String> {
+        match self {
+            Self::Supplied(text) => Some(text),
+            Self::Ask => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HandoffState {
+    /// A request that arrived while a turn was running.
+    pub parked: Option<ParkedHandoff>,
+    /// Why this handoff runs, which the row and the record both state.
+    pub reason: Option<forge_primitives::HandoffReason>,
+    /// The judgment turn forge sent is running.
+    pub awaiting: bool,
+    /// The last assistant text seen while that turn ran.
+    pub judgment: Option<String>,
+}
+
+impl HandoffState {
+    /// Whether a handoff owns this seat's next turn boundary.
+    pub fn in_progress(&self) -> bool {
+        self.parked.is_some() || self.awaiting
+    }
+}
+
 /// Workspace's owned per-session state. One `DomainSession` per
 /// active `SessionTask`. Single writer (the `SessionTask`); accessed
 /// via `Arc<parking_lot::Mutex<DomainSession>>` so the `Workspace`
@@ -327,6 +370,11 @@ pub struct DomainSession {
     pub mcp_servers: Option<McpServers>,
     /// How full the context window was at the last poll.
     pub context_usage: Option<ContextUsage>,
+    /// The handoff this occupant is running, if any. Belongs to the
+    /// occupant: a swap that completes resets it, and a request that was
+    /// parked for a seat whose occupant changed describes a session that
+    /// is gone.
+    pub handoff: HandoffState,
     /// The model the session resolved to, from its connect and from
     /// every later init frame that names a different one.
     pub current_model: Option<CurrentModel>,
@@ -528,6 +576,7 @@ impl DomainSession {
             configured_permission_mode: None,
             mcp_servers: None,
             context_usage: None,
+            handoff: HandoffState::default(),
             current_model: None,
             available_models: Vec::new(),
             monitors: Vec::new(),

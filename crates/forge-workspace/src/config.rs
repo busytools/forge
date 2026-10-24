@@ -560,6 +560,44 @@ pub struct HandoffSettings {
     pub after_compactions: Option<u32>,
 }
 
+/// The trigger a session reads, with the project's table over the top-level
+/// one and the defaults under both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandoffPolicy {
+    pub enabled: bool,
+    pub at_percent: u8,
+    pub after_compactions: u32,
+}
+
+impl Default for HandoffPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            at_percent: DEFAULT_HANDOFF_AT_PERCENT,
+            after_compactions: DEFAULT_HANDOFF_AFTER_COMPACTIONS,
+        }
+    }
+}
+
+impl HandoffPolicy {
+    pub fn resolve(global: &HandoffSettings, project: Option<&HandoffSettings>) -> Self {
+        Self {
+            enabled: project
+                .and_then(|settings| settings.enabled)
+                .or(global.enabled)
+                .unwrap_or(true),
+            at_percent: project
+                .and_then(|settings| settings.at_percent)
+                .or(global.at_percent)
+                .unwrap_or(DEFAULT_HANDOFF_AT_PERCENT),
+            after_compactions: project
+                .and_then(|settings| settings.after_compactions)
+                .or(global.after_compactions)
+                .unwrap_or(DEFAULT_HANDOFF_AFTER_COMPACTIONS),
+        }
+    }
+}
+
 /// Refuse a trigger that can never fire or fires on every turn. `scope` names
 /// the table the value came from, so the error says which one to edit.
 fn validate_handoff_settings(
