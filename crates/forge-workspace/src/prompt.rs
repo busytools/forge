@@ -13,6 +13,10 @@ pub enum ForgePrompt {
     /// `/resume <session_id>`: move the seat onto a session that already
     /// exists.
     ResumeSession { session_id: String },
+    /// `/handoff`: hand the seat over to a fresh session that continues from
+    /// a brief. The same process the automatic trigger and `agents__handoff`
+    /// run; only the trigger differs.
+    Handoff,
     /// `/mode <id>`: switch the session's permission mode.
     SetMode { mode: String },
     /// `/model <id>`: switch the model the session runs on.
@@ -40,7 +44,7 @@ impl ForgePrompt {
     /// answers where it was asked, so a view that blocked on one would leave
     /// the input disabled with nothing coming to release it.
     pub const fn respawns(&self) -> bool {
-        matches!(self, Self::NewSession | Self::ResumeSession { .. })
+        matches!(self, Self::NewSession | Self::ResumeSession { .. } | Self::Handoff)
     }
 }
 
@@ -49,6 +53,7 @@ impl ForgePrompt {
 const USAGE: &[(&str, &str)] = &[
     ("/new", "Usage: /new"),
     ("/resume", "Usage: /resume <session_id>"),
+    ("/handoff", "Usage: /handoff"),
     ("/mode", "Usage: /mode <id>"),
     ("/model", "Usage: /model <id>"),
     ("/effort", "Usage: /effort <level>"),
@@ -96,6 +101,7 @@ pub fn forge_invocation(text: &str) -> Option<Invocation> {
     let command = match (name, arguments.as_slice()) {
         ("/new", []) => Some(ForgePrompt::NewSession),
         ("/resume", [arg]) => Some(ForgePrompt::ResumeSession { session_id: (*arg).to_owned() }),
+        ("/handoff", []) => Some(ForgePrompt::Handoff),
         ("/mode", [arg]) => Some(ForgePrompt::SetMode { mode: (*arg).to_owned() }),
         ("/model", [arg]) => Some(ForgePrompt::SetModel { model: (*arg).to_owned() }),
         ("/effort", [arg]) => Some(ForgePrompt::SetEffort { level: (*arg).to_owned() }),
@@ -136,6 +142,19 @@ mod tests {
             forge_invocation("  /resume  7f3a92e0  "),
             named("7f3a92e0"),
             "the argument is read the way a shell would read it",
+        );
+    }
+
+    /// `/handoff` takes no argument, replaces the occupant, and answers a
+    /// worded invocation with its usage rather than sending it to the model.
+    #[test]
+    fn handoff_is_a_respawn_with_no_argument() {
+        assert_eq!(forge_invocation("/handoff"), Some(Invocation::Command(ForgePrompt::Handoff)));
+        assert!(ForgePrompt::Handoff.respawns(), "the swap replaces the occupant");
+        assert_eq!(
+            forge_invocation("/handoff now"),
+            Some(Invocation::Misuse("Usage: /handoff")),
+            "a brief is not an argument the command takes",
         );
     }
 

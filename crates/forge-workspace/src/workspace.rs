@@ -4516,6 +4516,9 @@ impl Workspace {
                 let (cwd, launch_settings) = self.spawn_inputs(key);
                 Command::NewSession { key: key.clone(), cwd, launch_settings, session_id: None }
             }
+            // The brief is asked of the session: the same process the
+            // automatic trigger runs, with the trigger being the person.
+            ForgePrompt::Handoff => Command::Handoff { key: key.clone(), brief: None },
             ForgePrompt::ResumeSession { session_id } => {
                 let (cwd, launch_settings) = self.spawn_inputs(key);
                 Command::ResumeSession {
