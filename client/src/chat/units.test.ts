@@ -1815,6 +1815,65 @@ describe('one turn folded into the units a view draws', () => {
     ).toBe(false);
   });
 
+  it('marks a cancelled run failed, which reports no exit code at all', () => {
+    // A timed-out hook never finishes, so it exits nowhere: the outcome is the
+    // only carrier that says it did not succeed, and a rule reading only the
+    // exit code drew it as a clean line.
+    const [started] = hookFrames();
+    const run = started as { hook_id: string };
+    const cancelled = fold([
+      started,
+      {
+        type: 'system',
+        subtype: 'hook_response',
+        hook_id: run.hook_id,
+        hook_name: 'SessionStart:startup',
+        hook_event: 'SessionStart',
+        outcome: 'cancelled',
+        uuid: 'u-cancelled',
+      },
+    ]);
+    expect(runOf(cancelled)?.failed, 'the outcome marks the run').toBe(true);
+
+    // The control: the same frame with the success outcome and no code is not
+    // a failure, so a fold that marked every codeless run would show.
+    const clean = fold([
+      started,
+      {
+        type: 'system',
+        subtype: 'hook_response',
+        hook_id: run.hook_id,
+        hook_name: 'SessionStart:startup',
+        hook_event: 'SessionStart',
+        outcome: 'success',
+        uuid: 'u-clean',
+      },
+    ]);
+    expect(runOf(clean)?.failed, 'a codeless success stays a line').toBe(false);
+  });
+
+  it('draws a live run whose only words are on stderr', () => {
+    // The live frame carries the raw streams beside the combined output, and
+    // a hook that failed to start prints on stderr alone.
+    const [started] = hookFrames();
+    const run = started as { hook_id: string };
+    const failed = fold([
+      started,
+      {
+        type: 'system',
+        subtype: 'hook_response',
+        hook_id: run.hook_id,
+        hook_name: 'SessionStart:startup',
+        hook_event: 'SessionStart',
+        stdout: '',
+        stderr: 'Failed with non-blocking status code',
+        outcome: 'error',
+        uuid: 'u-live-stderr',
+      },
+    ]);
+    expect(runOf(failed)?.body).toBe('Failed with non-blocking status code');
+  });
+
   it('says which event a hook ran for when its name does not already say it', () => {
     // Every captured run names its hook `<Event>:<matcher>`, so the event rides
     // the line inside the name. This is the guard for a name that carries none:

@@ -160,6 +160,13 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
 /// the CLI never writes, so a copy holding it counts a frame the file counts
 /// no row for. That difference is what a page below the floor has to be
 /// numbered through, by whoever still holds the frames the drops took.
+///
+/// **A live hook frame has no row, though the read now serves hook rows.** The
+/// CLI mints three ids for one run - the attachment row's uuid, the live
+/// `hook_id` and the live frame's uuid - and none of them equals another, so a
+/// live hook frame names no row a walk could resolve; the row the read
+/// synthesizes is a copy of the run, not the frame. The answer stays false,
+/// which is what keeps a stop off a frame the file cannot be asked for.
 pub fn has_a_transcript_row(message: &forge_primitives::Message) -> bool {
     // The row rule drops a sub-agent's frame, so a frame naming one has no
     // row either, whatever its kind: a numbering that counted it as having
@@ -207,6 +214,22 @@ fn transcript_row(value: &Value) -> Option<(SessionMessage, bool)> {
         Some("attachment") => match value.get("attachment") {
             Some(att) if att.get("type").and_then(Value::as_str) == Some("queued_command") => {
                 (SessionMessageKind::User, Some(synthesize_queued_command_message(att)))
+            }
+            // **A hook's own record is the row its live frames drew.** The
+            // live stream sends a run as `system/hook_*` frames and the
+            // transcript persists it as an attachment; dropping the row left a
+            // page without rows the live conversation drew (rule 25), and
+            // every later landing reconciled against a copy that had none of
+            // them.
+            //
+            // **The served set is the live wire's**: the SessionStart and
+            // Setup runs it gates live hook frames on, in their success,
+            // cancelled and non-blocking-error records. Every other event's
+            // rows stay the CLI's own context, and `hook_additional_context`
+            // is not a run at all - the live path drew none of them as a row,
+            // so a read that did would show a reader rows they never had.
+            Some(att) if is_hook_attachment(att) => {
+                (SessionMessageKind::System, Some(synthesize_hook_frame(value, att)))
             }
             _ => return None,
         },
@@ -370,6 +393,106 @@ fn synthesize_queued_command_message(attachment: &Value) -> Value {
         "role": "user",
         "content": [Value::Object(block)],
     })
+}
+
+/// The hook events whose runs the live stream forwards, and therefore the only
+/// ones a read serves as rows.
+///
+/// **The CLI gates live hook frames on these outside remote.** A page that
+/// drew any other event would show rows the live view never had - a divergence
+/// the read would introduce rather than repair - so the rest of the file's
+/// hook rows stay context the CLI keeps for itself.
+fn live_hook_event(attachment: &Value) -> bool {
+    matches!(attachment.get("hookEvent").and_then(Value::as_str), Some("SessionStart" | "Setup"))
+}
+
+/// Whether an attachment row records a hook run the live stream forwards.
+///
+/// The persisted run records are the success, the cancelled run and the
+/// non-blocking error; `hook_additional_context` is aggregate context rather
+/// than a run, and the live path drew it as none.
+fn is_hook_attachment(attachment: &Value) -> bool {
+    live_hook_event(attachment)
+        && matches!(
+            attachment.get("type").and_then(Value::as_str),
+            Some("hook_success" | "hook_cancelled" | "hook_non_blocking_error")
+        )
+}
+
+/// One persisted hook run as the live frame the chat folds.
+///
+/// **The two carriers' ids never meet.** The CLI stamps the row a uuid of its
+/// own, the live run a `hook_id` and the live frame another uuid - three
+/// distinct ids for one run - so a read copy that borrowed any of them would
+/// still name nothing the held frame names. The row keeps its own uuid, and
+/// `transcript` marks it as the read's copy: the client pairs it with a held
+/// live run of the same event and name, and keeps one row.
+fn synthesize_hook_frame(row: &Value, attachment: &Value) -> Value {
+    let mut frame = serde_json::Map::new();
+    frame.insert("type".into(), Value::String("system".into()));
+    frame.insert("subtype".into(), Value::String("hook_response".into()));
+    if let Some(id) = row.get("uuid") {
+        frame.insert("hook_id".into(), id.clone());
+        frame.insert("uuid".into(), id.clone());
+    }
+    for (field, from) in [("hook_name", "hookName"), ("hook_event", "hookEvent")] {
+        if let Some(held) = attachment.get(from) {
+            frame.insert(field.into(), held.clone());
+        }
+    }
+    // **The live frame's own fields, all of them.** `HookResponse` in the
+    // primitives requires every one, and a cancelled row carries none of the
+    // stream fields at all: a frame that omitted them would decode as the
+    // generic system shape rather than the typed response the live wire sends.
+    // Absent ones are the empty value the live frame's own type carries.
+    frame.insert("output".into(), Value::String(hook_output(attachment).unwrap_or_default()));
+    for field in ["stdout", "stderr"] {
+        let held = attachment.get(field).and_then(Value::as_str).unwrap_or_default();
+        frame.insert(field.into(), Value::String(held.to_owned()));
+    }
+    let code = attachment.get("exitCode").and_then(Value::as_i64).unwrap_or(0);
+    frame.insert("exit_code".into(), Value::Number(code.into()));
+    frame.insert("outcome".into(), hook_outcome(attachment));
+    frame.insert("session_id".into(), Value::String(session_in_row(row)));
+    frame.insert("transcript".into(), Value::Bool(true));
+    Value::Object(frame)
+}
+
+/// The outcome the live frame reports for one persisted run record.
+///
+/// A timeout is persisted as a cancellation with `timedOut`, and draws as a
+/// cancelled run; a non-blocking error is the error outcome the live path
+/// sends for it.
+fn hook_outcome(attachment: &Value) -> Value {
+    let outcome = match attachment.get("type").and_then(Value::as_str) {
+        Some("hook_non_blocking_error") => "error",
+        Some("hook_cancelled") => "cancelled",
+        _ => "success",
+    };
+    Value::String(outcome.to_owned())
+}
+
+/// What one persisted hook run printed, as a `hook_response` frame carries it.
+///
+/// `content` is the combined output, a string or the lines of one; the raw
+/// streams are the fallback, `stdout` first, so a row whose combined field is
+/// empty still draws what the hook wrote. Both branches read the same way: a
+/// value that is only whitespace is nothing to draw.
+fn hook_output(attachment: &Value) -> Option<String> {
+    let held = match attachment.get("content") {
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(Value::Array(lines)) => {
+            Some(lines.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"))
+        }
+        _ => None,
+    };
+    held.into_iter()
+        .chain(
+            ["stdout", "stderr"].iter().filter_map(|field| {
+                attachment.get(field).and_then(Value::as_str).map(str::to_owned)
+            }),
+        )
+        .find(|text| !text.trim().is_empty())
 }
 
 /// Sanitise a path the same way the `claude` CLI does -
@@ -690,6 +813,12 @@ pub const SPAN_CAP_BYTES: u64 = 64 * 1024 * 1024;
 /// which covers every page these transcripts would cut. A page whose turns
 /// run heavier comes back short with a cursor to ask below with, rather than
 /// converting a window's rows for turns nothing reads.
+///
+/// **The served hook rows ride inside that figure.** The SessionStart and
+/// Setup runs a read now serves are about a seventh of a transcript's hook
+/// rows and a few rows a session, so they do not move the 2,799 measurement;
+/// a session that fired an unusual number of them is the "comes back short
+/// with a cursor" case above, not a lost row.
 pub const SPAN_ROWS_PER_TURN: usize = 150;
 
 /// How many rows past a page's own count a cut may step back over, so that it
@@ -1872,6 +2001,113 @@ mod tests {
         assert_eq!(content[0].get("prompt").and_then(Value::as_str), Some("queued prompt"));
         assert_eq!(content[0].get("commandMode").and_then(Value::as_str), Some("prompt"));
         assert!(matches!(msgs[2].kind, SessionMessageKind::Assistant));
+    }
+
+    /// **A hook run the file persisted is a row the live chat drew.** The live
+    /// stream sends each run as a `system/hook_response` frame; the transcript
+    /// keeps it as an attachment. Dropping the row left a server page with
+    /// none of the SessionStart rows the reader was looking at (rule 25), and
+    /// every landing that merged against such a page moved the live rows it
+    /// did not carry.
+    ///
+    /// **The served set is the live stream's, not the file's.** The CLI gates
+    /// live hook frames on SessionStart and Setup, so only those events are
+    /// served; `hook_additional_context` is aggregate context, not a run, and
+    /// the live path drew it as no row at all.
+    #[test]
+    fn parse_session_messages_serves_the_hook_runs_the_live_wire_forwards() {
+        let jsonl = r###"{"type":"attachment","attachment":{"type":"hook_success","hookName":"SessionStart:startup","hookEvent":"SessionStart","content":"## The PR review gate","stdout":"## The PR review gate","exitCode":0,"toolUseID":"tool-1"},"uuid":"h1","sessionId":"s1"}
+{"type":"attachment","attachment":{"type":"hook_success","hookName":"PreToolUse:Skill","hookEvent":"PreToolUse","content":"not served live","stdout":"not served live","exitCode":0,"toolUseID":"tool-1"},"uuid":"h-skip","sessionId":"s1"}
+{"type":"attachment","attachment":{"type":"hook_additional_context","content":["aggregate context"],"hookName":"SessionStart:startup","hookEvent":"SessionStart","toolUseID":"tool-1"},"uuid":"h-context","sessionId":"s1"}
+{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"after the first run"}]},"uuid":"a1","sessionId":"s1"}
+{"type":"attachment","attachment":{"type":"hook_success","hookName":"Setup:init","hookEvent":"Setup","content":["line one","line two"],"stdout":"line one\nline two","exitCode":0,"toolUseID":"tool-1"},"uuid":"h2","sessionId":"s1"}
+{"type":"attachment","attachment":{"type":"hook_non_blocking_error","hookName":"SessionStart:startup","hookEvent":"SessionStart","stdout":"","stderr":"Failed with non-blocking status code","exitCode":141,"command":"bash til.sh","durationMs":45,"toolUseID":"tool-1"},"uuid":"h3","sessionId":"s1"}
+{"type":"attachment","attachment":{"type":"hook_cancelled","hookName":"SessionStart:startup","hookEvent":"SessionStart","command":"check.sh","durationMs":3018,"timedOut":true,"timeoutMs":3000,"toolUseID":"tool-1"},"uuid":"h4","sessionId":"s1"}
+{"type":"attachment","attachment":{"type":"hook_success","hookName":"SessionStart:startup","hookEvent":"SessionStart","content":"","stdout":"plugin lines","stderr":"","exitCode":0,"toolUseID":"tool-1"},"uuid":"h5","sessionId":"s1"}
+"###;
+        let msgs = parse_session_messages(jsonl.as_bytes()).messages;
+        assert_eq!(
+            msgs.iter().map(|m| m.uuid.clone()).collect::<Vec<_>>().join(","),
+            "h1,a1,h2,h3,h4,h5",
+            "the served runs, in file order, with the assistant row between them"
+        );
+        assert!(
+            msgs.iter().filter(|m| !matches!(m.kind, SessionMessageKind::System)).count() == 1,
+            "a hook row is a system frame, the shape the live path draws"
+        );
+
+        let h1 = &msgs[0].message;
+        assert_eq!(h1.get("subtype").and_then(Value::as_str), Some("hook_response"));
+        assert_eq!(h1.get("hook_id").and_then(Value::as_str), Some("h1"));
+        assert_eq!(h1.get("uuid").and_then(Value::as_str), Some("h1"));
+        assert_eq!(h1.get("hook_name").and_then(Value::as_str), Some("SessionStart:startup"));
+        assert_eq!(h1.get("hook_event").and_then(Value::as_str), Some("SessionStart"));
+        assert_eq!(h1.get("output").and_then(Value::as_str), Some("## The PR review gate"));
+        assert_eq!(h1.get("stdout").and_then(Value::as_str), Some("## The PR review gate"));
+        assert_eq!(h1.get("exit_code").and_then(Value::as_i64), Some(0));
+        assert_eq!(h1.get("outcome").and_then(Value::as_str), Some("success"));
+        assert_eq!(h1.get("session_id").and_then(Value::as_str), Some("s1"));
+        assert_eq!(h1.get("transcript").and_then(Value::as_bool), Some(true));
+
+        let h2 = &msgs[2].message;
+        assert_eq!(
+            h2.get("output").and_then(Value::as_str),
+            Some("line one\nline two"),
+            "the content array joins its lines"
+        );
+        assert_eq!(h2.get("hook_event").and_then(Value::as_str), Some("Setup"));
+
+        let h3 = &msgs[3].message;
+        assert_eq!(h3.get("outcome").and_then(Value::as_str), Some("error"));
+        assert_eq!(
+            h3.get("output").and_then(Value::as_str),
+            Some("Failed with non-blocking status code"),
+            "the stderr fallback when the combined output and stdout are empty"
+        );
+        assert_eq!(h3.get("exit_code").and_then(Value::as_i64), Some(141));
+
+        let h4 = &msgs[4].message;
+        assert_eq!(h4.get("outcome").and_then(Value::as_str), Some("cancelled"));
+        assert_eq!(h4.get("output").and_then(Value::as_str), Some(""));
+
+        let h5 = &msgs[5].message;
+        assert_eq!(
+            h5.get("output").and_then(Value::as_str),
+            Some("plugin lines"),
+            "the stdout fallback for a row with no combined content"
+        );
+
+        // And the rows still decode as the frames a page serves: the scan's
+        // shape is only a carrier, the wire shape is what crosses.
+        let frames = messages_from_rows(parse_session_messages(jsonl.as_bytes()).messages, "s1");
+        assert!(
+            matches!(&frames[0], forge_primitives::Message::HookResponse { output, exit_code, .. }
+                if output == "## The PR review gate" && *exit_code == 0),
+            "the row decodes to the typed live response"
+        );
+        assert!(
+            matches!(&frames[1], forge_primitives::Message::Assistant { .. }),
+            "and the assistant row keeps its place between the hook rows"
+        );
+        assert!(
+            frames.iter().any(|frame| matches!(frame,
+                forge_primitives::Message::HookResponse { hook_id, outcome, .. }
+                    if hook_id == "h4" && outcome == "cancelled")),
+            "and a cancelled run decodes as the same typed response, not the generic system shape"
+        );
+        let crossed = serde_json::to_value(&frames[0]).expect("the frame crosses");
+        for (field, want) in [
+            ("hook_id", "h1"),
+            ("output", "## The PR review gate"),
+            ("outcome", "success"),
+            ("transcript", "true"),
+        ] {
+            assert_eq!(
+                crossed.get(field).map(|held| held.to_string().trim_matches('"').to_owned()),
+                Some(want.to_owned()),
+                "{field} survives the decode"
+            );
+        }
     }
 
     /// The count has to come out of the same streamed pass that builds

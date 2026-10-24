@@ -599,6 +599,156 @@ export class Frames {
 }
 
 /**
+ * A page's rows with the frames it does not carry put back where the held copy
+ * had them.
+ *
+ * **Appending them is a reorder the reader sees.** A page built from the
+ * transcript can lack frames the live fold holds - a hook's own row is one the
+ * file keeps as an attachment the read used to drop - and a landing that
+ * parked the held-only rows at the end moved every row the page never carried
+ * (measured: four SessionStart hook rows jump from the head of a turn to its
+ * tail on one landing). The page's order is kept for what it carries; each
+ * held-only frame goes back beside the frame that preceded it in the held
+ * copy, so a row the page says nothing about does not move.
+ */
+function interleave(pageRows: unknown[], heldRows: unknown[]): unknown[] {
+  // Where each page frame the held copy also carries sits. **The same three
+  // faces `Frames` answers by** - id, the ending's envelope, then the words -
+  // so a frame the page carries under an id-less copy is placed, not inserted
+  // beside itself.
+  const byId = new Map<string, number>();
+  const byEnding = new Map<string, number>();
+  const byWords = new Map<string, number>();
+  pageRows.forEach((message, index) => {
+    const id = uuidOf(message);
+    if (id !== null && !byId.has(id)) byId.set(id, index);
+    const ending = completionText(message);
+    if (ending !== null && !byEnding.has(ending)) byEnding.set(ending, index);
+    const words = wordsOf(message);
+    if (words.length > 0) {
+      const key = JSON.stringify(words);
+      if (!byWords.has(key)) byWords.set(key, index);
+    }
+  });
+  const whereOf = (message: unknown): number | undefined => {
+    const id = uuidOf(message);
+    if (id !== null) return byId.get(id);
+    const ending = completionText(message);
+    if (ending !== null) return byEnding.get(ending);
+    const words = wordsOf(message);
+    return words.length > 0 ? byWords.get(JSON.stringify(words)) : undefined;
+  };
+  /** The held-only frames that follow the page frame at a given index. */
+  const after = new Map<number, unknown[]>();
+  let anchor = -1;
+  for (const message of heldRows) {
+    const where = whereOf(message);
+    if (where !== undefined) {
+      // **Never backwards**: a frame whose copy sits earlier than the last
+      // anchor is placed where the walk has reached, not before it.
+      anchor = Math.max(anchor, where);
+      continue;
+    }
+    const bucket = after.get(anchor) ?? [];
+    bucket.push(message);
+    after.set(anchor, bucket);
+  }
+  const out: unknown[] = [...(after.get(-1) ?? [])];
+  pageRows.forEach((message, index) => {
+    out.push(message);
+    const bucket = after.get(index);
+    if (bucket !== undefined) out.push(...bucket);
+  });
+  return out;
+}
+
+/**
+ * The run a hook frame belongs to, as the only name both carriers share.
+ *
+ * **The ids never meet.** The CLI mints three for one run - the attachment
+ * row's uuid, the run's live `hook_id` and the live frame's own uuid - so a
+ * read's copy and the held frame name different ids for the same hook. The
+ * event and the hook's name are what the transcript row and the live frame
+ * both carry, and they are what a landing pairs on.
+ */
+function hookRunName(message: unknown): string | null {
+  const frame = message as {
+    type?: unknown;
+    subtype?: unknown;
+    hook_event?: unknown;
+    hook_name?: unknown;
+  } | null;
+  // **Any frame of the run names it**, not only the response: a run that has
+  // started and not yet settled is still a run, and the page's copy of it
+  // pairs just the same.
+  if (
+    frame?.type !== 'system' ||
+    (frame.subtype !== 'hook_started' &&
+      frame.subtype !== 'hook_progress' &&
+      frame.subtype !== 'hook_response')
+  ) {
+    return null;
+  }
+  const event = typeof frame.hook_event === 'string' ? frame.hook_event : '';
+  const name = typeof frame.hook_name === 'string' ? frame.hook_name : '';
+  return `${event}\u0000${name}`;
+}
+
+/** Whether a frame is the transcript read's copy of a hook run. */
+function isTranscriptCopy(message: unknown): boolean {
+  return (message as { transcript?: unknown } | null)?.transcript === true;
+}
+
+/**
+ * One row per hook run when a read's copy lands on held live frames.
+ *
+ * **Pairing by run, because the ids cannot pair it.** A page carries the
+ * transcript's copy of each SessionStart run under its own uuid, while the
+ * held turn carries the live frame under the live id - two names for one run,
+ * so appending the page's copy draws the run twice. The held frame is kept
+ * (its id is what the row on screen is keyed by); the read's copy is dropped.
+ * A page that lands with no live run of that name keeps its copy, which is how
+ * a fresh load draws the run at all.
+ */
+function pairHookRuns(messages: unknown[]): unknown[] {
+  // **Run for run, not name for name.** Every SessionStart hook of one launch
+  // is named alike, so a name that any live frame carries cannot pair a whole
+  // batch by itself: a reconnect mid-burst leaves fewer live runs than the
+  // page's copies, and the extras are runs the reader has never seen. The live
+  // ids are what count them - one per run, whichever frame carried it - and
+  // only that many copies are dropped.
+  const runs = new Map<string, number>();
+  const ids = new Map<string, Set<string>>();
+  for (const message of messages) {
+    const name = hookRunName(message);
+    if (name === null || isTranscriptCopy(message)) continue;
+    const id = liveHookId(message);
+    if (id === null) continue;
+    const seen = ids.get(name) ?? new Set<string>();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.set(name, seen);
+    runs.set(name, seen.size);
+  }
+  if (runs.size === 0) return messages;
+  return messages.filter((message) => {
+    const name = hookRunName(message);
+    if (name === null || !isTranscriptCopy(message)) return true;
+    const left = runs.get(name) ?? 0;
+    if (left <= 0) return true;
+    runs.set(name, left - 1);
+    return false;
+  });
+}
+
+/** The run a live hook frame belongs to, as the live path names it. */
+function liveHookId(message: unknown): string | null {
+  const frame = message as { hook_id?: unknown; uuid?: unknown } | null;
+  if (typeof frame?.hook_id === 'string' && frame.hook_id !== '') return frame.hook_id;
+  return typeof frame?.uuid === 'string' && frame.uuid !== '' ? frame.uuid : null;
+}
+
+/**
  * Whether a frame opens a turn of its own rather than joining the live one:
  * what a person said.
  *
@@ -1909,12 +2059,17 @@ export class Chat {
           const page = new Frames(row.messages);
           const missed = repeated.messages.filter((message) => !page.carries(message));
           const adds = row.messages.filter((message) => !held.carries(message));
-          const messages =
+          // **The same pairing as every other landing.** A repeated page can
+          // carry a run's copy the held row has already adopted live, and the
+          // ids never meet: without the pairing the run draws twice on an
+          // ordinary reconnect or refresh.
+          const messages = pairHookRuns(
             adds.length === 0
               ? repeated.messages
               : missed.length === 0
                 ? row.messages
-                : [...row.messages, ...missed];
+                : interleave(row.messages, repeated.messages),
+          );
           const settled = messages === repeated.messages ? repeated : { ...repeated, messages };
           named.push(settled);
           copies.push(settled.messages);
@@ -2078,7 +2233,9 @@ export class Chat {
           const later = also.includes(row.key) ? also : [...also, row.key];
           drawn[placedAt] = {
             ...target,
-            ...(grown.length > 0 ? { messages: [...target.messages, ...grown] } : {}),
+            ...(grown.length > 0
+              ? { messages: pairHookRuns(interleave(target.messages, copy)) }
+              : {}),
             ...(later === also ? {} : { also: later }),
           };
           continue;
@@ -2105,8 +2262,11 @@ export class Chat {
           // first read cut it - a name it did have would have been found
           // through `known` - and the page is the fuller account: the frames
           // it lacks arrived after its read.
-          const missed = match.messages.filter((message) => !carried.carries(message));
-          drawn.push({ ...match, messages: [...copy, ...missed], also });
+          drawn.push({
+            ...match,
+            messages: pairHookRuns(interleave(copy, match.messages)),
+            also,
+          });
           continue;
         }
         // A copy read while the turn was still being written carries both the
@@ -2125,7 +2285,12 @@ export class Chat {
         drawn.push(
           settledRow(index) && grown.length === 0
             ? { ...row, key: match.key, also }
-            : { key: match.key, messages: [...copy, ...grown], live: !settledRow(index), also },
+            : {
+                key: match.key,
+                messages: pairHookRuns(interleave(copy, match.messages)),
+                live: !settledRow(index),
+                also,
+              },
         );
       }
       // Frames that waited for a turn, against this page: one the page already
@@ -2134,16 +2299,31 @@ export class Chat {
       // which is the exchange that was being written when they arrived. An
       // older page takes none of them: they are newer than everything in it.
       if (direction === 'newest' && this.unturned.length > 0) {
-        const riding = this.unturned.filter((message) => !fromPage.carries(message));
         const newest = drawn[drawn.length - 1];
+        const riding: unknown[] = [];
+        let landed = newest;
+        for (const message of this.unturned) {
+          if (fromPage.carries(message)) continue;
+          // **A run the page already carries its copy of takes that place**,
+          // the same pairing an appended frame gets: riding it would draw the
+          // run twice, once from each carrier.
+          const adopted = landed === undefined ? null : this.adoptInTurn(landed, message);
+          if (adopted !== null) {
+            landed = adopted.turn;
+            continue;
+          }
+          riding.push(message);
+        }
         if (newest === undefined) {
           // Nothing on this page to ride; the next turn that opens takes them.
           this.unturned = riding;
         } else {
-          if (riding.length > 0) {
-            for (const frame of riding) this.ridden.add(frame);
-            drawn[drawn.length - 1] = { ...newest, messages: [...newest.messages, ...riding] };
-          }
+          for (const frame of riding) this.ridden.add(frame);
+          const merged = landed ?? newest;
+          drawn[drawn.length - 1] = {
+            ...merged,
+            ...(riding.length > 0 ? { messages: [...merged.messages, ...riding] } : {}),
+          };
           this.unturned = [];
         }
       }
@@ -3004,6 +3184,81 @@ export class Chat {
     this.append(message);
   }
 
+  /**
+   * Replace a held transcript copy of one hook run with the live frame, in
+   * place.
+   *
+   * **The frame can arrive after its copy.** The transport flushes the updates
+   * it holds before it asks for a seat's record, so a run completing between
+   * the ask and the read lands after the page that already carries its copy -
+   * and the two carriers name different ids, so nothing else would pair them.
+   * The copy's own place is where the live frame belongs: replacing it there
+   * keeps the row where the reader has it rather than moving it to the end.
+   */
+  private adoptInTurn(turn: Turn, message: unknown): { turn: Turn; bytes: number } | null {
+    const run = hookRunName(message);
+    if (run === null || isTranscriptCopy(message)) return null;
+    // **One live run adopts one copy.** A run's started and response frames
+    // share its id; the first of them takes the copy, and the next frame of
+    // the same run joins the row it built rather than pairing a second copy of
+    // another run.
+    const id = liveHookId(message);
+    if (
+      id !== null &&
+      turn.messages.some(
+        (held) => !isTranscriptCopy(held) && hookRunName(held) === run && liveHookId(held) === id,
+      )
+    ) {
+      return null;
+    }
+    const at = turn.messages.findIndex(
+      (held) => isTranscriptCopy(held) && hookRunName(held) === run,
+    );
+    if (at < 0) return null;
+    const replaced = turn.messages[at];
+    const messages = [...turn.messages];
+    messages[at] = message;
+    return { turn: { ...turn, messages }, bytes: messageBytes(message) - messageBytes(replaced) };
+  }
+
+  /**
+   * Where a live hook frame belongs: the turn already holding its run, or the
+   * last turn where a copy of it can be adopted.
+   *
+   * **Adoption belongs to the LAST turn alone.** A system frame joins the
+   * newest turn, so that is where a copy of the same run waits for it - a
+   * same-named copy in an older turn is an older run of the hook, and taking
+   * it splits one run across two rows and loses the older copy. A run already
+   * held is found by its live id wherever it sits, so its response joins the
+   * row its start built.
+   */
+  private adoptRun(
+    turns: Turn[],
+    message: unknown,
+  ): { at: number; turn: Turn; bytes: number } | null {
+    const run = hookRunName(message);
+    const id = liveHookId(message);
+    if (run === null || id === null || isTranscriptCopy(message)) return null;
+    for (let at = turns.length - 1; at >= 0; at -= 1) {
+      const turn = turns[at];
+      if (turn === undefined) continue;
+      const holds = turn.messages.some(
+        (held) => !isTranscriptCopy(held) && liveHookId(held) === id && hookRunName(held) === run,
+      );
+      if (!holds) continue;
+      return {
+        at,
+        turn: { ...turn, messages: [...turn.messages, message] },
+        bytes: messageBytes(message),
+      };
+    }
+    const last = turns[turns.length - 1];
+    if (last === undefined) return null;
+    const adopted = this.adoptInTurn(last, message);
+    if (adopted === null) return null;
+    return { at: turns.length - 1, turn: adopted.turn, bytes: adopted.bytes };
+  }
+
   private append(message: unknown, own = false): void {
     this.stream((held) => {
       const last = held.turns[held.turns.length - 1];
@@ -3015,6 +3270,20 @@ export class Chat {
       // it arrives on a running seat between one turn and the next.
       const units = fold([message]);
       const draws = units.length > 0;
+      // **A live run takes over its read copy where the copy sits.** The two
+      // are one run, and the frame arriving second must not draw beside it.
+      const adopted = this.adoptRun(held.turns, message);
+      if (adopted !== null) {
+        return this.answered({
+          ...held,
+          bytes: held.bytes + adopted.bytes,
+          turns: [
+            ...held.turns.slice(0, adopted.at),
+            adopted.turn,
+            ...held.turns.slice(adopted.at + 1),
+          ],
+        });
+      }
       // **A prompt brings the reader back to the end.** The view this client
       // replaced engaged its follow on the prompt path for the same reason:
       // they have just asked for something to arrive, so a column left where
