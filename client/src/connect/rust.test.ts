@@ -330,6 +330,31 @@ describe('frames from the bridge', () => {
     );
     expect(store.state(), 'nothing has answered it').toEqual({ kind: 'loading' });
   });
+
+  /**
+   * **A closed connection owes no read.** A page that goes closed keeps its
+   * loading store but must not keep its bound ticking: a refresh cannot go on
+   * a socket that is gone, and the next open is the one that re-arms (#2540).
+   */
+  it('stops the read bound when the connection closes', async () => {
+    vi.useFakeTimers();
+    const connection = await opened();
+    const store = connection.subscribe(subject);
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') {
+        return Promise.resolve({ status: 'closed', greeting: null, role: false });
+      }
+      return Promise.resolve(undefined);
+    });
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('closed'));
+
+    vi.advanceTimersByTime(5_000);
+    await vi.waitFor(() =>
+      expect(invoke).not.toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
+    expect(store.state(), 'nothing has answered it').toEqual({ kind: 'loading' });
+  });
 });
 
 describe("the connection's own facts", () => {

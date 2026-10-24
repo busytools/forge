@@ -1157,6 +1157,31 @@ describe('what a row says', () => {
   });
 
   /**
+   * **A snapshot missing one of its collections must not throw.** The store
+   * is already marked `ready` and its bound cleared before the page narrows
+   * it, so a throw here leaves the page at "Reading the fleet..." with
+   * nothing left to retry it (#2540). The guarded read draws the empty
+   * collection instead.
+   */
+  it('reads a home snapshot missing its collections as empty rather than throwing', () => {
+    const partial = {
+      ...homeWire,
+      agents: undefined,
+      projects: undefined,
+      fleet: undefined,
+      accounts: undefined,
+      dictate: undefined,
+    } as unknown as HomeWire;
+    expect(() => homeFrom(partial)).not.toThrow();
+    const parsed = homeFrom(partial);
+    expect(parsed.agents).toEqual([]);
+    expect(parsed.projects).toEqual([]);
+    expect(parsed.fleet).toEqual([]);
+    expect(parsed.accounts.loading).toEqual([]);
+    expect(parsed.dictate.snapshot.models).toEqual([]);
+  });
+
+  /**
    * A server older than the field states no count, and the whole trail is
    * what it sent: the list's own length is the total then, which is what a
    * drawer reads as nothing withheld.

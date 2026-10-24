@@ -582,7 +582,7 @@ export function homeFrom(data: HomeWire): HomeWire {
     // draw a stopped line it cannot word.
     fatal_error:
       typeof data.fatal_error === 'string' && data.fatal_error !== '' ? data.fatal_error : null,
-    agents: data.agents.map((agent) => ({
+    agents: (Array.isArray(data.agents) ? data.agents : []).map((agent) => ({
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
@@ -603,9 +603,9 @@ export function homeFrom(data: HomeWire): HomeWire {
           ? null
           : { ...agent.work, gate: narrow(agent.work.gate, GATES, 'in_repo') },
     })),
-    projects: data.projects.map((row) => ({
+    projects: (Array.isArray(data.projects) ? data.projects : []).map((row) => ({
       ...row,
-      work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
+      work: { ...row.work, gate: narrow(row.work?.gate, GATES, 'in_repo') },
     })),
     // The misses are the one member here that is a union of shapes rather
     // than a union of literals, so they are narrowed by `missFrom` rather
@@ -616,14 +616,14 @@ export function homeFrom(data: HomeWire): HomeWire {
     // absent too** - a v8 server answers a v9 client's home without it - and
     // a header that summed `undefined` would draw `NaN tasks`, so it reads as
     // none.
-    fleet: (data.fleet ?? []).map((row) => ({
+    fleet: (Array.isArray(data.fleet) ? data.fleet : []).map((row) => ({
       ...row,
       rows: typeof row.rows === 'number' ? row.rows : 0,
-      misses: (row.misses as unknown[]).map(missFrom),
+      misses: (Array.isArray(row.misses) ? row.misses : []).map(missFrom),
     })),
     accounts: {
       ...data.accounts,
-      loading: data.accounts.loading.map((row) => ({
+      loading: (Array.isArray(data.accounts?.loading) ? data.accounts.loading : []).map((row) => ({
         ...row,
         state: narrow(row.state, LOADING, 'loading'),
       })),
@@ -631,8 +631,11 @@ export function homeFrom(data: HomeWire): HomeWire {
     dictate: {
       ...data.dictate,
       snapshot: {
-        ...data.dictate.snapshot,
-        models: data.dictate.snapshot.models.map((model) => ({
+        ...data.dictate?.snapshot,
+        models: (Array.isArray(data.dictate?.snapshot?.models)
+          ? data.dictate.snapshot.models
+          : []
+        ).map((model) => ({
           ...model,
           state: modelStateFrom(model.state),
         })),
