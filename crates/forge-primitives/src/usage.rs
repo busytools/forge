@@ -338,9 +338,9 @@ mod tests {
         );
         let mut moved = snapshot(at + Duration::from_secs(60));
         moved.seven_day_opus = Some(window(46.0, None));
-        assert!(!snapshot(at).same_usage(&moved), "a window that moved is a change to announce",);
+        assert!(!snapshot(at).same_usage(&moved), "a moved window is news");
         let mut moved = snapshot(at + Duration::from_secs(60));
         moved.balance = Some(7.25);
-        assert!(!snapshot(at).same_usage(&moved), "a balance that moved is a change to announce",);
+        assert!(!snapshot(at).same_usage(&moved), "a moved balance is news");
     }
 }
