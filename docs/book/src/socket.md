@@ -135,10 +135,10 @@ variants, 54 of them struct variants; the four unit variants,
 `plugin_check_updates`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 66 of `SessionUpdate`'s 70 variants are struct variants too. The other
-four are why the payload is not one shape: they are unit variants and cross
-as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
-`"dictate_availability"` and `"accounts_changed"`.
+and 67 of `SessionUpdate`'s 70 variants are struct variants too. The other
+three are why the payload is not one shape: they are unit variants and cross
+as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
+`"dictate_availability"`.
 
 ## What a client sends
 
@@ -472,11 +472,12 @@ of prose on either side.
   something of, and an update belonging to no seat at all. Two home fields
   arrive only through the second: the service status and the fatal error.
   Read that arm as absent and a page keeps what it read at subscribe for the
-  life of the connection. The account pool is a home field as well, but its
+  life of the connection. The account pool is a home field as well, and its
   announcement is also a fleet redraw, so it arrives through the first arm
-  too. The pool is the one that reads as a live state rather than as an
-  event: a card left at `0 ready, probing` looks like a slow probe rather
-  than like a page that stopped listening.
+  too; **the frame carries the pool's own state**, so a client applies it
+  instead of reading for it. A card left at `0 ready, probing` looks like a
+  slow probe rather than like a page that stopped listening, which is why
+  the frame says so rather than staying a bare wake-up.
 
   **The plugin records are keyless without being home fields.** They cross
   to a home subscriber for the same reason - they name no seat - but nothing
