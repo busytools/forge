@@ -1107,6 +1107,118 @@ describe('the loading state over the column', () => {
   });
 });
 
+describe('the held window at the column foot', () => {
+  /** One turn heavy enough that a handful pass the window. */
+  const heavy = (key: string, mb = 1): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'user',
+        uuid: `u-${key}`,
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: `${key} ${'x'.repeat(Math.floor(mb * (1 << 20)))}` }],
+        },
+      },
+    ],
+  });
+
+  /**
+   * **A fitting column keeps every row**, and an overflowing one settles on the
+   * newest window when the reader reaches its foot (#2532 review). Re-arming
+   * the follow on a column that holds everything must not trim rows the reader
+   * can see; the foot of a column that scrolls is where the oldest pages go.
+   */
+  it('leaves a fitting column alone and settles an overflowing one at the foot', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(900, 320);
+    server.page([turn('t0')], 'cursor-0');
+    await tick();
+    // The reader scrolls up and pulls pages past the window.
+    list()?.scrolledTo(0, 900, 320);
+    flushSync();
+    for (let i = 1; i <= 8; i += 1) {
+      server.page([heavy(`h${i}`)], `cursor-${i}`);
+      await tick();
+    }
+    const full = last()?.length ?? 0;
+    expect(full, 'the reader is holding an over-window history').toBeGreaterThan(8);
+
+    // The column now holds everything: re-arming the follow there must not
+    // trim rows the reader can see.
+    setMeasured(300, 900);
+    resized(100);
+    await tick();
+    expect(last()?.length, 'a fitting column keeps its rows').toBe(full);
+
+    // Overflowing again and back at the foot, the oldest pages go.
+    setMeasured(900, 320);
+    resized(100);
+    list()?.scrolledTo(580, 900, 320);
+    await tick();
+    expect(last()?.length ?? 0, 'the foot settles on the newest window').toBeLessThan(full);
+  });
+
+  /**
+   * **A landing under a fitting column drops nothing.** The settle's bound is
+   * the row at the column's top edge, which on a column that holds everything
+   * is row 0: a settle written as a budget check alone would drop the oldest
+   * pages under a reader who can see all of them (#2532 review).
+   */
+  it('keeps every row when a page lands under a fitting column', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(900, 320);
+    server.page([turn('t0')], 'cursor-0');
+    await tick();
+    list()?.scrolledTo(0, 900, 320);
+    flushSync();
+    for (let i = 1; i <= 8; i += 1) {
+      server.page([heavy(`h${i}`)], `cursor-${i}`);
+      await tick();
+    }
+    const full = last()?.length ?? 0;
+    expect(full, 'the reader is holding an over-window history').toBeGreaterThan(8);
+
+    // Everything fits, and the follow is re-armed there.
+    setMeasured(300, 900);
+    resized(100);
+    await tick();
+
+    // A page lands while the column fits: the top edge rests on row 0, so the
+    // settle may drop nothing the reader can see.
+    server.page([heavy('h9')], 'cursor-9');
+    await tick();
+    expect(last()?.length, 'the page landed and no row under the reader went').toBe(full + 1);
+  });
+
+  /**
+   * **A landing while the reader is at the latest settles the window.** The
+   * page arrives while the follow is on and the column scrolls; the column is
+   * what settles it, because it is what knows whether the whole conversation
+   * is on screen (a fitting column must keep the page it just pulled).
+   */
+  it('settles the window when a landing arrives while the reader is at the latest', async () => {
+    const server = stub();
+    draw(server);
+    setMeasured(900, 320);
+    server.page([turn('t0')], 'cursor-0');
+    await tick();
+    // The reader is at the foot of a column that scrolls.
+    list()?.scrolledTo(580, 900, 320);
+    await tick();
+    const before = last()?.length ?? 0;
+
+    // One landing of a single row over the window on its own.
+    server.page([heavy('h1', 10)], 'cursor-1');
+    await tick();
+    await tick();
+
+    expect(last()?.length ?? 0, 'the landing settled the window').toBe(before);
+  });
+});
+
 describe('a row the list has not measured', () => {
   it('is drawn rather than left hidden, so a fling is not a black column', async () => {
     const server = stub();

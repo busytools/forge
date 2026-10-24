@@ -9,7 +9,7 @@ import type { ClientMessage, ServerMessage, SessionUpdate, Subject } from '../pr
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import * as fleet from '../wire/fleet';
-import { Chat, Frames, beingWritten, type PageTurn } from './conversation';
+import { Chat, Frames, HISTORY_WINDOW_BYTES, beingWritten, type PageTurn } from './conversation';
 import { PRE_RESUME, PRE_RESUME_OPEN, RESUME, RESUME_KEY } from './testing/resume-2503';
 import type { ToolLeaf } from './leaves';
 import { echoes } from './echoes.svelte';
@@ -698,6 +698,537 @@ describe('the conversation the chat draws', () => {
     const keys = get(chat.value).turns.map((row) => row.key);
     expect(keys, 'everything walked still draws').toEqual(['t1', 't2', 't3', 't4']);
     expect(server.more().length, 'and no further ask follows the end').toBe(beforeEnd);
+    stop();
+  });
+
+  /**
+   * **Reading back through a seat may hold more than the window.** The bound
+   * is not a refusal: `older()` answers for as long as the server has pages,
+   * and the trim runs where the reader returns to the latest (#2532).
+   */
+  it('keeps pulling older history past the window', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const big = (name: string): string => `${name} ${'x'.repeat(1 << 20)}`;
+    server.send(page([turn('t0', big('t0'))], 'cursor-0'));
+    // The fresh open's own fill asks once; answer it, then walk by hand.
+    server.send(page([turn('t1', big('t1'))], 'cursor-1'));
+    chat.following(false);
+    let i = 2;
+    let pulled = 0;
+    while (pulled < 24 && chat.older()) {
+      server.send(page([turn(`t${i}`, big(`t${i}`))], `cursor-${i}`));
+      i += 1;
+      pulled += 1;
+    }
+
+    const held = get(chat.value);
+    expect(held.bytes, 'an exploration is allowed past the window').toBeGreaterThan(
+      HISTORY_WINDOW_BYTES,
+    );
+    expect(
+      held.turns.map((row) => row.key),
+      'and every pulled page is held',
+    ).toContain('t0');
+    expect(chat.older(), 'the walk itself is never refused for the budget').toBe(true);
+    stop();
+  });
+
+  /**
+   * **Returning to the latest settles on the newest window**: the oldest pages
+   * go, the newest stays, and the oldest kept turn names the page above it.
+   * The column is what calls `trim()` there, with the row at its top edge.
+   */
+  it('trims the oldest turns when the reader returns to the latest', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // Pages of 3 MiB each, so whole-page arithmetic lands at a boundary the
+    // test can name: two pages fit the window and a third would not. The
+    // weight rides the content alone, never the uuid, so a turn is one page's
+    // size rather than two.
+    const heavy = (key: string): PageTurn => ({
+      key,
+      messages: [
+        {
+          type: 'user',
+          uuid: `u-${key}`,
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: `${key} ${'x'.repeat(3 << 20)}` }],
+          },
+        },
+      ],
+    });
+    server.send(page([heavy('t0')], 'cursor-0'));
+    server.send(page([heavy('t1')], 'cursor-1'));
+    chat.following(false);
+    let i = 2;
+    while (i < 6 && chat.older()) {
+      server.send(page([heavy(`t${i}`)], `cursor-${i}`));
+      i += 1;
+    }
+    const before = get(chat.value).turns.map((row) => row.key);
+    expect(get(chat.value).bytes, 'the reader is over the window while up').toBeGreaterThan(
+      HISTORY_WINDOW_BYTES,
+    );
+
+    chat.trim();
+
+    const held = get(chat.value);
+    expect(held.bytes, 'the held set is back inside the window').toBeLessThanOrEqual(
+      HISTORY_WINDOW_BYTES,
+    );
+    expect(held.turns.at(-1)?.key, 'the latest turn is never dropped').toBe(before.at(-1));
+    // **The exact kept set, not a suffix of whatever length the trim chose.**
+    // Two 3 MiB pages fit 8 MiB and a third does not, so a trim that stopped
+    // early or dropped one page too many is a different list - which is what
+    // pins the boundary against an over-trim.
+    const keptKeys = held.turns.map((row) => row.key);
+    expect(keptKeys, 'the window is maximal: no whole page dropped past the budget').toEqual([
+      't1',
+      't0',
+    ]);
+    expect(held.cursor, 'the oldest kept turn names the page above it').toBe('cursor-0');
+
+    // The next page out would not fit, which is what stops the trim - not a
+    // loop that happens to end, and not a trim down to one row.
+    const next = heavy('t2').messages[0];
+    expect(
+      held.bytes + (JSON.stringify(next)?.length ?? 0),
+      'the first dropped page would not fit the window',
+    ).toBeGreaterThan(HISTORY_WINDOW_BYTES);
+    stop();
+  });
+
+  /**
+   * **A seat the reader leaves keeps only its newest window** (Ved,
+   * 2026-10-23): the conversation goes on folding every frame for the seat,
+   * but the history read on the way up is not held for a page nobody draws.
+   */
+  it('trims a visited seat when the reader leaves it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const big = (name: string): string => `${name} ${'x'.repeat(1 << 20)}`;
+    server.send(page([turn('t0', big('t0'))], 'cursor-0'));
+    server.send(page([turn('t1', big('t1'))], 'cursor-1'));
+    chat.following(false);
+    let i = 2;
+    while (i < 26 && chat.older()) {
+      server.send(page([turn(`t${i}`, big(`t${i}`))], `cursor-${i}`));
+      i += 1;
+    }
+    const before = get(chat.value).turns.map((row) => row.key);
+
+    chat.leaving();
+
+    const held = get(chat.value);
+    expect(held.bytes, 'the visited seat holds its newest window').toBeLessThanOrEqual(
+      HISTORY_WINDOW_BYTES,
+    );
+    expect(held.turns.length, 'the older stretch went with the page').toBeLessThan(before.length);
+    expect(held.turns.at(-1)?.key, 'the latest turn is still held').toBe(before.at(-1));
+    stop();
+  });
+
+  /**
+   * **A trimmed stretch is still reachable.** The oldest kept turn carries the
+   * cursor its page was asked with, so the next `more` asks for the page above
+   * it and the trimmed rows come back.
+   */
+  it('re-fetches the trimmed rows from the kept cursor', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const big = (name: string): string => `${name} ${'x'.repeat(1 << 20)}`;
+    server.send(page([turn('t0', big('t0'))], 'cursor-0'));
+    server.send(page([turn('t1', big('t1'))], 'cursor-1'));
+    chat.following(false);
+    let i = 2;
+    while (i < 26 && chat.older()) {
+      server.send(page([turn(`t${i}`, big(`t${i}`))], `cursor-${i}`));
+      i += 1;
+    }
+    chat.trim();
+    // The reader turns back to the history they came from: the follow is
+    // disarmed by their own scroll, and the ask is theirs.
+    chat.following(false);
+    const kept = get(chat.value);
+    const cursor = kept.cursor;
+    // The kept top turn came from the page asked with the cursor one below
+    // its own: asking for it is the ask that walks back into the trimmed
+    // stretch rather than one that skips it.
+    const top = Number((kept.turns[0]?.key ?? 't0').slice(1));
+    expect(cursor, 'the cursor points at the page above the kept top turn').toBe(
+      `cursor-${Math.max(0, top - 1)}`,
+    );
+
+    expect(chat.older(), 'the trimmed stretch is askable').toBe(true);
+    expect(server.more().at(-1), 'from the cursor the oldest kept turn carries').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: cursor,
+      turns: 20,
+    });
+    server.send(page([turn('t0', big('t0')), turn('restored', big('restored'))], 'older-than-t0'));
+
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the trimmed rows land back above the kept ones',
+    ).toContain('restored');
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'and the held window stays',
+    ).toContain(kept.turns[0]?.key);
+    stop();
+  });
+
+  /**
+   * **The newest page is the floor**, even when it alone is over the window:
+   * the bound gives way to the live end and the page stays whole.
+   */
+  it('keeps the newest page whole when it alone is over the window', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const huge = `huge ${'y'.repeat(HISTORY_WINDOW_BYTES + 1)}`;
+    server.send(page([turn('huge', huge)], 'cursor-0'));
+
+    chat.trim();
+
+    expect(words(chat), 'the live end is still drawn').toContain('yyyy');
+    expect(get(chat.value).bytes, 'and its weight is allowed past the window').toBeGreaterThan(
+      HISTORY_WINDOW_BYTES,
+    );
+    stop();
+  });
+
+  /**
+   * **A trim never cuts into the newest page.** Its rows' cursor names the
+   * place above the page, so a row dropped from inside it would be skipped by
+   * the re-fetch: the page stays whole even when it alone is over the window,
+   * and the kept top row names the page above it - the first trimmed page - so
+   * the stretch comes back in order.
+   */
+  it('keeps the newest page whole and asks above it, so no row is skipped', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const big = (name: string, mb: number): string =>
+      `${name} ${'x'.repeat(Math.floor(mb * (1 << 20)))}`;
+    // The newest page: three rows, 1 + 1 + 7.5 MiB, over the window on its own.
+    server.send(
+      page(
+        [turn('n1', big('n1', 1)), turn('n2', big('n2', 1)), turn('n3', big('n3', 7.5))],
+        'above-newest',
+      ),
+    );
+    // The reader scrolls up, and an older page lands above the newest one.
+    chat.following(false);
+    expect(chat.older(), 'the reader pulls the page above').toBe(true);
+    server.send(page([turn('o1', big('o1', 2))], 'above-o1'));
+    expect(get(chat.value).bytes, 'the held set is over the window').toBeGreaterThan(
+      HISTORY_WINDOW_BYTES,
+    );
+
+    chat.trim();
+
+    const held = get(chat.value);
+    expect(
+      held.turns.map((row) => row.key),
+      'the whole newest page stays',
+    ).toEqual(['n1', 'n2', 'n3']);
+    expect(held.bytes, 'and its weight is allowed past the window').toBeGreaterThan(
+      HISTORY_WINDOW_BYTES,
+    );
+    expect(held.cursor, 'the kept top names the page above the newest page').toBe('above-newest');
+
+    expect(chat.older(), 'the trimmed stretch is askable').toBe(true);
+    expect(server.more().at(-1)?.before, 'from the page above the kept top').toBe('above-newest');
+    server.send(page([turn('o1', big('o1', 2))], 'above-o1'));
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the trimmed page comes back above the newest one',
+    ).toEqual(['o1', 'n1', 'n2', 'n3']);
+    stop();
+  });
+
+  /**
+   * **The kept floor takes the newest page's own cursor.** A repeated row is
+   * handed back as the object already held, so its `before` still names the
+   * page that first fetched it - and after a refresh that page is stale. The
+   * trim keeps the newest page whole, so when the kept top IS its first row
+   * the ask above the window is the refresh's cursor, not the row's old stamp.
+   */
+  it('asks from the newest page cursor when the kept top is the refreshed floor', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const big = (name: string, mb: number): string =>
+      `${name} ${'x'.repeat(Math.floor(mb * (1 << 20)))}`;
+    // The seed is the newest page, so its first row is the newest-page floor.
+    server.send(page([turn('s1', big('s1', 4)), turn('s2', big('s2', 1))], 'top'));
+    // A refresh repeats both rows from the page - reusing the held objects -
+    // and brings one turn that is over the window on its own. The page's own
+    // handle names the place above its first row.
+    expect(chat.refresh(), 'the newest page is asked again').toBe(true);
+    server.send(
+      page(
+        [turn('s1', big('s1', 4)), turn('s2', big('s2', 1)), turn('x1', big('x1', 4))],
+        'above-C',
+      ),
+    );
+    // An older page lands above the floor, and the trim goes back to it.
+    chat.following(false);
+    expect(chat.older(), 'the reader pulls the page above').toBe(true);
+    server.send(page([turn('o1', big('o1', 1))], 'above-o1'));
+
+    chat.trim();
+
+    const held = get(chat.value);
+    expect(
+      held.turns.map((row) => row.key),
+      'the refreshed page stays whole, its floor included',
+    ).toEqual(['s1', 's2', 'x1']);
+    expect(held.cursor, 'the kept top asks from the refreshed page, not its own stale stamp').toBe(
+      'above-C',
+    );
+
+    expect(chat.older(), 'the stretch above the floor is askable').toBe(true);
+    expect(server.more().at(-1)?.before, 'from the refreshed page cursor').toBe('above-C');
+    server.send(page([turn('o1', big('o1', 1))], 'above-o1'));
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the dropped page comes back above the floor',
+    ).toEqual(['o1', 's1', 's2', 'x1']);
+    stop();
+  });
+
+  /**
+   * **A newest page counts toward the window.** A reconnect's newest page
+   * carries turns this client missed; a count that only took the walk's pages
+   * left the window blind to them, so repeated reconnects grew past it.
+   */
+  it('counts a newest page that lands over a loaded conversation', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('seed', 'seed words')], 'above-seed'));
+    // The fresh open's fill ask is in flight; answer it so the refresh is the
+    // next ask and its page lands as a newest one.
+    server.send(page([turn('seed', 'seed words')], 'above-seed'));
+    const before = get(chat.value).bytes;
+    expect(chat.refresh(), 'the newest page is asked for').toBe(true);
+    const fresh = `fresh ${'x'.repeat(1 << 20)}`;
+    server.send(page([turn('seed', 'seed words'), turn('fresh', fresh)], 'above-seed'));
+
+    expect(get(chat.value).bytes - before, 'the newest page is counted').toBeGreaterThan(500_000);
+    stop();
+  });
+
+  /**
+   * **The seed page is a floor too.** The subscribe's page is the one page no
+   * `more` can return: its rows name the place above it. A later newest page
+   * that carries only the running turn must not leave the seed above it
+   * droppable, or the walk heads older and skips it (#2532 review A).
+   */
+  it('keeps the seed page when a newest landing carries only the live turn', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const big = (name: string, mb: number): string =>
+      `${name} ${'x'.repeat(Math.floor(mb * (1 << 20)))}`;
+    server.send(page([turn('p0', big('p0', 1)), turn('p1', big('p1', 1))], 'top'));
+    const live = {
+      type: 'assistant',
+      uuid: 'live-1',
+      message: {
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'text', text: big('live', 9) }],
+      },
+    };
+    server.update({ chat_appended: { key: LEAD, msg: live } });
+    // The turn settles and a newest page carrying only the live turn re-bases
+    // the newest-page floor onto it.
+    expect(chat.refresh(), 'the newest page is asked for').toBe(true);
+    server.send(page([{ key: null, messages: [live] }], 'top'));
+
+    chat.trim();
+
+    const held = get(chat.value);
+    expect(
+      held.turns.map((row) => row.key),
+      'the seed page is still held',
+    ).toEqual(expect.arrayContaining(['p0', 'p1']));
+    expect(held.cursor, 'and its cursor names the page above the seed').toBe('top');
+    expect(chat.older(), 'the page above the seed is askable').toBe(true);
+    expect(server.more().at(-1)?.before, 'from the seed cursor').toBe('top');
+    stop();
+  });
+
+  /**
+   * **A seat nobody is drawing settles on its landings.** A seat the reader has
+   * left keeps receiving pages; one that lands while it is away must not grow
+   * it past the window (#2532 review B).
+   */
+  it('settles a seat nobody is drawing when a page lands', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const big = (name: string, mb: number): string =>
+      `${name} ${'x'.repeat(Math.floor(mb * (1 << 20)))}`;
+    server.send(page([turn('t0', big('t0', 1))], 'cursor-0'));
+    server.send(page([turn('t1', big('t1', 1))], 'cursor-1'));
+    chat.leaving();
+    expect(chat.older(), 'the left seat still walks').toBe(true);
+    server.send(page([turn('t2', big('t2', 10))], 'cursor-2'));
+
+    const held = get(chat.value);
+    expect(held.bytes, 'the left seat holds its window').toBeLessThanOrEqual(HISTORY_WINDOW_BYTES);
+    expect(
+      held.turns.map((row) => row.key),
+      'the oversized page is dropped',
+    ).not.toContain('t2');
+    stop();
+  });
+
+  /**
+   * **A page is dropped whole or not at all.** A page with one huge row and a
+   * couple of small ones must not lose just the big row to the budget: its
+   * rows share one cursor, so a partial drop is a partial skip (#2532 review E).
+   */
+  it('never splits a page at the window boundary', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const big = (name: string, mb: number): string =>
+      `${name} ${'x'.repeat(Math.floor(mb * (1 << 20)))}`;
+    // Two seed turns, so the fresh open's fill has nothing to ask for and the
+    // next ask is the test's own.
+    server.send(page([turn('s0', big('s0', 0.1)), turn('s1', big('s1', 0.1))], 'cursor-0'));
+    chat.following(false);
+    expect(chat.older(), 'the reader pulls a page of three rows').toBe(true);
+    server.send(
+      page(
+        [turn('h0', big('h0', 7)), turn('h1', big('h1', 0.5)), turn('h2', big('h2', 0.5))],
+        'cursor-1',
+      ),
+    );
+
+    chat.trim();
+
+    const keys = get(chat.value).turns.map((row) => row.key);
+    // A turn-wise trim would keep h1/h2 under the budget; the page's rows go
+    // together.
+    expect(keys, 'the page goes whole, never in part').not.toContain('h0');
+    expect(keys, 'and its small rows go with it').not.toContain('h1');
+    expect(keys, 'and the seed stays').toContain('s0');
+    stop();
+  });
+
+  /**
+   * **A live frame is counted against the window when it lands.** The frame's
+   * own weight is what the trim sees; a count that ignores it lets a running
+   * seat pass the budget (#2532 review F). Exactly its own JSON, so a count
+   * that adds nothing - or adds the frame twice - is a different number.
+   */
+  it('counts a live frame by its own bytes, exactly', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t0', 'the seed')], 'cursor-0'));
+    const before = get(chat.value).bytes;
+    const frame = said('x'.repeat(1 << 20));
+    server.update({ chat_appended: { key: LEAD, msg: frame } });
+
+    expect(get(chat.value).bytes - before, 'the frame adds its own weight').toBe(
+      (JSON.stringify(frame) ?? '').length,
+    );
+    stop();
+  });
+
+  /**
+   * **A frame the pile pulls back leaves the count.** A retraction removes a
+   * row's messages; the window is recomputed from what is left, so it does not
+   * keep paying for a prompt that moved (#2532 review F) - back to the byte
+   * the conversation held before the frame arrived.
+   */
+  it('takes a retracted frame out of the window count', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t0', 'the seed')], 'cursor-0'));
+    const before = get(chat.value).bytes;
+    const text = `retracted ${'x'.repeat(1 << 20)}`;
+    const uuid = 'retract-1';
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: { type: 'user', uuid, message: { role: 'user', content: [{ type: 'text', text }] } },
+      },
+    });
+    expect(get(chat.value).bytes, 'the frame was counted first').toBeGreaterThan(before);
+    server.update({ prompt_queued: { key: LEAD, uuid, text, source: 'you' } });
+
+    expect(get(chat.value).bytes, 'the pulled row leaves the count whole').toBe(before);
+    stop();
+  });
+
+  /**
+   * **A frame held back for the turn it will open is counted once.** The
+   * conversation keeps it (rule 25) and counts it while it waits; the turn
+   * that opens with it rides it without adding its weight a second time
+   * (#2532 review F).
+   */
+  it('counts a held frame once, when it is held and when it rides a turn', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const held = {
+      type: 'system',
+      subtype: 'init',
+      uuid: 'held-1',
+      note: 'held-back '.padEnd(1 << 20, 'x'),
+    };
+    server.update({ chat_appended: { key: LEAD, msg: held } });
+    expect(get(chat.value).bytes, 'the held frame counts its own weight').toBe(
+      (JSON.stringify(held) ?? '').length,
+    );
+
+    const opener = {
+      type: 'user',
+      uuid: 'open-1',
+      message: { role: 'user', content: [{ type: 'text', text: 'opens the turn' }] },
+    };
+    server.update({ chat_appended: { key: LEAD, msg: opener } });
+    expect(get(chat.value).bytes, 'and the riding frame is not counted twice').toBe(
+      (JSON.stringify(held) ?? '').length + (JSON.stringify(opener) ?? '').length,
+    );
+    expect(get(chat.value).turns, 'the two frames are one turn').toHaveLength(1);
+    stop();
+  });
+
+  /**
+   * **A waiting frame survives an empty newest page.** A seat with no turn yet
+   * can answer a refresh with an empty page - the real server sends a null
+   * cursor for it - and the frame waiting for the turn that will carry it is
+   * still held, so the landing's count must include it (`heldBytes`, not the
+   * turns alone).
+   */
+  it('counts a waiting frame across an empty newest page', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const waiting = { type: 'system', subtype: 'init', uuid: 'waiting-1', note: 'quiet line' };
+    server.update({ chat_appended: { key: LEAD, msg: waiting } });
+    server.send(page([], null));
+
+    expect(get(chat.value).bytes, 'the empty page does not lose the waiting frame').toBe(
+      (JSON.stringify(waiting) ?? '').length,
+    );
     stop();
   });
 

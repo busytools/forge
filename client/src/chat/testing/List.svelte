@@ -83,6 +83,20 @@
     records.push({ length: data.length, shift });
   });
 
+  /**
+   * The row at an offset, as `virtua` answers it.
+   *
+   * The stub performs no layout, so a row's place is its share of the height:
+   * enough for a column that asks which row its top edge rests on.
+   */
+  export function findItemIndex(offset: number): number {
+    const total = element.height;
+    const rows = data.length;
+    if (total <= 0 || rows === 0) return 0;
+    const at = Math.floor((offset / total) * rows);
+    return Math.min(rows - 1, Math.max(0, at));
+  }
+
   export function getScrollOffset(): number {
     return element.offset;
   }
