@@ -84,9 +84,13 @@ const inboundsOf = (unit: Unit | undefined): InboundLeaf[] =>
 const nudgesOf = (unit: Unit | undefined): NudgeLeaf[] =>
   rowsOf(unit).flatMap((row) => (row.tag === 'nudge' ? [row] : []));
 
-/** The hook runs a fold drew, in the order they arrived. */
+/** The hook runs a fold drew, in the order they arrived, grouped or not. */
 const runsOf = (units: Unit[]): HookLeaf[] =>
-  units.flatMap((unit) => rowsOf(unit).flatMap((row) => (row.tag === 'hook' ? [row] : [])));
+  units.flatMap((unit) =>
+    rowsOf(unit).flatMap((row) =>
+      row.tag === 'hook' ? [row] : row.tag === 'hookgroup' ? row.runs : [],
+    ),
+  );
 
 /** The first hook run a fold drew, or null when it drew none. */
 const runOf = (units: Unit[]): HookRun | null => runsOf(units)[0]?.run ?? null;
@@ -150,6 +154,37 @@ const hookFrames = (): unknown[] => [
     session_id: '41e36bf9-8391-44c4-95fe-6167881d7f73',
   },
 ];
+
+/**
+ * One session start's burst of hooks: a start and the response that settles
+ * it, per run, the first `voiced` of them carrying output and the rest silent.
+ *
+ * Eleven runs is what a fresh session opened on (Ved, 2026-10-24: eleven
+ * separate rows at the top of a fresh session, several of them empty), and a
+ * transcript on this machine carries the nine-silent-plus-one shape the tail of
+ * this fixture copies - `output` kept as a field and empty.
+ */
+const startupFrames = (count: number, voiced = 2): unknown[] =>
+  Array.from({ length: count }, (_, n) => {
+    const id = `start-${n}`;
+    const run = {
+      type: 'system',
+      hook_id: id,
+      hook_name: 'SessionStart:startup',
+      hook_event: 'SessionStart',
+    };
+    return [
+      { ...run, subtype: 'hook_started', uuid: `u-start-${n}` },
+      {
+        ...run,
+        subtype: 'hook_response',
+        output: n < voiced ? `hook ${n} said something\n` : '',
+        exit_code: 0,
+        outcome: 'success',
+        uuid: `u-end-${n}`,
+      },
+    ];
+  }).flat();
 
 describe('one turn folded into the units a view draws', () => {
   it('folds consecutive calls into one list', () => {
@@ -1884,6 +1919,68 @@ describe('one turn folded into the units a view draws', () => {
 
     expect(runOf(renamed)?.name, 'the name the frame sent').toBe('notify.sh');
     expect(runOf(renamed)?.event, 'and the event beside it').toBe('SessionStart');
+  });
+
+  it("draws a session start's hooks as one row, opened onto the hooks it carried", () => {
+    // Eleven rows at the head of a fresh session, several of them empty, is
+    // what a reader met before this fold (Ved, 2026-10-24); the run is one
+    // firing of the event, so it draws as one row carrying every hook.
+    const units = fold(startupFrames(11));
+
+    expect(kinds(units), 'one stretch, as before').toEqual(['leaves']);
+    const rows = rowsOf(units[0]);
+    expect(
+      rows.map((row) => row.tag),
+      'one row for the whole start rather than one per hook',
+    ).toEqual(['hookgroup']);
+
+    const group = rows[0];
+    if (group?.tag !== 'hookgroup') throw new Error('the start drew no group row');
+    expect(group.event, 'the event the row is named for').toBe('SessionStart');
+    expect(
+      group.runs.map((run) => run.run.name),
+      'every hook the start carried stays reachable inside the row',
+    ).toEqual(Array.from({ length: 11 }, () => 'SessionStart:startup'));
+    expect(
+      group.runs.filter((run) => run.run.body !== null && run.run.body !== ''),
+      'with the output the hooks sent',
+    ).toHaveLength(2);
+  });
+
+  it('keeps a hook outside a session start on its own row', () => {
+    // The control the grouping needs: a PostToolUse hook is one run of its own,
+    // not something a later start absorbs or a group collects.
+    const [started, response] = hookFrames();
+    const editRun = { hook_name: 'PostToolUse:Edit', hook_event: 'PostToolUse' };
+    const units = fold([
+      { ...(started as Record<string, unknown>), ...editRun },
+      { ...(response as Record<string, unknown>), ...editRun },
+    ]);
+
+    expect(
+      rowsOf(units[0]).map((row) => row.tag),
+      'a run of its own',
+    ).toEqual(['hook']);
+  });
+
+  it('opens a second row for a second start', () => {
+    // A resumed session fires the event again, and the two firings are two
+    // rows: one row per start, not one row for every start the page holds.
+    const first = startupFrames(2);
+    const second = startupFrames(2).map((frame) => {
+      const held = frame as Record<string, unknown>;
+      return {
+        ...held,
+        hook_id: `again-${String(held['hook_id'])}`,
+        uuid: `again-${String(held['uuid'])}`,
+      };
+    });
+    const units = fold([...first, call('read', 0), ...second]);
+
+    expect(
+      rowsOf(units[0]).map((row) => row.tag),
+      'a group either side of the call that separated the two starts',
+    ).toEqual(['hookgroup', 'call', 'hookgroup']);
   });
 
   it('settles each call with the result that answers it', () => {

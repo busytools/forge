@@ -208,6 +208,23 @@ export interface HookLeaf {
 }
 
 /**
+ * A session start's hooks, as one row of the work.
+ *
+ * The event fires a burst of hooks at once - eleven is what a fresh session
+ * opened on - and one row per hook buried the first of the turn's work under
+ * them (Ved, 2026-10-24). The firing is the row: it carries every run, and the
+ * reader opens it onto the hooks that said anything.
+ */
+export interface HookGroupLeaf {
+  /** The first run's key, which is what the row is keyed by. */
+  key: string;
+  /** The event the firing was for, e.g. `SessionStart`. */
+  event: string;
+  /** Every run the firing carried, in the order they arrived. */
+  runs: HookLeaf[];
+}
+
+/**
  * One row of a turn's work, in the order it arrived.
  *
  * Every row a stretch draws - a call, a peer card, a thought, a hook run, a
@@ -219,6 +236,7 @@ export type WorkRow =
   | { tag: 'card'; card: PeerCard }
   | ({ tag: 'thought' } & ThoughtLeaf)
   | ({ tag: 'hook' } & HookLeaf)
+  | ({ tag: 'hookgroup' } & HookGroupLeaf)
   | ({ tag: 'inbound' } & InboundLeaf)
   | ({ tag: 'nudge' } & NudgeLeaf);
 
@@ -1798,25 +1816,73 @@ export function fold(
    *
    * A later frame of one run replaces that run's row rather than drawing
    * beside it, in place: the list never reorders, so an update never moves a
-   * row the reader is looking at.
+   * row the reader is looking at. A run gathered under a session start is
+   * rewritten inside that row the same way.
    */
   const rewriteHook = (key: string, run: HookRun): boolean => {
     for (const [index, item] of pending.entries()) {
-      if (item.tag !== 'hook' || item.key !== key) continue;
-      pending[index] = { tag: 'hook', key, run };
+      if (item.tag === 'hook' && item.key === key) {
+        pending[index] = { tag: 'hook', key, run };
+        return true;
+      }
+      if (item.tag !== 'hookgroup') continue;
+      const at = item.runs.findIndex((held) => held.key === key);
+      if (at === -1) continue;
+      item.runs[at] = { key, run };
       return true;
     }
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit?.kind !== 'leaves') continue;
-      const held = unit.rows.find((row) => row.tag === 'hook' && row.key === key);
-      if (held === undefined) continue;
-      unit.rows = unit.rows.map((row) =>
-        row.tag === 'hook' && row.key === key ? { tag: 'hook', key, run } : row,
-      );
-      return true;
+      let rewritten = false;
+      unit.rows = unit.rows.map((row) => {
+        if (row.tag === 'hook' && row.key === key) {
+          rewritten = true;
+          return { tag: 'hook', key, run };
+        }
+        if (row.tag !== 'hookgroup') return row;
+        const where = row.runs.findIndex((held) => held.key === key);
+        if (where === -1) return row;
+        rewritten = true;
+        const runs = [...row.runs];
+        runs[where] = { key, run };
+        return { ...row, runs };
+      });
+      if (rewritten) return true;
     }
     return false;
+  };
+
+  /** The newest row drawn, which sits in `pending` while that is unflushed. */
+  const lastRow = (): WorkRow | undefined => {
+    const held = pending[pending.length - 1];
+    if (held !== undefined) return held;
+    const unit = units[units.length - 1];
+    return unit?.kind === 'leaves' ? unit.rows[unit.rows.length - 1] : undefined;
+  };
+
+  /**
+   * Draw one hook run: under the session start it belongs to, or on its own
+   * row.
+   *
+   * **The trailing row is the whole rule.** A start fires its hooks as one
+   * burst, so they arrive with nothing between them; a row that is not the
+   * start's own group ends the firing, and a later one opens a new row. That
+   * keeps a resumed session's second start a second row rather than folding
+   * every start the page holds into one.
+   */
+  const drawHook = (key: string, run: HookRun): void => {
+    const start = run.event === 'SessionStart' || run.name.startsWith('SessionStart');
+    if (start) {
+      const tail = lastRow();
+      if (tail?.tag === 'hookgroup' && tail.event === 'SessionStart') {
+        tail.runs.push({ key, run });
+        return;
+      }
+      pending.push({ tag: 'hookgroup', key, event: 'SessionStart', runs: [{ key, run }] });
+      return;
+    }
+    pending.push({ tag: 'hook', key, run });
   };
 
   /**
@@ -2042,7 +2108,7 @@ export function fold(
         // rather than being folded onto a run it may not belong to.
         const key = run === null ? keyOf(at, frame, 'hook') : `hook-${run}`;
         if (run !== null && rewriteHook(key, hookRun(frame))) continue;
-        pending.push({ tag: 'hook', key, run: hookRun(frame) });
+        drawHook(key, hookRun(frame));
         continue;
       }
       continue;

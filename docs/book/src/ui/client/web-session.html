@@ -935,6 +935,9 @@
   details.hookrow > summary .ev { color: var(--muted); flex: 1 1 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color: var(--text); }
+  /* A session start's hooks under one row, indented off the column the way a
+     thought's expansion is, so the hooks read as what the firing carried. */
+  details.hookgroup > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
   details.inboundrow > summary .ev { color: var(--muted); flex: 1 1 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   details.inboundrow > summary .ev.warn { color: var(--warn); }
@@ -2595,28 +2598,22 @@ docs: The sprite a row draws, by the class it belongs to.</div>
 
       <div class="mine">
         <div class="prose">
-          <p>And a hook's own run, closed on the hook and its own words - the markdown it injects drawn with its block marks off and its inline marks rendered, a JSON envelope read through to the context it carries - clipped to the one line the row has, with the whole output behind the open. A failed one's mark rides the closed row the way the failed chip's does, and a name that carries no event draws its event beside it.</p>
+          <p>A session start is one row, closed on what fired and how many hooks it carried, and it opens onto the hooks that said anything - the ones that printed nothing draw no row of their own. Every hook still opens onto the whole of what it printed: the markdown it injects drawn with its block marks off and its inline marks rendered, a JSON envelope read through to the context it carries.</p>
+          <p>A hook outside a start keeps a row of its own, closed on the hook and its own words, clipped to the one line the row has, with the whole output behind the open. A failed one's mark rides the closed row the way the failed chip's does, and a name that carries no event draws its event beside it.</p>
         </div>
       </div>
 
       <div class="work">
         <div class="leaves">
-          <details class="leaf hookrow">
+          <details class="leaf hookgroup">
             <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
-              <span class="tn">SessionStart:startup</span>
-              <span class="ev">repository is clean</span>
+              <span class="tn">session start &#183; 11 hooks</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
           </details>
           <details class="leaf hookrow">
             <summary><svg class="ic gl err"><use href="#i-hook"/></svg>
               <span class="tn">PostToolUse:Edit</span>
               <span class="ev">format check failed: 2 files</span>
-              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          </details>
-          <details class="leaf hookrow">
-            <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
-              <span class="tn">notify.sh</span>
-              <span class="ev">(SessionStart)</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
           </details>
           <!-- The external deliveries: each row of its own kind, the same shape
@@ -2657,20 +2654,34 @@ docs: The sprite a row draws, by the class it belongs to.</div>
 
       <div class="mine">
         <div class="prose">
-          <p>Opened, it carries the whole of what the hook printed: a summary standing in for the output would be the drop rule 25 forbids, so the row collapses it instead of clipping it.</p>
+          <p>Opened, the start lists the hooks it carried, each one drawn as the row a hook outside a start is. A hook opened carries the whole of what it printed: a summary standing in for the output would be the drop rule 25 forbids, so the row collapses it instead of clipping it.</p>
         </div>
       </div>
 
       <div class="work">
-        <details class="leaf hookrow" open>
+        <details class="leaf hookgroup" open>
           <summary>
-            <svg class="ic st"><use href="#i-check"/></svg>
-            <span class="tn">SessionStart:startup</span>
-            <span class="ev">repository is clean</span>
+            <svg class="ic gl ok"><use href="#i-hook"/></svg>
+            <span class="tn">session start &#183; 2 hooks</span>
             <svg class="ic arw"><use href="#i-chev"/></svg></summary>
           <div class="body">
-            <div class="term">repository is clean
+            <details class="leaf hookrow" open>
+              <summary>
+                <svg class="ic gl ok"><use href="#i-hook"/></svg>
+                <span class="tn">SessionStart:startup</span>
+                <span class="ev">repository is clean</span>
+                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="term">repository is clean
 branch main, nothing to commit</div>
+              </div>
+            </details>
+            <details class="leaf hookrow">
+              <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
+                <span class="tn">notify.sh</span>
+                <span class="ev">(SessionStart)</span>
+                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            </details>
           </div>
         </details>
       </div>

@@ -77,6 +77,12 @@ read as one system.
   does. The row is found by the id the machinery minted for the prompt,
   which survives into the transcript, so a reloaded row draws what the
   live one did.
+- **A session start** is one row, not one per hook: the firing says what
+  fired and how many hooks it carried, and opens onto them. A hook that
+  printed nothing draws no row of its own inside it; one that failed
+  stays even silent, and its mark rides the closed row. Every hook still
+  opens onto the whole of what it printed, and a hook outside a start
+  keeps a row of its own.
 - **A read** draws by what the file is, from the same per-format policy the
   Files reader uses: markdown renders as prose, code stays coloured with the
   file's own grammar (a `Justfile` is `just`, a script's shebang names its
