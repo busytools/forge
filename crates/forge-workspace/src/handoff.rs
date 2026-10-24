@@ -61,7 +61,18 @@ pub(crate) struct HandoffSeat<'a> {
 pub(crate) struct GroundTruth {
     pub sections: Vec<HandoffSection>,
     pub cycle: HandoffCycle,
+    /// Every path the handover read, which the successor's re-reads are
+    /// measured against. Store-only: no view draws it.
+    pub reads: Vec<String>,
 }
+
+/// How many of the successor's turns are measured.
+pub(crate) const SUCCESSOR_TURNS: u32 = 10;
+
+/// The predecessor's read set the successor is measured against is bounded:
+/// a record is not a transcript, and the count only needs the files the two
+/// sessions plausibly meet in.
+const READ_SET_CAP: usize = 200;
 
 /// Build the brief's first half. The transcript read blocks, so it runs off
 /// the actor; the git probe waits on child processes and stays async.
@@ -107,7 +118,111 @@ pub(crate) fn assemble(
             record_section(seat),
         ],
         cycle: cycle(messages, asks.len()),
+        reads: read_set(messages),
     }
+}
+
+/// Every path the session read, in transcript order, deduped and capped.
+fn read_set(messages: &[Message]) -> Vec<String> {
+    let mut reads: Vec<String> = Vec::new();
+    for (_, name, input) in tool_uses(messages) {
+        if !matches!(name, "Read" | "NotebookRead") {
+            continue;
+        }
+        let Some(path) = input.get("file_path").or_else(|| input.get("notebook_path")) else {
+            continue;
+        };
+        let Some(path) = path.as_str() else { continue };
+        if !reads.iter().any(|seen| seen == path) {
+            reads.push(path.to_owned());
+        }
+        if reads.len() >= READ_SET_CAP {
+            break;
+        }
+    }
+    reads
+}
+
+/// How the successor's first turns went, from its own transcript.
+///
+/// The first user row is the brief forge gave it, not a turn of its own, so
+/// it is skipped - and it must be, because the judgment half can carry a
+/// "do not" rule that would otherwise read as a correction. A reply the
+/// user typed later is measured for correction cues; the count is a proxy,
+/// and the anchor is that it only ever counts words a person wrote.
+pub(crate) fn successor_counts(
+    messages: &[Message],
+    predecessor_reads: &[String],
+) -> forge_primitives::HandoffSuccessor {
+    let mut turns = 0;
+    let mut reads: Vec<String> = Vec::new();
+    let mut questions = 0;
+    let mut corrections = 0;
+    for message in messages {
+        match message {
+            Message::User { message: envelope, synthetic, .. } if !*synthetic => {
+                let Some(text) = text_of(&envelope.content) else { continue };
+                if turns == 0 && text.starts_with("HANDOFF - ") {
+                    continue;
+                }
+                // The window closes when an eleventh prompt arrives: that
+                // turn is the successor's own work, not the brief's doing,
+                // and the tenth turn's own frames are already counted.
+                if turns >= SUCCESSOR_TURNS {
+                    break;
+                }
+                turns += 1;
+                if turns > 1 && states_a_correction(&text) {
+                    corrections += 1;
+                }
+            }
+            Message::Assistant { message: envelope, .. } => {
+                for block in &envelope.content {
+                    let ContentBlock::ToolUse { name, input, .. } = block else { continue };
+                    match name.as_str() {
+                        "AskUserQuestion" => questions += 1,
+                        "Read" | "NotebookRead" => {
+                            let path = input
+                                .get("file_path")
+                                .or_else(|| input.get("notebook_path"))
+                                .and_then(serde_json::Value::as_str);
+                            if let Some(path) = path
+                                && predecessor_reads.iter().any(|read| read == path)
+                                && !reads.iter().any(|seen| seen == path)
+                            {
+                                reads.push(path.to_owned());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    forge_primitives::HandoffSuccessor {
+        turns,
+        reread_files: u32::try_from(reads.len()).unwrap_or(u32::MAX),
+        questions,
+        corrections,
+    }
+}
+
+/// Whether a user prompt reads as a correction of what came before.
+fn states_a_correction(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "actually",
+        "i said",
+        "as i said",
+        "not what i asked",
+        "that is wrong",
+        "that's wrong",
+        "you missed",
+        "you forgot",
+    ]
+    .iter()
+    .any(|cue| lower.contains(cue))
 }
 
 fn seat_section(seat: &HandoffSeat<'_>, git: &HandoffGitState) -> HandoffSection {
@@ -648,6 +763,17 @@ exactly. Do not restate what is on disk: forge's own half of the brief already \
 carries the seat, the asks, the constraints, the files, the git state, the gate \
 and the board. Keep the whole reply under 600 words.";
 
+/// The handoff a session arrived by, while its first turns are measured.
+#[derive(Debug, Clone)]
+pub(crate) struct SuccessorWatch {
+    /// The occupant the handoff named.
+    pub to: String,
+    /// Turns counted so far.
+    pub turns: u32,
+    /// What its predecessor had read.
+    pub predecessor_reads: Vec<String>,
+}
+
 /// What a swap left for the occupant that continues: the text it is given,
 /// and the record the seat draws. Held until that occupant connects.
 #[derive(Debug, Clone)]
@@ -700,6 +826,81 @@ impl crate::Workspace {
         self.pending_handoffs.lock().remove(slot);
     }
 
+    /// Write one handoff to the store, which is what `at_percent` is tuned
+    /// from later. A store that cannot write is logged, never a reason to
+    /// hold up the swap: the session is already handing over.
+    pub(crate) fn record_handoff(&self, record: &HandoffRecord, predecessor_reads: &[String]) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(error) = crate::store::handoffs::put(db, record, predecessor_reads) {
+            tracing::warn!(
+                target: "forge_workspace::handoff",
+                event_name = "handoff_record_failed",
+                slot = %record.slot.display(),
+                %error,
+                "the handoff record could not be written; the swap itself is unaffected",
+            );
+        }
+    }
+
+    /// The handoff `occupant` arrived by, if it arrived by one.
+    pub(crate) fn handoff_for_successor(
+        &self,
+        slot: &SessionSlot,
+        occupant: &str,
+    ) -> Option<(HandoffRecord, Vec<String>)> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        match crate::store::handoffs::for_successor(db, slot, occupant) {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::handoff",
+                    event_name = "handoff_record_unreadable",
+                    slot = %slot.display(),
+                    %error,
+                    "the handoff record could not be read; this seat's first turns go unmeasured",
+                );
+                None
+            }
+        }
+    }
+
+    /// Measure the successor's first turns off its own transcript and write
+    /// them onto the record. Runs detached: the read is a whole transcript
+    /// and the seat has work to do.
+    pub(crate) fn measure_successor(
+        self: &Arc<Self>,
+        slot: SessionSlot,
+        occupant: String,
+        cwd: String,
+        predecessor_reads: Vec<String>,
+    ) {
+        let workspace = Arc::clone(self);
+        tokio::spawn(async move {
+            let config_dir = workspace.config_dir().to_path_buf();
+            let read_id = occupant.clone();
+            let read = tokio::task::spawn_blocking(move || {
+                forge_agent::session_history(&config_dir, &read_id, &cwd)
+            })
+            .await;
+            let messages = read.map(|history| history.messages).unwrap_or_default();
+            let counts = successor_counts(&messages, &predecessor_reads);
+            let guard = workspace.db.lock();
+            let Some(db) = guard.as_ref() else { return };
+            if let Err(error) = crate::store::handoffs::set_successor(db, &slot, &occupant, counts)
+            {
+                tracing::warn!(
+                    target: "forge_workspace::handoff",
+                    event_name = "handoff_successor_measurement_failed",
+                    slot = %slot.display(),
+                    %error,
+                    "the successor's first turns could not be written to the record",
+                );
+            }
+        });
+    }
+
     /// Run a handoff: build the ground truth, draw the row, and start the new
     /// session on the same order `/new` uses.
     ///
@@ -733,6 +934,7 @@ impl crate::Workspace {
             role: request.role.clone(),
         };
         let truth = ground_truth(self.config_dir(), &seat, &board).await;
+        let reads = truth.reads.clone();
         let record = HandoffRecord {
             slot: request.slot.clone(),
             from: request.from.clone(),
@@ -750,6 +952,7 @@ impl crate::Workspace {
             successor: None,
         };
         let text = brief_text(&record.pair(), &record.brief);
+        self.record_handoff(&record, &reads);
         // The brief is held before the row and the spawn, so a successor
         // that connects immediately cannot outrun it.
         self.set_pending_brief(&request.slot, PendingBrief { to: request.to.clone(), text });
@@ -1158,6 +1361,49 @@ mod tests {
         assert!(ground < judgment, "ground truth first: {text}");
         assert!(text.contains("seat: Busytools/forge/lead"), "the facts are rendered");
         assert!(text.contains("Next: the client row"), "and so is the judgment");
+    }
+
+    /// The successor's own first user row is the brief forge gave it, not a
+    /// turn of its own - and its judgment half can carry a "do not" rule
+    /// that would otherwise read as a correction.
+    #[test]
+    fn the_successor_counts_skip_the_brief_row() {
+        let messages = vec![
+            user("HANDOFF - 9cfe315c -> 4b21e0a7\n\nPART 2: JUDGMENT\ndo not delete the row"),
+            user("carry on"),
+            user("actually, keep the row"),
+        ];
+        let counts = successor_counts(&messages, &[]);
+        assert_eq!(counts.turns, 2, "two turns, not the brief");
+        assert_eq!(counts.corrections, 1, "and the correction is the later prompt: {counts:?}");
+    }
+
+    /// A re-read is a file the PREDECESSOR had read: the same file the
+    /// successor opened for its own reasons is not evidence the brief lost
+    /// anything.
+    #[test]
+    fn a_reread_is_a_file_the_predecessor_had_read() {
+        let messages = vec![
+            call("r1", "Read", serde_json::json!({ "file_path": "src/a.rs" })),
+            call("r2", "Read", serde_json::json!({ "file_path": "src/b.rs" })),
+        ];
+        let counts = successor_counts(&messages, &["src/a.rs".to_owned()]);
+        assert_eq!(counts.reread_files, 1, "only the file both sessions read: {counts:?}");
+    }
+
+    /// Questions and corrections are what say the successor could not pick
+    /// the work up from the brief alone.
+    #[test]
+    fn questions_and_corrections_are_counted() {
+        let messages = vec![
+            user("HANDOFF - brief"),
+            user("go on"),
+            call("q1", "AskUserQuestion", serde_json::json!({ "questions": [] })),
+            user("as i said, the server row first"),
+        ];
+        let counts = successor_counts(&messages, &[]);
+        assert_eq!(counts.questions, 1, "the ask is counted");
+        assert_eq!(counts.corrections, 1, "and the repeat is a correction: {counts:?}");
     }
 
     /// A line is "measured" only when it states a number in a unit: prose

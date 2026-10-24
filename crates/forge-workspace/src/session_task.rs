@@ -60,6 +60,11 @@ pub(crate) struct SessionTask {
     /// to what is RUNNING rather than to what is being read - which is the
     /// price of having one producer rather than two.
     pub(crate) conversation: Option<(crate::conversation_window::Window, u32)>,
+    /// The handoff this session arrived by, while its first ten turns are
+    /// measured. `None` for a session that arrived another way - the counts
+    /// exist to tune the trigger, and a session nobody handed to has
+    /// nothing to compare against.
+    pub(crate) successor: Option<handoff::SuccessorWatch>,
     /// Fires as this task drops - after `run`'s exit path has disconnected
     /// the subprocess (waited it out up to the close-wait budget, then
     /// SIGKILLed it) - so a despawn can hold its worktree removal until
@@ -443,6 +448,11 @@ impl SessionTask {
                 // login or logout arrives as a Connected on a task that
                 // has already connected once, and its row predates it.
                 let replacing = self.connected_once;
+                if replacing {
+                    // A successor that is replaced before its ten turns is
+                    // no longer the session the handoff wrote for.
+                    self.successor = None;
+                }
                 if self.connected_once {
                     // Drop oneshots from the previous identity so parked
                     // forwarder tasks exit instead of waiting on
@@ -538,6 +548,16 @@ impl SessionTask {
                         let force_new = self.domain.lock().spawned_force_new;
                         maybe_respawn_workers_on_connected(&workspace, &self.key, force_new);
                         maybe_kick_worker_on_connected(&workspace, &self.key);
+                        // A session that arrived by a handoff is measured for
+                        // its first ten turns, which is what says whether the
+                        // brief carried enough.
+                        self.successor = workspace
+                            .handoff_for_successor(&self.key, &session_id)
+                            .map(|(record, predecessor_reads)| handoff::SuccessorWatch {
+                                to: record.to,
+                                turns: 0,
+                                predecessor_reads,
+                            });
                     }
                     // A boot resolves a session from the store, so the id
                     // the CLI adopted is recorded rather than left to the
@@ -1480,6 +1500,7 @@ impl SessionTask {
     /// Act on a turn that ended normally: finish a running handoff, or start
     /// one that arrived while the turn was running.
     fn after_turn_ended(&mut self) {
+        self.advance_successor();
         let (awaiting, parked, reason) = {
             let mut domain = self.domain.lock();
             let awaiting = domain.handoff.awaiting;
@@ -1496,6 +1517,21 @@ impl SessionTask {
             return;
         }
         self.maybe_trigger_handoff();
+    }
+
+    /// Count the successor's turns, and measure them at the tenth. A
+    /// successor that leaves before then goes unmeasured rather than
+    /// writing half a comparison.
+    fn advance_successor(&mut self) {
+        let Some(watch) = self.successor.as_mut() else { return };
+        watch.turns += 1;
+        if watch.turns < handoff::SUCCESSOR_TURNS {
+            return;
+        }
+        let Some(watch) = self.successor.take() else { return };
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let cwd = workspace.cwd_for_session(&self.key).unwrap_or_default();
+        workspace.measure_successor(self.key.clone(), watch.to, cwd, watch.predecessor_reads);
     }
 
     /// The automatic trigger: at a turn boundary with no handoff running,
@@ -3051,6 +3087,7 @@ mod tests {
             connected_once,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -3206,6 +3243,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         (task, update_rx)
@@ -3233,6 +3271,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         (task, cmds)
@@ -3250,6 +3289,9 @@ mod tests {
         let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
         let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
         task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
 
         task.execute_command(Command::Handoff {
             key: slot.clone(),
@@ -3299,6 +3341,39 @@ mod tests {
             workspace.take_pending_brief(&slot).expect("the brief waits for its successor");
         assert_eq!(pending.to, record.to, "and it names the same occupant");
         assert!(pending.text.starts_with("HANDOFF - "), "the successor is given the brief");
+        assert!(
+            workspace.handoff_for_successor(&slot, &record.to).is_some(),
+            "and the record is written, so the successor is measurable",
+        );
+    }
+
+    /// The successor's window closes at its tenth turn: a row that kept
+    /// counting would measure the seat's later work against a brief that
+    /// had nothing to do with it.
+    #[tokio::test]
+    async fn the_successor_is_measured_at_its_tenth_turn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        task.successor = Some(crate::handoff::SuccessorWatch {
+            to: "old-session-id".to_owned(),
+            turns: 0,
+            predecessor_reads: Vec::new(),
+        });
+
+        for _ in 0..(crate::handoff::SUCCESSOR_TURNS - 1) {
+            task.after_turn_ended();
+        }
+        assert_eq!(
+            task.successor.as_ref().map(|watch| watch.turns),
+            Some(crate::handoff::SUCCESSOR_TURNS - 1),
+            "nine turns are counted and the watch is still open",
+        );
+
+        task.after_turn_ended();
+        assert!(task.successor.is_none(), "the tenth turn closes the measurement");
     }
 
     /// A judgment turn that ends swaps the seat, and the row's judgment is
@@ -3926,6 +4001,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -3990,6 +4066,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -4456,6 +4533,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         (task, update_rx, to_agent)
@@ -4934,6 +5012,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -4990,6 +5069,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -5046,6 +5126,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -5299,6 +5380,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -5362,6 +5444,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -5410,6 +5493,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -5457,6 +5541,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -5507,6 +5592,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -6396,6 +6482,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: std::sync::Weak::new(),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -6498,6 +6585,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -6662,6 +6750,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -6738,6 +6827,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -6793,6 +6883,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -6851,6 +6942,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         let cap = crate::conversation_window::CONVERSATION_CAP;
@@ -6955,6 +7047,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                successor: None,
                 teardown_done: None,
             };
             let frame = |at: usize| {
@@ -7029,6 +7122,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output"));
@@ -7105,6 +7199,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-reasons"));
@@ -7204,6 +7299,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-running"));
@@ -7288,6 +7384,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-not-yet"));
@@ -7542,6 +7639,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                successor: None,
                 teardown_done: None,
             };
 
@@ -7595,6 +7693,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -7686,6 +7785,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -7763,6 +7863,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -8676,6 +8777,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                successor: None,
                 teardown_done: None,
             };
 
@@ -8740,6 +8842,7 @@ provider = "anthropic"
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -8833,6 +8936,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -8908,6 +9012,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -8966,6 +9071,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         let held = crate::mcp::peers::types::WrappedPrompt {
@@ -9026,6 +9132,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         let held = crate::mcp::peers::types::WrappedPrompt {
@@ -9086,6 +9193,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -9155,6 +9263,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 

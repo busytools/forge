@@ -2594,6 +2594,7 @@ impl Workspace {
                 // Filled by the first `Connected`, which is where this task
                 // is handed the history it can later replay.
                 conversation: None,
+                successor: None,
                 teardown_done: Some(teardown_done),
             };
             let span = tracing::info_span!(
@@ -14092,6 +14093,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.run().await;
