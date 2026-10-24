@@ -33,6 +33,7 @@ const run = (extra: Partial<HookRun> = {}): HookRun => ({
   name: 'SessionStart:startup',
   event: null,
   failed: false,
+  settled: true,
   body: 'capture-line-1\ncapture-line-2\n',
   ...extra,
 });
@@ -201,6 +202,12 @@ describe('the hook run row', () => {
     expect(summaryOf(draw()), 'a run that exited clean settles green').toContain(
       'class="ic gl ok"',
     );
+
+    // A run still out is neither green nor red: the passing tone says it
+    // finished clean, and the response that settles it may never land.
+    const running = summaryOf(draw({ settled: false }));
+    expect(running, 'a run still out carries no passing tone').toMatch(/class="ic gl"/);
+    expect(running, 'and no failure tone either').not.toContain('gl err');
 
     for (const [what, sheet] of sheets()) {
       // The selector alone proves nothing, so the rule and the declaration are

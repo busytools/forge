@@ -1,6 +1,7 @@
 <script lang="ts">
   import Call from './Call.svelte';
   import Hook from './Hook.svelte';
+  import HookGroup from './HookGroup.svelte';
   import Inbound from './Inbound.svelte';
   import { opensByDefault, type ToolLeaf } from './leaves';
   import Nudge from './Nudge.svelte';
@@ -53,6 +54,8 @@
       <Call call={row.leaf} k={row.key} open={opens(row.leaf)} {turns} {onreadoutput} />
     {:else if row.tag === 'hook'}
       <Hook run={row.run} />
+    {:else if row.tag === 'hookgroup'}
+      <HookGroup group={row} />
     {:else if row.tag === 'inbound'}
       <Inbound {row} />
     {:else if row.tag === 'thought'}

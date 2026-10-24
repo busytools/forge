@@ -452,14 +452,37 @@ describe('axe over the rendered pages', () => {
               type: 'system',
               subtype: 'hook_started',
               hook_id: 'h1',
-              hook_name: 'SessionStart:startup',
-              hook_event: 'SessionStart',
+              hook_name: 'PostToolUse:Edit',
+              hook_event: 'PostToolUse',
               uuid: 'h1',
             },
             {
               type: 'system',
               subtype: 'hook_response',
               hook_id: 'h1',
+              hook_name: 'PostToolUse:Edit',
+              hook_event: 'PostToolUse',
+              output: 'format check failed',
+              stdout: 'format check failed',
+              stderr: '',
+              exit_code: 2,
+              outcome: 'error',
+              uuid: 'h2',
+            },
+            // And a session start's row, which is the disclosure those hooks
+            // gather under: a summary of its own, opening onto them.
+            {
+              type: 'system',
+              subtype: 'hook_started',
+              hook_id: 'h3',
+              hook_name: 'SessionStart:startup',
+              hook_event: 'SessionStart',
+              uuid: 'h3',
+            },
+            {
+              type: 'system',
+              subtype: 'hook_response',
+              hook_id: 'h3',
               hook_name: 'SessionStart:startup',
               hook_event: 'SessionStart',
               output: 'memory index loaded',
@@ -467,7 +490,7 @@ describe('axe over the rendered pages', () => {
               stderr: '',
               exit_code: 0,
               outcome: 'success',
-              uuid: 'h2',
+              uuid: 'h4',
             },
           ],
         },
@@ -489,6 +512,7 @@ describe('axe over the rendered pages', () => {
     // body is a `<div class="term">` of text today, and an element axe cares
     // about put in there would be checked by nothing until it is opened.
     expect(html, 'and the hook run drew, so axe saw that too').toContain('class="leaf hookrow"');
+    expect(html, "and the session start's row drew").toContain('class="leaf hookgroup"');
     // Inside the landmark the session page puts it in: the column is a region
     // of that page rather than a page, and axe reports content outside one.
     expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
