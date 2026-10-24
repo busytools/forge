@@ -7,6 +7,7 @@
  * read is its own subject. The row narrowing here is shared with that file.
  */
 
+import type { SessionUpdate } from '../protocol';
 import { reportFrom, type ServiceReport } from './fleet';
 import {
   modelStateFrom,
@@ -106,6 +107,25 @@ export interface Task {
   archived_at: WireTime | null;
   created_at: WireTime;
   updated_at: WireTime;
+}
+
+/**
+ * A `tasks_changed` update as its project and the exact tasks it carries, for
+ * a store that skips a re-read when the set has not moved.
+ *
+ * **The chase sweep announces every project every 30 s with the set
+ * unchanged** (#2540). A board that re-read 628 KB for that, or a home that
+ * re-read 72 KB, is a loop with no news in it. `null` for any other update,
+ * and for an empty task set, which names no project to compare.
+ */
+export function tasksChanged(update: SessionUpdate): { project: string; encoded: string } | null {
+  const payload = (update as { tasks_changed?: { tasks?: unknown } }).tasks_changed;
+  const tasks = payload?.tasks;
+  if (!Array.isArray(tasks) || tasks.length === 0) return null;
+  const first = tasks[0] as { project_name?: unknown };
+  const project = typeof first?.project_name === 'string' ? first.project_name : null;
+  if (project === null) return null;
+  return { project, encoded: JSON.stringify(tasks) };
 }
 
 /**

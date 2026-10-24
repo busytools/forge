@@ -19,7 +19,7 @@ import { subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
-import { homeFrom, type HomeWire } from '../wire/home';
+import { homeFrom, tasksChanged, type HomeWire } from '../wire/home';
 
 /**
  * How long an update waits before it is answered with a read.
@@ -76,6 +76,8 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   let stale = false;
   /** The core's last service report, read off the update that carried it. */
   let report: ServiceReport | null = null;
+  /** The tasks each project last announced, so an unchanged set is no read. */
+  const lastTasks = new Map<string, string>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
@@ -154,6 +156,15 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       // re-reading with nothing to say why.
       const said = serviceReport(message.update);
       if (said !== null) report = said;
+      if (said === null) {
+        const tasks = tasksChanged(message.update);
+        if (tasks !== null) {
+          // The chase sweep re-announces every project every 30 s with the set
+          // unchanged; a full home re-read for that is a loop with no news.
+          if (lastTasks.get(tasks.project) === tasks.encoded) return;
+          lastTasks.set(tasks.project, tasks.encoded);
+        }
+      }
       if (reading) {
         stale = true;
         return;

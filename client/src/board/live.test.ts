@@ -5,6 +5,7 @@ import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
 import type { BoardRead } from '../wire/board';
+import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { watchBoard } from './live';
 
@@ -170,6 +171,47 @@ describe('the board over a connection', () => {
     forge.arrive(UPDATE);
     await settle();
     expect(forge.refreshed, 'a burst was not coalesced').toEqual([BOARD]);
+    stop();
+  });
+
+  /**
+   * **The chase sweep re-announces every project every 30 s with the set
+   * unchanged** (#2540). Answering that with a full 628 KB board read is the
+   * loop the installed client was paying; only a moved task set asks.
+   */
+  it('skips a task set that has not moved', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    const task = {
+      id: 't1',
+      project_name: 'proj',
+      subject: 'a row',
+      status: 'pending',
+    } as unknown as Task;
+    const same: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [task] } },
+    };
+    const moved: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [{ ...task, status: 'completed' }] } },
+    };
+
+    forge.arrive(same);
+    await settle();
+    expect(forge.refreshed, 'the first task set asked for a read').toEqual([BOARD]);
+
+    // The read in hand answers, so a later moved set can ask again.
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    await settle();
+
+    forge.arrive(same);
+    await settle();
+    expect(forge.refreshed, 'an unchanged task set asked for another read').toEqual([BOARD]);
+
+    forge.arrive(moved);
+    await settle();
+    expect(forge.refreshed, 'a moved task set did not ask for a read').toEqual([BOARD, BOARD]);
     stop();
   });
 

@@ -4,6 +4,7 @@ import type { ServerMessage, Subject } from '../protocol';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
+import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { watchHome, type HomeRead } from './live';
 
@@ -223,6 +224,47 @@ describe('the home over a connection', () => {
     } as unknown as ServerMessage);
     await settle();
     expect(forge.refreshed, 'a background task starting asked for no read').toEqual([HOME]);
+    stop();
+  });
+
+  /**
+   * **The chase sweep re-announces every project every 30 s with the set
+   * unchanged** (#2540). A home read for that is a loop with no news; only a
+   * moved task set asks.
+   */
+  it('skips a task set that has not moved', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+    const task = {
+      id: 't1',
+      project_name: 'proj',
+      subject: 'a row',
+      status: 'pending',
+    } as unknown as Task;
+    const same: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [task] } },
+    };
+    const moved: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [{ ...task, status: 'completed' }] } },
+    };
+
+    forge.arrive(same);
+    await settle();
+    expect(forge.refreshed, 'the first task set asked for a read').toEqual([HOME]);
+
+    // The read in hand answers, so a later moved set can ask again.
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
+    await settle();
+
+    forge.arrive(same);
+    await settle();
+    expect(forge.refreshed, 'an unchanged task set asked for another read').toEqual([HOME]);
+
+    forge.arrive(moved);
+    await settle();
+    expect(forge.refreshed, 'a moved task set did not ask for a read').toEqual([HOME, HOME]);
     stop();
   });
 
