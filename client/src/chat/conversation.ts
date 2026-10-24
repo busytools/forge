@@ -804,9 +804,11 @@ const EMPTY_RETRY_MAX_MS = 30_000;
  * end. Reading back through a seat still loads whatever is pulled - the bound
  * is enforced when the reader returns to the latest, so the column settles on
  * the newest window instead of the whole transcript, and a later pull re-fetches
- * the trimmed pages through the cursor the oldest kept turn carries. In the
- * same run the return settled that build to 8.3 MB over 8 turns, and scrolling
- * up again re-fetched the trimmed pages.
+ * the trimmed pages through the cursor the oldest kept turn carries - or, when
+ * that turn is the newest page's floor row, through the newest page's own
+ * cursor rather than the row's `before` (see `pageCursor`). In the same run the
+ * return settled that build to 8.3 MB over 8 turns, and scrolling up again
+ * re-fetched the trimmed pages.
  *
  * **Eight mebibytes is the plateau on this seat**: the trim keeps whole pages,
  * so the kept set is a whole number of them - 8,294,549 bytes over 8 turns,
