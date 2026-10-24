@@ -198,7 +198,7 @@ describe('the home over a connection', () => {
       update: { prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } },
     });
     await settle();
-    expect(forge.refreshed, "a turn's start asked for no read").toEqual([HOME]);
+    expect(forge.refreshed, "a turn's start did not ask for exactly one read").toEqual(['home']);
     stop();
   });
 
@@ -469,6 +469,40 @@ describe('the home over a connection', () => {
     } as unknown as ServerMessage);
     await settle();
     expect(forge.refreshed, 'a chat message asked for a home read').toEqual([]);
+    stop();
+  });
+
+  /**
+   * **The predicate's headline, end to end.** A plugin run's frame names no
+   * seat, so the server sends it to every home subscriber - and no field of
+   * the home's snapshot carries it, so it buys no read. A keyless frame whose
+   * data the snapshot DOES carry still asks for exactly one.
+   */
+  it('reads for a keyless frame the snapshot carries, and not for the plugin family', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive({
+      kind: 'update',
+      update: { plugins_update_run_finished: {} },
+    } as unknown as ServerMessage);
+    await settle();
+    expect(forge.refreshed, 'a plugin frame asked the home for a read').toEqual([]);
+
+    // The read the frame above would have owed is answered before the next
+    // one is asked for, so the second assertion is the predicate's and not
+    // the in-flight guard's. The positive control is the other keyless
+    // family the home carries, not a fleet redraw.
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: null });
+    forge.arrive({
+      kind: 'update',
+      update: { service_status: { severity: 'warning', message: 'a notice' } },
+    } as unknown as ServerMessage);
+    await settle();
+    expect(
+      forge.refreshed,
+      'a keyless frame the snapshot carries did not ask for one read',
+    ).toEqual(['home']);
     stop();
   });
 

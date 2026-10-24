@@ -72,13 +72,19 @@ impl Subject {
     /// conversation - so a second table of variants here would both drift and
     /// hand a home subscriber every token of every seat in the fleet.
     ///
-    /// **The fleet region is not the whole home.** The service status, the
-    /// fatal error and the plugin records carry no slot, are not fleet news,
-    /// and are fields of the home's own snapshot - so `fleet_news` alone
-    /// would drop them, leaving a client to draw what it read once at
-    /// subscribe for the life of the connection. They come with the
-    /// slot-less arm below, which the client mirrors in
-    /// `client/src/wire/fleet.ts`'s `coversHome`.
+    /// **The fleet region is not the whole home.** Two home fields carry no
+    /// slot and are not fleet news: the service status and the fatal error.
+    /// They come with the slot-less arm below, and without it a client would
+    /// draw what it read once at subscribe for the life of the connection.
+    /// The account pool is a home field too, but its announcement is also a
+    /// fleet redraw, so it arrives through the first arm.
+    ///
+    /// **That arm is wider than the client's read rule, by the plugin
+    /// family.** The plugin records cross to a home subscriber only because
+    /// they name no seat; no field of the home snapshot carries them, their
+    /// reader is the `extensions` subject, and `coversHome`
+    /// (`client/src/wire/fleet.ts`) declines the home read for them on
+    /// purpose. Delivery here is the superset.
     pub fn covers(&self, update: &SessionUpdate) -> bool {
         match self {
             // **The board's own variants are not the home's.** A cron or a

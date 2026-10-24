@@ -3345,7 +3345,10 @@ impl Workspace {
         snapshot: forge_primitives::usage::UsageSnapshot,
     ) {
         use forge_gateway::LoadingState;
-        let healed = self.accounts.loading_state(key) == LoadingState::Bailed;
+        let previous = self.accounts.usage(&key.0);
+        let was_loading = self.accounts.loading_state(key);
+        let was_error = self.accounts.usage_error(&key.0);
+        let healed = was_loading == LoadingState::Bailed;
         // A window at the cap with a reset ahead is proven exhaustion:
         // the gateway cools the account until that reset and every
         // bound session re-selects. Read off the incoming snapshot -
@@ -3367,7 +3370,25 @@ impl Workspace {
                 "Bailed -> Ready on a clean usage poll; the walk serves it for new sessions",
             );
         }
-        self.announce_accounts_changed();
+        // A poll that found the figures already held is no news, and
+        // announcing it costs every home subscriber a full read for an
+        // answer that cannot differ. Everything the wire carries is
+        // compared: the loading state, the last probe failure (a success
+        // after a transient failure clears it, and the figures can be
+        // identical; its hold-down instant is cleared with it, so the error
+        // is the whole of that change), and the usage's own fields.
+        // `fetched_at` is the one exclusion - it records when the reading
+        // was taken rather than what it says, and it moves on every probe.
+        let moved = was_loading != self.accounts.loading_state(key)
+            || was_error != self.accounts.usage_error(&key.0)
+            || match (&previous, &self.accounts.usage(&key.0)) {
+                (Some(before), Some(after)) => !before.same_usage(after),
+                (None, None) => false,
+                _ => true,
+            };
+        if moved {
+            self.announce_accounts_changed();
+        }
     }
 
     /// Read the cached usage snapshot for an account by display
@@ -20831,6 +20852,108 @@ provider = "anthropic"
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
             .any(|frame| matches!(frame.update, SessionUpdate::AccountsChanged));
         assert!(announced, "a probe that wrote the pool announced nothing");
+    }
+
+    /// A poll that found the pool as it already stood announces nothing.
+    ///
+    /// **`fetched_at` moves on every probe**, so a comparison against the
+    /// whole snapshot makes every poll news: six idle accounts then buy six
+    /// full home reads a minute for figures nobody changed. What is news is
+    /// the pool's loading state or its usage, and a probe that moved either
+    /// still announces.
+    #[tokio::test]
+    async fn a_probe_announces_only_a_pool_that_moved() {
+        fn announced(updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>) -> usize {
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged))
+                .count()
+        }
+
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut updates = workspace.subscribe();
+        while updates.try_recv().is_ok() {}
+
+        let key = AccountKey("Stargate".to_owned());
+        let first = usage_at(10.0);
+        workspace.record_usage_success(&key, first.clone());
+        assert_eq!(announced(&mut updates), 1, "the loading transition is news");
+
+        let mut later = first.clone();
+        later.fetched_at = first.fetched_at + std::time::Duration::from_secs(60);
+        workspace.record_usage_success(&key, later);
+        assert_eq!(announced(&mut updates), 0, "an unchanged pool is no news");
+
+        workspace.record_usage_success(&key, usage_at(11.0));
+        assert_eq!(announced(&mut updates), 1, "a window that moved is news");
+    }
+
+    /// A probe that moves only the pool's loading state is news, even when
+    /// its figures match the ones already held.
+    ///
+    /// The pool can hold a snapshot while an account is still `Loading` -
+    /// the cache seeds usage before anything settles the state - and a poll
+    /// that is what moves it to `Ready` changes nothing else. Without the
+    /// loading clause the card keeps `0 ready, probing` until something else
+    /// moves.
+    #[tokio::test]
+    async fn a_probe_that_only_settles_the_loading_state_is_news() {
+        use forge_gateway::LoadingState;
+
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut updates = workspace.subscribe();
+        while updates.try_recv().is_ok() {}
+        let key = AccountKey("Stargate".to_owned());
+
+        let cached = usage_at(10.0);
+        workspace.accounts.set_usage(&key, cached.clone());
+        workspace.accounts.set_loading(&key, LoadingState::Loading);
+
+        let mut same = cached;
+        same.fetched_at += std::time::Duration::from_secs(60);
+        workspace.record_usage_success(&key, same);
+
+        let announced = std::iter::from_fn(|| updates.try_recv().ok())
+            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged))
+            .count();
+        assert_eq!(announced, 1, "the Loading -> Ready move was not announced");
+    }
+
+    /// A success after a transient failure is news even when its figures
+    /// match the ones held.
+    ///
+    /// The loading row carries the last probe failure and its hold-down, and
+    /// a clean probe clears both. With the usage identical that is the only
+    /// change in the pool, so a comparison that looks at the figures alone
+    /// drops the read and leaves a client drawing a failure the pool no
+    /// longer holds.
+    #[tokio::test]
+    async fn a_probe_after_a_failure_is_news_even_when_the_figures_match() {
+        use forge_gateway::UsageFetchStatus;
+
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut updates = workspace.subscribe();
+        while updates.try_recv().is_ok() {}
+        let key = AccountKey("Stargate".to_owned());
+
+        let held = usage_at(10.0);
+        workspace.accounts.set_usage(&key, held.clone());
+        workspace.accounts.set_last_error(
+            &key,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(120)),
+        );
+
+        let mut same = held;
+        same.fetched_at += std::time::Duration::from_secs(60);
+        workspace.record_usage_success(&key, same);
+
+        let announced = std::iter::from_fn(|| updates.try_recv().ok())
+            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged))
+            .count();
+        assert_eq!(announced, 1, "the cleared probe failure was not announced");
     }
 
     /// An org whose primaries cannot serve the project's model and whose

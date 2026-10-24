@@ -9,6 +9,8 @@ import {
   BOARD_REFUSAL_PREFIX,
   coversHome,
   fleetNews,
+  HOME_IGNORES,
+  HOME_WAKES,
   isBoardRefusal,
   REDRAWS,
   serviceReport,
@@ -343,22 +345,23 @@ describe('what one update asks of the fleet', () => {
   /**
    * What a home subscriber is SENT, which is not what the region DRAWS. A
    * slot-less update belongs to no seat, so home is the only subscription
-   * that could have carried it, and the service status, the fatal error and
-   * the plugin records all arrive that way. Gating a reader on `fleetNews`
-   * alone throws them away, and the page keeps what it read at subscribe for
-   * the life of the connection.
-   *
-   * The account pool is the one of these that reads as a live state rather
-   * than as an event: a card that keeps `0 ready, probing` while the pool has
-   * been ready for minutes looks like a slow probe rather than like a page
-   * that stopped listening.
+   * that could have carried it - but only the ones whose data the snapshot
+   * carries are worth a read. Gating a reader on `fleetNews` alone throws
+   * the service status and the fatal error away, and the page keeps what it
+   * read at subscribe for the life of the connection. The account pool is
+   * the exception on the other side: it is a fleet redraw, so the region's
+   * own table already carries it.
    */
-  it('counts a slot-less update as one the home is sent', () => {
+  it('counts a slot-less update as one the home is sent when the snapshot carries it', () => {
     expect(coversHome({ service_status: { state: 'ok' } })).toBe(true);
     expect(coversHome({ fatal_error: { message: 'it died' } })).toBe(true);
-    expect(coversHome({ plugins_inventory_updated: {} })).toBe(true);
     expect(coversHome('catalog_loaded')).toBe(true);
     expect(coversHome('accounts_changed')).toBe(true);
+    // **A plugin update is not home news.** The inventory is the extensions
+    // subject's read, and no `HomeWire` field carries it; the keyless arm
+    // used to accept it as a refresh for an answer that could not differ.
+    expect(coversHome({ plugins_inventory_updated: {} })).toBe(false);
+    expect(coversHome({ plugins_update_run_progress: {} })).toBe(false);
     // A turn's own words on a watched seat are neither fleet news nor
     // slot-less, so a home subscriber is never sent them.
     expect(coversHome(appended({ type: 'assistant' }))).toBe(false);
@@ -574,5 +577,176 @@ describe('the variant census', () => {
 
     const twice = [...REDRAWS].filter((name) => NOT_NEWS.includes(name));
     expect(twice, "a name in both the client's redraw mirror and its not-news list").toEqual([]);
+  });
+});
+
+/**
+ * The home's coverage of every variant, which is the predicate a read is
+ * spent on.
+ *
+ * `coversHome` decides whether one update is answered with a full snapshot
+ * encode, and before this census its keyless half was "everything with no
+ * seat": a plugin run's progress asked the home for an answer that cannot
+ * carry it. The two tables in `fleet.ts` are the decision. This block holds
+ * them to the enum and to the predicate, so a variant added, renamed or
+ * dropped is a red build that names it rather than a page that quietly stops
+ * following something or quietly reads for nothing.
+ */
+describe('the home variant census', () => {
+  /** The variants that cross as a bare string, since they carry no payload. */
+  const UNIT = new Set([
+    'catalog_loaded',
+    'cli_version_changed',
+    'accounts_changed',
+    'dictate_availability',
+  ]);
+
+  /** One update of `name`, shaped so its own classification can read it. */
+  function sample(name: string, keyed: Set<string>): SessionUpdate {
+    if (name === 'chat_appended') {
+      // The one variant whose answer is a field's, not a name's.
+      return appended({ type: 'result', is_error: false, subtype: 'success' });
+    }
+    if (UNIT.has(name)) return name;
+    return { [name]: keyed.has(name) ? { key: LEAD } : {} };
+  }
+
+  it('decides every declared variant, and the predicate follows the decision', () => {
+    const { names, closed } = serverVariantNames();
+    const news = new Set(serverArms().map((name) => snake(name)));
+    const keyed = new Set(serverSlots().keyed.map((name) => snake(name)));
+
+    // The parse's own denominator: a run that stopped early would find every
+    // name it did read classified, which is the shape of a clean run over
+    // nothing. The enum's variant count is asserted by the fleet census above.
+    expect(closed, 'the parse never reached the end of `SessionUpdate`').toBe(true);
+
+    // A variant is decided by one of four tables: a fleet arm, the fleet's
+    // not-news list, or one of the home's two. A new variant in none is the
+    // failure this census exists for.
+    const unclassified = names.filter(
+      (name) =>
+        !news.has(name) &&
+        !NOT_NEWS.includes(name) &&
+        !HOME_WAKES.has(name) &&
+        !HOME_IGNORES.has(name),
+    );
+    expect(
+      unclassified,
+      'a variant in no fleet arm, NOT_NEWS, HOME_WAKES or HOME_IGNORES is one nobody decided ' +
+        'about: say whether the home reads for it, and why',
+    ).toEqual([]);
+
+    // The home's two tables cannot both claim a name, and an ignore cannot
+    // shadow a fleet redraw except for the board pair that left the snapshot
+    // (#2517). Anything else is a second, contradictory decision.
+    const bothHome = names.filter((name) => HOME_WAKES.has(name) && HOME_IGNORES.has(name));
+    expect(bothHome, 'a name in both home tables is a decision nobody can read').toEqual([]);
+    const shadows = [...HOME_IGNORES.keys()].filter((name) => news.has(name));
+    expect(
+      shadows,
+      'an ignored variant the fleet redraws for is a second decision over the same instant',
+    ).toEqual(['cron_schedules_changed', 'connector_subscriptions_changed']);
+
+    // And the predicate follows the decision, for every variant rather than
+    // for the handful sampled above: an ignore wins over a fleet arm, a wake
+    // reads, any other fleet arm reads, and the rest is silent.
+    for (const name of names) {
+      const expected = !HOME_IGNORES.has(name) && (HOME_WAKES.has(name) || news.has(name));
+      expect(
+        coversHome(sample(name, keyed)),
+        `${name} ${expected ? 'changes' : 'cannot change'} the home's answer`,
+      ).toBe(expected);
+    }
+  });
+
+  /**
+   * The decision itself, restated so it cannot move by accident.
+   *
+   * The census above derives its expectation from these two tables, so it
+   * catches a variant nobody classified and a predicate that disagrees with
+   * the tables - but not a table entry quietly dropped. This is the list a
+   * person decided; a change to it is a change to what the home follows, and
+   * that is worth reading in a diff.
+   */
+  it('holds the home tables to the set a person decided', () => {
+    expect([...HOME_WAKES.keys()].sort()).toEqual([
+      'accounts_changed',
+      'catalog_loaded',
+      'cli_version_changed',
+      'dictate_availability',
+      'dictate_models_changed',
+      'fatal_error',
+      'service_status',
+      'worker_status_changed',
+    ]);
+    expect([...HOME_IGNORES.keys()].sort()).toEqual([
+      'connector_subscriptions_changed',
+      'cron_schedules_changed',
+      'plugins_cli_action_failed',
+      'plugins_cli_action_succeeded',
+      'plugins_inventory_refresh_failed',
+      'plugins_inventory_updated',
+      'plugins_rollback_failed',
+      'plugins_rollback_succeeded',
+      'plugins_update_run_finished',
+      'plugins_update_run_progress',
+    ]);
+  });
+
+  it('carries no name the enum no longer declares, and states a reason for each', () => {
+    const { names } = serverVariantNames();
+    const declared = new Set(names);
+
+    for (const [table, label] of [
+      [HOME_WAKES, 'HOME_WAKES'],
+      [HOME_IGNORES, 'HOME_IGNORES'],
+    ] as const) {
+      const stale = [...table.keys()].filter((name) => !declared.has(name));
+      expect(stale, `${label} names a variant the enum does not declare`).toEqual([]);
+      const unreasoned = [...table.entries()]
+        .filter(([, why]) => why.trim() === '')
+        .map(([name]) => name);
+      expect(unreasoned, `${label} carries a row with no reason`).toEqual([]);
+    }
+  });
+
+  /**
+   * **Every keyless variant has a home decision, both ways round.**
+   *
+   * The server delivers every slot-less variant to a home subscriber
+   * (`envelope.rs`), so a keyless variant nobody has decided about is one
+   * that reaches the home and is silently dropped here - the failure this
+   * block exists to make loud, and the forward check the fleet census makes
+   * cannot see it. The board's own two are keyed on the project's lead and
+   * are named for the snapshot's history rather than for the keyless arm.
+   */
+  it('decides every keyless variant, in exactly one home table', () => {
+    const { keyed, seatless: seatlessNames } = serverSlots();
+    const seatless = new Set(seatlessNames.map((name) => snake(name)));
+    const keyedByDesign = new Set(['cron_schedules_changed', 'connector_subscriptions_changed']);
+
+    expect(seatless.size, 'the seat-less arm was not read out of protocol.rs').toBeGreaterThan(3);
+    // The two arms' own denominator. A conditional `slot()` arm belongs to
+    // neither list, and every variant it names would then reach a subscription
+    // this test never asks about.
+    expect(
+      keyed.length + seatlessNames.length,
+      'a variant is in neither `slot()` arm, so neither this census nor the reader can place it',
+    ).toBe(serverVariantNames().names.length);
+
+    const wrong = [...HOME_WAKES.keys(), ...HOME_IGNORES.keys()].filter(
+      (name) => !seatless.has(name) && !keyedByDesign.has(name),
+    );
+    expect(wrong, 'a table says slot-less about a variant that carries a seat').toEqual([]);
+
+    const undecided = [...seatless].filter(
+      (name) => !HOME_WAKES.has(name) && !HOME_IGNORES.has(name),
+    );
+    expect(
+      undecided,
+      'a keyless variant reaches every home subscriber and neither table decides its read: ' +
+        'say which field of the snapshot carries it, or why none does',
+    ).toEqual([]);
   });
 });
