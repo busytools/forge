@@ -3327,8 +3327,8 @@ mod tests {
     /// A generic scratch filename under `/tmp` is shared by every session
     /// on the machine, so a concurrent seat can overwrite it mid-task and
     /// the harness surfaces the foreign content as the file's state.
-    /// Pinned with the naming remedy and the class it belongs to, because
-    /// the hazard is invisible until the clobber lands.
+    /// Pinned with the naming remedy, because the hazard is invisible
+    /// until the clobber lands.
     #[test]
     fn the_conduct_block_carries_the_scratch_name_rule() {
         assert!(
@@ -3352,11 +3352,11 @@ mod tests {
         );
     }
 
-    /// A review round builds in the same checkout the worker handed over,
-    /// so a worker's own re-run or a reviewer's mutation pass in the live
-    /// tree races it - and a kill in a tree something else is writing is
-    /// not independent evidence. Pinned on both sides, because the rule
-    /// reads as ordinary diligence without the reason.
+    /// Work done after handover is work the round did not ask for, so the
+    /// worker leaves the tree alone and a reviewer's mutation pass runs in
+    /// a detached throwaway worktree - a kill in a tree something else is
+    /// writing is not independent evidence. Pinned on both sides, because
+    /// the rule reads as ordinary diligence without the reason.
     #[test]
     fn the_conduct_block_carries_the_worktree_quiesce_rule() {
         assert!(

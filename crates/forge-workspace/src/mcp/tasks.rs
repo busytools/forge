@@ -1489,7 +1489,7 @@ mod tests {
     /// off that wait in the same pass. Pinned on both doors, because
     /// either one can strand the chain.
     #[test]
-    fn the_update_and_delete_descriptions_state_the_waiter_repoint() {
+    fn the_update_and_delete_descriptions_state_the_waiter_release() {
         let facade = MockTasksFacade::new().into_arc();
         let slot = lead_slot();
         let update = Update { facade: facade.clone(), slot: slot.clone() };

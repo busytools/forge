@@ -9684,6 +9684,10 @@ mod lead_charter_tests {
                 "the lead charter does not forbid a worker as trigger: {clause}",
             );
         }
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("A worker has no autonomous wake"),
+            "the false absolute must not come back beside the correct wording",
+        );
     }
 
     /// The charter is shipped text every lead reads, so a blocked CLI tool
