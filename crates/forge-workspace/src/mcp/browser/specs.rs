@@ -9,6 +9,8 @@
 //! family carries beyond upstream are marked as such, and each names an
 //! argument upstream does not have - `force`, `expression`, the hand-off's
 //! `tab` - or stands as a tool of its own built from the same driver.
+//! `browser_close`'s description is this family's own: it names the session's
+//! current tab, which is what a close means here.
 //!
 //! Kept apart from the tools themselves so the surface a model reads is one
 //! table rather than a struct apiece: a shape is edited here and nowhere
