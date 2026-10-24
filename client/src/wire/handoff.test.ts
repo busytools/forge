@@ -36,6 +36,32 @@ describe('the handoff record', () => {
     expect(handoffOf(wire({ to: null })), 'and no to is the same').toBeNull();
   });
 
+  /**
+   * **A section with no label is dropped, deliberately.** The heading is the
+   * writer's own word for the block; inventing one would attribute the lines
+   * to a heading nobody chose. This is a record shape, not a CLI frame, so
+   * the drop is a decision this test holds rather than a rendering gap.
+   */
+  it('drops a section with no label rather than inventing one', () => {
+    const record = handoffOf(
+      wire({
+        brief: {
+          ground_truth: [
+            { lines: ['unlabelled'] },
+            { label: 'seat', lines: ['Busytools/forge/lead'] },
+            {},
+          ],
+          judgment: [{ label: 7, lines: ['not a heading'] }],
+        },
+      }),
+    );
+    expect(
+      record?.ground_truth.map((section) => section.label),
+      'only the section that names itself is drawn',
+    ).toEqual(['seat']);
+    expect(record?.judgment, 'a non-string label is no label either').toEqual([]);
+  });
+
   it('keys the row by the pair, so a reconnect lands on one row', () => {
     const record = handoffOf(wire());
     expect(record).not.toBeNull();
