@@ -121,6 +121,14 @@ pub struct AccountLoadingRow {
     pub retry_after: Option<std::time::Duration>,
     /// Which repair instruction a bailed row earns.
     pub auth: AccountAuth,
+    /// A cached usage window is at its cap with the reset still ahead, so a
+    /// spawn would not bind here until then. **Carried without the usage**:
+    /// it is the half of the usage that moves selection, and a client
+    /// comparing two pools needs it to know a frame moved a project row.
+    pub at_cap: bool,
+    /// The rotation is holding the account out after a probe wrote a limit.
+    /// The other selection input a usage move can take with it.
+    pub cooling: bool,
 }
 
 /// The account pool as a view draws it: the rows the home's snapshot carries

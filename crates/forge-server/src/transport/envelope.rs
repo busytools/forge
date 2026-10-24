@@ -595,6 +595,8 @@ mod tests {
             last_error: None,
             retry_after: Some(std::time::Duration::from_secs(30)),
             auth: forge_primitives::account::AccountAuth::Token,
+            at_cap: true,
+            cooling: false,
         });
         accounts.all_loaded = true;
         accounts.gateway.ready = true;
@@ -613,6 +615,8 @@ mod tests {
         assert_eq!(body["gateway"]["bind_error"], "port in use");
         assert_eq!(body["loading"][0]["display_name"], "A");
         assert_eq!(body["loading"][0]["state"], "ready");
+        assert_eq!(body["loading"][0]["at_cap"], true, "the selection signal crosses");
+        assert_eq!(body["loading"][0]["cooling"], false);
         assert_eq!(body["usage"][0]["display_name"], "A");
         assert!(body["usage"][0]["snapshot"].is_null(), "an absent snapshot crosses as null");
         let back: SessionUpdate = serde_json::from_value(json).expect("decode");

@@ -372,6 +372,10 @@ interface AccountLoadingRow {
   last_error: unknown;
   retry_after: unknown;
   auth: string;
+  /** A usage window is at its cap with the reset ahead: selection refuses it. */
+  at_cap: boolean;
+  /** The rotation holds the account out after a probe wrote a limit. */
+  cooling: boolean;
 }
 
 export interface AccountsWire {
@@ -410,10 +414,12 @@ export function accountsFrom(value: unknown): AccountsWire {
     },
     usage: Array.isArray(data.usage) ? (data.usage as AccountsWire['usage']) : [],
     loading: (Array.isArray(data.loading) ? data.loading : []).map((row) => {
-      const state = (row as { state?: unknown }).state;
+      const held = row as { state?: unknown; at_cap?: unknown; cooling?: unknown };
       return {
         ...(row as AccountLoadingRow),
-        state: narrow(typeof state === 'string' ? state : '', LOADING, 'loading'),
+        state: narrow(typeof held.state === 'string' ? held.state : '', LOADING, 'loading'),
+        at_cap: held.at_cap === true,
+        cooling: held.cooling === true,
       };
     }),
   };
@@ -441,10 +447,16 @@ export function accountsPayload(update: SessionUpdate): AccountsWire | null {
  * listener's state are read from - the usage rows aside.
  *
  * **Why the fold is conditional.** `HomeWire.projects[].would_bind` and its
- * `chip` derive from the pool, so a loading change, a settle or a probe
- * failure moves them; only a read refreshes those. The usage rows are the
- * drift the fold exists to stop paying for, and no row or card reads them
- * beyond the rail chip's figures.
+ * `chip` derive from the pool, so a loading change, a settle, a probe failure
+ * or the selection signal moves them; only a read refreshes those. The usage
+ * rows are the drift the fold exists to stop paying for, and no row or card
+ * reads them beyond the rail chip's figures.
+ *
+ * **`at_cap` and `cooling` are the usage that moves selection**, carried on
+ * the row so a frame can be compared without its usage: a probe landing at a
+ * window's cap changes neither the loading state nor the failure, and a
+ * comparator without them folds a frame that just took the account out of the
+ * walk.
  *
  * `retry_after` is left out on purpose: it is a countdown that shrinks on
  * every read and no view draws it, so comparing it would turn every frame
@@ -465,6 +477,7 @@ export function poolFactsChanged(before: AccountsWire, after: AccountsWire): boo
     const now = after.loading[at];
     if (was === undefined || now === undefined) return true;
     if (was.display_name !== now.display_name || was.state !== now.state) return true;
+    if (was.at_cap !== now.at_cap || was.cooling !== now.cooling) return true;
     if (JSON.stringify(was.last_error) !== JSON.stringify(now.last_error)) return true;
   }
   return false;

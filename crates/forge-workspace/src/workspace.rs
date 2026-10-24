@@ -2702,6 +2702,8 @@ impl Workspace {
                     last_error,
                     retry_after,
                     auth: auth.unwrap_or(crate::views::AccountAuth::Token),
+                    at_cap: self.accounts.is_saturated(&key),
+                    cooling: self.gateway.is_cooling(&key),
                 }
             })
             .collect()
@@ -3835,8 +3837,9 @@ impl Workspace {
     /// Called from the writes that move it - a boot probe settling, the usage
     /// poller landing or failing, and the listener binding - because none of
     /// them belongs to a seat. The frame carries the pool's drawn state, built
-    /// by [`Self::account_pool_view`], so a subscriber applies it instead of
-    /// re-reading the home.
+    /// by [`Self::account_pool_view`], so a subscriber applies a usage-only
+    /// move without a home re-read; a move in what a project row binds on
+    /// still asks for the snapshot that refreshes it.
     pub(crate) fn announce_accounts_changed(&self) {
         let _ = self
             .update_tx
