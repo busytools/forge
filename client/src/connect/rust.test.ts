@@ -300,7 +300,6 @@ describe('frames from the bridge', () => {
     expect(invoke, 'the first ask crossed').toHaveBeenCalledWith('client_subscribe', {
       what: subject,
       answering: false,
-      browser: false,
     });
 
     // The bound fires while connecting: the refresh cannot go, so the timer dies.

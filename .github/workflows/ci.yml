@@ -339,13 +339,15 @@ jobs:
       # The distribution is what this job downloads: cef-dll-sys fetches a
       # 307 MB archive on a cold build. Keyed on the pinned cef-dll-sys
       # version rather than the lockfile, so an unrelated dependency move
-      # does not pay for the download again. The wrapper's cmake/ninja build
-      # stays in rust-cache below: that is target-dir output keyed by the
-      # lockfile, which is what rust-cache covers.
+      # does not pay for the download again. **The workspace's lock carries
+      # it**: the browser host is where CEF lives now, and the client's own
+      # lock no longer names it. The wrapper's cmake/ninja build stays in
+      # rust-cache below: that is target-dir output keyed by the lockfile,
+      # which is what rust-cache covers.
       - name: Read the pinned CEF version
         id: cef
         run: |
-          version=$(awk '/^name = "cef-dll-sys"$/{getline; sub(/^version = "/, ""); sub(/"$/, ""); print}' client/src-tauri/Cargo.lock)
+          version=$(awk '/^name = "cef-dll-sys"$/{getline; sub(/^version = "/, ""); sub(/"$/, ""); print}' Cargo.lock)
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
