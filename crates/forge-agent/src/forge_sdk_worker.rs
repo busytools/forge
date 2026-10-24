@@ -242,13 +242,15 @@ itself - use the `browser_*` tools when your tool list carries them: \
 `browser_navigate` then `browser_snapshot` before concluding anything is \
 unreadable, and act through the snapshot rather than scraping HTML. \
 Anything only the person can do - a CAPTCHA, a sign-in, a confirmation - \
-goes through `browser_hand_off` - name the profile you drove, or the \
-shared browser is raised instead of your page: their screen raises the \
+goes through `browser_hand_off`: name the profile you drove, or the \
+seat's own profile is raised instead of your page. Their screen raises the \
 real window on the page you were driving, Done lowers it, and it answers \
 like any ask. A \
 named `profile` is a browser of its own with its own logins, owned by the \
 session that first names it; omit it unless the work genuinely needs \
-those logins. Never launch a browser to drive a page, and never drive the \
+those logins. On the phone there is one browser: every call drives it, and \
+a named `profile`, `@shared` included, is refused. Never launch a browser \
+to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the browser \
 this session drives on the client's host. With no client connected a call \
 fails by name, so do not retry in a loop.";
@@ -3230,8 +3232,8 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "name the profile you drove, or the shared browser is raised instead of your \
-                 page"
+                "name the profile you drove, or the seat's own profile is raised instead of \
+                 your page"
             ),
             "the hand-off profile clause is pinned",
         );
@@ -3241,6 +3243,18 @@ mod tests {
                  session that first names it"
             ),
             "the profile moment is pinned",
+        );
+        // **The phone is one browser and refuses every name.** The clause
+        // rides the always-on block, so a session on the phone is not told
+        // an omitted profile reaches a browser the phone does not have.
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("On the phone there is one browser: every call drives it"),
+            "the phone's single browser is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("`@shared` included, is refused"),
+            "and the phone's refusal of every name is pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(

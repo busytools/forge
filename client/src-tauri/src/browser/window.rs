@@ -55,6 +55,58 @@ impl Cdp {
             .map_err(|why| format!("{method} could not be sent: {why}"))
     }
 
+    /// Send one call on `session` without waiting for its reply - the same
+    /// one-way ordering `send` gives, addressed the way a flattened session
+    /// needs.
+    ///
+    /// **A command whose reply is not the thing to wait for.** The veto's
+    /// carried navigation must not hold its event loop: a target that
+    /// attaches while the reply is pending - a service worker, above all -
+    /// would keep waiting for a debugger nobody can release (measured
+    /// 2026-10-23, #2534).
+    pub async fn send_in(
+        &mut self,
+        method: &str,
+        params: Value,
+        session: &str,
+    ) -> Result<(), String> {
+        self.next_id += 1;
+        let message =
+            json!({ "id": self.next_id, "method": method, "params": params, "sessionId": session });
+        self.sink
+            .send(Message::Text(message.to_string().into()))
+            .await
+            .map_err(|why| format!("{method} could not be sent: {why}"))
+    }
+
+    /// Send one call and hand back the receiver its reply will arrive on, so
+    /// a caller can watch a one-way command's outcome from a task of its own.
+    ///
+    /// **For work that must not hold an event loop and whose failure is
+    /// still worth a line**: the veto's release and context patch are sent
+    /// this way, and a refused one is named without stalling the loop that
+    /// releases the next paused target (measured 2026-10-23, #2534).
+    pub async fn send_watch(
+        &mut self,
+        method: &str,
+        params: Value,
+        session: Option<&str>,
+    ) -> Result<oneshot::Receiver<Value>, String> {
+        self.next_id += 1;
+        let id = self.next_id;
+        let (waiter, answer) = oneshot::channel();
+        self.replies.lock().unwrap_or_else(PoisonError::into_inner).insert(id, waiter);
+        let mut message = json!({ "id": id, "method": method, "params": params });
+        if let Some(session) = session {
+            message["sessionId"] = Value::String(session.to_owned());
+        }
+        if let Err(why) = self.sink.send(Message::Text(message.to_string().into())).await {
+            self.replies.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+            return Err(format!("{method} could not be sent: {why}"));
+        }
+        Ok(answer)
+    }
+
     /// Connect to the endpoint a host's page target names, answering the
     /// connection and the endpoint's events (every frame without an id).
     pub async fn connect_watch(

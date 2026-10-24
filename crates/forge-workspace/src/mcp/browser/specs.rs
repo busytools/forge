@@ -28,9 +28,12 @@ pub(crate) struct ToolSpec {
 /// The whole surface, in upstream's own order.
 ///
 /// Every tool carries the optional `profile` name: a session says which
-/// profile a call drives, and the client routes on it - except
+/// profile a call drives, and the client routes on it - an omitted name is
+/// the calling seat's own, and the shared browser is named `@shared` - except
 /// `browser_profile_delete`, which names the profile to remove in `name` and
-/// is answered by the client's host.
+/// is answered by the client's host. **The phone is one browser**: every
+/// call there drives it, and a named profile, `@shared` included, is
+/// refused.
 pub(crate) fn specs() -> Vec<ToolSpec> {
     let mut specs = vec![
         ToolSpec {
@@ -777,19 +780,26 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         if spec.name == "browser_profile_delete" {
             continue;
         }
+        // **The phone is one browser.** Its shell refuses every name,
+        // `@shared` included, so a description that said an omitted profile
+        // drives the seat's own would be false there this cut ships.
+        let phone = " The phone has one browser: every call drives it there, and a named profile, \
+                     `@shared` included, is refused.";
         let description = if spec.name == "browser_hand_off" {
-            "Name of the browser profile to raise for the person. Omit to raise the browser's \
-             own profile. Only this seat's own profile can be raised; another seat's is refused. \
-             The raise is on the client's host, never the person's own browser or its tabs."
+            "Name of the browser profile to raise for the person. **Omit it to raise this \
+             seat's own profile**; name `@shared` to raise the browser's own profile. Only this \
+             seat's own profile can be raised; another seat's is refused. The raise is on the \
+             client's host, never the person's own browser or its tabs."
         } else {
-            "Name of the browser profile to drive. **Omit it to use the browser's own \
-                profile**, the one every seat shares; a call reaches the client's host, never \
-                the person's own browser or its tabs. A named profile belongs to the SEAT that \
-                first names it - another seat naming it is refused - and a seat's own profile, \
-                named after its project and label, is created on its first reach for the browser \
-                that names \
-                no profile."
+            "Name of the browser profile to drive. **Omit it to drive this seat's own \
+                profile**, named after its project and label and opened on its first call. Name \
+                `@shared` to drive the browser's own profile, the one every seat shares - its \
+                tabs are whatever the person or another seat left there, so name it \
+                deliberately. A call reaches the client's host, never the person's own browser \
+                or its tabs. A named profile belongs to the SEAT that first names it; another \
+                seat naming it is refused."
         };
+        let description = format!("{description}{phone}");
         properties
             .insert("profile".to_owned(), json!({ "type": "string", "description": description }));
     }
@@ -869,10 +879,11 @@ mod tests {
 
     /// **Every tool takes an optional `profile` name - except the delete,
     /// whose own `name` IS the profile it acts on.** A session says which
-    /// profile a call drives; a call that names none drives the browser's own.
-    /// The schema is where the model learns the argument exists, and a closed
-    /// schema that did not declare it would REFUSE the call - so this is the
-    /// contract's own half, not decoration.
+    /// profile a call drives; a call that names none drives the calling
+    /// seat's own, and the shared browser is named `@shared`. The schema is
+    /// where the model learns the argument exists, and a closed schema that
+    /// did not declare it would REFUSE the call - so this is the contract's
+    /// own half, not decoration.
     #[test]
     fn every_tool_takes_an_optional_profile_name() {
         for spec in specs() {
@@ -897,14 +908,35 @@ mod tests {
                 spec.name,
                 spec.schema,
             );
+            let described =
+                spec.schema["properties"]["profile"]["description"].as_str().unwrap_or_default();
             assert!(
-                spec.schema["properties"]["profile"]["description"]
-                    .as_str()
-                    .is_some_and(|description| description
-                        .contains("the client's host, never the person's own browser or its tabs")),
+                described.contains("the client's host, never the person's own browser or its tabs"),
                 "{} does not say which browser a call reaches: {}",
                 spec.name,
                 spec.schema,
+            );
+            // **The default and the shared browser are named in the text the
+            // model reads**: an omitted profile is the seat's own, and the
+            // shared browser has a reserved word - a stale description here
+            // is the tab leak handed back as an instruction (#2535).
+            assert!(
+                described.contains("@shared"),
+                "{} does not name the shared browser's reserved word: {described}",
+                spec.name,
+            );
+            assert!(
+                described.contains("this seat's own profile"),
+                "{} does not say what an omitted profile drives: {described}",
+                spec.name,
+            );
+            // **The phone is one browser and refuses every name**, so a
+            // description that stopped at the desktop rule would be false on
+            // a platform this cut ships.
+            assert!(
+                described.contains("The phone has one browser"),
+                "{} does not state the phone's single browser: {described}",
+                spec.name,
             );
             let required = &spec.schema["required"];
             assert!(

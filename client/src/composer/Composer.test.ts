@@ -20,10 +20,10 @@ vi.mock('../browser/host', async (importOriginal) => {
     // and the shell's own doors are mocked below on that basis.
     canHost: vi.fn(() => true),
     drawsSurface: vi.fn(() => true),
-    // No window in tests: the shell's raise answers the reason it could not
-    // land, or null when it did. The default takes it as landing; a case
+    // No window in tests: the shell's raise answers the profile it raised,
+    // or the reason it could not. The default takes it as landing; a case
     // that wants the failure resolves the reason instead.
-    showBrowser: vi.fn(() => Promise.resolve(null)),
+    showBrowser: vi.fn(() => Promise.resolve({ profile: 'job-hunt' })),
     hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
   };
 });
@@ -5493,6 +5493,34 @@ describe('the dock', () => {
     // window would leave the person's browser up while the answer said done.
     expect(hideBrowser, "and it is that hand-off's profile that comes down").toHaveBeenCalledWith(
       'job-hunt',
+      SLOT,
+    );
+  });
+
+  /** **A hand-off that named no profile still lowers the browser its Open
+   *  raised.** The raise resolves it to the asking seat's own profile; Done
+   *  passes that seat, so the shell resolves the lower the same way. Without
+   *  the seat the page asked for the shared browser, the seat's surface
+   *  stayed up, and Done left the takeover covering the chat. */
+  it('lowers the seat-own browser of a hand-off that named no profile', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'forge-lead' });
+    open({ record: record({ pending_asks: [browserHandOffAsk({ profile: null })] }) });
+
+    action('Open browser').click();
+    await vi.waitFor(() =>
+      expect(showBrowser, 'the raise names no profile and carries the seat').toHaveBeenCalledWith(
+        null,
+        SLOT,
+        expect.any(Number),
+      ),
+    );
+    flushSync();
+    barAction('Done').click();
+    flushSync();
+
+    expect(hideBrowser, 'Done carries the seat for the raise it is lowering').toHaveBeenCalledWith(
+      null,
+      SLOT,
     );
   });
 
@@ -5559,7 +5587,7 @@ describe('the dock', () => {
       },
     });
 
-    expect(hideBrowser, 'the hand-off profile comes down').toHaveBeenCalledWith('job-hunt');
+    expect(hideBrowser, 'the hand-off profile comes down').toHaveBeenCalledWith('job-hunt', SLOT);
   });
 
   it('declines the hand-off with Not now, which is the same release', () => {
@@ -5594,7 +5622,7 @@ describe('the dock', () => {
     expect(surface.reason).toContain('did not start in time');
     expect(drawn(), 'and the bar offers the door back').toContain('try again');
 
-    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt' });
     barAction('try again').click();
     await Promise.resolve();
     await Promise.resolve();
@@ -5713,7 +5741,7 @@ describe('the dock', () => {
    * carries the ASKING SEAT, which the shell checks against the profile's
    * record before it raises anything. */
   it('opens the browser window', async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt' });
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
@@ -5797,7 +5825,7 @@ describe('the dock', () => {
     expect(drawn(), 'precondition: the refusal is drawn').toContain('another connected client');
 
     hosting = true;
-    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt' });
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the second ask landed').toBe('live'));
     flushSync();
@@ -5848,7 +5876,7 @@ describe('the dock', () => {
     flushSync();
     expect(surface.hand_off, 'precondition: no hand-off stands behind this surface').toBeNull();
     vi.mocked(showBrowser).mockClear();
-    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: '@shared' });
 
     barAction('try again').click();
     await vi.waitFor(() =>
@@ -5875,7 +5903,7 @@ describe('the dock', () => {
     expect(surface.hand_off, 'precondition: the parked ask never raised').toBeNull();
     expect(surface.profile, 'precondition: the failed surface is the shared one').toBeNull();
     vi.mocked(showBrowser).mockClear();
-    vi.mocked(showBrowser).mockResolvedValueOnce(null);
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'forge-lead' });
 
     barAction('try again').click();
     await vi.waitFor(() =>

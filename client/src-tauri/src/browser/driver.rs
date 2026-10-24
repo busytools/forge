@@ -620,6 +620,23 @@ pub(super) fn did_not_answer(tool: &str, bound: Duration) -> String {
     format!("the driver did not answer {tool} within {} s", bound.as_secs())
 }
 
+/// Whether a failure is the driver never getting attached at all.
+///
+/// **The MCP handshake says nothing about the browser.** Upstream creates
+/// its backend lazily on the first `tools/call`, and `connectOverCDP` only
+/// then opens the browser websocket and waits for its protocol handshake -
+/// with Playwright's own 30 s default and no words from the host. Measured
+/// 2026-10-23 against a host whose page was wedged: `<ws connected>`, then
+/// `TimeoutError: async initializeServer: Timeout 30000ms exceeded`
+/// (#2534). A ws that never connects at all reports the other prefix; both
+/// are the attach, not the tool.
+#[cfg(desktop)]
+pub(super) fn attach_timed_out(why: &str) -> bool {
+    (why.contains("initializeServer: Timeout")
+        || why.contains("browserType.connectOverCDP: Timeout"))
+        && why.contains("ms exceeded")
+}
+
 /// Map one MCP result onto the parts the socket carries.
 ///
 /// **A block this host cannot carry is an error rather than a silence.** The
@@ -978,6 +995,37 @@ mod tests {
         assert_eq!(endpoint_port("http://127.0.0.1:9411/"), Some(9411));
         assert_eq!(endpoint_port("https://example.com"), None);
         assert_eq!(endpoint_port("http://127.0.0.1:notaport"), None);
+    }
+
+    /// **An attach that never finished is the host's failure, not the
+    /// tool's.** The measured line from #2534 is this class; a page's own
+    /// timeout, or a tool's `Timeout 30000ms exceeded`, is not.
+    #[cfg(desktop)]
+    #[test]
+    fn the_drivers_attach_timeout_is_recognised_by_its_own_line() {
+        let measured = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.\n\
+                        Call log:\n  - <ws preparing> retrieving websocket url from \
+                        http://127.0.0.1:9413\n  - <ws connecting> \
+                        ws://127.0.0.1:9413/devtools/browser/88b56812\n  - <ws connected> \
+                        ws://127.0.0.1:9413/devtools/browser/88b56812";
+        assert!(attach_timed_out(measured), "the measured initializeServer timeout is the attach");
+        assert!(
+            attach_timed_out(
+                "browserType.connectOverCDP: Timeout 30000ms exceeded.\nCall log:\n  - <ws \
+                 preparing> retrieving websocket url from http://127.0.0.1:9413"
+            ),
+            "a browser websocket that never connected is the attach too",
+        );
+        assert!(
+            !attach_timed_out("### Error\nTimeoutError: page.click: Timeout 30000ms exceeded."),
+            "a tool's own timeout is not the attach",
+        );
+        assert!(
+            !attach_timed_out(
+                "### Error\nTimeoutError: async initializeServer: the browser is gone"
+            ),
+            "a different initializeServer failure without the timeout is not this class",
+        );
     }
 
     /// **The tab a call created is told from the pages already open**: the

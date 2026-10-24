@@ -157,27 +157,34 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
 /**
  * Put the browser surface up, which is what a hand-off's Open asks for: the
  * client's own CEF host over the profile the agents drive, drawn into the
- * takeover. **`profile` names which one**: `null` is the shared profile, a
- * name is that profile's own host - the CAPTCHA in the right session, not a
- * lookalike in the wrong one. The page a session prepared is the page that
- * comes up: this attaches the surface and relaunches nothing.
+ * takeover. **`profile` names which one**: a name is that profile's own
+ * host, `null` is the asking seat's own when a seat rides along (or the
+ * shared browser for the person's own door), and `@shared` is the shared
+ * browser by name - the CAPTCHA in the right session, not a lookalike in the
+ * wrong one. The page a session prepared is the page that comes up: this
+ * attaches the surface and relaunches nothing.
  *
- * **Answers why it could not open, or `null` when it did.** The shell
- * carries the actionable sentence and a caller that drew a reason of its
- * own would throw that away. Outside the shell the reason is the page's own.
- * A dock that claimed the browser was up over an open that never happened
- * would have the person press Done and tell the session they acted.
+ * **Answers the profile it raised, or the shell's reason it could not.** The
+ * raised name is what the page lowers on Done; the shell carries the
+ * actionable sentence and a caller that drew a reason of its own would throw
+ * that away. Outside the shell the reason is the page's own. A dock that
+ * claimed the browser was up over an open that never happened would have the
+ * person press Done and tell the session they acted.
  */
+export type OpenAnswer = { profile: string } | string;
+
 export async function showBrowser(
   profile: string | null,
   seat: SessionSlot | null,
   epoch: number,
-): Promise<string | null> {
+): Promise<OpenAnswer> {
   if (!canHost()) return 'this page is not the client';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_show', { profile, seat, epoch });
-    return null;
+    // **The profile the shell actually raised**: a hand-off with no profile
+    // raises the asking seat's own, and Done must lower that very browser
+    // rather than a name this page guessed.
+    return { profile: await invoke<string>('browser_show', { profile, seat, epoch }) };
   } catch (why) {
     return whyText(why);
   }
@@ -193,11 +200,17 @@ export async function showBrowser(
  * shape an open answers with, so a button that said back and then drew
  * nothing on a refusal cannot happen.
  */
-export async function hideBrowser(profile: string | null = null): Promise<HideAnswer> {
+export async function hideBrowser(
+  profile: string | null = null,
+  seat: SessionSlot | null = null,
+): Promise<HideAnswer> {
   if (!canHost()) return 'this page is not the client';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    return { lowered: await invoke<boolean>('browser_hide', { profile }) };
+    // **The seat resolves an omitted profile the same way the raise did**:
+    // a hand-off that named none was raised as the asking seat's own, and
+    // its Done must lower that browser.
+    return { lowered: await invoke<boolean>('browser_hide', { profile, seat }) };
   } catch (why) {
     return whyText(why);
   }

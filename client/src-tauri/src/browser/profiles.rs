@@ -230,10 +230,7 @@ impl Profile {
         // fail fast until the cooldown runs out or a call answers.
         if held.stale_since.is_some_and(|at| at.elapsed() < REBUILD_COOLDOWN) {
             log_rebuild(start.profile, tool, "not rebuilt again yet", &why);
-            return Err(format!(
-                "{why}\n\nThe browsing context died again after a rebuild and the driver has not \
-                 been rebuilt a second time yet; try again shortly."
-            ));
+            return Err(dead_page_answer(DeadPageOutcome::Cooling));
         }
         // **The stale driver is let go before the fresh one starts**: clearing
         // the held slot alone leaves this call's own `Arc` holding the child
@@ -245,10 +242,7 @@ impl Profile {
             Err(cannot) => {
                 held.stale_since = Some(std::time::Instant::now());
                 log_rebuild(start.profile, tool, "rebuild failed", &why);
-                return Err(format!(
-                    "{why}\n\nThe browsing context was dead and the driver could not be \
-                     rebuilt: {cannot}"
-                ));
+                return Err(dead_page_answer(DeadPageOutcome::RebuildFailed { why: &cannot }));
             }
         };
         if repeatable(tool, args) {
@@ -262,20 +256,18 @@ impl Profile {
                     held.stale_since = Some(std::time::Instant::now());
                     log_rebuild(start.profile, tool, "rebuilt, retried call failed", &why);
                     // **No second rebuild in this call**: the repeated
-                    // failure is handed back with both reasons, not met with
-                    // another driver start.
-                    Err(format!(
-                        "{why}\n\nThe driver was rebuilt after the dead page context and the \
-                         repeated call failed too: {retry_why}"
-                    ))
+                    // failure is handed back, not met with another driver
+                    // start.
+                    Err(if stale_page(&retry_why) {
+                        dead_page_answer(DeadPageOutcome::StillDead)
+                    } else {
+                        dead_page_answer(DeadPageOutcome::RetryFailed { why: &retry_why })
+                    })
                 }
             };
         }
         log_rebuild(start.profile, tool, "rebuilt, call handed back", &why);
-        Err(format!(
-            "{why}\n\nThe browsing context was dead and has been rebuilt; this call was not \
-             repeated because {tool} is not safe to run twice. Repeat it."
-        ))
+        Err(dead_page_answer(DeadPageOutcome::NotRepeated { tool }))
     }
 
     /// Forget the driver, so the next call builds a fresh one. Called when a
@@ -289,17 +281,67 @@ impl Profile {
     }
 }
 
-/// The driver's own words for a page whose renderer is gone: the wrapping
-/// prefix and the reading together, so a page script's own TypeError that
+/// The driver's own words for a page whose renderer is gone: each wrapping
+/// prefix with the reading together, so a page script's own TypeError that
 /// carries the same reading is not mistaken for it.
+///
+/// **Both measured prefixes are here.** `browserBackend.callTool` is a tool
+/// on the page; `browserContext.newPage` is a tab being created, which dies
+/// the same way and carries the same reading (#2534, 2026-10-22).
 #[cfg(desktop)]
-const DEAD_PAGE: &str =
-    "browserBackend.callTool: Cannot read properties of undefined (reading '_page')";
+const DEAD_PAGE: [&str; 2] = [
+    "browserBackend.callTool: Cannot read properties of undefined (reading '_page')",
+    "browserContext.newPage: Cannot read properties of undefined (reading '_page')",
+];
 
 /// Whether a failure is the driver's held page outliving its renderer.
 #[cfg(desktop)]
 fn stale_page(why: &str) -> bool {
-    why.contains(DEAD_PAGE)
+    DEAD_PAGE.iter().any(|line| why.contains(line))
+}
+
+/// What became of a call whose page context died, as the answer's own words.
+#[cfg(desktop)]
+#[derive(Debug)]
+enum DeadPageOutcome<'a> {
+    /// The call cannot be repeated safely, so it was handed back.
+    NotRepeated { tool: &'a str },
+    /// The repeated call failed too, with a reason of its own.
+    RetryFailed { why: &'a str },
+    /// The repeated call hit the same dead context again.
+    StillDead,
+    /// No rebuild was possible.
+    RebuildFailed { why: &'a str },
+    /// A rebuild failed inside the cooldown, so none was attempted.
+    Cooling,
+}
+
+/// **The answer never leads with the driver's `_page` TypeError**: it names
+/// an internal Playwright object, and a session can act only on what died
+/// and what to do now (#2534). The driver's line stays in the rebuild log.
+#[cfg(desktop)]
+fn dead_page_answer(outcome: DeadPageOutcome<'_>) -> String {
+    let died = "the browser's page context died (its renderer went away)";
+    match outcome {
+        DeadPageOutcome::NotRepeated { tool } => format!(
+            "{died} and the driver has been rebuilt. {tool} was not run again because repeating \
+             it could land twice; run it again now."
+        ),
+        DeadPageOutcome::RetryFailed { why } => {
+            format!("{died} and the driver was rebuilt, but the repeated call failed too: {why}")
+        }
+        DeadPageOutcome::StillDead => format!(
+            "{died} and the driver was rebuilt, but the repeated call met the same dead context; \
+             try again shortly."
+        ),
+        DeadPageOutcome::RebuildFailed { why } => {
+            format!("{died} and the driver could not be rebuilt: {why}")
+        }
+        DeadPageOutcome::Cooling => format!(
+            "{died} again after a rebuild, and the driver has not been rebuilt a second time yet; \
+             try again shortly."
+        ),
+    }
 }
 
 /// The line a rebuild logs. Pure, so the page it names is pinned by a test
@@ -535,6 +577,14 @@ pub(super) enum Verdict {
     Refuse(String),
 }
 
+/// The name that addresses the browser's own profile - the one every seat
+/// shares - where a call or a raise names it explicitly.
+///
+/// **It cannot be a profile name**: `@` is outside the registry's charset,
+/// so the reserved word never collides with a profile a person or a seat
+/// made, and the rule that every name is a directory stays true.
+pub(super) const SHARED_PROFILE: &str = "@shared";
+
 /// Why a name cannot be a profile, or `None` when it can.
 ///
 /// A profile's name becomes a directory name, so it is held to what is safe
@@ -744,7 +794,7 @@ pub(super) fn migrate_brave(legacy: &Path, cache: &Path) -> Result<bool, String>
 }
 
 #[cfg(desktop)]
-fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|why| format!("{} cannot be made: {why}", to.display()))?;
     let entries = std::fs::read_dir(from)
         .map_err(|why| format!("{} cannot be read: {why}", from.display()))?;
@@ -828,6 +878,16 @@ mod tests {
         };
         assert!(refusal.contains("'job-hunt'"), "{refusal}");
         assert!(refusal.contains("Busytools/forge/client-dev"), "{refusal}");
+    }
+
+    /// **The shared browser's reserved name is not a profile name.** It is
+    /// resolved before the registry is consulted, and the registry itself
+    /// still refuses it like any other illegal name - so no profile can ever
+    /// be created under it and shadow the shared browser.
+    #[test]
+    fn the_shared_browsers_name_can_never_be_a_profile() {
+        assert!(name_refusal(super::SHARED_PROFILE).is_some(), "`@` is outside the charset");
+        assert_ne!(super::SHARED_PROFILE, "shared", "the word is reserved, not borrowed");
     }
 
     /// A name that cannot become a directory is refused with the rule, rather
@@ -949,6 +1009,13 @@ mod tests {
              (reading '_page')"
         ));
         assert!(
+            stale_page(
+                "### Error\nTypeError: browserContext.newPage: Cannot read properties of \
+                 undefined (reading '_page')"
+            ),
+            "a tab creation dying is the same dead page, measured 2026-10-22",
+        );
+        assert!(
             !stale_page(
                 "page.evaluate: TypeError: Cannot read properties of undefined \
                          (reading '_page')"
@@ -963,6 +1030,34 @@ mod tests {
         assert!(!stale_page(
             "browserBackend.callTool: net::ERR_CONNECTION_REFUSED at https://x.test/"
         ));
+    }
+
+    /// **A dead page is answered in the client's words, never the driver's
+    /// `_page` TypeError.** Each outcome names what died and what to do now;
+    /// the raw line stays in the rebuild log, where a recurrence reads it.
+    #[test]
+    fn a_dead_page_answer_never_leads_with_the_drivers_type_error() {
+        let answers = [
+            dead_page_answer(DeadPageOutcome::NotRepeated { tool: "browser_click" }),
+            dead_page_answer(DeadPageOutcome::RetryFailed { why: "no element matches" }),
+            dead_page_answer(DeadPageOutcome::StillDead),
+            dead_page_answer(DeadPageOutcome::RebuildFailed { why: "the start timed out" }),
+            dead_page_answer(DeadPageOutcome::Cooling),
+        ];
+        for answer in answers {
+            assert!(answer.contains("the browser's page context died"), "{answer}");
+            assert!(answer.contains("renderer went away"), "{answer}");
+            assert!(!answer.contains("_page"), "the internal reading never surfaces: {answer}");
+            assert!(
+                !answer.contains("browserBackend.callTool"),
+                "nor the driver's wrapper: {answer}",
+            );
+        }
+        let handed = dead_page_answer(DeadPageOutcome::NotRepeated { tool: "browser_tabs" });
+        assert!(handed.contains("browser_tabs was not run again"), "{handed}");
+        assert!(handed.contains("run it again now"), "{handed}");
+        let failed = dead_page_answer(DeadPageOutcome::RetryFailed { why: "no element matches" });
+        assert!(failed.contains("the repeated call failed too: no element matches"), "{failed}");
     }
 
     /// The rebuild's log line names the profile, the carried page and its own

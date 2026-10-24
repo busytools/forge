@@ -43,7 +43,7 @@ vi.mock('../browser/host', async (importOriginal) => {
     closeProfile: vi.fn(() => Promise.resolve(undefined)),
     deleteProfile: vi.fn(() => Promise.resolve(undefined)),
     browserUsed: vi.fn(() => Promise.resolve(false)),
-    showBrowser: vi.fn(() => Promise.resolve(null)),
+    showBrowser: vi.fn(() => Promise.resolve({ profile: '@shared' })),
     hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
     drawsSurface: vi.fn(() => true),
     profileWindowed: vi.fn(() => Promise.resolve(false)),
@@ -152,7 +152,7 @@ describe('the browser segment', () => {
     );
     expect(
       shownText(shown.target),
-      'the shared profile is always listed: most sessions drive it',
+      'the shared profile is always listed: it is reached by naming @shared',
     ).toContain('shared');
     await vi.waitFor(() => {
       expect(
@@ -1254,7 +1254,10 @@ describe('the browser segment', () => {
       );
     });
     click(rowButton(shown.target, 'shared'));
-    expect(hideBrowser, 'the shared line lowers the shared window').toHaveBeenCalledWith(null);
+    expect(hideBrowser, 'the shared line lowers the shared window').toHaveBeenCalledWith(
+      null,
+      null,
+    );
     shown.stop();
   });
 
@@ -1280,7 +1283,7 @@ describe('the browser segment', () => {
       );
     });
     click(rowButton(shown.target, 'hunt'));
-    expect(hideBrowser, 'the row lowers its own window').toHaveBeenCalledWith('hunt');
+    expect(hideBrowser, 'the row lowers its own window').toHaveBeenCalledWith('hunt', null);
     await vi.waitFor(() => {
       expect(shownText(shown.target), 'a refused hide is drawn, not swallowed').toContain(
         'no browser profile is open under hunt',

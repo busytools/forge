@@ -52,12 +52,24 @@ raising a browser of its own that has nothing to do with the session. A role
 the relay has not said yet - a reconnect's answer in flight - is no reading,
 so that raise stays the local one it always was.
 
-**A profile is a browser of its own.** The shared profile is the unnamed
-call's; a named profile is a directory under `browser/profiles/<name>/cef`,
-owned by the seat that opened it, with the ownership record beside it. A
-hand-off raises only the asking seat's profile; another seat's is refused by
-name. The ownership locks and the single-owner rule are unchanged from the
-vendored browser's day - what changed is the engine behind them.
+**A profile is a browser of its own, and a call never defaults to someone
+else's.** An omitted `profile` drives the calling seat's own profile, named
+after its project and label and opened on its first call; the browser's own
+shared profile is reached only by naming it `@shared`, a word outside the
+profile charset so it can never collide with a real profile. **The phone is
+the exception below**: it has one browser and no named profiles, so every
+phone call drives that one and a name, `@shared` included, is refused. A named profile
+is a directory under `browser/profiles/<name>/cef`, owned by the seat that
+opened it, with the ownership record beside it. A hand-off with no profile
+raises the asking seat's own profile - the one its calls drive - and another
+seat's name is refused by name. Every call logs the profile, host pid, port
+and cache root it drove, so a tab's identity is readable after the fact.
+**A page context that dies is rebuilt and answered in the client's words**,
+never handed back as the driver's `_page` TypeError, and a driver that cannot
+attach within its 30 s bound has its host named and ended rather than
+reported as a bare timeout. The ownership locks and the single-owner rule are
+unchanged from the vendored browser's day - what changed is the engine
+behind them.
 
 **The picture is the host's own buffer.** The host paints into a POSIX
 shared-memory ring; the client maps it and draws the latest frame over the
