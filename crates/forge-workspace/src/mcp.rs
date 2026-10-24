@@ -377,13 +377,14 @@ before working: tasks__claim by `id`, or by `epic` to pull that epic's top \
 ready row; one row in progress per worker. Keep your row true: tasks__update on every \
 state change - the update is also your alive signal - and attach the PR \
 the moment it exists. If you cannot proceed, tasks__wait: `kind` is \
-decision (a question for the user - only a hold the user explicitly asked \
-for, or something still ambiguous after the decision model, peers and your \
-own review), dependency (another task - put its id \
+decision (a question for the user, minted only by the lead - only a hold \
+the user explicitly asked for, or something still ambiguous after the \
+decision model, peers and your own review), dependency (another task - put its id \
 in `on`) or resource (an account, a CI run, a machine); then move to your \
 next held row instead of sitting still. File what you find mid-flight at \
-once with tasks__create, under your epic, owned or unowned; nothing is \
-deferred. A row with verify=user cannot complete until the user approves \
+once with tasks__create, under your epic, owned or unowned, except a \
+defect in a cut under review, which the lead fixes in line rather than \
+filing; nothing else is deferred. A row with verify=user cannot complete until the user approves \
 it, and that gate is minted on the row - never inherited from an epic, \
 whose own gate governs only its own completion; a look the user already \
 gave in chat is completed by the lead with tasks__approve and the approval \
@@ -469,6 +470,29 @@ mod tests {
                  the decision model, peers and your own review"
             ),
             "the parking test rides the kind: decision clause, channels and bar together",
+        );
+        assert!(
+            TASK_BOARD_INSTRUCTIONS
+                .contains("decision (a question for the user, minted only by the lead"),
+            "the decision wait is the lead's to mint: {TASK_BOARD_INSTRUCTIONS}",
+        );
+    }
+
+    /// A finding of a cut under review is fixed in line, not filed: the
+    /// instructions every session reads are where the filing habit was
+    /// taught, so they carry the carve-out too.
+    #[test]
+    fn the_task_instructions_fix_a_cuts_finding_in_line() {
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.contains(
+                "except a defect in a cut under review, which the lead fixes in line rather \
+                 than filing"
+            ),
+            "the filing clause carries the in-line carve-out: {TASK_BOARD_INSTRUCTIONS}",
+        );
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.contains("nothing else is deferred"),
+            "the deferral ban still covers everything outside the cut",
         );
     }
 

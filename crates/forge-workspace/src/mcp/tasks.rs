@@ -183,7 +183,8 @@ impl Tool for Create {
          `status` defaults to pending. A row whose deliverable IS the user's own read or \
          decision - a report the user asked to read, a verdict the user asked to give - is \
          minted `verify: \"user\"` explicitly: it ends parked on the user, and the board's \
-         approve is what completes it. The gate is minted on the row that owes the look; an \
+         approve is what completes it. Only the lead mints this gate; a worker hands the ask \
+         to its lead instead. The gate is minted on the row that owes the look; an \
          epic's `verify: \"user\"` governs the epic's own completion, and a child never \
          inherits it - a child that owes no look completes on its own terms. `reserved: \
          \"user\"` reserves the pick for the user: the board sweep leaves it, it never reads \
@@ -238,7 +239,8 @@ impl Tool for Create {
                                     The gate is minted on the row; a child never inherits \
                                     its epic's. A row whose deliverable IS the user's own \
                                     read or decision states `user`; anything else owes no \
-                                    look, even under a `user` epic.",
+                                    look, even under a `user` epic. The gate is the lead's \
+                                    to mint; a worker asks its lead instead.",
                 },
                 "reserved": {
                     "type": "string",
@@ -324,9 +326,13 @@ impl Tool for Update {
          other move off `waiting` drops the wait the row held - except a completion on a row \
          whose completion waits on the user: while it is waiting on something else the gate \
          would trade that wait for a look park, so the completion is refused by name; move it \
-         off waiting first, then complete it. `verify: \"user\"` \
-         may be set here, but not taken away: a row carrying `user` keeps that gate until the \
-         user's approve, so clearing it is refused rather than taken as a way around the look. \
+         off waiting first, then complete it. When the row you end is named by another row's \
+         dependency wait, move every waiter off that wait in the same pass - a wait left on an \
+         ended row reads that its target has ended indefinitely. `verify: \"user\"` \
+         may be set here by the lead, but not taken away: a row carrying `user` keeps that \
+         gate until the user's approve, so clearing it is refused rather than taken as a way \
+         around the look. Only the lead mints this gate; a worker hands the ask to its lead \
+         instead. \
          The gate is minted on the row, never inherited from its epic, so reparenting changes \
          no gate. A task is \
          named by its full id or any unique prefix of one; an exact id wins over any longer id \
@@ -373,9 +379,10 @@ impl Tool for Update {
                     "type": "string",
                     "enum": ["user", "none"],
                     "description": "Whether the row's own completion waits on the user's look. \
-                                    Can be set here, but a `user` gate is the user's to \
-                                    clear: an update cannot clear it. The gate is minted on \
-                                    the row, so moving the row changes nothing.",
+                                    Can be set here by the lead; a worker asks its lead \
+                                    instead. A `user` gate is the user's to clear: an update \
+                                    cannot clear it. The gate is minted on the row, so moving \
+                                    the row changes nothing.",
                 },
                 "parked": {
                     "type": "boolean",
@@ -605,7 +612,9 @@ impl Tool for Delete {
          take - the board's answer or approve settles it, and deleting it (or a tree holding \
          it) is refused rather than taken as a way around the ask. A dependency wait is not \
          such an ask: the row waits on the task it names, not on the user, even when the epic \
-         is `verify: user`. \
+         is `verify: user`. When the row you delete is named by another row's dependency wait, \
+         move every waiter off that wait in the same pass - a wait left on a deleted row reads \
+         that its target has ended indefinitely. \
          An ask that has gone moot is withdrawn, not removed: `tasks__update` cancels it with \
          the reason it goes away, and the row records why. The task is named by its \
          full id or any unique \
@@ -748,7 +757,10 @@ impl Tool for Wait {
          user: a row's `verify: user` gates its own completion, not its dependency \
          wait, so the row stays movable and deletable. Route a decision to the user only when the user \
          explicitly asked for a hold, or something is still genuinely ambiguous after the \
-         decision model, peer opinions and the team's own review. `detail` is the words. \
+         decision model, peer opinions and the team's own review. Only the lead mints a \
+         user-decision wait: a worker that believes the call is the user's hands it to its \
+         lead, because a decision a worker parks outlives its answer and the lead cannot close \
+         it afterward. `detail` is the words. \
          A wait on the user that has gone moot is withdrawn, not stranded: a lead cancels the \
          row with the reason it goes away (`tasks__update`, `detail`), and the row records why. \
          The row \
@@ -1472,6 +1484,39 @@ mod tests {
         );
     }
 
+    /// A wait left on an ended row reads that its target has ended
+    /// forever, so the verb that ends the row owns moving every waiter
+    /// off that wait in the same pass. Pinned on both doors, because
+    /// either one can strand the chain.
+    #[test]
+    fn the_update_and_delete_descriptions_state_the_waiter_release() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let update = Update { facade: facade.clone(), slot: slot.clone() };
+        let delete = Delete { facade, slot };
+        for (name, description, remedy) in [
+            (
+                "tasks__update",
+                update.description(),
+                "When the row you end is named by another row's dependency wait, move every \
+                 waiter off that wait in the same pass - a wait left on an ended row reads \
+                 that its target has ended indefinitely",
+            ),
+            (
+                "tasks__delete",
+                delete.description(),
+                "When the row you delete is named by another row's dependency wait, move every \
+                 waiter off that wait in the same pass - a wait left on a deleted row reads \
+                 that its target has ended indefinitely",
+            ),
+        ] {
+            assert!(
+                description.contains(remedy),
+                "{name} does not state the waiter release: {description}",
+            );
+        }
+    }
+
     /// The withdraw door is shipped text (#2340): each verb that reaches a
     /// row waiting on the user states the door - the cancel carrying the
     /// reason, which lands on the row - so a lead reads the way out from
@@ -1602,6 +1647,29 @@ mod tests {
         }
     }
 
+    /// The verify gate is the lead's to mint on the update door too: a
+    /// worker that reads only the update description must not find
+    /// `verify: "user"` offered to it as an unconditional set.
+    #[test]
+    fn the_update_verify_door_keeps_the_mint_with_the_lead() {
+        let update = Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        assert!(
+            update.description().contains(
+                "Only the lead mints this gate; a worker hands the ask to its lead instead"
+            ),
+            "the update description keeps the gate with the lead: {}",
+            update.description(),
+        );
+        let verify = update.input_schema()["properties"]["verify"]["description"]
+            .as_str()
+            .expect("the verify property carries a description")
+            .to_owned();
+        assert!(
+            verify.contains("Can be set here by the lead; a worker asks its lead instead"),
+            "the verify property keeps the gate with the lead: {verify}",
+        );
+    }
+
     /// The user-read mint is shipped text (#2377), and the gate belongs to
     /// the row it is minted on (#2423): a row whose deliverable IS the
     /// user's own read or decision states `verify: "user"`, while an
@@ -1616,6 +1684,7 @@ mod tests {
              asked to read, a verdict the user asked to give - is minted `verify: \"user\"` \
              explicitly: it ends parked on the user, and the board's approve is what completes \
              it",
+            "Only the lead mints this gate; a worker hands the ask to its lead instead",
             "an epic's `verify: \"user\"` governs the epic's own completion, and a child never \
              inherits it",
             "a child that owes no look completes on its own terms",
@@ -1632,10 +1701,31 @@ mod tests {
         for clause in [
             "The gate is minted on the row; a child never inherits its epic's",
             "anything else owes no look, even under a `user` epic",
+            "The gate is the lead's to mint; a worker asks its lead instead",
         ] {
             assert!(
                 verify.contains(clause),
                 "the verify property owes the mint where the caller sets it ({clause}): {verify}",
+            );
+        }
+    }
+
+    /// Only the lead mints a user-decision wait; a worker hands the ask
+    /// over instead, because a decision a worker parks outlives its
+    /// answer and the lead cannot close it afterward. Pinned on the wait
+    /// verb, which is where the decision kind is chosen.
+    #[test]
+    fn the_wait_description_keeps_the_user_decision_mint_with_the_lead() {
+        let wait = Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        for clause in [
+            "Only the lead mints a user-decision wait",
+            "a worker that believes the call is the user's hands it to its lead",
+            "a decision a worker parks outlives its answer and the lead cannot close it afterward",
+        ] {
+            assert!(
+                wait.description().contains(clause),
+                "tasks__wait does not keep the ask with the lead ({clause}): {}",
+                wait.description(),
             );
         }
     }

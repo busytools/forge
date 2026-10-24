@@ -124,6 +124,13 @@ the PID you hold. If you must match a name, make it one only your own \
 processes can carry - a scratch script named a minute ago, never a \
 binary, a path or a flag.\n\
 \n\
+Name scratch files so only your own session can produce them. `/tmp` is \
+shared by every session on the machine, so a generic `pr-body.md` or \
+`out.jsonl` can be overwritten mid-task, and the harness then surfaces \
+another session's content as your file's state. Name it for the issue or \
+branch - `/tmp/pr-body-2195.md`. Same class as kill-by-PID: the identifier \
+must be one only you carry.\n\
+\n\
 If you were spawned by a lead, route through the lead. The user reads \
 the lead's chat, not yours - your session is reachable, but nobody is \
 watching it - so do not address the user, do not park waiting for the \
@@ -134,7 +141,11 @@ you are blocked, or when you need a decision that is the user's to make, \
 say so to the lead - a question and a result are both just messages. \
 Do it before you go idle, because going idle \
 silently reads as still working. Your lead is `label=\"lead\"` under \
-your own org and project - `agents__whoami` prints both.\n\
+your own org and project - `agents__whoami` prints both. A turn that ends \
+on stated intent schedules nothing - forge can wake you through a cron or \
+a subscription, but nothing resumes you on intent alone - so ending one \
+with work outstanding and no reply required stops there: say a reply is \
+required so the lead can nudge you.\n\
 \n\
 Delegation in a forge session goes through the delegation paths forge \
 intends: a lead creates worker sessions with `agents__spawn`; \
@@ -167,6 +178,12 @@ stop. Do not spawn reviewers or run a review pass \
 over your own work; the lead runs the gate, and a second one from \
 you is the same review bought twice. The lead reads every PR \
 substantively, and the approval anchors to the SHA it read.\n\
+\n\
+Once you hand a PR over, leave its worktree alone until the lead gives \
+you a new instruction: work done after handover is work the round did not \
+ask for. A reviewer's mutation pass runs in a detached throwaway \
+worktree, never the live one - a kill in a tree something else is writing \
+is not independent evidence.\n\
 \n\
 Changing state under another project is that project agent's call, not \
 yours. Before you edit a file, run a migration or push a branch outside \
@@ -3304,6 +3321,102 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("killed two other workers mid-task"),
             "the measured case is pinned",
+        );
+    }
+
+    /// A generic scratch filename under `/tmp` is shared by every session
+    /// on the machine, so a concurrent seat can overwrite it mid-task and
+    /// the harness surfaces the foreign content as the file's state.
+    /// Pinned with the naming remedy, because the hazard is invisible
+    /// until the clobber lands.
+    #[test]
+    fn the_conduct_block_carries_the_scratch_name_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Name scratch files so only your own session can produce them"),
+            "the rule's handle is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("`/tmp` is shared by every session on the machine"),
+            "the shared-machine reason is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("another session's content as your file's state"),
+            "the foreign-content failure is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("Name it for the issue or branch"),
+            "the naming remedy is pinned",
+        );
+    }
+
+    /// Work done after handover is work the round did not ask for, so the
+    /// worker leaves the tree alone and a reviewer's mutation pass runs in
+    /// a detached throwaway worktree - a kill in a tree something else is
+    /// writing is not independent evidence. Pinned on both sides, because
+    /// the rule reads as ordinary diligence without the reason.
+    #[test]
+    fn the_conduct_block_carries_the_worktree_quiesce_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "Once you hand a PR over, leave its worktree alone until the lead gives you a new instruction"
+            ),
+            "the worker's stop is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("work done after handover is work the round did not ask for"),
+            "the reason work stops is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "A reviewer's mutation pass runs in a detached throwaway worktree, never the live one"
+            ),
+            "the reviewer's tree is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("a kill in a tree something else is writing is not independent evidence"),
+            "the circularity reason is pinned",
+        );
+    }
+
+    /// A turn that ends on stated intent schedules nothing, so a worker
+    /// with work outstanding that asks for no reply stops there - its own
+    /// stated intent is what makes the stall invisible. The forge-driven
+    /// wakes are named because they exist, and the old absolute is pinned
+    /// absent so a correction cannot be reverted into it.
+    #[test]
+    fn the_conduct_block_carries_the_worker_wake_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("A turn that ends on stated intent schedules nothing"),
+            "the rule's handle is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("forge can wake you through a cron or a subscription"),
+            "the forge-driven wakes are acknowledged, not denied",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("nothing resumes you on intent alone"),
+            "the limit of an intent-only turn is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("ending one with work outstanding and no reply required stops there"),
+            "the silent stop is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("say a reply is required so the lead can nudge you"),
+            "the remedy is pinned",
+        );
+        assert!(
+            !FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("You have no autonomous wake"),
+            "the false absolute must not come back: a worker with cron or gotify can wake itself",
         );
     }
 

@@ -9575,6 +9575,121 @@ mod lead_charter_tests {
         }
     }
 
+    /// A defect the review or the look of a cut surfaces belongs to that
+    /// cut, not to the board: the lead fixes it in line with the worker
+    /// frozen, and only work outside the cut gets a row. Pinned because
+    /// the charter's filing rule reads as "file everything" without the
+    /// carve-out, which is how a finding of the cut under review was
+    /// filed as a separate issue.
+    #[test]
+    fn the_charter_fixes_a_cuts_findings_in_line() {
+        for clause in [
+            "File what is outside the cut; fix what is inside it",
+            "A defect that surfaces in the review or the look of a cut under review is not \
+             filed and not handed to a worker",
+            "fix it in line on that cut's branch, with the worker frozen",
+            "let the same branch carry it",
+            "except a finding of a cut under review, which you fix in line with the worker \
+             frozen",
+            "dispatch, except a finding of a cut under review, which is yours to fix in line",
+            "You orchestrate; you don't write code - except a finding of a cut under review, \
+             which you fix in line",
+            "found anywhere else becomes a row the moment it surfaces",
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not fix a cut's findings in line: {clause}",
+            );
+        }
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("File everything you find"),
+            "the unconditional filing headline must not come back",
+        );
+    }
+
+    /// A user-decision wait or a `verify: user` gate is the lead's to
+    /// mint. A worker-parked decision outlives its answer and the lead
+    /// cannot close it afterward, so the ask travels to the lead instead
+    /// of parking on the user from a worker's row.
+    #[test]
+    fn the_charter_keeps_the_user_decision_mint_with_the_lead() {
+        for clause in [
+            "Only you mint a `verify: user` gate or a `kind: decision` wait",
+            "a worker hands the ask to you instead",
+            "A decision wait a worker parks outlives its answer and you cannot close it afterward",
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not keep the user-decision mint with the lead: {clause}",
+            );
+        }
+    }
+
+    /// A review round builds in the same checkout the worker handed
+    /// over, so reviewers read the pushed branch and a mutation pass
+    /// runs in a detached throwaway worktree, never the live checkout.
+    #[test]
+    fn the_charter_scopes_reviewers_away_from_the_live_worktree() {
+        for clause in [
+            "Reviewers read the pushed branch",
+            "a mutation pass runs in a detached throwaway worktree, never the live checkout",
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not scope reviewers away from the live worktree: {clause}",
+            );
+        }
+    }
+
+    /// The merge queue is pulled from GitHub, not held only on the push
+    /// ping: an approved-and-green PR otherwise sits silently when a
+    /// ping is lost.
+    #[test]
+    fn the_charter_pulls_the_merge_queue_from_github() {
+        for clause in [
+            "a worker's \"PR #N ready\" ping is a prompt, not the source of truth",
+            "on every health check and resume",
+            "pull `gh pr list --state open` and `gh pr checks <N>` and reconcile them against \
+             the loops you ran",
+            "an approved-and-green PR otherwise sits silently when a ping is lost",
+            "(on each wake)",
+            "plus `gh pr list --state open` and `gh pr checks <N>` for the merge queue - pull \
+             both rather than waiting on a ping",
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not pull the merge queue from GitHub: {clause}",
+            );
+        }
+    }
+
+    /// A turn that ends on stated intent schedules nothing, so making a
+    /// worker the trigger for a timed or external condition leaves both
+    /// sides idle. The report-only one-shot and the ban on one that
+    /// performs the action itself are pinned with it, because either
+    /// alone reads as a licence to schedule the work twice.
+    #[test]
+    fn the_charter_forbids_making_a_worker_a_trigger() {
+        for clause in [
+            "Never make a worker the trigger for a timed or external condition",
+            "A turn that ends on stated intent schedules nothing",
+            "forge can wake a worker through a cron or a subscription it set, but not on intent",
+            "leaves both sides idle",
+            "schedule a report-only `cron__create` one-shot (`run_once_at`)",
+            "Never schedule a one-shot that performs the action itself",
+            "it races the real trigger and can double a review round or a spend",
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not forbid a worker as trigger: {clause}",
+            );
+        }
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("A worker has no autonomous wake"),
+            "the false absolute must not come back beside the correct wording",
+        );
+    }
+
     /// The charter is shipped text every lead reads, so a blocked CLI tool
     /// named here would send it to a surface its own launch denies. The
     /// preamble is the other lead-facing text and carries the same test in
@@ -9793,8 +9908,22 @@ mod lead_charter_tests {
         );
         assert!(
             DEFAULT_LEAD_CHARTER
-                .contains("nothing here mandates tooling a fresh install does not have"),
+                .contains("Nothing here mandates tooling a fresh install does not have"),
             "the fresh-install guard is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("A round is not clean until every"),
+            "a partial round is never clean: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "not a clean round, because the one still running is the one that has not spoken"
+            ),
+            "a clean return does not stand for the round: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("never merge on the first one back"),
+            "the merge waits for the last review, not the first: {DEFAULT_LEAD_CHARTER}",
         );
     }
 
