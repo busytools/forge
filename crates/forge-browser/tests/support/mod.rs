@@ -42,7 +42,35 @@ pub fn cef_distribution() -> PathBuf {
             }
         }
     }
+    // **CI unpacks the distribution into its download cache**, outside the
+    // target tree the walk above covers: cef-dll-sys puts it under
+    // `CEF_PATH/<version>` when that variable is set.
+    if let Ok(cache) = std::env::var("CEF_PATH")
+        && let Some(found) = find_distribution(std::path::Path::new(&cache))
+    {
+        return found;
+    }
     panic!("the CEF distribution is not under any ancestor of {}", exe.display());
+}
+
+/// The first `cef_macos_aarch64` directory with a framework under `root`.
+fn find_distribution(root: &std::path::Path) -> Option<PathBuf> {
+    let mut queue = vec![root.to_path_buf()];
+    while let Some(dir) = queue.pop() {
+        if dir.file_name().is_some_and(|name| name == "cef_macos_aarch64")
+            && dir.join("Chromium Embedded Framework.framework").is_dir()
+        {
+            return Some(dir);
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        queue.extend(
+            entries
+                .flatten()
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                .map(|entry| entry.path()),
+        );
+    }
+    None
 }
 
 /// The app's executable: an installed bundle when one is named, otherwise a
