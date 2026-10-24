@@ -115,7 +115,7 @@ export interface Task {
  *
  * **The chase sweep used to announce every project every 30 s with the set
  * unchanged** (#2540). A board that re-read 628 KB for that, or a home that
- * re-read 72 KB, was a loop with no news in it; the sweep no longer sends
+ * re-read the home, was a loop with no news in it; the sweep no longer sends
  * them, and the skip stays because any re-announced set is still no read.
  * The project comes from the update's key, so an empty set is comparable
  * too: the store's last digest tells an unchanged empty set from a deletion

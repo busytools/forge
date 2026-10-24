@@ -233,11 +233,12 @@ export const HOME_IGNORES: ReadonlyMap<string, string> = new Map([
  * **Three questions look alike and only one of them is this one.** The
  * server's `Subject::covers` for `Home` says what a home subscriber is SENT;
  * `fleetNews` says what the fleet region DRAWS; and this says what the
- * client SPENDS a read on. A read is a 72 KB encode, so it is owed only when
- * the answer can come back different - which is the union of the fleet's own
- * table and the keyless facts above, and is deliberately narrower than the
- * server's delivery: the plugin family reaches a home subscriber because it
- * names no seat, and no field of the snapshot carries it.
+ * client SPENDS a read on. A read is a full encode on the server, so it is
+ * owed only when the answer can come back different - which is the union of
+ * the fleet's own table and the keyless facts above, and is deliberately
+ * narrower than the server's delivery: the plugin family reaches a home
+ * subscriber because it names no seat, and no field of the snapshot carries
+ * it.
  *
  * **Gating a reader on `fleetNews` alone throws the keyless facts away**, and
  * the symptom is not an error: it is a page that read them once and never
