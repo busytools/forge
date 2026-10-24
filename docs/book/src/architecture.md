@@ -329,7 +329,8 @@ The shell under `client/src-tauri/` is its own workspace root, so
 `just check`'s workspace-side steps never reach it; CI compiles it in the
 `client-tauri` job (its clippy and tests), and the `cargo fmt --check`
 job's second invocation carries its rustfmt check. Both jobs run when the
-shell, `crates/forge-capture` or the toolchain changes. Every build and
+shell, `crates/forge-capture`, `clippy.toml`, the root `Cargo.toml` or the
+toolchain changes. Every build and
 test job in `ci.yml` is path-filtered, and the ruleset requires two
 checks: `ci-required`, that workflow's aggregate, which always runs and
 fails if a job whose paths changed was skipped, and the docs workflow's

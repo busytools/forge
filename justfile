@@ -996,7 +996,8 @@ check_groups := "fast|fmt-check unicode-punct-check script-tests;rust|clippy tes
 # **Parallel groups cannot turn a red gate green.** Every group runs to its
 # own first failure while the others keep going, each failing group's log
 # tail is printed, and the verdict names the first failing step in
-# `check_steps` order and the steps its group did not reach. The exit status
+# `check_steps` order and the steps its group did not reach, or names a
+# group that reported nothing. The exit status
 # is the failing step's. A group that dies before writing its report is a
 # failure, not a pass: the report file exists before its worker starts. A
 # step list and group list that disagree are a refusal before anything

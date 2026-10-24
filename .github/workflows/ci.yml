@@ -115,15 +115,18 @@ jobs:
       - run: ./scripts/check_no_unicode_punctuation.sh
 
   script-tests:
+    # The display name stays `release script tests` until the ruleset stops
+    # requiring it: renaming it now leaves a pull request waiting for a
+    # check that no longer reports.
     name: release script tests
     needs: changes
     if: needs.changes.outputs.scripts == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The recipe is what runs both scripts, so the step's composition has one
-      # home; `just` is here for it and for the client-dependency pin, which
-      # drives the recipe the gate runs.
+      # The recipe is what runs the scripts' tests, so the step's composition
+      # has one home; `just` is here for it and for the client-dependency pin,
+      # which drives the recipe the gate runs.
       - uses: taiki-e/install-action@just
       - run: just script-tests
 

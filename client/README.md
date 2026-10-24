@@ -34,8 +34,9 @@ bundle built.
 its own cargo workspace root, so the repo's cargo gates and CI's other
 cargo jobs do not reach it: CI's `client-tauri` job runs its clippy and
 tests, and the `cargo fmt --check` job runs the rustfmt check against its
-manifest. Both run when the shell, `crates/forge-capture` or the
-toolchain changes. The ruleset requires two checks: `ci-required`, which
+manifest. Both run when the shell, `crates/forge-capture`, `clippy.toml`,
+the root `Cargo.toml` or the toolchain changes. The ruleset requires two
+checks: `ci-required`, which
 fails if a job whose paths changed was skipped, and the docs workflow's
 `build site`. `just check`
 reaches it through

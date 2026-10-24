@@ -74,10 +74,11 @@ compiles the Kotlin half and runs its unit tests, because nothing else
 reaches that code; it needs the Android SDK and a JDK.
 
 The last line it prints is its verdict, `[OK] check: ...` or
-`[ERROR] check: <step> failed`. A failing group stops at its own first
-failure; the other groups still run; every failing group's log tail is
-printed before the verdict; and the verdict names the first failing step
-and the later steps in that group that did not run. Read that line rather
+`[ERROR] check: <step> failed`, or `[ERROR] check: group reported nothing
+(<group>)` when a group died without a report. A failing group stops at
+its own first failure; the other groups still run; every failing group's
+log tail is printed before the verdict; and the verdict names the first
+failing step and the later steps in that group that did not run. Read that line rather
 than a pipeline's exit status: piping `just check` through `tail` reports
 tail's status, not the recipe's.
 

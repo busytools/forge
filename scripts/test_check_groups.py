@@ -1,5 +1,5 @@
-"""Tests for check_groups.sh: the parity guard, the verdict, and a worker
-that dies before it can write its report.
+"""Tests for check_groups.sh: the parity guard, the verdict, the sentinel a
+group's report exists under, and a worker that dies before it can write one.
 
 The runner is a stub, so these exercise the orchestrator's own decisions
 rather than a real gate step: which failure is reported, what the last line
@@ -30,6 +30,10 @@ class CheckGroups(unittest.TestCase):
                 case "$step" in
                     step-fail) exit 7 ;;
                     step-killdir) rm -rf "$CHECK_LOG_DIR"; exit 1 ;;
+                    step-killparent) kill -9 "$PPID"; exit 1 ;;
+                    step-see-report)
+                        ls "$CHECK_LOG_DIR"/*.failed >/dev/null 2>&1 || exit 9
+                        ;;
                     *) exit 0 ;;
                 esac
                 """
@@ -61,19 +65,33 @@ class CheckGroups(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         lines = done.stdout.strip().splitlines()
         self.assertEqual(lines[-1], "[OK] check: all green (a b)")
-        self.assertTrue(any(line.startswith("logs: ") for line in lines), done.stdout)
+        logs_at = next(
+            i for i, line in enumerate(lines) if line.startswith("logs: ")
+        )
+        self.assertLess(logs_at, len(lines) - 1, done.stdout)
+
+    def test_a_group_report_exists_before_its_steps_run(self):
+        # Pins the sentinel: a worker that dies before writing its report can
+        # only be detected if one was there first.
+        done = self.gate("step-see-report b", "g|step-see-report b")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
     def test_failure_names_the_step_and_its_unrun_steps(self):
         done = self.gate("a step-fail c", "g|a step-fail c")
         self.assertEqual(done.returncode, 7, done.stdout + done.stderr)
         lines = done.stdout.strip().splitlines()
-        self.assertEqual(
-            lines[-1], "[ERROR] check: step-fail failed; not run: c"
-        )
+        self.assertEqual(lines[-1], "[ERROR] check: step-fail failed; not run: c")
         self.assertIn("[ERROR] check: g group failed at step-fail", done.stdout)
 
     def test_group_that_dies_without_a_report_is_a_failure(self):
         done = self.gate("a step-killdir c", "g|a step-killdir c")
+        self.assertNotEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertNotIn("[OK] check: all green", done.stdout)
+        lines = done.stdout.strip().splitlines()
+        self.assertEqual(lines[-1], "[ERROR] check: group reported nothing (g)")
+
+    def test_a_killed_worker_is_a_failure(self):
+        done = self.gate("a step-killparent c", "g|a step-killparent c")
         self.assertNotEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertNotIn("[OK] check: all green", done.stdout)
         lines = done.stdout.strip().splitlines()
@@ -99,6 +117,11 @@ class CheckGroups(unittest.TestCase):
 
     def test_job_count_must_be_positive(self):
         done = self.gate("a", "g|a", jobs="0")
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("FORGE_CHECK_JOBS must be a positive integer", done.stderr)
+
+    def test_job_count_must_be_a_number(self):
+        done = self.gate("a", "g|a", jobs="abc")
         self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
         self.assertIn("FORGE_CHECK_JOBS must be a positive integer", done.stderr)
 

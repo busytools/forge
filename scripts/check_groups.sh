@@ -8,6 +8,8 @@
 # Env:
 #   FORGE_CHECK_JOBS   how many groups run at once (default 4)
 #   CHECK_LOG_ROOT     where run directories live (default target/check-logs)
+#   CHECK_LOG_DIR      exported to each step: the run's own log directory
+#                      (the dead-worker test's stub uses it)
 #
 # Each run gets its own `run.XXXXXX` directory under the log root, and every
 # step writes its full output there; the directory is printed with the
@@ -64,6 +66,13 @@ mkdir -p "$logroot" || {
     echo "[ERROR] check: cannot write $logroot" >&2
     exit 2
 }
+# Keep the newest five run directories. `target/` is disposable, but a gate
+# that runs many times a day should not grow it without bound. Pruning runs
+# before this run's directory exists, so a concurrent run's newer directory
+# is among those kept.
+ls -1dt "$logroot"/run.* 2>/dev/null | tail -n +6 | while IFS= read -r old; do
+    rm -rf "$old"
+done
 logdir="$(mktemp -d "$logroot/run.XXXXXX")" || {
     echo "[ERROR] check: cannot write $logroot" >&2
     exit 2
@@ -94,7 +103,11 @@ run_group() {
             break
         fi
     done
-    printf '%s' "$failed" > "$logdir/$name.failed"
+    # Written aside and moved into place: a kill between truncate and write
+    # would otherwise leave an empty report, which reads as a pass. Until
+    # the move lands, the sentinel written before the worker started stands.
+    printf '%s' "$failed" > "$logdir/$name.failed.tmp" &&
+        mv "$logdir/$name.failed.tmp" "$logdir/$name.failed"
 }
 
 pids=()
@@ -120,13 +133,9 @@ missing_groups=" "
 for i in "${!group_names[@]}"; do
     name="${group_names[$i]}"
     report="$logdir/$name.failed"
-    if [ ! -f "$report" ]; then
-        missing_groups="$missing_groups$name "
-        failed_any=1
-        continue
-    fi
-    failed="$(cat "$report" 2>/dev/null || true)"
-    if [ "$failed" = "$no_report" ]; then
+    # A failed `cat` is a missing or unreadable report, never a pass: a
+    # report we cannot read says nothing about the group.
+    if ! failed="$(cat "$report" 2>/dev/null)" || [ "$failed" = "$no_report" ]; then
         missing_groups="$missing_groups$name "
         failed_any=1
         continue
@@ -147,8 +156,7 @@ fi
 for i in "${!group_names[@]}"; do
     name="${group_names[$i]}"
     report="$logdir/$name.failed"
-    failed="$(cat "$report" 2>/dev/null || true)"
-    if [ ! -f "$report" ] || [ "$failed" = "$no_report" ]; then
+    if ! failed="$(cat "$report" 2>/dev/null)" || [ "$failed" = "$no_report" ]; then
         echo "[ERROR] check: $name group reported nothing"
         echo "---- $name (its steps may not have run: ${group_steps[$i]})"
         echo "----"

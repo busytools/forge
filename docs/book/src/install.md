@@ -121,7 +121,8 @@ line.
 CI runs each build and test job in `ci.yml` only for the paths it serves,
 so a docs-only pull request does not wait for the Rust or client jobs, and
 a Rust-only one does not wait for the client's CEF job unless it touches
-`crates/forge-capture`, which the shell links. One job, `ci-required`,
+one of the shell's shared inputs: `crates/forge-capture`, `clippy.toml`,
+the root `Cargo.toml` or `rust-toolchain.toml`. One job, `ci-required`,
 always runs, depends on every job in that workflow, and fails when a job
 that ran failed or when a job whose paths changed was skipped. The ruleset
 requires two checks: `ci-required` there, and `build site` from the docs
@@ -157,10 +158,11 @@ in the bundle, and a client built without it answers the browser doors with
 a sentence naming the missing framework rather than a timeout.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
-or `[ERROR] check: <step> failed`. A failing group stops at its own first
-failure; the other groups still run; every failing group's log tail is
-printed before the verdict; and the verdict names the first failing step
-and the later steps in that group that did not run. That
+or `[ERROR] check: <step> failed`, or `[ERROR] check: group reported
+nothing (<group>)` when a group died without a report. A failing group
+stops at its own first failure; the other groups still run; every failing
+group's log tail is printed before the verdict; and the verdict names the
+first failing step and the later steps in that group that did not run. That
 line is deliberately the last one written: piping the output through
 `tail` reports tail's exit status rather than the recipe's, so a red gate
 reads green to whoever ran it unless the result travels in the text.
