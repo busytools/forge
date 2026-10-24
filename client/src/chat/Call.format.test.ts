@@ -606,24 +606,165 @@ describe('an Edit of markdown', () => {
    * A `diff` piece is the fallback an Edit builds from its own two sides; a
    * Write's fallback is a hunk from line zero. This is that diff branch.
    */
-  it('renders a markdown diff fallback from its two sides', () => {
+  /**
+   * **A created markdown file renders as the document it is.** Every line of
+   * a create is an addition, so marking them drew the whole file green; the
+   * row's `+N -0` already says it is new, and the document should read.
+   */
+  it('renders a created markdown file with no change marks, definitions and all', () => {
     const write = leaf({
       row: { kind: 'family', family: 'edit' },
       name: 'Write',
-      title: 'docs/new.md',
-      body: [{ kind: 'diff', old: '', new: '# New\n\nthe first line' }],
-      mutation: { hunks: 1, added: 3, removed: 0, all: false, outside: false, omitted: null },
+      title: 'memory/note.md',
+      body: [
+        {
+          kind: 'hunk',
+          header: '@@ -0,0 +1,4 @@',
+          lines: [
+            line('add', '# A note', null, 1),
+            line('add', 'The body links [the docs][docs].', null, 2),
+            line('add', '', null, 3),
+            line('add', '[docs]: https://example.com', null, 4),
+          ],
+        },
+      ],
+      mutation: { hunks: 1, added: 4, removed: 0, all: false, outside: false, omitted: null },
     });
 
     const app = mount(Call, { target: document.body, props: { k: 'f1', call: write, open: true } });
     try {
       flushSync();
       const prose = document.querySelector('.code .code-diff .prose');
-      expect(prose?.querySelector('h1')?.textContent, 'the new heading renders').toBe('New');
+      expect(prose?.querySelector('h1')?.textContent, 'the document renders').toBe('A note');
+      expect(
+        prose?.querySelector('a')?.getAttribute('href'),
+        'the definition still resolves and draws no source line',
+      ).toBe('https://example.com');
+      expect(document.querySelectorAll('.mdadd, .mddel').length, 'no change is marked').toBe(0);
+      expect(document.querySelector('.dif'), 'and no source diff is drawn').toBeNull();
+    } finally {
+      void unmount(app);
+    }
+  });
+
+  /**
+   * **An insertion is not a create.** A pure insertion with no context is
+   * all additions too, but it changed an existing file, so its line draws as
+   * an addition rather than the file rendering unmarked.
+   */
+  it('marks an all-addition insertion into an existing markdown file', () => {
+    const edit = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'docs/old.md',
+      body: [
+        {
+          kind: 'hunk',
+          header: '@@ -12,0 +13,1 @@',
+          lines: [line('add', 'A line appended at the end.', null, 13)],
+        },
+      ],
+      mutation: { hunks: 1, added: 1, removed: 0, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: edit, open: true } });
+    try {
+      flushSync();
+      const prose = document.querySelector('.code .code-diff .prose');
       expect(
         [...(prose?.querySelectorAll('.mdadd') ?? [])].map((span) => span.textContent),
-        'the written lines draw as additions',
-      ).toEqual(['New', 'the first line']);
+        'the inserted line is marked as an addition',
+      ).toEqual(['A line appended at the end.']);
+    } finally {
+      void unmount(app);
+    }
+  });
+
+  it('renders a markdown change from its two sides', () => {
+    const edit = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'docs/old.md',
+      body: [{ kind: 'diff', old: '# Old\n\nthe first line', new: '# New\n\nthe first line' }],
+      mutation: { hunks: 1, added: 1, removed: 1, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: edit, open: true } });
+    try {
+      flushSync();
+      const prose = document.querySelector('.code .code-diff .prose');
+      expect(
+        [...(prose?.querySelectorAll('h1') ?? [])].map((heading) => heading.textContent),
+        'the changed heading draws both sides as headings',
+      ).toEqual(['Old', 'New']);
+      expect(
+        [...(prose?.querySelectorAll('.mddel') ?? [])].map((span) => span.textContent),
+        'the old words are struck',
+      ).toEqual(['Old']);
+      expect(
+        [...(prose?.querySelectorAll('.mdadd') ?? [])].map((span) => span.textContent),
+        'the new words are added',
+      ).toEqual(['New']);
+    } finally {
+      void unmount(app);
+    }
+  });
+});
+
+describe('an Edit of code', () => {
+  /**
+   * **A diff fallback keeps the unchanged lines as context.** The piece
+   * carries a replaced region, not a hunk, and drawing every old line as a
+   * removal and every new line as an addition showed a whole file changed
+   * where one line did.
+   */
+  it('draws only the changed line of a diff fallback, the rest as context', () => {
+    const edit = leaf({
+      row: { kind: 'family', family: 'edit' },
+      name: 'Edit',
+      title: 'client/src/assets/web.css',
+      body: [
+        {
+          kind: 'diff',
+          old: '.row {\n  display: flex;\n  flex: none;\n}',
+          new: '.row {\n  display: flex;\n  flex: 0 1 auto;\n}',
+        },
+      ],
+      mutation: { hunks: 1, added: 1, removed: 1, all: false, outside: false, omitted: null },
+    });
+
+    const app = mount(Call, { target: document.body, props: { k: 'f1', call: edit, open: true } });
+    try {
+      flushSync();
+      const rows = [...document.querySelectorAll('.dif .ln')];
+      const kinds = rows.map((row) =>
+        row.classList.contains('d') ? 'd' : row.classList.contains('a') ? 'a' : 'ctx',
+      );
+      expect(kinds, 'the shared lines stay context, one line removed and one added').toEqual([
+        'ctx',
+        'ctx',
+        'd',
+        'a',
+        'ctx',
+      ]);
+      expect(
+        rows
+          .filter((row) => row.classList.contains('d'))
+          .map((row) => row.querySelector('.l')?.textContent),
+        'the old changed line only',
+      ).toEqual(['  flex: none;']);
+      expect(
+        [...document.querySelectorAll('.dif .ln.d .w')].map((word) => word.textContent),
+        'the removed word is tinted inside its line',
+      ).toEqual(['none']);
+      expect(
+        [...document.querySelectorAll('.dif .ln.a .w')].map((word) => word.textContent),
+        'the added words are tinted',
+      ).toEqual(['0 1 auto']);
+      expect(
+        rows.some((row) => row.classList.contains('ctx') && row.querySelector('.w') !== null),
+        'a context line carries no word tint',
+      ).toBe(false);
     } finally {
       void unmount(app);
     }

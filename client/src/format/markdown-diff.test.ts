@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import { renderProse } from '../chat/prose';
 import type { SourceLine } from './diff';
-import { hasDefinitionChange, markdownDiffHtml, plain } from './markdown-diff';
+import { hasDefinitionChange, markdownDiffHtml, patchLines, plain } from './markdown-diff';
 
 const html = (lines: SourceLine[]): HTMLElement => {
   const host = document.createElement('div');
@@ -17,6 +17,33 @@ const html = (lines: SourceLine[]): HTMLElement => {
 };
 
 describe('a markdown change across block markers', () => {
+  it('marks only the changed words between unchanged context lines', () => {
+    // The two sides the wire carries, read by the production `patchLines`:
+    // the shared lines have to come back as context, not as removals and
+    // additions of the whole document.
+    // An INSERTION, where position pairing and a line diff diverge: a
+    // `patchLines` that stopped reading the two sides as a diff would pair
+    // the old second paragraph with the inserted one and mangle the third.
+    const drawn = html(
+      patchLines([
+        {
+          kind: 'diff',
+          old: 'First paragraph.\nThird paragraph.',
+          new: 'First paragraph.\nSecond new text.\nThird paragraph.',
+        },
+      ]),
+    );
+
+    expect(drawn.textContent, 'the context still draws').toContain('First paragraph.');
+    expect(drawn.textContent, 'and the paragraph below the insertion').toContain(
+      'Third paragraph.',
+    );
+    expect(drawn.querySelector('.mddel'), 'nothing was removed').toBeNull();
+    expect(drawn.querySelector('.mdadd')?.textContent, 'only the inserted line is added').toBe(
+      'Second new text.',
+    );
+  });
+
   it('renders a promoted paragraph as a heading, with the old line struck', () => {
     const drawn = html([
       { kind: 'del', text: 'A short intro' },

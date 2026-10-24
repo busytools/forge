@@ -16,7 +16,7 @@
  * the span pass, so no encoded sentinel can reach an href.
  */
 
-import { wordOps, wordSpans, type SourceLine, type Span } from './diff';
+import { lineDiff, wordOps, wordSpans, type SourceLine, type Span } from './diff';
 
 /** Sentinels that markdown-it passes through as text, replaced after render. */
 const DEL_OPEN = '\u{E000}';
@@ -163,12 +163,9 @@ export function patchLines(
       lines.push(...piece.lines.map(({ kind, text }) => ({ kind, text })));
       continue;
     }
-    if (piece.old !== '') {
-      lines.push(...piece.old.split('\n').map((text) => ({ kind: 'del' as const, text })));
-    }
-    if (piece.new !== '') {
-      lines.push(...piece.new.split('\n').map((text) => ({ kind: 'add' as const, text })));
-    }
+    // The two sides are read as a line diff, so the unchanged lines between
+    // the changed ones stay context and only the change draws struck/added.
+    lines.push(...lineDiff(piece.old, piece.new));
   }
   return lines;
 }

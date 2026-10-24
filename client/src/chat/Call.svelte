@@ -207,19 +207,6 @@
   );
 
   /**
-   * Whether a mutation's patch is a markdown change drawn as a rendered
-   * diff. A changed reference-style definition falls back to the source
-   * diff: a rendered view cannot show a definition, and a sentinel in one
-   * breaks the definition and every reference to it.
-   */
-  const markdownPatch = $derived(
-    isEdit(call.name) &&
-      formatOf(call.title).kind === 'markdown' &&
-      !hasDefinitionChange(patchLines(patches)),
-  );
-  const tail = $derived(rest.map((piece) => piece.kind).lastIndexOf('text'));
-
-  /**
    * Whether the change only adds, which is what a file the call created is.
    *
    * **Then there is no old side, and no old-number column to draw**: a fixed
@@ -235,6 +222,52 @@
   );
 
   /**
+   * Whether the change created the file rather than edited one.
+   *
+   * **Every line added is not enough**: an insertion with no context is also
+   * all additions. A create is the hunk git writes for a new file, from line
+   * zero, or the call's own two sides with no old one.
+   */
+  const createdChange = $derived(
+    patches.length > 0 &&
+      patches.every((piece) =>
+        piece.kind === 'hunk'
+          ? piece.header.startsWith('@@ -0,0 ') && piece.lines.every((line) => line.old === null)
+          : piece.old === '',
+      ),
+  );
+
+  /**
+   * A markdown file the call created, which renders as the document it is.
+   *
+   * **Nothing in it changed**, so there is no change to mark: every line is
+   * an addition, and drawing the whole file green says only that it is new -
+   * which the marks line already says with `+N -0`. It reads as a Read of the
+   * same file instead.
+   *
+   * **And no definition can be lost by rendering it**, because nothing is
+   * being marked: the document draws as a Read of it would, definitions
+   * included in the source and invisible in the rendering.
+   */
+  const createdMarkdown = $derived(
+    isEdit(call.name) && formatOf(call.title).kind === 'markdown' && createdChange,
+  );
+
+  /**
+   * Whether a mutation's patch is a markdown change drawn as a rendered
+   * diff. A changed reference-style definition falls back to the source
+   * diff: a rendered view cannot show a definition, and a sentinel in one
+   * breaks the definition and every reference to it.
+   */
+  const markdownPatch = $derived(
+    isEdit(call.name) &&
+      formatOf(call.title).kind === 'markdown' &&
+      (createdMarkdown || !hasDefinitionChange(patchLines(patches))),
+  );
+
+  const tail = $derived(rest.map((piece) => piece.kind).lastIndexOf('text'));
+
+  /**
    * Whether the change is the call's own two sides, which have no position.
    *
    * A hunk the CLI wrote carries line numbers, and the columns for them; the
@@ -242,6 +275,19 @@
    * of a gap on every line of it - so the columns go with the numbers.
    */
   const bare = $derived(patches.length > 0 && patches.every((piece) => piece.kind === 'diff'));
+
+  /** The new side of the change, as the source a created document renders. */
+  const newSideText = $derived(
+    patches
+      .flatMap((piece) =>
+        piece.kind === 'hunk'
+          ? piece.lines.filter((line) => line.kind !== 'del').map((line) => line.text)
+          : piece.new === ''
+            ? []
+            : piece.new.split('\n'),
+      )
+      .join('\n'),
+  );
 
   /**
    * What an image result draws under its picture: every piece the picture is
@@ -678,9 +724,15 @@
       {:else}
         {#if patches.length > 0}
           {#if markdownPatch}
-            <!-- A markdown change draws as rendered markdown, removals kept
-                 inline and struck; the source diff is not shown under it. -->
-            <MarkdownDiff pieces={patches} />
+            {#if createdMarkdown}
+              <!-- A created file has no change to mark: it renders as the
+                   document it is, the row's `+N -0` saying it is new. -->
+              <MarkdownPanel text={newSideText} />
+            {:else}
+              <!-- A markdown change draws as rendered markdown, removals kept
+                   inline and struck; the source diff is not shown under it. -->
+              <MarkdownDiff pieces={patches} />
+            {/if}
           {:else}
             <!-- The patch box: the CLI's hunks and a call's own two sides,
                  with the file's grammar and GitHub's tinted grounds. -->

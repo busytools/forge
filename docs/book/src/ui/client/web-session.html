@@ -821,6 +821,10 @@
   .code .dif { border: 0; border-radius: 0; }
   .code-diff { padding: 8px 12px 10px; color: var(--muted); font-size: var(--fs-base); }
   .code-diff .prose p + p { margin-top: 9px; }
+  /* The panel owns its own padding, so the prose's block margins inside it
+     read as dead space around the one block a rendered diff holds. */
+  .code-diff .prose > :first-child { margin-top: 0; }
+  .code-diff .prose > :last-child { margin-bottom: 0; }
   /* A fence inside the rendered body is chrome-less: the outer panel owns
      the border, ground and strip. */
   .code-diff .code { border: 0; border-radius: 0; background: transparent; }
@@ -2026,6 +2030,26 @@ Set `service_key` per environment in the bot's own config.</pre>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +2 &#8722;1</span></div>
             </div>
           </details>
+          <!-- A markdown file the call CREATED renders as the document it is,
+               with nothing marked: every line is new, which the marks line
+               says, and the document is what a reader wants. -->
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/note.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="code panel markdown-panel">
+                <div class="lang">markdown</div>
+              <div class="code-diff"><div class="prose">
+                <h2>A new note</h2>
+                <p>The document draws as a read of it would, with a <a href="https://example.com">link</a> and a list:</p>
+                <ul>
+                  <li>one thing</li>
+                  <li>another thing</li>
+                </ul>
+              </div></div>
+              </div>
+              <div class="patchline"><span class="patchsize">1 hunk &#183; +6 &#8722;0</span></div>
+            </div>
+          </details>
           <!-- A file the call created carries no patch on the wire at all, so
                the row draws the first hunk git writes for one, from line zero,
                with every line an addition - and no old-number column, because
@@ -2045,17 +2069,20 @@ Set `service_key` per environment in the bot's own config.</pre>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
             </div>
           </details>
-          <!-- A failed edit: the diff it meant to make, and the CLI's own
-               reason under it in the caption chrome - the envelope's tags
-               are read off in the fold and never reach the page. -->
+          <!-- A failed edit: the diff it meant to make, with the lines the two
+               sides share kept as context, and the CLI's own reason under it
+               in the caption chrome - the envelope's tags are read off in the
+               fold and never reach the page. -->
           <details class="leaf" open>
             <summary><svg class="ic gl err"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/assets/web.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="code panel">
                 <div class="lang">css</div>
               <div class="dif bare">
+                <div class="ln ctx"><span class="n"></span><span class="l">  display: flex;</span></div>
                 <div class="ln d"><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
                 <div class="ln a"><span class="n">+</span><span class="l">  flex: 0 1 auto;</span></div>
+                <div class="ln ctx"><span class="n"></span><span class="l">}</span></div>
               </div>
               </div>
               <div class="errhint">

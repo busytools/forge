@@ -85,10 +85,18 @@ read as one system.
   draws - the panel's border and ground, with the format on the head when the
   file names one: the hunks with both line numbers, the file's syntax colours on every line,
   the row tinted for a removal or an addition, and the changed words of a
-  paired removal and addition tinted darker. **A markdown edit renders
+  paired removal and addition tinted darker. **A change the call's own input
+  carries as two sides** draws the same way without positions: the lines the
+  two sides share stay as context, and only the lines that differ are
+  removals and additions - save a change too large to compare, which draws as
+  one removed block and one added block.
+  **A markdown edit renders
   instead**: the hunk draws as markdown, in that same panel, with removed
   words kept inline, struck and dimmed, and added words drawn normal; the
-  source diff is not shown under it. **A plain row** - a command's output, a
+  source diff is not shown under it. **A markdown file the call created**
+  renders as the document it is, with nothing marked: the change is the
+  line-zero hunk a create writes, and the marks line already says the file is
+  new. **A plain row** - a command's output, a
   text result - takes the same panel's border and ground, with no format strip;
   a hook run's output keeps the sheet's own inset rule.
   **An edit or a question whose structured record the page could not
