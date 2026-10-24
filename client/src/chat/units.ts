@@ -244,7 +244,11 @@ export interface HookRun {
   name: string;
   /** The event that fired it, and only where the name does not already say it. */
   event: string | null;
-  /** Whether it failed, which is the code the response reports it exited on. */
+  /**
+   * Whether it failed: the outcome the response reports, or the code it exited
+   * on where an outcome is absent. A cancelled or timed-out run never exits, so
+   * the outcome is the whole of what says it did not succeed.
+   */
   failed: boolean;
   /**
    * What the run printed, whole rather than clipped, and null where it printed
@@ -1494,8 +1498,18 @@ function hookOutput(frame: Frame): string | null {
   return null;
 }
 
-/** Whether the hook failed, which is the code the response reports it exited on. */
+/**
+ * Whether the hook failed: the outcome the live frame reports, or the code it
+ * exited on.
+ *
+ * **A cancelled or timed-out run reports no exit code** - it never finished -
+ * so a rule that read only the code drew it as a clean success. The outcome is
+ * the carrier the live path sends for both, and the transcript read maps its
+ * persisted records onto the same words.
+ */
 function hookFailed(frame: Frame): boolean {
+  const outcome = frame.outcome;
+  if (outcome === 'error' || outcome === 'cancelled') return true;
   const exit = frame.exit_code;
   return typeof exit === 'number' && exit !== 0;
 }

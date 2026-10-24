@@ -98,6 +98,60 @@ const record = (turns: PageTurn[], cursor: string | null = null): ServerMessage 
   data: { header: {}, conversation: { turns, cursor, compaction_count: 0 } },
 });
 
+/** One live hook frame, as the stream sends a run's lifecycle. */
+const hook = (id: string, subtype: string): unknown => ({
+  type: 'system',
+  subtype,
+  hook_id: id,
+  hook_name: 'SessionStart:startup',
+  hook_event: 'SessionStart',
+  uuid: `${id}-${subtype}`,
+  ...(subtype === 'hook_response'
+    ? { output: `out ${id}`, stdout: `out ${id}`, stderr: '', exit_code: 0, outcome: 'success' }
+    : {}),
+});
+
+/**
+ * The read's copy of one run: a `hook_response` under ids of its own.
+ *
+ * **The ids are the point.** The CLI stamps the attachment row a uuid, the run
+ * a live `hook_id` and the live frame another uuid - three for one run - so a
+ * copy that reused the live ids would pair where the real read never does.
+ * `transcript` marks it as the read's.
+ */
+const hookCopy = (row: string, name = 'SessionStart:startup'): unknown => ({
+  type: 'system',
+  subtype: 'hook_response',
+  hook_id: row,
+  uuid: row,
+  hook_name: name,
+  hook_event: 'SessionStart',
+  output: `out ${row}`,
+  stdout: `out ${row}`,
+  stderr: '',
+  exit_code: 0,
+  outcome: 'success',
+  transcript: true,
+});
+
+/** Each frame the held turns carry, named by its id (a hook by its run). */
+const names = (chat: Chat): string[] =>
+  get(chat.value).turns.flatMap((held) =>
+    held.messages.map((message) => {
+      const frame = message as { uuid?: string; subtype?: string; hook_id?: string };
+      return frame.hook_id !== undefined
+        ? `${frame.hook_id}:${frame.subtype ?? ''}`
+        : (frame.uuid ?? '?');
+    }),
+  );
+
+/** The reader's prompt, as either carrier sends it. */
+const promptRow = (text: string): unknown => ({
+  type: 'user',
+  uuid: `u-${text}`,
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+
 /** One `system` frame: the thinking-token counter, which draws nothing. */
 const counted = (tokens: number): unknown => ({
   type: 'system',
@@ -458,6 +512,264 @@ describe('the conversation the chat draws', () => {
     expect(words(chat), 'an answer to an ask nobody wants is dropped').not.toContain(
       'not an answer',
     );
+    stop();
+  });
+
+  /**
+   * **A landing must neither move the live rows nor draw their runs again.**
+   *
+   * This is the LIVE-FIRST shape, which is the one a reader meets: the
+   * SessionStart runs stream in ahead of the prompt, then the subscribe's page
+   * arrives carrying the transcript's copies of the same runs under ids of
+   * their own (the CLI mints three for one run, and the read's copy shares
+   * none of them). The page's turn is also keyed by the server's own name, not
+   * the `live:` key the frames gave the turn - so the landing goes through the
+   * frame match, and the merge there must put the page's frames where the live
+   * turn had them and keep one row per run.
+   */
+  it('keeps the live order and one row per run when the first page lands', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.update({ chat_appended: { key: LEAD, msg: hook('h1', 'hook_started') } });
+    server.update({ chat_appended: { key: LEAD, msg: hook('h2', 'hook_started') } });
+    server.update({ chat_appended: { key: LEAD, msg: hook('h1', 'hook_response') } });
+    server.update({ chat_appended: { key: LEAD, msg: promptRow('one') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('two') } });
+    expect(names(chat), 'the live order leads with the hook runs').toEqual([
+      'h1:hook_started',
+      'h2:hook_started',
+      'h1:hook_response',
+      'u-one',
+      'a-two',
+    ]);
+
+    // The page: the newest window under the server's own turn key, carrying
+    // the prompt, the answer, and the read's copies of the two runs.
+    const newest = page(
+      [
+        {
+          key: 'page-turn',
+          messages: [hookCopy('t1'), hookCopy('t2'), promptRow('one'), said('two')],
+        },
+      ],
+      null,
+    );
+    server.send(newest);
+
+    expect(names(chat), 'the page neither moves the live rows nor doubles the runs').toEqual([
+      'h1:hook_started',
+      'h2:hook_started',
+      'h1:hook_response',
+      'u-one',
+      'a-two',
+    ]);
+
+    // **The SECOND landing is the repeated-row path** (`refresh()` after the
+    // turn settles, a reconnect, a return), and it carries the same copies: a
+    // landing that skipped the pairing would draw every run twice there.
+    server.send(newest);
+    expect(names(chat), 'a repeated page pairs the same way').toEqual([
+      'h1:hook_started',
+      'h2:hook_started',
+      'h1:hook_response',
+      'u-one',
+      'a-two',
+    ]);
+    stop();
+  });
+
+  /**
+   * **A live run that arrives after its copy takes the copy's place.** The
+   * transport flushes the updates it holds before it asks for a seat's record,
+   * so a hook completing between the ask and the read lands after the page
+   * that already carries its copy; the ids do not meet, so the live frame is
+   * what the copy becomes, in the copy's own place.
+   */
+  it('replaces a page copy when the live run arrives after it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(
+      page(
+        [
+          {
+            key: 'page-turn',
+            messages: [hookCopy('t1'), hookCopy('t2'), promptRow('one'), said('two')],
+          },
+        ],
+        null,
+      ),
+    );
+    expect(names(chat), 'the page draws its copies').toEqual([
+      't1:hook_response',
+      't2:hook_response',
+      'u-one',
+      'a-two',
+    ]);
+
+    server.update({ chat_appended: { key: LEAD, msg: hook('h1', 'hook_started') } });
+    server.update({ chat_appended: { key: LEAD, msg: hook('h1', 'hook_response') } });
+
+    const after = names(chat);
+    expect(after, 'the live run takes the copy it pairs with').not.toContain('t1:hook_response');
+    expect(
+      after.filter((name) => name.startsWith('h1:')),
+      `and its own frames are the run the reader sees: ${after.join(' | ')}`,
+    ).toEqual(['h1:hook_started', 'h1:hook_response']);
+    expect(after, 'the other copy is a run the live path never sent').toContain('t2:hook_response');
+    stop();
+  });
+
+  /**
+   * **One live run pairs one copy, not every copy of its name.** Every
+   * SessionStart hook of one launch is named alike, so a reconnect mid-burst
+   * can leave fewer live runs than the page's copies - and those extras are
+   * runs the reader has never seen. The live ids count the runs; only that
+   * many copies are dropped.
+   */
+  it('keeps the copies a mid-burst reconnect leaves without a live run', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.update({ chat_appended: { key: LEAD, msg: hook('h1', 'hook_started') } });
+    server.update({ chat_appended: { key: LEAD, msg: hook('h1', 'hook_response') } });
+    server.update({ chat_appended: { key: LEAD, msg: promptRow('one') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('two') } });
+    server.send(
+      page(
+        [
+          {
+            key: 'page-turn',
+            messages: [
+              hookCopy('t1'),
+              hookCopy('t2'),
+              hookCopy('t3'),
+              promptRow('one'),
+              said('two'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    const after = names(chat);
+    expect(after.filter((name) => name.startsWith('h1:'))).toEqual([
+      'h1:hook_started',
+      'h1:hook_response',
+    ]);
+    expect(after, 'two runs the live path never sent still draw').toEqual(
+      expect.arrayContaining(['t2:hook_response', 't3:hook_response']),
+    );
+    expect(after.length, 'three runs in all: one live, two read').toBe(6);
+    stop();
+  });
+
+  /**
+   * **A live run never borrows an older turn's copy.** Every SessionStart run
+   * of a launch is named alike, so two turns can hold copies of the same name
+   * - and the system frame joins the LAST turn, where its own copy waits. A
+   * run that adopted an older turn's copy would leave its response in the
+   * newest turn: one run split across two rows, and the older run's copy gone.
+   */
+  it("adopts the copy in the turn the run joins, never an older turn's", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(
+      page(
+        [
+          { key: 'old-turn', messages: [hookCopy('t-old'), promptRow('old')] },
+          {
+            key: 'new-turn',
+            messages: [hookCopy('t-new'), promptRow('new'), said('reply')],
+          },
+        ],
+        null,
+      ),
+    );
+    expect(names(chat), 'both turns hold a copy before the live run').toEqual([
+      't-old:hook_response',
+      'u-old',
+      't-new:hook_response',
+      'u-new',
+      'a-reply',
+    ]);
+
+    server.update({ chat_appended: { key: LEAD, msg: hook('h1', 'hook_started') } });
+    server.update({ chat_appended: { key: LEAD, msg: hook('h1', 'hook_response') } });
+
+    const after = names(chat);
+    expect(after, 'the older turn keeps the run it already drew').toContain('t-old:hook_response');
+    expect(after, 'the newest turn takes the live run').toContain('h1:hook_started');
+    expect(after, 'and its response joins it').toContain('h1:hook_response');
+    expect(after, "the newest turn's copy is the one adopted").not.toContain('t-new:hook_response');
+    // One run in one row: the started and the response sit in the same turn,
+    // and the older turn's copy is untouched.
+    const rows = after.join('|');
+    expect(rows, 'the live run is not split across turns').toBe(
+      't-old:hook_response|u-old|h1:hook_started|u-new|a-reply|h1:hook_response',
+    );
+    stop();
+  });
+
+  /**
+   * **The mark is what keeps a catch-up from splicing as older.** An unmarked
+   * page takes its direction from the ask in flight, so a newest window that
+   * lands while an older ask is out is prepended above the held turns. The
+   * desktop's bridge marks its catch-up for exactly this reason (`reconciled`);
+   * this pins the shape a landing without the mark produces.
+   */
+  it('splices an unmarked newest window as older while an older ask is out', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'held')], 'c1'));
+    chat.older();
+
+    server.send(page([turn('t9', 'newest')], null));
+
+    expect(names(chat), 'the unmarked newest window lands above the held turn').toEqual([
+      'u-newest',
+      'u-held',
+    ]);
+    stop();
+  });
+
+  /**
+   * **An older answer that lands after a marked catch-up is taken as newest.**
+   * The mark clears the ask in flight, so the late answer has no direction to
+   * inherit and appends its older turn at the end.
+   *
+   * **This is reachable, not dead.** The bridge drains the frames it already
+   * holds before it answers with the catch-up, but an older `more` already
+   * sent travels straight to the socket and can answer after it - bounded only
+   * by the park window the reconcile fires on (15 s), not by the drain. Pinned
+   * as the known scramble it is: a fix has to hold the ask's direction across
+   * the mark rather than assume the answer died with the park.
+   */
+  it('takes an older answer that lands after a marked catch-up as newest', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one')], 'c1'));
+    chat.older();
+
+    server.send({
+      kind: 'page',
+      conversation: LEAD,
+      turns: [turn('t1', 'one'), turn('t2', 'two')],
+      cursor: 'c2',
+      reconciled: true,
+    });
+    server.send(page([turn('t0', 'zero')], 'c0'));
+
+    expect(names(chat), 'the late older answer has no ask left to splice it above').toEqual([
+      'u-one',
+      'u-two',
+      'u-zero',
+    ]);
     stop();
   });
 
