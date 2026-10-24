@@ -3130,6 +3130,12 @@ describe('one turn folded into the units a view draws', () => {
     expect(callsOf(after[0])[0]?.leaf.status, 'and the stop re-folds the turn it marks').toBe(
       'killed',
     );
+    // And a VALUE-EQUAL page is the same page: a fresh object carrying the same
+    // stops is answered from the carry, not folded again. Identity comparison
+    // would miss here, since the derive rebuilds the object per frame.
+    const sameContent = { settled: new Map(holds.settled), drawn: new Set(holds.drawn) };
+    const [again] = [turnFold(carried, null, false, false, sameContent)];
+    expect(again, 'a value-equal stop page keeps the carry').toBe(after);
 
     // Rule 25: the same stop folded as its own page - no held launch - draws,
     // named with the task it stopped.
@@ -3255,6 +3261,48 @@ describe('one turn folded into the units a view draws', () => {
       message: `No task found with ID: ${TASK}`,
       detail: '',
     });
+  });
+
+  it('draws a stop whose launch came from a dispatched agent, which the fold skips', () => {
+    // A sub-agent's frames belong to the dispatch timeline and the fold skips
+    // them whole. A parent's TaskStop of a task the sub-agent launched has no
+    // row here to mark, so it must draw as its own row - the join reads the
+    // same skip the drawing does, or the stop would vanish (rule 25).
+    const TASK = 'b4f1ow726';
+    const subLaunch = said(
+      [
+        use('toolu_sub_bg', 'Bash', {
+          command: 'sleep 60',
+          run_in_background: true,
+        }),
+      ],
+      { parent_tool_use_id: 'toolu_dispatch' },
+    );
+    const subResult = heard(
+      [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_sub_bg',
+          content: `Command running in background with ID: ${TASK}.`,
+        },
+      ],
+      { parent_tool_use_id: 'toolu_dispatch' },
+    );
+    const asking = said([use('toolu_stop', 'TaskStop', { task_id: TASK })]);
+    const stopped = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_stop',
+        content: JSON.stringify({ message: `Successfully stopped task: ${TASK}`, task_id: TASK }),
+      },
+    ]);
+
+    const frames = [subLaunch, subResult, asking, stopped];
+    const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+    const calls = callsOf(group);
+    expect(calls, 'the sub-agent call is not folded here, so the stop draws').toHaveLength(1);
+    expect(calls[0]?.leaf.title, 'named with the task it stopped').toContain(TASK);
+    expect(calls[0]?.leaf.id, 'and the row is the stop itself').toBe('toolu_stop');
   });
 
   it('settles a stopped Monitor through the task_started link the frames carry', () => {

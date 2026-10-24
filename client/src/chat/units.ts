@@ -41,13 +41,12 @@
 
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
+import { addJoinFrame, isDispatched, seedJoin, settleStops } from './join';
 import {
   blocksOf,
   bodyOf,
-  launchedTask,
   leafOf,
   omittedRecord,
-  stopSucceeded,
   type Block,
   type TaskFact,
   type ToolLeaf,
@@ -76,64 +75,6 @@ export interface PageStops {
 /** What a page with no stops gets: one shared value, so its turns memoize as they did before. */
 export const NO_STOPS: PageStops = { settled: new Map(), drawn: new Set() };
 
-/** One turn's stop facts, read once and carried as the turn grows. */
-interface StopFacts {
-  /** The call a task belongs to, from `task_started` and launch results. */
-  owners: Map<string, string>;
-  /** The tasks `task_started` linked itself: the CLI's own word, which wins
-   * over a launch sentence wherever either sits on the page. */
-  strong: Set<string>;
-  /** The calls whose `tool_use` the turn holds. */
-  held: Set<string>;
-  /** The `TaskStop` calls the turn holds, by the task each names. */
-  asks: Map<string, string>;
-  /** Whether each stop's own answer reported success, by the stop's call. */
-  answers: Map<string, boolean>;
-}
-
-/** A turn with no stop facts yet: the seed `carriedValue` builds on a miss. */
-function seedStopFacts(): StopFacts {
-  return {
-    owners: new Map(),
-    strong: new Set(),
-    held: new Set(),
-    asks: new Map(),
-    answers: new Map(),
-  };
-}
-
-/** Fold one frame into a turn's stop facts. */
-function addStopFacts(facts: StopFacts, frame: unknown): void {
-  const held = frame as Frame | null;
-  if (held === null || typeof held !== 'object') return;
-  if (held.type === 'assistant' || held.type === 'user') {
-    for (const block of blocksOf(held.message?.content)) {
-      if (block.type === 'tool_use' && typeof block.id === 'string') {
-        facts.held.add(block.id);
-        if (block.name === 'TaskStop') {
-          const task = str(block.input, 'task_id');
-          if (task !== null) facts.asks.set(block.id, task);
-        }
-      }
-      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        const task = launchedTask(block.content);
-        // `task_started` is the CLI's own link and wins where both exist.
-        if (task !== null && !facts.owners.has(task)) facts.owners.set(task, block.tool_use_id);
-        if (facts.asks.has(block.tool_use_id)) {
-          facts.answers.set(block.tool_use_id, stopSucceeded(block));
-        }
-      }
-    }
-    return;
-  }
-  if (held.type !== 'system' || held.subtype !== 'task_started') return;
-  const task = str(held, 'task_id');
-  const call = str(held, 'tool_use_id');
-  if (task === null || call === null) return;
-  facts.owners.set(task, call);
-  facts.strong.add(task);
-}
-
 /**
  * The stops the held turns carry, resolved as a folded turn reads them.
  *
@@ -141,30 +82,30 @@ function addStopFacts(facts: StopFacts, frame: unknown): void {
  * the live path, and a walk of the page per arriving frame is the cost the
  * carry exists to delete (`fold-cost.test.ts`). Only a turn that grew is
  * extended, and only by the frames it gained.
+ *
+ * The frames are read by the same `addJoinFrame` the strip uses, so the two
+ * cannot disagree on a launch's link or a stop's success.
  */
 export function stopsOf(turns: readonly { messages: readonly unknown[] }[]): PageStops {
-  const pages = turns.map((turn) => carriedValue(turn, 'stops', seedStopFacts, addStopFacts));
-  const owners = new Map<string, string>();
-  const held = new Set<string>();
-  const resolved: Array<{ stop: string; task: string }> = [];
+  const pages = turns.map((turn) => carriedValue(turn, 'stops', seedJoin, addJoinFrame));
+  const merged = seedJoin();
   // The CLI's own link first, then a launch sentence only where nothing has
   // spoken: first-write-wins keeps a later tool result that merely QUOTES the
   // sentence from stealing the task from the call that launched it.
   for (const facts of pages) {
     for (const [task, call] of facts.owners) {
-      if (facts.strong.has(task)) owners.set(task, call);
+      if (facts.strong.has(task)) merged.owners.set(task, call);
     }
   }
   for (const facts of pages) {
     for (const [task, call] of facts.owners) {
-      if (!facts.strong.has(task) && !owners.has(task)) owners.set(task, call);
+      if (!facts.strong.has(task) && !merged.owners.has(task)) merged.owners.set(task, call);
     }
   }
   for (const facts of pages) {
-    for (const id of facts.held) held.add(id);
-    for (const [stop, task] of facts.asks) {
-      if (facts.answers.get(stop) === true) resolved.push({ stop, task });
-    }
+    for (const id of facts.held) merged.held.add(id);
+    for (const [stop, task] of facts.asks) merged.asks.set(stop, task);
+    for (const [stop, ok] of facts.answers) merged.answers.set(stop, ok);
   }
   // **The page's own rows are the only place a mark can land.** A page cut
   // through a turn can hold a launch's result without its call, and a stop
@@ -172,9 +113,8 @@ export function stopsOf(turns: readonly { messages: readonly unknown[] }[]): Pag
   // (rule 25).
   const settled = new Map<string, string>();
   const drawn = new Set<string>();
-  for (const { stop, task } of resolved) {
-    const call = owners.get(task);
-    if (call === undefined || !held.has(call)) continue;
+  for (const { stop, task, call } of settleStops(merged)) {
+    if (call === null || !merged.held.has(call)) continue;
     settled.set(call, task);
     drawn.add(stop);
   }
@@ -631,17 +571,6 @@ function promptIdOf(frame: Frame, block: Block): string | null {
   const carried = block.source_uuid;
   if (typeof carried === 'string' && carried !== '') return carried;
   return typeof frame.uuid === 'string' && frame.uuid !== '' ? frame.uuid : null;
-}
-
-/** Whether a frame came from a dispatched agent rather than the session's own. */
-function isDispatched(frame: Frame): boolean {
-  // The wire spells "no dispatch" as null and a dispatch's own tool-use id
-  // otherwise, which is the same field and the same guard the server's fold
-  // reads. The sidechain flag a transcript FILE carries is not on the wire at
-  // all: `Message` has no such field, and no captured baseline contains the
-  // string - so a guard keyed on it would read as working and suppress
-  // nothing, which is worse than no guard.
-  return typeof frame.parent_tool_use_id === 'string' && frame.parent_tool_use_id.trim() !== '';
 }
 
 /** What follows `marker`, or `null` when the text does not carry it. */
