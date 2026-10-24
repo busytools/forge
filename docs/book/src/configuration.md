@@ -199,7 +199,7 @@ the load instead of quietly applying nothing.
 
 ## `[handoff]`
 
-When a session's context nearly full, forge replaces it with a fresh
+When a session's context is nearly full, forge replaces it with a fresh
 session that continues from a brief: the work carries on, and only a
 handoff row marks the swap. The trigger runs on by default, at the end of
 a turn, so a long session stops before its first compaction rather than
@@ -686,9 +686,9 @@ Every table rejects unknown fields, so a mistyped key fails the load
 and names itself rather than parsing clean and meaning something else -
 a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
-`[[accounts]]`, `[models."<name>"]`, `[[slack]]`, `[gotify]`,
-`[systemone]`, `[gateway]`, `[dictate]`, `[plugins]`, `[server]` and
-`[client]`.
+`[[accounts]]`, `[models."<name>"]`, `[handoff]` and
+`[orgs.projects.handoff]`, `[[slack]]`, `[gotify]`, `[systemone]`,
+`[gateway]`, `[dictate]`, `[plugins]`, `[server]` and `[client]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:

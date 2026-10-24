@@ -91,7 +91,7 @@ pub enum WorkspaceError {
         path.display(),
         crate::config::DEFAULT_HANDOFF_AT_PERCENT
     )]
-    HandoffAtPercentInvalid { path: PathBuf, scope: String, value: u8 },
+    HandoffAtPercentInvalid { path: PathBuf, scope: String, value: u32 },
 
     #[error(
         "the handoff table at {scope} in forge.toml at {} sets after_compactions = 0, which is not usable; it must name a count of at least 1, so remove the key for the {} default",

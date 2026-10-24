@@ -553,8 +553,10 @@ pub struct HandoffSettings {
     #[serde(default)]
     pub enabled: Option<bool>,
     /// The share of the CLI's effective window the fill trigger fires at.
+    /// Widened past `u8` so a value above 255 gets this crate's own refusal
+    /// rather than serde's, and validation bounds what survives to 1..=100.
     #[serde(default)]
-    pub at_percent: Option<u8>,
+    pub at_percent: Option<u32>,
     /// The compaction count the backstop fires at.
     #[serde(default)]
     pub after_compactions: Option<u32>,
@@ -586,10 +588,13 @@ impl HandoffPolicy {
                 .and_then(|settings| settings.enabled)
                 .or(global.enabled)
                 .unwrap_or(true),
-            at_percent: project
-                .and_then(|settings| settings.at_percent)
-                .or(global.at_percent)
-                .unwrap_or(DEFAULT_HANDOFF_AT_PERCENT),
+            at_percent: u8::try_from(
+                project
+                    .and_then(|settings| settings.at_percent)
+                    .or(global.at_percent)
+                    .unwrap_or(u32::from(DEFAULT_HANDOFF_AT_PERCENT)),
+            )
+            .unwrap_or(DEFAULT_HANDOFF_AT_PERCENT),
             after_compactions: project
                 .and_then(|settings| settings.after_compactions)
                 .or(global.after_compactions)
@@ -4342,10 +4347,11 @@ at_percent = 95
     }
 
     /// A share at either end of the range is a trigger that never fires or
-    /// one that fires on the first turn, so it is refused by name.
+    /// one that fires on the first turn, and a value past 255 is refused
+    /// here rather than by serde, so it is refused by name with the fix.
     #[test]
     fn a_handoff_percent_outside_the_window_is_refused() {
-        for value in [0u8, 101] {
+        for value in [0u32, 101, 300] {
             let dir = tempdir().expect("tempdir");
             write_config(
                 dir.path(),

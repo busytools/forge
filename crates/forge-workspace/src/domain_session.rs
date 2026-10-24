@@ -53,11 +53,6 @@ pub struct PendingAutoContinue {
     pub reason: String,
 }
 
-/// The handoff this session is running, if any.
-///
-/// The request is parked rather than acted on while a turn runs: a handoff
-/// never interrupts one. The judgment turn is forge's own prompt, so the
-/// reply it captures is the last assistant text before that turn ends.
 /// A handoff request that arrived while a turn was running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParkedHandoff {
@@ -77,6 +72,12 @@ impl ParkedHandoff {
     }
 }
 
+/// The handoff this session is running, if any.
+///
+/// The request is parked rather than acted on while a turn runs: a handoff
+/// never interrupts one. The judgment turn is forge's own prompt, so the
+/// reply it captures is the last assistant text before that turn ends - and
+/// only that turn's end finishes the handoff.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandoffState {
     /// A request that arrived while a turn was running.
@@ -90,6 +91,12 @@ pub struct HandoffState {
     pub fill: Option<crate::handoff::FillReading>,
     /// The judgment turn forge sent is running.
     pub awaiting: bool,
+    /// The id the judgment prompt was sent under, so the swap waits for
+    /// THAT prompt's turn rather than for whatever turn ends next.
+    pub judgment_uuid: Option<String>,
+    /// The CLI's own lifecycle frame said the judgment prompt started. A
+    /// turn that ends without it is not the judgment turn.
+    pub judgment_started: bool,
     /// The last assistant text seen while that turn ran.
     pub judgment: Option<String>,
 }
@@ -610,6 +617,19 @@ impl DomainSession {
                 self.runtime_state,
                 Some(RuntimeSessionState::Running | RuntimeSessionState::RequiresAction)
             )
+    }
+
+    /// Whether a handoff may start here: nothing running, nothing waiting in
+    /// the CLI's queue, and nothing parked on an answer.
+    ///
+    /// **All three, not just the turn.** A prompt already queued is a turn
+    /// the handoff's own prompt would be folded into, and a parked
+    /// interaction is a turn that has not ended; the document names both as
+    /// the "otherwise idle" condition.
+    pub fn is_idle_for_handoff(&self) -> bool {
+        !self.turn_in_flight()
+            && self.prompt_queue.is_empty()
+            && self.pending_interactions.is_empty()
     }
 
     /// Fold one frame's own claim about the turn into the liveness mirror.

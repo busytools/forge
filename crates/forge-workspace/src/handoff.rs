@@ -785,10 +785,13 @@ pub(crate) struct HeldPrompt {
 pub(crate) struct SuccessorWatch {
     /// The occupant the handoff named.
     pub to: String,
-    /// Turns counted so far.
+    /// Turns counted so far, the brief's own excluded.
     pub turns: u32,
     /// What its predecessor had read.
     pub predecessor_reads: Vec<String>,
+    /// The brief's own turn has not ended yet, so the first boundary to come
+    /// is forge's prompt rather than one of the successor's ten.
+    pub skip_brief_turn: bool,
 }
 
 /// What a swap left for the occupant that continues: the text it is given,
@@ -804,9 +807,26 @@ pub(crate) struct PendingBrief {
 /// The fill reading a handoff fired on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FillReading {
+    /// The share, rounded, as the row draws it.
     pub percent: u8,
     pub total_tokens: u64,
     pub max_tokens: u64,
+}
+
+impl FillReading {
+    /// Whether the seat has crossed `at_percent`.
+    ///
+    /// **Compared on the pair, not the rounded share.** Rounding first would
+    /// fire a 84.6% reading at a 85% threshold; the record carries both
+    /// numbers so a later reader can see the exact ratio the trigger saw.
+    pub fn fires(&self, at_percent: u8) -> bool {
+        if self.max_tokens == 0 {
+            // A reading that named only its share: all this can compare.
+            return self.percent >= at_percent;
+        }
+        self.total_tokens.saturating_mul(100)
+            >= u64::from(at_percent).saturating_mul(self.max_tokens)
+    }
 }
 
 /// One handoff, decided and ready to run.
@@ -1511,6 +1531,18 @@ mod tests {
         let counts = successor_counts(&messages, &[]);
         assert_eq!(counts.questions, 1, "the ask is counted");
         assert_eq!(counts.corrections, 1, "and the repeat is a correction: {counts:?}");
+    }
+
+    /// The threshold is compared on the pair, before the share is rounded:
+    /// an 84.6% reading rounds to 85 and must still not fire at 85.
+    #[test]
+    fn the_threshold_is_compared_before_rounding() {
+        let just_under = FillReading { percent: 85, total_tokens: 846_000, max_tokens: 1_000_000 };
+        assert!(!just_under.fires(85), "84.6% is under the line");
+        let at = FillReading { percent: 85, total_tokens: 850_000, max_tokens: 1_000_000 };
+        assert!(at.fires(85), "exactly 85% is at it");
+        let share_only = FillReading { percent: 85, total_tokens: 0, max_tokens: 0 };
+        assert!(share_only.fires(85), "a share-only reading falls back to its share");
     }
 
     /// A line is "measured" only when it states a number in a unit: prose

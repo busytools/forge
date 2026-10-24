@@ -4322,6 +4322,31 @@ impl Workspace {
         text: String,
         uuid: String,
     ) -> Result<(), DispatchError> {
+        self.dispatch_forged_prompt_held(key, text, uuid, true)
+    }
+
+    /// The handoff's own judgment prompt.
+    ///
+    /// **The one prompt a swap's gate lets through.** The gate opens when
+    /// the handoff begins, and this is the prompt the handoff is built on:
+    /// held like any other, it would wait for a successor that is waiting
+    /// for it.
+    pub(crate) fn dispatch_handoff_prompt(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        uuid: String,
+    ) -> Result<(), DispatchError> {
+        self.dispatch_forged_prompt_held(key, text, uuid, false)
+    }
+
+    fn dispatch_forged_prompt_held(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        uuid: String,
+        holdable: bool,
+    ) -> Result<(), DispatchError> {
         // Stamped at the forge: the CLI never echoes a prompt, so this row
         // opens every turn the machinery starts - and a page attaching
         // mid-turn anchors its running clock on the first row that carries a
@@ -4332,7 +4357,17 @@ impl Workspace {
         // the row a view labels and the frame a reader's follow reads arm
         // alike only while they are one fact (#2198).
         let source = crate::protocol::PromptSource::Forge;
-        let result = self.dispatch_workspace_prompt_under(key, text, source, uuid);
+        let result = if holdable {
+            self.dispatch_workspace_prompt_under(key, text, source, uuid)
+        } else {
+            self.route(Command::PromptUnder {
+                key: key.clone(),
+                text,
+                attachments: Vec::new(),
+                uuid,
+                source,
+            })
+        };
         if result.is_ok() {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
