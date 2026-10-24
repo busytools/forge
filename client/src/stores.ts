@@ -196,4 +196,12 @@ export class Stores {
   byKey(key: string): Store | undefined {
     return this.held.get(key)?.store;
   }
+
+  /**
+   * Every subject this connection currently holds, for a caller that has to
+   * sweep the set rather than address one by key.
+   */
+  subjects(): Subject[] {
+    return Array.from(this.held.values(), ({ store }) => store.subject);
+  }
 }
