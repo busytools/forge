@@ -958,6 +958,114 @@ fn turn_wire(
     TurnWire { key: key.map(str::to_owned), messages: frames }
 }
 
+/// Fold each run of consecutive thinking-token counters in a turn into the one
+/// frame it draws as.
+///
+/// The fold reads a counter for two things only, its growth and its stamp,
+/// and draws no row for it - so a turn that thinks for an hour is thousands of
+/// frames that all say the same running figure. One frame per run carries it
+/// exactly: the summed `estimated_tokens_delta`, the newest frame's own id and
+/// stamp, and the stamps the run covers (`folded_from` through its own
+/// `timestamp`) with `folded_frames` saying how many the one stands for. **The
+/// live stream already serves a flush's run this way** (`batch::merge`); this
+/// is that shape at the page's own cut.
+///
+/// **The range is what a landing reads, not a single instant.** A page can
+/// open on a turn's SUFFIX - the held window's front cuts inside a running
+/// turn when no turn opener sits above the line - so a client holding the
+/// counters above the page's first one must keep them, and a run that recorded
+/// only where it ends would drop them.
+///
+/// **A run that may start mid-turn is never folded.** When a turn's first
+/// carried frame is itself a counter, the window's front cut inside that
+/// running turn, and the run's true start is not in the page - so its leading
+/// counters are served as themselves. Every fold a page carries therefore
+/// starts at the first counter after a frame that is no counter, which is a
+/// boundary any earlier page of the same run shares; a later page's fold then
+/// nests inside or around an earlier one instead of crossing it.
+///
+/// **A run is one dispatch's, and the dispatch lives in the frame's extras
+/// rather than in its typed fields.** No captured baseline carries
+/// `parent_tool_use_id` on a counter, so the grouping is a guard rather than a
+/// live path: if the CLI ever stamps one, a sub-agent's counters are the
+/// subagents surface's and the chat fold skips them whole, and folding them
+/// into the parent's run would move its figure and its clock. **A folded run
+/// is stamped throughout**: a frame with no stamp breaks the run rather than
+/// being folded under a bound it cannot be placed by.
+///
+/// It runs after the page is cut, so the budget still counts the bytes a page
+/// used to carry and keeps the same turns it always did.
+fn compact_counters(frames: &mut Vec<Value>) {
+    let held = std::mem::take(frames);
+    let mut out: Vec<Value> = Vec::with_capacity(held.len());
+    // The turn's first frame opens it unless the page cut the turn, and only
+    // a proven opening lets the leading run fold.
+    let mut leading = held.first().is_some_and(is_counter);
+    for frame in held {
+        if !is_counter(&frame) {
+            leading = false;
+        }
+        if let Some(last) = out.last_mut()
+            && !leading
+            && is_counter(last)
+            && is_counter(&frame)
+            && same_run(last, &frame)
+            && counter_stamp(last).is_some()
+            && counter_stamp(&frame).is_some()
+        {
+            // The newest frame survives with its own id, session and extras,
+            // the same exchange `batch::merge` makes; only the growth, the
+            // count and the range are the run's. The frame being replaced
+            // carries the range's start once it is itself a fold, and before
+            // that it is the run's opening frame.
+            let previous = std::mem::replace(last, frame);
+            let delta = grown(last).saturating_add(grown(&previous));
+            let count = counted(&previous).saturating_add(1);
+            let from = previous.get("folded_from").or_else(|| counter_stamp(&previous)).cloned();
+            if let Some(object) = last.as_object_mut() {
+                if let Some(from) = from {
+                    object.insert("folded_from".to_owned(), from);
+                }
+                object.insert("estimated_tokens_delta".to_owned(), Value::from(delta));
+                object.insert("folded_frames".to_owned(), Value::from(count));
+            }
+            continue;
+        }
+        out.push(frame);
+    }
+    *frames = out;
+}
+
+/// Whether the frame is a thinking-token counter.
+fn is_counter(frame: &Value) -> bool {
+    frame["type"] == "system" && frame["subtype"] == "thinking_tokens"
+}
+
+/// The dispatch a counter ran under, empty when it is the turn's own.
+fn counter_dispatch(frame: &Value) -> Option<&str> {
+    frame.get("parent_tool_use_id").and_then(Value::as_str).filter(|id| !id.trim().is_empty())
+}
+
+/// Whether `next` continues the counter run `last` is part of.
+fn same_run(last: &Value, next: &Value) -> bool {
+    counter_dispatch(last) == counter_dispatch(next)
+}
+
+/// The stamp a counter frame carries, when it carries one.
+fn counter_stamp(frame: &Value) -> Option<&Value> {
+    frame.get("timestamp").filter(|stamp| stamp.is_string())
+}
+
+/// The growth one counter frame stands for: one frame's delta, or a run's sum.
+fn grown(frame: &Value) -> i64 {
+    frame["estimated_tokens_delta"].as_i64().unwrap_or(0)
+}
+
+/// How many frames a counter stands for, itself included.
+fn counted(frame: &Value) -> u64 {
+    frame["folded_frames"].as_u64().unwrap_or(1)
+}
+
 /// The keys a client actually draws out of a structured record: a mutation's
 /// patch and its outside-edit mark, a question's answers and the notes typed
 /// beside them.
@@ -1228,7 +1336,11 @@ fn turn_ranges<'a>(
 pub fn all_turns(messages: &[Message], rendered: &Rendered) -> Vec<TurnWire> {
     turn_ranges(messages, &rendered.turns)
         .into_iter()
-        .map(|(from, to, key)| turn_wire(messages, from, to, key, &rendered.endings))
+        .map(|(from, to, key)| {
+            let mut turn = turn_wire(messages, from, to, key, &rendered.endings);
+            compact_counters(&mut turn.messages);
+            turn
+        })
         .collect()
 }
 
@@ -1325,7 +1437,7 @@ pub fn page_within(
     // would walk and encode the whole conversation on a path a reader hits
     // while scrolling.
     let window_first = ends_at.saturating_sub(turns);
-    let (first, page_turns) = if budget == usize::MAX {
+    let (first, mut page_turns) = if budget == usize::MAX {
         let page_turns: Vec<TurnWire> = ranges[window_first..ends_at]
             .iter()
             .map(|&(from, to, key)| turn_wire(messages, from, to, key, &rendered.endings))
@@ -1361,6 +1473,11 @@ pub fn page_within(
         kept.reverse();
         (first, kept)
     };
+    // After the cut, so the budget still counts the bytes a page used to carry
+    // and keeps the same whole turns it always did.
+    for turn in &mut page_turns {
+        compact_counters(&mut turn.messages);
+    }
 
     // `None` is the real "nothing above this page": a page already opening on
     // the conversation's first turn has nothing to walk back to, and that is
@@ -2366,6 +2483,252 @@ mod tests {
             "a page that fits its budget is the page the count asked for",
         );
         assert_eq!(bounded.cursor, counted.cursor, "on the same handle");
+    }
+
+    /// A wire frame as a page carries it.
+    fn a_frame(text: &str) -> Message {
+        serde_json::from_str(text).expect("a wire frame decodes")
+    }
+
+    /// A prompt, which is what opens a turn.
+    fn opens_turn() -> Message {
+        opens_turn_at(1)
+    }
+
+    /// The same, under an id and a clock of its own.
+    fn opens_turn_at(seq: u32) -> Message {
+        a_frame(&format!(
+            r#"{{"type":"user","uuid":"u-{seq}","session_id":"s","timestamp":"2026-10-24T09:00:{seq:02}.000000Z","message":{{"role":"user","content":[{{"type":"text","text":"turn {seq}"}}]}}}}"#
+        ))
+    }
+
+    /// The result that closes a turn.
+    fn ends_turn(seq: u32) -> Message {
+        a_frame(&format!(
+            r#"{{"type":"result","uuid":"r-{seq}","session_id":"s","subtype":"success","is_error":false,"duration_ms":1,"duration_api_ms":1,"num_turns":1}}"#
+        ))
+    }
+
+    /// One thinking-token counter, as the CLI emits them.
+    fn counter(seq: u32, delta: i64) -> Message {
+        counter_of(seq, delta, None)
+    }
+
+    /// The same, under a sub-agent's dispatch when `dispatch` names one.
+    fn counter_of(seq: u32, delta: i64, dispatch: Option<&str>) -> Message {
+        let parent =
+            dispatch.map_or_else(String::new, |id| format!(r#","parent_tool_use_id":"{id}""#));
+        a_frame(&format!(
+            r#"{{"type":"system","subtype":"thinking_tokens","estimated_tokens":{delta},"estimated_tokens_delta":{delta},"uuid":"t-{seq}","session_id":"s","timestamp":"2026-10-24T09:00:00.{seq:06}Z"{parent}}}"#
+        ))
+    }
+
+    /// An assistant message, which draws a row of its own between runs.
+    fn says(seq: u32) -> Message {
+        a_frame(&format!(
+            r#"{{"type":"assistant","uuid":"a-{seq}","session_id":"s","timestamp":"2026-10-24T09:00:00.{seq:06}Z","message":{{"id":"m-{seq}","role":"assistant","model":"claude-opus-5","content":[{{"type":"text","text":"reply"}}]}}}}"#
+        ))
+    }
+
+    /// A tool result, which draws nothing and is no counter either.
+    fn answers(seq: u32) -> Message {
+        a_frame(&format!(
+            r#"{{"type":"user","uuid":"r-{seq}","session_id":"s","timestamp":"2026-10-24T09:00:00.{seq:06}Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"call-1","content":"ok"}}]}}}}"#
+        ))
+    }
+
+    /// The counters a page's frames carry, as `(delta, folded_frames)`.
+    fn counters_on(page: &Page) -> Vec<(i64, Option<u64>)> {
+        page.turns
+            .iter()
+            .flat_map(|turn| turn.messages.iter())
+            .filter(|frame| frame["subtype"] == "thinking_tokens")
+            .map(|frame| {
+                (
+                    frame["estimated_tokens_delta"].as_i64().expect("a delta"),
+                    frame["folded_frames"].as_u64(),
+                )
+            })
+            .collect()
+    }
+
+    /// **A turn's counter storm is one frame per run on a page.**
+    ///
+    /// The fold reads a counter for its growth and its stamp and draws no row
+    /// for it, so the page carries the run's sum and newest stamp once - and
+    /// the figure a reader sees is the same number either way. A run of one is
+    /// left exactly as the CLI sent it.
+    #[test]
+    fn a_turns_counter_runs_are_one_frame_each_on_a_page() {
+        let messages = vec![
+            opens_turn(),
+            counter(1, 10),
+            counter(2, 20),
+            counter(3, 5),
+            says(4),
+            counter(5, 7),
+            counter(6, 3),
+            answers(7),
+            counter(8, 9),
+        ];
+        let rendered = crate::transcript::render(&messages, true);
+
+        let page = page(&messages, &rendered, 0, None, u32::MAX);
+
+        assert_eq!(page.turns.len(), 1, "the frames are one live turn");
+        let served = &page.turns[0].messages;
+        assert_eq!(served.len(), 6, "nine frames, three runs folded: {served:?}");
+        assert_eq!(
+            counters_on(&page),
+            vec![(35, Some(3)), (10, Some(2)), (9, None)],
+            "each run is its summed delta and its count, and a run of one is untouched",
+        );
+        let first = served.iter().find(|frame| frame["folded_frames"] == 3).expect("the first run");
+        assert_eq!(first["uuid"], "t-3", "the surviving frame is the newest of its run");
+        assert_eq!(
+            first["folded_from"], "2026-10-24T09:00:00.000001Z",
+            "and it names where its run starts, so a landing knows which counters it covers",
+        );
+        assert_eq!(
+            first["timestamp"], "2026-10-24T09:00:00.000003Z",
+            "so the turn's clock reads the newest stamp, as it did over the raw run",
+        );
+        assert_eq!(
+            first["estimated_tokens"], 5,
+            "the running value is the newest frame's own, the same exchange the live fold makes",
+        );
+        assert_eq!(
+            served.last().map(|frame| &frame["timestamp"]),
+            Some(&serde_json::json!("2026-10-24T09:00:00.000008Z")),
+            "the turn still ends on the instant its newest frame was stamped",
+        );
+    }
+
+    /// **A run is one dispatch's.** A sub-agent's counters are the subagents
+    /// surface's, and the chat fold skips them whole - folding them into the
+    /// turn's own run, or into another sub-agent's, would move the running
+    /// figure and the clock.
+    #[test]
+    fn a_dispatched_counters_do_not_fold_into_the_turns_own() {
+        let messages = vec![
+            opens_turn(),
+            counter_of(1, 10, Some("tool-1")),
+            counter_of(2, 20, Some("tool-1")),
+            counter_of(3, 7, Some("tool-2")),
+            counter(4, 5),
+        ];
+        let rendered = crate::transcript::render(&messages, true);
+
+        let page = page(&messages, &rendered, 0, None, u32::MAX);
+
+        assert_eq!(
+            counters_on(&page),
+            vec![(30, Some(2)), (7, None), (5, None)],
+            "each dispatch keeps its own run, and the turn's own counter stays its own",
+        );
+        let folded = page.turns[0]
+            .messages
+            .iter()
+            .find(|frame| frame["folded_frames"] == 2)
+            .expect("the first dispatch's run");
+        assert_eq!(folded["parent_tool_use_id"], "tool-1", "under the dispatch it ran as");
+        assert_eq!(
+            folded["folded_from"], "2026-10-24T09:00:00.000001Z",
+            "and its range is its own run's, not the turn's",
+        );
+    }
+
+    /// **A leading run with no proven start is never folded.** A turn whose
+    /// first carried frame is a counter is the window's front cutting inside
+    /// a running turn, so the run's true start is not in the page - its
+    /// counters are served as themselves, and a later run still folds.
+    #[test]
+    fn a_leading_counter_run_of_a_cut_turn_is_not_folded() {
+        let messages = vec![
+            counter(1, 10),
+            counter(2, 20),
+            says(3),
+            counter(4, 7),
+            counter(5, 3),
+            answers(6),
+            counter(7, 5),
+        ];
+        let rendered = crate::transcript::render(&messages, true);
+
+        let page = page(&messages, &rendered, 0, None, u32::MAX);
+
+        assert_eq!(
+            counters_on(&page),
+            vec![(10, None), (20, None), (10, Some(2)), (5, None)],
+            "the leading pair stays raw and the run after the assistant folds",
+        );
+    }
+
+    /// **A frame with no stamp breaks a run.** A fold's coverage is a stamp
+    /// range, so a frame that cannot be placed is served as itself and the
+    /// stamped frames either side fold among themselves.
+    #[test]
+    fn a_counter_frame_with_no_stamp_breaks_the_run() {
+        let unstamped = |seq: u32, delta: i64| {
+            a_frame(&format!(
+                r#"{{"type":"system","subtype":"thinking_tokens","estimated_tokens":{delta},"estimated_tokens_delta":{delta},"uuid":"t-{seq}","session_id":"s"}}"#
+            ))
+        };
+        let messages = vec![opens_turn(), unstamped(1, 10), counter(2, 20), counter(3, 5)];
+        let rendered = crate::transcript::render(&messages, true);
+
+        let page = page(&messages, &rendered, 0, None, u32::MAX);
+
+        assert_eq!(
+            counters_on(&page),
+            vec![(10, None), (25, Some(2))],
+            "the unstamped frame is served, and the stamped pair after it folds",
+        );
+        let folded = page.turns[0]
+            .messages
+            .iter()
+            .find(|frame| frame["folded_frames"] == 2)
+            .expect("the stamped pair");
+        assert_eq!(
+            folded["folded_from"], "2026-10-24T09:00:00.000002Z",
+            "its range starts at the first frame it can place",
+        );
+    }
+
+    /// **The budget still counts the bytes a page carried before the fold.**
+    /// Folding after the cut is what keeps a capped page's turns the same as
+    /// they were; folding first would fit more of them and change what a page
+    /// draws.
+    #[test]
+    fn the_budget_cuts_on_the_bytes_a_page_carried_before_the_fold() {
+        let mut messages = Vec::new();
+        let mut seq = 0;
+        for turn in 1..=4 {
+            messages.push(opens_turn_at(turn));
+            for _ in 0..40 {
+                seq += 1;
+                messages.push(counter(seq, 10));
+            }
+            messages.push(ends_turn(turn));
+        }
+        let rendered = crate::transcript::render(&messages, false);
+        let ranges = turn_ranges(&messages, &rendered.turns);
+        let raw_turn = |&(from, to, key): &(usize, usize, Option<&str>)| {
+            serde_json::to_string(&turn_wire(&messages, from, to, key, &rendered.endings))
+                .expect("a turn serialises")
+                .len()
+                + 1
+        };
+        let newest_two: usize = ranges[ranges.len() - 2..].iter().map(raw_turn).sum();
+
+        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, newest_two, None);
+
+        assert_eq!(bounded.turns.len(), 2, "the same two turns the raw budget kept");
+        assert!(
+            wire_bytes(&bounded.turns) < newest_two,
+            "and the page is served folded: {} bytes under a {newest_two}-byte cut",
+            wire_bytes(&bounded.turns),
+        );
     }
 
     /// A turn whose structured tool result is `pad` bytes of payload.
