@@ -165,7 +165,7 @@ pub struct AccountLoadingRow {
 /// and the state an `AccountsChanged` frame pushes.
 ///
 /// **One shape for both paths.** The snapshot field and the frame's payload
-/// are built by [`crate::Workspace::account_pool`], so a client folding a
+/// are built by [`crate::Workspace::account_pool_view`], so a client folding a
 /// frame and a client reading the snapshot cannot disagree (rule 25).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
