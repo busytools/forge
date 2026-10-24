@@ -30,6 +30,7 @@ fn click(host: &mut support::Host, x: i32, y: i32) {
         forge_primitives::browser::MouseAction::Release,
     ] {
         host.input(&host_line(&HostInput::Mouse {
+            tab: 1,
             action,
             x,
             y,

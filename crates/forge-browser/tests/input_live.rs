@@ -92,6 +92,7 @@ async fn wait_for(fixture: &mut Fixture, expression: &str, ok: impl Fn(&Value) -
 fn click(fixture: &mut Fixture, x: i32, y: i32) {
     for action in [MouseAction::Press, MouseAction::Release] {
         fixture.host.input(&host_line(&HostInput::Mouse {
+            tab: 1,
             action,
             x,
             y,

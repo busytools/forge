@@ -1,9 +1,9 @@
 //! A painted frame as it leaves the host: a small header and encoded pixels.
 //!
-//! The wire form is `[profile u16][seq u32][width u16][height u16][format
-//! u8][key u8][bytes]` in little-endian, and [`crate::channel`] carries it
-//! with a length prefix. The bytes stay encoded end to end: the host is the
-//! only encoder, and the server relays them untouched.
+//! The wire form is `[profile u16][tab u16][seq u32][width u16][height u16]
+//! [format u8][key u8][bytes]` in little-endian, and [`crate::channel`]
+//! carries it with a length prefix. The bytes stay encoded end to end: the
+//! host is the only encoder, and the server relays them untouched.
 
 /// How a frame's pixels are encoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,14 +28,16 @@ impl Format {
 }
 
 /// The header's own length; the payload follows it.
-pub const HEADER_LEN: usize = 12;
+pub const HEADER_LEN: usize = 14;
 
-/// One encoded frame for one profile.
+/// One encoded frame for one tab of one profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
     /// The served profile's id, as the server assigned it.
     pub profile: u16,
-    /// Monotonic per profile; a newer frame supersedes an older one.
+    /// The profile's tab this frame belongs to.
+    pub tab: u16,
+    /// Monotonic per tab; a newer frame supersedes an older one.
     pub seq: u32,
     pub width: u16,
     pub height: u16,
@@ -50,6 +52,7 @@ impl Frame {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_LEN + self.bytes.len());
         out.extend_from_slice(&self.profile.to_le_bytes());
+        out.extend_from_slice(&self.tab.to_le_bytes());
         out.extend_from_slice(&self.seq.to_le_bytes());
         out.extend_from_slice(&self.width.to_le_bytes());
         out.extend_from_slice(&self.height.to_le_bytes());
@@ -65,12 +68,13 @@ impl Frame {
             return Err(format!("a frame is at least {HEADER_LEN} bytes, got {}", bytes.len()));
         }
         let profile = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let seq = u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
-        let width = u16::from_le_bytes([bytes[6], bytes[7]]);
-        let height = u16::from_le_bytes([bytes[8], bytes[9]]);
-        let format = Format::from_code(bytes[10])
-            .ok_or_else(|| format!("unknown frame format {}", bytes[10]))?;
-        let key = match bytes[11] {
+        let tab = u16::from_le_bytes([bytes[2], bytes[3]]);
+        let seq = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let width = u16::from_le_bytes([bytes[8], bytes[9]]);
+        let height = u16::from_le_bytes([bytes[10], bytes[11]]);
+        let format = Format::from_code(bytes[12])
+            .ok_or_else(|| format!("unknown frame format {}", bytes[12]))?;
+        let key = match bytes[13] {
             0 => false,
             1 => true,
             other => return Err(format!("the key flag is 0 or 1, got {other}")),
@@ -82,7 +86,7 @@ impl Frame {
         if width == 0 || height == 0 {
             return Err(format!("a frame has a size, got {width}x{height}"));
         }
-        Ok(Frame { profile, seq, width, height, format, key, bytes: payload })
+        Ok(Frame { profile, tab, seq, width, height, format, key, bytes: payload })
     }
 }
 
@@ -132,6 +136,7 @@ pub fn encode_webp(
 #[cfg(target_os = "macos")]
 pub struct Sink {
     profile: u16,
+    tab: u16,
     path: std::path::PathBuf,
     fps: u16,
     quality: u8,
@@ -149,9 +154,10 @@ pub struct Sink {
 
 #[cfg(target_os = "macos")]
 impl Sink {
-    pub fn new(profile: u16, path: std::path::PathBuf, fps: u16, quality: u8) -> Self {
+    pub fn new(profile: u16, tab: u16, path: std::path::PathBuf, fps: u16, quality: u8) -> Self {
         Self {
             profile,
+            tab,
             path,
             fps: fps.clamp(1, 120),
             quality: quality.min(100),
@@ -242,6 +248,7 @@ impl Sink {
         };
         let frame = Frame {
             profile: self.profile,
+            tab: self.tab,
             seq: self.seq,
             width: width16,
             height: height16,
@@ -316,6 +323,7 @@ mod tests {
     fn frame(seq: u32, profile: u16) -> Frame {
         Frame {
             profile,
+            tab: 1,
             seq,
             width: 800,
             height: 600,
@@ -335,6 +343,34 @@ mod tests {
         assert_eq!(Frame::decode(&bytes), Ok(original));
     }
 
+    /// **The profile and the tab are both on the wire.** A host serves one
+    /// profile's tabs, and a frame that lost its tab drew on the wrong one.
+    #[test]
+    fn a_frame_names_its_profile_and_its_tab() {
+        let frame = Frame {
+            profile: 3,
+            tab: 7,
+            seq: 9,
+            width: 800,
+            height: 600,
+            format: Format::Webp,
+            key: true,
+            bytes: vec![1, 2, 3],
+        };
+        let encoded = frame.encode();
+        assert_eq!(u16::from_le_bytes([encoded[0], encoded[1]]), 3);
+        assert_eq!(u16::from_le_bytes([encoded[2], encoded[3]]), 7);
+        assert_eq!(Frame::decode(&encoded).expect("a frame decodes"), frame);
+
+        let mut old = encoded.clone();
+        old[2..4].copy_from_slice(&0_u16.to_le_bytes());
+        old.truncate(12);
+        assert_eq!(
+            Frame::decode(&old).expect_err("a short header is refused"),
+            "a frame is at least 14 bytes, got 12",
+        );
+    }
+
     /// **A frame the header cannot describe is refused, not read.** The
     /// negative control is the control: a truncated buffer and an unknown
     /// format byte must not decode into something plausible.
@@ -344,10 +380,10 @@ mod tests {
         assert!(Frame::decode(&whole[..HEADER_LEN - 1]).is_err(), "a short header");
         assert!(Frame::decode(&whole[..HEADER_LEN]).is_err(), "no pixels");
         let mut unknown = whole.clone();
-        unknown[10] = 9;
+        unknown[12] = 9;
         assert!(Frame::decode(&unknown).is_err(), "an unknown format");
         let mut flag = whole;
-        flag[11] = 2;
+        flag[13] = 2;
         assert!(Frame::decode(&flag).is_err(), "a key flag that is not a flag");
     }
 
@@ -363,7 +399,7 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("a listener");
         let bgra = [255_u8, 0, 0, 255, 0, 0, 255, 255];
 
-        let mut sink = super::Sink::new(1, path.clone(), 120, 80);
+        let mut sink = super::Sink::new(1, 1, path.clone(), 120, 80);
         sink.set_paused(true);
         sink.offer(&bgra, 2, 1);
         listener.set_nonblocking(true).expect("a non-blocking listener");
@@ -397,7 +433,7 @@ mod tests {
 
         // One frame a second, so every frame after the first is well inside
         // the interval and would have been dropped by the old rate limit.
-        let mut sink = super::Sink::new(1, path.clone(), 1, 80);
+        let mut sink = super::Sink::new(1, 1, path.clone(), 1, 80);
         sink.offer(&two, 2, 1);
         let (mut stream, _) = listener.accept().expect("the first connection");
         stream.set_read_timeout(Some(super::ONE_SECOND)).expect("a read bound");

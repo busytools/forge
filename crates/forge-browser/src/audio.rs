@@ -39,6 +39,7 @@ impl Default for Stream {
 cef::wrap_audio_handler! {
     pub struct PageAudioHandler {
         profile: u16,
+        tab: u16,
         sink: AudioSink,
         stream: Arc<Mutex<Stream>>,
     }
@@ -89,7 +90,14 @@ cef::wrap_audio_handler! {
             // SAFETY: CEF hands `channels` planes, each `frames` long, for the
             // whole of this callback.
             let Some(samples) = (unsafe { interleave(data, frames, channels) }) else { return };
-            (self.sink)(Audio { profile: self.profile, seq, sample_rate, channels: u8::try_from(channels).unwrap_or(2), samples });
+            (self.sink)(Audio {
+                profile: self.profile,
+                tab: self.tab,
+                seq,
+                sample_rate,
+                channels: u8::try_from(channels).unwrap_or(2),
+                samples,
+            });
         }
 
         fn on_audio_stream_stopped(&self, _browser: Option<&mut cef::Browser>) {
@@ -100,7 +108,14 @@ cef::wrap_audio_handler! {
                 stream.seq = stream.seq.wrapping_add(1);
                 (stream.sample_rate, stream.channels, stream.seq)
             };
-            (self.sink)(Audio { profile: self.profile, seq, sample_rate, channels, samples: Vec::new() });
+            (self.sink)(Audio {
+                profile: self.profile,
+                tab: self.tab,
+                seq,
+                sample_rate,
+                channels,
+                samples: Vec::new(),
+            });
         }
     }
 }
@@ -139,8 +154,8 @@ fn sample(value: f32) -> i16 {
 }
 
 /// The handler the host's client hands CEF.
-pub fn handler(profile: u16, sink: AudioSink) -> AudioHandler {
-    PageAudioHandler::new(profile, sink, Arc::new(Mutex::new(Stream::default())))
+pub fn handler(profile: u16, tab: u16, sink: AudioSink) -> AudioHandler {
+    PageAudioHandler::new(profile, tab, sink, Arc::new(Mutex::new(Stream::default())))
 }
 
 #[cfg(test)]

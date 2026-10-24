@@ -93,7 +93,10 @@ async fn a_recording_writes_the_viewport_to_an_mp4() {
     // at the file's own size for the duration.
     ring.request(1280, 720, 1.0);
     let path = scratch.path().join("take.mp4");
-    host.input(&host_line(&HostInput::RecordStart { path: path.to_string_lossy().into_owned() }));
+    host.input(&host_line(&HostInput::RecordStart {
+        tab: 1,
+        path: path.to_string_lossy().into_owned(),
+    }));
 
     let HostEvent::Recording { started, error, .. } =
         wait_event(&host, |event| matches!(event, HostEvent::Recording { .. }))

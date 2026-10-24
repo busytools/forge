@@ -48,6 +48,10 @@ struct Candidate {
 pub const VIEW_WIDTH: u32 = 1440;
 pub const VIEW_HEIGHT: u32 = 900;
 
+/// The host's first tab, which every call drives until a profile's tabs are
+/// numbered on the wire.
+const FIRST_TAB: u16 = 1;
+
 /// How long a profile that just rebuilt its driver waits before another call
 /// tries a rebuild: long enough that a run of calls fails fast, short enough
 /// that a browser which recovers is picked up by the next fire.
@@ -957,7 +961,7 @@ impl BrowserService {
                 .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
             (host.input.clone(), host.port)
         };
-        match input::route(event) {
+        match input::route(event, FIRST_TAB) {
             // **A pointer gesture is the host's**, whose own mouse calls are
             // what CEF routes into a windowless popup.
             input::Route::Host(line) => input
@@ -1127,6 +1131,7 @@ impl BrowserService {
         // for the duration, and restored after the stop.
         ring.request(crate::record::WIDTH, crate::record::HEIGHT, 1.0);
         let line = input::host_line(&crate::input::HostInput::RecordStart {
+            tab: FIRST_TAB,
             path: path.to_string_lossy().into_owned(),
         });
         if let Err(why) = input.send(line) {
@@ -2033,6 +2038,7 @@ impl Profile {
                 let encoded = frame.encode();
                 frames.send_replace(Some(BrowserFrame {
                     profile: frame.profile,
+                    tab: frame.tab,
                     seq: frame.seq,
                     encoded,
                 }));
@@ -2043,6 +2049,7 @@ impl Profile {
             channel::ChannelMessage::Audio(packet) => {
                 let _ = audio.send(BrowserAudio {
                     profile: packet.profile,
+                    tab: packet.tab,
                     seq: packet.seq,
                     sample_rate: packet.sample_rate,
                     channels: packet.channels,
@@ -2193,6 +2200,21 @@ impl Profile {
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
                 match event {
+                    // **The registry reads these in the call path**, where a
+                    // new tab is paired with its page target; until the
+                    // registry lands they are only the host's own news.
+                    crate::control::HostEvent::TabCreated { tab, opener, url } => {
+                        tracing::debug!(
+                            "a host tab opened (event_name browser_tab_created, profile {key}, \
+                             tab {tab}, opener {opener:?}, url {url})"
+                        );
+                    }
+                    crate::control::HostEvent::TabClosed { tab } => {
+                        tracing::debug!(
+                            "a host tab closed (event_name browser_tab_closed, profile {key}, \
+                             tab {tab})"
+                        );
+                    }
                     crate::control::HostEvent::FileDialog { id, multiple } => {
                         // **The CEF fallback is a chooser decision too**: it
                         // takes the lock and checks the profile is up, so a
@@ -4199,6 +4221,7 @@ mod tests {
         );
         first.frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
             profile: first.id(),
+            tab: 1,
             seq: 1,
             encoded: vec![1],
         }));

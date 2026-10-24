@@ -77,6 +77,7 @@ async fn a_page_file_chooser_is_answered_with_a_server_path() {
             forge_primitives::browser::MouseAction::Release,
         ] {
             host.input(&host_line(&HostInput::Mouse {
+                tab: 1,
                 action,
                 x,
                 y,

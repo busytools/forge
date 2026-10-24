@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostEvent {
+    /// A tab the host created: the page the server asked for, or the popup a
+    /// page opened under `opener`.
+    TabCreated { tab: u16, opener: Option<u16>, url: String },
+    /// A tab the host closed.
+    TabClosed { tab: u16 },
     /// A page's file chooser: the client's picker answers with the files'
     /// bytes, and the host is handed server-local paths.
     FileDialog { id: u64, multiple: bool },
@@ -55,5 +60,28 @@ mod tests {
         assert_eq!(parse(&line), Some(event));
         assert!(parse("").is_none());
         assert!(parse("{\"kind\":\"other\"}").is_none());
+    }
+
+    /// **A tab's birth and end are named on the control line**, with the tab
+    /// number and, for a popup, the tab that opened it: the server files a
+    /// tab under its opener's session from this line alone.
+    #[test]
+    fn a_tab_created_and_closed_round_trip_their_lines() {
+        let created = HostEvent::TabCreated {
+            tab: 2,
+            opener: Some(1),
+            url: "https://example.com/".to_owned(),
+        };
+        let line = serde_json::to_string(&created).expect("a line");
+        assert!(line.contains("tab_created"), "the server matches the kind: {line}");
+        assert_eq!(parse(&line), Some(created));
+
+        let popup = HostEvent::TabCreated { tab: 3, opener: None, url: "about:blank".to_owned() };
+        let line = serde_json::to_string(&popup).expect("a line");
+        assert_eq!(parse(&line), Some(popup), "a requested tab has no opener");
+
+        let closed = HostEvent::TabClosed { tab: 2 };
+        let line = serde_json::to_string(&closed).expect("a line");
+        assert_eq!(parse(&line), Some(closed));
     }
 }

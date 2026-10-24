@@ -7,8 +7,8 @@
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -152,7 +152,9 @@ pub const KIND_AUDIO: u8 = 2;
 pub struct Audio {
     /// The profile whose page made it.
     pub profile: u16,
-    /// Monotonic per profile, so a dropped packet is visible.
+    /// The profile's tab whose page made it.
+    pub tab: u16,
+    /// Monotonic per tab, so a dropped packet is visible.
     pub seq: u32,
     pub sample_rate: u32,
     pub channels: u8,
@@ -162,11 +164,12 @@ pub struct Audio {
 
 impl Audio {
     /// The header's own length; the samples follow it.
-    pub const HEADER_LEN: usize = 11;
+    pub const HEADER_LEN: usize = 13;
 
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(Self::HEADER_LEN + self.samples.len() * 2);
         out.extend_from_slice(&self.profile.to_le_bytes());
+        out.extend_from_slice(&self.tab.to_le_bytes());
         out.extend_from_slice(&self.seq.to_le_bytes());
         out.extend_from_slice(&self.sample_rate.to_le_bytes());
         out.push(self.channels);
@@ -185,16 +188,17 @@ impl Audio {
             ));
         }
         let profile = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let seq = u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
-        let sample_rate = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]);
-        let channels = bytes[10];
+        let tab = u16::from_le_bytes([bytes[2], bytes[3]]);
+        let seq = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let sample_rate = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        let channels = bytes[12];
         let rest = &bytes[Self::HEADER_LEN..];
         if !rest.len().is_multiple_of(2) {
             return Err("an audio packet carries a whole number of samples".to_owned());
         }
         let samples =
             rest.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
-        Ok(Self { profile, seq, sample_rate, channels, samples })
+        Ok(Self { profile, tab, seq, sample_rate, channels, samples })
     }
 }
 
@@ -295,7 +299,11 @@ pub fn read(stream: &mut UnixStream) -> Result<Reception, String> {
 /// **The reader runs on its own thread** and is stopped through the returned
 /// guard: the server keeps one per open profile, and a closed profile's
 /// thread ends rather than waiting on an accept that will never return.
-pub fn serve<F>(path: &Path, mut sink: F) -> Result<Reader, String>
+///
+/// **Each connection gets a reader of its own.** A host opens one connection
+/// per tab, and accepting one stream at a time would leave every tab after
+/// the first waiting in the backlog with its frames never read.
+pub fn serve<F>(path: &Path, sink: F) -> Result<Reader, String>
 where
     F: FnMut(ChannelMessage) + Send + 'static,
 {
@@ -309,13 +317,21 @@ where
     let own_stop = Arc::clone(&stop);
     let own_path = path.to_path_buf();
     let wake = path.to_path_buf();
+    let sink = Arc::new(Mutex::new(sink));
     let thread = std::thread::spawn(move || {
+        let mut connections: Vec<JoinHandle<()>> = Vec::new();
         while !own_stop.load(Ordering::Acquire) {
-            let stream = match listener.accept() {
-                Ok((stream, _)) => stream,
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let sink = Arc::clone(&sink);
+                    let stop = Arc::clone(&own_stop);
+                    let path = own_path.clone();
+                    connections.push(std::thread::spawn(move || {
+                        read_connection(stream, &path, &stop, &sink);
+                    }));
+                }
                 Err(why) if why.kind() == ErrorKind::WouldBlock => {
                     std::thread::sleep(ACCEPT_POLL);
-                    continue;
                 }
                 Err(why) => {
                     eprintln!(
@@ -323,42 +339,59 @@ where
                          cef_frames_accept_failed, {}): {why}",
                         own_path.display()
                     );
-                    return;
-                }
-            };
-            if let Err(why) = stream.set_read_timeout(Some(READ_POLL)) {
-                eprintln!("cef host: the frame socket's read timeout was refused: {why}");
-            }
-            // **Blocking, so the timeout is the only bound.** An accepted
-            // socket can inherit the listener's non-blocking flag, and then a
-            // body read fails the moment no byte is ready.
-            if let Err(why) = stream.set_nonblocking(false) {
-                eprintln!("cef host: the frame socket cannot be made blocking: {why}");
-            }
-            let mut stream = stream;
-            loop {
-                if own_stop.load(Ordering::Acquire) {
-                    return;
-                }
-                match read(&mut stream) {
-                    Ok(Reception::Frame(frame)) => sink(ChannelMessage::Frame(frame)),
-                    Ok(Reception::Audio(audio)) => sink(ChannelMessage::Audio(audio)),
-                    Ok(Reception::Quiet) => {}
-                    Ok(Reception::Closed) => break,
-                    Err(why) => {
-                        eprintln!(
-                            "cef host: the frame stream ended (event_name cef_frames_read_failed, \
-                             {}): {why}",
-                            own_path.display()
-                        );
-                        break;
-                    }
+                    break;
                 }
             }
+        }
+        for connection in connections {
+            let _ = connection.join();
         }
         let _ = std::fs::remove_file(&own_path);
     });
     Ok(Reader { stop, wake, path: path.to_path_buf(), thread: Some(thread) })
+}
+
+/// Read one host connection until it closes or the profile's reader stops.
+fn read_connection<F>(mut stream: UnixStream, path: &Path, stop: &AtomicBool, sink: &Mutex<F>)
+where
+    F: FnMut(ChannelMessage),
+{
+    if let Err(why) = stream.set_read_timeout(Some(READ_POLL)) {
+        eprintln!("cef host: the frame socket's read timeout was refused: {why}");
+    }
+    // **Blocking, so the timeout is the only bound.** An accepted socket can
+    // inherit the listener's non-blocking flag, and then a body read fails
+    // the moment no byte is ready.
+    if let Err(why) = stream.set_nonblocking(false) {
+        eprintln!("cef host: the frame socket cannot be made blocking: {why}");
+    }
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        match read(&mut stream) {
+            Ok(Reception::Frame(frame)) => {
+                (sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner))(
+                    ChannelMessage::Frame(frame),
+                );
+            }
+            Ok(Reception::Audio(audio)) => {
+                (sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner))(
+                    ChannelMessage::Audio(audio),
+                );
+            }
+            Ok(Reception::Quiet) => {}
+            Ok(Reception::Closed) => break,
+            Err(why) => {
+                eprintln!(
+                    "cef host: the frame stream ended (event_name cef_frames_read_failed, {}): \
+                     {why}",
+                    path.display()
+                );
+                break;
+            }
+        }
+    }
 }
 
 /// One profile's frame reader, as the server holds it.

@@ -17,7 +17,16 @@ use forge_browser::channel;
 use forge_browser::frame::{Format, Frame};
 
 fn frame(seq: u32, profile: u16, width: u16, height: u16) -> Frame {
-    Frame { profile, seq, width, height, format: Format::Webp, key: seq == 0, bytes: vec![42; 64] }
+    Frame {
+        profile,
+        tab: 1,
+        seq,
+        width,
+        height,
+        format: Format::Webp,
+        key: seq == 0,
+        bytes: vec![42; 64],
+    }
 }
 
 /// **Frames cross a socket whole and in order.** The reader's sink is what a
@@ -69,6 +78,7 @@ fn audio_crosses_the_socket_beside_frames() {
     let mut stream = channel::connect(&path).expect("the host side connects");
     let packet = channel::Audio {
         profile: 3,
+        tab: 1,
         seq: 9,
         sample_rate: 48_000,
         channels: 2,

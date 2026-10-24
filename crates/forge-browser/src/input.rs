@@ -115,6 +115,8 @@ pub fn cef_modifiers(modifiers: InputModifiers) -> u32 {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostInput {
     Mouse {
+        /// The tab whose page takes the gesture.
+        tab: u16,
         action: MouseAction,
         x: i32,
         y: i32,
@@ -124,23 +126,25 @@ pub enum HostInput {
         modifiers: InputModifiers,
     },
     Wheel {
+        /// The tab whose page takes the gesture.
+        tab: u16,
         x: i32,
         y: i32,
         delta_x: i32,
         delta_y: i32,
         modifiers: InputModifiers,
     },
+    /// Open a new tab at `url`, or blank. **A trusted server command**: unlike
+    /// a page's popup it accepts any address the server names.
+    TabNew { url: Option<String> },
+    /// Close one tab.
+    TabClose { tab: u16 },
     /// The files a person chose for a page's file dialog: server-local paths
     /// already written for CEF, or none when the dialog was dismissed.
-    File {
-        id: u64,
-        paths: Vec<String>,
-    },
-    /// Begin a recording of the page's viewport into `path`, a server-local
-    /// file the service has already laid the page out for.
-    RecordStart {
-        path: String,
-    },
+    File { id: u64, paths: Vec<String> },
+    /// Begin a recording of `tab`'s viewport into `path`, a server-local file
+    /// the service has already laid the page out for.
+    RecordStart { tab: u16, path: String },
     /// Finish the running recording; the host answers with its outcome.
     RecordStop,
 }
@@ -154,16 +158,17 @@ pub enum Route {
     Page(&'static str, Value),
 }
 
-/// The route one event takes.
+/// The route one event takes, into the tab whose page the viewer is on.
 ///
 /// **A pointer gesture belongs to the host, a keystroke to the page.** CEF
 /// routes its own mouse calls into a windowless popup - a select's menu is
 /// its own view - and a click sent to the page target instead reaches only
 /// the page's widget, so the menu treats it as an outside click and closes.
-pub fn route(event: &BrowserInputEvent) -> Route {
+pub fn route(event: &BrowserInputEvent, tab: u16) -> Route {
     match event {
         BrowserInputEvent::Mouse { action, x, y, button, clicks, modifiers } => {
             Route::Host(host_line(&HostInput::Mouse {
+                tab,
                 action: *action,
                 x: rounded(*x),
                 y: rounded(*y),
@@ -180,6 +185,7 @@ pub fn route(event: &BrowserInputEvent) -> Route {
             // every wheel - and every finger scroll on the phone - runs the
             // wrong way.
             Route::Host(host_line(&HostInput::Wheel {
+                tab,
                 x: rounded(*x),
                 y: rounded(*y),
                 delta_x: rounded(*delta_x).saturating_neg(),
@@ -257,20 +263,24 @@ mod tests {
     /// whole pixels.
     #[test]
     fn a_click_goes_to_the_host_with_its_button_and_modifiers() {
-        let route = route(&BrowserInputEvent::Mouse {
-            action: MouseAction::Press,
-            x: 12.5,
-            y: 30.4,
-            button: 1,
-            clicks: 2,
-            modifiers: InputModifiers { meta: true, shift: true, ..Default::default() },
-        });
+        let route = route(
+            &BrowserInputEvent::Mouse {
+                action: MouseAction::Press,
+                x: 12.5,
+                y: 30.4,
+                button: 1,
+                clicks: 2,
+                modifiers: InputModifiers { meta: true, shift: true, ..Default::default() },
+            },
+            1,
+        );
         let Route::Host(line) = route else { panic!("a click is the host's: {route:?}") };
-        let HostInput::Mouse { action, x, y, button, clicks, modifiers } =
+        let HostInput::Mouse { tab, action, x, y, button, clicks, modifiers } =
             parse_host_line(&line).expect("the host reads its own line")
         else {
             panic!("the line names a mouse event: {line}");
         };
+        assert_eq!(tab, 1, "the click names the viewer's tab");
         assert_eq!((x, y), (13, 30), "the host is given whole pixels");
         assert_eq!((action, button, clicks), (MouseAction::Press, 1, 2));
         assert_eq!(cef_modifiers(modifiers), 130, "Command 128 + shift 2");
@@ -282,13 +292,16 @@ mod tests {
     /// scrolled the wrong way on every platform.
     #[test]
     fn a_wheel_carries_both_deltas_to_the_host_with_cefs_sign() {
-        let route = route(&BrowserInputEvent::Wheel {
-            x: 1.2,
-            y: 2.0,
-            delta_x: -3.0,
-            delta_y: 40.0,
-            modifiers: InputModifiers::default(),
-        });
+        let route = route(
+            &BrowserInputEvent::Wheel {
+                x: 1.2,
+                y: 2.0,
+                delta_x: -3.0,
+                delta_y: 40.0,
+                modifiers: InputModifiers::default(),
+            },
+            1,
+        );
         let Route::Host(line) = route else { panic!("a wheel is the host's: {route:?}") };
         let HostInput::Wheel { x, y, delta_x, delta_y, .. } =
             parse_host_line(&line).expect("the host reads its own line")
@@ -308,11 +321,39 @@ mod tests {
     /// because the recording it names is the one running.
     #[test]
     fn a_recording_cue_round_trips_its_line() {
-        let start = HostInput::RecordStart { path: "/tmp/take.mp4".to_owned() };
+        let start = HostInput::RecordStart { tab: 1, path: "/tmp/take.mp4".to_owned() };
         assert_eq!(parse_host_line(&host_line(&start)), Some(start));
         assert_eq!(
             parse_host_line(&host_line(&HostInput::RecordStop)),
             Some(HostInput::RecordStop)
+        );
+    }
+
+    /// **A gesture names the tab it belongs to, and the tab commands
+    /// round-trip their lines.** One host serves several pages, so a click
+    /// with no tab is a click into whichever page was created first.
+    #[test]
+    fn a_gesture_names_the_tab_it_belongs_to() {
+        let line = host_line(&HostInput::Mouse {
+            tab: 2,
+            action: MouseAction::Press,
+            x: 10,
+            y: 20,
+            button: 0,
+            clicks: 1,
+            modifiers: InputModifiers::default(),
+        });
+        let HostInput::Mouse { tab, .. } = parse_host_line(&line).expect("a gesture reads") else {
+            panic!("a mouse line reads as a mouse");
+        };
+        assert_eq!(tab, 2);
+        assert_eq!(
+            parse_host_line(r#"{"kind":"tab_new","url":null}"#),
+            Some(HostInput::TabNew { url: None })
+        );
+        assert_eq!(
+            parse_host_line(r#"{"kind":"tab_close","tab":4}"#),
+            Some(HostInput::TabClose { tab: 4 })
         );
     }
 
@@ -465,7 +506,7 @@ mod tests {
             windows_vk: 0,
             modifiers: InputModifiers { meta: true, shift, ..Default::default() },
         };
-        let page = |event: &BrowserInputEvent| match route(event) {
+        let page = |event: &BrowserInputEvent| match route(event, 1) {
             Route::Page(_, params) => params,
             Route::Host(line) => panic!("a key is the page's, not the host's: {line}"),
         };
@@ -486,7 +527,7 @@ mod tests {
     /// server does not know still types what the person typed.
     #[test]
     fn text_is_inserted_rather_than_replayed() {
-        let route = route(&BrowserInputEvent::Text { text: "hello".to_owned() });
+        let route = route(&BrowserInputEvent::Text { text: "hello".to_owned() }, 1);
         let Route::Page(method, params) = route else {
             panic!("text is the page's: {route:?}");
         };
