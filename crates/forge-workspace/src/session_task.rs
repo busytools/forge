@@ -1788,6 +1788,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeleteReviewThread { .. }
         | Command::SubmitReview { .. }
         | Command::BrowserIdleWarning { .. }
+        | Command::BrowserProfileClose { .. }
+        | Command::BrowserProfileDelete { .. }
         | Command::TaskVerdict { .. }
         | Command::TaskAnswer { .. }
         | Command::TaskRank { .. }

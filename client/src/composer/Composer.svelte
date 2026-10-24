@@ -6,14 +6,7 @@
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/host';
-  import {
-    clearHandOff,
-    closeSurface,
-    failSurface,
-    handOffRefusal,
-    openSurface,
-    surface,
-  } from '../browser/surface.svelte';
+  import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -538,9 +531,13 @@
   });
 
   // The reader's eye is in that slot: a prompt takes the box and the keyboard
-  // with it, and the field takes it back when the box returns.
+  // with it, and the field takes it back when the box returns. **The browser
+  // takeover owns the keyboard while it is up**: its hidden field is what
+  // types into the page, and a box that took it back swallowed the phone's
+  // typing into the chat behind the picture.
   $effect(() => {
     if (ask !== null) return;
+    if (surface.phase !== 'closed') return;
     if (field !== null) field.focus();
   });
 
@@ -1084,9 +1081,22 @@
    * bare picture with no way back to the chat is a trap. With no ask the bar
    * carries only back-to-chat.
    */
+  /**
+   * The browser this surface really drives, spelled the way the strip does.
+   * **The server's resolved name wins when it arrives; the requested one is
+   * the fallback**, so a shell that predates the field still names the row
+   * the person opened.
+   */
+  const attachedName = $derived(
+    (surface.attachedProfile ?? surface.profile) === '@shared'
+      ? 'shared'
+      : (surface.attachedProfile ?? surface.profile),
+  );
   const takeoverTitle = $derived(
     takeoverAsk === null
-      ? 'the browser'
+      ? attachedName === null
+        ? 'the browser'
+        : `the browser · ${attachedName}`
       : takeoverAsk.request.profile != null
         ? `browser hand-off · ${takeoverAsk.request.profile}`
         : 'browser hand-off',
@@ -1145,22 +1155,8 @@
    * sentence.
    */
   function takeoverRetry(): void {
-    // **A retry re-raises the surface it stands over, and the role rule is
-    // the hand-off's alone.** With no hand-off attached, the failed surface
-    // is the person's own show - a profile another seat holds, a browser that
-    // did not start - so it re-shows THAT profile straight to the shell, even
-    // while a hand-off ask is parked elsewhere. An attached hand-off retries
-    // its own profile, after asking the role (#2519).
-    if (surface.hand_off !== null) {
-      const refusal = handOffRefusal(connection.browserRoleKnown(), connection.browserRole());
-      if (refusal !== null) {
-        failSurface(refusal);
-        return;
-      }
-      void openSurface(takeoverAsk?.request.profile ?? surface.profile, slot);
-      return;
-    }
-    void openSurface(surface.profile, slot);
+    const profile = takeoverAsk?.request.profile ?? surface.profile;
+    void openSurface(profile, slot);
   }
 
   /**
@@ -1241,7 +1237,7 @@
     {#if ring === 'load'}
       <span class="sr" role="status">opening the microphone</span>
     {/if}
-    <Pinned info={pinnedRow.of(seatKey)} {connection} {slot} />
+    <Pinned info={pinnedRow.of(seatKey)} {slot} />
     {#if blocker !== null}
       <div class="box">
         <div class="blocked">

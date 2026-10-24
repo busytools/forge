@@ -325,10 +325,10 @@ pub fn build_forge_server(
     if matches!(kind, SessionKind::Lead) {
         builder = agents::add_lead_tools(builder, worker, slot.clone());
     }
-    // Unconditional for both kinds: the browser is one machine-global client
-    // rather than a per-project scope, so every session may drive it, and a
-    // session with no browser-capable client connected gets the named error
-    // from the tool rather than a surface that varies by who is running.
+    // Unconditional for both kinds: the browser is the SERVER's fleet rather
+    // than a per-project scope, so every session may drive it, and a server
+    // with no host answers with its own sentence rather than a tool that
+    // varies by who is running.
     builder = browser::add_tools(builder, browser, slot.clone());
     // Unconditional for the same reason: a hand-off reads the caller's own
     // tree, so every session may hand a document and no project has anything

@@ -36,9 +36,9 @@ its own, so it does not deny warnings inside one. This is CI's set minus
 the jobs a checkout cannot carry - CI runs `cargo check --release` and the
 image workflow, which builds and exercises
 the web image on the commits that touch it - and plus the android warnings
-check CI cannot run yet (`client-android-warnings`; the vendoring its build
-needs refuses non-macOS hosts, so the CI side is #1959, closed as an
-enhancement and tracked in #2258). The piecewise
+check CI cannot run yet (`client-android-warnings`; it needs the Android
+NDK's target installed, so the CI side is #1959, closed as an enhancement
+and tracked in #2258). The piecewise
 client gates
 are `just client-tauri-check`, `just client-android-check` and `just
 web-image-check`.
@@ -57,7 +57,7 @@ time, for debugging. When `sccache` is on `PATH`, the recipes export
 branches; without it they build normally.
 `just check-feature-configs` compiles the two server configurations nothing
 else builds - the release one `just install` and `install.sh` produce, with
-the test-only features off, and `testing`
+the test-only features off, the host executable included, and `testing`
 on its own. `just check` runs with `--all-features`, which turns every
 feature on regardless and so never catches what that configuration leaves
 out. `just check` alone decides both stacks, so its verdict line names the
@@ -186,7 +186,7 @@ is smaller and slightly incomplete.
 
 ## Where code goes
 
-The workspace is eleven crates with a strictly acyclic dependency graph,
+The workspace is twelve crates with a strictly acyclic dependency graph,
 and putting something in the wrong one is the most common structural
 review comment. The
 [architecture page](https://busytools.github.io/forge/architecture.html)
@@ -200,7 +200,8 @@ health go in `forge-gateway`,
 inbound connector clients and matching go in `forge-connectors`,
 anything speaking stream-json goes in `forge-sdk`, environment and I/O
 go in `forge-agent`, multi-session orchestration goes in
-`forge-workspace`, a session record as a view sees it goes in
+`forge-workspace`, the browser the sessions drive goes in
+`forge-browser`, a session record as a view sees it goes in
 `forge-server`, and anything a person sees goes in the client under
 `client/`. A further view is a crate of its own, built against that
 socket. The

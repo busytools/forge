@@ -77,6 +77,10 @@ struct ForgeToml {
     /// section means every name unset, which is the built-in.
     #[serde(default)]
     client: ClientConfig,
+    /// Optional `[browser]` section - how the server's browser hosts encode
+    /// and when an idle profile closes. Absent section keeps the defaults.
+    #[serde(default)]
+    browser: BrowserSettings,
     /// Optional `[documents]` section - the ceiling on one handed
     /// document. Absent section keeps the 10 MiB default.
     #[serde(default)]
@@ -140,6 +144,7 @@ impl std::fmt::Debug for ForgeToml {
             .field("gateway", &self.gateway)
             .field("server", &self.server)
             .field("client", &self.client)
+            .field("browser", &self.browser)
             .field("documents", &self.documents)
             .field("usage", &self.usage)
             .field("web", &ignored(&self.web))
@@ -190,6 +195,28 @@ impl UsageSettings {
             Some(0) => Err(WorkspaceError::UsagePollIntervalInvalid { path: path.to_path_buf() }),
             Some(seconds) => Ok(Duration::from_secs(seconds)),
         }
+    }
+}
+
+/// The `[browser]` table: how the server's browser hosts encode, and when an
+/// idle profile closes. Unknown fields are rejected so a mistyped key fails
+/// the load instead of being ignored.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BrowserSettings {
+    /// Frames encoded per second; faster paints are coalesced. 1 to 120.
+    pub fps: u16,
+    /// Lossy WebP quality, 0 to 100. A key frame is lossless regardless.
+    pub quality: u8,
+    /// Minutes a profile no viewer has used may sit before it closes.
+    pub idle_minutes: u64,
+    /// Minutes past that bound the browser lives unless it is used.
+    pub grace_minutes: u64,
+}
+
+impl Default for BrowserSettings {
+    fn default() -> Self {
+        Self { fps: 30, quality: 75, idle_minutes: 20, grace_minutes: 10 }
     }
 }
 
@@ -564,6 +591,9 @@ pub(crate) struct LoadedConfig {
     /// `[client]` section knobs. Absent section means every name unset,
     /// which is the built-in rather than a pin.
     pub client: ClientConfig,
+    /// `[browser]` section knobs, resolved: the encoding rate and quality,
+    /// and the idle release's two bounds. Absent section keeps the defaults.
+    pub browser: BrowserSettings,
     /// The ceiling on one handed document, in bytes: `[documents]
     /// max_size_mib` resolved, 10 MiB when the key is absent. Read by the
     /// document read, which refuses over it.
@@ -594,6 +624,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("gateway_rotation", &self.gateway_rotation)
             .field("server", &self.server)
             .field("client", &self.client)
+            .field("browser", &self.browser)
             .field("document_max_bytes", &self.document_max_bytes)
             .field("usage_poll_interval", &self.usage_poll_interval)
             .finish()
@@ -728,6 +759,7 @@ impl LoadedConfig {
             gateway_rotation: forge_gateway::rotation::RotationNumbers::default(),
             server: ServerConfig::default(),
             client: ClientConfig::default(),
+            browser: BrowserSettings::default(),
             document_max_bytes: DEFAULT_DOCUMENT_MAX_MIB * 1024 * 1024,
             usage_poll_interval: Duration::from_secs(DEFAULT_USAGE_POLL_SECONDS),
         }
@@ -915,6 +947,17 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             event_name = "ui_section_ignored",
             "[ui] is no longer read; the spinner and its cadence retired with the \
              terminal crate, so the section and its keys can be deleted",
+        );
+    }
+
+    if parsed.client.browser_idle_minutes.is_some() || parsed.client.browser_grace_minutes.is_some()
+    {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "client_browser_idle_keys_ignored",
+            "[client] browser_idle_minutes and browser_grace_minutes are no longer read; \
+             [browser] idle_minutes and grace_minutes are the authority, so the two keys \
+             and their values can be deleted",
         );
     }
 
@@ -1208,6 +1251,21 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     let server = resolve_server(parsed.server, gateway_port, &path)?;
     let document_max_bytes = parsed.documents.resolved_max_bytes(&path)?;
     let usage_poll_interval = parsed.usage.resolved_poll_interval(&path)?;
+    // **A [browser] value outside its range is refused, not clamped**: a
+    // quality of 140 is a typo, and silently encoding at 100 would hide it.
+    let browser = parsed.browser;
+    if browser.fps == 0 || browser.fps > 120 {
+        return Err(WorkspaceError::ConfigInvalid {
+            path,
+            message: format!("[browser] fps must be 1 to 120, not {}", browser.fps),
+        });
+    }
+    if browser.quality > 100 {
+        return Err(WorkspaceError::ConfigInvalid {
+            path,
+            message: format!("[browser] quality must be 0 to 100, not {}", browser.quality),
+        });
+    }
     // A listener that never binds never hands a client its names either, so
     // a stale key there is not worth refusing the boot over - the call the
     // pre-split section made for every key at once.
@@ -1264,6 +1322,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         gateway_rotation,
         server,
         client,
+        browser,
         document_max_bytes,
         usage_poll_interval,
     })
@@ -1732,8 +1791,7 @@ max_size_mib = 0
         write_config(
             dir.path(),
             &format!(
-                "{}\n[client]\nmark = \"klin\"\ntheme = \"dark\"\nfont = \"system\"\n\
-                 browser_idle_minutes = 45\nbrowser_grace_minutes = 15\n",
+                "{}\n[client]\nmark = \"klin\"\ntheme = \"dark\"\nfont = \"system\"\n",
                 minimal_config()
             ),
         );
@@ -1741,12 +1799,6 @@ max_size_mib = 0
         assert_eq!(config.client.mark.as_deref(), Some("klin"));
         assert_eq!(config.client.theme.as_deref(), Some("dark"));
         assert_eq!(config.client.font.as_deref(), Some("system"));
-        assert_eq!(
-            config.client.browser_idle_minutes,
-            Some(45),
-            "the idle release's keys ride too"
-        );
-        assert_eq!(config.client.browser_grace_minutes, Some(15));
 
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
@@ -1754,11 +1806,70 @@ max_size_mib = 0
         assert_eq!(config.client.mark, None, "an unset key is the built-in, not a pinned value");
         assert_eq!(config.client.theme, None);
         assert_eq!(config.client.font, None, "and the built-in face is what an unset font draws");
-        assert_eq!(
-            config.client.browser_idle_minutes, None,
-            "an unset idle bound is the built-in half hour",
+    }
+
+    /// **A config written before the idle pair moved still boots.** The old
+    /// `[client]` keys are declared ghosts, and `[browser]` stays the
+    /// authority: a synced `forge.toml` carrying both loads with the new
+    /// section's values.
+    #[test]
+    fn the_old_client_idle_keys_do_not_fail_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[client]\nbrowser_idle_minutes = 45\nbrowser_grace_minutes = 15\n\n\
+                 [browser]\nidle_minutes = 5\ngrace_minutes = 2\n",
+                minimal_config()
+            ),
         );
-        assert_eq!(config.client.browser_grace_minutes, None);
+        let config = load_from_dir(dir.path()).expect("the old keys are ignored, not refused");
+        assert_eq!(config.browser.idle_minutes, 5, "[browser] is the authority");
+        assert_eq!(config.browser.grace_minutes, 2, "for both clocks");
+    }
+
+    /// **`[browser]` carries the encoding and the idle release.** An absent
+    /// section is the documented pair of defaults; a key outside its range
+    /// is refused rather than clamped, because a quality of 140 is a typo
+    /// and silently encoding at 100 would hide it.
+    #[test]
+    fn browser_section_reads_its_keys_and_refuses_a_bad_range() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[browser]\nfps = 30\nquality = 90\nidle_minutes = 45\ngrace_minutes = 15\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert_eq!(config.browser.fps, 30);
+        assert_eq!(config.browser.quality, 90);
+        assert_eq!(config.browser.idle_minutes, 45);
+        assert_eq!(config.browser.grace_minutes, 15);
+
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("absent section loads");
+        assert_eq!(
+            config.browser,
+            BrowserSettings::default(),
+            "an absent section is the documented defaults",
+        );
+        assert_eq!(config.browser.fps, 30, "the documented default frames a second");
+
+        for (key, value) in [("fps", "0"), ("fps", "121"), ("quality", "101")] {
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &format!("{}\n[browser]\n{key} = {value}\n", minimal_config()),
+            );
+            let Err(refused) = load_from_dir(dir.path()) else {
+                panic!("{key} = {value} is outside its range and must be refused");
+            };
+            let rendered = format!("{refused}");
+            assert!(rendered.contains("[browser]"), "{rendered}");
+        }
     }
 
     /// A section that never binds cannot stop the boot: a stale port on a
@@ -4252,6 +4363,11 @@ provider = "anthropic"
                 "[dictate] device",
                 "\n[dictate]\ndevice = \"shure-id\"\n",
                 "dictate_device_key_ignored",
+            ),
+            (
+                "the [client] idle pair",
+                "\n[client]\nbrowser_idle_minutes = 45\nbrowser_grace_minutes = 15\n",
+                "client_browser_idle_keys_ignored",
             ),
             (
                 "a gateway key in an env layer",

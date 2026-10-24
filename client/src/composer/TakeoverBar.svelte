@@ -12,7 +12,7 @@
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
-  import { surface } from '../browser/surface.svelte';
+  import { holdsControl, surface, takeControl } from '../browser/surface.svelte';
   import type { NavState } from '../browser/surface.svelte';
   import type { Take } from './wire';
 
@@ -85,6 +85,13 @@
     if (text === '' || onfeedback === null) return;
     onfeedback(text);
   }
+
+  /**
+   * Whether this surface's gestures reach the page. **Exactly one viewer
+   * holds the role**, and the server names whose; a surface that does not
+   * hold it draws the page and sends nothing until the person takes it.
+   */
+  const holding = $derived(holdsControl());
 </script>
 
 <div class="takeover-bar" role="region" aria-label="the browser takeover" bind:this={barEl}>
@@ -96,7 +103,7 @@
         type="button"
         aria-label="back"
         title="back (Cmd+[)"
-        disabled={!nav.can_back}
+        disabled={!holding || !nav.can_back}
         onclick={() => onnav?.('back')}
       >
         <Icon name="back" />
@@ -106,20 +113,28 @@
         type="button"
         aria-label="forward"
         title="forward (Cmd+])"
-        disabled={!nav.can_forward}
+        disabled={!holding || !nav.can_forward}
         onclick={() => onnav?.('forward')}
       >
         <Icon name="forward" />
       </button>
     </span>
     <span class="tb-title">{title}</span>
-    {#if onretry !== null}
-      <span class="tb-acts">
+    <span class="tb-acts">
+      {#if surface.phase === 'live'}
+        <button
+          class="tb-btn"
+          type="button"
+          aria-pressed={holding}
+          onclick={() => void takeControl(!holding)}
+        >
+          {holding ? 'release control' : 'take control'}
+        </button>
+      {/if}
+      {#if onretry !== null}
         <button class="tb-btn" type="button" onclick={onretry}>try again</button>
-      </span>
-    {/if}
-    {#if ondone !== null && onnotnow !== null}
-      <span class="tb-acts">
+      {/if}
+      {#if ondone !== null && onnotnow !== null}
         <button class="tb-btn" type="button" onclick={ondone}>Done</button>
         {#if onfeedback !== null}
           <button
@@ -132,8 +147,8 @@
           </button>
         {/if}
         <button class="tb-btn d" type="button" onclick={onnotnow}>Not now</button>
-      </span>
-    {/if}
+      {/if}
+    </span>
   </div>
   {#if feedbackOpen && onfeedback !== null}
     <div class="tb-feedback">

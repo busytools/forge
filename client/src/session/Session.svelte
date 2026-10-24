@@ -581,9 +581,9 @@
     {#if surface.phase !== 'closed' && drawsSurface()}
       <!-- The browser's own surface, over the whole window: the page under
            it measures the box and draws the states; the shell draws the
-           frames at exactly this rect. The phone draws its own native
-           takeover, so nothing here mounts there. -->
-      <BrowserSurface />
+           frames at exactly this rect (on the phone this page paints them on
+           a canvas instead). -->
+      <BrowserSurface {connection} />
     {/if}
     <div class="sess">
       <!-- The chip: the brand's own mark as the face of the one projects

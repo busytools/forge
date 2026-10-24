@@ -116,7 +116,29 @@ fn run() -> anyhow::Result<()> {
         // teardown that ran out of budget exits non-zero, so a supervisor
         // can tell a clean stop from one that left a tree.
         let unready = workspace.shutdown().await;
-        forge_server::boot::stop_result(&unready)?;
+        // **The browser hosts are this process's children too.** A clean
+        // stop ends them before the store goes; the profiles stay on disk,
+        // and the next boot opens each browser on its carried page. A host
+        // that outlived its teardown is named rather than reported as a
+        // clean exit.
+        let stray = match workspace.browser_host() {
+            Some(host) => host.stop().await,
+            None => Vec::new(),
+        };
+        // **Both halves are reported**: a stray host must not hide a
+        // teardown that ran out of budget, and neither may pass as clean.
+        let stopped = forge_server::boot::stop_result(&unready);
+        if !stray.is_empty() {
+            let why = format!(
+                "forge: browser host(s) did not stop before the exit: {}",
+                stray.join(", ")
+            );
+            return match stopped {
+                Ok(()) => Err(anyhow::anyhow!(why)),
+                Err(error) => Err(error.context(why)),
+            };
+        }
+        stopped?;
         Ok(())
     })
 }

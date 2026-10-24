@@ -19,9 +19,7 @@ import {
   slotOf,
   subjectFromKey,
   subjectKey,
-  type BrowserAnswer,
-  type BrowserAsk,
-  type BrowserPart,
+  type BrowserInputEvent,
   type ClientMessage,
   type Command,
   type ServerMessage,
@@ -60,7 +58,7 @@ export interface Connection {
    * subscribes to one subject are two subscriptions, and one unsubscribe must
    * not take the seat out of the set the other is still watching.
    */
-  subscribe(what: Subject, options?: { answering?: boolean; browser?: boolean }): Store;
+  subscribe(what: Subject, options?: { answering?: boolean }): Store;
   unsubscribe(what: Subject): void;
   /**
    * Ask again for a subject this connection already holds.
@@ -168,54 +166,38 @@ export interface Connection {
    */
   frame(bytes: Uint8Array): boolean;
   /**
-   * Answer the browser asks this connection is sent, as its host.
-   *
-   * The handler is what drives the browser: the ask arrives and it answers
-   * with the tool's parts or the reason it failed, and the socket puts the
-   * answer on the wire under the ask's own id. An image part's bytes ride
-   * their own frame, so what a handler returns carries them.
-   *
-   * **Declaring `browser: true` and registering a handler travel together.**
-   * A connection that declares the capability and registers nothing is sent
-   * asks it answers with a failure, which reads at the far end as a session's
-   * tool call failing; one that registers a handler and declares nothing is
-   * never asked at all. The last registration wins, and a handler that throws
-   * answers with the thrown reason rather than with silence.
+   * Attach this connection to a profile's browser as a viewer: `null` is the
+   * asking seat's own profile, `@shared` the browser's own, a name that
+   * profile. The answer is a `browser_view` message naming the profile's wire
+   * id, then `browser_nav_state`, then frames; its reply names the profile the
+   * attach took.
    */
-  onBrowserAsk(fn: (ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>): () => void;
+  browserView(seat: SessionSlot, profile: string | null): boolean;
   /**
-   * Whether this connection holds the browser role, as the server last said.
+   * Take the controller role for the viewed surface, or give it back.
    *
-   * The grant a capable declare is answered with, and the loss a force-take
-   * sends. A strip reads this to say who drives the browser it is drawing.
+   * **Exactly one viewer holds it.** A take moves the role to this
+   * connection; the previous holder becomes a watcher, and every viewer is
+   * told the new state in a `browser_view` message.
    */
-  browserRole(): boolean;
+  browserControl(take: boolean): boolean;
+  /** Move the viewed page through its own history: the bar's arrows. */
+  browserNav(back: boolean): boolean;
   /**
-   * Whether the relay has said the role on this connection, grant or wait.
+   * One input event from the controlling viewer.
    *
-   * A `false` that has not been said is "not told yet" - a reconnect's answer
-   * still in flight - and is no reading of who drives the browser (#2519).
+   * **The wire carries the gesture, not CDP**: a press, a wheel, a key or
+   * inserted text, with the modifier keys held. The server turns it into the
+   * engine's own input.
    */
-  browserRoleKnown(): boolean;
-  /** Hear each change of the role. Answers a function that stops listening. */
-  onBrowserRole(fn: (hosting: boolean) => void): () => void;
+  browserInput(event: BrowserInputEvent): boolean;
   /**
-   * Hear that the host swept its named profiles - a seat's despawn or a
-   * live-seat set arriving emptied rows - so a strip that is open re-reads.
-   *
-   * The sweep is the host's own act, which is why this is a notice and not
-   * a frame: no page runs a sweep. The web build has no host to sweep, so
-   * its own never fires.
+   * Hear each browser frame the server relays, as its host's own wire: the
+   * profile id, the sequence, the view size, the key flag and the encoded
+   * pixels. The phone draws them on a canvas; the desktop hands them to its
+   * shell, which has no page listener.
    */
-  onProfilesChanged(fn: () => void): () => void;
-  /**
-   * Take the browser role from whoever holds it.
-   *
-   * The claimant must have declared itself capable, which a shell with a
-   * browser host does on every subscribe; the server answers with the role
-   * frame either way, so a refused take is visible rather than silent.
-   */
-  takeBrowserRole(): void;
+  onBrowserFrame(fn: (frame: BrowserFrame) => void): () => void;
   /** Every message the server sent, unparsed by anything here. Answers a function that stops listening. */
   onMessage(fn: (message: ServerMessage) => void): () => void;
   /**
@@ -251,10 +233,11 @@ export interface Connection {
 /**
  * The commands a PAGE dispatches that answer through a reply.
  *
- * The server's own set is `answers_through_a_reply`; it also carries
- * `browser_idle_warning`, which only the shell's idle sweep sends. These are
- * the page commands with nothing behind them on the wire: a client that omits
- * `reply_to` for one of them has no second way to learn what happened.
+ * The server's own set is `answers_through_a_reply`, which also carries
+ * commands the server dispatches itself, like `browser_idle_warning` from its
+ * idle sweep. These are the page commands with nothing behind them on the
+ * wire: a client that omits `reply_to` for one of them has no second way to
+ * learn what happened.
  */
 const ANSWERS_THROUGH_A_REPLY = new Set([
   'spawn_worker',
@@ -315,23 +298,42 @@ function variantOf(command: Command): string {
   return only;
 }
 
-/** The kind tag a browser image frame carries, which is the wire's own. */
-const BROWSER_IMAGE_TAG = 1;
+/** The kind tag a browser frame carries, which is the wire's own. */
+const BROWSER_FRAME_TAG = 1;
 
 /**
- * One image frame at the wire's shape: the kind tag, the answer's id as a
- * big-endian u64, then the bytes.
+ * One relayed browser frame, as the host encoded it.
  *
- * Big-endian because the server reads it that way; the id is what pairs the
- * frame with the answer that declared the image, so two asks in flight at
- * once cannot be handed each other's picture.
+ * The server re-encodes nothing: the payload is the host's own WebP and the
+ * header states the size it was painted at, so a viewer decodes rather than
+ * stretches.
  */
-function imageFrame(id: number, bytes: Uint8Array): Uint8Array {
-  const frame = new Uint8Array(1 + 8 + bytes.length);
-  frame[0] = BROWSER_IMAGE_TAG;
-  new DataView(frame.buffer).setBigUint64(1, BigInt(id));
-  frame.set(bytes, 9);
-  return frame;
+export interface BrowserFrame {
+  /** The profile's wire id, from the `browser_view` that named it. */
+  profile: number;
+  /** Monotonic per profile; a newer frame supersedes an older one. */
+  seq: number;
+  width: number;
+  height: number;
+  /** A full-quality frame: the first of a surface, a resize, an attach. */
+  key: boolean;
+  /** The encoded pixels, untouched by the server. */
+  bytes: Uint8Array;
+}
+
+/** One binary message, decoded as a browser frame, when it is one. */
+function browserFrame(bytes: Uint8Array): BrowserFrame | null {
+  // The kind tag, then the host's own 12-byte header, then the pixels.
+  if (bytes.length < 14 || bytes[0] !== BROWSER_FRAME_TAG) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return {
+    profile: view.getUint16(1, true),
+    seq: view.getUint32(3, true),
+    width: view.getUint16(7, true),
+    height: view.getUint16(9, true),
+    key: bytes[12] === 1,
+    bytes: bytes.subarray(13),
+  };
 }
 
 /**
@@ -359,36 +361,11 @@ export function connect(
    */
   const bounds = new ReadBounds(stores, (what) => refresh(what), boundMs);
   /** What to ask for again on a reconnect, in the order it was first asked. */
-  const held = new Map<string, { subject: Subject; answering: boolean; browser: boolean }>();
+  const held = new Map<string, { subject: Subject; answering: boolean }>();
   const listeners = new Set<(message: ServerMessage) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
-  /**
-   * The handler that drives the browser, registered by the shell that owns
-   * one. `null` until then, and a connection with none answers an ask with
-   * the reason rather than with nothing.
-   */
-  let onBrowserAsk: ((ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>) | null = null;
-  /**
-   * Whether this connection holds the browser role, as the server last said.
-   *
-   * `false` until a `browser_role` frame says otherwise, because before the
-   * grant the truth is "not hosting": a strip that drew "you" off the declare
-   * alone would say so while another client is still the one being asked.
-   */
-  let browserRole = false;
-  /**
-   * Whether the relay has SAID the role on this connection - grant or wait.
-   *
-   * **A `false` nobody has said is not the same fact as a said `false`**: the
-   * first is a socket not told yet (a reconnect's answer is in flight), the
-   * second is another client holding the browser. The hand-off's raise reads
-   * the difference before it refuses (#2519).
-   */
-  let browserRoleKnown = false;
-  const roleListeners = new Set<(hosting: boolean) => void>();
-  /** The sweep notices this connection will never raise (no host lives on
-   *  the web side); kept so the interface is implemented, not faked. */
-  const profilesListeners = new Set<() => void>();
+  /** The page's viewers of the relayed frames: the phone's canvas. */
+  const frameListeners = new Set<(frame: BrowserFrame) => void>();
   const pending = new Map<number, PendingReply>();
   /**
    * The subscribes that have gone and not been answered, oldest first, which
@@ -420,6 +397,8 @@ export function connect(
   /** The greeting's own number, kept whether or not it skews. */
   let greetingProtocol: number | null = null;
   let nextReplyId = 1;
+  /** The wire sequence the viewer's gestures carry, minted per connection. */
+  let inputSeq = 0;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryDelay = RETRY_MS;
 
@@ -438,8 +417,10 @@ export function connect(
     if (!isOpen()) throw new Error('the socket is not open');
     socket?.send(JSON.stringify(message));
     // **The write's own mark (#2513).** Taken after the send, so the gap a
-    // switch pays is measured to the frame leaving this side.
-    if (message.kind === 'subscribe') noteSubscribe(message.what, message.declare);
+    // switch pays is measured to the frame leaving this side. A held
+    // subscription is not the browser role's declare - this client has no
+    // such role - so the flag is false.
+    if (message.kind === 'subscribe') noteSubscribe(message.what, false);
   }
 
   function failPending(why: string): void {
@@ -497,30 +478,12 @@ export function connect(
   }
 
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
-  function askFor(what: Subject, answering: boolean, browser: boolean, declare = false): void {
-    sendNow({ kind: 'subscribe', what, answering, browser, declare });
+  function askFor(what: Subject, answering: boolean): void {
+    sendNow({ kind: 'subscribe', what, answering });
     awaiting.push(subjectKey(what));
     // The read this ask owes is bounded from here: nothing else would ask
     // again for a snapshot that simply never came.
     bounds.arm(what);
-  }
-
-  /**
-   * Re-declare the browser capability on what this connection already
-   * watches.
-   *
-   * A take needs it: the relay registers only connections that declared, and
-   * one displaced by an earlier take is no longer in its line - so the claim
-   * below would be answered `false` with the click visibly doing nothing.
-   * Nothing is declared when the page watches nothing yet. **The frame says
-   * it is a declare**, so the server answers it with the watched subject's
-   * snapshot but counts no watch, attachment or hold for it: the client never
-   * counts it either, so there would be nothing to give one back with.
-   */
-  function declare(): void {
-    const watching = held.values().next();
-    if (watching.done) return;
-    askFor(watching.value.subject, watching.value.answering, true, true);
   }
 
   /** A subject the server has answered, which is no longer outstanding. */
@@ -611,78 +574,12 @@ export function connect(
       // report below is for.
       case 'seat_frames':
         return;
-      // An ask is answered here rather than handed to a page: the handler is
-      // the shell's, and the answer has to go back under the ask's own id.
-      case 'browser_ask':
-        void answerAsk(message);
-        return;
-      // Whether THIS connection holds the role - the grant, and the loss to a
-      // force-take. Kept here rather than on a page: it is the connection's
-      // own fact, and every strip reads it from one place.
-      case 'browser_role':
-        browserRole = message.hosting;
-        browserRoleKnown = true;
-        for (const hear of roleListeners) hear(browserRole);
-        return;
       // A frame whose kind this client does not know is REPORTED rather than
       // dropped in silence: a message that arrived and drew nothing is
       // indistinguishable from one that never arrived.
       default:
         report('the server sent a frame this client does not know', message);
         return;
-    }
-  }
-
-  /**
-   * One ask answered and put back on the wire.
-   *
-   * Every path answers: a handler that throws, and a connection with no
-   * handler at all, both send the failed shape naming why. A session's tool
-   * call is waiting on this, so silence here is a turn that hangs.
-   */
-  async function answerAsk(ask: BrowserAsk): Promise<void> {
-    let answer: BrowserAnswer;
-    try {
-      answer =
-        onBrowserAsk === null
-          ? { error: 'this client cannot host the browser' }
-          : await onBrowserAsk(ask);
-    } catch (why) {
-      answer = { error: `the browser handler failed: ${String(why)}` };
-    }
-    // The connection the ask arrived on is gone: there is nothing to send the
-    // answer down, and the server frees the role with the connection.
-    if (!isOpen()) {
-      report('a browser ask was answered after the socket closed', ask);
-      return;
-    }
-    if ('error' in answer) {
-      sendNow({ kind: 'browser_answer', id: ask.id, parts: [], error: answer.error });
-      return;
-    }
-    // The mime types cross on the answer; the bytes follow as frames, in the
-    // order the parts are listed. **The answer goes first**, which is what the
-    // server reads: it declares the images before any frame can fill them.
-    const parts: BrowserPart[] = answer.parts.map((part) =>
-      part.type === 'image' ? { type: 'image', mime_type: part.mime_type } : part,
-    );
-    sendNow({ kind: 'browser_answer', id: ask.id, parts, error: null });
-    for (const part of answer.parts) {
-      if (part.type !== 'image') continue;
-      try {
-        // `send` takes an ArrayBufferView over an ArrayBuffer; the frame's own
-        // view is one, and TS cannot see that through the default.
-        socket?.send(imageFrame(ask.id, part.bytes) as Uint8Array<ArrayBuffer>);
-      } catch (why) {
-        // **A frame that could not be sent cannot be skipped.** The answer is
-        // already on the wire and its images will never all arrive, so the
-        // tool call would wait on a promise this client cannot keep. Dropping
-        // the connection ends that ask - the server fails it naming the host
-        // that went away - and the reconnect re-declares the capability.
-        report('an image frame could not be sent; dropping the connection', why);
-        socket?.close();
-        return;
-      }
     }
   }
 
@@ -703,20 +600,22 @@ export function connect(
       scheduleRetry();
       return;
     }
+    // Frames arrive as their bytes, not as a Blob: a canvas draws the bytes.
+    next.binaryType = 'arraybuffer';
     socket = next;
 
     next.onopen = () => {
       if (next !== socket) return;
       move('open');
       retryDelay = RETRY_MS;
-      for (const { subject, answering, browser } of held.values()) {
+      for (const { subject, answering } of held.values()) {
         // Once per subscription, which is how many times the server was asked
         // before the drop: one unsubscribe drops one of its entries, so
         // re-asking once for a subject held twice would leave its count lower
         // than this side's, and a later unsubscribe would take the subject
         // away from a caller still drawing it.
         for (let remaining = stores.count(subject); remaining > 0; remaining -= 1) {
-          askFor(subject, answering, browser);
+          askFor(subject, answering);
         }
       }
     };
@@ -758,6 +657,27 @@ export function connect(
 
     next.onmessage = (event) => {
       if (next !== socket) return;
+      // **A binary message is a relayed browser frame.** The phone's canvas
+      // draws it; a page with no viewer ignores it, which is the desktop,
+      // where the shell took the same bytes off its own socket.
+      if (event.data instanceof ArrayBuffer) {
+        const frame = browserFrame(new Uint8Array(event.data));
+        if (frame === null) {
+          // **A binary frame this page cannot read is said**, not dropped:
+          // an unknown kind or a short header would otherwise vanish with no
+          // trace at all.
+          report('a binary frame was not a browser frame', event.data.byteLength);
+          return;
+        }
+        for (const fn of frameListeners) {
+          try {
+            fn(frame);
+          } catch (why) {
+            report('a browser frame listener threw', why);
+          }
+        }
+        return;
+      }
       const raw = String(event.data);
       let message: ServerMessage;
       try {
@@ -793,18 +713,6 @@ export function connect(
       // A dropped socket's holds die with it: the reconnect's answer is the
       // whole record, and the numbers start wherever it says.
       opened.reset();
-      // **The role dies with the connection it belonged to.** The relay keeps
-      // the role for the CONNECTION id, not for the page, so a reconnected
-      // client is a new one - and a strip that went on saying "this client
-      // drives the browser" through a drop would hide the override that is
-      // the only way back. Reset before the drop guard, so even the final
-      // close says the truth.
-      if (browserRole) {
-        browserRole = false;
-        for (const hear of roleListeners) hear(browserRole);
-      }
-      // The new connection has been told nothing yet, even if this one had.
-      browserRoleKnown = false;
       if (status === 'closed') return;
       move('connecting');
       // A command that was in flight has no answer coming: the reply died
@@ -831,7 +739,7 @@ export function connect(
     retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
   }
 
-  function subscribe(what: Subject, options?: { answering?: boolean; browser?: boolean }): Store {
+  function subscribe(what: Subject, options?: { answering?: boolean }): Store {
     if (status === 'closed') {
       // Nothing replays a subscribe made after the socket went, so a live
       // store here would promise a snapshot that is never coming.
@@ -839,25 +747,21 @@ export function connect(
     }
 
     const answering = options?.answering ?? false;
-    const browser = options?.browser ?? false;
     const key = subjectKey(what);
     const store = stores.open(what);
 
     const existing = held.get(key);
     if (existing === undefined) {
-      held.set(key, { subject: what, answering, browser });
-    } else {
+      held.set(key, { subject: what, answering });
+    } else if (answering) {
       // The core's stream only ever escalates, so a later answering
-      // subscribe raises the role the reconnect re-declares. The browser
-      // capability is the same: a connection that has declared it does not
-      // un-declare it by subscribing again without it.
-      if (answering) existing.answering = true;
-      if (browser) existing.browser = true;
+      // subscribe raises the role the reconnect re-establishes.
+      existing.answering = true;
     }
 
     if (isOpen()) {
       const declaration = held.get(key);
-      askFor(what, declaration?.answering ?? answering, declaration?.browser ?? browser);
+      askFor(what, declaration?.answering ?? answering);
     }
     return store;
   }
@@ -884,7 +788,7 @@ export function connect(
     forget(what);
     sendNow({ kind: 'unsubscribe', what });
     const declaration = held.get(subjectKey(what));
-    askFor(what, declaration?.answering ?? false, declaration?.browser ?? false);
+    askFor(what, declaration?.answering ?? false);
     return true;
   }
 
@@ -983,46 +887,30 @@ export function connect(
       }
       return true;
     },
-    onBrowserAsk(fn) {
-      onBrowserAsk = fn;
-      return () => {
-        // Only the registration that is still in place is cleared: a listener
-        // that unregisters after another took over must not take the live one
-        // with it.
-        if (onBrowserAsk === fn) onBrowserAsk = null;
-      };
+    browserView(seat, profile) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'browser_view', seat, profile });
+      return true;
     },
-    browserRole() {
-      return browserRole;
+    browserControl(take) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'browser_control', take });
+      return true;
     },
-    browserRoleKnown() {
-      return browserRoleKnown;
+    browserNav(back) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'browser_nav', back });
+      return true;
     },
-    onBrowserRole(fn) {
-      roleListeners.add(fn);
-      return () => roleListeners.delete(fn);
+    browserInput(event) {
+      if (!isOpen()) return false;
+      inputSeq += 1;
+      sendNow({ kind: 'browser_input', seq: inputSeq, event });
+      return true;
     },
-    onProfilesChanged(fn) {
-      // No host, no sweep: the web build's own listener is kept for the
-      // interface's sake and never fires.
-      profilesListeners.add(fn);
-      return () => profilesListeners.delete(fn);
-    },
-    takeBrowserRole() {
-      // A click while the socket is down is dropped with a record rather than
-      // thrown into the click handler: a command that cannot cross is the
-      // connection's state, not a page error.
-      if (!isOpen()) {
-        report('the browser role could not be claimed', 'the socket is not open');
-        return;
-      }
-      // The claim re-declares first: the relay holds a channel only for a
-      // connection that declared, and a connection displaced by an earlier
-      // take is no longer registered - so the bare claim would come back
-      // `false` with nothing re-registered. The declare puts this connection
-      // back in the line the claim moves, and holds nothing while it does.
-      declare();
-      sendNow({ kind: 'browser_take_role' });
+    onBrowserFrame(fn) {
+      frameListeners.add(fn);
+      return () => frameListeners.delete(fn);
     },
     onMessage(fn) {
       listeners.add(fn);

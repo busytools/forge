@@ -122,14 +122,6 @@ export type ComposerConnection = Pick<
   | 'subscribe'
   | 'unsubscribe'
   | 'refresh'
-  // The strip lane's browser segment reads these four, and the lane lives in
-  // this surface now - so the composer needs them to draw its own strip. The
-  // hand-off's raise reads the role and whether the relay has said it (#2519).
-  | 'browserRole'
-  | 'browserRoleKnown'
-  | 'onBrowserRole'
-  | 'onProfilesChanged'
-  | 'takeBrowserRole'
 >;
 
 export interface ComposerProps {

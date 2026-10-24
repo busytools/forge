@@ -58,8 +58,10 @@ feature. The published rustdoc is the one exception: it needs
 ## Development is macOS-first
 
 forge is developed and run on macOS. Other platforms compile, and CI
-builds and tests on Linux - with one job on macOS that compiles the shell's
-CEF bridge, which no Linux runner sees - but one thing behaves differently:
+builds and tests on Linux - with one job on macOS that compiles the two
+macOS-only halves no Linux runner sees, the server's browser host and the
+shell's native overlay, and runs the host's own tests - but one thing
+behaves differently:
 
 - **App-level chords use Cmd on macOS, Ctrl elsewhere.** The pane
   toggles (`Cmd+Left`/`Cmd+Right` vs `Ctrl+Left`/`Ctrl+Right`) and
@@ -73,8 +75,9 @@ just check
 
 That runs four independent groups concurrently: the fast checks
 (`cargo fmt --check`, the Unicode punctuation gate, and the scripts' own
-tests, `script-tests`),
-the Rust workspace (`cargo clippy --all-targets --workspace -- -D warnings`
+tests, `script-tests`: the release manifest's, the client-dependency
+bootstrap's and the browser-stack patch's), the Rust workspace
+(`cargo clippy --all-targets --workspace -- -D warnings`
 once per feature set, with and without `--all-features`,
 `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features` and
@@ -111,9 +114,9 @@ The gate is two commands: run this one before opening a pull request, and
 `install.sh` builds; the second command is what compiles it. Beyond that
 this is CI's set with two differences: CI also runs
 `cargo check --release`, while `client-android-warnings` (the shell's
-android step) is in `just check` alone - the vendoring its build needs
-refuses non-macOS hosts, so CI runs no such job yet (issue #1959, closed
-as an enhancement and tracked in #2258). The
+android step) is in `just check` alone - it needs the Android NDK's target
+installed, which the CI runners do not carry, so CI runs no such job yet
+(issue #1959, closed as an enhancement and tracked in #2258). The
 client's steps are in here too, so the client and the server are not
 separate commands, and a failure on either side lands on the same verdict
 line.
@@ -144,18 +147,17 @@ configuration needs `just client-tauri-check` (which runs the tests too)
 or `just client-tauri-bundle` (plus the bundles), and the first is the one
 to run before handing over a change there.
 
-A client that BUNDLES takes two steps of its own first. `just
-vendor-browser-stack` fetches and verifies the driver the client hosts -
-node and `@playwright/mcp`, about 140 MB into the client's gitignored
-`browser-stack/` directory - and `just stage-cef` stages the app's own
-Chromium, the CEF framework and its five helper apps, before `tauri build`,
-which copies the staged tree into `Contents/Frameworks` as it builds the
-app. `client-tauri-bundle` and `client-release` run both
-themselves, so a release cannot ship without them. The vendoring needs
-network access the first time and nothing after that, and prints the pins
-it verified on every run. **No browser needs installing**: the engine is
-in the bundle, and a client built without it answers the browser doors with
-a sentence naming the missing framework rather than a timeout.
+A client bundles with `just client-tauri-bundle`, and carries no browser:
+the engine, its driver and every profile live on the SERVER. The install
+(`scripts/install.sh`) is what stages the browser there - a signed
+`Forge Browser.app` beside forge's machine-local state, and the driver
+stack (`node` and `@playwright/mcp`, about 140 MB) beside it. The vendoring
+needs network access the first time and nothing after that, and prints the
+pins it verified on every run. **The server's browser is macOS-only**: the
+install stages the bundle only on Darwin, and elsewhere its browser tools
+answer the no-host refusal by name. **No browser needs installing**: a
+client built where the server has no engine answers the browser doors with
+the server's own sentence rather than a timeout.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
 or `[ERROR] check: <step> failed`, or `[ERROR] check: group reported
@@ -198,9 +200,10 @@ deliberately not part of `just check`, because a second full compile is
 too slow for the inner loop; it catches the errors only a release build
 sees.
 
-`just check-feature-configs` compiles the two server configurations
-nothing else builds: the one `just install` produces - release, the
-test-only features off - and `testing` on its own.
+`just check-feature-configs` compiles the configurations nothing else
+builds: the one `just install` produces - release, the test-only features
+off, the server binary plus the host executable `install.sh` builds
+separately - and `testing` on its own.
 `--all-features` cannot stand in for either, because it turns every
 feature on regardless and so never exercises which configuration
 enables what: the install build leaving `test-helpers` off, or

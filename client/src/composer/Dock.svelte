@@ -5,7 +5,6 @@
     attachHandOff,
     clearHandOff,
     closeSurface,
-    handOffRefusal,
     openSurface,
     surface,
   } from '../browser/surface.svelte';
@@ -48,7 +47,7 @@
      */
     ownKey?: string | null;
     slot: SessionSlot;
-    connection: Pick<Connection, 'dispatch' | 'browserRole' | 'browserRoleKnown'>;
+    connection: Pick<Connection, 'dispatch'>;
     /** How many prompts wait behind this one, which the queue line states. */
     depth?: number;
     /** Why the core refused an answer to this prompt, when it did. */
@@ -587,27 +586,16 @@
    * Raise the browser surface, which is the client's own act rather than the
    * core's.
    *
-   * **The takeover, not a separate window**: the app runs its own CEF host
-   * over the profile the agents drive, and Open puts that page over the whole
-   * window at full screen - nothing is relaunched, so the page the session
-   * prepared is the page that comes up. An open that does not land says so
-   * rather than claiming the browser is up.
+   * **The takeover, not a separate window**: the SERVER runs the CEF host
+   * over the profile the agents drive, and Open attaches this client as a
+   * viewer and puts the relayed page over the whole window under the bar. A
+   * host that had closed relaunches on its carried page, so the page the
+   * session prepared is the page that comes up. An open that does not land
+   * says so rather than claiming the browser is up.
    */
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    // **Only the client the relay has told holds the browser raises it.** The
-    // shell's show raises THIS client's browser; when the role is another
-    // client's that browser has no page of the session's, so the card says
-    // where the page is instead of opening the wrong surface. **An unsaid
-    // role is no reading** - a reconnect's answer is still in flight - so an
-    // unknown role takes the old path rather than claiming another has it.
-    const refusal = handOffRefusal(connection.browserRoleKnown(), connection.browserRole());
-    if (refusal !== null) {
-      raiseFailedFor = id;
-      raiseWhy = refusal;
-      return;
-    }
     // **The takeover marks itself live for this ask, and the composer's bar
     // is what answers it.** Attaching also routes a take started from the
     // bar's mic into this dock's own words box.
@@ -621,14 +609,6 @@
       if (why !== null) {
         raiseFailedFor = id;
         raiseWhy = why;
-        return;
-      }
-      // **A raise that landed is no refusal any more**: the role can move to
-      // this client (the strip's override), and a card still saying the page
-      // is elsewhere would be false over buttons that now work.
-      if (raiseFailedFor === id) {
-        raiseFailedFor = null;
-        raiseWhy = null;
       }
     });
   }
@@ -674,33 +654,6 @@
     onanswer(ask.request.id);
     answer({ answer_document_hand_off: { key: slot, id: ask.request.id, answer: 'not_now' } });
   }
-
-  /**
-   * The phone's takeover bar, the same answer: its Done arrives as a window
-   * event (the Kotlin bar calls into this page - see `installTakeoverHook`),
-   * and this dock's own `handOff` is what answers it, refusals and all. Its
-   * back never crosses: lowering is the host's, and an unanswered hand-off
-   * simply stays parked.
-   */
-  $effect(() => {
-    const onTakeover = (event: Event): void => {
-      const what = (event as CustomEvent<string>).detail;
-      // **The phone's back, the hardware Back and its bar's lower** all end
-      // with the native takeover gone; the page's store follows, or a later
-      // Open would draw over nothing.
-      if (what === 'lowered') {
-        surface.phase = 'closed';
-        surface.profile = null;
-        surface.reason = null;
-        if (surface.hand_off !== null) clearHandOff(surface.hand_off.id);
-        return;
-      }
-      if (what !== 'done') return;
-      handOff(true);
-    };
-    window.addEventListener('forge-takeover', onTakeover);
-    return () => window.removeEventListener('forge-takeover', onTakeover);
-  });
 
   function move(step: number): void {
     // An answered prompt is standing down: its rows are a record of what was

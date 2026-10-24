@@ -135,16 +135,7 @@ async fn snapshot_until(
     mut want: impl FnMut(&serde_json::Value) -> bool,
 ) -> bool {
     for _ in 0..200 {
-        send(
-            socket,
-            ClientMessage::Subscribe {
-                what: subject.clone(),
-                answering: true,
-                browser: false,
-                declare: false,
-            },
-        )
-        .await;
+        send(socket, ClientMessage::Subscribe { what: subject.clone(), answering: true }).await;
         let (_, data, _) = snapshot_answering(socket).await;
         if want(&data) {
             return true;
@@ -182,12 +173,6 @@ async fn wait_for_the_server_to_notice(fleet: &Fleet, attached: usize) -> bool {
 async fn send(socket: &mut Client, message: ClientMessage) {
     let text = serde_json::to_string(&message).expect("encode");
     socket.send(Message::Text(text.into())).await.expect("send");
-}
-
-/// One frame as JSON rather than through the typed enum, for the shapes the
-/// wire itself is the contract for: the keys a client writes by hand.
-async fn send_wire(socket: &mut Client, frame: serde_json::Value) {
-    socket.send(Message::Text(frame.to_string().into())).await.expect("send");
 }
 
 /// The server's next message, or `None` if it said nothing inside `ms`.
@@ -310,16 +295,7 @@ async fn a_client_can_open_the_socket() {
 #[tokio::test]
 async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
     let mut socket = connected().await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
 
     let (subject, data, _) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home);
@@ -338,16 +314,7 @@ async fn a_board_subscriber_hears_what_the_home_no_longer_carries() {
     let mut board = connect(&url).await;
     let mut home = connect(&url).await;
     for (socket, subject) in [(&mut board, Subject::Board), (&mut home, Subject::Home)] {
-        send(
-            socket,
-            ClientMessage::Subscribe {
-                what: subject.clone(),
-                answering: true,
-                browser: false,
-                declare: false,
-            },
-        )
-        .await;
+        send(socket, ClientMessage::Subscribe { what: subject.clone(), answering: true }).await;
         let (answered, ..) = snapshot_answering(socket).await;
         assert_eq!(answered, subject, "the subscription's own answer");
     }
@@ -394,16 +361,7 @@ async fn a_late_subscriber_sees_the_same_board_and_home() {
     let (url, fleet) = a_server().await;
     let mut early = connect(&url).await;
     for subject in [Subject::Board, Subject::Home] {
-        send(
-            &mut early,
-            ClientMessage::Subscribe {
-                what: subject,
-                answering: true,
-                browser: false,
-                declare: false,
-            },
-        )
-        .await;
+        send(&mut early, ClientMessage::Subscribe { what: subject, answering: true }).await;
         snapshot_answering(&mut early).await;
     }
 
@@ -428,16 +386,7 @@ async fn a_late_subscriber_sees_the_same_board_and_home() {
 
     // A connection that attaches after the write reads the same row first.
     let mut late = connect(&url).await;
-    send(
-        &mut late,
-        ClientMessage::Subscribe {
-            what: Subject::Board,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut late, ClientMessage::Subscribe { what: Subject::Board, answering: true }).await;
     let (_, late_board, _) = snapshot_answering(&mut late).await;
     let task_ids = |data: &serde_json::Value| {
         data["projects"][0]["rows"]
@@ -452,16 +401,7 @@ async fn a_late_subscriber_sees_the_same_board_and_home() {
     );
 
     // And the home's total on a late connection matches the board's rows.
-    send(
-        &mut late,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut late, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let (_, late_home, _) = snapshot_answering(&mut late).await;
     assert_eq!(
         late_home["fleet"][0]["rows"].as_u64(),
@@ -481,16 +421,7 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
     // project's agents, and a seat nothing has started is not among them.
     fleet.install_agent("TestOrg", "proj", "lead");
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
 
@@ -514,12 +445,7 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
 
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
@@ -550,27 +476,13 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
     domain.lock().failed_turn_at = Some(std::time::SystemTime::now());
 
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
 
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
@@ -608,16 +520,7 @@ async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
     );
 
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
 
@@ -637,12 +540,7 @@ async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
 
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
@@ -685,27 +583,13 @@ async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
 async fn showing_a_seat_with_nothing_to_spend_leaves_the_home_alone() {
     let (url, _fleet) = a_server().await;
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
 
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
@@ -776,24 +660,14 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     let mut owner = connect(&url).await;
     send(
         &mut owner,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut owner).await;
     let mut other = connect(&url).await;
     send(
         &mut other,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut other).await;
@@ -868,12 +742,7 @@ async fn a_takes_surface_crosses_the_socket_into_its_end() {
     let mut owner = connect(&url).await;
     send(
         &mut owner,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut owner).await;
@@ -939,12 +808,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
     for seat in [lead_seat(), other_seat.clone()] {
         send(
             &mut owner,
-            ClientMessage::Subscribe {
-                what: Subject::Session(seat),
-                answering: true,
-                browser: false,
-                declare: false,
-            },
+            ClientMessage::Subscribe { what: Subject::Session(seat), answering: true },
         )
         .await;
         let _ = snapshot_answering(&mut owner).await;
@@ -1021,12 +885,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
     let mut next = connect(&url).await;
     send(
         &mut next,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut next).await;
@@ -1062,12 +921,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
     let mut holder = connect(&url).await;
     send(
         &mut holder,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut holder).await;
@@ -1094,12 +948,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut second).await;
@@ -1184,12 +1033,7 @@ async fn a_clients_frames_feed_the_take_it_started() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut socket).await;
@@ -1243,11 +1087,7 @@ async fn a_frame_lands_in_the_read_aloud_recording() {
     let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
     let mut socket = connect(&url).await;
     for what in [Subject::Session(lead_seat()), Subject::DictateModels] {
-        send(
-            &mut socket,
-            ClientMessage::Subscribe { what, answering: true, browser: false, declare: false },
-        )
-        .await;
+        send(&mut socket, ClientMessage::Subscribe { what, answering: true }).await;
         let _ = snapshot_answering(&mut socket).await;
     }
 
@@ -1305,12 +1145,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut first).await;
@@ -1352,12 +1187,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
     let mut next = connect(&url).await;
     send(
         &mut next,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut next).await;
@@ -1397,12 +1227,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut first).await;
@@ -1466,12 +1291,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
     let mut next = connect(&url).await;
     send(
         &mut next,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut next).await;
@@ -1507,12 +1327,7 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
     let mut client = connect(&url).await;
     send(
         &mut client,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut client).await;
@@ -1536,17 +1351,11 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
 
     // The reader moves to another seat: this seat's subscription goes back.
     send(&mut client, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
-    // A turnstile, because an unsubscribe is answered by silence: the role
-    // claim answers at once and in order, so hearing it proves the seat was
-    // let go before anything below was emitted.
-    send(&mut client, ClientMessage::BrowserTakeRole).await;
-    loop {
-        match next_server_within(&mut client, 5_000).await {
-            Some(ServerMessage::BrowserRole { .. }) => break,
-            Some(_) => {}
-            None => panic!("waited for the role claim's answer, and never heard it"),
-        }
-    }
+    // A turnstile, because an unsubscribe is answered by silence: a subscribe
+    // answers at once and in order, so hearing it proves the seat was let go
+    // before anything below was emitted.
+    send(&mut client, ClientMessage::Subscribe { what: Subject::Home, answering: false }).await;
+    let (_, _, _) = snapshot_answering(&mut client).await;
 
     // The whole family crosses the switch, not only the end: one frame in,
     // and a level for the unwatched seat comes back METERED - the reading a
@@ -1624,12 +1433,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
     let mut client = connect(&url).await;
     send(
         &mut client,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut client).await;
@@ -1720,12 +1524,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
     let mut next = connect(&url).await;
     send(
         &mut next,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut next).await;
@@ -1797,6 +1596,44 @@ async fn the_greeting_carries_the_dictate_axes_the_config_set() {
         fleet.surface().dictate_axes(),
         "the greeting's axes are the workspace's own, not a default standing in for them"
     );
+}
+
+/// **A large text frame crosses whole.** The inbound cap is the socket's
+/// guard against abuse, not a ceiling on a prompt: a command carrying a
+/// ~100 KiB prompt used to exceed a 16 KiB message cap and tear the
+/// connection, and a prompt has no reply, so the loss was silent. The
+/// subscription behind it is the proof the socket lived.
+#[tokio::test]
+async fn a_large_text_command_does_not_tear_the_connection() {
+    let (url, _fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::Prompt {
+                key: lead_seat(),
+                text: "x".repeat(100 * 1024),
+                attachments: Vec::new(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: false }).await;
+
+    let mut answered = false;
+    for _ in 0..20 {
+        match next_server_within(&mut socket, 5_000).await {
+            Some(ServerMessage::Snapshot { subject: Subject::Home, .. }) => {
+                answered = true;
+                break;
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    assert!(answered, "the socket survived the large command and answered the subscribe");
 }
 
 /// The greeting names the build that sent it.
@@ -1936,11 +1773,7 @@ fn a_reading_past_the_gate() -> ContextUsage {
 /// and handed back beside it.
 async fn a_page_on(url: &str, what: Subject) -> (Client, serde_json::Value) {
     let mut socket = connect(url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe { what, answering: true, browser: false, declare: false },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what, answering: true }).await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
     (socket, data)
 }
@@ -1963,12 +1796,7 @@ async fn a_seat_a_client_opens_with_no_usage_asks_the_core_for_one() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -2005,12 +1833,7 @@ async fn a_seat_that_already_reports_usage_is_not_asked_again() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -2045,12 +1868,7 @@ async fn a_seat_a_client_opens_with_no_mcp_snapshot_asks_the_core_for_one() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -2085,12 +1903,7 @@ async fn a_seat_that_already_reports_an_mcp_snapshot_is_not_asked_again() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -2488,16 +2301,7 @@ async fn a_client_declares_answering_on_a_subscribe_and_not_on_its_first_word() 
     let _ = next_server(&mut socket).await;
     assert_eq!(fleet.answering_count(), 0, "a command or a page is not a declaration either way");
 
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     snapshot_answering(&mut socket).await;
     assert_eq!(
         fleet.answering_count(),
@@ -2519,12 +2323,7 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
         let mut leaving = connect(&url).await;
         send(
             &mut leaving,
-            ClientMessage::Subscribe {
-                what: Subject::Session(lead_seat()),
-                answering: true,
-                browser: false,
-                declare: false,
-            },
+            ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
         )
         .await;
         snapshot_answering(&mut leaving).await;
@@ -2566,16 +2365,7 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
     let mut marked = false;
     let mut last = 0;
     for _ in 0..200 {
-        send(
-            &mut fresh,
-            ClientMessage::Subscribe {
-                what: Subject::Home,
-                answering: true,
-                browser: false,
-                declare: false,
-            },
-        )
-        .await;
+        send(&mut fresh, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
         let (_, data, _) = snapshot_answering(&mut fresh).await;
         let unseen = data["unseen"].as_array().expect("the home carries the marks");
         if unseen.iter().any(|slot| slot["label"] == "lead" && slot["project"] == "proj") {
@@ -2591,169 +2381,6 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
     );
 }
 
-/// **A role declare watches nothing, so nothing is left behind for it.** The
-/// client re-declares its browser capability with one extra subscribe against
-/// the subject it is claiming the role on; the server answers it like any
-/// subscribe, but it takes no watch entry and no attachment. The client never
-/// counts the declare, so nothing on that side ever gives it back - and a
-/// declared seat stayed counted as watched for the life of the connection,
-/// its unwatched-completion mark never arming.
-#[tokio::test]
-async fn a_role_declare_leaves_no_watch_behind() {
-    let (url, fleet) = a_server().await;
-    fleet.install_agent("TestOrg", "proj", "lead");
-    let seat = serde_json::to_value(Subject::Session(lead_seat())).expect("a seat encodes");
-
-    // **The frames are the wire's own, not the typed enum's**: the `declare`
-    // key is what both clients write by hand, and this test is where the
-    // server is held to reading it.
-    let mut page = connect(&url).await;
-    send_wire(
-        &mut page,
-        serde_json::json!({ "kind": "subscribe", "what": seat, "answering": true, "browser": true }),
-    )
-    .await;
-    let (subject, ..) = snapshot_answering(&mut page).await;
-    assert_eq!(subject, Subject::Session(lead_seat()), "precondition: the page holds the seat");
-    // The page's subscribe carries the browser capability, so the role is
-    // granted after its snapshot - it is this connection's already, so the
-    // declare below says nothing new about the role.
-    assert!(
-        matches!(next_server(&mut page).await, ServerMessage::BrowserRole { hosting: true }),
-        "precondition: the page's own subscribe took the role",
-    );
-    // **The seat set rides the same declare.** A capable connection is
-    // answered with the seats that exist, so its host can sweep its
-    // profiles; the frame arrives after the grant and before the declare's
-    // own answer below.
-    assert!(
-        matches!(next_server(&mut page).await, ServerMessage::BrowserSeats { .. }),
-        "precondition: a capable subscribe is answered with the seat set too",
-    );
-
-    // The declare, as the take-role control puts it on the wire.
-    send_wire(
-        &mut page,
-        serde_json::json!({
-            "kind": "subscribe",
-            "what": seat,
-            "answering": true,
-            "browser": true,
-            "declare": true,
-        }),
-    )
-    .await;
-    let (subject, ..) = snapshot_answering(&mut page).await;
-    assert_eq!(
-        subject,
-        Subject::Session(lead_seat()),
-        "the declare is answered with its subject's snapshot like any subscribe",
-    );
-
-    // The page leaves the seat: one unsubscribe, one entry given back.
-    send_wire(&mut page, serde_json::json!({ "kind": "unsubscribe", "what": seat })).await;
-    // A turnstile, because an unsubscribe is answered by silence: this
-    // connection's messages are handled in order, so a snapshot arriving for
-    // the ask below proves the seat was let go before the turn beneath is
-    // emitted.
-    send_wire(
-        &mut page,
-        serde_json::json!({ "kind": "subscribe", "what": "home", "answering": true, "browser": false }),
-    )
-    .await;
-    let (subject, ..) = snapshot_answering(&mut page).await;
-    assert_eq!(subject, Subject::Home, "the turnstile ask is answered");
-
-    // A turn now finishes with nobody showing the seat, so it has to mark it.
-    fleet.emit(SessionUpdate::ChatAppended {
-        key: lead_seat(),
-        msg: serde_json::from_value(serde_json::json!({
-            "type": "result",
-            "subtype": "success",
-            "duration_ms": 1,
-            "duration_api_ms": 1,
-            "is_error": false,
-            "num_turns": 1,
-            "session_id": "s",
-        }))
-        .expect("parse a result message"),
-        origin: None,
-        source: None,
-    });
-
-    // The fold is the transport's own task, so the mark lands a scheduling hop
-    // after the emit. Polling is honest because the property IS "eventually",
-    // and it is bounded so a fold that never runs fails this test rather than
-    // hanging it.
-    let mut fresh = connect(&url).await;
-    let mut marked = false;
-    let mut last = 0;
-    for _ in 0..200 {
-        send_wire(
-            &mut fresh,
-            serde_json::json!({ "kind": "subscribe", "what": "home", "answering": true, "browser": false }),
-        )
-        .await;
-        let (_, data, _) = snapshot_answering(&mut fresh).await;
-        let unseen = data["unseen"].as_array().expect("the home carries the marks");
-        if unseen.iter().any(|slot| slot["label"] == "lead" && slot["project"] == "proj") {
-            marked = true;
-            break;
-        }
-        last = unseen.len();
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(
-        marked,
-        "the seat the declare left behind is unlooked again: a declare that takes a watch entry \
-         outlives the page that made it, and its completions never mark; marks seen: {last}",
-    );
-}
-
-/// **A capable declare that waits is answered with the role it does not
-/// hold (#2519).** A hand-off's Open refuses on a client the relay has told
-/// it is not the host; an unsaid `false` is indistinguishable from a socket
-/// that has not been told yet, so without this frame a waiting client can
-/// never know the role is settled - and its hand-off raise would stay the
-/// local one, which is the defect.
-#[tokio::test]
-async fn a_capable_declare_that_waits_is_answered_without_the_role() {
-    let (url, _fleet) = a_server().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
-    assert!(
-        matches!(next_server(&mut first).await, ServerMessage::BrowserRole { hosting: true }),
-        "precondition: the first capable connection holds the role",
-    );
-
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
-    let ServerMessage::BrowserRole { hosting } = next_server(&mut second).await else {
-        panic!("a declare that waits is answered with the role it does not hold");
-    };
-    assert!(!hosting, "which is not the browser");
-}
-
 /// A turn that finishes while nobody is showing the seat leaves a mark, and
 /// the mark is exactly the fact a client cannot reconstruct: a transcript says
 /// the turn ended, never that it ended unwatched. It rides the home snapshot,
@@ -2766,16 +2393,7 @@ async fn a_turn_that_finished_unwatched_marks_its_row() {
     // project's agents, and a seat nothing has started is not among them.
     fleet.install_agent("TestOrg", "proj", "lead");
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     snapshot_answering(&mut socket).await;
 
     // A turn ends with this connection watching the home and not the seat, so
@@ -2905,16 +2523,7 @@ async fn a_pending_reply_does_not_hold_the_connections_read_loop() {
         },
     )
     .await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: false,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: false }).await;
 
     let next = next_server_within(&mut socket, 5_000).await;
     assert!(
@@ -3275,8 +2884,6 @@ async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
         ClientMessage::Subscribe {
             what: Subject::Session(SessionSlot::for_label("Nowhere", "nothing", Some("lead"))),
             answering: true,
-            browser: true,
-            declare: false,
         },
     )
     .await;
@@ -3295,11 +2902,6 @@ async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
         Some(SessionSlot::for_label("Nowhere", "nothing", Some("lead"))),
         "the refusal names the seat it belongs to",
     );
-
-    let ServerMessage::BrowserRole { hosting } = next_server(&mut socket).await else {
-        panic!("the refusal still owes the role its grant");
-    };
-    assert!(hosting, "which was taken at register, before the seat could refuse");
 }
 
 /// Paging a seat forge holds no session for is refused in the same words: the
@@ -3423,16 +3025,8 @@ async fn a_dropped_turn_is_not_logged_as_capped() {
     let seat = SessionSlot::lead("TestOrg", "capped");
 
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat),
-            answering: false,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Session(seat), answering: false })
+        .await;
     let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
         panic!("a snapshot is the answer to a subscribe")
     };
@@ -3586,12 +3180,7 @@ async fn the_records_cursor_carries_the_windows_floor() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: false,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
     )
     .await;
     let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
@@ -3686,12 +3275,7 @@ async fn the_configured_first_frame_budget_is_completed_by_the_walk_above_it() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: false,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
     )
     .await;
     let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
@@ -3765,12 +3349,7 @@ async fn a_newest_turn_over_the_budget_is_served_whole() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: false,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
     )
     .await;
     let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
@@ -3806,12 +3385,7 @@ async fn a_zero_first_frame_cap_serves_the_twenty_turn_page() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: false,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
     )
     .await;
     let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
@@ -4043,12 +3617,7 @@ async fn a_seats_answer_carries_its_epoch_and_the_number_the_next_frame_will_bea
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -4085,12 +3654,7 @@ async fn a_seats_answer_carries_its_epoch_and_the_number_the_next_frame_will_bea
 async fn next_frame_number(socket: &mut Client, seat: &SessionSlot) -> u64 {
     send(
         socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(socket).await;
@@ -4197,12 +3761,7 @@ async fn a_reconnect_answer_covers_every_frame_below_its_number() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -4228,12 +3787,7 @@ async fn a_reconnect_answer_covers_every_frame_below_its_number() {
     }
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, after, _) = snapshot_answering(&mut socket).await;
@@ -4271,12 +3825,7 @@ async fn a_fill_that_spans_a_replay_is_refused_rather_than_marked_past() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     match next_server(&mut socket).await {
@@ -4303,12 +3852,7 @@ async fn a_fill_that_spans_a_replay_is_refused_rather_than_marked_past() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, after, _) = snapshot_answering(&mut socket).await;
@@ -4363,12 +3907,7 @@ async fn a_caught_up_seat_answers_a_reconnect_with_a_shed_window() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let message = next_server(&mut socket).await;
@@ -4412,12 +3951,7 @@ async fn a_copy_no_window_can_cover_is_refused_rather_than_answered() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let message = next_server(&mut socket).await;
@@ -4483,12 +4017,7 @@ async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let _ = snapshot_answering(&mut socket).await;
@@ -4517,12 +4046,7 @@ async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -4602,12 +4126,7 @@ async fn a_fill_through_a_pending_seal_is_refused_rather_than_synthesised() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let answer = an_answer(&mut socket).await;
@@ -4638,12 +4157,7 @@ async fn a_fill_through_a_pending_seal_is_refused_rather_than_synthesised() {
     );
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -4696,12 +4210,7 @@ async fn an_empty_history_seal_still_fills_from_the_ring() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let answer = an_answer(&mut socket).await;
@@ -4783,12 +4292,7 @@ async fn an_empty_history_epoch_after_a_sealed_one_still_fills_from_the_ring() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let answer = an_answer(&mut socket).await;
@@ -4827,12 +4331,7 @@ async fn a_read_during_a_lagging_seal_answers_once_the_fold_catches_up() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
@@ -4909,12 +4408,7 @@ async fn an_answer_inside_the_seal_window_is_not_the_previous_runs_conversation(
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -5010,12 +4504,7 @@ async fn an_answer_through_a_reseed_carries_the_copys_own_number() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -5060,12 +4549,7 @@ async fn a_replay_answers_with_the_number_its_window_reaches() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -5133,12 +4617,7 @@ async fn a_seal_over_a_transcripts_copy_is_not_answered_with_the_previous_runs_r
     let mut socket2 = connect(&url).await;
     send(
         &mut socket2,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket2).await;
@@ -5225,12 +4704,7 @@ async fn a_read_in_the_seal_window_does_not_answer_the_previous_runs_transcript(
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -5600,12 +5074,7 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     snapshot_answering(&mut socket).await;
@@ -5643,12 +5112,7 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     let mut reader = connect(&url).await;
     send(
         &mut reader,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut reader).await;
@@ -5706,16 +5170,8 @@ async fn a_refused_subscribe_leaves_another_connections_hold_alone() {
         state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
 
     let mut a = connect(&url).await;
-    send(
-        &mut a,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut a, ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true })
+        .await;
     snapshot_answering(&mut a).await;
 
     // The session ends under A's hold. Its id leaving the header is what says
@@ -5737,16 +5193,8 @@ async fn a_refused_subscribe_leaves_another_connections_hold_alone() {
 
     // B subscribes to the same seat: refused a hold, and answered a record.
     let mut b = connect(&url).await;
-    send(
-        &mut b,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut b, ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true })
+        .await;
     let (_, data, _) = snapshot_answering(&mut b).await;
     assert_eq!(
         data["slot"]["label"], "lead",
@@ -5791,12 +5239,7 @@ async fn a_seat_reopened_after_a_release_is_filled_from_its_ring() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     snapshot_answering(&mut first).await;
@@ -5843,12 +5286,7 @@ async fn a_seat_reopened_after_a_release_is_filled_from_its_ring() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut second).await;
@@ -5959,12 +5397,7 @@ async fn a_stale_store_is_re_read_by_the_record() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -5991,12 +5424,7 @@ async fn an_open_announces_no_value_its_snapshot_carried() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -6078,16 +5506,7 @@ fn a_repo(dir: &std::path::Path) {
 async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
     let (url, fleet) = a_server().await;
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     snapshot_answering(&mut socket).await;
 
     // An App-level update names no slot, which is what the home subscription is for.
@@ -6148,16 +5567,7 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
         origin: None,
         source: None,
     });
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let (_, _, passed) = snapshot_answering(&mut socket).await;
     assert!(
         !passed.iter().any(|update| matches!(update, SessionUpdate::ChatAppended { .. })),
@@ -6179,12 +5589,7 @@ async fn a_burst_leaves_a_connection_in_one_batch_whole_and_in_order() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: false,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
     )
     .await;
     let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
@@ -6247,16 +5652,7 @@ async fn a_burst_leaves_a_connection_in_one_batch_whole_and_in_order() {
 async fn a_batch_waiting_when_a_client_asks_goes_out_ahead_of_the_answer() {
     let (url, fleet) = a_server().await;
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     snapshot_answering(&mut socket).await;
 
     let held = "held for the answer";
@@ -6268,16 +5664,7 @@ async fn a_batch_waiting_when_a_client_asks_goes_out_ahead_of_the_answer() {
         });
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
 
     let (subject, _, passed) = snapshot_answering(&mut socket).await;
     assert!(
@@ -6339,12 +5726,7 @@ async fn a_run_of_token_appends_reaches_a_client_as_one_update() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: false,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
     )
     .await;
     let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
@@ -6412,12 +5794,7 @@ async fn two_sockets_on_one_seat_both_hear_it() {
     for socket in [&mut first, &mut second] {
         send(
             socket,
-            ClientMessage::Subscribe {
-                what: Subject::Session(lead_seat()),
-                answering: true,
-                browser: false,
-                declare: false,
-            },
+            ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
         )
         .await;
         let ServerMessage::Snapshot { .. } = next_server(socket).await else {
@@ -6459,12 +5836,7 @@ async fn one_unsubscribe_leaves_the_seats_other_subscription() {
     for _ in 0..2 {
         send(
             &mut socket,
-            ClientMessage::Subscribe {
-                what: Subject::Session(lead_seat()),
-                answering: false,
-                browser: false,
-                declare: false,
-            },
+            ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
         )
         .await;
         let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
@@ -6498,16 +5870,7 @@ async fn one_unsubscribe_leaves_the_seats_other_subscription() {
 async fn a_dropped_socket_leaves_no_subscription_behind() {
     let (url, fleet) = a_server().await;
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     snapshot_answering(&mut socket).await;
     // Counted WITH this socket attached, so the transport's own fold - which
     // attaches on a task of its own, a scheduling hop after the server
@@ -6546,12 +5909,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: false,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
     )
     .await;
     snapshot_answering(&mut socket).await;
@@ -6606,12 +5964,7 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: false,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
     )
     .await;
     snapshot_answering(&mut socket).await;
@@ -6686,12 +6039,7 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     for socket in [&mut sender, &mut watcher, &mut onlooker] {
         send(
             socket,
-            ClientMessage::Subscribe {
-                what: Subject::Session(lead_seat()),
-                answering: true,
-                browser: false,
-                declare: false,
-            },
+            ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
         )
         .await;
         let ServerMessage::Snapshot { .. } = next_server(socket).await else {
@@ -6950,25 +6298,11 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     let mut watched = connect(&url).await;
     // The subjects a session page's own connection watches: the shell holds
     // the home for its whole life, and the page holds the seat it draws.
-    send(
-        &mut watched,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut watched, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     snapshot_answering(&mut watched).await;
     send(
         &mut watched,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     // The attach's own read, and nothing else: the seat carries no mark for
@@ -6982,16 +6316,7 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     // count none here - a check that could not come back empty would prove
     // nothing about the count it makes.
     let mut home_only = connect(&url).await;
-    send(
-        &mut home_only,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut home_only, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     snapshot_answering(&mut home_only).await;
 
     let turn = a_thinking_turn();
@@ -7109,12 +6434,7 @@ async fn a_prompt_the_core_refuses_draws_nothing() {
     let mut sender = connect(&url).await;
     send(
         &mut sender,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let ServerMessage::Snapshot { .. } = next_server(&mut sender).await else {
@@ -7721,829 +7041,6 @@ async fn a_subscribe_from_a_client_that_predates_v6_is_answered() {
     assert_eq!(subject, Subject::Home, "the field v6 added is absent, and the ask is answered");
 }
 
-/// The host's next browser ask, passing over whatever updates arrive first.
-///
-/// A connection forwards the core's news as well as the asks, so a test that
-/// reads once and expects an ask is claiming an ordering nothing here gives -
-/// the role's own frame (the grant a capable declare is answered with) and
-/// the seat set (the sweep a capable declare is answered with) both arrive
-/// between the snapshot and the first ask.
-async fn browser_ask(socket: &mut Client) -> (u64, SessionSlot, String, serde_json::Value) {
-    loop {
-        match next_server(socket).await {
-            ServerMessage::BrowserAsk { id, seat, tool, args } => return (id, seat, tool, args),
-            ServerMessage::Update { .. }
-            | ServerMessage::BrowserRole { .. }
-            | ServerMessage::BrowserSeats { .. } => {}
-            other => panic!("a browser ask was expected and {other:?} arrived"),
-        }
-    }
-}
-
-/// One browser tool call, made from the core's side of the relay.
-fn ask(
-    state: &Arc<TransportState>,
-    tool: &str,
-    args: serde_json::Value,
-) -> tokio::task::JoinHandle<Result<Vec<forge_primitives::browser::BrowserPart>, String>> {
-    let state = Arc::clone(state);
-    let tool = tool.to_owned();
-    tokio::spawn(async move { state.browser.ask(&lead_seat(), &tool, args).await })
-}
-
-/// What an ask was settled with, or a named failure.
-///
-/// **Bounded, because an ask that is never answered is the failure these tests
-/// exist for.** Waiting on the task itself would hold the test open until the
-/// whole run is killed, and a hang reports nothing about what was being
-/// proven - this panics instead, naming the call that never came back.
-async fn settled(
-    asked: tokio::task::JoinHandle<Result<Vec<forge_primitives::browser::BrowserPart>, String>>,
-    what: &str,
-) -> Result<Vec<forge_primitives::browser::BrowserPart>, String> {
-    let answer = tokio::time::timeout(std::time::Duration::from_secs(10), asked)
-        .await
-        .unwrap_or_else(|_| panic!("{what} was never settled"));
-    answer.expect("the asker task ran")
-}
-
-/// A capable connection is sent the asks, and the answer it sends back is what
-/// the tool call returns.
-#[tokio::test]
-async fn a_capable_client_is_sent_the_asks_and_its_answer_comes_back() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-
-    let asked =
-        ask(&state, "browser_navigate", serde_json::json!({ "url": "https://example.com" }));
-
-    let (id, seat, tool, args) = browser_ask(&mut socket).await;
-    assert_eq!(seat, lead_seat(), "the ask names the seat whose session asked");
-    assert_eq!(tool, "browser_navigate", "and the tool the model called");
-    assert_eq!(args["url"], "https://example.com", "and the arguments verbatim");
-
-    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "navigated".to_owned() }];
-    send(&mut socket, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
-
-    let answer = settled(asked, "the navigate").await;
-    assert_eq!(answer, Ok(parts), "the host's parts are what the tool call returns");
-}
-
-/// An answer that carries an image has its bytes handed over in their own
-/// binary frame, under the answer's id - and the tool call returns them with
-/// the part that declared them.
-#[tokio::test]
-async fn an_answers_image_rides_its_own_binary_frame() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-
-    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
-
-    let (id, _, _, _) = browser_ask(&mut socket).await;
-    send(
-        &mut socket,
-        ClientMessage::BrowserAnswer {
-            id,
-            parts: vec![forge_primitives::browser::BrowserPart::Image {
-                mime_type: "image/png".to_owned(),
-                bytes: Vec::new(),
-            }],
-            error: None,
-        },
-    )
-    .await;
-    let mut frame = vec![forge_server::transport::frame::Kind::BrowserImage.tag()];
-    frame.extend_from_slice(&id.to_be_bytes());
-    frame.extend_from_slice(&[0x89, 0x50]);
-    socket.send(Message::Binary(frame.into())).await.expect("the image frame sends");
-
-    let answer = settled(asked, "the screenshot").await;
-    assert_eq!(
-        answer,
-        Ok(vec![forge_primitives::browser::BrowserPart::Image {
-            mime_type: "image/png".to_owned(),
-            bytes: vec![0x89, 0x50],
-        }]),
-        "the bytes the frame carried reach the part that declared the image",
-    );
-}
-
-/// The role is one connection's: a second capable client takes nothing, and
-/// the asks keep going to the first.
-#[tokio::test]
-async fn a_second_capable_client_does_not_take_the_role() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
-
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
-
-    let asked = ask(&state, "browser_close", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut first).await;
-
-    // Nothing but news reaches the second: the asks are the holder's.
-    for _ in 0..8 {
-        match next_server_within(&mut second, 200).await {
-            Some(ServerMessage::BrowserAsk { .. }) => {
-                panic!("the asks of the role go to its holder alone")
-            }
-            Some(_) => {}
-            None => break,
-        }
-    }
-
-    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
-    send(&mut first, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
-    assert!(settled(asked, "the close").await.is_ok(), "the holder's answer settles the call");
-}
-
-/// **A force-take moves the role on the wire, and the displacement is said
-/// out loud.** The claimant's `browser_take_role` makes it the connection the
-/// asks land on; the old holder receives the role frame with `false` - not a
-/// silence - so its own browser strip stops saying it hosts, and its
-/// in-flight calls fail rather than half-answering into a role it no longer
-/// holds.
-#[tokio::test]
-async fn a_force_take_moves_the_role_and_tells_the_holder() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let first_hello = loop {
-        match next_server_within(&mut first, 2000).await {
-            Some(ServerMessage::Snapshot { subject, data }) => break (subject, data),
-            Some(ServerMessage::Update { .. }) => {}
-            Some(other) => panic!("first subscribe answered with {other:?}"),
-            None => panic!("first subscribe said nothing"),
-        }
-    };
-    let _ = first_hello;
-
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let second_hello = loop {
-        match next_server_within(&mut second, 2000).await {
-            Some(ServerMessage::Snapshot { subject, data }) => break (subject, data),
-            Some(ServerMessage::Update { .. }) => {}
-            Some(other) => panic!("second subscribe answered with {other:?}"),
-            None => panic!("second subscribe said nothing"),
-        }
-    };
-    let _ = second_hello;
-
-    // **The declare that waits is answered with the role it does not hold**
-    // (#2519): the frame before any claim, so a client can tell a settled
-    // `false` from a socket the relay has not answered yet.
-    let waited = loop {
-        match next_server_within(&mut second, 2000).await {
-            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
-            Some(_) => {}
-            None => panic!("a declare that waits is answered with the role frame"),
-        }
-    };
-    assert!(!waited, "which is not the browser, while the first client holds it");
-
-    send(&mut second, ClientMessage::BrowserTakeRole).await;
-
-    // The claimant's own answer, passing over whatever updates arrive.
-    let holds = loop {
-        match next_server_within(&mut second, 2000).await {
-            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
-            Some(_) => {}
-            None => panic!("the claim is answered with the role frame"),
-        }
-    };
-    assert!(holds, "the claimant holds the role");
-
-    // The first client's OWN grant, from its subscribe, is still unread: the
-    // snapshot was what that reply stopped at.
-    let granted = loop {
-        match next_server_within(&mut first, 2000).await {
-            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
-            Some(_) => {}
-            None => panic!("the first client's declare was answered with a role frame"),
-        }
-    };
-    assert!(granted, "which said it held the role");
-
-    let told = loop {
-        match next_server_within(&mut first, 2000).await {
-            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
-            Some(_) => {}
-            None => panic!("the old holder is told it lost the role, not left silent"),
-        }
-    };
-    assert!(!told, "and then the take told it the role is gone");
-
-    // **And it is still a client.** The take displaced it; it did not end.
-    // The displaced hold has both its channels closed, and a connection
-    // there parks rather than dying - proven by it answering a message of
-    // its own AFTER the notice, which a mutant that ended the displaced
-    // connection (or a reverting drain that broke on the closed asks
-    // channel) cannot get past.
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: false,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
-    let (subject, _, _) = snapshot_answering(&mut first).await;
-    assert!(
-        matches!(subject, Subject::Home),
-        "the displaced connection still answers a subscribe: it is a viewer, not a corpse",
-    );
-
-    // The asks follow the role: the claimant is what gets asked now.
-    let asked = ask(&state, "browser_close", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut second).await;
-    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
-    send(&mut second, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
-    assert_eq!(
-        settled(asked, "the close").await,
-        Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }]),
-        "the claimant's own parts are what the call settles with",
-    );
-}
-
-/// **The promoted waiter is told on its own socket.** The holder's connection
-/// goes and the role moves to whoever waited in line: without the frame the
-/// survivor's strip goes on saying another client drives the browser while
-/// its own connection is the one the asks now reach.
-#[tokio::test]
-async fn a_promoted_waiter_is_told_on_its_own_socket() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
-
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
-
-    // **The declare that waits is answered with the role it does not hold**
-    // (#2519), so the promotion below is a change rather than the first word.
-    let waited = loop {
-        match next_server_within(&mut second, 2000).await {
-            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
-            Some(_) => {}
-            None => panic!("a declare that waits is answered with the role frame"),
-        }
-    };
-    assert!(!waited, "precondition: the second connection waits in line");
-
-    // The holder's socket goes, which is the path a crashed client takes.
-    drop(first);
-
-    // The promotion is a frame, not a silence, and it arrives among whatever
-    // else the core says.
-    let promoted = loop {
-        match next_server_within(&mut second, 5000).await {
-            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
-            Some(_) => {}
-            None => panic!("the promotion is said on the wire, not left silent"),
-        }
-    };
-    assert!(promoted, "the survivor is told the role is its own now");
-
-    // And the role is where the asks land, which is the whole of what holding
-    // means: read off the call's destination rather than off the frame alone.
-    let asked = ask(&state, "browser_close", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut second).await;
-    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
-    send(&mut second, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
-    assert_eq!(
-        settled(asked, "the promoted close").await,
-        Ok(parts),
-        "the promoted connection answers the calls the role brought it",
-    );
-}
-
-/// **An ask in flight when a take lands fails loudly, and names the TAKE.**
-/// The displaced holder stops reading asks, so the call it was carrying is
-/// failed by the transport with the take's own sentence - not the relay's
-/// host-gone failure, which would say the holder went away when it was
-/// displaced and is still connected (the test below pins that other path for
-/// a holder that really goes).
-#[tokio::test]
-async fn an_ask_in_flight_fails_when_a_take_moves_the_role() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
-
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
-
-    // The ask reaches the holder and is never answered there.
-    let asked = ask(&state, "browser_close", serde_json::json!({}));
-    let (_id, _, _, _) = browser_ask(&mut first).await;
-
-    send(&mut second, ClientMessage::BrowserTakeRole).await;
-
-    let answer = settled(asked, "the displaced ask").await;
-    let Err(why) = answer else {
-        panic!("the displaced holder's ask cannot settle: {answer:?}");
-    };
-    assert!(
-        why.contains("took the browser role"),
-        "the failure names the take that displaced the holder, not a holder that went away: {why}",
-    );
-}
-
-/// **An ask waiting on an image when a take lands fails with its OWN
-/// sentence.** This is the one failure the relay writes for itself: the call
-/// was fine and the role moved, which is not the same news as a tool error or
-/// a dead holder.
-#[tokio::test]
-async fn an_image_waiting_ask_fails_naming_the_take() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
-
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
-
-    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut first).await;
-    // The answer declares an image; the frame that carries its bytes has not
-    // arrived when the take lands, so the wait is the transport's.
-    send(
-        &mut first,
-        ClientMessage::BrowserAnswer {
-            id,
-            parts: vec![forge_primitives::browser::BrowserPart::Image {
-                mime_type: "image/png".to_owned(),
-                bytes: Vec::new(),
-            }],
-            error: None,
-        },
-    )
-    .await;
-
-    send(&mut second, ClientMessage::BrowserTakeRole).await;
-
-    let answer = settled(asked, "the image-waiting ask").await;
-    let Err(why) = answer else {
-        panic!("an ask waiting on an image cannot settle after a take: {answer:?}");
-    };
-    assert!(why.contains("took the browser role"), "{why}");
-}
-
-/// **The holder going mid-ask fails the call and frees the role.** Dropping
-/// the socket is the path a crashed client takes, and the ask it was carrying
-/// must come back as the host-gone failure rather than hanging.
-#[tokio::test]
-async fn an_ask_in_flight_fails_when_the_holder_drops() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
-
-    let asked = ask(&state, "browser_close", serde_json::json!({}));
-    let (_id, _, _, _) = browser_ask(&mut first).await;
-
-    drop(first);
-
-    let answer = settled(asked, "the orphaned ask").await;
-    let Err(why) = answer else {
-        panic!("the dropped holder's ask cannot settle: {answer:?}");
-    };
-    assert!(why.contains("went away before answering"), "{why}");
-
-    // And the role is free: the next capable client is what gets asked.
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
-    let asked = ask(&state, "browser_close", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut second).await;
-    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
-    send(&mut second, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
-    assert_eq!(
-        settled(asked, "the close").await,
-        Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }]),
-        "the promoted client's parts are what the call settles with",
-    );
-}
-
-/// **A stray or repeated answer cannot settle an ask.** Pairing is by id AND
-/// by the role: a second capable client that is not the holder answering the
-/// holder's id is dropped, an id nobody asked under is dropped, and the
-/// holder's own answer is what settles the call.
-#[tokio::test]
-async fn a_stray_or_repeated_answer_cannot_settle_an_ask() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
-
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
-
-    let asked = ask(&state, "browser_close", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut first).await;
-
-    // A non-holder's answer for the holder's id.
-    send(
-        &mut second,
-        ClientMessage::BrowserAnswer {
-            id,
-            parts: vec![forge_primitives::browser::BrowserPart::Text { text: "stolen".to_owned() }],
-            error: None,
-        },
-    )
-    .await;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert!(!asked.is_finished(), "an answer from a non-holder settles nothing");
-
-    // The holder's answer for an id nobody asked under.
-    send(
-        &mut first,
-        ClientMessage::BrowserAnswer {
-            id: id + 999,
-            parts: vec![forge_primitives::browser::BrowserPart::Text { text: "stray".to_owned() }],
-            error: None,
-        },
-    )
-    .await;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert!(!asked.is_finished(), "an id nobody asked under settles nothing");
-
-    // The holder's own answer, under its own id.
-    send(
-        &mut first,
-        ClientMessage::BrowserAnswer {
-            id,
-            parts: vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }],
-            error: None,
-        },
-    )
-    .await;
-    assert_eq!(
-        settled(asked, "the close").await,
-        Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }]),
-        "and the holder's own parts are what the call settles with",
-    );
-}
-
-/// **The relay the transport registers into is the one the WORKSPACE hands
-/// out.** The ask here is made through `workspace.browser_relay()`, while the
-/// connection took its role through the state the fixture built - so this
-/// passes only if those are one relay. A state holding a relay of its own
-/// would register a host nothing routes to, and every browser tool would
-/// answer "no browser-capable client connected" with a client attached.
-#[tokio::test]
-async fn the_transports_relay_is_the_workspaces_own() {
-    let (url, fleet, _state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-
-    let asked = tokio::spawn({
-        let workspace = fleet.workspace();
-        async move {
-            workspace
-                .browser_relay()
-                .ask(&lead_seat(), "browser_close", serde_json::json!({}))
-                .await
-        }
-    });
-    let (id, _, _, _) = browser_ask(&mut socket).await;
-    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
-    send(&mut socket, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
-    assert_eq!(
-        settled(asked, "the close").await,
-        Ok(parts),
-        "the ask went through the workspace's relay to the connection that took the role",
-    );
-}
-
-/// An image frame before the answer that declares it is a malformed pair, so
-/// the ask FAILS naming it - it is not left waiting on parts no answer has
-/// declared, which is a session's tool call hanging on a promise nothing can
-/// keep.
-#[tokio::test]
-async fn an_image_frame_before_its_answer_fails_the_ask() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-
-    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut socket).await;
-
-    let mut frame = vec![forge_server::transport::frame::Kind::BrowserImage.tag()];
-    frame.extend_from_slice(&id.to_be_bytes());
-    frame.extend_from_slice(&[0x89, 0x50]);
-    socket.send(Message::Binary(frame.into())).await.expect("the image frame sends");
-
-    let refused = settled(asked, "the screenshot").await;
-    assert!(
-        matches!(&refused, Err(why) if why.contains("before the answer")),
-        "the ask fails naming the ordering it met: {refused:?}",
-    );
-}
-
-/// An image frame the server cannot take cannot fill the part waiting for it,
-/// so the ask fails with the refusal rather than waiting for a frame that was
-/// never going to arrive - and **every** ask waiting on an image fails, not
-/// just the one being read: a refused frame names no id, so none of them can
-/// be singled out, and the alternative to failing them all is a session's
-/// tool call waiting on a frame nothing will send.
-#[tokio::test]
-async fn a_refused_image_frame_fails_every_ask_waiting_for_one() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-
-    let first = ask(&state, "browser_take_screenshot", serde_json::json!({}));
-    let (first_id, _, _, _) = browser_ask(&mut socket).await;
-    let second = ask(&state, "browser_take_screenshot", serde_json::json!({}));
-    let (second_id, _, _, _) = browser_ask(&mut socket).await;
-    for id in [first_id, second_id] {
-        send(
-            &mut socket,
-            ClientMessage::BrowserAnswer {
-                id,
-                parts: vec![forge_primitives::browser::BrowserPart::Image {
-                    mime_type: "image/png".to_owned(),
-                    bytes: Vec::new(),
-                }],
-                error: None,
-            },
-        )
-        .await;
-    }
-
-    // A frame cut inside its own header: an id cannot be read from it, so
-    // neither ask can be named as the one it was for.
-    socket
-        .send(Message::Binary(
-            vec![forge_server::transport::frame::Kind::BrowserImage.tag()].into(),
-        ))
-        .await
-        .expect("the short frame sends");
-
-    for (asked, what) in [(first, "the first screenshot"), (second, "the second screenshot")] {
-        let refused = settled(asked, what).await;
-        assert!(
-            matches!(&refused, Err(why) if why.contains("cannot take")),
-            "{what} fails with the frame's own refusal: {refused:?}",
-        );
-    }
-}
-
-/// **The socket carries exactly one byte past the image cap, so an image a
-/// shade too big is refused by the decoder rather than at the socket layer.**
-/// The frame is the socket's own limit - the tag, the id and a payload of
-/// `MAX_IMAGE_BYTES + 1` - and what it must produce is the decoder's refusal
-/// (failing the ask that was waiting for it), with the connection still
-/// there afterwards: a limit that refused it at the socket layer instead
-/// would tear the connection down and tell the asker only that its host went
-/// away.
-#[tokio::test]
-async fn an_image_one_byte_past_the_cap_is_refused_and_the_connection_survives() {
-    use forge_server::transport::frame::{IMAGE_HEADER_BYTES, Kind, MAX_IMAGE_BYTES};
-
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-
-    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut socket).await;
-    send(
-        &mut socket,
-        ClientMessage::BrowserAnswer {
-            id,
-            parts: vec![forge_primitives::browser::BrowserPart::Image {
-                mime_type: "image/png".to_owned(),
-                bytes: Vec::new(),
-            }],
-            error: None,
-        },
-    )
-    .await;
-
-    let mut frame = vec![Kind::BrowserImage.tag()];
-    frame.extend_from_slice(&id.to_be_bytes());
-    frame.extend(std::iter::repeat_n(0_u8, MAX_IMAGE_BYTES + 1));
-    assert_eq!(
-        frame.len(),
-        MAX_IMAGE_BYTES + IMAGE_HEADER_BYTES + 1,
-        "precondition: the frame is the socket's own limit",
-    );
-    socket.send(Message::Binary(frame.into())).await.expect("the socket carries its own limit");
-
-    let refused = settled(asked, "the screenshot").await;
-    assert!(
-        matches!(&refused, Err(why) if why.contains("past the image frame cap")),
-        "the decoder refuses it, naming the cap: {refused:?}",
-    );
-
-    // The connection is still there: another ask is answered on it, which a
-    // socket-layer refusal would have taken with it.
-    let next = ask(&state, "browser_close", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut socket).await;
-    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
-    send(&mut socket, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
-    assert_eq!(settled(next, "the close").await, Ok(parts), "the connection survived the refusal");
-}
-
 /// How long one frame of the giant handover may take to cross: **the batch's
 /// own ceiling for an update it is holding**
 /// (`forge_server::transport::batch::FLUSH_CEILING`, the cap on how long a
@@ -8669,12 +7166,7 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     // The read a client makes at launch: the seat's own subscribe.
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
@@ -8784,16 +7276,7 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
 
     // And the connection is still there: another read is answered on it,
     // which the client's own refusal of the frame took with it live.
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        },
-    )
-    .await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home, "the connection survived the giant seat's history");
 }
@@ -8905,12 +7388,7 @@ async fn a_windowed_connect_still_gives_the_walk_its_floor() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
@@ -8959,517 +7437,6 @@ async fn a_windowed_connect_still_gives_the_walk_its_floor() {
         crossed,
         "the walk crosses into the transcript below the window rather than stopping at its \
          front: with no floor carried, the window reads as the whole history",
-    );
-}
-
-/// **A dictation refusal keeps its hands off the image waits.** The two
-/// streams share a connection and their refusals are different news: an
-/// oversized audio payload says nothing about an ask waiting for a
-/// screenshot, so that ask is NOT failed by it - and it still settles when
-/// its own bytes arrive.
-#[tokio::test]
-async fn a_dictation_refusal_does_not_fail_an_image_waiting_ask() {
-    use forge_server::transport::frame::{Kind, MAX_PAYLOAD_BYTES};
-
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-
-    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut socket).await;
-    send(
-        &mut socket,
-        ClientMessage::BrowserAnswer {
-            id,
-            parts: vec![forge_primitives::browser::BrowserPart::Image {
-                mime_type: "image/png".to_owned(),
-                bytes: Vec::new(),
-            }],
-            error: None,
-        },
-    )
-    .await;
-
-    // The microphone's stream, one byte past its own cap: a refusal the
-    // decoder makes about AUDIO.
-    let mut refuse = vec![Kind::Dictation.tag()];
-    refuse.extend(std::iter::repeat_n(0_u8, MAX_PAYLOAD_BYTES + 1));
-    socket.send(Message::Binary(refuse.into())).await.expect("the dictation frame sends");
-
-    // The image ask is untouched: its own bytes arrive and settle it.
-    let mut bytes = vec![Kind::BrowserImage.tag()];
-    bytes.extend_from_slice(&id.to_be_bytes());
-    bytes.extend_from_slice(&[1, 2, 3]);
-    socket.send(Message::Binary(bytes.into())).await.expect("the image frame sends");
-
-    let settled_answer = settled(asked, "the screenshot").await;
-    assert!(
-        settled_answer.is_ok(),
-        "the audio refusal did not fail the image wait: {settled_answer:?}",
-    );
-}
-
-/// Two asks in flight at once, answered in the other order: each is settled
-/// with its OWN parts, because the id - not the arrival order - is what pairs
-/// an answer with its ask.
-#[tokio::test]
-async fn two_asks_in_flight_are_settled_by_their_own_answers() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-
-    let first = ask(&state, "browser_navigate", serde_json::json!({ "url": "one" }));
-    let second = ask(&state, "browser_navigate", serde_json::json!({ "url": "two" }));
-    let (first_id, _, _, _) = browser_ask(&mut socket).await;
-    let (second_id, _, _, _) = browser_ask(&mut socket).await;
-    assert_ne!(first_id, second_id, "two asks are two ids");
-
-    let parts =
-        |text: &str| vec![forge_primitives::browser::BrowserPart::Text { text: text.to_owned() }];
-    // The second one answered first: the ids are what keep them apart.
-    send(
-        &mut socket,
-        ClientMessage::BrowserAnswer { id: second_id, parts: parts("second"), error: None },
-    )
-    .await;
-    send(
-        &mut socket,
-        ClientMessage::BrowserAnswer { id: first_id, parts: parts("first"), error: None },
-    )
-    .await;
-
-    assert_eq!(settled(second, "the second ask").await, Ok(parts("second")));
-    assert_eq!(settled(first, "the first ask").await, Ok(parts("first")));
-}
-
-/// One answer carrying two image parts, whose frames fill them in the order
-/// the parts are listed - the frames say nothing about which part they are
-/// for, so the pair's own order is what decides.
-#[tokio::test]
-async fn two_images_of_one_answer_are_filled_in_their_own_order() {
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-
-    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut socket).await;
-    send(
-        &mut socket,
-        ClientMessage::BrowserAnswer {
-            id,
-            parts: vec![
-                forge_primitives::browser::BrowserPart::Image {
-                    mime_type: "image/png".to_owned(),
-                    bytes: Vec::new(),
-                },
-                forge_primitives::browser::BrowserPart::Image {
-                    mime_type: "image/jpeg".to_owned(),
-                    bytes: Vec::new(),
-                },
-            ],
-            error: None,
-        },
-    )
-    .await;
-
-    for bytes in [[0x01_u8, 0x02], [0x03, 0x04]] {
-        let mut frame = vec![forge_server::transport::frame::Kind::BrowserImage.tag()];
-        frame.extend_from_slice(&id.to_be_bytes());
-        frame.extend_from_slice(&bytes);
-        socket.send(Message::Binary(frame.into())).await.expect("the image frame sends");
-    }
-
-    let answer = settled(asked, "the screenshot").await;
-    assert_eq!(
-        answer,
-        Ok(vec![
-            forge_primitives::browser::BrowserPart::Image {
-                mime_type: "image/png".to_owned(),
-                bytes: vec![0x01, 0x02],
-            },
-            forge_primitives::browser::BrowserPart::Image {
-                mime_type: "image/jpeg".to_owned(),
-                bytes: vec![0x03, 0x04],
-            },
-        ]),
-        "the first frame filled the first part, the second the second",
-    );
-}
-
-/// **The role frees when its holder goes, and the next capable client takes
-/// it.** This is the path a client restart rides, and a role that stayed held
-/// would make every browser tool answer "no browser-capable client connected"
-/// while a client sat attached.
-///
-/// **One subscribe, and no failing ask before it.** The role has to be free
-/// by the time this client offers to take it: an unwanted retry, or a first
-/// ask that fails and frees it on the way, would let this pass with the
-/// holder's role never given back on its own.
-#[tokio::test]
-async fn a_second_capable_client_takes_the_role_when_its_holder_goes() {
-    let (url, fleet, state) = a_server_with_state().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
-
-    // The holder goes, the way a client quitting does, and the server is
-    // given the hop it takes to notice - the file's own wait, which reaps on
-    // an emit until the count falls.
-    let attached = fleet.subscriber_count();
-    drop(first);
-    assert!(
-        wait_for_the_server_to_notice(&fleet, attached).await,
-        "the server noticed the holder went rather than leaving it counted",
-    );
-
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
-
-    let asked = ask(&state, "browser_close", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut second).await;
-    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
-    send(&mut second, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
-    assert!(
-        settled(asked, "the close").await.is_ok(),
-        "the ask routed to the new holder is settled by its answer",
-    );
-}
-
-/// **A capable client that offered while the role was held takes it when the
-/// holder goes, without declaring anything again.** One subscribe each is the
-/// whole of this test: a waiter left waiting is a client attached and capable
-/// while every browser tool answers "no browser-capable client connected" -
-/// which is a lie about the machine, not a state a person can act on.
-#[tokio::test]
-async fn a_waiting_capable_client_takes_the_role_when_the_holder_goes() {
-    let (url, fleet, state) = a_server_with_state().await;
-    let mut first = connect(&url).await;
-    send(
-        &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
-
-    // The waiter declares WHILE the role is held, and that is the only
-    // declaration it makes.
-    let mut second = connect(&url).await;
-    send(
-        &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
-
-    let attached = fleet.subscriber_count();
-    drop(first);
-    assert!(
-        wait_for_the_server_to_notice(&fleet, attached).await,
-        "the server noticed the holder went",
-    );
-
-    let asked = ask(&state, "browser_close", serde_json::json!({}));
-    let (id, _, _, _) = browser_ask(&mut second).await;
-    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
-    send(&mut second, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
-    assert_eq!(
-        asked.await.expect("the asker task ran"),
-        Ok(parts),
-        "the role moved to the waiter, so the ask reached it",
-    );
-}
-
-/// **A capable peer that stops answering is reaped, the role it held passes
-/// on, and the trail says which side ended it.** A connection whose peer
-/// vanished without closing reads nothing for ever, so the browser role it
-/// holds sits with a corpse and the live client behind it waits. The live
-/// control beside it is the other half: a peer that answers each ping is NOT
-/// cut, so the bound is silence being noticed rather than every connection
-/// expiring.
-///
-/// **The pair is shortened and the clock is real**, so this exercises the
-/// decision, the promotion and the lines - not the shipping threshold, which
-/// `the_shipping_heartbeat_is_the_documented_pair` pins.
-#[tokio::test]
-async fn a_silent_capable_client_is_reaped_and_the_role_passes_on() {
-    install_capture();
-    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-    // Wide against a loaded runner: the live control's own answers must not
-    // be lost to one scheduling stall, or the negative half flakes.
-    let dead = Duration::from_millis(1_200);
-    let (url, state) =
-        serve_fleet(&fleet, Heartbeat { every: Duration::from_millis(200), dead }).await;
-
-    // The holder declares, reads the answer it is owed, and then stops
-    // reading: the server's pings are never drained, so its side hears
-    // nothing more.
-    let mut silent = connect(&url).await;
-    send(
-        &mut silent,
-        ClientMessage::Subscribe {
-            what: Subject::Usage,
-            answering: false,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut silent).await;
-    let held = state.browser.testing_host().expect("the capable connection holds the role");
-
-    // The live control: a second capable connection, read start to finish so
-    // its own ping answers go out.
-    let mut live = connect(&url).await;
-    send(
-        &mut live,
-        ClientMessage::Subscribe {
-            what: Subject::Usage,
-            answering: false,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut live).await;
-    let waiter = *state
-        .browser
-        .testing_waiting_ids()
-        .first()
-        .expect("the second capable connection is in line");
-    let pump = tokio::spawn(async move { while live.next().await.is_some() {} });
-
-    // **The reap.** The role leaves the silent holder inside the bound.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while state.browser.testing_host() == Some(held) {
-        assert!(Instant::now() < deadline, "the silent holder was never reaped");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    // **The promotion.** The client already in line holds it, and the line is
-    // empty.
-    assert_eq!(
-        state.browser.testing_host(),
-        Some(waiter),
-        "the role passed to the client already in line",
-    );
-    assert_eq!(state.browser.testing_waiting(), 0, "and nothing is left waiting");
-
-    // **The live control is not itself reaped.** It answered the pings that
-    // cut the silent holder, so a second dead window must leave it in place -
-    // otherwise this test would pass on a keepalive that cuts everything.
-    let settled = Instant::now() + dead + Duration::from_millis(300);
-    while Instant::now() < settled {
-        assert_eq!(
-            state.browser.testing_host(),
-            Some(waiter),
-            "the peer that answers its pings kept the role through a second window",
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    pump.abort();
-
-    // **The trail.** The reap names the connection, and the role's release
-    // names the keepalive rather than a client close or a socket failure -
-    // which is the whole point of the reason.
-    let caught = captured();
-    let reap = caught
-        .lines()
-        .find(|line| line.contains("\"connection_reaped\""))
-        .unwrap_or_else(|| panic!("a silent peer must be reaped by name; caught: {caught}"));
-    let parsed: serde_json::Value = serde_json::from_str(reap).expect("the line is JSON");
-    assert_eq!(
-        parsed["client"],
-        serde_json::json!(held),
-        "the reap names the connection that went silent: {reap}",
-    );
-    assert!(parsed.get("waited_ms").is_some(), "and how long the ping went unanswered: {reap}");
-
-    // Parsed and matched on the field, not on a substring: connection 1 is a
-    // prefix of connection 12.
-    let released = caught
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find(|record| {
-            record["event_name"] == "browser_host_released"
-                && record["client"] == serde_json::json!(held)
-        })
-        .unwrap_or_else(|| panic!("the reaped holder's release is logged; caught: {caught}"));
-    assert_eq!(
-        released["reason"], "reaped",
-        "the release names the keepalive, not a client close: {released}",
-    );
-    assert!(released.get("held_ms").is_some(), "and how long the role was held: {released}");
-}
-
-/// **A client that closes its connection reads as `closed`, not `failed`.**
-/// The release's reason is what tells a reader whether the client left on
-/// purpose or its socket broke, and the two arms are one `if` apart, so each
-/// needs a test: the keepalive's own reason is pinned in the reap test.
-#[tokio::test]
-async fn a_client_that_closes_its_socket_releases_the_role_as_closed() {
-    install_capture();
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Usage,
-            answering: false,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-    let held = state.browser.testing_host().expect("the capable connection holds the role");
-
-    // **Drain the answer's tail before closing.** The grant and the seat set
-    // follow the snapshot; a close sent while they sit unread makes the drop
-    // a reset, and a reset is `failed` by definition - which is not the close
-    // this test is about.
-    let _ = next_server_within(&mut socket, 500).await;
-    let _ = next_server_within(&mut socket, 500).await;
-
-    // A clean close: the close frame, the handshake completed, then dropped.
-    socket.send(Message::Close(None)).await.expect("the close frame goes");
-    let _ = tokio::time::timeout(Duration::from_secs(2), async {
-        while socket.next().await.is_some() {}
-    })
-    .await;
-    drop(socket);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while state.browser.testing_host().is_some() {
-        assert!(Instant::now() < deadline, "the role was given back after the client closed");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    let caught = captured();
-    let released = caught
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find(|record| {
-            record["event_name"] == "browser_host_released"
-                && record["client"] == serde_json::json!(held)
-        })
-        .unwrap_or_else(|| panic!("the close releases the role and logs it; caught: {caught}"));
-    assert_eq!(
-        released["reason"], "closed",
-        "a client closing its connection is not a socket failure: {released}",
-    );
-}
-
-/// **A socket that fails reads as `failed`, not as a client closing.** The
-/// two arms are one `if` apart, so each needs a test: this one makes the
-/// server's read fail by sending a text frame whose payload is not UTF-8 -
-/// a protocol failure, which no close handshake produced.
-#[tokio::test]
-async fn a_socket_that_fails_releases_the_role_as_failed() {
-    use tokio_tungstenite::tungstenite::protocol::frame::Frame;
-    use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data as OpData, OpCode};
-
-    install_capture();
-    let (url, _fleet, state) = a_server_with_state().await;
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Usage,
-            answering: false,
-            browser: true,
-            declare: false,
-        },
-    )
-    .await;
-    let (_, _, _) = snapshot_answering(&mut socket).await;
-    let held = state.browser.testing_host().expect("the capable connection holds the role");
-    // Drain the answer's tail, so the failure is the frame below rather than
-    // a reset from unread bytes.
-    let _ = next_server_within(&mut socket, 500).await;
-    let _ = next_server_within(&mut socket, 500).await;
-
-    // A masked text frame carrying 0xff: valid WebSocket framing, invalid
-    // UTF-8, so the server's own read answers an error.
-    let invalid = Message::Frame(Frame::message(vec![0xff], OpCode::Data(OpData::Text), true));
-    socket.send(invalid).await.expect("the invalid frame goes");
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while state.browser.testing_host().is_some() {
-        assert!(Instant::now() < deadline, "the failed connection gave its role back");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    let caught = captured();
-    let released = caught
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find(|record| {
-            record["event_name"] == "browser_host_released"
-                && record["client"] == serde_json::json!(held)
-        })
-        .unwrap_or_else(|| panic!("the failure releases the role and logs it; caught: {caught}"));
-    assert_eq!(
-        released["reason"], "failed",
-        "a socket that errored is not a client closing: {released}",
     );
 }
 
@@ -9540,12 +7507,7 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
     };
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: false,
-            declare: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (subject, _data, _passed) = snapshot_answering(&mut socket).await;
@@ -9628,61 +7590,1052 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         subscribed["peer"], parsed["peer"],
         "the attach and the open name the same client: {subscribed} beside {parsed}",
     );
-    assert_eq!(subscribed["declare"], false, "an open's attach is not a declare: {subscribed}");
 }
 
-/// **A declare logs its client but opens nothing (#2374, #2506).** It
-/// re-states the browser capability against a subject the client already
-/// watches, holding no watch and no seat - no page came on screen, so the
-/// open line must not fire for it, while the attach's own record still has to
-/// (a declare is one of the attachments the watch cannot otherwise name). The
-/// counts are taken around the ask rather than over the whole capture, so a
-/// neighbouring record cannot be read as this one's.
-#[tokio::test]
-async fn a_declare_subscribe_logs_its_client_but_no_open() {
-    install_capture();
-    let (url, _fleet, _state) = a_server_with_state().await;
-    let opens_before = captured().matches("\"session_open\"").count();
-    let writes_before = captured().matches("\"frame_write\"").count();
-    let clients_before = captured().matches("\"client_subscribed\"").count();
+/// The server's browser fleet, stubbed at the port: frames and viewer state
+/// are watches the test drives, and input is recorded under the controller
+/// rule the real service applies.
+struct StubBrowser {
+    frames: tokio::sync::watch::Sender<Option<forge_primitives::browser::BrowserFrame>>,
+    view: tokio::sync::watch::Sender<forge_primitives::browser::BrowserViewState>,
+    failures: tokio::sync::watch::Sender<Option<String>>,
+    controller: Mutex<Option<u64>>,
+    viewers: Mutex<std::collections::HashSet<u64>>,
+    inputs: Mutex<Vec<(u64, u64)>>,
+    resizes: Mutex<Vec<Resize>>,
+    nav: tokio::sync::watch::Sender<Option<forge_primitives::browser::BrowserNavState>>,
+    files: tokio::sync::watch::Sender<Option<forge_primitives::browser::BrowserFileAsk>>,
+    downloads: tokio::sync::broadcast::Sender<forge_primitives::browser::BrowserDownload>,
+    audio: tokio::sync::broadcast::Sender<forge_primitives::browser::BrowserAudio>,
+    /// Every file answer the server handed the fleet: id and file count.
+    answers: Mutex<Vec<(u64, usize)>>,
+    closed: Mutex<Vec<String>>,
+    deleted: Mutex<Vec<String>>,
+    detached: Mutex<Vec<u64>>,
+}
 
+impl StubBrowser {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            frames: tokio::sync::watch::channel(None).0,
+            view: tokio::sync::watch::channel(
+                forge_primitives::browser::BrowserViewState::default(),
+            )
+            .0,
+            failures: tokio::sync::watch::channel(None).0,
+            controller: Mutex::new(None),
+            viewers: Mutex::new(std::collections::HashSet::new()),
+            inputs: Mutex::new(Vec::new()),
+            resizes: Mutex::new(Vec::new()),
+            nav: tokio::sync::watch::channel(None).0,
+            files: tokio::sync::watch::channel(None).0,
+            downloads: tokio::sync::broadcast::channel(4).0,
+            audio: tokio::sync::broadcast::channel(4).0,
+            answers: Mutex::new(Vec::new()),
+            closed: Mutex::new(Vec::new()),
+            deleted: Mutex::new(Vec::new()),
+            detached: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn publish(&self) {
+        let controller = *self.controller.lock().expect("the stub's controller");
+        let viewers =
+            u32::try_from(self.viewers.lock().expect("the stub's viewers").len()).unwrap_or(0);
+        self.view.send_replace(forge_primitives::browser::BrowserViewState { controller, viewers });
+    }
+}
+
+/// One resize the stub was asked for: profile, viewer, device pixels, ratio.
+type Resize = (String, u64, u32, u32, f64);
+
+#[async_trait::async_trait]
+impl forge_workspace::browser::BrowserHost for StubBrowser {
+    async fn call(
+        &self,
+        _seat: &SessionSlot,
+        _tool: &str,
+        _args: serde_json::Value,
+    ) -> Result<Vec<forge_primitives::browser::BrowserPart>, String> {
+        Err("the stub drives nothing".to_owned())
+    }
+
+    async fn attach(
+        &self,
+        _viewer: u64,
+        _seat: &SessionSlot,
+        _profile: Option<&str>,
+    ) -> Result<forge_workspace::browser::BrowserAttachment, String> {
+        // One name is the refusal's own: a profile the server cannot attach.
+        if _profile == Some("held") {
+            return Err("the profile 'held' belongs to another seat".to_owned());
+        }
+        // The real service counts its viewers; the stub does the same so a
+        // detach can be seen in the state push.
+        self.viewers.lock().expect("the stub's viewers").insert(_viewer);
+        self.publish();
+        Ok(forge_workspace::browser::BrowserAttachment {
+            // **The stub resolves the default the way the service does**: an
+            // omitted profile is the seat's own, and the shared browser is
+            // named `@shared`. The stub has no seat-naming, so it answers the
+            // shared key for an omitted name.
+            key: _profile.unwrap_or("@shared").to_owned(),
+            id: 5,
+            frames: self.frames.subscribe(),
+            view: self.view.subscribe(),
+            nav: self.nav.subscribe(),
+            failures: self.failures.subscribe(),
+            files: self.files.subscribe(),
+            downloads: self.downloads.subscribe(),
+            audio: self.audio.subscribe(),
+        })
+    }
+
+    async fn answer_files(
+        &self,
+        _profile: &str,
+        id: u64,
+        files: Vec<forge_primitives::browser::BrowserUpload>,
+    ) -> Result<(), String> {
+        self.answers.lock().expect("the stub's answers").push((id, files.len()));
+        Ok(())
+    }
+
+    async fn detach(&self, viewer: u64) {
+        self.detached.lock().expect("the stub's detaches").push(viewer);
+        self.viewers.lock().expect("the stub's viewers").remove(&viewer);
+        let mut controller = self.controller.lock().expect("the stub's controller");
+        if *controller == Some(viewer) {
+            *controller = None;
+        }
+        drop(controller);
+        self.publish();
+    }
+
+    async fn input(
+        &self,
+        _profile: &str,
+        viewer: u64,
+        seq: u64,
+        _event: &forge_primitives::browser::BrowserInputEvent,
+    ) -> Result<(), String> {
+        if *self.controller.lock().expect("the stub's controller") != Some(viewer) {
+            return Err("this viewer is not the browser's controller".to_owned());
+        }
+        self.inputs.lock().expect("the stub's inputs").push((viewer, seq));
+        Ok(())
+    }
+
+    async fn take_control(&self, _profile: &str, viewer: u64) -> Result<(), String> {
+        *self.controller.lock().expect("the stub's controller") = Some(viewer);
+        self.publish();
+        Ok(())
+    }
+
+    async fn release_control(&self, _profile: &str, viewer: u64) {
+        let mut controller = self.controller.lock().expect("the stub's controller");
+        if *controller == Some(viewer) {
+            *controller = None;
+            drop(controller);
+            self.publish();
+        }
+    }
+
+    async fn nav(
+        &self,
+        _profile: &str,
+        viewer: u64,
+        _back: bool,
+    ) -> Result<forge_primitives::browser::BrowserNavState, String> {
+        // The real service's rule: the controller moves the page, a watcher
+        // is refused before the history is read.
+        if *self.controller.lock().expect("the stub's controller") != Some(viewer) {
+            return Err("this viewer is not the browser's controller".to_owned());
+        }
+        Ok(forge_primitives::browser::BrowserNavState::default())
+    }
+
+    async fn nav_state(
+        &self,
+        _profile: &str,
+    ) -> Option<forge_primitives::browser::BrowserNavState> {
+        Some(forge_primitives::browser::BrowserNavState::default())
+    }
+
+    async fn resize(&self, profile: &str, viewer: u64, width: u32, height: u32, scale: f64) {
+        self.resizes.lock().expect("the stub's resizes").push((
+            profile.to_owned(),
+            viewer,
+            width,
+            height,
+            scale,
+        ));
+    }
+
+    async fn profiles(
+        &self,
+        seat: &SessionSlot,
+    ) -> Result<Vec<forge_primitives::browser::BrowserProfileRow>, String> {
+        Ok(vec![
+            forge_primitives::browser::BrowserProfileRow {
+                name: "@shared".to_owned(),
+                owner: None,
+                up: true,
+                windowed: true,
+                busy: true,
+                closed: false,
+                unreadable: false,
+            },
+            forge_primitives::browser::BrowserProfileRow {
+                name: "hunt".to_owned(),
+                owner: Some(seat.clone()),
+                up: false,
+                windowed: false,
+                busy: false,
+                closed: true,
+                unreadable: false,
+            },
+        ])
+    }
+
+    async fn close_profile(&self, _seat: &SessionSlot, name: &str) -> Result<(), String> {
+        self.closed.lock().expect("the stub's closes").push(name.to_owned());
+        Ok(())
+    }
+
+    async fn delete_profile(&self, _seat: &SessionSlot, name: &str) -> Result<(), String> {
+        if name == "held" {
+            return Err("the profile 'held' belongs to another seat".to_owned());
+        }
+        self.deleted.lock().expect("the stub's deletes").push(name.to_owned());
+        Ok(())
+    }
+
+    async fn sweep_seats(&self, _seats: &[SessionSlot]) {}
+
+    async fn stop(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// **A refused attach answers the client that asked.** Without an answer the
+/// surface went live over nothing and the page sat under its bar with no
+/// picture and no reason; the reply is what carries the server's sentence
+/// into the surface's failed state.
+#[tokio::test]
+async fn a_refused_attach_answers_its_reply() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
     let mut socket = connect(&url).await;
+
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            browser: true,
-            declare: true,
+        ClientMessage::BrowserView {
+            seat: lead_seat(),
+            profile: Some("held".to_owned()),
+            reply_to: Some(41),
         },
     )
     .await;
-    let (subject, _data, _passed) = snapshot_answering(&mut socket).await;
+
+    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
+        panic!("a refused attach answers the asker")
+    };
+    assert_eq!(reply_to, 41, "under the id the asker minted");
+    assert_eq!(body["ok"], false, "and it says the attach did not happen");
+    let why = body["why"].as_str().expect("the server's own words");
+    assert!(why.contains("held") && why.contains("another seat"), "{why}");
+}
+
+/// **Lowering the takeover detaches the viewer, and its role with it.** An
+/// attached viewer counts as a use in the idle clock, so a lowered surface
+/// that stayed attached kept its profile warm for ever and left the
+/// controller role held by nobody's surface.
+#[tokio::test]
+async fn lowering_detaches_the_viewer_and_releases_its_role() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { id, viewer, .. } = next_server(&mut socket).await else {
+        panic!("an attach is answered with the viewer state")
+    };
+    let _ = next_server(&mut socket).await; // the nav state behind it
+    send(&mut socket, ClientMessage::BrowserControl { take: true }).await;
+    let ServerMessage::BrowserView { controller, .. } = next_server(&mut socket).await else {
+        panic!("the take answers with the state")
+    };
+    assert_eq!(controller, Some(viewer), "this viewer holds the role");
+
+    // **No state frame is owed to the client that lowered its own surface**;
+    // the re-attach's count is the proof the detach took the viewer off.
+    send(&mut socket, ClientMessage::BrowserDetach).await;
+
+    // A fresh attach starts from zero, not from a phantom count.
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { id: again, viewers, controller, .. } =
+        next_server(&mut socket).await
+    else {
+        panic!("the re-attach answers with the state")
+    };
+    assert_eq!((again, viewers, controller), (id, 1, None), "one viewer, and the role free");
+}
+
+/// **The controller's surface size reaches the browser it is watching.** The
+/// client writes these fields by hand, and a resize nothing forwards leaves
+/// the page laid out for a window that is not on screen.
+#[tokio::test]
+async fn a_resize_reaches_the_browser_it_is_watching() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { viewer, .. } = next_server(&mut socket).await else {
+        panic!("an attach is answered with the viewer state")
+    };
+    let _ = next_server(&mut socket).await; // the nav state behind it
+    send(&mut socket, ClientMessage::BrowserResize { width: 1600, height: 1200, scale: 2.0 }).await;
+
+    // The connection handles one message at a time, so an answer to the next
+    // one proves the resize was taken before it arrives here.
+    send(&mut socket, ClientMessage::BrowserControl { take: true }).await;
+    let _ = next_server(&mut socket).await;
+    let resizes = stub.resizes.lock().expect("the stub's resizes").clone();
+    assert_eq!(
+        resizes,
+        vec![("@shared".to_owned(), viewer, 1600, 1200, 2.0)],
+        "the surface size reached the viewed profile, under this viewer"
+    );
+}
+
+/// **A profile's close and delete answer through their reply.** They carry
+/// a verdict sender the wire deliberately omits, so a generic command form
+/// that listed neither hung its caller or got the subscription's answer
+/// instead.
+#[tokio::test]
+async fn a_profile_close_and_delete_answer_through_their_reply() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::BrowserProfileClose {
+                seat: lead_seat(),
+                name: "hunt".to_owned(),
+                verdict: None,
+            }),
+            reply_to: Some(51),
+        },
+    )
+    .await;
+    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
+        panic!("a close answers its asker")
+    };
+    assert_eq!(reply_to, 51, "under the id the asker minted");
+    assert_eq!(body, serde_json::json!({ "Ok": null }), "an ok close answers the unit result");
+    assert_eq!(stub.closed.lock().expect("the stub's closes").as_slice(), ["hunt"]);
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::BrowserProfileDelete {
+                seat: lead_seat(),
+                name: "held".to_owned(),
+                verdict: None,
+            }),
+            reply_to: Some(52),
+        },
+    )
+    .await;
+    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
+        panic!("a refused delete answers its asker")
+    };
+    assert_eq!(reply_to, 52, "under the id the asker minted");
+    let why =
+        body.get("Err").and_then(serde_json::Value::as_str).expect("the refusal's own sentence");
+    assert!(why.contains("belongs to another seat"), "{why}");
+}
+
+/// **Only the controller moves the page.** The history arrows are drawn on
+/// every viewer's surface, so without the role check a watcher's click moved
+/// the page under the person driving it.
+#[tokio::test]
+async fn a_watcher_cannot_move_the_page() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+
+    let mut controller = connect(&url).await;
+    send(
+        &mut controller,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { viewer: holder, .. } = next_server(&mut controller).await
+    else {
+        panic!("an attach is answered with the viewer state")
+    };
+    let _ = next_server(&mut controller).await; // the nav state behind it
+    send(&mut controller, ClientMessage::BrowserControl { take: true }).await;
+    let ServerMessage::BrowserView { controller: who, .. } = next_server(&mut controller).await
+    else {
+        panic!("the take answers with the state")
+    };
+    assert_eq!(who, Some(holder), "the first viewer holds the role");
+
+    let mut watcher = connect(&url).await;
+    send(
+        &mut watcher,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { viewer: second, controller: who, .. } =
+        next_server(&mut watcher).await
+    else {
+        panic!("the watcher's attach answers with the state")
+    };
+    assert_eq!(who, Some(holder), "the watcher joins under the same controller");
+    let _ = next_server(&mut watcher).await; // the nav state behind it
+
+    send(&mut watcher, ClientMessage::BrowserNav { back: true }).await;
+    let ServerMessage::Error { what, why, .. } = next_server(&mut watcher).await else {
+        panic!("a watcher's move is refused, not answered")
+    };
+    assert_eq!(what, "browser_nav", "the refusal names the move");
+    assert!(why.contains("not the browser's controller"), "in the server's own words: {why}");
+
+    // The role is what was missing: with it taken, the same move lands.
+    send(&mut watcher, ClientMessage::BrowserControl { take: true }).await;
+    let ServerMessage::BrowserView { controller: who, .. } = next_server(&mut watcher).await else {
+        panic!("the take answers with the state")
+    };
+    assert_eq!(who, Some(second), "the role moved to this viewer");
+    send(&mut watcher, ClientMessage::BrowserNav { back: true }).await;
     assert!(
-        matches!(subject, Subject::Session(_)),
-        "a declare is still answered with its subject's snapshot",
+        matches!(next_server(&mut watcher).await, ServerMessage::BrowserNavState { .. }),
+        "the controller's move is answered with the arrows",
+    );
+}
+
+/// **A browser that stops is said once, and the viewer goes with it.** The
+/// connection outlives the failed surface; a viewer left on the profile kept
+/// it warm and its role held by nobody's surface.
+#[tokio::test]
+async fn a_host_death_fails_the_surface_and_drops_the_viewer() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { id, viewer, .. } = next_server(&mut socket).await else {
+        panic!("an attach is answered with the viewer state")
+    };
+    let _ = next_server(&mut socket).await; // the nav state behind it
+
+    stub.failures.send_replace(Some("the host died".to_owned()));
+    let ServerMessage::BrowserSurfaceFailed { id: failed, reason } = next_server(&mut socket).await
+    else {
+        panic!("the failure is said, not left as a frozen frame")
+    };
+    assert_eq!(
+        (failed, reason.as_str()),
+        (id, "the host died"),
+        "the failed profile and its reason"
+    );
+    assert!(
+        !stub.viewers.lock().expect("the stub's viewers").contains(&viewer),
+        "the viewer came off the profile with the failure",
+    );
+    assert!(
+        stub.detached.lock().expect("the stub's detaches").contains(&viewer),
+        "through the host's own detach",
     );
 
-    let caught = captured();
-    assert_eq!(
-        caught.matches("\"session_open\"").count(),
-        opens_before,
-        "a declare is no page opening, so it logs no open; caught: {caught}",
+    // A second push for the profile this connection no longer views is not a
+    // second failure: there is nothing left to draw it on.
+    stub.failures.send_replace(Some("again".to_owned()));
+    assert!(
+        next_server_within(&mut socket, 300).await.is_none(),
+        "one failure per surface, not one per push",
     );
-    assert_eq!(
-        caught.matches("\"frame_write\"").count(),
-        writes_before,
-        "and no frame was written for it, so it logs no write; caught: {caught}",
+}
+
+/// **A viewer that attaches is sent the frame the profile already holds.**
+/// The newest frame is a value rather than an event, so without this a
+/// surface opening on a still page drew nothing until the next paint.
+#[tokio::test]
+async fn an_attaching_viewer_is_sent_the_kept_frame() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+    let encoded = vec![5_u8, 4, 3, 2];
+    stub.frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
+        profile: 5,
+        seq: 3,
+        encoded: encoded.clone(),
+    }));
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { id, .. } = next_server(&mut socket).await else {
+        panic!("an attach is answered with the viewer state")
+    };
+    let bytes = loop {
+        let msg = socket.next().await.expect("a message").expect("no error");
+        if let Message::Binary(bytes) = msg {
+            break bytes;
+        }
+    };
+    assert_eq!(bytes[0], forge_server::transport::frame::Kind::BrowserFrame.tag());
+    assert_eq!(&bytes[1..], &encoded[..], "the kept frame crosses untouched");
+    let ServerMessage::BrowserNavState { id: nav_id, .. } = next_server(&mut socket).await else {
+        panic!("the attach is followed by the page's history")
+    };
+    assert_eq!((nav_id, id), (5, 5), "all three name the viewed profile");
+}
+
+/// **The strip's read answers through its reply**, with the rows the host
+/// serves for this seat: the shared browser and the seat's own profiles.
+#[tokio::test]
+async fn a_strip_read_answers_the_profiles_it_may_see() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(&mut socket, ClientMessage::BrowserProfiles { seat: lead_seat(), reply_to: Some(9) })
+        .await;
+
+    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
+        panic!("the strip's read answers its reply")
+    };
+    assert_eq!(reply_to, 9);
+    assert_eq!(body["ok"], true);
+    let rows = body["rows"].as_array().expect("the rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["name"], "@shared");
+    assert_eq!(rows[0]["up"], true);
+    assert_eq!(rows[1]["name"], "hunt");
+    assert_eq!(rows[1]["closed"], true, "a profile only on disk is a closed row");
+    assert_eq!(rows[1]["owner"]["label"], "lead", "owned by the seat that asked");
+}
+
+/// **Close and delete answer through their reply**, and a refusal carries
+/// the server's own words so the row that stayed can draw them.
+#[tokio::test]
+async fn a_strip_close_and_delete_answer_and_a_refusal_carries_its_why() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserProfileClose {
+            seat: lead_seat(),
+            name: "hunt".to_owned(),
+            reply_to: Some(3),
+        },
+    )
+    .await;
+    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
+        panic!("a close answers its reply")
+    };
+    assert_eq!((reply_to, body["ok"].clone()), (3, serde_json::json!(true)));
+    assert_eq!(stub.closed.lock().expect("the stub's closes").as_slice(), ["hunt"]);
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserProfileDelete {
+            seat: lead_seat(),
+            name: "held".to_owned(),
+            reply_to: Some(4),
+        },
+    )
+    .await;
+    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
+        panic!("a refused delete answers its reply")
+    };
+    assert_eq!((reply_to, body["ok"].clone()), (4, serde_json::json!(false)));
+    let why = body["why"].as_str().expect("the server's words");
+    assert!(why.contains("belongs to"), "{why}");
+    assert!(stub.deleted.lock().expect("the stub's deletes").is_empty());
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserProfileDelete {
+            seat: lead_seat(),
+            name: "hunt".to_owned(),
+            reply_to: Some(5),
+        },
+    )
+    .await;
+    let ServerMessage::Reply { body, .. } = next_server(&mut socket).await else {
+        panic!("a delete answers its reply")
+    };
+    assert_eq!(body["ok"], true);
+    assert_eq!(stub.deleted.lock().expect("the stub's deletes").as_slice(), ["hunt"]);
+}
+
+/// **Two viewers see one controller, and only that viewer's input lands.**
+/// The role is a fact every viewer is told, not a private guess.
+#[tokio::test]
+async fn two_viewers_see_one_controller_and_only_its_input_lands() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut first = connect(&url).await;
+    let mut second = connect(&url).await;
+
+    send(
+        &mut first,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { viewer: one, viewers: 1, .. } = next_server(&mut first).await
+    else {
+        panic!("the first viewer attaches")
+    };
+    let _ = next_server(&mut first).await; // its nav state
+    send(
+        &mut second,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { viewer: two, viewers: 2, .. } = next_server(&mut second).await
+    else {
+        panic!("the second viewer attaches")
+    };
+    assert_ne!(one, two, "each connection is its own viewer");
+    let _ = next_server(&mut second).await; // the second attach's nav state
+    let ServerMessage::BrowserView { viewers: 2, .. } = next_server(&mut first).await else {
+        panic!("the attach publishes the new count to the viewer already there")
+    };
+
+    send(&mut first, ClientMessage::BrowserControl { take: true }).await;
+    let ServerMessage::BrowserView { controller, .. } = next_server(&mut first).await else {
+        panic!("the take answers the taker")
+    };
+    assert_eq!(controller, Some(one), "the first viewer holds the role");
+    let ServerMessage::BrowserView { controller: seen, .. } = next_server(&mut second).await else {
+        panic!("the take reaches the other viewer")
+    };
+    assert_eq!(seen, Some(one), "and it is told who drives");
+
+    send(
+        &mut second,
+        ClientMessage::BrowserInput {
+            seq: 1,
+            event: forge_primitives::browser::BrowserInputEvent::Text { text: "x".to_owned() },
+        },
+    )
+    .await;
+    let ServerMessage::Error { what, .. } = next_server(&mut second).await else {
+        panic!("input from a watcher is refused")
+    };
+    assert_eq!(what, "browser_input");
+    send(
+        &mut first,
+        ClientMessage::BrowserInput {
+            seq: 1,
+            event: forge_primitives::browser::BrowserInputEvent::Text { text: "y".to_owned() },
+        },
+    )
+    .await;
+    // The input has no reply; a message that does proves it was handled.
+    send(&mut first, ClientMessage::BrowserControl { take: true }).await;
+    let _ = next_server(&mut first).await;
+    let landed = stub.inputs.lock().expect("the stub's inputs").clone();
+    assert_eq!(landed, vec![(one, 1)], "only the controller's input landed");
+}
+
+/// **A watcher never cancels the controller's chooser.** The ask is the
+/// profile's, so every viewer's connection sees it; a watcher that answered
+/// it with no files took the dialog away from the person who was showing it
+/// - the picker opened for the controller and died because another client
+/// was merely watching. Only the controller is asked, and a watcher stays
+/// silent.
+#[tokio::test]
+async fn a_watcher_does_not_cancel_the_controllers_file_chooser() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut controller = connect(&url).await;
+    let mut watcher = connect(&url).await;
+    for socket in [&mut controller, &mut watcher] {
+        send(
+            socket,
+            ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+        )
+        .await;
+        let _ = next_server(socket).await; // its view state
+        let _ = next_server(socket).await; // its nav state
+    }
+    // The second attach's count reaches the viewer already there.
+    let _ = next_server(&mut controller).await;
+    send(&mut controller, ClientMessage::BrowserControl { take: true }).await;
+    let _ = next_server(&mut controller).await; // the take's answer
+    let _ = next_server(&mut watcher).await; // the take, told to the watcher
+
+    stub.files
+        .send_replace(Some(forge_primitives::browser::BrowserFileAsk { id: 7, multiple: false }));
+    let asked = next_server(&mut controller).await;
+    let ServerMessage::BrowserFileDialog { id, multiple } = asked else {
+        panic!("the controller is the one asked for a file, got {asked:?}")
+    };
+    assert_eq!((id, multiple), (7, false));
+    assert!(
+        next_server_within(&mut watcher, 400).await.is_none(),
+        "a watcher is sent nothing for the chooser",
     );
-    assert_eq!(
-        caught.matches("\"client_subscribed\"").count(),
-        clients_before + 1,
-        "a declare is still an attached client, so it is named once; caught: {caught}",
+    assert!(
+        stub.answers.lock().expect("the stub's answers").is_empty(),
+        "and nothing cancelled the controller's dialog: {:?}",
+        stub.answers.lock().expect("the stub's answers"),
     );
-    let line = caught
-        .lines()
-        .find(|line| line.contains("\"client_subscribed\""))
-        .unwrap_or_else(|| panic!("a declare names its client; caught: {caught}"));
-    let client: serde_json::Value = serde_json::from_str(line).expect("the line is JSON");
-    assert_eq!(client["declare"], true, "the attach says it opened nothing: {line}");
+}
+
+/// **Only the controller can answer, and only the outstanding ask.** An
+/// answer from a watcher, or one naming an id that is not the profile's ask,
+/// is refused before the fleet writes a byte or clears the dialog - a stale
+/// answer otherwise wiped the uploads a live dialog was handing over.
+#[tokio::test]
+async fn a_file_answer_is_bound_to_the_controller_and_the_ask() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut controller = connect(&url).await;
+    let mut watcher = connect(&url).await;
+    for socket in [&mut controller, &mut watcher] {
+        send(
+            socket,
+            ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+        )
+        .await;
+        let _ = next_server(socket).await;
+        let _ = next_server(socket).await;
+    }
+    let _ = next_server(&mut controller).await;
+    send(&mut controller, ClientMessage::BrowserControl { take: true }).await;
+    let _ = next_server(&mut controller).await;
+    let _ = next_server(&mut watcher).await;
+    stub.files
+        .send_replace(Some(forge_primitives::browser::BrowserFileAsk { id: 7, multiple: false }));
+    let _ = next_server(&mut controller).await; // the dialog
+
+    let answer = |id: u64| ClientMessage::BrowserFileAnswer {
+        id,
+        files: vec![forge_server::transport::envelope::BrowserFileWire {
+            name: "cv.pdf".to_owned(),
+            data: "aGVsbG8=".to_owned(),
+        }],
+    };
+    send(&mut watcher, answer(7)).await;
+    let ServerMessage::Error { what, why, .. } = next_server(&mut watcher).await else {
+        panic!("a watcher's answer is refused")
+    };
+    assert_eq!(what, "browser_file_answer");
+    assert!(why.contains("not the file chooser's"), "{why}");
+    send(&mut controller, answer(8)).await;
+    let ServerMessage::Error { what, .. } = next_server(&mut controller).await else {
+        panic!("a stale id is refused")
+    };
+    assert_eq!(what, "browser_file_answer");
+    assert!(
+        stub.answers.lock().expect("the stub's answers").is_empty(),
+        "neither answer reached the fleet: {:?}",
+        stub.answers.lock().expect("the stub's answers"),
+    );
+}
+
+/// **A chooser nobody is driving is cancelled once.** With no controller the
+/// dialog can never be answered, so the connection that sees it cancels it
+/// rather than leaving CEF holding a callback behind a panel nobody shows.
+#[tokio::test]
+async fn a_chooser_with_no_controller_is_cancelled() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let _ = next_server(&mut socket).await;
+    let _ = next_server(&mut socket).await;
+
+    stub.files
+        .send_replace(Some(forge_primitives::browser::BrowserFileAsk { id: 9, multiple: true }));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if !stub.answers.lock().expect("the stub's answers").is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the chooser was never cancelled");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        stub.answers.lock().expect("the stub's answers").as_slice(),
+        [(9, 0)],
+        "cancelled once, with no files",
+    );
+}
+
+/// **Re-attaching to another profile detaches the first.** A switch that
+/// left the old viewer attached kept its profile warm and its count wrong.
+#[tokio::test]
+async fn a_reattach_to_another_profile_detaches_the_first() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserView {
+            seat: lead_seat(),
+            profile: Some("a".to_owned()),
+            reply_to: None,
+        },
+    )
+    .await;
+    let ServerMessage::BrowserView { viewer, profile, .. } = next_server(&mut socket).await else {
+        panic!("the first attach answers")
+    };
+    assert_eq!(profile, "a");
+    let _ = next_server(&mut socket).await; // its nav state
+    send(
+        &mut socket,
+        ClientMessage::BrowserView {
+            seat: lead_seat(),
+            profile: Some("b".to_owned()),
+            reply_to: None,
+        },
+    )
+    .await;
+    let ServerMessage::BrowserView { profile, .. } = next_server(&mut socket).await else {
+        panic!("the re-attach answers")
+    };
+    assert_eq!(profile, "b", "the connection views the new profile");
+    let _ = next_server(&mut socket).await; // its nav state
+    assert_eq!(
+        stub.detached.lock().expect("the stub's detaches").as_slice(),
+        [viewer],
+        "the old profile gave its viewer up"
+    );
+}
+
+/// **A page that navigates on its own moves the bar's arrows.** The client
+/// asks nothing after a link click; the profile's history watch is pushed as
+/// `browser_nav_state` so the arrows do not stay grey until the next open.
+#[tokio::test]
+async fn a_page_driven_navigation_pushes_the_history_to_the_viewer() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { id, .. } = next_server(&mut socket).await else {
+        panic!("an attach is answered with the viewer state")
+    };
+    let _ = next_server(&mut socket).await; // the attach's own history read
+
+    stub.nav.send_replace(Some(forge_primitives::browser::BrowserNavState {
+        can_back: true,
+        can_forward: false,
+    }));
+
+    let ServerMessage::BrowserNavState { id: moved, can_back, can_forward } =
+        next_server(&mut socket).await
+    else {
+        panic!("a page-driven navigation is pushed to the viewer")
+    };
+    assert_eq!((moved, can_back, can_forward), (id, true, false), "under the viewed profile");
+}
+
+/// **A viewer attaches, is sent frames as the server's own binary kind, and
+/// its input obeys the controller role.** The frames stay encoded end to
+/// end, and input from a viewer without the role is refused rather than
+/// injected.
+#[tokio::test]
+async fn the_viewer_wire_attaches_relays_frames_and_guards_input() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: Some(42) },
+    )
+    .await;
+    let ServerMessage::BrowserView { id, profile, controller, viewers, viewer } =
+        next_server(&mut socket).await
+    else {
+        panic!("an attach is answered with the viewer state")
+    };
+    assert_eq!(id, 5, "the profile's wire id");
+    assert_eq!(profile, "@shared");
+    assert_eq!(controller, None, "a surface starts controller-less");
+    assert_eq!(viewers, 1);
+    assert!(viewer > 0, "and this connection's own number, which a take makes the controller");
+    let ServerMessage::BrowserNavState { id: nav_id, .. } = next_server(&mut socket).await else {
+        panic!("the attach is followed by the page's history")
+    };
+    assert_eq!(nav_id, 5);
+    // **The reply names the profile the attach took**, which is what the
+    // page's Done lowers: an omitted profile is resolved by the service, and
+    // the client never has to guess what came up.
+    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
+        panic!("the attach answers its reply")
+    };
+    assert_eq!(reply_to, 42);
+    assert_eq!(body["profile"], "@shared");
+
+    // A frame reaches the socket as the browser kind, its bytes untouched.
+    let encoded = vec![9_u8, 8, 7, 6];
+    stub.frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
+        profile: 5,
+        seq: 1,
+        encoded: encoded.clone(),
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let bytes = loop {
+        assert!(Instant::now() < deadline, "the frame reaches the socket");
+        let msg = socket.next().await.expect("a message").expect("no error");
+        if let Message::Binary(bytes) = msg {
+            break bytes;
+        }
+    };
+    assert_eq!(bytes[0], forge_server::transport::frame::Kind::BrowserFrame.tag());
+    assert_eq!(&bytes[1..], &encoded[..], "the host's frame crosses untouched");
+
+    // Input before the role is refused, and said.
+    send(
+        &mut socket,
+        ClientMessage::BrowserInput {
+            seq: 1,
+            event: forge_primitives::browser::BrowserInputEvent::Text { text: "x".to_owned() },
+        },
+    )
+    .await;
+    let ServerMessage::Error { what, .. } = next_server(&mut socket).await else {
+        panic!("input without the role is refused")
+    };
+    assert_eq!(what, "browser_input");
+
+    // Taking the role publishes the controller, and input lands.
+    send(&mut socket, ClientMessage::BrowserControl { take: true }).await;
+    let ServerMessage::BrowserView { controller, .. } = next_server(&mut socket).await else {
+        panic!("a take republishes the viewer state")
+    };
+    assert!(controller.is_some(), "the taker holds the role");
+    send(
+        &mut socket,
+        ClientMessage::BrowserInput {
+            seq: 2,
+            event: forge_primitives::browser::BrowserInputEvent::Text { text: "y".to_owned() },
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while stub.inputs.lock().expect("the stub's inputs").is_empty() {
+        assert!(Instant::now() < deadline, "the controller's input reaches the fleet");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        stub.inputs.lock().expect("the stub's inputs")[0].1,
+        2,
+        "the event's own sequence reached the fleet",
+    );
+
+    // Releasing gives the role back, and the state says so.
+    send(&mut socket, ClientMessage::BrowserControl { take: false }).await;
+    let ServerMessage::BrowserView { controller, .. } = next_server(&mut socket).await else {
+        panic!("a release republishes the viewer state")
+    };
+    assert_eq!(controller, None, "the role is free again");
 }

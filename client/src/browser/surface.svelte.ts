@@ -18,7 +18,15 @@
  */
 
 import type { SessionSlot } from '../wire/types';
-import { canHost, drawsSurface, hideBrowser, reportSurfaceRect, showBrowser } from './host';
+import {
+  canHost,
+  drawsSurface,
+  hideBrowser,
+  reportSurfaceRect,
+  resizeBrowser,
+  showBrowser,
+  takeControl as sendControl,
+} from './host';
 
 export type SurfacePhase = 'closed' | 'opening' | 'live' | 'failed';
 
@@ -40,10 +48,30 @@ interface Surface {
   profile: string | null;
   /** The shell's sentence when the surface could not open. */
   reason: string | null;
+  /**
+   * The viewed profile's wire id, from the shell's `browser_view`: **the
+   * frames a phone paints are filtered by it**, so one relayed for another
+   * profile never lands on this canvas.
+   */
+  id: number | null;
+  /**
+   * The profile the server actually attached, from `browser_view` - the
+   * requested name resolved (`@shared`, or the seat's own when none was
+   * named). **The bar spells it**, so two devices looking at two different
+   * browsers cannot read as one browser with a shared role.
+   */
+  attachedProfile: string | null;
   /** The hand-off this takeover answers, while one is parked. */
   hand_off: HandOff | null;
   /** The bar's two history arrows; both disabled until the shell answers. */
   nav: NavState;
+  /**
+   * This connection's own viewer number, from the shell's `browser_view`.
+   * The server names it, so the bar can tell whose role it is reading.
+   */
+  viewer: number | null;
+  /** The viewer that holds the controller role; `null` when nobody does. */
+  controller: number | null;
   /**
    * The dock's bar height, which the page area starts under.
    *
@@ -68,11 +96,56 @@ export const surface: Surface = $state({
   phase: 'closed',
   profile: null,
   reason: null,
+  id: null,
+  attachedProfile: null,
   hand_off: null,
   nav: { can_back: false, can_forward: false },
+  viewer: null,
+  controller: null,
   barHeight: 38,
   epoch: 0,
 });
+
+/**
+ * The phone's hardware Back asks this first: a live takeover is its door,
+ * and the answer says whether the Back was consumed. It goes the same way
+ * every lower does - the `forge-takeover` word the dock and the strip already
+ * fold - so the hand-off is left parked exactly as back-to-chat leaves it.
+ * Installed by the shell alone; a plain page has no hardware Back to route.
+ */
+if (canHost() && typeof window !== 'undefined') {
+  (window as unknown as { __forgeLower?: () => boolean }).__forgeLower = (): boolean => {
+    if (surface.phase === 'closed') return false;
+    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'lowered' }));
+    return true;
+  };
+  // **Every lower lands here, whichever door asked for it.** The hardware
+  // Back's `__forgeLower` dispatches the word, and it goes through the same
+  // close the dock and the strip call - the shell's view is given up and the
+  // window comes back, not just the store's phase.
+  window.addEventListener('forge-takeover', (event: Event) => {
+    if ((event as CustomEvent<string>).detail !== 'lowered') return;
+    if (surface.phase === 'closed') return;
+    void closeSurface();
+  });
+}
+
+/** Whether this surface's input will reach the page: the controller role. */
+export function holdsControl(): boolean {
+  return surface.viewer !== null && surface.controller === surface.viewer;
+}
+
+/**
+ * Take the controller role for this surface, or give it back. **The reply's
+ * state push is what settles it**; the store moves now so the bar does not
+ * lag a round trip behind the person's press.
+ */
+export async function takeControl(take: boolean): Promise<void> {
+  if (!drawsSurface()) return;
+  await sendControl(take);
+  surface.controller = take ? surface.viewer : null;
+  if (take) void resizeToRegion();
+}
 
 /** Mark the takeover live for this hand-off, on Open. */
 export function attachHandOff(hand_off: HandOff): void {
@@ -86,27 +159,6 @@ export function clearHandOff(id: string): void {
 
 /** The request that is current; a result from an older one is dropped. */
 let generation = 0;
-
-/**
- * The refusal for raising a hand-off on this client, or null when it may
- * raise: the page lives in the one browser the session drives, and only the
- * client the relay has told holds it has that page (#2519).
- */
-export const HAND_OFF_ELSEWHERE =
-  'The page this hand-off prepared is in the browser another connected client holds, and ' +
-  "pressing Open here does not move it. Open the hand-off there; the browser strip's override " +
-  'takes the browser for this client without carrying that page across.';
-
-export function handOffRefusal(told: boolean, hosting: boolean): string | null {
-  return canHost() && told && !hosting ? HAND_OFF_ELSEWHERE : null;
-}
-
-/** Draw a raise's refusal where a failed open draws its own. */
-export function failSurface(reason: string): void {
-  surface.phase = 'failed';
-  surface.reason = reason;
-  surface.nav = { can_back: false, can_forward: false };
-}
 
 /**
  * Open the takeover for `profile` (`null` is the asking seat's own when a
@@ -130,6 +182,10 @@ export async function openSurface(
     surface.reason = null;
     // **A fresh page has nowhere to go until the shell says otherwise.**
     surface.nav = { can_back: false, can_forward: false };
+    surface.id = null;
+    surface.attachedProfile = null;
+    surface.viewer = null;
+    surface.controller = null;
     // The load-time install is the normal one; this retries it after an
     // import that failed then, so a rejected fetch cannot cost the page its
     // subscriptions for life. Idempotent, and started before the show so the
@@ -188,13 +244,17 @@ export async function closeSurface(
     surface.profile = null;
     surface.reason = null;
     surface.nav = { can_back: false, can_forward: false };
+    surface.id = null;
+    surface.attachedProfile = null;
+    surface.viewer = null;
+    surface.controller = null;
   } else {
     surface.phase = 'live';
   }
   return null;
 }
 
-/** How many of the shell's listeners are registered; four is all of them. */
+/** How many of the shell's listeners are registered; five is all of them. */
 let installed = 0;
 /** The attempt in flight, so callers arriving mid-install wait for it. */
 let inFlight: Promise<void> | null = null;
@@ -210,10 +270,10 @@ let inFlight: Promise<void> | null = null;
  * it up, rather than being dismissed by it.
  */
 export async function installSurfaceEvents(): Promise<void> {
-  if (installed === 4 || !canHost()) return;
+  if (installed === 5 || !canHost()) return;
   while (inFlight !== null) {
     await inFlight;
-    if (installed === 4) return;
+    if (installed === 5) return;
   }
   inFlight = installOnce();
   try {
@@ -275,21 +335,62 @@ async function installOnce(): Promise<void> {
       });
       installed = 4;
     }
+    if (installed < 5) {
+      // **The role's truth is the server's push**, so two surfaces draw the
+      // same answer about who is driving; `viewer` is this connection's own
+      // number, which is what makes "take control" a read rather than a
+      // guess.
+      await listen<Record<string, unknown>>('browser_view', (event) => {
+        const state = event.payload;
+        surface.id = typeof state.id === 'number' ? state.id : null;
+        surface.viewer = typeof state.viewer === 'number' ? state.viewer : null;
+        surface.controller = typeof state.controller === 'number' ? state.controller : null;
+        // **The server resolves the name**, so a null request reads as the
+        // seat's own profile rather than as the shared browser.
+        if (typeof state.profile === 'string') surface.attachedProfile = state.profile;
+      });
+      installed = 5;
+    }
   } catch {
     // No event API (a plain page, a test harness), or one listener refused:
     // the count stays where it got to, and the next call resumes there.
   }
 }
 
+/** The last page area measured, for the size the server lays the page out to. */
+let region: { width: number; height: number; scale: number } | null = null;
+
+/**
+ * The page area's size, in the page's own CSS pixels.
+ *
+ * **A gesture maps through this, not through the canvas element**: the
+ * picture is scaled to fit its box, and a letterboxed canvas is smaller than
+ * the page it shows.
+ */
+export function pageArea(): { width: number; height: number } | null {
+  return region === null ? null : { width: region.width, height: region.height };
+}
+
+/** Ask the server for this surface's size: the controller's job, no one else's. */
+function resizeToRegion(): Promise<void> {
+  if (region === null) return Promise.resolve();
+  const width = Math.max(1, Math.round(region.width * region.scale));
+  const height = Math.max(1, Math.round(region.height * region.scale));
+  return resizeBrowser(width, height, region.scale);
+}
+
 /** The takeover's page area, as the shell places the native layer: CSS pixels
- *  from the viewport's top-left, the device pixel ratio drawn at, and the
- *  epoch of the mount that measured it. */
+ *  from the viewport's top-left, the page's own viewport, the device pixel
+ *  ratio drawn at, and the epoch of the mount that measured it. */
 export function setRegion(
   rect: { x: number; y: number; width: number; height: number },
+  viewport: { width: number; height: number },
   scale: number,
   epoch: number,
 ): void {
-  void reportSurfaceRect(rect, scale, epoch);
+  region = { width: rect.width, height: rect.height, scale };
+  void reportSurfaceRect(rect, viewport, scale, epoch);
+  if (holdsControl()) void resizeToRegion();
 }
 
 // **Installed at page load, before any surface can open.** The shell pushes

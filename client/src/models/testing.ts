@@ -296,12 +296,11 @@ export function fakeConnection() {
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     close: () => {},
-    onBrowserAsk: () => () => {},
-    browserRole: () => false,
-    browserRoleKnown: () => false,
-    onBrowserRole: () => () => {},
-    onProfilesChanged: () => () => {},
-    takeBrowserRole: () => {},
+    browserView: () => false,
+    browserControl: () => false,
+    browserNav: () => false,
+    browserInput: () => false,
+    onBrowserFrame: () => () => {},
   };
 
   return {

@@ -10,6 +10,7 @@ vi.mock('./host', () => ({
   showBrowser: () => Promise.resolve({ profile: '@shared' }),
   hideBrowser: () => Promise.resolve({ lowered: true }),
   reportSurfaceRect: () => Promise.resolve(),
+  resizeBrowser: () => Promise.resolve(),
 }));
 
 /** The events the shell listeners were registered for, in order. */
@@ -21,6 +22,13 @@ function registered(): string[] {
 function navHandler(): (event: { payload: Record<string, unknown> }) => void {
   const call = listen.mock.calls.find((entry) => entry[0] === 'browser_nav_state');
   if (call === undefined) throw new Error('the history listener was never registered');
+  return call[1] as (event: { payload: Record<string, unknown> }) => void;
+}
+
+/** The handler the shell's viewer state was registered with. */
+function viewHandler(): (event: { payload: Record<string, unknown> }) => void {
+  const call = listen.mock.calls.find((entry) => entry[0] === 'browser_view');
+  if (call === undefined) throw new Error('the viewer listener was never registered');
   return call[1] as (event: { payload: Record<string, unknown> }) => void;
 }
 
@@ -56,6 +64,7 @@ describe('the shell listeners', () => {
         'browser_surface_remeasure',
         'browser_surface_failed',
         'browser_nav_state',
+        'browser_view',
       ]);
 
       const pushed = navHandler();
@@ -64,6 +73,22 @@ describe('the shell listeners', () => {
         can_back: true,
         can_forward: false,
       });
+
+      // **The viewer state names the profile a phone's canvas filters on**,
+      // and whose role each surface holds; a drift here draws another
+      // profile's frame or offers a control the person does not have.
+      const viewed = viewHandler();
+      viewed({ payload: { id: 7, profile: 'browser-stack-lead', viewer: 3, controller: 4 } });
+      expect(
+        [surface.id, surface.viewer, surface.controller],
+        'the profile id, this viewer and the role holder',
+      ).toEqual([7, 3, 4]);
+      expect(surface.attachedProfile, "the server's resolved name is what the bar spells").toBe(
+        'browser-stack-lead',
+      );
+      viewed({ payload: { id: 'seven', viewer: 3 } });
+      expect(surface.id, 'a value this page cannot read is no id at all').toBeNull();
+      expect(surface.controller, 'and a missing role holder is nobody').toBeNull();
 
       // **The remeasure ask reaches the page.** The shell refuses a report and
       // asks through this listener; deleting the relay leaves every refusal

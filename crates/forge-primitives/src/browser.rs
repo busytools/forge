@@ -1,11 +1,10 @@
-//! What a browser tool call hands back from the client that drove it.
+//! What a browser tool call hands back from the server's browser.
 //!
-//! The socket's ask/answer pair carries these: an answer is the parts a tool
-//! returns, in order, and one of them may be an image. **The image's bytes are
-//! not in this type's wire form.** They ride their own binary frame under the
-//! answer's id (`forge-server`'s `transport::frame`), because a screenshot is
-//! megabytes and base64 in JSON pays a third again for it; the mime type
-//! crosses here so the frame carries nothing but the bytes.
+//! A call answers the parts the tool returned, in order: text, or an image
+//! whose bytes the MCP host hands to the CLI as their own content block. **The
+//! browser is the server's**, so none of this crosses the socket; and the
+//! image's bytes are not in this type's JSON form either, because a screenshot
+//! is megabytes and base64 in JSON would pay a third again for it.
 
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +36,172 @@ pub struct HandOff {
     pub reason: String,
     /// The named profile to raise, when the session named one.
     pub profile: Option<String>,
+}
+
+/// The modifier keys a person held for one input event.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputModifiers {
+    pub alt: bool,
+    pub control: bool,
+    pub meta: bool,
+    pub shift: bool,
+}
+
+/// One pointer gesture's kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseAction {
+    Move,
+    Press,
+    Release,
+}
+
+/// One input event a controlling viewer sends, in CSS pixels for the page's
+/// viewport.
+///
+/// **The wire carries the person's gesture, not the browser's protocol.** The
+/// server is what turns a press into `Input.dispatchMouseEvent`; a client
+/// speaks about a click, and the CDP method names stay on the server.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BrowserInputEvent {
+    Mouse {
+        action: MouseAction,
+        x: f64,
+        y: f64,
+        /// 0 left, 1 right, 2 middle.
+        button: i32,
+        clicks: i32,
+        modifiers: InputModifiers,
+    },
+    Wheel {
+        x: f64,
+        y: f64,
+        delta_x: f64,
+        delta_y: f64,
+        modifiers: InputModifiers,
+    },
+    /// A key with no text of its own: an arrow, Enter, Escape, a modifier.
+    Key {
+        down: bool,
+        key: String,
+        code: String,
+        /// The Windows virtual key code a page's widgets read.
+        windows_vk: i32,
+        modifiers: InputModifiers,
+    },
+    /// The person's own text, inserted as text rather than replayed keycodes.
+    Text {
+        text: String,
+    },
+}
+
+/// One encoded browser frame as the socket relays it.
+///
+/// **The bytes stay encoded end to end.** The host is the only encoder; the
+/// server relays `encoded` untouched as one binary frame, and every client
+/// decodes the same host frame the server read. `encoded` is the host's own
+/// frame wire: the profile id, sequence, view size, format, key flag and the
+/// WebP payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserFrame {
+    /// The service's profile id: which surface the frame belongs to.
+    pub profile: u16,
+    /// Monotonic per profile; a newer frame supersedes an older one.
+    pub seq: u32,
+    pub encoded: Vec<u8>,
+}
+
+/// One profile as a client's browser strip draws it.
+///
+/// **The server owns every browser**, so the strip's rows are the server's
+/// answer: a profile it holds open in memory and one it knows only from its
+/// directory are both rows, told apart by [`BrowserProfileRow::closed`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserProfileRow {
+    /// The profile's key: its name, or `@shared` for the browser's own.
+    pub name: String,
+    /// The seat that opened it; `None` for the shared browser and an
+    /// ownerless legacy directory.
+    pub owner: Option<crate::SessionSlot>,
+    /// Whether its browser host is up.
+    pub up: bool,
+    /// Whether a client has it open as the takeover.
+    pub windowed: bool,
+    /// Whether a browser call is running on it now.
+    pub busy: bool,
+    /// Whether it is known only on disk: no browser is open for it.
+    pub closed: bool,
+    /// Whether its ownership record could not be read. **The row is still
+    /// drawn**: the profile and its logins exist, and hiding it made them
+    /// unreachable from the strip; but no verb can name an owner it could
+    /// not read, so the row is inert.
+    #[serde(default)]
+    pub unreadable: bool,
+}
+
+/// A profile's viewer state, as every attached client sees it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserViewState {
+    /// The controller's viewer id, when one holds the role.
+    pub controller: Option<u64>,
+    /// How many clients are attached to this profile.
+    pub viewers: u32,
+}
+
+/// Where the page's history sits: what the takeover bar's two arrows may do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserNavState {
+    pub can_back: bool,
+    pub can_forward: bool,
+}
+
+/// A page's file chooser, as the client's picker reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserFileAsk {
+    /// The dialog's id; the answer comes back under it.
+    pub id: u64,
+    /// Whether the page accepts more than one file.
+    pub multiple: bool,
+}
+
+/// One file a person chose, on its way to the server's host as a path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserUpload {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The most one file answer may carry across all its files, and the most
+/// files it may name.
+///
+/// **The answer is base64 JSON in one socket message**, and the socket's
+/// inbound cap is 16 MiB: 8 MiB of bytes encodes to about 10.7 MiB, so this
+/// is a cap the connection really carries rather than a promise that tears
+/// it. The client refuses past it before reading, and the server refuses
+/// again before writing.
+pub const MAX_UPLOAD_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_UPLOAD_FILES: usize = 16;
+
+/// One finished download, on its way to the person's save door.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserDownload {
+    pub name: String,
+    /// The file's bytes, empty when it could not be relayed.
+    pub bytes: Vec<u8>,
+    /// Why this download cannot be saved, when it cannot.
+    pub error: Option<String>,
+}
+
+/// One packet of the page's audio, as the controlling client plays it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserAudio {
+    pub profile: u16,
+    pub seq: u32,
+    pub sample_rate: u32,
+    pub channels: u8,
+    /// Interleaved 16-bit samples.
+    pub samples: Vec<i16>,
 }
 
 /// Why a hand-off left the registry.
@@ -112,8 +277,8 @@ mod tests {
         );
     }
 
-    /// The bytes are the frame's, not this type's: a wire form that carried
-    /// them would be the base64 balloon the frame exists to avoid.
+    /// The bytes are the part's, not its JSON form: a carrier that base64'd
+    /// them into JSON would pay a third again for a screenshot.
     #[test]
     fn an_image_part_crosses_with_its_mime_and_not_its_bytes() {
         let part = BrowserPart::Image { mime_type: "image/png".to_owned(), bytes: vec![1, 2, 3] };
@@ -121,7 +286,7 @@ mod tests {
         assert_eq!(
             encoded,
             serde_json::json!({ "type": "image", "mime_type": "image/png" }),
-            "the wire form carries the tag and the mime, and the bytes ride the frame",
+            "the JSON form carries the tag and the mime, and never the bytes",
         );
         let BrowserPart::Image { mime_type, bytes } =
             serde_json::from_value(encoded).expect("a part decodes")
@@ -129,7 +294,40 @@ mod tests {
             panic!("an image part decodes into another part")
         };
         assert_eq!(mime_type, "image/png");
-        assert!(bytes.is_empty(), "and it decodes with no bytes until the frame fills them");
+        assert!(bytes.is_empty(), "and a decoded JSON part carries no bytes");
+    }
+
+    /// **An input event crosses as the gesture, not as CDP.** A wire that
+    /// named `Input.dispatchMouseEvent` would put the browser's protocol on
+    /// every client; the server is what maps a gesture to it.
+    #[test]
+    fn an_input_event_crosses_as_the_gesture() {
+        let click = BrowserInputEvent::Mouse {
+            action: MouseAction::Press,
+            x: 12.5,
+            y: 30.0,
+            button: 1,
+            clicks: 1,
+            modifiers: InputModifiers { meta: true, ..Default::default() },
+        };
+        let encoded = serde_json::to_value(&click).expect("an event encodes");
+        assert_eq!(encoded["kind"], "mouse");
+        assert_eq!(encoded["action"], "press");
+        assert_eq!(encoded["modifiers"]["meta"], true);
+        assert_eq!(
+            serde_json::from_value::<BrowserInputEvent>(encoded).expect("an event decodes"),
+            click,
+        );
+        let text = BrowserInputEvent::Text { text: "hi".to_owned() };
+        assert_eq!(serde_json::to_value(&text).expect("text encodes")["kind"], "text");
+        let key = BrowserInputEvent::Key {
+            down: true,
+            key: "Enter".to_owned(),
+            code: "Enter".to_owned(),
+            windows_vk: 13,
+            modifiers: InputModifiers::default(),
+        };
+        assert_eq!(serde_json::to_value(&key).expect("a key encodes")["kind"], "key");
     }
 
     #[test]

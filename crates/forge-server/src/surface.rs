@@ -104,14 +104,6 @@ impl ViewSurface {
         cap_bytes(self.workspace.server_config().first_frame_cap_kb)
     }
 
-    /// Every seat that exists, for a browser-capable connection's profile
-    /// sweep. `None` when the store could not be read: **no set is sent in
-    /// that case**, because a client reading "no seats" would delete every
-    /// profile it holds.
-    pub fn live_seats(&self) -> Option<Vec<forge_primitives::SessionSlot>> {
-        self.workspace.live_seats()
-    }
-
     /// Dispatch one command to the core, which is how a view acts rather
     /// than only reads.
     ///
