@@ -1005,6 +1005,7 @@ where
             }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
+            let queued_at = Instant::now();
             let queued =
                 forward_queued(state, open_stream(state, updates, answering), watched, caller.id);
             // **A seat is held BEFORE its snapshot is encoded.** The hold
@@ -1019,6 +1020,7 @@ where
             // attachment below: it re-states the browser capability against a
             // subject the client already watches, and the client never counts
             // it, so nothing would ever give a hold back.
+            let mut hold_ms = 0.0;
             if let Subject::Session(slot) = &what
                 && !declare
             {
@@ -1027,10 +1029,19 @@ where
                 // every taken hold is remembered here so the two paths a
                 // subscribe can end without one can give it back: the encode's
                 // refusal below, and the unsubscribe.
+                let at = Instant::now();
                 state.surface.hold_seat(slot);
                 holds.take(slot);
+                hold_ms = at.elapsed().as_secs_f64() * 1000.0;
             }
             batch::flush(socket, queued).await?;
+            // The frames already queued for this subject, forwarded and
+            // written before the snapshot is built: a seat that kept
+            // streaming while nothing watched pays them on the next open.
+            let queued_ms = queued_at.elapsed().as_secs_f64() * 1000.0 - hold_ms;
+            // The subscribe's own opening: the client line, the browser
+            // role's answer and the seat set a first declaration carries.
+            let prelude_ms = queued_at.saturating_duration_since(open_at).as_secs_f64() * 1000.0;
             match encode_subject_timed(state, &what).await {
                 Ok((data, timings)) => {
                     // Watched only once the subject is one this server can
@@ -1097,11 +1108,14 @@ where
                             slot = %slot.display(),
                             peer = %caller.peer,
                             bytes = write.bytes,
+                            prep_ms = write.prep_ms,
                             write_ms = write.write_ms,
                             waited = write.waited,
-                            "the snapshot's socket write: waited says the write yielded at \
-                             least once before it was done (a prior frame's flush, kernel \
-                             send-buffer pressure or a slow reader)",
+                            "the snapshot's write: prep is the record serialised into the \
+                             bytes the socket takes, write_ms is the socket's share after \
+                             that, and waited says the write yielded at least once before it \
+                             was done (a prior frame's flush, kernel send-buffer pressure or \
+                             a slow reader)",
                         );
                         // The session's open, in its own slices: the numbers a
                         // reader places a slow switch with, beside the
@@ -1114,17 +1128,41 @@ where
                             slot = %slot.display(),
                             peer = %caller.peer,
                             open_ms = open_at.elapsed().as_secs_f64() * 1000.0,
+                            prelude_ms,
+                            queued_ms,
+                            hold_ms,
+                            prologue_ms = timings.prologue_ms,
+                            header_ms = timings.header_ms,
+                            catch_up_ms = timings.catch_up_ms,
                             seed_ms = timings.seed_ms,
                             conversation_ms = timings.conversation_ms,
                             page_ms = timings.page_ms,
+                            cards_ms = timings.cards_ms,
+                            work_ms = timings.work_ms,
+                            content_ms = timings.content_ms,
+                            reviews_ms = timings.reviews_ms,
+                            tree_reviews_ms = timings.tree_reviews_ms,
+                            state_ms = timings.state_ms,
+                            index_ms = timings.index_ms,
+                            tail_ms = timings.tail_ms,
                             encode_ms = timings.encode_ms,
-                            "the subscribe's own work: seed is the transcript read a cold \
-                             seat pays, conversation is the copy's arrival, page its cut and \
-                             fold, and encode the record's value; open_ms ends when the \
-                             snapshot's write returns, so the write is inside it - \
-                             frame_write carries that write's own numbers, and the rest is \
-                             the queued flush, the copy's catch-up, the record's reads and \
-                             the frame's own serialisation into the bytes it carries",
+                            pr_age_s = timings.pr_age_s,
+                            "the subscribe's own work, in DISJOINT slices: prelude is the \
+                             client line and the browser role, queued the frames already \
+                             waiting for this subject, hold the seat's watch, prologue the \
+                             roster and its asks, header the seat's header, catch_up the \
+                             copy's wait, seed the transcript read a cold seat pays, \
+                             conversation the copy's arrival, page its cut and fold, cards \
+                             the subagent cards, work the tree scan, content the diff's \
+                             changed files, reviews and tree_reviews the review reads, state \
+                             the seat's own state, index the file walk, tail the process read \
+                             and the \
+                             record's assembly, and encode the record's value; pr_age_s is \
+                             how old the PR attempt the record carries is, absent until one \
+                             has run; open_ms ends when the snapshot's write returns, so \
+                             frame_write's prep_ms and write_ms are inside it, and what the \
+                             slices and those two do not sum to is the subscribe path's own \
+                             glue",
                         );
                     }
                     // Rather than keeping a spent mark until the next unrelated
@@ -2089,6 +2127,9 @@ where
 /// whether the write yielded at least once before it was done.
 struct FrameWrite {
     bytes: usize,
+    /// The message's serialisation into the bytes the socket takes, on the
+    /// process's own clock.
+    prep_ms: f64,
     write_ms: f64,
     waited: bool,
 }
@@ -2132,7 +2173,9 @@ where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
     C: WriteClock,
 {
+    let prep_at = Instant::now();
     let text = serde_json::to_string(&message)?;
+    let prep_ms = prep_at.elapsed().as_secs_f64() * 1000.0;
     let bytes = text.len();
     let waited = AtomicBool::new(false);
     let at = clock.start(&text);
@@ -2152,6 +2195,7 @@ where
     .await?;
     Ok(FrameWrite {
         bytes,
+        prep_ms,
         write_ms: clock.end().saturating_duration_since(at).as_secs_f64() * 1000.0,
         waited: waited.load(Ordering::Relaxed),
     })

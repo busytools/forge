@@ -41,6 +41,21 @@ impl<T> LayerState<T> {
     }
 }
 
+/// Whether a scan may reach the network for its PR block.
+///
+/// The lookup is one `gh api` call: a full TLS + API round trip measured at
+/// 0.9 s on this machine, and it sat on the record a client waits for. A read
+/// somebody is waiting on serves the PR it already holds and leaves the
+/// refresh to the seat's own loop, which nobody waits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrRefresh {
+    /// A cache past its window is looked up again.
+    Fetch,
+    /// A cache past its window is served as it stands for the branch and sha
+    /// it belongs to - anything else answers nothing - and is never looked up.
+    ServeCached,
+}
+
 /// Three-state classification of the scan's repo gate. Replaces the
 /// earlier `in_repo` + `scanner_ok` bool pair so the illegal
 /// "in a repo but the scanner failed" combination is unrepresentable.
