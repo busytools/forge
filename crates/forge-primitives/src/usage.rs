@@ -177,6 +177,24 @@ impl UsageSnapshot {
         .filter_map(|w| w.resets_at)
         .max()
     }
+
+    /// Whether two snapshots say the same thing, `fetched_at` aside.
+    ///
+    /// **Derived `PartialEq` cannot answer this**: `fetched_at` moves on
+    /// every probe, so two successful polls that found an unchanged pool
+    /// compare unequal and every poll reads as news. The field says when a
+    /// reading was taken, not what it says, and it is the only one excluded
+    /// here - a new usage field belongs in the comparison below.
+    pub fn same_usage(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.five_hour == other.five_hour
+            && self.seven_day == other.seven_day
+            && self.seven_day_opus == other.seven_day_opus
+            && self.seven_day_sonnet == other.seven_day_sonnet
+            && self.extra_usage == other.extra_usage
+            && self.spend == other.spend
+            && self.balance == other.balance
+    }
 }
 
 /// What an account has left, in the terms its backend bills in.
@@ -262,5 +280,36 @@ mod tests {
         // limit is current. Returning true would strand the account
         // as forever-limited based on a single cached snapshot.
         assert!(!window(100.0, None).is_currently_limited());
+    }
+
+    /// A poll that found the same pool says nothing new, and `fetched_at`
+    /// moving is not a change of usage.
+    ///
+    /// This is the comparison the usage poller announces on: `PartialEq`
+    /// would make every probe news because it carries the reading's own
+    /// clock, so a quiet account bought a full home read every poll.
+    #[test]
+    fn same_usage_ignores_when_the_reading_was_taken() {
+        let snapshot = |fetched_at: SystemTime, utilization: f64| UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at,
+            five_hour: Some(window(utilization, None)),
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend: None,
+            balance: None,
+        };
+        let at = SystemTime::UNIX_EPOCH;
+
+        assert!(
+            snapshot(at, 42.0).same_usage(&snapshot(at + Duration::from_secs(60), 42.0)),
+            "a later probe that found the same figures is the same usage",
+        );
+        assert!(
+            !snapshot(at, 42.0).same_usage(&snapshot(at + Duration::from_secs(60), 43.0)),
+            "a window that moved is a change to announce",
+        );
     }
 }

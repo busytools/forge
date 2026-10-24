@@ -143,31 +143,117 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
 }
 
 /**
- * Whether a `home` subscription hears this update - the server's own
- * `Subject::covers` for `Home`, and the one place it lives on this side.
+ * The updates that belong to no seat and whose data a field of the home
+ * snapshot carries, with that field.
  *
- * **`fleetNews` answers a different question and is not a substitute.**
- * That one says what the fleet region DRAWS; this one says what a home
- * subscriber is SENT, and the server sends more than the region draws. A
- * slot-less update belongs to no seat, so home is the only subscription that
- * could have carried it, and the slot-less arm exists so a client is not
- * left drawing what it read once at subscribe - which is what the service
- * status, the fatal error and the plugin records are.
+ * **Slot-less is not the same as home news.** A variant that names no seat
+ * reaches only a home subscriber, so it has no other reader to lean on - but
+ * the read it wakes has to be able to come back different. These are the
+ * eight where it can: each has a field on `HomeWire` that moves with it.
  *
- * Gating a reader on `fleetNews` alone throws those away, and the symptom is
- * not an error: it is a page that read them once and never again.
+ * A variant belongs here by what the home's ANSWER holds, not by what its
+ * name suggests: `DictateModelsChanged` is here because the band's dictation
+ * card counts `HomeWire.dictate.snapshot.models`, while the catalogue the
+ * update carries is the models page's own read.
+ *
+ * `fleet.test.ts` enumerates every declared variant and holds this table and
+ * `HOME_IGNORES` to the enum, so a new variant is a red build rather than a
+ * page that quietly stops following something.
+ */
+export const HOME_WAKES: ReadonlyMap<string, string> = new Map([
+  ['catalog_loaded', 'HomeWire.projects, the roster the catalog scan fills'],
+  ['cli_version_changed', 'HomeWire.cli_version'],
+  ['accounts_changed', 'HomeWire.accounts'],
+  [
+    'worker_status_changed',
+    'HomeWire.fleet, whose live-worker count and unaccounted miss it moves',
+  ],
+  ['dictate_availability', 'HomeWire.dictate, whose models are resident once it lands'],
+  ['dictate_models_changed', 'HomeWire.dictate.snapshot.models, whose rows the preflight resolves'],
+  ['service_status', 'HomeWire.service_status, the issue the core holds'],
+  ['fatal_error', 'HomeWire.fatal_error, the words the core stopped with'],
+]);
+
+/**
+ * The slot-less updates a home subscriber can be sent whose data no field of
+ * the snapshot carries.
+ *
+ * The `Plugins*` family is the set: the plugin inventory is the `extensions`
+ * subject's whole read, and the home's snapshot has never carried it. They
+ * are keyless, so before this table each one bought a full home read for an
+ * answer that could not differ - the Extensions page's own subscription is
+ * where they belong.
+ *
+ * The other two are keyed, not slot-less, and they are here for history:
+ * `fleetNews` redraws for them because the board's row draws their sets, and
+ * a cron or a connector set left the home's snapshot with the board (#2517).
+ * Naming them in a table keyed by home coverage, rather than by the server's
+ * slot-less arm, is what keeps one decision in one place.
+ */
+export const HOME_IGNORES: ReadonlyMap<string, string> = new Map([
+  [
+    'plugins_inventory_updated',
+    'the inventory is the extensions subject, and no HomeWire field carries it',
+  ],
+  [
+    'plugins_inventory_refresh_failed',
+    'the failed refresh is the extensions subject, and no HomeWire field carries it',
+  ],
+  [
+    'plugins_cli_action_succeeded',
+    'an action outcome is the extensions subject, and no HomeWire field carries it',
+  ],
+  [
+    'plugins_cli_action_failed',
+    'an action refusal is the extensions subject, and no HomeWire field carries it',
+  ],
+  [
+    'plugins_update_run_progress',
+    'the update run is the extensions subject, and no HomeWire field carries it',
+  ],
+  [
+    'plugins_update_run_finished',
+    'the finished run is the extensions subject, and no HomeWire field carries it',
+  ],
+  [
+    'plugins_rollback_succeeded',
+    'the rollback result is the extensions subject, and no HomeWire field carries it',
+  ],
+  [
+    'plugins_rollback_failed',
+    'the failed rollback is the extensions subject, and no HomeWire field carries it',
+  ],
+  ['cron_schedules_changed', 'the schedules left the home for the board (#2517)'],
+  ['connector_subscriptions_changed', 'the subscriptions left the home for the board (#2517)'],
+]);
+
+/**
+ * Whether one update is worth a fresh home read.
+ *
+ * **Three questions look alike and only one of them is this one.** The
+ * server's `Subject::covers` for `Home` says what a home subscriber is SENT;
+ * `fleetNews` says what the fleet region DRAWS; and this says what the
+ * client SPENDS a read on. A read is a 72 KB encode, so it is owed only when
+ * the answer can come back different - which is the union of the fleet's own
+ * table and the keyless facts above, and is deliberately narrower than the
+ * server's delivery: the plugin family reaches a home subscriber because it
+ * names no seat, and no field of the snapshot carries it.
+ *
+ * **Gating a reader on `fleetNews` alone throws the keyless facts away**, and
+ * the symptom is not an error: it is a page that read them once and never
+ * again. Gating it on "slot-less" instead is the other failure - a keyless
+ * update whose data the snapshot cannot carry asks for a read that cannot
+ * change anything. Both tables are the answer, and neither subsumes the
+ * other.
  */
 export function coversHome(update: SessionUpdate): boolean {
-  // **Two variants leave the home.** A cron set and a connector set left the
-  // home's snapshot with the board (#2517), so the home is not asked to
-  // re-read for what its answer cannot carry (rule 25); the board hears both.
-  if (typeof update !== 'string') {
-    const [variant] = Object.keys(update);
-    if (variant === 'cron_schedules_changed' || variant === 'connector_subscriptions_changed') {
-      return false;
-    }
-  }
-  return fleetNews(update).kind !== 'nothing' || slotOf(update) === null;
+  const variant = typeof update === 'string' ? update : Object.keys(update)[0];
+  // The ignore wins over the fleet's own arm: the board pair redraws a row
+  // the home does not carry, and a plugin frame reaches a home subscriber
+  // because it names no seat rather than because the home draws it.
+  if (variant !== undefined && HOME_IGNORES.has(variant)) return false;
+  if (fleetNews(update).kind !== 'nothing') return true;
+  return variant !== undefined && HOME_WAKES.has(variant);
 }
 
 /** One service report's own words, narrowed where it enters. */
