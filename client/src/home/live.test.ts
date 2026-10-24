@@ -6,13 +6,91 @@ import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
 import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
+import { railFooter } from '../session/view';
 import { watchHome, type HomeRead } from './live';
+import { homeView } from './view';
 
 const HOME: Subject = 'home';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
 /** An update a home subscriber is sent, which is what it answers with a read. */
 const UPDATE: ServerMessage = { kind: 'update', update: { turn_cancelled: { key: LEAD } } };
+
+/** The account the pool fixture names, which the rail chip resolves to. */
+const POOL_ACCOUNT = 'OpenRouter';
+
+/** A pool with one ready, spend-billed account, as a frame or a read states it. */
+const POOL = {
+  loading: [
+    {
+      display_name: POOL_ACCOUNT,
+      state: 'ready',
+      last_error: null,
+      retry_after: null,
+      auth: 'oauth',
+    },
+  ],
+  all_loaded: true,
+  gateway: { ready: true, port: 8787, bind_error: null },
+  usage: [
+    {
+      display_name: POOL_ACCOUNT,
+      snapshot: {
+        source: 'OpenRouterKey',
+        fetched_at: { secs_since_epoch: 1, nanos_since_epoch: 0 },
+        five_hour: null,
+        seven_day: null,
+        seven_day_opus: null,
+        seven_day_sonnet: null,
+        extra_usage: null,
+        spend: {
+          daily: 1.5,
+          weekly: 2,
+          monthly: 3,
+          limit: 10,
+          limit_remaining: 8,
+          limit_reset: null,
+          expires_at: null,
+        },
+        balance: 7.25,
+      },
+    },
+  ],
+};
+
+/** A pool that states nothing, which is what the snapshot starts from. */
+const EMPTY_POOL = {
+  loading: [],
+  all_loaded: false,
+  gateway: { ready: false, port: 0, bind_error: null },
+  usage: [],
+};
+
+/** A home whose one project chips `POOL_ACCOUNT`, so the rail footer resolves it. */
+const POOL_HOME = {
+  agents: [],
+  projects: [
+    {
+      project: {
+        key: 'k',
+        name: 'proj',
+        org: 'TestOrg',
+        path: '/p',
+        display_path: '~/p',
+        accounts: [POOL_ACCOUNT],
+        fallback_accounts: [],
+        has_model: true,
+        sessions: [],
+      },
+      work: { branch: 'main', changed: 0, gate: 'in_repo' },
+      would_bind: true,
+      chip: { account_name: POOL_ACCOUNT, state: 'ready' },
+    },
+  ],
+  unseen: [],
+  accounts: POOL,
+  dictate: { snapshot: { models: [] } },
+};
 
 /** A home snapshot this client can read whole, with an empty pool. */
 const HOME_DATA = {
@@ -562,6 +640,55 @@ describe('the home over a connection', () => {
     await settle();
     expect(forge.refreshed, 'a payloadless pool frame did not ask for a read').toEqual(['home']);
     stop();
+  });
+
+  /**
+   * **Rule 25: the fold and the read are one obligation.** A pool applied
+   * from a frame must draw exactly what the same pool read from a snapshot
+   * draws - the band's accounts card and the rail's account chip - or the
+   * two paths have quietly become two answers.
+   */
+  it('draws the same band card and rail chip from a folded frame as from a snapshot', async () => {
+    // A: one snapshot that already states the pool.
+    const a = fakeConnection();
+    const seenA: HomeRead[] = [];
+    const stopA = watchHome(a.connection).subscribe((read) => seenA.push(read));
+    a.stores.get(HOME)?.set(POOL_HOME);
+    a.arrive({ kind: 'snapshot', subject: HOME, data: POOL_HOME });
+    await settle();
+
+    // B: a snapshot stating an empty pool, then the frame that carries it.
+    const b = fakeConnection();
+    const seenB: HomeRead[] = [];
+    const stopB = watchHome(b.connection).subscribe((read) => seenB.push(read));
+    const emptyHome = { ...POOL_HOME, accounts: EMPTY_POOL };
+    b.stores.get(HOME)?.set(emptyHome);
+    b.arrive({ kind: 'snapshot', subject: HOME, data: emptyHome });
+    await settle();
+    b.arrive({
+      kind: 'update',
+      update: { accounts_changed: POOL },
+    } as unknown as ServerMessage);
+    await settle();
+
+    const wireA = seenA.at(-1)?.wire ?? null;
+    const wireB = seenB.at(-1)?.wire ?? null;
+    if (wireA === null || wireB === null) throw new Error('a read did not publish a wire');
+
+    const card = (wire: typeof wireA) =>
+      homeView(wire, '').band.find((entry) => entry.title === 'accounts') ?? null;
+    expect(card(wireB), 'the folded pool drew a different accounts card').toEqual(card(wireA));
+    expect(card(wireA), 'the fixture did not resolve an accounts card').not.toBeNull();
+    // The chip must actually resolve, or the two fallbacks would agree
+    // without either path drawing the pool.
+    expect(railFooter(wireB, LEAD).account.name, 'the folded pool did not reach the chip').toBe(
+      POOL_ACCOUNT,
+    );
+    expect(railFooter(wireB, LEAD), 'the folded pool drew a different rail chip').toEqual(
+      railFooter(wireA, LEAD),
+    );
+    stopA();
+    stopB();
   });
 
   /**
