@@ -1700,6 +1700,26 @@ impl SessionTask {
     /// Act on a turn that ended normally: finish a running handoff, or start
     /// one that arrived while the turn was running.
     fn after_turn_ended(&mut self) {
+        // **The boundary's own turn is over, and its markers clear later in
+        // the same event.** The idle gate must not read the turn that just
+        // ended as still running, or every trigger parks and waits for a
+        // turn that is never coming - which is exactly what the scratch
+        // stack found. The `Result` is the freshest word on liveness, so
+        // this is also where a stale Running mirror goes.
+        {
+            let mut domain = self.domain.lock();
+            domain.turn_pending = false;
+            domain.turn_open = false;
+            if matches!(
+                domain.runtime_state,
+                Some(
+                    forge_primitives::RuntimeSessionState::Running
+                        | forge_primitives::RuntimeSessionState::RequiresAction
+                )
+            ) {
+                domain.runtime_state = None;
+            }
+        }
         self.advance_successor();
         let (awaiting, started, lifecycle_correlates, parked, reason) = {
             let mut domain = self.domain.lock();
@@ -4193,6 +4213,50 @@ mod tests {
             total_tokens: total,
             effective_max_tokens: effective,
         }
+    }
+
+    /// **The trigger must fire at a REAL turn boundary.** The turn's
+    /// `turn_pending` marker is cleared later in the same event than
+    /// `after_turn_ended` runs, so a gate that read it would park every
+    /// handoff and wait for a turn that never comes; this drives a `Result`
+    /// through the actor and then its reading.
+    #[tokio::test]
+    async fn the_trigger_measures_at_a_real_turn_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 0);
+        // The state the actor is in when a `Result` lands.
+        task.domain.lock().turn_pending = true;
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "old-session-id".to_owned(),
+            msg: result_message("success", false),
+        });
+
+        assert!(
+            matches!(
+                agent_rx.try_recv(),
+                Ok(forge_primitives::AgentCommand::GetContextUsage { .. })
+            ),
+            "the boundary asks for the reading",
+        );
+        assert!(
+            task.domain.lock().handoff.parked.is_none(),
+            "and does not park on the turn that just ended",
+        );
+
+        task.translate_event(reading(Some(90), Some(180_000), Some(200_000)));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "the handoff begins at the boundary",
+        );
+        assert!(workspace.swap_in_progress(&task.key), "with its gate open");
     }
 
     /// The probe is asynchronous: a turn can open while it is out (the
