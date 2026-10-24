@@ -66,6 +66,11 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
     Ok(workspace)
 }
 
+/// What the deleted `[browser] grace_minutes` key used to supply, until the
+/// grace path itself goes.
+#[cfg(target_os = "macos")]
+const GRACE_MINUTES: u64 = 10;
+
 /// Install the server's browser fleet: constructed here, one host and one
 /// driver per profile spawned on first use.
 ///
@@ -86,7 +91,7 @@ fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
     fleet.configure_encoding(browser.fps, browser.quality);
     fleet.configure_idle(
         browser.idle_minutes,
-        browser.grace_minutes,
+        GRACE_MINUTES,
         Arc::new(IdleWarnings { workspace: Arc::downgrade(workspace) }),
     );
     fleet.start_idle();

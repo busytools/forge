@@ -9575,6 +9575,8 @@ mod account_stamp_tests {
             permission_mode,
             vault_roots: Vec::new(),
             handoff: None,
+            browser_profile: forge_primitives::browser::ProfileKey::of("Personal", "default")
+                .expect("a profile key"),
         }
     }
 

@@ -23,6 +23,70 @@ pub enum BrowserPart {
     },
 }
 
+/// One org's browser profile, `<org>/<name>`: two path-safe segments, and the
+/// unit every profile lookup is keyed by.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ProfileKey(String);
+
+impl ProfileKey {
+    pub fn of(org: &str, name: &str) -> Result<Self, String> {
+        Self::parse(&format!("{org}/{name}"))
+    }
+
+    /// Parse `<org>/<name>`; both halves become directory names.
+    pub fn parse(key: &str) -> Result<Self, String> {
+        let Some((org, name)) = key.split_once('/') else {
+            return Err(format!("'{key}' is not a browser profile key: the shape is <org>/<name>"));
+        };
+        segment_refusal(org, "org")?;
+        segment_refusal(name, "name")?;
+        Ok(Self(key.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn org(&self) -> &str {
+        self.0.split_once('/').map(|(org, _)| org).unwrap_or_default()
+    }
+
+    pub fn name(&self) -> &str {
+        self.0.split_once('/').map(|(_, name)| name).unwrap_or_default()
+    }
+
+    /// A fixture's key, from parts the fixture chose and so already knows
+    /// are safe.
+    #[cfg(feature = "test-helpers")]
+    pub fn from_parts_for_test(org: &str, name: &str) -> Self {
+        Self(format!("{org}/{name}"))
+    }
+}
+
+/// One segment of a profile key: what can be a directory name and nothing
+/// else. A name is the profile charset; an org may carry any character a
+/// directory holds, but never a separator or a dot traversal.
+fn segment_refusal(segment: &str, what: &str) -> Result<(), String> {
+    let refused = segment.is_empty()
+        || segment == "."
+        || segment == ".."
+        || segment.contains(['/', '\\', '\0']);
+    if refused {
+        return Err(format!("'{segment}' cannot be a browser profile {what}"));
+    }
+    if what == "name" {
+        let allowed = segment.len() <= 64
+            && segment.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !allowed {
+            return Err(format!(
+                "'{segment}' cannot be a browser profile name: 1 to 64 characters of letters, \
+                 digits, dot, dash or underscore"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A browser hand-off: a session asking the person at a client to act in a
 /// browser tab before it can carry on.
 ///
@@ -219,6 +283,36 @@ pub enum HandOffEnding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key_of_default() -> ProfileKey {
+        ProfileKey::of("Busytools", "default").expect("a key")
+    }
+
+    #[test]
+    fn a_profile_key_is_two_safe_segments() {
+        let key = ProfileKey::of("Busytools", "work").expect("a valid key");
+        assert_eq!(key.as_str(), "Busytools/work");
+        assert_eq!(key.org(), "Busytools");
+        assert_eq!(key.name(), "work");
+        assert_eq!(ProfileKey::parse("Busytools/default").expect("a parsed key"), key_of_default());
+
+        for (key, why) in [
+            ("Busytools", "one segment is not a key"),
+            ("/work", "an empty org is not a key"),
+            ("Busytools/", "an empty name is not a key"),
+            ("Busy/tools/work", "a third segment is not a key"),
+            ("Busytools/..", "a dot-dot name is not a key"),
+            ("Busytools/.", "a dot name is not a key"),
+            ("Busytools/two words", "a space is outside the name charset"),
+            ("Busytools/a/b", "a slash is outside the name charset"),
+        ] {
+            assert!(ProfileKey::parse(key).is_err(), "{why}: {key}");
+        }
+        assert!(
+            ProfileKey::of("Busy/tools", "work").is_err(),
+            "an org carrying a slash is refused"
+        );
+    }
 
     /// A hand-off crosses as its own words plus the profile it named - and
     /// one that named no profile carries none, rather than an empty string a

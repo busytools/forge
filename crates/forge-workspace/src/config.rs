@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use forge_primitives::GotifyConfig;
 use forge_primitives::account::Provider;
+use forge_primitives::browser::ProfileKey;
 use forge_primitives::permission::PermissionMode;
 use forge_primitives::slack::SlackConfig;
 use forge_primitives::{ClientConfig, ServerConfig};
@@ -216,13 +217,11 @@ pub struct BrowserSettings {
     pub quality: u8,
     /// Minutes a profile no viewer has used may sit before it closes.
     pub idle_minutes: u64,
-    /// Minutes past that bound the browser lives unless it is used.
-    pub grace_minutes: u64,
 }
 
 impl Default for BrowserSettings {
     fn default() -> Self {
-        Self { fps: 30, quality: 75, idle_minutes: 20, grace_minutes: 10 }
+        Self { fps: 30, quality: 75, idle_minutes: 30 }
     }
 }
 
@@ -391,6 +390,9 @@ struct OrgEntry {
     /// exactly like `accounts`.
     #[serde(default)]
     fallback_accounts: Vec<String>,
+    /// The org's browser profile name; `<org>/<name>`. Absent is `default`.
+    #[serde(default)]
+    browser_profile: Option<String>,
     #[serde(default)]
     projects: Vec<ProjectEntry>,
 }
@@ -441,6 +443,10 @@ struct ProjectEntry {
     /// Every key is optional, so a project sets the one it disagrees on.
     #[serde(default)]
     handoff: Option<HandoffSettings>,
+    /// This project's browser profile name; `<org>/<name>`. Absent keeps
+    /// the org's.
+    #[serde(default)]
+    browser_profile: Option<String>,
 }
 
 /// Hand-written because a project's env may carry secrets, which the
@@ -460,6 +466,7 @@ impl std::fmt::Debug for ProjectEntry {
             .field("env_file", &self.env_file)
             .field("vault_roots", &self.vault_roots)
             .field("handoff", &self.handoff)
+            .field("browser_profile", &self.browser_profile)
             .finish()
     }
 }
@@ -657,6 +664,9 @@ fn validate_handoff_settings(
 
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
+    /// Each org's resolved browser profile name, keyed by org name: what
+    /// the boot's profile resolver reads to place an org's browsers.
+    pub org_browser_profiles: HashMap<String, String>,
     /// Index into `projects` for the default startup target -
     /// alphabetically-first project that carries `auto_start = true`,
     /// falling back to the alphabetically-first project overall
@@ -698,7 +708,7 @@ pub(crate) struct LoadedConfig {
     /// which is the built-in rather than a pin.
     pub client: ClientConfig,
     /// `[browser]` section knobs, resolved: the encoding rate and quality,
-    /// and the idle release's two bounds. Absent section keeps the defaults.
+    /// and the idle release's bound. Absent section keeps the defaults.
     pub browser: BrowserSettings,
     /// The ceiling on one handed document, in bytes: `[documents]
     /// max_size_mib` resolved, 10 MiB when the key is absent. Read by the
@@ -718,6 +728,7 @@ impl std::fmt::Debug for LoadedConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedConfig")
             .field("projects", &self.projects)
+            .field("org_browser_profiles", &self.org_browser_profiles)
             .field("default_index", &self.default_index)
             .field("accounts", &self.accounts)
             .field("models", &self.models)
@@ -789,6 +800,9 @@ pub(crate) struct LoadedProject {
     /// This project's handoff table, unresolved; `None` inherits the
     /// top-level one entirely.
     pub handoff: Option<HandoffSettings>,
+    /// The browser profile this project's sessions drive: the project's
+    /// override, else the org's, else `<org>/default`.
+    pub browser_profile: ProfileKey,
 }
 
 /// Hand-written because a project's env may carry secrets (`env_file`
@@ -812,6 +826,7 @@ impl std::fmt::Debug for LoadedProject {
             .field("permission_mode", &self.permission_mode)
             .field("vault_roots", &self.vault_roots)
             .field("handoff", &self.handoff)
+            .field("browser_profile", &self.browser_profile)
             .finish()
     }
 }
@@ -858,6 +873,7 @@ impl LoadedConfig {
     pub(crate) fn empty_for_test() -> Self {
         Self {
             projects: Vec::new(),
+            org_browser_profiles: HashMap::new(),
             default_index: 0,
             accounts: Vec::new(),
             models: HashMap::new(),
@@ -1068,8 +1084,8 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             target: "forge_workspace::config",
             event_name = "client_browser_idle_keys_ignored",
             "[client] browser_idle_minutes and browser_grace_minutes are no longer read; \
-             [browser] idle_minutes and grace_minutes are the authority, so the two keys \
-             and their values can be deleted",
+             [browser] idle_minutes is the authority, so the two keys and their values \
+             can be deleted",
         );
     }
 
@@ -1249,6 +1265,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     let mut seen_project_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     let mut projects: Vec<LoadedProject> = Vec::new();
+    let mut org_browser_profiles: HashMap<String, String> = HashMap::new();
     for org_entry in parsed.orgs {
         if !seen_org_names.insert(org_entry.name.clone()) {
             return Err(WorkspaceError::DuplicateOrg { path, name: org_entry.name });
@@ -1271,6 +1288,21 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         if org_entry.projects.is_empty() {
             return Err(WorkspaceError::EmptyOrg { path, org: org_entry.name });
         }
+        let org_profile = match org_entry.browser_profile.as_deref() {
+            Some(name) => ProfileKey::of(&org_entry.name, name).map_err(|why| {
+                WorkspaceError::ConfigInvalid {
+                    path: path.clone(),
+                    message: format!("[[orgs]] browser_profile: {why}"),
+                }
+            })?,
+            None => ProfileKey::of(&org_entry.name, "default").map_err(|why| {
+                WorkspaceError::ConfigInvalid {
+                    path: path.clone(),
+                    message: format!("[[orgs]] name: {why}"),
+                }
+            })?,
+        };
+        org_browser_profiles.insert(org_entry.name.clone(), org_profile.name().to_owned());
         for project_entry in org_entry.projects {
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
@@ -1303,6 +1335,15 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                     &format!("project \"{}\"", project_entry.name),
                 )?;
             }
+            let browser_profile = match project_entry.browser_profile.as_deref() {
+                Some(name) => ProfileKey::of(&org_entry.name, name).map_err(|why| {
+                    WorkspaceError::ConfigInvalid {
+                        path: path.clone(),
+                        message: format!("[[orgs.projects]] browser_profile: {why}"),
+                    }
+                })?,
+                None => org_profile.clone(),
+            };
             projects.push(LoadedProject {
                 name: project_entry.name.clone(),
                 path: expand_home(&project_entry.path),
@@ -1317,6 +1358,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 permission_mode,
                 vault_roots,
                 handoff: project_entry.handoff,
+                browser_profile,
             });
             // The project model must be served by at least one account
             // the org can reach: a typo would boot clean, stamp all the
@@ -1432,6 +1474,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 
     Ok(LoadedConfig {
         projects,
+        org_browser_profiles,
         default_index,
         accounts,
         models: parsed.models,
@@ -1934,7 +1977,7 @@ max_size_mib = 0
     /// **A config written before the idle pair moved still boots.** The old
     /// `[client]` keys are declared ghosts, and `[browser]` stays the
     /// authority: a synced `forge.toml` carrying both loads with the new
-    /// section's values.
+    /// section's value.
     #[test]
     fn the_old_client_idle_keys_do_not_fail_the_load() {
         let dir = tempdir().expect("tempdir");
@@ -1942,13 +1985,12 @@ max_size_mib = 0
             dir.path(),
             &format!(
                 "{}\n[client]\nbrowser_idle_minutes = 45\nbrowser_grace_minutes = 15\n\n\
-                 [browser]\nidle_minutes = 5\ngrace_minutes = 2\n",
+                 [browser]\nidle_minutes = 5\n",
                 minimal_config()
             ),
         );
         let config = load_from_dir(dir.path()).expect("the old keys are ignored, not refused");
         assert_eq!(config.browser.idle_minutes, 5, "[browser] is the authority");
-        assert_eq!(config.browser.grace_minutes, 2, "for both clocks");
     }
 
     /// **`[browser]` carries the encoding and the idle release.** An absent
@@ -1961,7 +2003,7 @@ max_size_mib = 0
         write_config(
             dir.path(),
             &format!(
-                "{}\n[browser]\nfps = 30\nquality = 90\nidle_minutes = 45\ngrace_minutes = 15\n",
+                "{}\n[browser]\nfps = 30\nquality = 90\nidle_minutes = 45\n",
                 minimal_config()
             ),
         );
@@ -1969,7 +2011,6 @@ max_size_mib = 0
         assert_eq!(config.browser.fps, 30);
         assert_eq!(config.browser.quality, 90);
         assert_eq!(config.browser.idle_minutes, 45);
-        assert_eq!(config.browser.grace_minutes, 15);
 
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
@@ -1993,6 +2034,113 @@ max_size_mib = 0
             let rendered = format!("{refused}");
             assert!(rendered.contains("[browser]"), "{rendered}");
         }
+    }
+
+    /// **A profile key resolves per project**: the org's `browser_profile`
+    /// is the fallback, a project's own key replaces it, and an org that
+    /// declares neither resolves to `<org>/default`.
+    #[test]
+    fn an_org_profile_is_the_fallback_and_a_project_override_wins() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[accounts]]
+display_name = "main"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[[orgs]]
+name = "Busytools"
+accounts = ["main"]
+browser_profile = "work"
+
+  [[orgs.projects]]
+  name = "forge"
+  path = "/tmp/forge"
+
+  [[orgs.projects]]
+  name = "apply"
+  path = "/tmp/apply"
+  browser_profile = "job"
+
+[[orgs]]
+name = "Personal"
+accounts = ["main"]
+
+  [[orgs.projects]]
+  name = "notes"
+  path = "/tmp/notes"
+"#,
+        );
+        let loaded = load_from_dir(dir.path()).expect("the config loads");
+        let key = |name: &str| {
+            loaded
+                .projects
+                .iter()
+                .find(|project| project.name == name)
+                .map(|project| project.browser_profile.as_str().to_owned())
+                .expect("the project")
+        };
+        assert_eq!(key("forge"), "Busytools/work", "the org's profile is the fallback");
+        assert_eq!(key("apply"), "Busytools/job", "a project override replaces it");
+        let personal = loaded
+            .projects
+            .iter()
+            .find(|project| project.org == "Personal")
+            .expect("the personal project");
+        assert_eq!(personal.browser_profile.as_str(), "Personal/default", "no key is default");
+        assert_eq!(
+            loaded.org_browser_profiles.get("Busytools").map(String::as_str),
+            Some("work"),
+            "the org map carries what the boot's resolver reads",
+        );
+        assert_eq!(
+            loaded.org_browser_profiles.get("Personal").map(String::as_str),
+            Some("default"),
+        );
+    }
+
+    #[test]
+    fn an_invalid_profile_name_fails_the_load_and_names_the_key() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[accounts]]
+display_name = "main"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[[orgs]]
+name = "Busytools"
+accounts = ["main"]
+browser_profile = "two words"
+
+  [[orgs.projects]]
+  name = "forge"
+  path = "/tmp/forge"
+"#,
+        );
+        let why = load_from_dir(dir.path()).expect_err("the load refuses");
+        let text = format!("{why}");
+        assert!(text.contains("browser_profile"), "the key is named: {text}");
+        assert!(text.contains("two words"), "the value is named: {text}");
+    }
+
+    /// The idle default is half an hour, and the grace key is gone: the
+    /// next spawn is what picks a closed profile up, so there is no owner
+    /// left to warn and nothing for a second clock to do.
+    #[test]
+    fn the_browser_idle_default_is_thirty_minutes_and_grace_is_gone() {
+        let settings = BrowserSettings::default();
+        assert_eq!(settings.idle_minutes, 30);
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[browser]\ngrace_minutes = 5\n", minimal_config()));
+        let why = load_from_dir(dir.path()).expect_err("a removed key is refused");
+        assert!(format!("{why}").contains("grace_minutes"), "the key is named: {why}");
     }
 
     /// A section that never binds cannot stop the boot: a stale port on a
