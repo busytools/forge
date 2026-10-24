@@ -192,3 +192,6 @@ That last check depends on serde's own unknown-variant message, which it
 formats rather than contracts: the parse finds nothing if the wording
 changes, and the emptiness assertion fails loudly rather than the
 comparison passing against an empty set.
+
+<!-- path-filter proof: docs-only change against ci-speed -->
+
