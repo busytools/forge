@@ -357,8 +357,7 @@ describe('what one update asks of the fleet', () => {
     expect(coversHome('accounts_changed')).toBe(true);
     // **A plugin update is not home news.** The inventory is the extensions
     // subject's read, and no `HomeWire` field carries it; the keyless arm
-    // used to accept it as a refresh for a 72 KB answer that could not
-    // differ.
+    // used to accept it as a refresh for an answer that could not differ.
     expect(coversHome({ plugins_inventory_updated: {} })).toBe(false);
     expect(coversHome({ plugins_update_run_progress: {} })).toBe(false);
     // A turn's own words on a watched seat are neither fleet news nor
@@ -583,13 +582,13 @@ describe('the variant census', () => {
  * The home's coverage of every variant, which is the predicate a read is
  * spent on.
  *
- * `coversHome` decides whether one update is answered with a 72 KB snapshot,
- * and before this census its keyless half was "everything with no seat":
- * a plugin run's progress asked the home for an answer that cannot carry it.
- * The two tables in `fleet.ts` are the decision. This block holds them to the
- * enum and to the predicate, so a variant added, renamed or dropped is a red
- * build that names it rather than a page that quietly stops following
- * something or quietly reads for nothing.
+ * `coversHome` decides whether one update is answered with a full snapshot
+ * encode, and before this census its keyless half was "everything with no
+ * seat": a plugin run's progress asked the home for an answer that cannot
+ * carry it. The two tables in `fleet.ts` are the decision. This block holds
+ * them to the enum and to the predicate, so a variant added, renamed or
+ * dropped is a red build that names it rather than a page that quietly stops
+ * following something or quietly reads for nothing.
  */
 describe('the home variant census', () => {
   /** The variants that cross as a bare string, since they carry no payload. */
@@ -615,10 +614,10 @@ describe('the home variant census', () => {
     const news = new Set(serverArms().map((name) => snake(name)));
     const keyed = new Set(serverSlots().keyed.map((name) => snake(name)));
 
-    // The denominator: a parse that stopped early would find every name it
-    // did read classified, which is the shape of a clean run over nothing.
+    // The parse's own denominator: a run that stopped early would find every
+    // name it did read classified, which is the shape of a clean run over
+    // nothing. The enum's variant count is asserted by the fleet census above.
     expect(closed, 'the parse never reached the end of `SessionUpdate`').toBe(true);
-    expect(names.length, 'the enum read a different count than the one it holds').toBe(70);
 
     // A variant is decided by one of four tables: a fleet arm, the fleet's
     // not-news list, or one of the home's two. A new variant in none is the
@@ -710,24 +709,34 @@ describe('the home variant census', () => {
     }
   });
 
-  it('keeps the slot-less tables to the variants that really carry no seat', () => {
+  /**
+   * **Every keyless variant has a home decision, both ways round.**
+   *
+   * The server delivers every slot-less variant to a home subscriber
+   * (`envelope.rs`), so a keyless variant nobody has decided about is one
+   * that reaches the home and is silently dropped here - the failure this
+   * block exists to make loud, and the forward check the fleet census makes
+   * cannot see it. The board's own two are keyed on the project's lead and
+   * are named for the snapshot's history rather than for the keyless arm.
+   */
+  it('decides every keyless variant, in exactly one home table', () => {
     const seatless = new Set(serverSlots().seatless.map((name) => snake(name)));
-    // The board's own two are keyed on the project's lead, and they are named
-    // here for the snapshot's history rather than for the keyless arm.
     const keyedByDesign = new Set(['cron_schedules_changed', 'connector_subscriptions_changed']);
 
     expect(seatless.size, 'the seat-less arm was not read out of protocol.rs').toBeGreaterThan(3);
+
     const wrong = [...HOME_WAKES.keys(), ...HOME_IGNORES.keys()].filter(
       (name) => !seatless.has(name) && !keyedByDesign.has(name),
     );
     expect(wrong, 'a table says slot-less about a variant that carries a seat').toEqual([]);
-  });
 
-  it('does not answer a read for the plugin family the extensions page draws', () => {
-    const pluginFamily = [...HOME_IGNORES.keys()].filter((name) => name.startsWith('plugins_'));
-    expect(pluginFamily.length, 'the plugin family left the ignore table').toBe(8);
-    for (const name of pluginFamily) {
-      expect(coversHome({ [name]: {} }), `${name} asked the home for a read`).toBe(false);
-    }
+    const undecided = [...seatless].filter(
+      (name) => !HOME_WAKES.has(name) && !HOME_IGNORES.has(name),
+    );
+    expect(
+      undecided,
+      'a keyless variant reaches every home subscriber and neither table decides its read: ' +
+        'say which field of the snapshot carries it, or why none does',
+    ).toEqual([]);
   });
 });
