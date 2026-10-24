@@ -163,7 +163,7 @@ const DEFAULT_LEAD_CHARTER: &str = include_str!("spawn/lead_charter.md");
 /// Stamp [`DEFAULT_LEAD_CHARTER`] onto the launch settings so every lead
 /// session carries one. No-op when a charter is already set - worker
 /// spawns supply their own and we never overwrite it.
-fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
+pub(crate) fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
     if settings.charter.is_some() {
         return;
     }
@@ -371,9 +371,9 @@ pub(crate) fn handle_deliver_peer_prompt(
         let uuid = forge_sdk::request_id::next_prompt_id();
         push_peer_user_turn_into_chat(workspace, &target_key, &wrapped, &uuid);
         let text = wrapped.to_prose();
-        if let Err(err) =
-            workspace.dispatch_workspace_prompt_under(&target_key, text, PromptSource::Peer, uuid)
-        {
+        // The peer path keeps the sender: a swap's hold answers that seat if
+        // the handoff never reaches a successor.
+        if let Err(err) = workspace.dispatch_peer_prompt_under(caller, &target_key, text, uuid) {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 target_project = %target_project,

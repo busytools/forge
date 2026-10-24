@@ -39,6 +39,7 @@
  * they duplicate that surface inside every turn that used one.
  */
 
+import { handoffOf, type HandoffRecord } from '../wire/handoff';
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
 import {
@@ -394,6 +395,16 @@ export type Unit =
       postTokens: number | null;
       summary: string | null;
     }
+  /**
+   * The row between two sessions: the one forge swapped, why, and the brief
+   * the successor was given.
+   *
+   * The wire carries it as a `handoff` update of its own, and the client
+   * forges the turn this unit folds from - the CLI wrote no such row, so a
+   * read and a stream both come through here rather than through the
+   * transcript.
+   */
+  | { kind: 'handoff'; key: string; handoff: HandoffRecord }
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; key: string; info: TurnInfo };
 
@@ -437,6 +448,8 @@ interface Frame {
   exit_code?: unknown;
   /** `NoticeSeverity`, on the core's own line about a command. */
   severity?: unknown;
+  /** The record the handoff row folds from, on forge's own frame. */
+  handoff?: unknown;
   output?: unknown;
   stdout?: unknown;
   stderr?: unknown;
@@ -2206,6 +2219,17 @@ export function fold(
       continue;
     }
 
+    // The handoff row: a frame forge mints for its own row, never a
+    // transcript's. It ends the run above it, because the two conversations
+    // meet at it and nothing below is the same work.
+    if (frame.type === 'forge_handoff') {
+      const handoff = handoffOf(frame.handoff);
+      if (handoff !== null) {
+        push({ kind: 'handoff', key: `h-${at}`, handoff });
+      }
+      continue;
+    }
+
     if (frame.type !== 'assistant' && frame.type !== 'user') continue;
 
     // What the frame attached, read before its blocks are walked: the wire
@@ -2223,6 +2247,10 @@ export function fold(
           // typing in the launch terminal, and the view this client replaced
           // filtered the same heads. A decided ignore, not a dropped frame.
           if (isLocalCommand(stripped)) continue;
+          // **The handoff brief is already drawn.** The handoff row carries
+          // both halves the successor was given, so the prompt that delivered
+          // them is not a second row: filtered, not lost.
+          if (stripped.startsWith('HANDOFF - ')) continue;
           // A background task's end arrives as a user frame nobody typed -
           // the CLI's `<task-notification>` envelope - and draws as its own
           // summary line, never as the raw XML and never as the reader's turn

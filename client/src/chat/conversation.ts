@@ -30,6 +30,7 @@ import { inFlightOf } from '../session/apply';
 import { watchSession } from '../session/live';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import { handoffFrame, handoffKey, handoffOf, type HandoffRecord } from '../wire/handoff';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
 import {
@@ -907,10 +908,15 @@ interface FailedLine {
   message?: unknown;
 }
 
-/** Whether a frame is the core's own line, which stands alone where it must. */
+/** Whether a frame is a row forge itself minted, which no transcript read
+ * carries: the core's own line, or the handoff row. A turn of nothing but
+ * these is no walk's target, because no page ever answers with one. */
 function isForgeNotice(message: unknown): boolean {
   const frame = message as { type?: unknown; subtype?: unknown } | null;
-  return frame?.type === 'system' && frame.subtype === 'forge_notice';
+  return (
+    frame?.type === 'forge_handoff' ||
+    (frame?.type === 'system' && frame.subtype === 'forge_notice')
+  );
 }
 
 /** The update's variant name, for the ones the chat acts on. */
@@ -1010,6 +1016,16 @@ export class Chat {
    * for the same reason (`session/live.ts`).
    */
   private held: Conversation = NOTHING;
+  /**
+   * The turns a handoff keeps across the swap that follows it.
+   *
+   * **A `/new` clears the seat's conversation; a handoff does not.** The row
+   * says two conversations met, so the one above it stays - the reader's own
+   * work does not vanish because the session did. Held here between the
+   * `handoff` frame and the `session_replaced` that lands the successor, and
+   * taken by [`Self::replaced`].
+   */
+  private carried: { turns: Turn[]; to: string } | null = null;
   /** The frame a publish is waiting for, or `null`. */
   private queued: number | null = null;
   /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
@@ -1857,12 +1873,18 @@ export class Chat {
           // so its snapshot cannot steal an older ask's in-flight bookkeeping.
           const fresh = !this.held.loaded;
           this.heard(runningOf(message.data));
+          const data = (message.data ?? {}) as { conversation?: unknown };
+          const conversation = (data.conversation ?? {}) as {
+            turns?: unknown;
+            cursor?: unknown;
+            handoff?: unknown;
+          };
+          // **A client attaching after the swap draws the row the record
+          // carries**, because the successor's transcript never holds it and
+          // the live frame it arrived on is long gone.
+          const record = handoffOf(conversation.handoff);
+          if (record !== null) this.seedHandoffTurn(record);
           if (fresh) {
-            const data = (message.data ?? {}) as { conversation?: unknown };
-            const conversation = (data.conversation ?? {}) as {
-              turns?: unknown;
-              cursor?: unknown;
-            };
             const rows = pageTurns(conversation.turns);
             if (rows.length > 0) {
               if (!Object.hasOwn(conversation, 'cursor')) {
@@ -2584,7 +2606,40 @@ export class Chat {
    * which occupant it came from - so what is held has to be nothing, and the
    * ask has to go out after the swap rather than before it.
    */
-  private replaced(): void {
+  /**
+   * Draw the row a live swap announced, and hold the conversation above it
+   * for the `session_replaced` that follows.
+   *
+   * A swap is two frames: the row, then the new occupant. The row is added
+   * before the clear so the turns it joins are the ones whose work it
+   * describes.
+   */
+  private holdHandoff(handoff: HandoffRecord): void {
+    this.seedHandoffTurn(handoff);
+    // **The successor's id rides with the turns.** A swap that never lands
+    // (a failed spawn, a dropped socket) leaves this set, and the next
+    // `session_replaced` from anything else - a plain `/new` - must not read
+    // it as its own continuation.
+    this.carried = { turns: this.held.turns, to: handoff.to };
+  }
+
+  /** Put the row in the conversation once, wherever it is missing: the live
+   * frame and a seat record's copy are the same row by its key. */
+  private seedHandoffTurn(handoff: HandoffRecord): void {
+    const key = handoffKey(handoff);
+    if (this.held.turns.some((turn) => turn.key === key)) return;
+    const turn: Turn = { key, messages: [handoffFrame(handoff)], live: false };
+    this.fold((held) => ({ ...held, turns: [...held.turns, turn] }));
+  }
+
+  private replaced(occupant: string | null): void {
+    // Only the session the handoff named continues the conversation above
+    // the row; any other replacement is a plain occupant change and clears.
+    const carried =
+      this.carried !== null && occupant !== null && this.carried.to === occupant
+        ? this.carried.turns
+        : null;
+    this.carried = null;
     const held = this.inFlight !== null;
     if (held) this.abandoned += 1;
     this.inFlight = null;
@@ -2617,7 +2672,11 @@ export class Chat {
     this.pageFloor = null;
     this.pageCursor = null;
     this.seedFloor = null;
-    this.held = NOTHING;
+    // **A handoff keeps the conversation; a plain `/new` clears it.** The row
+    // between them says two sessions met, so what the reader was reading
+    // stays above it - and the successor is fresh, so there is no page above
+    // the carried turns to fetch.
+    this.held = carried === null ? NOTHING : { ...NOTHING, turns: carried, loaded: true };
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
     // zeroes the count the column drains against, so a column that was holding
@@ -2640,7 +2699,12 @@ export class Chat {
     // and nothing re-subscribes it, so no snapshot follows to seed the new
     // occupant - this ask is the only way its page arrives. It is therefore
     // `ask` rather than the guarded `refresh`.
-    this.ask(null);
+    //
+    // **A handoff's successor needs no page**: it is a fresh session whose
+    // history is empty, and the row the reader keeps above it would be
+    // replaced by whatever a read answered about a conversation it did not
+    // join.
+    if (carried === null) this.ask(null);
   }
 
   /**
@@ -2758,10 +2822,19 @@ export class Chat {
       this.append(message, !repaired && textIn(update, 'chat_appended', 'source') === 'you');
       return;
     }
+    // The seat changed occupant by a handoff. The row is drawn here, and the
+    // conversation above it is remembered: the `session_replaced` that lands
+    // the successor must not clear the work the reader was reading.
+    if (variant === 'handoff') {
+      const record = (update as { handoff?: { handoff?: unknown } }).handoff?.handoff;
+      const handoff = handoffOf(record);
+      if (handoff !== null) this.holdHandoff(handoff);
+      return;
+    }
     // The seat changed occupant under this column - a `/new`, a `/resume`, a
     // login or a logout - so what is drawn is another session's conversation.
     if (variant === 'session_replaced') {
-      this.replaced();
+      this.replaced(textIn(update, 'session_replaced', 'session_id'));
       return;
     }
     // A process that is gone takes its queue with it: no lifecycle frame is
@@ -2776,6 +2849,8 @@ export class Chat {
       this.waiting.clear();
       this.drained.clear();
       this.plainDrawn.clear();
+      // A fresh connect is its own occupant, not a handoff's successor.
+      this.carried = null;
       return;
     }
     // The answer to the row's own ask, kept where the row reads it: by the
@@ -2799,6 +2874,9 @@ export class Chat {
       this.waiting.clear();
       this.drained.clear();
       this.plainDrawn.clear();
+      // A handoff whose spawn failed has no successor: the conversation is
+      // not carried by whatever replacement comes next.
+      this.carried = null;
       const failed = (update as { connection_failed?: { message?: unknown } }).connection_failed;
       const why = failed?.message;
       if (typeof why === 'string' && why !== '') {

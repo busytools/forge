@@ -20,6 +20,7 @@ use tracing::Instrument;
 
 use crate::SessionSlot;
 use crate::domain_session::{DomainSession, PendingAutoContinue};
+use crate::handoff;
 use crate::protocol::{
     Command, NoticeSeverity, PendingInteractionSlot, PromptSource, SessionUpdate,
 };
@@ -59,6 +60,11 @@ pub(crate) struct SessionTask {
     /// to what is RUNNING rather than to what is being read - which is the
     /// price of having one producer rather than two.
     pub(crate) conversation: Option<(crate::conversation_window::Window, u32)>,
+    /// The handoff this session arrived by, while its first ten turns are
+    /// measured. `None` for a session that arrived another way - the counts
+    /// exist to tune the trigger, and a session nobody handed to has
+    /// nothing to compare against.
+    pub(crate) successor: Option<handoff::SuccessorWatch>,
     /// Fires as this task drops - after `run`'s exit path has disconnected
     /// the subprocess (waited it out up to the close-wait budget, then
     /// SIGKILLed it) - so a despawn can hold its worktree removal until
@@ -255,10 +261,17 @@ impl SessionTask {
         }
         // First, update DomainSession in-place.
         let nudge_armed;
+        // Whether this event closed a turn normally, which is the one
+        // boundary a handoff may act on. Captured here because the domain
+        // lock is released before the handoff runs.
+        let turn_completed;
+        let turn_cancelled;
         {
             let mut guard = self.domain.lock();
             let moved = apply_event_to_domain(&mut guard, &event);
             nudge_armed = moved.nudge;
+            turn_completed = matches!(moved.turn_ended, Some(MovedTurnEnd::Complete { .. }));
+            turn_cancelled = matches!(moved.turn_ended, Some(MovedTurnEnd::Cancelled));
             // The two sets that move whole are announced from the scope the
             // fold wrote in, so what goes out is what the core now holds -
             // and only when the fold moved it.
@@ -316,6 +329,16 @@ impl SessionTask {
                     }
                 }
             }
+        }
+        // A handoff acts only on a turn boundary: never mid-turn, and never
+        // on a transport-died one. A cancelled judgment turn is the reader
+        // stopping the prompt the brief was coming from, which ends the
+        // handoff rather than finishing it.
+        if turn_completed {
+            self.after_turn_ended();
+        }
+        if turn_cancelled {
+            self.abort_cancelled_handoff();
         }
 
         // Mirror Connected into the project catalog so the Projects
@@ -432,6 +455,11 @@ impl SessionTask {
                 // login or logout arrives as a Connected on a task that
                 // has already connected once, and its row predates it.
                 let replacing = self.connected_once;
+                if replacing {
+                    // A successor that is replaced before its ten turns is
+                    // no longer the session the handoff wrote for.
+                    self.successor = None;
+                }
                 if self.connected_once {
                     // Drop oneshots from the previous identity so parked
                     // forwarder tasks exit instead of waiting on
@@ -515,6 +543,60 @@ impl SessionTask {
                         key: key.clone(),
                         overrides: crate::dictate::DictateOverrides::default(),
                     });
+                    // **Only the successor the brief names consumes it.** A
+                    // login or logout can replace the occupant while the swap
+                    // is in flight, and that session is not the one the brief
+                    // was written for - so it neither takes the brief nor
+                    // draws a row it did not join. The gate closes either way:
+                    // the seat is no longer the handoff's, and what it held is
+                    // handed to whoever is here now.
+                    let awaited_successor = self.workspace.upgrade().is_some_and(|workspace| {
+                        workspace
+                            .pending_brief_for(&key)
+                            .is_some_and(|brief| brief.to == session_id)
+                    });
+                    // The swap's gate opens before the brief is delivered, so
+                    // the brief itself is not taken by it - and what waited
+                    // during the swap follows the brief, in arrival order.
+                    let held = self.workspace.upgrade().map(|workspace| workspace.end_swap(&key));
+                    if awaited_successor {
+                        self.deliver_pending_brief(&key, &session_id);
+                    }
+                    // **The successor's measurement is armed HERE**, on the
+                    // connect a handoff actually lands as - the replacement
+                    // branch, not the first connect a boot would take. Its
+                    // brief turn is the next boundary and is not one of the
+                    // ten.
+                    self.successor = self.workspace.upgrade().and_then(|workspace| {
+                        workspace.handoff_for_successor(&key, &session_id).map(
+                            |(record, predecessor_reads)| handoff::SuccessorWatch {
+                                to: record.to,
+                                turns: 0,
+                                predecessor_reads,
+                                skip_brief_turn: true,
+                            },
+                        )
+                    });
+                    if let (Some(workspace), Some(held)) = (self.workspace.upgrade(), held) {
+                        for prompt in held {
+                            let uuid = forge_sdk::request_id::next_forged_prompt_id();
+                            if let Err(error) = workspace.dispatch(Command::PromptUnder {
+                                key: key.clone(),
+                                text: prompt.text,
+                                attachments: prompt.attachments,
+                                uuid,
+                                source: prompt.source,
+                            }) {
+                                tracing::warn!(
+                                    target: "forge_workspace::session_task",
+                                    event_name = "handoff_held_prompt_delivery_failed",
+                                    slot = %key.display(),
+                                    %error,
+                                    "a prompt held during the handoff could not be delivered",
+                                );
+                            }
+                        }
+                    }
                 } else {
                     self.connected_once = true;
                     // When the connecting session is a project's lead and
@@ -526,6 +608,19 @@ impl SessionTask {
                         let force_new = self.domain.lock().spawned_force_new;
                         maybe_respawn_workers_on_connected(&workspace, &self.key, force_new);
                         maybe_kick_worker_on_connected(&workspace, &self.key);
+                        // A session that arrived by a handoff is measured for
+                        // its first ten turns, which is what says whether the
+                        // brief carried enough. This is the boot/resume
+                        // path: any brief turn is already in the transcript,
+                        // so nothing is skipped here.
+                        self.successor = workspace
+                            .handoff_for_successor(&self.key, &session_id)
+                            .map(|(record, predecessor_reads)| handoff::SuccessorWatch {
+                                to: record.to,
+                                turns: 0,
+                                predecessor_reads,
+                                skip_brief_turn: false,
+                            });
                     }
                     // A boot resolves a session from the store, so the id
                     // the CLI adopted is recorded rather than left to the
@@ -648,6 +743,33 @@ impl SessionTask {
                         &self.key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
+                    // A handoff whose successor never came up has no
+                    // occupant to give its brief to; the row stays and
+                    // `/resume <old-id>` is the recovery. A prompt held for
+                    // that successor is told it did not run rather than
+                    // vanishing with the swap.
+                    workspace.clear_pending_brief(&self.key);
+                    for prompt in workspace.end_swap(&self.key) {
+                        // **A peer's sender hears it, the way the parked
+                        // bucket answers one.** A cron or a person's prompt
+                        // has no sender but the seat, so the seat is told.
+                        if let Some(sender) = &prompt.sender {
+                            workspace.notice_undelivered_message(
+                                sender,
+                                &self.key,
+                                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                            );
+                            continue;
+                        }
+                        let first = prompt.text.lines().next().unwrap_or_default();
+                        self.emit(SessionUpdate::Notice {
+                            key: self.key.clone(),
+                            severity: NoticeSeverity::Error,
+                            text: format!(
+                                "the handoff failed before this prompt could run: {first}"
+                            ),
+                        });
+                    }
                     // Worker async spawn failure: classify the
                     // failure, dispatch a typed
                     // WorkerSpawnFailedNotice envelope to the lead's
@@ -819,17 +941,32 @@ impl SessionTask {
                     terminal_reason: None,
                 });
             }
-            AgentEvent::ContextUsage { percentage, max_tokens, .. } => {
+            AgentEvent::ContextUsage {
+                session_id,
+                percentage,
+                max_tokens,
+                total_tokens,
+                effective_max_tokens,
+            } => {
                 self.emit(SessionUpdate::ContextUsageSnapshot {
                     key: self.key.clone(),
                     percentage,
                     max_tokens,
                 });
+                self.evaluate_handoff_trigger(
+                    &session_id,
+                    percentage,
+                    total_tokens,
+                    effective_max_tokens,
+                );
             }
             AgentEvent::McpSnapshot { servers, error, .. } => {
                 self.emit(SessionUpdate::McpSnapshot { key: self.key.clone(), servers, error });
             }
             AgentEvent::SdkMessage { msg, .. } => {
+                // The judgment turn is forge's own prompt, so the last
+                // assistant text before it ends is the half it wrote.
+                self.capture_judgment(&msg);
                 // A rate-limit window that is not `allowed` proves the
                 // bound account exhausted: report it so the gateway
                 // cools the account down and drops this session's
@@ -929,6 +1066,20 @@ impl SessionTask {
                 if let forge_primitives::Message::CommandLifecycle { command_uuid, state, .. } =
                     &msg
                 {
+                    // **The judgment prompt's own start is what makes the
+                    // next turn end its turn.** Without that, the end of any
+                    // other turn (a continuation, a prompt sent before the
+                    // decision) would be read as the reply the brief is
+                    // built from.
+                    {
+                        let mut domain = self.domain.lock();
+                        if state == "started"
+                            && domain.handoff.judgment_uuid.as_deref()
+                                == Some(command_uuid.as_str())
+                        {
+                            domain.handoff.judgment_started = true;
+                        }
+                    }
                     let known = { self.domain.lock().advance_queued_prompt(command_uuid, state) };
                     // Only the states that IMPLY a row: a prompt's `completed`
                     // or `cancelled` follows the row's own removal at
@@ -1022,7 +1173,22 @@ impl SessionTask {
     /// doing, not a transcript of everything it printed.
     const CALL_OUTPUT_MAX_LINES: usize = 12;
 
-    fn execute_command(&self, cmd: Command) {
+    fn execute_command(&mut self, cmd: Command) {
+        // **The judgment prompt is the one the swap's gate lets through.**
+        // Recognised by the id the handoff recorded for it, so nothing else
+        // can pass on its word.
+        let judgment_prompt = matches!(
+            &cmd,
+            Command::PromptUnder { uuid, .. }
+                if self.domain.lock().handoff.judgment_uuid.as_deref() == Some(uuid.as_str())
+        );
+        // A person's prompt arriving while the seat swaps its occupant waits
+        // for the successor, exactly as a peer or cron delivery does. It is
+        // held before its queued row is recorded, because no session is
+        // going to run it here.
+        if !judgment_prompt && held_while_swapping(&cmd, &self.key, &self.workspace) {
+            return;
+        }
         // A prompt's queued row is recorded here, where its id is minted (or
         // is already the caller's) and its source is known: the lifecycle
         // frames that follow name only the id and the state, so this is the
@@ -1192,15 +1358,23 @@ impl SessionTask {
                 };
                 self.emit(SessionUpdate::CallOutput { key: self.key.clone(), call_id, output });
             }
+            // Answered by this task's own state machine: a handoff asks for
+            // its brief in a turn of its own and only swaps at a turn end.
+            Command::Handoff { key: _, brief } => {
+                self.request_handoff(forge_primitives::HandoffReason::Manual, brief);
+            }
             other => {
                 let sid = self.session_id_string();
                 // `/new` starts under an id minted here, so the row this
                 // session belongs to names the new session from the moment
                 // it starts rather than the one it replaces.
-                let fresh = if matches!(other, Command::NewSession { .. }) {
-                    self.fresh_session_id()
-                } else {
-                    None
+                // A handoff supplies the id it wrote into its row; `/new`
+                // mints one here.
+                let fresh = match &other {
+                    Command::NewSession { session_id, .. } => {
+                        session_id.clone().or_else(|| self.fresh_session_id())
+                    }
+                    _ => None,
                 };
                 // The id the respawned child runs under: the one minted
                 // above for `/new`, the transcript's own for `/resume`.
@@ -1217,10 +1391,9 @@ impl SessionTask {
                 // `/new` are built without it, so re-deliver the charter
                 // the store holds for this slot.
                 //
-                // Workers only. A lead's own instructions are appended to
-                // its prompt by the spawn, and the store holds no charter
-                // for a lead row, so a lead that runs `/new` still comes
-                // back without `LEAD_DELEGATION_PREAMBLE`.
+                // Workers only here: a lead has no stored row to read one
+                // from, and `stamp_respawn_overrides` below rebuilds its
+                // charter and its `LEAD_DELEGATION_PREAMBLE` instead.
                 let mut other = other;
                 if let Command::NewSession { launch_settings, .. } = &mut other
                     && let Some(charter) =
@@ -1356,6 +1529,495 @@ impl SessionTask {
     /// row to record against, which leaves the CLI to pick its own id.
     fn fresh_session_id(&self) -> Option<String> {
         Some(self.workspace.upgrade()?.fresh_session_id_for(&self.key))
+    }
+
+    /// Give a successor the brief its swap wrote, as its first turn. The row
+    /// went out before this connect, so the brief lands below it.
+    fn deliver_pending_brief(&mut self, key: &SessionSlot, occupant: &str) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let Some(pending) = workspace.take_pending_brief(key) else { return };
+        if pending.to != occupant {
+            tracing::debug!(
+                target: "forge_workspace::session_task",
+                event_name = "handoff_brief_occupant_mismatch",
+                slot = %key.display(),
+                written_for = %pending.to,
+                occupant = %occupant,
+                "the handoff brief was written for another occupant; it is not given",
+            );
+            return;
+        }
+        let uuid = forge_sdk::request_id::next_forged_prompt_id();
+        if let Err(error) = workspace.dispatch_handoff_brief(key, pending.text, uuid) {
+            tracing::warn!(
+                target: "forge_workspace::session_task",
+                event_name = "handoff_brief_delivery_failed",
+                slot = %key.display(),
+                %error,
+                "the handoff brief could not be delivered to its successor",
+            );
+            // **The successor is told.** A seat that connected and got no
+            // brief looks like a session that started empty; the row above it
+            // says otherwise, so the failure is stated rather than inferred.
+            self.emit(SessionUpdate::Notice {
+                key: key.clone(),
+                severity: NoticeSeverity::Error,
+                text: "the handoff brief could not be delivered to this session; the row above \
+                       names the session that handed over, and /resume reaches it"
+                    .to_owned(),
+            });
+        }
+    }
+
+    /// A handoff was asked for. The seat must be otherwise idle - no turn,
+    /// no queued prompt, nothing parked on an answer - or the request waits
+    /// for the next turn end: a handoff is never injected into a turn, and
+    /// its prompt must run as a turn of its own.
+    fn request_handoff(&mut self, reason: forge_primitives::HandoffReason, brief: Option<String>) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        if workspace.swap_in_progress(&self.key) {
+            tracing::debug!(
+                target: "forge_workspace::session_task",
+                event_name = "handoff_requested_during_swap",
+                slot = %self.key.display(),
+                "a swap is already building on this seat; this request is dropped",
+            );
+            return;
+        }
+        {
+            let mut domain = self.domain.lock();
+            if domain.handoff.in_progress() {
+                tracing::debug!(
+                    target: "forge_workspace::session_task",
+                    event_name = "handoff_already_running",
+                    slot = %self.key.display(),
+                    "a handoff is already running; this request is dropped",
+                );
+                return;
+            }
+            if !domain.is_idle_for_handoff() {
+                domain.handoff.reason = Some(reason);
+                domain.handoff.parked = Some(brief.map_or(
+                    crate::domain_session::ParkedHandoff::Ask,
+                    crate::domain_session::ParkedHandoff::Supplied,
+                ));
+                return;
+            }
+            // The reason rides to the row even on the immediate path.
+            domain.handoff.reason = Some(reason);
+        }
+        self.begin_handoff(brief);
+    }
+
+    /// Start the handoff's own turn when the caller supplied no judgment
+    /// half, or swap straight away when it did.
+    ///
+    /// **The swap's gate opens HERE**, at the decision, not when the brief is
+    /// built: everything the seat is sent from this point waits for the
+    /// successor, and only the judgment prompt is let through.
+    fn begin_handoff(&mut self, supplied: Option<String>) {
+        if self.session_id_string().is_none() {
+            self.emit(SessionUpdate::Notice {
+                key: self.key.clone(),
+                severity: NoticeSeverity::Error,
+                text: "a handoff needs a connected session; this seat has none yet".to_owned(),
+            });
+            return;
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        // **One handoff at a time on a seat.** A swap already building is a
+        // state in which this task's own request state reads as idle, so
+        // the gate is the authority, not the domain.
+        if workspace.swap_in_progress(&self.key) {
+            tracing::debug!(
+                target: "forge_workspace::session_task",
+                event_name = "handoff_begin_during_swap",
+                slot = %self.key.display(),
+                "a swap is already building on this seat; this handoff is dropped",
+            );
+            return;
+        }
+        workspace.begin_swap(&self.key);
+        let reason = self.domain.lock().handoff.reason.unwrap_or_default();
+        if let Some(text) = supplied {
+            self.swap(reason, handoff::parse_judgment(&text));
+            return;
+        }
+        let uuid = forge_sdk::request_id::next_forged_prompt_id();
+        {
+            let mut domain = self.domain.lock();
+            domain.handoff.awaiting = true;
+            domain.handoff.judgment_uuid = Some(uuid.clone());
+            domain.handoff.judgment_started = false;
+        }
+        let text = handoff::JUDGMENT_PROMPT.to_owned();
+        if let Err(error) = workspace.dispatch_handoff_prompt(&self.key, text, uuid) {
+            self.domain.lock().handoff = crate::domain_session::HandoffState::default();
+            // Nothing is coming to hand over to, so the gate must not keep
+            // holding prompts for it.
+            let held = workspace.end_swap(&self.key);
+            if !held.is_empty() {
+                tracing::warn!(
+                    target: "forge_workspace::session_task",
+                    event_name = "handoff_prompts_dropped",
+                    slot = %self.key.display(),
+                    held = held.len(),
+                    "the handoff could not ask for its brief; prompts held for it were dropped",
+                );
+            }
+            for prompt in held {
+                if let Some(sender) = &prompt.sender {
+                    workspace.notice_undelivered_message(
+                        sender,
+                        &self.key,
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                    );
+                }
+            }
+            self.emit(SessionUpdate::TurnError {
+                key: self.key.clone(),
+                message: format!("the handoff could not ask for its brief: {error}"),
+                class: None,
+                terminal_reason: None,
+            });
+        }
+    }
+
+    /// Hold the assistant text of a running judgment turn.
+    fn capture_judgment(&self, message: &forge_primitives::Message) {
+        let forge_primitives::Message::Assistant { message: envelope, .. } = message else {
+            return;
+        };
+        let mut domain = self.domain.lock();
+        if !domain.handoff.awaiting {
+            return;
+        }
+        if let Some(text) = handoff::assistant_text(&envelope.content) {
+            domain.handoff.judgment = Some(text);
+        }
+    }
+
+    /// Act on a turn that ended normally: finish a running handoff, or start
+    /// one that arrived while the turn was running.
+    fn after_turn_ended(&mut self) {
+        // **The boundary's own turn is over, and its markers clear later in
+        // the same event.** The idle gate must not read the turn that just
+        // ended as still running, or every trigger parks and waits for a
+        // turn that is never coming - which is exactly what the scratch
+        // stack found. The `Result` is the freshest word on liveness, so
+        // this is also where a stale Running mirror goes.
+        {
+            let mut domain = self.domain.lock();
+            domain.turn_pending = false;
+            domain.turn_open = false;
+            if matches!(
+                domain.runtime_state,
+                Some(
+                    forge_primitives::RuntimeSessionState::Running
+                        | forge_primitives::RuntimeSessionState::RequiresAction
+                )
+            ) {
+                domain.runtime_state = None;
+            }
+        }
+        self.advance_successor();
+        let (awaiting, started, lifecycle_correlates, parked, reason) = {
+            let mut domain = self.domain.lock();
+            let awaiting = domain.handoff.awaiting;
+            let started = domain.handoff.judgment_started;
+            // A CLI that never advertised the lifecycle frames cannot say
+            // which prompt a turn belongs to; the idle gate is then the
+            // whole of the correlation.
+            let correlates = domain.lifecycle_frames == Some(true);
+            let parked = if awaiting { None } else { domain.handoff.parked.take() };
+            (awaiting, started, correlates, parked, domain.handoff.reason.unwrap_or_default())
+        };
+        if awaiting {
+            if lifecycle_correlates && !started {
+                // Some other turn ended - the continuation a failed turn
+                // fired, or a prompt sent before the handoff. It is not the
+                // judgment turn, so its prose is not the brief.
+                tracing::debug!(
+                    target: "forge_workspace::session_task",
+                    event_name = "handoff_judgment_turn_not_ours",
+                    slot = %self.key.display(),
+                    "a turn ended without the judgment prompt starting; the handoff waits",
+                );
+                return;
+            }
+            let judgment = {
+                let mut domain = self.domain.lock();
+                let judgment = domain.handoff.judgment.take().unwrap_or_default();
+                domain.handoff.judgment_started = false;
+                judgment
+            };
+            self.swap(reason, handoff::parse_judgment(&judgment));
+            return;
+        }
+        if let Some(parked) = parked {
+            self.begin_handoff(parked.supplied());
+            return;
+        }
+        self.maybe_trigger_handoff();
+    }
+
+    /// A cancelled judgment turn ends the handoff rather than finishing it:
+    /// the reader stopped the prompt the brief was coming from, so the seat
+    /// keeps its session and what waited during the swap goes back to it.
+    fn abort_cancelled_handoff(&mut self) {
+        let (awaiting, started, correlates) = {
+            let domain = self.domain.lock();
+            (
+                domain.handoff.awaiting,
+                domain.handoff.judgment_started,
+                domain.lifecycle_frames == Some(true),
+            )
+        };
+        if !awaiting || (correlates && !started) {
+            return;
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        self.domain.lock().handoff = crate::domain_session::HandoffState::default();
+        let held = workspace.end_swap(&self.key);
+        self.emit(SessionUpdate::Notice {
+            key: self.key.clone(),
+            severity: NoticeSeverity::Info,
+            text: "the handoff's brief was cancelled; this session continues".to_owned(),
+        });
+        for prompt in held {
+            let uuid = forge_sdk::request_id::next_forged_prompt_id();
+            if let Err(error) = workspace.dispatch(Command::PromptUnder {
+                key: self.key.clone(),
+                text: prompt.text,
+                attachments: prompt.attachments,
+                uuid,
+                source: prompt.source,
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::session_task",
+                    event_name = "handoff_held_prompt_redelivery_failed",
+                    slot = %self.key.display(),
+                    %error,
+                    "a prompt held during an aborted handoff could not be handed back",
+                );
+            }
+        }
+    }
+
+    /// Count the successor's turns, and measure them at the tenth. A
+    /// successor that leaves before then goes unmeasured rather than
+    /// writing half a comparison.
+    ///
+    /// **The brief's own turn is not one of them.** The successor's first
+    /// turn is forge's prompt, which `successor_counts` skips in the
+    /// transcript; counting it here would measure nine real turns against
+    /// ten.
+    fn advance_successor(&mut self) {
+        let Some(watch) = self.successor.as_mut() else { return };
+        if watch.skip_brief_turn {
+            watch.skip_brief_turn = false;
+            return;
+        }
+        watch.turns += 1;
+        if watch.turns < handoff::SUCCESSOR_TURNS {
+            return;
+        }
+        let Some(watch) = self.successor.take() else { return };
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let cwd = workspace.cwd_for_session(&self.key).unwrap_or_default();
+        workspace.measure_successor(self.key.clone(), watch.to, cwd, watch.predecessor_reads);
+    }
+
+    /// The automatic trigger: at a turn boundary with no handoff running,
+    /// ask the CLI for this seat's own fill reading.
+    ///
+    /// **Asked at every boundary, page or no page.** A view refreshes the
+    /// reading, but an unattended worker has no view, so a trigger that read
+    /// only what a page had asked for would never fire on exactly the
+    /// sessions that run longest. A failed ask skips this boundary and says
+    /// so at debug; the denominator is never guessed.
+    fn maybe_trigger_handoff(&mut self) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        if !workspace.handoff_policy_for(&self.key).enabled {
+            return;
+        }
+        // A swap already building on this seat is the one this boundary
+        // must not race: `swap` clears the request state, so an in-flight
+        // build reads as idle here and would fire a second handoff.
+        if workspace.swap_in_progress(&self.key) {
+            return;
+        }
+        {
+            let mut domain = self.domain.lock();
+            if domain.handoff.in_progress() || !domain.is_idle_for_handoff() {
+                return;
+            }
+            // Re-armed rather than skipped when a probe is already out: a
+            // reading that never came (the bridge's own timeout swallows it)
+            // would otherwise leave the trigger stuck off for the life of
+            // the session.
+            domain.handoff.probing = true;
+        }
+        let Some(session_id) = self.session_id_string() else {
+            self.domain.lock().handoff.probing = false;
+            return;
+        };
+        if let Err(error) = self.handle.get_context_usage(session_id) {
+            self.domain.lock().handoff.probing = false;
+            tracing::debug!(
+                target: "forge_workspace::session_task",
+                event_name = "handoff_reading_ask_failed",
+                slot = %self.key.display(),
+                %error,
+                "the fill reading could not be asked for; no handoff trigger this turn",
+            );
+        }
+    }
+
+    /// Judge a reading the trigger asked for: a fill at or over the
+    /// configured share, or a compaction the fill trigger did not stop.
+    fn evaluate_handoff_trigger(
+        &mut self,
+        reading_for: &str,
+        reported: Option<u8>,
+        total_tokens: Option<u64>,
+        effective_max_tokens: Option<u64>,
+    ) {
+        // **A reading for another occupant is the previous session's.** The
+        // probe is asynchronous, so a swap can land while one is out; that
+        // answer says nothing about the session here and must not judge it
+        // (nor spend the boundary's probe).
+        if self.session_id_string().as_deref() != Some(reading_for) {
+            tracing::debug!(
+                target: "forge_workspace::session_task",
+                event_name = "handoff_reading_stale_occupant",
+                slot = %self.key.display(),
+                reading_for = %reading_for,
+                "a fill reading arrived for a session this seat no longer runs; ignored",
+            );
+            return;
+        }
+        {
+            let mut domain = self.domain.lock();
+            if !std::mem::take(&mut domain.handoff.probing) {
+                return;
+            }
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let policy = workspace.handoff_policy_for(&self.key);
+        if !policy.enabled {
+            return;
+        }
+        let fill = fill_of(reported, total_tokens, effective_max_tokens);
+        let compaction_count = self.conversation.as_ref().map_or(0, |(_, count)| *count);
+        let reason = if compaction_count >= policy.after_compactions {
+            // The backstop: a huge turn crossed the window and the CLI
+            // compacted before a boundary could carry the handoff.
+            Some(forge_primitives::HandoffReason::Compaction)
+        } else if fill.is_some_and(|fill| fill.fires(policy.at_percent)) {
+            Some(forge_primitives::HandoffReason::Fill)
+        } else {
+            None
+        };
+        let Some(reason) = reason else { return };
+        self.domain.lock().handoff.fill = fill;
+        // **Through the request, not straight into `begin_handoff`.** The
+        // probe is asynchronous: a turn may have opened while it was out,
+        // and this path is where that turn parks the handoff instead of
+        // having the judgment prompt folded into it.
+        self.request_handoff(reason, None);
+    }
+
+    /// Replace this seat's occupant with a new session that continues from
+    /// the brief, on the same order `/new` uses.
+    fn swap(
+        &mut self,
+        reason: forge_primitives::HandoffReason,
+        judgment: Vec<forge_primitives::HandoffSection>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let (from, model, permission_mode, fill) = {
+            let mut domain = self.domain.lock();
+            let from = domain.session_id.as_ref().map(std::string::ToString::to_string);
+            let model = domain.current_model.as_ref().map(|model| model.display_name_short.clone());
+            let mode = domain
+                .observed_permission_mode
+                .or(domain.configured_permission_mode)
+                .map(|mode| mode.as_wire().to_owned());
+            let fill = domain.handoff.fill;
+            domain.handoff = crate::domain_session::HandoffState::default();
+            (from, model, mode, fill)
+        };
+        let Some(from) = from else {
+            // Nothing to hand over: close the gate this beginning opened and
+            // answer what it was holding, or the seat holds prompts for a
+            // successor nothing is bringing.
+            let held = workspace.end_swap(&self.key);
+            for prompt in held {
+                if let Some(sender) = &prompt.sender {
+                    workspace.notice_undelivered_message(
+                        sender,
+                        &self.key,
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                    );
+                } else {
+                    let first = prompt.text.lines().next().unwrap_or_default();
+                    self.emit(SessionUpdate::Notice {
+                        key: self.key.clone(),
+                        severity: NoticeSeverity::Error,
+                        text: format!(
+                            "the handoff did not run; this prompt waits no longer: {first}"
+                        ),
+                    });
+                }
+            }
+            self.emit(SessionUpdate::Notice {
+                key: self.key.clone(),
+                severity: NoticeSeverity::Error,
+                text: "a handoff needs a connected session; this seat has none yet".to_owned(),
+            });
+            return;
+        };
+        let compaction_count = self.conversation.as_ref().map_or(0, |(_, count)| *count);
+        let policy = workspace.handoff_policy_for(&self.key);
+        let cwd = workspace.cwd_for_session(&self.key).unwrap_or_default();
+        // Minted, not recorded: the id reaches the slot's row on Connected.
+        // A recorded id whose spawn failed is one the next boot resumes into
+        // an empty session, which a handoff record would then claim to have
+        // joined.
+        let to = handoff::mint_session_id();
+        // The base settings alone: the NewSession arm re-delivers the
+        // charter, rebuilds the lead's blocks and stamps the new occupant's
+        // gateway binding, exactly as it does for `/new`.
+        let launch_settings = workspace.launch_settings_for(&self.key, &cwd);
+        let charter = workspace.stored_charter_for(&self.key);
+        let role = if self.key.is_lead() {
+            handoff::Role::Lead
+        } else {
+            handoff::Role::Worker {
+                charter_opening: charter
+                    .as_deref()
+                    .and_then(|charter| charter.lines().next())
+                    .map(|line| line.chars().take(200).collect()),
+            }
+        };
+        let request = handoff::SwapRequest {
+            slot: self.key.clone(),
+            from,
+            to,
+            reason,
+            fill,
+            compaction_count,
+            at_percent: policy.at_percent,
+            role,
+            account: self.handle.display_name(),
+            model,
+            permission_mode,
+            judgment,
+            cwd,
+            launch_settings,
+        };
+        workspace.start_handoff(request);
     }
 
     /// Drain everything parked for this session's slot on its first
@@ -1562,6 +2224,28 @@ impl Drop for SessionTask {
                 &self.key,
                 crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
+            // A task that ends mid-swap leaves its gate open; closing it
+            // here is what keeps a later prompt from being held for a
+            // successor nothing is bringing.
+            let held = workspace.end_swap(&self.key);
+            if !held.is_empty() {
+                tracing::warn!(
+                    target: "forge_workspace::session_task",
+                    event_name = "handoff_prompts_dropped_on_teardown",
+                    slot = %self.key.display(),
+                    held = held.len(),
+                    "the session task ended during a handoff; prompts held for its successor were dropped",
+                );
+            }
+            for prompt in &held {
+                if let Some(sender) = &prompt.sender {
+                    workspace.notice_undelivered_message(
+                        sender,
+                        &self.key,
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                    );
+                }
+            }
         }
     }
 }
@@ -1693,10 +2377,13 @@ pub(crate) fn execute_command_via_handle(
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
         // Answered by the task before it reaches here: the conversation is
-        // the task's own and never crosses to the agent. A caller reading
-        // this as dead code should note the arm in `SessionTask::execute_command`
-        // is what returns early - the match here is exhaustive, not a route.
-        Command::ReplayConversation { key: _ } | Command::ReadCallOutput { .. } => Ok(()),
+        // the task's own and never crosses to the agent, and a handoff runs
+        // the task's own state machine. A caller reading this as dead code
+        // should note the arms in `SessionTask::execute_command` are what
+        // handle them - the match here is exhaustive, not a route.
+        Command::ReplayConversation { key: _ }
+        | Command::ReadCallOutput { .. }
+        | Command::Handoff { .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
@@ -1738,7 +2425,7 @@ pub(crate) fn execute_command_via_handle(
             };
             handle.set_model(sid.to_owned(), model)
         }
-        Command::NewSession { key: _, cwd, launch_settings } => {
+        Command::NewSession { key: _, cwd, launch_settings, .. } => {
             handle.new_session(new_session_id, cwd, launch_settings)
         }
         Command::ResumeSession { key: _, session_id, cwd, launch_settings } => {
@@ -1815,6 +2502,63 @@ pub(crate) fn execute_command_via_handle(
 
 /// The words a permission answer carried, where it carried any: the box's own
 /// notes, the one field a dictation into the ask lands in (#1360).
+/// Hold a prompt aimed at a seat that is swapping its occupant, answering
+/// whether it went into the hold.
+///
+/// The machinery's own deliveries are gated in
+/// `Workspace::dispatch_workspace_prompt_under`; a person's prompt reaches
+/// the task directly, so this is the door it comes through.
+fn held_while_swapping(
+    cmd: &Command,
+    key: &SessionSlot,
+    workspace: &std::sync::Weak<crate::Workspace>,
+) -> bool {
+    let prompt = match cmd {
+        Command::Prompt { key: _, text, attachments } => crate::handoff::HeldPrompt {
+            text: text.clone(),
+            attachments: attachments.clone(),
+            source: PromptSource::You,
+            sender: None,
+        },
+        Command::PromptUnder { key: _, text, attachments, source, .. } => {
+            crate::handoff::HeldPrompt {
+                text: text.clone(),
+                attachments: attachments.clone(),
+                source: *source,
+                sender: None,
+            }
+        }
+        _ => return false,
+    };
+    let Some(workspace) = workspace.upgrade() else { return false };
+    workspace.hold_prompt(key, prompt)
+}
+
+/// The fill a reading states, against the CLI's own effective window.
+///
+/// **Counted from the two numbers rather than taken from the reported
+/// share** when both are there: the denominator has to be the effective
+/// window after any lowered auto-compact window, so a reading that names
+/// only its share is the fallback rather than the truth. `None` when
+/// neither says anything, so nothing fires on a guess.
+fn fill_of(
+    reported: Option<u8>,
+    total_tokens: Option<u64>,
+    effective_max_tokens: Option<u64>,
+) -> Option<crate::handoff::FillReading> {
+    if let (Some(total), Some(max)) = (total_tokens, effective_max_tokens)
+        && max > 0
+    {
+        let percent = total.saturating_mul(100).saturating_add(max / 2) / max;
+        return Some(crate::handoff::FillReading {
+            percent: u8::try_from(percent).unwrap_or(u8::MAX),
+            total_tokens: total,
+            max_tokens: max,
+        });
+    }
+    reported.map(|percent| crate::handoff::FillReading { percent, total_tokens: 0, max_tokens: 0 })
+}
+
 fn permission_words(outcome: &forge_primitives::PermissionOutcome) -> Option<String> {
     match outcome {
         forge_primitives::PermissionOutcome::Selected { notes_text, .. } => notes_text.clone(),
@@ -2264,6 +3008,10 @@ fn clear_runtime_identity(domain: &mut DomainSession) {
     domain.current_model = None;
     domain.mcp_servers = None;
     domain.context_usage = None;
+    // A handoff belongs to the occupant that was running it: its reply, its
+    // parked request and its judgment describe a conversation the new one
+    // does not carry.
+    domain.handoff = crate::domain_session::HandoffState::default();
     domain.monitors.clear();
 }
 
@@ -2735,6 +3483,7 @@ mod tests {
             connected_once,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -2890,6 +3639,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         (task, update_rx)
@@ -2917,9 +3667,952 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         (task, cmds)
+    }
+
+    /// A handoff swaps under the id its row names, leaves the brief where
+    /// the successor takes it, and dispatches a spawn under that same id -
+    /// the pair on the row and the occupant that runs are one.
+    #[tokio::test]
+    async fn a_handoff_swaps_under_the_id_its_row_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        task.execute_command(Command::Handoff {
+            key: slot.clone(),
+            brief: Some("Now: the cut is half in.".to_owned()),
+        });
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+
+        assert_eq!(record.from, "old-session-id", "the row names the session that handed over");
+        assert_eq!(
+            record.reason,
+            forge_primitives::HandoffReason::Manual,
+            "a supplied brief is a handoff asked for",
+        );
+        assert!(
+            record.brief.ground_truth.iter().any(|section| section.label == "record"),
+            "the ground truth is built at the swap: {:?}",
+            record.brief.ground_truth,
+        );
+        assert_eq!(
+            record.brief.judgment.first().map(|section| section.label.as_str()),
+            Some("Now"),
+            "the caller's brief is the judgment half",
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let spawn = dispatched.iter().find_map(|command| match command {
+            Command::NewSession { session_id, .. } => Some(session_id.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            spawn,
+            Some(Some(record.to.clone())),
+            "the spawn runs under the id the row names",
+        );
+
+        let pending =
+            workspace.take_pending_brief(&slot).expect("the brief waits for its successor");
+        assert_eq!(pending.to, record.to, "and it names the same occupant");
+        assert!(pending.text.starts_with("HANDOFF - "), "the successor is given the brief");
+        assert!(
+            workspace.handoff_for_successor(&slot, &record.to).is_some(),
+            "and the record is written, so the successor is measurable",
+        );
+    }
+
+    /// A prompt that arrives while the seat swaps its occupant waits for the
+    /// successor: the session on its way out is never handed a turn the new
+    /// one would not carry, and what waited follows the brief.
+    #[tokio::test]
+    async fn a_prompt_sent_mid_swap_waits_for_the_successor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        task.connected_once = true;
+        workspace.begin_swap(&slot);
+
+        task.execute_command(Command::Prompt {
+            key: slot.clone(),
+            text: "sent mid swap".to_owned(),
+            attachments: Vec::new(),
+        });
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "the session on its way out is not handed the prompt",
+        );
+
+        task.translate_event(connected_event("new-session-id", "/tmp/forge"));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == "sent mid swap"
+            )),
+            "the successor is handed it once it is here: {dispatched:?}",
+        );
+        assert!(!workspace.swap_in_progress(&slot), "and the gate is closed");
+    }
+
+    /// A replacement that is not the successor a brief names does not take
+    /// it: a login or logout can land mid-swap, and the brief belongs to the
+    /// session it was written for.
+    #[tokio::test]
+    async fn a_non_matching_replacement_leaves_the_brief_for_its_successor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.connected_once = true;
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        workspace.set_pending_brief(
+            &slot,
+            crate::handoff::PendingBrief {
+                to: "new-session-id".to_owned(),
+                text: "HANDOFF - old -> new".to_owned(),
+            },
+        );
+
+        task.translate_event(connected_event("a-login-session", "/tmp/forge"));
+
+        assert!(
+            workspace.pending_brief_for(&slot).is_some(),
+            "another replacement leaves the brief for the successor it names",
+        );
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "and it is given to nobody else",
+        );
+
+        task.translate_event(connected_event("new-session-id", "/tmp/forge"));
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text.starts_with("HANDOFF - old -> new")
+            )),
+            "the named successor is the one given it: {dispatched:?}",
+        );
+    }
+
+    /// A handoff mints its successor without recording it: the id reaches the
+    /// slot's row on Connected. A recorded id whose spawn failed is one the
+    /// next boot resumes into an empty session, which the handoff record
+    /// would then claim to have joined.
+    #[tokio::test]
+    async fn a_handoff_does_not_persist_its_successor_before_it_connects() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        workspace.note_running_session_id(&slot, "old-session-id");
+
+        task.execute_command(Command::Handoff {
+            key: slot.clone(),
+            brief: Some("Now: the cut is half in.".to_owned()),
+        });
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+
+        assert_eq!(
+            task.domain.lock().session_id.as_ref().map(forge_primitives::SessionId::as_str),
+            Some("old-session-id")
+        );
+        let stored = {
+            let guard = workspace.db.lock();
+            let db = guard.as_ref().expect("a db");
+            crate::store::sessions::get(db, slot.org(), slot.project(), slot.label())
+                .expect("read")
+                .and_then(|row| row.session_id)
+        };
+        assert_eq!(
+            stored.as_deref(),
+            Some("old-session-id"),
+            "the successor id is not on the slot's row before it has run: {record:?}",
+        );
+    }
+
+    /// A swap that finds no session on the seat closes the gate its beginning
+    /// opened: a hold left open would keep every later prompt for a successor
+    /// nothing is bringing.
+    #[tokio::test]
+    async fn a_handoff_that_loses_its_session_closes_the_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let key = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, mut update_rx, _agent_rx) = nudge_task_for(&workspace, &key);
+        workspace.begin_swap(&key);
+        workspace.hold_prompt(
+            &key,
+            crate::handoff::HeldPrompt {
+                text: "held".to_owned(),
+                attachments: Vec::new(),
+                source: crate::protocol::PromptSource::You,
+                sender: None,
+            },
+        );
+
+        task.swap(forge_primitives::HandoffReason::Manual, Vec::new());
+
+        assert!(!workspace.swap_in_progress(&key), "the gate is closed with the swap");
+        let mut said = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::Notice { text, .. } = frame.update {
+                said.push(text);
+            }
+        }
+        assert!(
+            said.iter().any(|text| text.contains("needs a connected session")),
+            "the seat is told why: {said:?}",
+        );
+        assert!(
+            said.iter().any(|text| text.contains("this prompt waits no longer")),
+            "and the held prompt is accounted for: {said:?}",
+        );
+    }
+
+    /// One handoff at a time: a swap already building takes the seat, so a
+    /// handoff asked for then is dropped rather than racing it.
+    #[tokio::test]
+    async fn a_second_handoff_is_dropped_while_one_builds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        workspace.begin_swap(&task.key);
+
+        task.begin_handoff(None);
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "no judgment prompt is sent by a handoff that cannot own the seat",
+        );
+        assert!(!task.domain.lock().handoff.awaiting, "and nothing is left waiting");
+    }
+
+    /// A peer message held by the swap answers ITS SENDER when the handoff
+    /// never reaches a successor, the way the parked bucket does.
+    #[tokio::test]
+    async fn a_failed_handoff_answers_a_held_peers_sender() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        let sender = SessionSlot::from_str_for_test("sender-proj");
+        workspace.begin_swap(&task.key);
+        workspace.hold_prompt(
+            &task.key,
+            crate::handoff::HeldPrompt {
+                text: "[Message id=m-1] are you up?".to_owned(),
+                attachments: Vec::new(),
+                source: crate::protocol::PromptSource::Peer,
+                sender: Some(sender.clone()),
+            },
+        );
+
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "the child exited".to_owned(),
+            kind: forge_agent::client::SpawnFailureKind::Unclassified,
+        });
+
+        let mut told = None;
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update
+                && wrapped.kind == crate::mcp::peers::types::WrappedKind::DeliveryFailureNotice
+            {
+                told = Some((key, wrapped));
+            }
+        }
+        let (key, notice) = told.expect("the sender is told its message never landed");
+        assert_eq!(key, sender, "on the sender's own seat");
+        assert_eq!(
+            notice.sender_name, "forge/handoff-cut",
+            "and the notice names the seat that never took it",
+        );
+    }
+
+    /// A cancelled judgment turn ends the handoff rather than finishing it,
+    /// and what the swap's gate held goes back to the session that stays.
+    #[tokio::test]
+    async fn a_cancelled_judgment_turn_ends_the_handoff_and_returns_its_prompts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        {
+            let mut domain = task.domain.lock();
+            domain.lifecycle_frames = Some(true);
+            domain.handoff.awaiting = true;
+            domain.handoff.judgment_uuid = Some("judgment-id".to_owned());
+            domain.handoff.judgment_started = true;
+            domain.pending_cancel = true;
+        }
+        workspace.begin_swap(&task.key);
+        workspace.hold_prompt(
+            &task.key,
+            crate::handoff::HeldPrompt {
+                text: "sent during the swap".to_owned(),
+                attachments: Vec::new(),
+                source: crate::protocol::PromptSource::You,
+                sender: None,
+            },
+        );
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "old-session-id".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+
+        assert!(!workspace.swap_in_progress(&task.key), "the handoff is over");
+        assert!(
+            !task.domain.lock().handoff.awaiting,
+            "and nothing is left waiting on a judgment turn",
+        );
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == "sent during the swap"
+            )),
+            "the held prompt goes back to the session that continues: {dispatched:?}",
+        );
+    }
+
+    /// A handoff's successor lands as a REPLACEMENT connect, and that is
+    /// where its measurement must be armed; arming only on a first connect
+    /// left every live handoff unmeasured.
+    #[tokio::test]
+    async fn a_replacement_connect_arms_the_successor_measurement() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.connected_once = true;
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        workspace.record_handoff(
+            &forge_primitives::HandoffRecord {
+                slot: slot.clone(),
+                from: "old-session-id".to_owned(),
+                to: "new-session-id".to_owned(),
+                reason: forge_primitives::HandoffReason::Fill,
+                fill_percent: Some(85),
+                total_tokens: Some(850_000),
+                max_tokens: Some(1_000_000),
+                compaction_count: 0,
+                at_percent: 85,
+                brief: forge_primitives::HandoffBrief::default(),
+                transcript_path: "/tmp/old.jsonl".to_owned(),
+                at: "2026-10-24T08:00:00Z".to_owned(),
+                cycle: forge_primitives::HandoffCycle::default(),
+                successor: None,
+            },
+            &[],
+        );
+
+        task.translate_event(connected_event("new-session-id", "/tmp/forge"));
+
+        let watch = task.successor.as_ref().expect("the replacement connect arms it");
+        assert_eq!(watch.to, "new-session-id", "for the occupant the handoff named");
+        assert!(watch.skip_brief_turn, "its brief turn is not one of the ten");
+        assert_eq!(watch.turns, 0, "and no turn is counted before it");
+
+        // The brief's own turn ends first: it is skipped, not counted.
+        task.after_turn_ended();
+        assert_eq!(
+            task.successor.as_ref().map(|watch| watch.turns),
+            Some(0),
+            "the brief's turn is not one of the successor's ten",
+        );
+        assert!(
+            task.successor.as_ref().is_some_and(|watch| !watch.skip_brief_turn),
+            "and the skip is spent after it",
+        );
+    }
+
+    /// The successor's window closes at its tenth turn: a row that kept
+    /// counting would measure the seat's later work against a brief that
+    /// had nothing to do with it.
+    #[tokio::test]
+    async fn the_successor_is_measured_at_its_tenth_turn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        task.successor = Some(crate::handoff::SuccessorWatch {
+            to: "old-session-id".to_owned(),
+            turns: 0,
+            predecessor_reads: Vec::new(),
+            skip_brief_turn: false,
+        });
+
+        for _ in 0..(crate::handoff::SUCCESSOR_TURNS - 1) {
+            task.after_turn_ended();
+        }
+        assert_eq!(
+            task.successor.as_ref().map(|watch| watch.turns),
+            Some(crate::handoff::SUCCESSOR_TURNS - 1),
+            "nine turns are counted and the watch is still open",
+        );
+
+        task.after_turn_ended();
+        assert!(task.successor.is_none(), "the tenth turn closes the measurement");
+    }
+
+    /// A judgment turn that ends swaps the seat, and the row's judgment is
+    /// the reply that turn wrote.
+    #[tokio::test]
+    async fn the_judgment_turn_swaps_when_it_ends() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        {
+            let mut domain = task.domain.lock();
+            domain.handoff.awaiting = true;
+            domain.handoff.judgment = Some("Next: the client row.".to_owned());
+        }
+
+        task.after_turn_ended();
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+        assert_eq!(
+            record.brief.judgment.first().map(|section| section.label.as_str()),
+            Some("Next"),
+            "the judgment is the reply, parsed by its heading",
+        );
+    }
+
+    /// A handoff asked for while a turn runs sends nothing into that turn:
+    /// it waits, and the judgment prompt goes out as its own turn after.
+    #[test]
+    fn a_handoff_asked_mid_turn_waits_for_the_turn_to_end() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        task.domain.lock().turn_pending = true;
+
+        task.execute_command(Command::Handoff { key: slot.clone(), brief: None });
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "a running turn is never handed a prompt in the middle",
+        );
+        assert!(
+            task.domain.lock().handoff.parked.is_some(),
+            "the request waits for the boundary instead",
+        );
+
+        task.domain.lock().turn_pending = false;
+        task.after_turn_ended();
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let Some(Command::PromptUnder { text, source, .. }) = dispatched.first() else {
+            panic!("the judgment prompt was never sent: {dispatched:?}");
+        };
+        assert_eq!(text, crate::handoff::JUDGMENT_PROMPT, "forge's own text, which names no skill");
+        assert_eq!(*source, PromptSource::Forge, "and it is forge's turn, not the user's");
+        assert!(task.domain.lock().handoff.awaiting, "the reply is waited for");
+    }
+
+    /// A turn boundary in a fresh task with a session id, a window and the
+    /// stub workspace: the shape the trigger reads.
+    fn trigger_task(
+        workspace: &Arc<crate::Workspace>,
+        compaction_count: u32,
+    ) -> (SessionTask, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, agent_rx) = command_task_for(workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        let (window, _) = crate::conversation_window::Window::tail_of(&[]);
+        task.conversation = Some((window, compaction_count));
+        (task, agent_rx)
+    }
+
+    fn reading(reported: Option<u8>, total: Option<u64>, effective: Option<u64>) -> AgentEvent {
+        reading_for("old-session-id", reported, total, effective)
+    }
+
+    fn reading_for(
+        session_id: &str,
+        reported: Option<u8>,
+        total: Option<u64>,
+        effective: Option<u64>,
+    ) -> AgentEvent {
+        AgentEvent::ContextUsage {
+            session_id: session_id.to_owned(),
+            percentage: reported,
+            max_tokens: Some(1_000_000),
+            total_tokens: total,
+            effective_max_tokens: effective,
+        }
+    }
+
+    /// **The trigger must fire at a REAL turn boundary.** The turn's
+    /// `turn_pending` marker is cleared later in the same event than
+    /// `after_turn_ended` runs, so a gate that read it would park every
+    /// handoff and wait for a turn that never comes; this drives a `Result`
+    /// through the actor and then its reading.
+    #[tokio::test]
+    async fn the_trigger_measures_at_a_real_turn_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 0);
+        // The state the actor is in when a `Result` lands.
+        task.domain.lock().turn_pending = true;
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "old-session-id".to_owned(),
+            msg: result_message("success", false),
+        });
+
+        assert!(
+            matches!(
+                agent_rx.try_recv(),
+                Ok(forge_primitives::AgentCommand::GetContextUsage { .. })
+            ),
+            "the boundary asks for the reading",
+        );
+        assert!(
+            task.domain.lock().handoff.parked.is_none(),
+            "and does not park on the turn that just ended",
+        );
+
+        task.translate_event(reading(Some(90), Some(180_000), Some(200_000)));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "the handoff begins at the boundary",
+        );
+        assert!(workspace.swap_in_progress(&task.key), "with its gate open");
+    }
+
+    /// The probe is asynchronous: a turn can open while it is out (the
+    /// continuation a failed turn fires is the near case). The reading then
+    /// parks the handoff instead of writing its prompt into that turn.
+    #[tokio::test]
+    async fn the_trigger_parks_when_a_turn_started_while_the_probe_was_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 0);
+
+        task.maybe_trigger_handoff();
+        assert!(
+            matches!(
+                agent_rx.try_recv(),
+                Ok(forge_primitives::AgentCommand::GetContextUsage { .. })
+            ),
+            "precondition: the reading was asked for",
+        );
+        // The failed turn's continuation opens a turn before the answer lands.
+        task.domain.lock().turn_pending = true;
+
+        task.translate_event(reading(Some(90), Some(900_000), Some(1_000_000)));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "no judgment prompt is written into a running turn",
+        );
+        let parked = task.domain.lock().handoff.parked.is_some();
+        assert!(parked, "the handoff waits for the boundary instead");
+        assert_eq!(
+            task.domain.lock().handoff.reason,
+            Some(forge_primitives::HandoffReason::Fill),
+            "and the reason it will fire for is kept",
+        );
+
+        // That turn ends: the handoff now begins, and its gate opens with it.
+        task.domain.lock().turn_pending = false;
+        task.after_turn_ended();
+        assert!(
+            workspace.drain_test_dispatch_buffer().iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "the judgment prompt goes out as its own turn once the seat is idle",
+        );
+        assert!(workspace.swap_in_progress(&task.key), "and the swap gate is open");
+    }
+
+    /// An unanswered judgment turn waits for ITS turn: a boundary from any
+    /// other turn is not the reply the brief is built from.
+    #[tokio::test]
+    async fn a_turn_that_is_not_the_judgment_turn_does_not_swap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        {
+            let mut domain = task.domain.lock();
+            domain.lifecycle_frames = Some(true);
+            domain.handoff.awaiting = true;
+            domain.handoff.judgment_uuid = Some("judgment-id".to_owned());
+            domain.handoff.judgment_started = false;
+            domain.handoff.judgment = Some("Next: not the judgment turn".to_owned());
+        }
+
+        task.after_turn_ended();
+
+        assert!(
+            task.domain.lock().handoff.awaiting,
+            "the handoff is still waiting for its own prompt's turn",
+        );
+        assert!(
+            update_rx.try_recv().is_err(),
+            "and no handoff row was emitted for another turn's prose",
+        );
+    }
+
+    /// The CLI's lifecycle frame is what names the judgment turn, and its
+    /// end is what swaps.
+    #[tokio::test]
+    async fn the_lifecycle_frame_names_the_judgment_turn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        {
+            let mut domain = task.domain.lock();
+            domain.lifecycle_frames = Some(true);
+            domain.handoff.awaiting = true;
+            domain.handoff.judgment_uuid = Some("judgment-id".to_owned());
+        }
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "old-session-id".to_owned(),
+            msg: forge_primitives::Message::CommandLifecycle {
+                command_uuid: "judgment-id".to_owned(),
+                state: "started".to_owned(),
+                uuid: "lifecycle-1".to_owned(),
+                session_id: "old-session-id".to_owned(),
+                extras: forge_primitives::messages::Extras::new(),
+            },
+        });
+        assert!(task.domain.lock().handoff.judgment_started, "the frame names the turn");
+        task.domain.lock().handoff.judgment = Some("Next: the client row.".to_owned());
+
+        task.after_turn_ended();
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+        assert_eq!(
+            record.brief.judgment.first().map(|section| section.label.as_str()),
+            Some("Next"),
+            "the judgment is that turn's reply",
+        );
+    }
+
+    /// A late reading for the previous occupant cannot judge this one, and it
+    /// does not spend the boundary's probe.
+    #[tokio::test]
+    async fn a_reading_for_another_occupant_does_not_judge_this_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        task.maybe_trigger_handoff();
+
+        task.translate_event(reading_for(
+            "an-older-session",
+            Some(99),
+            Some(990_000),
+            Some(1_000_000),
+        ));
+
+        assert!(
+            task.domain.lock().handoff.probing,
+            "the boundary's probe is still owed to this occupant's reading",
+        );
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "and the previous session's fill asks for nothing here",
+        );
+    }
+
+    /// A boundary during a swap's build does not fire a second handoff: the
+    /// state it would read as idle is the swap's own.
+    #[tokio::test]
+    async fn no_second_handoff_fires_while_a_swap_builds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 0);
+        workspace.begin_swap(&task.key);
+
+        task.maybe_trigger_handoff();
+
+        assert!(agent_rx.try_recv().is_err(), "no reading is even asked for while the swap builds");
+        assert!(!task.domain.lock().handoff.probing, "and nothing is armed");
+    }
+
+    /// At the configured share the trigger asks for the judgment half in a
+    /// turn of its own, and the row later says why it fired.
+    #[tokio::test]
+    async fn the_trigger_fires_at_the_configured_share() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 0);
+
+        task.maybe_trigger_handoff();
+        assert!(
+            matches!(
+                agent_rx.try_recv(),
+                Ok(forge_primitives::AgentCommand::GetContextUsage { .. })
+            ),
+            "the reading is asked of the CLI at the boundary",
+        );
+
+        task.translate_event(reading(Some(85), Some(850_000), Some(1_000_000)));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "at 85% the judgment half is asked for: {dispatched:?}",
+        );
+        assert_eq!(
+            task.domain.lock().handoff.reason,
+            Some(forge_primitives::HandoffReason::Fill),
+            "and the reason rides to the row",
+        );
+        let fill = task.domain.lock().handoff.fill.expect("the reading that fired");
+        assert_eq!(fill.percent, 85);
+        assert_eq!((fill.total_tokens, fill.max_tokens), (850_000, 1_000_000));
+    }
+
+    /// One point under the share is not a handoff: the trigger fires at the
+    /// line, not near it.
+    #[tokio::test]
+    async fn a_reading_under_the_share_does_not_fire() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+
+        task.maybe_trigger_handoff();
+        task.translate_event(reading(Some(84), Some(840_000), Some(1_000_000)));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "84% is under the default share and asks for nothing",
+        );
+        assert!(!task.domain.lock().handoff.probing, "and the boundary is spent");
+    }
+
+    /// The denominator is the CLI's effective window, not the share it
+    /// reports: a window lowered for auto-compact fires earlier, which is
+    /// the whole reason the trigger is a percentage rather than a count.
+    #[tokio::test]
+    async fn the_effective_window_is_the_denominator() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+
+        task.maybe_trigger_handoff();
+        // 900k of an effective 1M is 90%, though the CLI's share of the raw
+        // 2M window reads 45%.
+        task.translate_event(reading(Some(45), Some(900_000), Some(1_000_000)));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "the effective window's 90% fires even though the reported share does not",
+        );
+    }
+
+    /// A compaction the fill trigger did not stop arms the backstop: the
+    /// session hands over at the next boundary whatever its fill reads.
+    #[tokio::test]
+    async fn the_count_backstop_fires_when_a_compaction_came_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 1);
+
+        task.maybe_trigger_handoff();
+        task.translate_event(reading(Some(10), Some(100_000), Some(1_000_000)));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "a session that compacted hands over even at a low fill",
+        );
+        assert_eq!(
+            task.domain.lock().handoff.reason,
+            Some(forge_primitives::HandoffReason::Compaction),
+            "and the row says a compaction came first",
+        );
+    }
+
+    /// `enabled = false` is the one off switch: not even a reading is asked
+    /// for, so a project that must not be interrupted pays nothing.
+    #[tokio::test]
+    async fn the_trigger_is_off_when_the_table_says_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.handoff = crate::config::HandoffSettings {
+            enabled: Some(false),
+            ..crate::config::HandoffSettings::default()
+        };
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 3);
+
+        task.maybe_trigger_handoff();
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "a disabled trigger does not even ask for the reading",
+        );
+        assert!(!task.domain.lock().handoff.probing, "and nothing is left half-armed");
+    }
+
+    /// A reading that says nothing fires nothing: the trigger never guesses
+    /// a denominator.
+    #[tokio::test]
+    async fn a_reading_with_no_numbers_does_not_fire() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+
+        task.maybe_trigger_handoff();
+        task.translate_event(reading(None, None, None));
+
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "an empty reading is not a full one",
+        );
+    }
+
+    /// The brief is given only to the occupant it was written for: a connect
+    /// under any other id is a different session, and the brief describes a
+    /// history it does not carry.
+    #[test]
+    fn the_brief_goes_to_the_occupant_it_was_written_for() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+
+        let brief = || crate::handoff::PendingBrief {
+            to: "new-id".to_owned(),
+            text: "HANDOFF - 9cfe315c -> 4b21e0a7".to_owned(),
+        };
+        workspace.set_pending_brief(&slot, brief());
+        task.deliver_pending_brief(&slot, "someone-else");
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "another occupant is not given a brief written for this one",
+        );
+
+        workspace.set_pending_brief(&slot, brief());
+        task.deliver_pending_brief(&slot, "new-id");
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let Some(Command::PromptUnder { text, source, .. }) = dispatched.first() else {
+            panic!("the brief was never delivered: {dispatched:?}");
+        };
+        assert!(text.starts_with("HANDOFF - "), "the successor is given the brief itself");
+        assert_eq!(*source, PromptSource::Forge, "as forge's own first turn");
     }
 
     /// A worker's mission lives in its conversation, so `/new` has to
@@ -2938,12 +4631,13 @@ mod tests {
         );
         let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
         workspace.seed_test_session_charter(&slot, "mind the queues", false);
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         task.execute_command(Command::NewSession {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
@@ -2987,7 +4681,7 @@ mod tests {
             },
         );
         workspace.gateway.bindings.bind("Busytools", "forge", "spawn-id", account.clone());
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         let stamped_base_url = |launch_settings: &serde_json::Value| -> Option<String> {
             launch_settings
@@ -3018,6 +4712,7 @@ mod tests {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession {
@@ -3108,12 +4803,13 @@ mod tests {
         );
         let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
         workspace.seed_test_session_charter(&slot, "review the diff", false);
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         task.execute_command(Command::NewSession {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
@@ -3144,12 +4840,13 @@ mod tests {
         );
         let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
         workspace.seed_test_session_charter(&slot, "review the diff", true);
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         task.execute_command(Command::NewSession {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
@@ -3176,12 +4873,13 @@ mod tests {
     fn a_respawned_lead_keeps_its_own_surface() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
         let slot = SessionSlot::lead("TestOrg", "forge");
-        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+        let (mut task, mut agent_rx) = command_task_for(&workspace, &slot);
 
         task.execute_command(Command::NewSession {
             key: slot.clone(),
             cwd: "/tmp/forge".to_owned(),
             launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+            session_id: None,
         });
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
@@ -3263,6 +4961,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -3327,6 +5026,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -3793,6 +5493,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         (task, update_rx, to_agent)
@@ -3869,10 +5570,25 @@ mod tests {
             key: key.clone(),
             text,
             attachments: Vec::new(),
-            uuid,
+            uuid: uuid.clone(),
             source: crate::protocol::PromptSource::Forge,
         });
-        to_agent.try_recv().is_ok()
+        // **The continuation is the command under test, not whatever arrives
+        // next.** The turn boundary also asks the CLI for a fill reading, so
+        // "something was sent" would answer a different question - and a
+        // dropped continuation would read as delivered on the strength of a
+        // probe.
+        loop {
+            match to_agent.try_recv() {
+                Ok(forge_primitives::AgentCommand::PromptWithImages { uuid: sent, .. })
+                    if sent == uuid =>
+                {
+                    return true;
+                }
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
     }
 
     /// The continuation speaks for the occupant that failed. A `/new` or
@@ -4256,6 +5972,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -4312,6 +6029,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -4368,6 +6086,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -4621,6 +6340,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -4684,6 +6404,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -4732,6 +6453,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -4779,6 +6501,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -4829,6 +6552,7 @@ mod tests {
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -5718,6 +7442,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: std::sync::Weak::new(),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -5820,6 +7545,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -5984,6 +7710,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -6060,6 +7787,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -6115,6 +7843,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -6173,6 +7902,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         let cap = crate::conversation_window::CONVERSATION_CAP;
@@ -6277,6 +8007,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                successor: None,
                 teardown_done: None,
             };
             let frame = |at: usize| {
@@ -6351,6 +8082,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output"));
@@ -6427,6 +8159,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-reasons"));
@@ -6526,6 +8259,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-running"));
@@ -6610,6 +8344,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-not-yet"));
@@ -6634,7 +8369,7 @@ provider = "anthropic"
         });
         while update_rx.try_recv().is_ok() {}
 
-        let read = |task: &SessionTask| {
+        let read = |task: &mut SessionTask| {
             task.execute_command(crate::protocol::Command::ReadCallOutput {
                 key: session_key.clone(),
                 call_id: "tu-absent".to_owned(),
@@ -6650,7 +8385,7 @@ provider = "anthropic"
             answered
         };
 
-        read(&task);
+        read(&mut task);
         assert_eq!(
             take_answer(),
             Some(forge_primitives::CallOutput::NoPath),
@@ -6663,7 +8398,7 @@ provider = "anthropic"
         std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
         std::fs::write(tasks.join(format!("{task_id}.output")), "first line\n")
             .expect("write the file");
-        read(&task);
+        read(&mut task);
         assert_eq!(
             take_answer(),
             Some(forge_primitives::CallOutput::Lines(vec!["first line".to_owned()])),
@@ -6864,6 +8599,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                successor: None,
                 teardown_done: None,
             };
 
@@ -6917,6 +8653,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -7008,6 +8745,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -7085,6 +8823,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -7554,6 +9293,8 @@ provider = "anthropic"
                 session_id: "s".to_owned(),
                 percentage: Some(62),
                 max_tokens: Some(1_000_000),
+                total_tokens: Some(620_000),
+                effective_max_tokens: Some(1_000_000),
             },
         );
 
@@ -7996,6 +9737,7 @@ provider = "anthropic"
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
                 conversation: None,
+                successor: None,
                 teardown_done: None,
             };
 
@@ -8060,6 +9802,7 @@ provider = "anthropic"
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -8153,6 +9896,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -8219,7 +9963,7 @@ provider = "anthropic"
         let (handle, mut agent_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let task = SessionTask {
+        let mut task = SessionTask {
             key: key.clone(),
             handle: Arc::new(handle),
             command_rx,
@@ -8228,6 +9972,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -8286,6 +10031,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         let held = crate::mcp::peers::types::WrappedPrompt {
@@ -8346,6 +10092,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         let held = crate::mcp::peers::types::WrappedPrompt {
@@ -8406,6 +10153,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 
@@ -8475,6 +10223,7 @@ provider = "anthropic"
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
 

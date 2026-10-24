@@ -325,12 +325,27 @@ pub enum Command {
         key: SessionSlot,
         cwd: String,
         launch_settings: SessionLaunchSettings,
+        /// The id the new occupant must run under. `None` mints one, which
+        /// is what `/new` wants; a handoff supplies the id it already
+        /// recorded, because its row names the pair before the spawn.
+        #[serde(default)]
+        session_id: Option<String>,
     },
     ResumeSession {
         key: SessionSlot,
         session_id: String,
         cwd: String,
         launch_settings: SessionLaunchSettings,
+    },
+    /// Hand this seat over to a new session that continues its work.
+    ///
+    /// The brief's judgment half is asked of the session, unless the caller
+    /// supplied `brief`, which is used instead. The swap itself runs on the
+    /// same order `/new` does.
+    Handoff {
+        key: SessionSlot,
+        /// The caller's own judgment half. `None` asks the session for it.
+        brief: Option<String>,
     },
     RespondPermission {
         key: SessionSlot,
@@ -862,6 +877,7 @@ impl Command {
             | Self::SetModel { key, .. }
             | Self::NewSession { key, .. }
             | Self::ResumeSession { key, .. }
+            | Self::Handoff { key, .. }
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::SetDictateOverride { key, .. }
@@ -967,6 +983,11 @@ impl std::fmt::Debug for Command {
                 .field("session_id", session_id)
                 .field("cwd", cwd)
                 .finish_non_exhaustive(),
+            Self::Handoff { key, brief } => f
+                .debug_struct("Handoff")
+                .field("key", key)
+                .field("brief", &brief.as_ref().map(|_| "supplied"))
+                .finish(),
             Self::RespondPermission { key, tool_id, .. } => f
                 .debug_struct("RespondPermission")
                 .field("key", key)
@@ -1435,6 +1456,14 @@ pub enum SessionUpdate {
         /// Compactions the resumed transcript records. Seeds the
         /// per-session count, which has no other durable source.
         compaction_count: u32,
+    },
+    /// The seat's occupant was replaced by a handoff rather than by a person
+    /// asking for one, and this is the record of it - emitted before any
+    /// frame from the new occupant, so a view draws the row between the two
+    /// conversations rather than after the new one has started.
+    Handoff {
+        key: SessionSlot,
+        handoff: forge_primitives::HandoffRecord,
     },
     ConnectionFailed {
         key: SessionSlot,
@@ -2114,6 +2143,7 @@ impl SessionUpdate {
             | Self::HistoryReplayed { key, .. }
             | Self::CallOutput { key, .. }
             | Self::SessionReplaced { key, .. }
+            | Self::Handoff { key, .. }
             | Self::ConnectionFailed { key, .. }
             | Self::Releasing { key }
             | Self::AuthRequired { key, .. }
@@ -2208,6 +2238,12 @@ impl std::fmt::Debug for SessionUpdate {
             Self::SessionReplaced { key, .. } => {
                 f.debug_struct("SessionReplaced").field("key", key).finish_non_exhaustive()
             }
+            Self::Handoff { key, handoff } => f
+                .debug_struct("Handoff")
+                .field("key", key)
+                .field("pair", &handoff.pair())
+                .field("reason", &handoff.reason)
+                .finish_non_exhaustive(),
             Self::ConnectionFailed { key, .. } => {
                 f.debug_struct("ConnectionFailed").field("key", key).finish_non_exhaustive()
             }

@@ -53,6 +53,61 @@ pub struct PendingAutoContinue {
     pub reason: String,
 }
 
+/// A handoff request that arrived while a turn was running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParkedHandoff {
+    /// The caller supplied its own judgment half.
+    Supplied(String),
+    /// The judgment half is asked of the session at the boundary.
+    Ask,
+}
+
+impl ParkedHandoff {
+    /// The caller's own half, when it supplied one.
+    pub fn supplied(self) -> Option<String> {
+        match self {
+            Self::Supplied(text) => Some(text),
+            Self::Ask => None,
+        }
+    }
+}
+
+/// The handoff this session is running, if any.
+///
+/// The request is parked rather than acted on while a turn runs: a handoff
+/// never interrupts one. The judgment turn is forge's own prompt, so the
+/// reply it captures is the last assistant text before that turn ends - and
+/// only that turn's end finishes the handoff.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HandoffState {
+    /// A request that arrived while a turn was running.
+    pub parked: Option<ParkedHandoff>,
+    /// Why this handoff runs, which the row and the record both state.
+    pub reason: Option<forge_primitives::HandoffReason>,
+    /// A fill reading was asked for at the last turn boundary, and the
+    /// trigger is waiting to judge it.
+    pub probing: bool,
+    /// The reading that fired this handoff, carried to the row.
+    pub fill: Option<crate::handoff::FillReading>,
+    /// The judgment turn forge sent is running.
+    pub awaiting: bool,
+    /// The id the judgment prompt was sent under, so the swap waits for
+    /// THAT prompt's turn rather than for whatever turn ends next.
+    pub judgment_uuid: Option<String>,
+    /// The CLI's own lifecycle frame said the judgment prompt started. A
+    /// turn that ends without it is not the judgment turn.
+    pub judgment_started: bool,
+    /// The last assistant text seen while that turn ran.
+    pub judgment: Option<String>,
+}
+
+impl HandoffState {
+    /// Whether a handoff owns this seat's next turn boundary.
+    pub fn in_progress(&self) -> bool {
+        self.parked.is_some() || self.awaiting
+    }
+}
+
 /// Workspace's owned per-session state. One `DomainSession` per
 /// active `SessionTask`. Single writer (the `SessionTask`); accessed
 /// via `Arc<parking_lot::Mutex<DomainSession>>` so the `Workspace`
@@ -327,6 +382,11 @@ pub struct DomainSession {
     pub mcp_servers: Option<McpServers>,
     /// How full the context window was at the last poll.
     pub context_usage: Option<ContextUsage>,
+    /// The handoff this occupant is running, if any. Belongs to the
+    /// occupant: a swap that completes resets it, and a request that was
+    /// parked for a seat whose occupant changed describes a session that
+    /// is gone.
+    pub handoff: HandoffState,
     /// The model the session resolved to, from its connect and from
     /// every later init frame that names a different one.
     pub current_model: Option<CurrentModel>,
@@ -528,6 +588,7 @@ impl DomainSession {
             configured_permission_mode: None,
             mcp_servers: None,
             context_usage: None,
+            handoff: HandoffState::default(),
             current_model: None,
             available_models: Vec::new(),
             monitors: Vec::new(),
@@ -556,6 +617,19 @@ impl DomainSession {
                 self.runtime_state,
                 Some(RuntimeSessionState::Running | RuntimeSessionState::RequiresAction)
             )
+    }
+
+    /// Whether a handoff may start here: nothing running, nothing waiting in
+    /// the CLI's queue, and nothing parked on an answer.
+    ///
+    /// **All three, not just the turn.** A prompt already queued is a turn
+    /// the handoff's own prompt would be folded into, and a parked
+    /// interaction is a turn that has not ended; the document names both as
+    /// the "otherwise idle" condition.
+    pub fn is_idle_for_handoff(&self) -> bool {
+        !self.turn_in_flight()
+            && self.prompt_queue.is_empty()
+            && self.pending_interactions.is_empty()
     }
 
     /// Fold one frame's own claim about the turn into the liveness mirror.

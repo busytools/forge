@@ -197,6 +197,57 @@ not usable; it must name a positive window in tokens`. Unknown keys
 inside a `[models."<name>"]` table are rejected, so a mistyped key fails
 the load instead of quietly applying nothing.
 
+## `[handoff]`
+
+When a session's context is nearly full, forge replaces it with a fresh
+session that continues from a brief: the work carries on, and only a
+handoff row marks the swap. The trigger runs on by default, at the end of
+a turn, so a long session stops before its first compaction rather than
+after it.
+
+| Key                 | Type    | Default | Notes                                                                                     |
+| ------------------- | ------- | ------- | ----------------------------------------------------------------------------------------- |
+| `enabled`           | boolean | `true`  | `false` turns the automatic trigger off. `/handoff` still works by hand.                  |
+| `at_percent`        | integer | `85`    | The share of the CLI's effective context window at which the handoff fires, from 1 to 100. |
+| `after_compactions` | integer | `1`     | The compaction count the backstop fires at, when a single turn crossed the window first.   |
+
+```toml
+[handoff]
+enabled = true
+at_percent = 85
+after_compactions = 1
+```
+
+An absent table is exactly the defaults above. `at_percent` is a share
+rather than a token count because the denominator is the CLI's own
+`ContextUsage.max_tokens`, which already reflects the model and any
+lowered `auto_compact_window` - 85% of a 200k window is 170k, and 85% of
+a 1M window is 870k, which is the same rule at a different limit.
+
+The compaction count is a backstop, not the trigger: a turn that crosses
+the window before it ends compacts first, and the count is what hands
+that session over at the next turn boundary. A session that reaches two
+compactions is the alarm the handoff record exists for.
+
+A project can carry its own table, and every key is optional - it sets the
+one it disagrees on and inherits the rest:
+
+```toml
+[[orgs.projects]]
+name = "companies"
+path = "~/Projects/companies"
+# this project's sessions run unattended for days; let them finish
+[orgs.projects.handoff]
+enabled = false
+```
+
+A share outside 1..100 fails the load:
+`the handoff table at the top level in forge.toml ... sets at_percent =
+0, which is not usable; it must name a share of the context window
+between 1 and 100`. So does `after_compactions = 0`, which would swap the
+seat on every turn. A project's refusal names the project rather than the
+top level. Unknown keys inside a `[handoff]` table are rejected.
+
 ## Per-project keys (inside `[[orgs.projects]]`)
 
 The per-project settings live directly on each `[[orgs.projects]]`
@@ -212,6 +263,7 @@ quietly applying nothing.
 | `permission_mode` | string  | `auto`  | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate.                                                                                                                                                                                                                                                                                                                                                 |
 | `model`           | string  |         | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Required: the walk that picks a session's account matches on the model an account serves, so a project without one is refused at spawn. |
 | `vault_roots`     | array   | `[]`    | Extra roots the document read accepts beyond the session's own tree, so a project's documents can live outside its repo (a vault, a shared spec directory). Each entry is an absolute path, `~` or a `~/` path; a relative one fails the load. |
+| `handoff`         | table   | none    | Written as `[orgs.projects.handoff]` under its own entry. Sets this project's handoff trigger; every key is optional and falls back to the top-level `[handoff]` section above. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
@@ -634,9 +686,9 @@ Every table rejects unknown fields, so a mistyped key fails the load
 and names itself rather than parsing clean and meaning something else -
 a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
-`[[accounts]]`, `[models."<name>"]`, `[[slack]]`, `[gotify]`,
-`[systemone]`, `[gateway]`, `[dictate]`, `[plugins]`, `[server]` and
-`[client]`.
+`[[accounts]]`, `[models."<name>"]`, `[handoff]` and
+`[orgs.projects.handoff]`, `[[slack]]`, `[gotify]`, `[systemone]`,
+`[gateway]`, `[dictate]`, `[plugins]`, `[server]` and `[client]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
@@ -693,6 +745,16 @@ accounts = ["Work"]
 
   [orgs.projects.env]
   SERVICE_MCP_URL = "https://mcp.example/service"
+
+  # This project's sessions run unattended for days; finish the work
+  # rather than swapping the session under it.
+  [orgs.projects.handoff]
+  enabled = false
+
+# The automatic session handoff: on at 85% of the window, with the first
+# compaction as the backstop.
+[handoff]
+at_percent = 85
 
 [[accounts]]
 display_name = "Personal"

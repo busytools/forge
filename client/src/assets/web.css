@@ -2296,6 +2296,35 @@ details.cpoint > summary::-webkit-details-marker { display: none; }
 .cpoint:hover .word { color: var(--text); }
 details.cpoint[open] > summary .word { color: var(--accent); }
 details.cpoint[open] > summary .arw { color: var(--accent); }
+
+/* The handoff row: the join between two sessions. The same hairline shape as
+   the compaction point, because both mark a boundary in the conversation, and
+   the body opens onto the brief the successor was given. */
+details.handoff { margin: 12px 0; font-family: var(--mono); font-size: var(--fs-base); }
+details.handoff > summary { list-style: none; display: flex; align-items: center; gap: 10px;
+  cursor: pointer; }
+details.handoff > summary::-webkit-details-marker { display: none; }
+.handoff .rule { flex: 1; height: 1px; background: var(--line); }
+.handoff .word { color: var(--muted); font-weight: 600; }
+.handoff .pair { color: var(--dim); }
+.handoff .pct { color: var(--dim); font-size: 12px; }
+.handoff:hover .word { color: var(--text); }
+details.handoff[open] > summary .word { color: var(--accent); }
+details.handoff[open] > summary .arw { color: var(--accent); }
+.handoff .hbody { padding: 8px 0 4px 0; }
+.handoff .meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+.handoff .lbl { color: var(--accent); font-size: 11px; letter-spacing: .08em;
+  margin: 14px 0 6px 0; }
+.handoff .fact { display: flex; gap: 18px; padding: 2px 0; font-size: 12px;
+  color: var(--text); }
+.handoff .fact .k { flex: 0 0 88px; color: var(--muted); }
+.handoff .fact .v { flex: 1; white-space: pre-wrap; word-break: break-word; }
+/* Touch: the summary is the row's only control, so it takes a finger's
+   target. Keyed on the pointer, not the width - a tablet is wide and still
+   finger-driven. */
+@media (pointer: coarse) {
+  details.handoff > summary { min-height: 44px; }
+}
 .cpoint .cpbody { margin: 6px 0 2px; color: var(--muted); }
 .cpoint .cpbody b { color: var(--text); font-weight: 500; }
 /* The continuation summary under the facts, as prose rather than the body's

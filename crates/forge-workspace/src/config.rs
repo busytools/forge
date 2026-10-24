@@ -44,6 +44,11 @@ struct ForgeToml {
     /// stamped and the CLI's own resolution stands.
     #[serde(default)]
     models: HashMap<String, ModelSettings>,
+    /// Optional `[handoff]` section - when forge replaces a session with a
+    /// fresh one that continues from a brief. Absent means the defaults,
+    /// which is on at 85% with a compaction backstop of 1.
+    #[serde(default)]
+    handoff: HandoffSettings,
     /// Optional `[dictate]` section - local dictation. Absent section
     /// -> disabled, which is what keeps a 3 GB model download opt-in.
     #[serde(default)]
@@ -132,6 +137,7 @@ impl std::fmt::Debug for ForgeToml {
             .field("orgs", &self.orgs)
             .field("accounts", &self.accounts)
             .field("models", &self.models)
+            .field("handoff", &self.handoff)
             .field("dictate", &self.dictate)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
@@ -404,6 +410,10 @@ struct ProjectEntry {
     /// empty.
     #[serde(default)]
     vault_roots: Vec<String>,
+    /// This project's handoff trigger, layered over the top-level table.
+    /// Every key is optional, so a project sets the one it disagrees on.
+    #[serde(default)]
+    handoff: Option<HandoffSettings>,
 }
 
 /// Hand-written because a project's env may carry secrets, which the
@@ -422,6 +432,7 @@ impl std::fmt::Debug for ProjectEntry {
             .field("env", &env)
             .field("env_file", &self.env_file)
             .field("vault_roots", &self.vault_roots)
+            .field("handoff", &self.handoff)
             .finish()
     }
 }
@@ -525,6 +536,98 @@ pub struct ModelSettings {
     pub auto_compact_window: Option<i64>,
 }
 
+/// The share of the window a session hands off at when the key is absent.
+pub const DEFAULT_HANDOFF_AT_PERCENT: u8 = 85;
+
+/// The compaction count the backstop hands off at when the key is absent.
+/// One is the first compaction: the fill trigger should have fired before it,
+/// and a session that reaches two is the alarm the record exists for.
+pub const DEFAULT_HANDOFF_AFTER_COMPACTIONS: u32 = 1;
+
+/// The `[handoff]` table, top-level or per project. Every key is optional so
+/// a project's table can set the one it disagrees on and inherit the rest.
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffSettings {
+    /// `false` turns the automatic trigger off and leaves `/handoff` alone.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// The share of the CLI's effective window the fill trigger fires at.
+    /// Widened past `u8` so a value above 255 gets this crate's own refusal
+    /// rather than serde's, and validation bounds what survives to 1..=100.
+    #[serde(default)]
+    pub at_percent: Option<u32>,
+    /// The compaction count the backstop fires at.
+    #[serde(default)]
+    pub after_compactions: Option<u32>,
+}
+
+/// The trigger a session reads, with the project's table over the top-level
+/// one and the defaults under both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandoffPolicy {
+    pub enabled: bool,
+    pub at_percent: u8,
+    pub after_compactions: u32,
+}
+
+impl Default for HandoffPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            at_percent: DEFAULT_HANDOFF_AT_PERCENT,
+            after_compactions: DEFAULT_HANDOFF_AFTER_COMPACTIONS,
+        }
+    }
+}
+
+impl HandoffPolicy {
+    pub fn resolve(global: &HandoffSettings, project: Option<&HandoffSettings>) -> Self {
+        Self {
+            enabled: project
+                .and_then(|settings| settings.enabled)
+                .or(global.enabled)
+                .unwrap_or(true),
+            at_percent: u8::try_from(
+                project
+                    .and_then(|settings| settings.at_percent)
+                    .or(global.at_percent)
+                    .unwrap_or(u32::from(DEFAULT_HANDOFF_AT_PERCENT)),
+            )
+            .unwrap_or(DEFAULT_HANDOFF_AT_PERCENT),
+            after_compactions: project
+                .and_then(|settings| settings.after_compactions)
+                .or(global.after_compactions)
+                .unwrap_or(DEFAULT_HANDOFF_AFTER_COMPACTIONS),
+        }
+    }
+}
+
+/// Refuse a trigger that can never fire or fires on every turn. `scope` names
+/// the table the value came from, so the error says which one to edit.
+fn validate_handoff_settings(
+    settings: &HandoffSettings,
+    path: &Path,
+    scope: &str,
+) -> Result<(), WorkspaceError> {
+    if let Some(value) = settings.at_percent
+        && !(1..=100).contains(&value)
+    {
+        return Err(WorkspaceError::HandoffAtPercentInvalid {
+            path: path.to_path_buf(),
+            scope: scope.to_owned(),
+            value,
+        });
+    }
+    if settings.after_compactions == Some(0) {
+        return Err(WorkspaceError::HandoffAfterCompactionsInvalid {
+            path: path.to_path_buf(),
+            scope: scope.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
     /// Index into `projects` for the default startup target -
@@ -538,6 +641,9 @@ pub(crate) struct LoadedConfig {
     /// `model` pins. Absent tables mean a spawn stamps no model
     /// parameters.
     pub models: HashMap<String, ModelSettings>,
+    /// `[handoff]` section knobs, unresolved: a project's own table layers
+    /// over these, and the defaults sit under both.
+    pub handoff: HandoffSettings,
     /// `[dictate]` section knobs. Absent section means dictation is
     /// off and preflight skips it entirely.
     pub dictate: crate::dictate::DictateSettings,
@@ -585,6 +691,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("default_index", &self.default_index)
             .field("accounts", &self.accounts)
             .field("models", &self.models)
+            .field("handoff", &self.handoff)
             .field("dictate", &self.dictate)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
@@ -648,6 +755,9 @@ pub(crate) struct LoadedProject {
     /// tree: the entry's `vault_roots` with `~` expanded. Empty for a
     /// project that declares none.
     pub vault_roots: Vec<PathBuf>,
+    /// This project's handoff table, unresolved; `None` inherits the
+    /// top-level one entirely.
+    pub handoff: Option<HandoffSettings>,
 }
 
 /// Hand-written because a project's env may carry secrets (`env_file`
@@ -670,6 +780,7 @@ impl std::fmt::Debug for LoadedProject {
             .field("max_workers", &self.max_workers)
             .field("permission_mode", &self.permission_mode)
             .field("vault_roots", &self.vault_roots)
+            .field("handoff", &self.handoff)
             .finish()
     }
 }
@@ -719,6 +830,7 @@ impl LoadedConfig {
             default_index: 0,
             accounts: Vec::new(),
             models: HashMap::new(),
+            handoff: HandoffSettings::default(),
             dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
             systemone: None,
@@ -1141,6 +1253,13 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 .collect::<Result<Vec<_>, _>>()?;
             let env =
                 resolve_project_env(&project_entry.name, project_entry.env, project_entry.env_file);
+            if let Some(settings) = &project_entry.handoff {
+                validate_handoff_settings(
+                    settings,
+                    &path,
+                    &format!("project \"{}\"", project_entry.name),
+                )?;
+            }
             projects.push(LoadedProject {
                 name: project_entry.name.clone(),
                 path: expand_home(&project_entry.path),
@@ -1154,6 +1273,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 max_workers: project_entry.max_workers,
                 permission_mode,
                 vault_roots,
+                handoff: project_entry.handoff,
             });
             // The project model must be served by at least one account
             // the org can reach: a typo would boot clean, stamp all the
@@ -1213,6 +1333,8 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     // pre-split section made for every key at once.
     let client = if server.enabled { resolve_client(parsed.client, &path)? } else { parsed.client };
 
+    validate_handoff_settings(&parsed.handoff, &path, "the top level")?;
+
     let systemone = match parsed.systemone {
         Some(section) => {
             section.into_config().map_err(|message| WorkspaceError::ConfigInvalid {
@@ -1255,6 +1377,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         default_index,
         accounts,
         models: parsed.models,
+        handoff: parsed.handoff,
         dictate: parsed.dictate,
         gotify: parsed.gotify,
         systemone,
@@ -4173,6 +4296,111 @@ auto_compact_window = 0
         assert!(
             message.contains("auto_compact_window")
                 && message.contains("positive window in tokens"),
+            "and says what to fix, got: {message}",
+        );
+    }
+
+    /// A project's table carries only what it disagrees on, and every key it
+    /// leaves out is an absent value rather than a default baked in at parse
+    /// time - that absence is what lets the top-level table show through.
+    #[test]
+    fn a_project_handoff_table_carries_only_its_own_keys() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[orgs.projects.handoff]
+enabled = false
+
+[[orgs.projects]]
+name = "companies"
+path = "~/Projects/companies"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[handoff]
+at_percent = 95
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("the tables load");
+        let forge = named(&config, "forge").handoff.expect("forge carries a table");
+        assert_eq!(forge.enabled, Some(false), "its own key is read");
+        assert_eq!(forge.at_percent, None, "and the key it omits stays absent");
+        assert_eq!(forge.after_compactions, None, "so the global value shows through");
+        assert!(
+            named(&config, "companies").handoff.is_none(),
+            "a project with no table inherits rather than carrying an empty one",
+        );
+        assert_eq!(config.handoff.at_percent, Some(95), "the top-level table is read");
+        assert_eq!(config.handoff.enabled, None, "and defaults by absence");
+    }
+
+    /// A share at either end of the range is a trigger that never fires or
+    /// one that fires on the first turn, and a value past 255 is refused
+    /// here rather than by serde, so it is refused by name with the fix.
+    #[test]
+    fn a_handoff_percent_outside_the_window_is_refused() {
+        for value in [0u32, 101, 300] {
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &minimal_config().replace(
+                    "[[accounts]]",
+                    &format!("[handoff]\nat_percent = {value}\n\n[[accounts]]"),
+                ),
+            );
+            let err = load_from_dir(dir.path()).expect_err("the share is refused");
+            let message = err.to_string();
+            assert!(
+                matches!(
+                    err,
+                    WorkspaceError::HandoffAtPercentInvalid { value: refused, ref scope, .. }
+                        if refused == value && scope == "the top level"
+                ),
+                "the refusal names the table and the value, got: {message}",
+            );
+            assert!(
+                message.contains("between 1 and 100") && message.contains("85% default"),
+                "and says what to fix, got: {message}",
+            );
+        }
+    }
+
+    /// The backstop's zero would swap the seat on every turn, which is not
+    /// what the key means, and the project's own table is the one named.
+    #[test]
+    fn a_project_handoff_backstop_of_zero_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &minimal_config().replace(
+                "auto_start = true",
+                "auto_start = true\n[orgs.projects.handoff]\nafter_compactions = 0",
+            ),
+        );
+        let err = load_from_dir(dir.path()).expect_err("the backstop is refused");
+        let message = err.to_string();
+        assert!(
+            matches!(
+                err,
+                WorkspaceError::HandoffAfterCompactionsInvalid { ref scope, .. }
+                    if scope == "project \"forge\""
+            ),
+            "the refusal names the project's table, got: {message}",
+        );
+        assert!(
+            message.contains("at least 1") && message.contains("1 default"),
             "and says what to fix, got: {message}",
         );
     }

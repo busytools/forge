@@ -590,6 +590,20 @@ pub struct Workspace {
     /// its own bucket on first `Connected`. `pub(crate)` so the impl
     /// block in [`crate::parked`] can reach it.
     pub(crate) parked_by_slot: Mutex<crate::parked::ParkedMap>,
+    /// The brief a handoff wrote, waiting for the successor it was written
+    /// for to connect. Taken by the session task on that connect, which is
+    /// what makes the brief the new occupant's first turn. `pub(crate)` so
+    /// the impl block in [`crate::handoff`] can reach it.
+    pub(crate) pending_handoffs:
+        Mutex<std::collections::HashMap<SessionSlot, crate::handoff::PendingBrief>>,
+    /// Seats whose occupant is being swapped by a handoff: from the moment
+    /// the brief is built until the successor connects, a prompt aimed at one
+    /// is held rather than run by the session leaving.
+    pub(crate) swapping: Mutex<std::collections::HashSet<SessionSlot>>,
+    /// Prompts held for a swapping seat, delivered to its successor after the
+    /// brief, in arrival order.
+    pub(crate) held_prompts:
+        Mutex<std::collections::HashMap<SessionSlot, Vec<crate::handoff::HeldPrompt>>>,
     /// Active Gotify subscriptions (`mcp__forge__gotify`). The set the
     /// stream matches each inbound message against. Durable ones (lead /
     /// team-worker) are also persisted to `db` and reloaded here
@@ -1822,6 +1836,9 @@ impl Workspace {
             crons: Mutex::new(crons),
             tasks: Mutex::new(tasks),
             parked_by_slot: Mutex::new(HashMap::new()),
+            pending_handoffs: Mutex::new(HashMap::new()),
+            swapping: Mutex::new(std::collections::HashSet::new()),
+            held_prompts: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(gotify_subs),
             db,
             catalog_loaded,
@@ -2077,6 +2094,13 @@ impl Workspace {
             });
         }
         views
+    }
+
+    /// The handoff trigger this seat runs under: the project's table over the
+    /// top-level one, with the defaults under both.
+    pub(crate) fn handoff_policy_for(&self, slot: &SessionSlot) -> crate::config::HandoffPolicy {
+        let project = self.project_for_slot(slot).and_then(|project| project.handoff);
+        crate::config::HandoffPolicy::resolve(&self.config.handoff, project.as_ref())
     }
 
     /// Validate that `name` matches a project in `forge.toml`. Used
@@ -2580,6 +2604,7 @@ impl Workspace {
                 // Filled by the first `Connected`, which is where this task
                 // is handed the history it can later replay.
                 conversation: None,
+                successor: None,
                 teardown_done: Some(teardown_done),
             };
             let span = tracing::info_span!(
@@ -3427,6 +3452,15 @@ impl Workspace {
             crate::mcp::SessionKind::Worker => self.stored_interactive_for(slot).unwrap_or(false),
         };
         crate::spawn::apply_blocked_tools(launch_settings, kind, interactive);
+        // **A respawn rebuilds both of a lead's blocks.** A worker's charter
+        // is re-delivered from the store by the caller, and a lead has no
+        // stored row to read one from - its two blocks are stamped at spawn
+        // and were lost here, so a `/new`, a `/resume` or a handoff handed
+        // back a lead with neither its mission nor its delegation rules.
+        if matches!(kind, crate::mcp::SessionKind::Lead) {
+            crate::spawn::apply_lead_charter(launch_settings);
+            Self::apply_lead_delegation(launch_settings, kind);
+        }
         let (registration, replaced) = {
             let mut pool = self.pool.lock();
             let Some(entry) = pool.get_mut(slot) else { return };
@@ -4196,6 +4230,21 @@ impl Workspace {
         source: PromptSource,
         uuid: String,
     ) -> Result<(), DispatchError> {
+        // A prompt arriving while the seat swaps its occupant waits for the
+        // successor: the session on its way out must not start a turn the new
+        // one would never carry. Every machinery delivery - peer, cron,
+        // Gotify, Slack - comes through here, so one gate holds them all.
+        if self.hold_prompt(
+            key,
+            crate::handoff::HeldPrompt {
+                text: text.clone(),
+                attachments: Vec::new(),
+                source,
+                sender: None,
+            },
+        ) {
+            return Ok(());
+        }
         // `route` rather than `dispatch`: the delivery's frame is the
         // envelope one its own update forges, not a bare user turn.
         self.route(Command::PromptUnder {
@@ -4278,6 +4327,52 @@ impl Workspace {
         text: String,
         uuid: String,
     ) -> Result<(), DispatchError> {
+        self.dispatch_forged_prompt_held(key, text, uuid, true)
+    }
+
+    /// The brief a handoff's successor runs as its first turn.
+    ///
+    /// **No conversation row.** The brief is already drawn, whole, inside the
+    /// handoff row; forging a second row for the prompt that carried it would
+    /// be the same text twice - and on a reload the transcript's own copy
+    /// would be a third.
+    pub(crate) fn dispatch_handoff_brief(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        uuid: String,
+    ) -> Result<(), DispatchError> {
+        self.route(Command::PromptUnder {
+            key: key.clone(),
+            text,
+            attachments: Vec::new(),
+            uuid,
+            source: crate::protocol::PromptSource::Forge,
+        })
+    }
+
+    /// The handoff's own judgment prompt.
+    ///
+    /// **The one prompt a swap's gate lets through.** The gate opens when
+    /// the handoff begins, and this is the prompt the handoff is built on:
+    /// held like any other, it would wait for a successor that is waiting
+    /// for it.
+    pub(crate) fn dispatch_handoff_prompt(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        uuid: String,
+    ) -> Result<(), DispatchError> {
+        self.dispatch_forged_prompt_held(key, text, uuid, false)
+    }
+
+    fn dispatch_forged_prompt_held(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        uuid: String,
+        holdable: bool,
+    ) -> Result<(), DispatchError> {
         // Stamped at the forge: the CLI never echoes a prompt, so this row
         // opens every turn the machinery starts - and a page attaching
         // mid-turn anchors its running clock on the first row that carries a
@@ -4288,7 +4383,17 @@ impl Workspace {
         // the row a view labels and the frame a reader's follow reads arm
         // alike only while they are one fact (#2198).
         let source = crate::protocol::PromptSource::Forge;
-        let result = self.dispatch_workspace_prompt_under(key, text, source, uuid);
+        let result = if holdable {
+            self.dispatch_workspace_prompt_under(key, text, source, uuid)
+        } else {
+            self.route(Command::PromptUnder {
+                key: key.clone(),
+                text,
+                attachments: Vec::new(),
+                uuid,
+                source,
+            })
+        };
         if result.is_ok() {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
@@ -4491,8 +4596,11 @@ impl Workspace {
         let command = match prompt {
             ForgePrompt::NewSession => {
                 let (cwd, launch_settings) = self.spawn_inputs(key);
-                Command::NewSession { key: key.clone(), cwd, launch_settings }
+                Command::NewSession { key: key.clone(), cwd, launch_settings, session_id: None }
             }
+            // The brief is asked of the session: the same process the
+            // automatic trigger runs, with the trigger being the person.
+            ForgePrompt::Handoff => Command::Handoff { key: key.clone(), brief: None },
             ForgePrompt::ResumeSession { session_id } => {
                 let (cwd, launch_settings) = self.spawn_inputs(key);
                 Command::ResumeSession {
@@ -4637,7 +4745,11 @@ impl Workspace {
 
     /// The settings a launch on `key` carries, read from the same documents
     /// the CLI reads.
-    fn launch_settings_for(&self, key: &SessionSlot, cwd: &str) -> SessionLaunchSettings {
+    pub(crate) fn launch_settings_for(
+        &self,
+        key: &SessionSlot,
+        cwd: &str,
+    ) -> SessionLaunchSettings {
         let empty = || serde_json::Value::Object(serde_json::Map::new());
         // An empty cwd is no cwd: joining `.claude/settings.local.json` onto
         // one would read it against the process working directory.
@@ -4660,7 +4772,7 @@ impl Workspace {
     }
 
     /// Route a command that carries no frame of its own.
-    fn route(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
+    pub(crate) fn route(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
         // A spawn a caller could not complete is completed here, ahead of
         // routing: a client has no config to read, so what it sends carries no
         // settings, and a spawn that ran on those alone would carry no
@@ -4869,10 +4981,12 @@ impl Workspace {
                 let sid = self.domain_handles.lock().get(&key).and_then(|d| {
                     d.lock().session_id.as_ref().map(std::string::ToString::to_string)
                 });
-                let fresh = if matches!(cmd, Command::NewSession { .. }) {
-                    Some(self.fresh_session_id_for(&key))
-                } else {
-                    None
+                let fresh = match &cmd {
+                    Command::NewSession { session_id: Some(id), .. } => Some(id.clone()),
+                    Command::NewSession { session_id: None, .. } => {
+                        Some(self.fresh_session_id_for(&key))
+                    }
+                    _ => None,
                 };
                 // A respawn moves the id the child runs under, so its
                 // gateway binding moves with it. The routed path stamps
@@ -9214,6 +9328,7 @@ mod account_stamp_tests {
             max_workers: None,
             permission_mode,
             vault_roots: Vec::new(),
+            handoff: None,
         }
     }
 
@@ -13757,6 +13872,7 @@ provider = "anthropic"
                 key: key.clone(),
                 cwd: "/tmp".to_owned(),
                 launch_settings: auto_settings(),
+                session_id: None,
             })
             .expect("dispatch new");
         workspace
@@ -13884,6 +14000,7 @@ provider = "anthropic"
                 key: key.clone(),
                 cwd: "/tmp".to_owned(),
                 launch_settings: caller_settings(),
+                session_id: None,
             })
             .expect("dispatch new");
         workspace
@@ -13952,6 +14069,7 @@ provider = "anthropic"
                     settings: Some(serde_json::json!({ "permissions": { "defaultMode": "plan" } })),
                     ..SessionLaunchSettings::default()
                 },
+                session_id: None,
             })
             .expect("dispatch new");
 
@@ -14056,6 +14174,7 @@ provider = "anthropic"
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
             conversation: None,
+            successor: None,
             teardown_done: None,
         };
         task.run().await;
@@ -16467,6 +16586,35 @@ mod worker_respawn_tests {
                 "the delegation preamble must not name the blocked CLI tool {tool}",
             );
         }
+    }
+
+    /// A respawn rebuilds both of a lead's blocks. They are stamped at spawn
+    /// and the store holds no charter for a lead row, so a `/new`, a
+    /// `/resume` or a handoff used to hand back a lead with neither its
+    /// mission nor its delegation rules - and a handoff that quietly did
+    /// that is the bug this pins. A worker's respawn gets neither: its
+    /// charter comes from its own stored row.
+    #[test]
+    fn a_respawn_rebuilds_a_leads_charter_and_preamble() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        let mut settings = SessionLaunchSettings::default();
+        ws.stamp_respawn_overrides(&lead, "new-id", &mut settings);
+        assert!(
+            settings.charter.as_deref().is_some_and(|charter| charter.contains("engineering lead")),
+            "the lead's mission survives the respawn: {:?}",
+            settings.charter,
+        );
+        assert!(settings.delegation_preamble.is_some(), "and so do its delegation rules");
+
+        let worker = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let mut worker_settings = SessionLaunchSettings::default();
+        ws.stamp_respawn_overrides(&worker, "new-id", &mut worker_settings);
+        assert!(worker_settings.charter.is_none(), "a worker's charter is its own row's");
+        assert!(
+            worker_settings.delegation_preamble.is_none(),
+            "and a worker is never given the lead-only block",
+        );
     }
 
     /// The role a spawn carries is the role it gets, and the slot's label

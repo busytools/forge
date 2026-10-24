@@ -4,7 +4,7 @@
 //! The single MCP server is named `forge` and grouped by submodule:
 //!
 //! - `agents` - every session reaches every other by its slot: `list`,
-//!   `tell`, `ask` and `whoami` for any caller, plus `spawn`,
+//!   `tell`, `ask`, `whoami` and `handoff` for any caller, plus `spawn`,
 //!   `despawn`, `update` and `capacity` for a lead. Tools render as
 //!   `mcp__forge__agents__<name>`.
 //! - `documents` - the document hand-off: a session hands the person at a
@@ -24,12 +24,13 @@
 //! Tool surface depends on the calling session's kind:
 //!
 //! - **Lead** sessions (project leads, including project sessions
-//!   another agent spawned) see all seven `agents__*` verbs. A lead is
+//!   another agent spawned) see all eight `agents__*` verbs. A lead is
 //!   the only role that can spawn, despawn, update or read capacity,
 //!   because each of those acts on the caller's own project.
-//! - **Worker** sessions see the three shared verbs and none of the
+//! - **Worker** sessions see the four shared verbs and none of the
 //!   lead-only ones. The reach is the same: a worker may address any
-//!   other session by its slot, its own lead and siblings included.
+//!   other session by its slot, its own lead and siblings included. A
+//!   handoff is shared because a seat is its own to hand over.
 //!
 //! Future submodules slot in alongside these (e.g. `worktree`,
 //! `memory`) without changing the server name or the auto-approve
@@ -75,9 +76,9 @@ pub mod workers;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
     /// Project lead - the session representing a project. Sees all
-    /// seven `agents__*` verbs.
+    /// eight `agents__*` verbs.
     Lead,
-    /// Worker - a child agent a lead spawned. Sees the three shared
+    /// Worker - a child agent a lead spawned. Sees the four shared
     /// `agents__*` verbs and none of the lead-only ones.
     Worker,
 }
@@ -659,12 +660,13 @@ mod tests {
     ];
 
     #[test]
-    fn a_lead_sees_all_seven() {
+    fn a_lead_sees_all_eight() {
         assert_eq!(
             agents_tools(SessionKind::Lead),
             [
                 "agents__capacity",
                 "agents__despawn",
+                "agents__handoff",
                 "agents__list",
                 "agents__send_message",
                 "agents__spawn",
@@ -675,12 +677,13 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_sees_only_the_shared_three() {
+    fn a_worker_sees_only_the_shared_four() {
         // The role gate: a worker gains the cross-project reach the
-        // merge adds, and must NOT gain a lead-only verb with it.
+        // merge adds, and must NOT gain a lead-only verb with it. The
+        // handoff is shared because a seat is its own to hand over.
         assert_eq!(
             agents_tools(SessionKind::Worker),
-            ["agents__list", "agents__send_message", "agents__whoami"],
+            ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"],
         );
     }
 
@@ -756,7 +759,7 @@ mod tests {
             Some(MockSystemOneFacade::new().into_arc()),
         ));
         worker.sort();
-        let mut expected: Vec<String> = ["agents__list", "agents__send_message", "agents__whoami"]
+        let mut expected: Vec<String> = ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"]
             .into_iter()
             .map(str::to_owned)
             .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
@@ -789,13 +792,16 @@ mod tests {
             [McpFamily::Cron].into_iter().collect();
         let mut names = names_of(&forge_server_families(SessionKind::Worker, &families, None));
         names.sort();
-        let mut expected: Vec<String> = ["agents__list", "agents__send_message", "agents__whoami"]
-            .into_iter()
-            .map(str::to_owned)
-            .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
-            .chain(["documents__hand_off"].into_iter().map(str::to_owned))
-            .chain(["cron__create", "cron__delete", "cron__list"].into_iter().map(str::to_owned))
-            .collect();
+        let mut expected: Vec<String> =
+            ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
+                .chain(["documents__hand_off"].into_iter().map(str::to_owned))
+                .chain(
+                    ["cron__create", "cron__delete", "cron__list"].into_iter().map(str::to_owned),
+                )
+                .collect();
         expected.sort();
         assert_eq!(names, expected, "{names:?}");
     }

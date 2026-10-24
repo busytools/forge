@@ -12,6 +12,7 @@
  * its project out.
  */
 
+import { handoffOf, type HandoffRecord } from '../wire/handoff';
 import type { WireTime, WorkState } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 
@@ -190,6 +191,9 @@ export interface Turn {
 export interface Conversation {
   turns: Turn[];
   compaction_count: number;
+  /** The row between the two conversations, when this occupant arrived by a
+   * handoff. The successor's transcript never carries it. */
+  handoff: HandoffRecord | null;
 }
 
 /**
@@ -588,6 +592,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     conversation: {
       turns: list(record(held['conversation'])['turns']).map(turnFrom),
       compaction_count: number(record(held['conversation'])['compaction_count']) ?? 0,
+      handoff: handoffOf(record(held['conversation'])['handoff']),
     },
     work: workFrom(held['work']),
     git: gitFrom(held['git']),

@@ -462,6 +462,9 @@ impl Workspace {
             crons: Mutex::new(Vec::new()),
             tasks: Mutex::new(Vec::new()),
             parked_by_slot: Mutex::new(HashMap::new()),
+            pending_handoffs: Mutex::new(HashMap::new()),
+            swapping: Mutex::new(std::collections::HashSet::new()),
+            held_prompts: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(Vec::new()),
             db: Arc::new(Mutex::new(None)),
             catalog_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -583,6 +586,7 @@ impl Workspace {
             max_workers,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
             vault_roots: Vec::new(),
+            handoff: None,
         });
     }
 
