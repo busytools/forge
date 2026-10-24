@@ -3433,7 +3433,7 @@ describe('a page seam that re-serves a result', () => {
     ]);
     expect(kinds(brief), 'the brief reaches the page through the handoff row').toEqual([]);
     const real = fold([heard([{ type: 'text', text: 'a real prompt' }])]);
-    expect(kinds(real), 'and a person’s own words still draw').toEqual(['user']);
+    expect(kinds(real), "and a person's own words still draw").toEqual(['user']);
   });
 
   it('folds a handoff frame into the row that joins two sessions', () => {

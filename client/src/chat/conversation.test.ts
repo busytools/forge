@@ -4121,7 +4121,7 @@ describe('the conversation the chat draws', () => {
     stop();
   });
 
-  it('draws the record’s handoff row above the successor turns a page carries', () => {
+  it('draws the recorded handoff row above the successor turns a page carries', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
