@@ -598,7 +598,6 @@ fn handoff_row(
 /// conversation and a window of it read the same way.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-
 pub struct ConversationWire {
     pub turns: Vec<TurnWire>,
     /// The handle above the newest page, the same one a `more` answers with.
