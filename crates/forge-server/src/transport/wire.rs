@@ -1661,19 +1661,40 @@ pub const SUBSCRIBE_TURNS: u32 = 20;
 /// drew; these are what the server was doing in between, so a gap the two
 /// artefacts have to explain is placed by them rather than guessed at.
 ///
-/// **The four slices are disjoint.** The seed is the transcript read only a
-/// cold seat pays, and the conversation total excludes it, so their sum is
-/// time the open spent and the remainder between it and the transport's
-/// `session_open` line - the queued flush, the copy's catch-up, the record's
-/// own reads and the frame's serialisation - is never short. The line also
-/// carries `write_ms`, the snapshot's socket write, which is inside `open_ms`
-/// and split out of that remainder.
+/// **The slices are disjoint.** Each is taken around one read on the path,
+/// in the order the path runs them, so their sum against `open_ms` is the
+/// work that did not name itself; the seed is the transcript read only a
+/// cold seat pays, and the conversation total excludes it. The frame's own
+/// record, `frame_write`, carries `prep_ms` (the record serialised into the
+/// bytes) and `write_ms` (the socket's share) - both inside `open_ms`, and
+/// split out of what the record's own reads would otherwise have to explain.
 #[derive(Debug, Default)]
 pub struct OpenTimings {
     pub seed_ms: f64,
     pub conversation_ms: f64,
     pub page_ms: f64,
     pub encode_ms: f64,
+    pub prologue_ms: f64,
+    pub header_ms: f64,
+    pub catch_up_ms: f64,
+    pub cards_ms: f64,
+    pub work_ms: f64,
+    pub content_ms: f64,
+    pub reviews_ms: f64,
+    pub tree_reviews_ms: f64,
+    pub state_ms: f64,
+    pub index_ms: f64,
+    pub tail_ms: f64,
+    /// How old the PR attempt behind this record is, in seconds; absent when
+    /// the scan has never attempted one. The record can carry a PR past its
+    /// refetch window while the watch refreshes it, and this is what says how
+    /// stale what a reader drew was.
+    pub pr_age_s: Option<f64>,
+}
+
+/// One read's share of the open, in milliseconds.
+fn slice_ms(at: std::time::Instant) -> f64 {
+    at.elapsed().as_secs_f64() * 1000.0
 }
 
 /// A subject's wire form. The ONE place it is produced.
@@ -1708,6 +1729,7 @@ pub(crate) async fn encode_subject_timed(
         Subject::Home => Ok((serde_json::to_value(home(state, surface).await)?, timings)),
         Subject::Board => Ok((serde_json::to_value(board(surface))?, timings)),
         Subject::Session(slot) => {
+            let at = std::time::Instant::now();
             let roster = surface.roster();
             let Some(cwd) = roster.cwd_for(slot) else {
                 anyhow::bail!("forge holds no session for {}", slot.display());
@@ -1718,6 +1740,7 @@ pub(crate) async fn encode_subject_timed(
             // from what this record carries (#2506).
             request_context_usage_if_unreported(surface, slot);
             request_mcp_snapshot_if_unreported(surface, slot);
+            timings.prologue_ms = slice_ms(at);
             let wire = session(state, surface, slot, &cwd, &mut timings).await?;
             // The record's own serialisation, and nothing else: what the
             // measurement pass timed as the encode, so the numbers line up.
@@ -2104,7 +2127,9 @@ async fn session(
     cwd: &Path,
     timings: &mut OpenTimings,
 ) -> Result<SessionWire> {
+    let at = std::time::Instant::now();
     let header = surface.header(slot);
+    timings.header_ms = slice_ms(at);
     // **The number is read BEFORE the copy's frames are.** Every frame minted
     // before this read is one the read below must carry; anything minted after
     // it carries a number at or above `seq`, which a client applies live rather
@@ -2116,6 +2141,7 @@ async fn session(
     // before the read can land after it: waited on briefly, and filled from
     // the seat's own window when the wait runs out. The answer never names a
     // number its copy cannot cover - a refusal is visible, a lost row is not.
+    let at = std::time::Instant::now();
     if let Err(reason) = catch_up(state, slot, seq.saturating_sub(1)).await {
         let why = match reason {
             NotReady::Behind => "its copy is behind the number an answer would carry",
@@ -2129,6 +2155,7 @@ async fn session(
         };
         anyhow::bail!("the seat's stream has not settled for {}; {why}", slot.display());
     }
+    timings.catch_up_ms = slice_ms(at);
     // The conversation's share of the record, taken through one blocking task
     // so the fold never runs on the reactor or under the lock. A seat with no
     // conversation is answered with the empty one.
@@ -2201,13 +2228,22 @@ async fn session(
     // held conversation on every read, which a drop would have shortened: a
     // record answering a window of cards over a window of messages is a
     // section that shrinks with the cap rather than with the conversation.
+    let at = std::time::Instant::now();
     let instances = surface.subagent_cards(slot);
+    timings.cards_ms = slice_ms(at);
     // The seat's scan, as the loop that owns it last answered it. Nothing is
     // read here: the tree is read for a seat somebody is showing, and this
     // answers what that read found - the tile's branch, count and PR are one
     // instant, so a branch switch cannot render a PR for a branch this record
     // does not name.
+    let at = std::time::Instant::now();
     let held = surface.work(slot, cwd).await;
+    timings.work_ms = slice_ms(at);
+    timings.pr_age_s = held
+        .diff
+        .pr_fetched_at
+        .and_then(|at| std::time::SystemTime::now().duration_since(at).ok())
+        .map(|age| age.as_secs_f64());
     let work = work_from_scan(&held.diff, &held.cwd);
     // The tree behind the row's depth, from the same held scan and through
     // the same constructor the pushed frame goes through - one derivation,
@@ -2216,8 +2252,11 @@ async fn session(
     // The content read, beside the stats one: bounded, and taken here
     // rather than stored with the row because a record read is a cold load,
     // a reconnect or a seat swap - not a frame a moving tree pushes.
+    let at = std::time::Instant::now();
     let diff = scan_content(&held.cwd, &held.diff).await;
+    timings.content_ms = slice_ms(at);
     let branch = work.branch.clone().unwrap_or_default();
+    let at = std::time::Instant::now();
     let reviews = surface.reviews(slot.project(), &branch);
     // The whole files for anchors the bounded content cannot place: read
     // only for a comment this record's own diff carries the file of, and
@@ -2235,10 +2274,12 @@ async fn session(
         }
         Err(_) => WholeFiles::new(),
     };
+    timings.reviews_ms = slice_ms(at);
     // The seat's tree half, placed against the working files: the reads
     // are files off disk, so they run off the reactor like the walk below.
     // Zero tree threads means zero reads. A panicked read answers Err, so
     // the page draws the failure as itself rather than as an empty review.
+    let at = std::time::Instant::now();
     let tree_reviews = {
         let surface = std::sync::Arc::clone(&state.surface);
         let seat = slot.clone();
@@ -2259,18 +2300,24 @@ async fn session(
             },
         )
     };
+    timings.tree_reviews_ms = slice_ms(at);
+    let at = std::time::Instant::now();
     let state_at = surface.session(slot, cwd);
+    timings.state_ms = slice_ms(at);
     // The seat's own loop walks the index and pushes the movement, so this
     // answers that store - and a seat nothing has walked yet takes the same
     // walk under the seat's gate, off the reactor: whichever of the record and
     // the first pass gets there first stores, and the other answers it rather
     // than walking the same tree again.
+    let at = std::time::Instant::now();
     let file_index = surface.file_index_for_record(slot).await;
+    timings.index_ms = slice_ms(at);
     // **The reads the watch seeds from are all taken, so the mark fires here**
     // - after the tree's scan, the index and the process walk, and before the
     // record's remaining reads and its serialisation. The first pass starts
     // from these stores while this frame is still being built; `processes` is
     // read here so the record carries the same walk the pass seeds from.
+    let at = std::time::Instant::now();
     let processes = surface.processes(slot);
     surface.note_record_read(slot);
 
@@ -2357,6 +2404,7 @@ async fn session(
         closes: held.diff.closes,
         diff,
     };
+    timings.tail_ms = slice_ms(at);
     Ok(wire)
 }
 

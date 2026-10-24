@@ -6,6 +6,7 @@
 //! rather than deriving anything: a view reads the session instead of
 //! folding the update stream a second time.
 
+use forge_primitives::git_diff::PrRefresh;
 use forge_primitives::runtime::AvailableModel;
 use forge_primitives::{
     CurrentModel, EffortLevel, MonitorRecord, PermissionMode, SessionId, SessionSlot,
@@ -131,12 +132,19 @@ impl ViewSurface {
     /// has since moved, so a store past the window is re-read here rather
     /// than carried.
     pub async fn work(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
-        if let Ok(held) = self.workspace.scan_work_if_stale(slot, false).await {
+        // **The record's read never waits on the PR lookup.** A
+        // lookup past its window is a TLS + API round trip (~0.9 s here) and
+        // it sat inside the open a client waits for; the seat's loop scans
+        // with `Fetch` and pushes the refreshed row instead.
+        if let Ok(held) =
+            self.workspace.scan_work_if_stale(slot, false, PrRefresh::ServeCached).await
+        {
             return held;
         }
         // A seat with no session has no store to hold a read, and its record
-        // still answers the tree it stands in.
-        self.workspace.scan_work_at(slot, cwd).await
+        // still answers the tree it stands in - so there is nothing cached to
+        // serve and no loop to refresh it either: this read fetches.
+        self.workspace.scan_work_at(slot, cwd, PrRefresh::Fetch).await
     }
 
     /// Store a scan's answer, which is the write half of [`Self::work`].
