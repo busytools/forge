@@ -1883,7 +1883,7 @@ export class Chat {
           // carries**, because the successor's transcript never holds it and
           // the live frame it arrived on is long gone.
           const record = handoffOf(conversation.handoff);
-          if (record !== null) this.seedHandoffTurn(record);
+          if (record !== null) this.seedHandoffTurn(record, 'ahead');
           if (fresh) {
             const rows = pageTurns(conversation.turns);
             if (rows.length > 0) {
@@ -2615,7 +2615,7 @@ export class Chat {
    * describes.
    */
   private holdHandoff(handoff: HandoffRecord): void {
-    this.seedHandoffTurn(handoff);
+    this.seedHandoffTurn(handoff, 'after');
     // **The successor's id rides with the turns.** A swap that never lands
     // (a failed spawn, a dropped socket) leaves this set, and the next
     // `session_replaced` from anything else - a plain `/new` - must not read
@@ -2625,11 +2625,18 @@ export class Chat {
 
   /** Put the row in the conversation once, wherever it is missing: the live
    * frame and a seat record's copy are the same row by its key. */
-  private seedHandoffTurn(handoff: HandoffRecord): void {
+  private seedHandoffTurn(handoff: HandoffRecord, where: 'ahead' | 'after'): void {
     const key = handoffKey(handoff);
     if (this.held.turns.some((turn) => turn.key === key)) return;
     const turn: Turn = { key, messages: [handoffFrame(handoff)], live: false };
-    this.fold((held) => ({ ...held, turns: [...held.turns, turn] }));
+    // **A live swap puts the row after the outgoing conversation**; a seed
+    // from a seat record puts it before the successor turns that are already
+    // held - the successor's transcript never carries the row, so it is the
+    // head of what is drawn, not its tail.
+    this.fold((held) => ({
+      ...held,
+      turns: where === 'ahead' ? [turn, ...held.turns] : [...held.turns, turn],
+    }));
   }
 
   private replaced(occupant: string | null): void {

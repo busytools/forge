@@ -599,7 +599,9 @@ pub struct Workspace {
     /// Seats whose occupant is being swapped by a handoff: from the moment
     /// the brief is built until the successor connects, a prompt aimed at one
     /// is held rather than run by the session leaving.
-    pub(crate) swapping: Mutex<std::collections::HashSet<SessionSlot>>,
+    pub(crate) swapping: Mutex<std::collections::HashMap<SessionSlot, u64>>,
+    /// Mints a swap's token, so a build that lost the seat cannot spawn.
+    pub(crate) swap_epochs: std::sync::atomic::AtomicU64,
     /// Prompts held for a swapping seat, delivered to its successor after the
     /// brief, in arrival order.
     pub(crate) held_prompts:
@@ -1837,7 +1839,8 @@ impl Workspace {
             tasks: Mutex::new(tasks),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
-            swapping: Mutex::new(std::collections::HashSet::new()),
+            swapping: Mutex::new(HashMap::new()),
+            swap_epochs: std::sync::atomic::AtomicU64::new(0),
             held_prompts: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(gotify_subs),
             db,
@@ -4937,7 +4940,7 @@ impl Workspace {
                         guard.pending_cancel = false;
                         guard.auto_continue = None;
                     }
-                    guard.turn_pending = true;
+                    guard.commit_turn();
                     guard.failed_turn_at = None;
                 }
                 // A prompt the reader's own hands sent moves the seat on: a

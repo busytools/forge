@@ -2911,19 +2911,12 @@ fn answer_delivery(
 /// between the hold and the turn end - is told to its sender rather than
 /// dropped, which is the whole point of holding it.
 ///
-/// The turn's whole hold signal is ended here, before the bucket is taken:
-/// the take shares its lock with a concurrent hold's check-and-enqueue, so a
-/// delivery decides on `delivery_hold_signal` either before this drain (and
-/// is delivered by it) or after (and is delivered directly).
-pub(crate) fn drain_turn_held_for_slot(
-    workspace: &Arc<Workspace>,
-    domain: &Arc<parking_lot::Mutex<crate::domain_session::DomainSession>>,
-    slot: &SessionSlot,
-) {
-    let mut guard = domain.lock();
-    guard.turn_pending = false;
-    guard.turn_open = false;
-    drop(guard);
+/// **The boundary's own settle is the session task's**, since it knows which
+/// turn ended; this drain clears no liveness. The take shares its lock with a
+/// concurrent hold's check-and-enqueue, so a delivery decides on
+/// [`delivery_hold_signal`] either before this drain (and is delivered by it)
+/// or after (and is delivered directly).
+pub(crate) fn drain_turn_held_for_slot(workspace: &Arc<Workspace>, slot: &SessionSlot) {
     for crate::parked::ParkedPeer { sender, wrapped } in workspace.take_turn_held_for_slot(slot) {
         let text = wrapped.to_prose();
         let uuid = forge_sdk::request_id::next_prompt_id();

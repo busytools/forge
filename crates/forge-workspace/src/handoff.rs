@@ -70,6 +70,14 @@ pub(crate) struct GroundTruth {
 /// How many of the successor's turns are measured.
 pub(crate) const SUCCESSOR_TURNS: u32 = 10;
 
+/// How long a handoff waits for its judgment prompt to start.
+///
+/// A prompt that never starts never produces the turn whose Result would
+/// finish the handoff, and a CLI that advertises no lifecycle frames never
+/// says it started at all - so the bound is the only backstop left once the
+/// cancellation and settlement frames have said nothing.
+pub(crate) const JUDGMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// The predecessor's read set the successor is measured against is bounded:
 /// a record is not a transcript, and the count only needs the files the two
 /// sessions plausibly meet in.
@@ -81,6 +89,7 @@ pub(crate) async fn ground_truth(
     config_dir: &Path,
     seat: &HandoffSeat<'_>,
     board: &[Task],
+    prior: Option<&HandoffRecord>,
 ) -> GroundTruth {
     let read = {
         let config_dir = config_dir.to_path_buf();
@@ -94,9 +103,31 @@ pub(crate) async fn ground_truth(
         })
         .await
     };
+    // **An absent transcript is a read that failed, not an empty session.**
+    // The loader answers a missing file with an empty history, so the path
+    // itself is the only thing that can tell the two apart.
+    let read_failed = read.is_err() || !seat.transcript_path.exists();
     let messages = read.map(|history| history.messages).unwrap_or_default();
     let git = forge_agent::env::git_state::probe(seat.cwd).await;
-    assemble(seat, &messages, &git, board)
+    let mut truth = assemble(seat, &messages, &git, board, prior);
+    if read_failed {
+        // **An empty PART 1 is not a session with nothing in it.** Without
+        // this line the successor reads a blank ground truth as a blank
+        // session, when what happened is that its predecessor's transcript
+        // could not be read at all.
+        truth.sections.insert(
+            0,
+            HandoffSection {
+                label: "note".to_owned(),
+                lines: vec![
+                    "the previous session's transcript could not be read; the asks, files, \
+                     verification and record below are empty for that reason"
+                        .to_owned(),
+                ],
+            },
+        );
+    }
+    truth
 }
 
 /// The deterministic half, pure over its inputs: what the tests drive.
@@ -105,14 +136,47 @@ pub(crate) fn assemble(
     messages: &[Message],
     git: &HandoffGitState,
     board: &[Task],
+    prior: Option<&HandoffRecord>,
 ) -> GroundTruth {
     let asks = user_prompts(messages);
+    let mut ask = ask_section(&asks);
+    let mut constraints = constraint_section(&asks);
+    if let Some(prior) = prior {
+        // **A successor's own transcript begins with the brief, which the
+        // machine filter removes.** Without carrying those lines forward, a
+        // second handoff would have no first ask and no constraints - the
+        // original intent is in the record the session arrived by, not in
+        // the transcript above it.
+        let carried_asks = section_lines(&prior.brief.ground_truth, "ask");
+        if !carried_asks.is_empty() {
+            let mut lines = vec!["carried by the brief this session arrived by".to_owned()];
+            lines.extend(carried_asks);
+            if !ask.lines.is_empty() {
+                lines.push("since then".to_owned());
+                lines.extend(std::mem::take(&mut ask.lines));
+            }
+            ask.lines = lines;
+        }
+        let carried_rules = section_lines(&prior.brief.ground_truth, "constraints");
+        if !carried_rules.is_empty() {
+            for rule in &carried_rules {
+                if !constraints.lines.contains(rule) {
+                    constraints.lines.insert(0, rule.clone());
+                }
+            }
+            if constraints.lines.len() > CONSTRAINT_CAP {
+                let cut = constraints.lines.len() - CONSTRAINT_CAP;
+                constraints.lines.truncate(CONSTRAINT_CAP);
+                constraints.lines.push(format!("[cut; {cut} more lines]"));
+            }
+        }
+    }
     GroundTruth {
         sections: vec![
             seat_section(seat, git),
             role_section(&seat.role),
-            ask_section(&asks),
-            constraint_section(&asks),
+            ask,
+            constraints,
             files_section(messages, git),
             verify_section(messages),
             board_section(seat.slot, board),
@@ -121,6 +185,16 @@ pub(crate) fn assemble(
         cycle: cycle(messages, asks.len()),
         reads: read_set(messages),
     }
+}
+
+/// A section's lines from a brief, by label. An older record's brief is the
+/// only place its asks survive: the transcript above the successor is gone.
+fn section_lines(sections: &[HandoffSection], label: &str) -> Vec<String> {
+    sections
+        .iter()
+        .find(|section| section.label == label)
+        .map(|section| section.lines.clone())
+        .unwrap_or_default()
 }
 
 /// Every path the session read, in transcript order, deduped and capped.
@@ -163,7 +237,11 @@ pub(crate) fn successor_counts(
         match message {
             Message::User { message: envelope, synthetic, .. } if !*synthetic => {
                 let Some(text) = text_of(&envelope.content) else { continue };
-                if turns == 0 && text.starts_with("HANDOFF - ") {
+                // **The machine's own rows are not turns.** The brief, a task
+                // notice, an interrupt marker and the no-output nudge all
+                // arrive as ordinary user rows, and counting one would
+                // measure the successor against the harness's words.
+                if is_machine_prompt(message) {
                     continue;
                 }
                 // The window closes when an eleventh prompt arrives: that
@@ -222,7 +300,11 @@ fn successor_measurement(
     if messages.is_empty() {
         return None;
     }
-    Some(successor_counts(messages, predecessor_reads))
+    let counts = successor_counts(messages, predecessor_reads);
+    // A transcript holding only the brief and the assistant's rows has no
+    // turn to measure: zeros would read as a successor that re-read nothing,
+    // which is the best possible brief.
+    (counts.turns > 0).then_some(counts)
 }
 
 /// Whether a user prompt reads as a correction of what came before.
@@ -278,14 +360,34 @@ fn ask_section(asks: &[(usize, String)]) -> HandoffSection {
     // The first ask is the session's intent; when it is already inside the
     // recent window it is not repeated.
     if recent > 0
-        && let Some((_, first)) = asks.first()
+        && let Some((ordinal, first)) = asks.first()
     {
-        lines.push(format!("first: {}", clipped_verbatim(first, PROMPT_LINE_CAP)));
+        let (author, body) = prompt_author(first, *ordinal);
+        lines.push(format!("first ({author}): {}", clipped_verbatim(body, PROMPT_LINE_CAP)));
     }
     for (ordinal, text) in &asks[recent..] {
-        lines.push(format!("#{ordinal}: {}", clipped_verbatim(text, PROMPT_LINE_CAP)));
+        let (author, body) = prompt_author(text, *ordinal);
+        lines.push(format!("#{ordinal} ({author}): {}", clipped_verbatim(body, PROMPT_LINE_CAP)));
     }
     HandoffSection { label: "ask".to_owned(), lines }
+}
+
+/// Who a user row came from, and the words without a peer envelope's own
+/// header.
+///
+/// A peer message is an ordinary user row whose text opens with
+/// `[Message id=... from agent 'X' (org 'Y')]`. Quoting it as "user prompt
+/// N" would attribute another agent's words to the person.
+fn prompt_author(text: &str, ordinal: usize) -> (String, &str) {
+    if let Some(rest) = text.strip_prefix("[Message id=")
+        && let Some((_id, rest)) = rest.split_once(" from agent '")
+        && let Some((agent, rest)) = rest.split_once("' (org '")
+        && let Some((org, body)) = rest.split_once("')]")
+    {
+        let author = format!("peer message from {agent} (org {org})");
+        return (author, body.trim_start());
+    }
+    (format!("user prompt {ordinal}"), text)
 }
 
 /// The rules still binding, quoted. A cue word is the pattern and a heading
@@ -298,29 +400,42 @@ fn ask_section(asks: &[(usize, String)]) -> HandoffSection {
 fn constraint_section(asks: &[(usize, String)]) -> HandoffSection {
     let mut found: Vec<String> = Vec::new();
     for (ordinal, text) in asks.iter().rev() {
-        let lines: Vec<&str> = text.lines().map(str::trim).collect();
-        for (at, line) in lines.iter().enumerate().rev() {
+        let (author, body) = prompt_author(text, *ordinal);
+        let raw: Vec<&str> = body.lines().collect();
+        for (at, raw_line) in raw.iter().enumerate().rev() {
+            let line = raw_line.trim();
             if line.is_empty() || !states_a_rule(line) {
                 continue;
             }
-            let mut block = vec![*line];
+            let mut block = vec![line.to_owned()];
             if line.ends_with(':') {
-                for next in lines.iter().skip(at + 1) {
-                    if next.is_empty()
-                        || !(next.starts_with("- ")
-                            || next.starts_with("* ")
-                            || next.starts_with("  "))
-                    {
+                let mut cut = 0;
+                for next in raw.iter().skip(at + 1) {
+                    let trimmed = next.trim();
+                    if trimmed.is_empty() {
                         break;
                     }
-                    block.push(*next);
+                    // Raw indentation is what tells a continuation from the
+                    // next paragraph; the trimmed line cannot.
+                    let continues = trimmed.starts_with("- ")
+                        || trimmed.starts_with("* ")
+                        || next.starts_with("  ")
+                        || next.starts_with('\t');
+                    if !continues {
+                        break;
+                    }
                     if block.len() >= CONSTRAINT_BLOCK_CAP {
-                        break;
+                        cut += 1;
+                        continue;
                     }
+                    block.push(trimmed.to_owned());
+                }
+                if cut > 0 {
+                    block.push(format!("[cut; {cut} more lines]"));
                 }
             }
             let quoted = format!(
-                "\"{}\" (user prompt {ordinal})",
+                "\"{}\" ({author})",
                 clipped_verbatim(&block.join("\n"), CONSTRAINT_LINE_CAP)
             );
             if !found.contains(&quoted) {
@@ -559,7 +674,13 @@ fn is_machine_prompt(message: &Message) -> bool {
     }
     let Some(text) = text_of(&envelope.content) else { return false };
     let text = text.trim_start();
-    text.starts_with("HANDOFF - ") || text.starts_with("A handoff is starting for this session:")
+    text.starts_with("HANDOFF - ")
+        || text.starts_with("A handoff is starting for this session:")
+        || crate::conversation_turns::is_task_notice(text)
+        || crate::conversation_turns::is_interrupt_marker(text)
+        // The CLI's own nudge after an empty response; the client draws it as
+        // its own line from the same opening (`noOutputNudge`).
+        || text.starts_with("[Your previous response had no visible output.")
 }
 
 /// Every tool call's id, name and input, in transcript order.
@@ -920,13 +1041,13 @@ pub(crate) struct HeldPrompt {
 pub(crate) struct SuccessorWatch {
     /// The occupant the handoff named.
     pub to: String,
-    /// Turns counted so far, the brief's own excluded.
+    /// Prompts counted so far, matching what `successor_counts` counts.
     pub turns: u32,
     /// What its predecessor had read.
     pub predecessor_reads: Vec<String>,
-    /// The brief's own turn has not ended yet, so the first boundary to come
-    /// is forge's prompt rather than one of the successor's ten.
-    pub skip_brief_turn: bool,
+    /// The tenth prompt has run; the measurement is taken at its turn end,
+    /// when the transcript holds all ten.
+    pub measure_at_boundary: bool,
 }
 
 /// What a swap left for the occupant that continues: the text it is given,
@@ -980,6 +1101,9 @@ pub(crate) struct SwapRequest {
     pub judgment: Vec<HandoffSection>,
     pub cwd: String,
     pub launch_settings: SessionLaunchSettings,
+    /// The token the gate was opened under; the build abandons if it is no
+    /// longer the current one.
+    pub token: Option<u64>,
 }
 
 impl crate::Workspace {
@@ -1001,13 +1125,25 @@ impl crate::Workspace {
     /// Mark the seat as swapping its occupant: from the moment the brief is
     /// built until the successor connects, a prompt aimed at it is held
     /// rather than run by the session on its way out.
-    pub(crate) fn begin_swap(&self, slot: &SessionSlot) {
-        self.swapping.lock().insert(slot.clone());
+    pub(crate) fn begin_swap(&self, slot: &SessionSlot) -> u64 {
+        let token = self.swap_epochs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        self.swapping.lock().insert(slot.clone(), token);
+        token
     }
 
     /// Whether a swap is in flight on this seat.
     pub(crate) fn swap_in_progress(&self, slot: &SessionSlot) -> bool {
-        self.swapping.lock().contains(slot)
+        self.swapping.lock().contains_key(slot)
+    }
+
+    /// Whether `token` still owns the seat's swap.
+    ///
+    /// **A build that lost the seat must not spawn.** A replacement during
+    /// `ground_truth` closes the gate, and a later handoff may open a new
+    /// one; only the token says whether the NewSession this build is about
+    /// to dispatch is still its own.
+    pub(crate) fn swap_is_current(&self, slot: &SessionSlot, token: u64) -> bool {
+        self.swapping.lock().get(slot) == Some(&token)
     }
 
     /// Dispatch a peer message's prompt, holding it for the successor when a
@@ -1181,10 +1317,28 @@ impl crate::Workspace {
     }
 
     async fn run_handoff(self: Arc<Self>, request: SwapRequest) {
-        // The gate opens before the read: building the brief takes seconds on
-        // a long transcript, and a prompt arriving in that stretch is exactly
-        // the one the session on its way out would swallow.
-        self.begin_swap(&request.slot);
+        // **The gate was opened at the decision, and the token says whether
+        // it is still this build's.** A replacement during the read below
+        // closes it, and a later handoff may open a new one; this build must
+        // not then spawn a second successor.
+        let Some(token) = request.token else {
+            tracing::debug!(
+                target: "forge_workspace::handoff",
+                event_name = "handoff_build_without_token",
+                slot = %request.slot.display(),
+                "a handoff build had no swap token; it is not run",
+            );
+            return;
+        };
+        if !self.swap_is_current(&request.slot, token) {
+            tracing::debug!(
+                target: "forge_workspace::handoff",
+                event_name = "handoff_build_lost_the_seat",
+                slot = %request.slot.display(),
+                "the swap gate closed before the build began; the handoff is not run",
+            );
+            return;
+        }
         let cwd = PathBuf::from(&request.cwd);
         let transcript_path = transcript_path(self.config_dir(), &cwd, &request.from);
         let board: Vec<Task> = self
@@ -1202,7 +1356,13 @@ impl crate::Workspace {
             permission_mode: request.permission_mode.clone(),
             role: request.role.clone(),
         };
-        let truth = ground_truth(self.config_dir(), &seat, &board).await;
+        // **The predecessor's own brief is where its original ask survives.**
+        // A session that itself arrived by a handoff has the prior brief as
+        // its first transcript row, not the words a person typed; the record
+        // it arrived by still holds them.
+        let prior =
+            self.handoff_for_successor(&request.slot, &request.from).map(|(record, _)| record);
+        let truth = ground_truth(self.config_dir(), &seat, &board, prior.as_ref()).await;
         let reads = truth.reads.clone();
         let record = HandoffRecord {
             slot: request.slot.clone(),
@@ -1221,6 +1381,19 @@ impl crate::Workspace {
             successor: None,
         };
         let text = brief_text(&record.pair(), &record.brief);
+        // **The seat is checked again with the build in hand.** The read and
+        // the git probe take seconds, and a replacement in that stretch
+        // means this successor is no longer the seat's: no row, no brief and
+        // no spawn.
+        if !self.swap_is_current(&request.slot, token) {
+            tracing::debug!(
+                target: "forge_workspace::handoff",
+                event_name = "handoff_build_lost_the_seat",
+                slot = %request.slot.display(),
+                "the swap gate closed while the brief was built; the handoff is not run",
+            );
+            return;
+        }
         self.record_handoff(&record, &reads);
         // The brief is held before the row and the spawn, so a successor
         // that connects immediately cannot outrun it.
@@ -1252,6 +1425,13 @@ impl crate::Workspace {
                         &request.slot,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
+                } else {
+                    let first = prompt.text.lines().next().unwrap_or_default();
+                    let _ = self.update_tx.send(SessionUpdate::Notice {
+                        key: request.slot.clone(),
+                        severity: NoticeSeverity::Error,
+                        text: format!("a prompt held for the failed handoff did not run: {first}"),
+                    });
                 }
             }
             let _ = self.update_tx.send(SessionUpdate::Notice {
@@ -1425,7 +1605,7 @@ mod tests {
     /// this brief belongs to, and where the rest of the truth is.
     #[test]
     fn the_seat_and_the_record_name_the_identity_and_the_transcript() {
-        let ground = assemble(&seat(), &[], &HandoffGitState::default(), &[]);
+        let ground = assemble(&seat(), &[], &HandoffGitState::default(), &[], None);
         let seat_lines = &ground.sections[0].lines;
         assert_eq!(ground.sections[0].label, "seat");
         assert!(
@@ -1492,6 +1672,125 @@ mod tests {
             "the judgment prompt's own instruction is not a user constraint: {:?}",
             constraints.lines,
         );
+    }
+
+    /// The CLI's own user rows are not asks, and they are not turns a
+    /// successor is measured by either.
+    #[test]
+    fn machine_rows_are_neither_asks_nor_successor_turns() {
+        let messages = vec![
+            user("ship the handoff"),
+            user("<task-notification>\n<task-id>b1</task-id>\n</task-notification>"),
+            user("[Request interrupted by user for tool use]"),
+            user("[Your previous response had no visible output. Please continue.]"),
+        ];
+        let asks = user_prompts(&messages);
+        assert_eq!(
+            asks.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>(),
+            vec!["ship the handoff"],
+            "only the person's own row is an ask",
+        );
+        let counts = successor_counts(&messages, &[]);
+        assert_eq!(counts.turns, 1, "and only that row is a successor turn: {counts:?}");
+    }
+
+    /// A successor that hands over again still has its predecessor's ask and
+    /// rules: they live in the record it arrived by, not in the transcript
+    /// above it (whose first row is the brief).
+    #[test]
+    fn a_second_handoff_carries_the_original_ask_and_rules() {
+        let prior = HandoffRecord {
+            slot: SessionSlot::worker("Busytools", "forge", "handoff-cut"),
+            from: "older-session".to_owned(),
+            to: "mid-session".to_owned(),
+            reason: HandoffReason::Fill,
+            fill_percent: Some(85),
+            total_tokens: Some(850_000),
+            max_tokens: Some(1_000_000),
+            compaction_count: 0,
+            at_percent: 85,
+            brief: HandoffBrief {
+                ground_truth: vec![
+                    HandoffSection {
+                        label: "ask".to_owned(),
+                        lines: vec!["first (user prompt 1): build the handoff row".to_owned()],
+                    },
+                    HandoffSection {
+                        label: "constraints".to_owned(),
+                        lines: vec!["\"Never drop a row\" (user prompt 1)".to_owned()],
+                    },
+                ],
+                judgment: Vec::new(),
+            },
+            transcript_path: "/tmp/older.jsonl".to_owned(),
+            at: "2026-10-24T08:00:00Z".to_owned(),
+            cycle: HandoffCycle::default(),
+            successor: None,
+        };
+        let messages = vec![
+            user("HANDOFF - older-session -> mid-session\n\nPART 1: GROUND TRUTH"),
+            user("now finish the client row"),
+        ];
+
+        let ground = assemble(&seat(), &messages, &HandoffGitState::default(), &[], Some(&prior));
+        let ask = ground.sections.iter().find(|section| section.label == "ask").expect("ask");
+        assert!(
+            ask.lines.iter().any(|line| line.contains("build the handoff row")),
+            "the original ask is carried: {:?}",
+            ask.lines,
+        );
+        assert!(
+            ask.lines.iter().any(|line| line.contains("now finish the client row")),
+            "and the current one is added below it: {:?}",
+            ask.lines,
+        );
+        let constraints = ground
+            .sections
+            .iter()
+            .find(|section| section.label == "constraints")
+            .expect("constraints");
+        assert!(
+            constraints.lines.iter().any(|line| line.contains("Never drop a row")),
+            "the rule outlives the session that stated it: {:?}",
+            constraints.lines,
+        );
+    }
+
+    /// A peer's words are labelled as the peer's, and the envelope header is
+    /// not quoted back as its body.
+    #[test]
+    fn a_peer_message_is_not_quoted_as_the_users_prompt() {
+        let asks = user_prompts(&[user(
+            "[Message id=m-1 from agent 'forge/steward' (org 'Busytools')]\n\nis the cron filed?",
+        )]);
+        let section = ask_section(&asks);
+        let line = section.lines.first().expect("the ask");
+        assert!(
+            line.contains("peer message from forge/steward (org Busytools)"),
+            "the author is named: {line}",
+        );
+        assert!(!line.contains("[Message id="), "and the envelope is not the body: {line}");
+    }
+
+    /// A heading block past the cap says how much it left: a rule read as
+    /// five bullets when ten were written is a shortened rule presented as
+    /// the whole.
+    #[test]
+    fn a_heading_block_states_what_it_cut() {
+        let bullets = (1..=8).map(|n| format!("- rule {n}")).collect::<Vec<_>>().join("\n");
+        // The indented line sits directly under the heading: raw indentation,
+        // not the trimmed text, is what makes it part of the rule.
+        let prompts = user_prompts(&[user(&format!(
+            "Do the thing.\nHard rule:\n  the wrapped tail\n{bullets}"
+        ))]);
+        let section = constraint_section(&prompts);
+        let quoted = section.lines.first().expect("the rule");
+        assert!(quoted.contains("rule 1"), "the block is quoted: {quoted}");
+        assert!(
+            quoted.contains("the wrapped tail"),
+            "an indented line under the heading is part of it: {quoted}",
+        );
+        assert!(quoted.contains("[cut; 4 more lines]"), "the omitted rules are counted: {quoted}");
     }
 
     /// A gate with no result in the transcript is unknown, never a pass.
@@ -1577,10 +1876,10 @@ mod tests {
         assert_eq!(
             section.lines,
             vec![
-                "first: one".to_owned(),
-                "#3: three".to_owned(),
-                "#4: four".to_owned(),
-                "#5: five".to_owned(),
+                "first (user prompt 1): one".to_owned(),
+                "#3 (user prompt 3): three".to_owned(),
+                "#4 (user prompt 4): four".to_owned(),
+                "#5 (user prompt 5): five".to_owned(),
             ],
             "the first ask plus the newest three, oldest first",
         );
@@ -1847,6 +2146,89 @@ mod tests {
         assert!(!workspace.swap_in_progress(&slot), "the gate closes with the take");
     }
 
+    fn swap_request(slot: &SessionSlot, token: Option<u64>) -> SwapRequest {
+        SwapRequest {
+            slot: slot.clone(),
+            from: "old-session-id".to_owned(),
+            to: "new-session-id".to_owned(),
+            token,
+            reason: forge_primitives::HandoffReason::Manual,
+            fill: None,
+            compaction_count: 0,
+            at_percent: 85,
+            role: Role::Lead,
+            account: None,
+            model: None,
+            permission_mode: None,
+            judgment: Vec::new(),
+            cwd: "/tmp/handoff-build".to_owned(),
+            launch_settings: crate::SessionLaunchSettings::default(),
+        }
+    }
+
+    /// A new swap on the seat invalidates the token that opened the last one,
+    /// and a closed gate owns nothing.
+    #[test]
+    fn a_new_swap_invalidates_the_previous_token() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let first = workspace.begin_swap(&slot);
+        assert!(workspace.swap_is_current(&slot, first), "the opener owns the gate");
+
+        let second = workspace.begin_swap(&slot);
+        assert!(!workspace.swap_is_current(&slot, first), "the replacement owns the seat now");
+        assert!(workspace.swap_is_current(&slot, second));
+
+        workspace.end_swap(&slot);
+        assert!(!workspace.swap_is_current(&slot, second), "a closed gate owns nothing");
+    }
+
+    /// **A build that loses the seat mid-read writes nothing.** The token is
+    /// checked again once the transcript and git read are in hand, because a
+    /// replacement in that stretch would otherwise draw a row and spawn a
+    /// successor for a seat it no longer runs.
+    #[tokio::test]
+    async fn a_build_that_loses_the_seat_writes_nothing() {
+        use std::task::{Context, Poll, Waker};
+
+        let (workspace, mut rx) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let token = workspace.begin_swap(&slot);
+        let mut build =
+            Box::pin(Arc::clone(&workspace).run_handoff(swap_request(&slot, Some(token))));
+
+        // Drive the build to its first await: the transcript read.
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        assert!(
+            matches!(build.as_mut().poll(&mut cx), Poll::Pending),
+            "precondition: the build suspended on its read",
+        );
+        // A second swap takes the seat while the first is still reading.
+        workspace.begin_swap(&slot);
+        build.await;
+
+        assert!(
+            !workspace
+                .drain_test_dispatch_buffer()
+                .iter()
+                .any(|command| matches!(command, Command::NewSession { .. })),
+            "no successor is spawned for a seat the build no longer owns",
+        );
+        assert!(
+            workspace.pending_brief_for(&slot).is_none(),
+            "and no brief is left waiting for a successor that was never started",
+        );
+        while let Ok(frame) = rx.try_recv() {
+            assert!(
+                !matches!(frame.update, SessionUpdate::Handoff { .. }),
+                "no handoff row is drawn for it: {:?}",
+                frame.update,
+            );
+        }
+    }
+
     /// The successor's own first user row is the brief forge gave it, not a
     /// turn of its own - and its judgment half can carry a "do not" rule
     /// that would otherwise read as a correction.
@@ -1873,6 +2255,42 @@ mod tests {
         assert!(
             successor_measurement(&[user("carry on")], &[]).is_some(),
             "a read with a turn in it measures",
+        );
+        assert!(
+            successor_measurement(
+                &[
+                    user("HANDOFF - old -> new\n\nPART 1: GROUND TRUTH"),
+                    assistant(Vec::new(), None),
+                ],
+                &[],
+            )
+            .is_none(),
+            "a read holding only the brief and the assistant's rows measures nothing",
+        );
+    }
+
+    /// A predecessor transcript that is not there is stated, not read as a
+    /// session with nothing in it.
+    #[tokio::test]
+    async fn an_absent_transcript_is_stated_in_the_ground_truth() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let transcript_path = dir.path().join("not-there.jsonl");
+        let seat = HandoffSeat {
+            slot: &SessionSlot::worker("Busytools", "forge", "handoff-cut"),
+            from: "missing-session",
+            cwd: dir.path(),
+            transcript_path: &transcript_path,
+            account: None,
+            model: None,
+            permission_mode: None,
+            role: Role::Worker { charter_opening: None },
+        };
+        let ground = ground_truth(dir.path(), &seat, &[], None).await;
+        assert_eq!(ground.sections[0].label, "note", "the failure leads the brief");
+        assert!(
+            ground.sections[0].lines[0].contains("could not be read"),
+            "and says what it is: {:?}",
+            ground.sections[0].lines,
         );
     }
 

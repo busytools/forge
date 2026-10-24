@@ -89,6 +89,9 @@ pub struct HandoffState {
     pub probing: bool,
     /// The reading that fired this handoff, carried to the row.
     pub fill: Option<crate::handoff::FillReading>,
+    /// The token of the swap gate this handoff opened, so a build that lost
+    /// the seat cannot spawn.
+    pub swap_token: Option<u64>,
     /// The judgment turn forge sent is running.
     pub awaiting: bool,
     /// The id the judgment prompt was sent under, so the swap waits for
@@ -241,7 +244,17 @@ pub struct DomainSession {
     pub runtime_state: Option<RuntimeSessionState>,
     /// Turn committed at `Command::Prompt` routing, ahead of the
     /// wire-lagged `runtime_state`; the guards OR it in.
+    ///
+    /// **Derived from the commit count, not a bare flag.** A Result ends ONE
+    /// turn, and a prompt committed before that Result landed belongs to the
+    /// next one - so clearing a flag at the Result would erase the next
+    /// turn's stamp and make a running seat read idle. `commit_turn` and
+    /// `serve_turn` are the only writers.
     pub turn_pending: bool,
+    /// Prompts committed as turns on this occupant.
+    pub turn_commits: u64,
+    /// Results (or transport errors) that closed one of them.
+    pub turns_served: u64,
     /// Frame-derived liveness: the model's own output proves a turn is
     /// running, and a `Result`/`Error` ends it.
     ///
@@ -566,6 +579,8 @@ impl DomainSession {
             spawn_wrote_row: false,
             runtime_state: None,
             turn_pending: false,
+            turn_commits: 0,
+            turns_served: 0,
             turn_open: false,
             pending_cancel: false,
             failed_turn_at: None,
@@ -617,6 +632,34 @@ impl DomainSession {
                 self.runtime_state,
                 Some(RuntimeSessionState::Running | RuntimeSessionState::RequiresAction)
             )
+    }
+
+    /// A prompt was committed as a turn.
+    pub fn commit_turn(&mut self) {
+        self.turn_commits = self.turn_commits.saturating_add(1);
+        self.turn_pending = true;
+    }
+
+    /// One Result (or transport error) closed the oldest outstanding turn.
+    ///
+    /// **One, not all of them.** A prompt committed before this Result
+    /// landed belongs to the next turn, so the flag is derived from what is
+    /// still outstanding rather than cleared outright.
+    pub fn serve_turn(&mut self) {
+        self.turns_served = self.turns_served.saturating_add(1);
+        self.turn_pending = self.turn_commits > self.turns_served;
+    }
+
+    /// Whether a committed turn is still waiting for its Result.
+    pub fn turns_outstanding(&self) -> bool {
+        self.turn_commits > self.turns_served
+    }
+
+    /// Drop the turn accounting with the occupant it described.
+    pub fn reset_turns(&mut self) {
+        self.turn_commits = 0;
+        self.turns_served = 0;
+        self.turn_pending = false;
     }
 
     /// Whether a handoff may start here: nothing running, nothing waiting in

@@ -144,8 +144,10 @@ saying where.
 
 **A handoff draws a row between two conversations.** When forge replaces a
 session with a fresh one that continues from a brief - at a turn boundary
-past 85% of its window by default, or when one is asked for - the row names
-the pair and the fill it fired at, and opens onto the brief the successor
+past 85% of its window by default, after a compaction, or when one is asked
+for - the row names the pair and the reason it fired for: the fill it
+crossed, or the compaction that forced it (a manual ask says so), and opens
+onto the brief the successor
 was given: the ground truth forge read off the transcript, git and the
 board, then the judgment the handing-over session wrote. The previous
 conversation stays above it, so a swap reads as a seam in the page rather

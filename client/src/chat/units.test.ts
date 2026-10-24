@@ -3429,9 +3429,17 @@ describe('a page seam that re-serves a result', () => {
 
   it('draws the handoff brief nowhere but the handoff row', () => {
     const brief = fold([
-      heard([{ type: 'text', text: 'HANDOFF - old -> new\n\nPART 1: GROUND TRUTH\nseat: x' }]),
+      heard([{ type: 'text', text: 'HANDOFF - old -> new\n\nPART 1: GROUND TRUTH\nseat: x' }], {
+        uuid: 'forge_nudge_12_ab12cd34',
+      }),
     ]);
     expect(kinds(brief), 'the brief reaches the page through the handoff row').toEqual([]);
+    const typed = fold([
+      heard([{ type: 'text', text: 'HANDOFF - my own notes for the next session' }], {
+        uuid: 'forge_prompt_13_99aa88bb',
+      }),
+    ]);
+    expect(kinds(typed), 'a reader typing the same words keeps their own row').toEqual(['user']);
     const real = fold([heard([{ type: 'text', text: 'a real prompt' }])]);
     expect(kinds(real), "and a person's own words still draw").toEqual(['user']);
   });

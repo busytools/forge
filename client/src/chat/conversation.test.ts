@@ -4135,16 +4135,33 @@ describe('the conversation the chat draws', () => {
     stop();
   });
 
+  it('puts a row a later snapshot carries above the successor turns already held', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t1', 'the successor is working')]));
+
+    // A reconnect's snapshot is not the first load, so it does not reseed the
+    // page - the row it carries still has to lead what is already drawn.
+    server.send(record([], null, handoffRecord('old', 'new')));
+
+    expect(
+      get(chat.value).turns.map((held) => held.key)[0],
+      'the row is the head of the conversation, not appended below it',
+    ).toBe('handoff:old:new');
+    stop();
+  });
+
   it('carries the conversation only onto the successor the row names', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
     server.send(record([turn('t1', 'the work so far')]));
 
-    // A swap that never lands: the handoff row is drawn, then the socket
-    // drops, and a plain /new lands later.
+    // A swap that never lands: the handoff row is drawn, then a plain /new
+    // replaces the seat under another id. The occupant check alone has to
+    // clear it - a drop that clears beforehand would hide this.
     server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new') } });
-    server.update({ connection_failed: { key: LEAD, message: 'the child exited', fatal: false } });
     server.update({ session_replaced: { key: LEAD, session_id: 'someone-else' } });
 
     expect(

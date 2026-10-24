@@ -2176,8 +2176,12 @@ export function fold(
           if (isLocalCommand(stripped)) continue;
           // **The handoff brief is already drawn.** The handoff row carries
           // both halves the successor was given, so the prompt that delivered
-          // them is not a second row: filtered, not lost.
-          if (stripped.startsWith('HANDOFF - ')) continue;
+          // them is not a second row: filtered, not lost. Keyed on the id
+          // forge minted, not the text, because a reader may type the same
+          // words and their own prompt must draw.
+          if (stripped.startsWith('HANDOFF - ') && isNudgeId(promptIdOf(frame, block))) {
+            continue;
+          }
           // A background task's end arrives as a user frame nobody typed -
           // the CLI's `<task-notification>` envelope - and draws as its own
           // summary line, never as the raw XML and never as the reader's turn
