@@ -469,13 +469,14 @@ of prose on either side.
 - **`update {update, seq, span}`** - one `SessionUpdate`, for whichever
   subjects the client is subscribed to. The subject decides, and a home
   subscription has **two** arms rather than one: an update a home row draws
-  something of, and an update belonging to no seat at all. Of the second,
-  three are fields of the home's own snapshot and no other subscription
-  carries them: the service status, the fatal error and the account pool.
+  something of, and an update belonging to no seat at all. Two home fields
+  arrive only through the second: the service status and the fatal error.
   Read that arm as absent and a page keeps what it read at subscribe for the
-  life of the connection. The pool is the one that reads as a live state
-  rather than as an event: a card left at `0 ready, probing` looks like a
-  slow probe rather than like a page that stopped listening.
+  life of the connection. The account pool is a home field as well, but its
+  announcement is also a fleet redraw, so it arrives through the first arm
+  too. The pool is the one that reads as a live state rather than as an
+  event: a card left at `0 ready, probing` looks like a slow probe rather
+  than like a page that stopped listening.
 
   **The plugin records are keyless without being home fields.** They cross
   to a home subscriber for the same reason - they name no seat - but nothing
