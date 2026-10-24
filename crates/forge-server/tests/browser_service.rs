@@ -61,9 +61,10 @@ async fn a_profile_drives_a_page_serves_frames_and_has_one_controller() {
     let service = BrowserService::at(scratch.path().to_path_buf(), stack);
     let seat = SessionSlot::lead("TestOrg", "proj");
 
-    // Opening the shared profile starts its host and driver; the page paints.
-    let attachment = service.attach(7, &seat, None).await.expect("the shared profile opens");
+    // Opening the seat's profile starts its host and driver; the page paints.
+    let attachment = service.attach(7, &seat, None).await.expect("the seat's profile opens");
     let key = attachment.key.clone();
+    let tab = attachment.tab;
     let mut frames = attachment.frames;
     let frame = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
@@ -77,6 +78,7 @@ async fn a_profile_drives_a_page_serves_frames_and_has_one_controller() {
     .expect("a frame arrives");
     assert!(!frame.encoded.is_empty(), "the frame carries the host's encoded pixels");
     assert_eq!(frame.profile, attachment.id, "the frame names the profile's wire id");
+    assert_eq!(frame.tab, tab, "and the tab the viewer attached to");
 
     // The page is really driven: a navigation answers from the driver.
     let answer = service
@@ -91,20 +93,26 @@ async fn a_profile_drives_a_page_serves_frames_and_has_one_controller() {
 
     // **One controller at a time.** A take moves the role; the previous
     // holder's input is refused from that moment on.
-    service.take_control(&key, 7).await.expect("the first viewer takes control");
-    service.input(&key, 7, 1, &move_event()).await.expect("the controller's input is accepted");
-    service.take_control(&key, 8).await.expect("a second take moves the role");
+    service.take_control(&key, tab, 7).await.expect("the first viewer takes control");
+    service
+        .input(&key, tab, 7, 1, &move_event())
+        .await
+        .expect("the controller's input is accepted");
+    service.take_control(&key, tab, 8).await.expect("a second take moves the role");
     assert!(
-        service.input(&key, 7, 2, &move_event()).await.is_err(),
+        service.input(&key, tab, 7, 2, &move_event()).await.is_err(),
         "the previous controller's input stops when the role moves",
     );
-    service.input(&key, 8, 1, &move_event()).await.expect("the new controller's input is accepted");
-    service.release_control(&key, 8).await;
+    service
+        .input(&key, tab, 8, 1, &move_event())
+        .await
+        .expect("the new controller's input is accepted");
+    service.release_control(&key, tab, 8).await;
     assert!(
-        service.input(&key, 8, 2, &move_event()).await.is_err(),
+        service.input(&key, tab, 8, 2, &move_event()).await.is_err(),
         "input stops the moment the role is released",
     );
 
     service.detach(7).await;
-    service.close(&seat, None).await.expect("the profile closes");
+    service.close(&seat).await.expect("the profile closes");
 }

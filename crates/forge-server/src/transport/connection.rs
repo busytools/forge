@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use base64::Engine as _;
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::{BrowserFrame, BrowserViewState};
+use forge_primitives::browser::{BrowserFrame, BrowserTabList, BrowserViewState};
 use forge_primitives::document::DocumentRead;
 use forge_workspace::browser::BrowserAttachment;
 use serde_json::json;
@@ -179,10 +179,14 @@ impl Drop for AttachedClient {
     }
 }
 
-/// One profile this connection is viewing: its id, its frames and its state.
+/// One tab this connection is viewing: its profile, its id, its frames and
+/// its state.
 struct Viewing {
     key: String,
     id: u16,
+    /// The tab this connection is on. **Every frame, gesture and state frame
+    /// is this tab's**; another tab's paint is not this viewer's to draw.
+    tab: u16,
     frames: tokio::sync::watch::Receiver<Option<BrowserFrame>>,
     view: tokio::sync::watch::Receiver<BrowserViewState>,
     nav: tokio::sync::watch::Receiver<Option<forge_primitives::browser::BrowserNavState>>,
@@ -200,6 +204,7 @@ impl Viewing {
         Self {
             key: attachment.key,
             id: attachment.id,
+            tab: attachment.tab,
             frames: attachment.frames,
             view: attachment.view,
             nav: attachment.nav,
@@ -210,6 +215,17 @@ impl Viewing {
             last_frame: None,
         }
     }
+}
+
+/// This connection's browser half: the tab it draws and the strip it follows.
+///
+/// **One value rather than two arguments**, because the read loop and its
+/// per-message handler already carry the connection's whole mutable state and
+/// two more fields would push both past the arity a reader can hold.
+#[derive(Default)]
+struct BrowserViewing {
+    viewing: Option<Viewing>,
+    tabs: Option<tokio::sync::watch::Receiver<BrowserTabList>>,
 }
 
 /// What a viewer has to say to the loop.
@@ -252,10 +268,14 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
                 }
             },
             packet = viewing.audio.recv() => match packet {
-                Ok(packet) => return ViewEvent::Audio(packet),
-                // **A viewer that fell behind loses packets, not the
-                // stream**: the next packet it can take resumes playback.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                // **Only this viewer's tab is heard.** One profile's audio
+                // broadcast carries every tab, and another page's sound is
+                // not this viewer's to play.
+                Ok(packet) if packet.tab == viewing.tab => return ViewEvent::Audio(packet),
+                // Another tab's packet, or one a viewer fell behind: it
+                // loses packets, not the stream, and the next it can take
+                // resumes playback.
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     std::future::pending().await
                 }
@@ -264,7 +284,11 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
         match ready {
             Ok(0) => {
                 let frame = viewing.frames.borrow_and_update().clone();
+                // **One profile's frame watch carries every tab's newest
+                // paint.** A frame for another tab is skipped rather than
+                // drawn as this viewer's page.
                 if let Some(frame) = frame
+                    && frame.tab == viewing.tab
                     && viewing.last_frame != Some(frame.seq)
                 {
                     viewing.last_frame = Some(frame.seq);
@@ -291,6 +315,21 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
             // Every sender is gone: the profile was closed or deleted.
             Err(_) => return ViewEvent::Failed("the browser was closed".to_owned()),
         }
+    }
+}
+
+/// The next tab list this connection asked to follow, or a future that never
+/// resolves while it follows none - the same shape [`next_view_event`] uses,
+/// so a connection with no strip parks rather than ending the loop.
+async fn next_tab_change(
+    tabs: &mut Option<tokio::sync::watch::Receiver<BrowserTabList>>,
+) -> Option<BrowserTabList> {
+    let Some(tabs) = tabs.as_mut() else { return std::future::pending().await };
+    match tabs.changed().await {
+        Ok(()) => Some(tabs.borrow_and_update().clone()),
+        // The profile's rows are gone with the service: nothing more will
+        // change, and the branch stays out of the way.
+        Err(_) => std::future::pending().await,
     }
 }
 
@@ -423,8 +462,9 @@ where
     // prompt as able to answer it, and the core parks a turn on that reply
     // rather than failing it.
     let mut updates: Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)> = None;
-    // The profile this connection is viewing, once it attaches.
-    let mut viewing: Option<Viewing> = None;
+    // The tab this connection is viewing and the seat's tab rows it follows,
+    // each once the client asks.
+    let mut browser = BrowserViewing::default();
     // Answers to reply-carrying commands, sent by the tasks that ran them:
     // the read loop hands a reply off rather than awaiting it, so a slow
     // handler holds nothing behind it (#2445).
@@ -437,7 +477,7 @@ where
         &mut holds,
         &mut updates,
         &mut dictate,
-        &mut viewing,
+        &mut browser,
         &reply_tx,
         &mut answers,
         caller,
@@ -581,7 +621,7 @@ async fn run_connection<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    viewing: &mut Option<Viewing>,
+    browser: &mut BrowserViewing,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     answers: &mut mpsc::UnboundedReceiver<ServerMessage>,
     caller: Caller,
@@ -625,7 +665,7 @@ where
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
                 handle_client(
-                    socket, state, watched, holds, updates, dictate, viewing, reply_tx, caller,
+                    socket, state, watched, holds, updates, dictate, browser, reply_tx, caller,
                     msg,
                 )
                 .await?;
@@ -696,7 +736,7 @@ where
             }
             // **The viewed profile's frames and state, raced as one future**
             // because `select!` wants one borrow of the viewer.
-            event = next_view_event(viewing) => {
+            event = next_view_event(&mut browser.viewing) => {
                 // What the core already said goes out first, the same rule
                 // every send here keeps.
                 batch::flush(socket, held.take()).await?;
@@ -709,12 +749,13 @@ where
                         transport.deliver(&frame).await?;
                     }
                     ViewEvent::State(state) => {
-                        let Some(viewing) = viewing.as_ref() else { continue };
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
                         send(
                             socket,
                             ServerMessage::BrowserView {
                                 id: viewing.id,
                                 profile: viewing.key.clone(),
+                                tab: viewing.tab,
                                 controller: state.controller,
                                 viewers: state.viewers,
                                 viewer: me,
@@ -725,11 +766,12 @@ where
                     // **The page navigated on its own**: a link click or a
                     // fragment moves the bar's arrows, and nobody asked.
                     ViewEvent::Nav(nav) => {
-                        let Some(viewing) = viewing.as_ref() else { continue };
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
                         send(
                             socket,
                             ServerMessage::BrowserNavState {
                                 id: viewing.id,
+                                tab: viewing.tab,
                                 can_back: nav.can_back,
                                 can_forward: nav.can_forward,
                             },
@@ -748,7 +790,7 @@ where
                     // one case that is cancelled here, once: nothing can
                     // answer it.
                     ViewEvent::File(ask) => {
-                        let Some(viewing) = viewing.as_ref() else { continue };
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
                         let controller = viewing.view.borrow().controller;
                         if controller.is_some_and(|holder| holder != me) {
                             continue;
@@ -759,8 +801,9 @@ where
                             // the one still outstanding is cancelled.
                             if viewing.files.borrow().is_some()
                                 && let Some(host) = state.browser_host.as_ref()
-                                && let Err(why) =
-                                    host.answer_files(&viewing.key, ask.id, Vec::new()).await
+                                && let Err(why) = host
+                                    .answer_files(&viewing.key, viewing.tab, ask.id, Vec::new())
+                                    .await
                             {
                                 tracing::warn!(
                                     "a file chooser could not be cancelled without a controller \
@@ -782,7 +825,7 @@ where
                     // watcher's connection receives the broadcast and drops
                     // it; the save door is the controller's.
                     ViewEvent::Download(download) => {
-                        let Some(viewing) = viewing.as_ref() else { continue };
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
                         if viewing.view.borrow().controller != Some(me) {
                             continue;
                         }
@@ -803,7 +846,7 @@ where
                     // Only the controller hears; a watcher's connection drops
                     // the packet rather than playing another person's page.
                     ViewEvent::Audio(packet) => {
-                        let Some(viewing) = viewing.as_ref() else { continue };
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
                         if viewing.view.borrow().controller != Some(me) {
                             continue;
                         }
@@ -815,9 +858,9 @@ where
                     // and the client re-attaches when it opens the surface
                     // again.
                     ViewEvent::Failed(reason) => {
-                        let Some(viewed) = viewing.as_ref() else { continue };
-                        let id = viewed.id;
-                        *viewing = None;
+                        let Some(viewed) = browser.viewing.as_ref() else { continue };
+                        let (id, tab) = (viewed.id, viewed.tab);
+                        browser.viewing = None;
                         // **The gone viewer comes off the profile too.** The
                         // connection lives on, so without this the profile
                         // kept a phantom viewer and a role held by a surface
@@ -825,9 +868,29 @@ where
                         if let Some(host) = state.browser_host.as_ref() {
                             host.detach(me).await;
                         }
-                        send(socket, ServerMessage::BrowserSurfaceFailed { id, reason }).await?;
+                        send(socket, ServerMessage::BrowserSurfaceFailed { id, tab, reason })
+                            .await?;
                     }
                 }
+            }
+            // **The strip's rows, once it asked for them.** A tab that
+            // opens, closes or changes hands is pushed as the whole list, so
+            // the client never has to poll a read it already subscribed to.
+            changed = next_tab_change(&mut browser.tabs) => {
+                let Some(list) = changed else { continue };
+                batch::flush(socket, held.take()).await?;
+                send(
+                    socket,
+                    ServerMessage::BrowserTabs {
+                        id: list.id,
+                        profile: list.profile,
+                        up: list.up,
+                        connected: list.connected,
+                        closing_at_ms: list.closing_at_ms,
+                        rows: list.rows,
+                    },
+                )
+                .await?;
             }
             // **The keepalive's beat.** A ping that went unanswered past the
             // bound is the evidence, never a quiet read: a busy connection
@@ -927,7 +990,7 @@ async fn handle_client<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    viewing: &mut Option<Viewing>,
+    browser: &mut BrowserViewing,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     caller: Caller,
     msg: Message,
@@ -935,6 +998,8 @@ async fn handle_client<S>(
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
+    let viewing = &mut browser.viewing;
+    let tabs = &mut browser.tabs;
     let me = caller.id;
     // The served-record bound every frame to a client takes (#2374), read once
     // rather than per frame.
@@ -1608,10 +1673,10 @@ where
             };
             send(socket, ServerMessage::FileContent { session, path, sha, content }).await
         }
-        ClientMessage::BrowserView { seat, profile, reply_to } => {
-            // **A re-attach is a switch**: the profile this connection was
+        ClientMessage::BrowserView { seat, tab, reply_to } => {
+            // **A re-attach is a switch**: the tab this connection was
             // viewing gives its viewer up before the new one takes it, or
-            // the old profile keeps a phantom viewer and its controller role.
+            // the old tab keeps a phantom viewer and its controller role.
             if viewing.is_some()
                 && let Some(host) = state.browser_host.as_ref()
             {
@@ -1625,17 +1690,18 @@ where
                 let why = "this server has no browser to view".to_owned();
                 return refuse_attach(socket, reply_to, &why, seat).await;
             };
-            match host.attach(me, &seat, profile.as_deref()).await {
+            match host.attach(me, &seat, tab).await {
                 Ok(attachment) => {
                     let key = attachment.key.clone();
                     let id = attachment.id;
+                    let tab = attachment.tab;
                     // **The attach's own frames carry the state they hold**:
                     // the receivers are read as seen, so the loop announces
                     // only what moves after them rather than repeating the
                     // state the client already drew.
                     let mut fresh = Viewing::new(attachment);
                     let now = *fresh.view.borrow_and_update();
-                    let read_nav = host.nav_state(&key).await;
+                    let read_nav = host.nav_state(&key, tab).await;
                     // The watch also carries a page-driven move that landed
                     // while the attach was in flight.
                     let watched_nav = *fresh.nav.borrow_and_update();
@@ -1643,8 +1709,9 @@ where
                     // **The kept frame goes to the viewer that attaches.**
                     // The newest frame is a value, not an event: a surface
                     // opening on a still page would otherwise wait for the
-                    // next paint.
-                    let kept = fresh.frames.borrow().clone();
+                    // next paint. The watch carries the whole profile's newest
+                    // paint, so another tab's frame is not this surface's.
+                    let kept = fresh.frames.borrow().clone().filter(|frame| frame.tab == tab);
                     if let Some(frame) = kept.as_ref() {
                         fresh.last_frame = Some(frame.seq);
                     }
@@ -1654,6 +1721,7 @@ where
                         ServerMessage::BrowserView {
                             id,
                             profile: key.clone(),
+                            tab,
                             controller: now.controller,
                             viewers: now.viewers,
                             viewer: me,
@@ -1669,6 +1737,7 @@ where
                             socket,
                             ServerMessage::BrowserNavState {
                                 id,
+                                tab,
                                 can_back: nav.can_back,
                                 can_forward: nav.can_forward,
                             },
@@ -1677,15 +1746,15 @@ where
                     }
                     match reply_to {
                         Some(ask) => {
-                            // **The profile the attach actually took**, so the
-                            // page's Done lowers the browser that came up: a
-                            // hand-off that named none was resolved to the
-                            // asking seat's own.
+                            // **The profile and tab the attach actually
+                            // took**, so the page's Done lowers the browser
+                            // that came up: a hand-off that named no tab was
+                            // resolved to the asking seat's current one.
                             send(
                                 socket,
                                 ServerMessage::Reply {
                                     reply_to: ask,
-                                    body: json!({ "ok": true, "profile": key }),
+                                    body: json!({ "ok": true, "profile": key, "tab": tab }),
                                 },
                             )
                             .await
@@ -1711,7 +1780,7 @@ where
             else {
                 return Ok(());
             };
-            match host.input(&viewing.key, me, seq, &event).await {
+            match host.input(&viewing.key, viewing.tab, me, seq, &event).await {
                 Ok(()) => Ok(()),
                 Err(why) => {
                     send(
@@ -1775,7 +1844,7 @@ where
                     .await;
                 }
             };
-            match host.answer_files(&viewing.key, id, files).await {
+            match host.answer_files(&viewing.key, viewing.tab, id, files).await {
                 Ok(()) => Ok(()),
                 Err(why) => {
                     send(
@@ -1796,11 +1865,11 @@ where
             else {
                 return Ok(());
             };
-            let key = viewing.key.clone();
+            let (key, tab) = (viewing.key.clone(), viewing.tab);
             let outcome = if take {
-                host.take_control(&key, me).await
+                host.take_control(&key, tab, me).await
             } else {
-                host.release_control(&key, me).await;
+                host.release_control(&key, tab, me).await;
                 Ok(())
             };
             match outcome {
@@ -1824,13 +1893,14 @@ where
             else {
                 return Ok(());
             };
-            let (key, id) = (viewing.key.clone(), viewing.id);
-            match host.nav(&key, me, back).await {
+            let (key, id, tab) = (viewing.key.clone(), viewing.id, viewing.tab);
+            match host.nav(&key, tab, me, back).await {
                 Ok(nav) => {
                     send(
                         socket,
                         ServerMessage::BrowserNavState {
                             id,
+                            tab,
                             can_back: nav.can_back,
                             can_forward: nav.can_forward,
                         },
@@ -1851,45 +1921,34 @@ where
                 }
             }
         }
-        ClientMessage::BrowserProfiles { seat, reply_to } => {
-            let outcome = match state.browser_host.as_ref() {
-                Some(host) => host.profiles(&seat).await.map(|rows| json!({ "rows": rows })),
-                None => Err("this server has no browser to list".to_owned()),
+        ClientMessage::BrowserTabs { seat, reply_to } => {
+            // **The ask is the subscription**: the answer names the rows as
+            // they stand now, and the connection follows the same watch from
+            // here on, so the strip costs one read rather than a poll.
+            let Some(host) = state.browser_host.as_ref() else {
+                let why = "this server has no browser to list".to_owned();
+                return answer_ask(socket, reply_to, "browser_tabs", Err(why)).await;
             };
-            answer_ask(socket, reply_to, "browser_profiles", outcome).await
-        }
-        ClientMessage::BrowserProfileClose { seat, name, reply_to } => {
-            // **A user-driven mutation goes through the Command bus**, like
-            // every other: the workspace owns the fleet and answers with its
-            // own sentence.
-            let (verdict, answer) = oneshot::channel();
-            let outcome = match state.surface.dispatch(Command::BrowserProfileClose {
-                seat,
-                name,
-                verdict: Some(verdict),
-            }) {
-                Ok(()) => match answer.await {
-                    Ok(outcome) => outcome.map(|()| json!({})),
-                    Err(_) => Err("the browser close did not answer".to_owned()),
-                },
-                Err(refusal) => Err(refusal.to_string()),
-            };
-            answer_ask(socket, reply_to, "browser_profile_close", outcome).await
-        }
-        ClientMessage::BrowserProfileDelete { seat, name, reply_to } => {
-            let (verdict, answer) = oneshot::channel();
-            let outcome = match state.surface.dispatch(Command::BrowserProfileDelete {
-                seat,
-                name,
-                verdict: Some(verdict),
-            }) {
-                Ok(()) => match answer.await {
-                    Ok(outcome) => outcome.map(|()| json!({})),
-                    Err(_) => Err("the browser delete did not answer".to_owned()),
-                },
-                Err(refusal) => Err(refusal.to_string()),
-            };
-            answer_ask(socket, reply_to, "browser_profile_delete", outcome).await
+            match host.tabs(&seat).await {
+                Ok(list) => {
+                    // The stream is subscribed before the answer goes out, so
+                    // a change landing between the two is pushed rather than
+                    // lost.
+                    match host.tab_stream(&seat).await {
+                        Ok(stream) => *tabs = Some(stream),
+                        Err(why) => {
+                            tracing::debug!(
+                                event_name = "browser_tab_stream_failed",
+                                seat = %seat.display(),
+                                %why,
+                                "a tab list was read but its stream could not be followed",
+                            );
+                        }
+                    }
+                    answer_ask(socket, reply_to, "browser_tabs", Ok(json!({ "tabs": list }))).await
+                }
+                Err(why) => answer_ask(socket, reply_to, "browser_tabs", Err(why)).await,
+            }
         }
         ClientMessage::BrowserResize { width, height, scale } => {
             // **Only the controller's surface sizes the page**, and the
@@ -1899,8 +1958,8 @@ where
             else {
                 return Ok(());
             };
-            let key = viewing.key.clone();
-            host.resize(&key, me, width, height, scale).await;
+            let (key, tab) = (viewing.key.clone(), viewing.tab);
+            host.resize(&key, tab, me, width, height, scale).await;
             Ok(())
         }
         ClientMessage::Unsubscribe { what } => {
@@ -2683,16 +2742,6 @@ fn dispatch_answering(
             };
             answered(state, command, to, rx, reply_tx);
         }
-        Command::BrowserProfileClose { seat, name, .. } => {
-            let (tx, rx) = oneshot::channel();
-            let command = Command::BrowserProfileClose { seat, name, verdict: Some(tx) };
-            answered(state, command, to, rx, reply_tx);
-        }
-        Command::BrowserProfileDelete { seat, name, .. } => {
-            let (tx, rx) = oneshot::channel();
-            let command = Command::BrowserProfileDelete { seat, name, verdict: Some(tx) };
-            answered(state, command, to, rx, reply_tx);
-        }
         // Every other command is fire-and-forget: success sends nothing
         // extra, because the update arrives through the subscription the
         // client already has.
@@ -2810,7 +2859,7 @@ fn dispatched(me: u64, command: &Command) {
 /// Whether a command reports its outcome through the reply rather than
 /// through an update on the subscription.
 ///
-/// These eight are the ones with nothing behind them on the wire: a client
+/// These six are the ones with nothing behind them on the wire: a client
 /// that omits `reply_to` for one of them has no second way to learn what
 /// happened.
 fn answers_through_a_reply(command: &Command) -> bool {
@@ -2822,12 +2871,10 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
             | Command::BrowserIdleWarning { .. }
-            | Command::BrowserProfileClose { .. }
-            | Command::BrowserProfileDelete { .. }
     )
 }
 
-/// Dispatch one of those eight, and answer the client that asked.
+/// Dispatch one of those six, and answer the client that asked.
 ///
 /// A client that asked for an answer always hears one - INCLUDING a refusal,
 /// so it is never left watching a channel that stays empty. The wait and the

@@ -84,6 +84,10 @@ fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
     let browser = workspace.browser_settings();
     fleet.configure_encoding(browser.fps, browser.quality);
     fleet.configure_idle(browser.idle_minutes);
+    // **The profile names are config's, not a client's**: every seat resolves
+    // its profile from `forge.toml` here, at boot, rather than naming one.
+    let (orgs, projects) = workspace.browser_profile_config();
+    fleet.configure_profiles(orgs, projects);
     fleet.start_idle();
     // **A host an unclean exit left behind is reaped before any profile is
     // used.** It still holds the profile's singleton lock, and the first
@@ -122,14 +126,16 @@ impl forge_workspace::browser::BrowserHost for HostedBrowser {
         &self,
         viewer: u64,
         seat: &forge_primitives::SessionSlot,
-        profile: Option<&str>,
+        tab: Option<u16>,
     ) -> Result<forge_workspace::browser::BrowserAttachment, String> {
-        let attachment = self.0.attach(viewer, seat, profile).await?;
+        let attachment = self.0.attach(viewer, seat, tab).await?;
         Ok(forge_workspace::browser::BrowserAttachment {
             key: attachment.key,
             id: attachment.id,
+            tab: attachment.tab,
             frames: attachment.frames,
             view: attachment.view,
+            tabs: attachment.tabs,
             nav: attachment.nav,
             failures: attachment.failures,
             files: attachment.files,
@@ -141,10 +147,11 @@ impl forge_workspace::browser::BrowserHost for HostedBrowser {
     async fn answer_files(
         &self,
         profile: &str,
+        tab: u16,
         id: u64,
         files: Vec<forge_primitives::browser::BrowserUpload>,
     ) -> Result<(), String> {
-        self.0.answer_files(profile, id, files).await
+        self.0.answer_files(profile, tab, id, files).await
     }
 
     async fn detach(&self, viewer: u64) {
@@ -154,63 +161,85 @@ impl forge_workspace::browser::BrowserHost for HostedBrowser {
     async fn input(
         &self,
         profile: &str,
+        tab: u16,
         viewer: u64,
         seq: u64,
         event: &forge_primitives::browser::BrowserInputEvent,
     ) -> Result<(), String> {
-        self.0.input(profile, viewer, seq, event).await
+        self.0.input(profile, tab, viewer, seq, event).await
     }
 
-    async fn take_control(&self, profile: &str, viewer: u64) -> Result<(), String> {
-        self.0.take_control(profile, viewer).await
+    async fn take_control(&self, profile: &str, tab: u16, viewer: u64) -> Result<(), String> {
+        self.0.take_control(profile, tab, viewer).await
     }
 
-    async fn release_control(&self, profile: &str, viewer: u64) {
-        self.0.release_control(profile, viewer).await;
+    async fn release_control(&self, profile: &str, tab: u16, viewer: u64) {
+        self.0.release_control(profile, tab, viewer).await;
     }
 
-    async fn resize(&self, profile: &str, viewer: u64, width: u32, height: u32, scale: f64) {
-        self.0.resize(profile, viewer, width, height, scale).await;
+    async fn resize(
+        &self,
+        profile: &str,
+        tab: u16,
+        viewer: u64,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) {
+        self.0.resize(profile, tab, viewer, width, height, scale).await;
     }
 
     async fn nav(
         &self,
         profile: &str,
+        tab: u16,
         viewer: u64,
         back: bool,
     ) -> Result<forge_primitives::browser::BrowserNavState, String> {
-        self.0.nav(profile, viewer, back).await
+        self.0.nav(profile, tab, viewer, back).await
     }
 
-    async fn nav_state(&self, profile: &str) -> Option<forge_primitives::browser::BrowserNavState> {
-        self.0.nav_state(profile).await
+    async fn nav_state(
+        &self,
+        profile: &str,
+        tab: u16,
+    ) -> Option<forge_primitives::browser::BrowserNavState> {
+        self.0.nav_state(profile, tab).await
     }
 
-    async fn profiles(
+    async fn tabs(
         &self,
         seat: &forge_primitives::SessionSlot,
-    ) -> Result<Vec<forge_primitives::browser::BrowserProfileRow>, String> {
-        self.0.profiles(seat).await
+    ) -> Result<forge_primitives::browser::BrowserTabList, String> {
+        self.0.tabs(seat).await
     }
 
-    async fn close_profile(
+    async fn tab_stream(
         &self,
         seat: &forge_primitives::SessionSlot,
-        name: &str,
-    ) -> Result<(), String> {
-        self.0.close(seat, Some(name)).await
+    ) -> Result<tokio::sync::watch::Receiver<forge_primitives::browser::BrowserTabList>, String>
+    {
+        self.0.tab_stream(seat).await
     }
 
-    async fn delete_profile(
-        &self,
-        seat: &forge_primitives::SessionSlot,
-        name: &str,
-    ) -> Result<(), String> {
-        self.0.delete_profile(seat, name).await
+    async fn sweep_sessions(&self, seats: &[forge_primitives::SessionSlot]) {
+        self.0.sweep_sessions(seats).await;
     }
 
-    async fn sweep_seats(&self, seats: &[forge_primitives::SessionSlot]) {
-        self.0.sweep_seats(seats).await;
+    async fn replace_seat(&self, seat: &forge_primitives::SessionSlot) {
+        self.0.replace_seat(seat).await;
+    }
+
+    async fn hand_off_started(&self, seat: &forge_primitives::SessionSlot, tab: u16) {
+        self.0.hand_off_started(seat, tab).await;
+    }
+
+    async fn hand_off_finished(&self, seat: &forge_primitives::SessionSlot, tab: u16) {
+        self.0.hand_off_finished(seat, tab).await;
+    }
+
+    async fn warm(&self, seat: &forge_primitives::SessionSlot) {
+        self.0.warm(seat).await;
     }
 
     async fn stop(&self) -> Vec<String> {

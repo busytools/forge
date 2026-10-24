@@ -247,20 +247,21 @@ pub enum ClientMessage {
         session: SessionSlot,
         sha: String,
     },
-    /// Attach this connection to a profile's browser, as a viewer.
+    /// Attach this connection to one of a seat's browser tabs, as a viewer.
     ///
-    /// `profile` names the profile to drive; `None` is the asking seat's own,
-    /// and the shared browser is named `@shared`. The answer is a
-    /// `browser_view` naming the profile's wire id, then a `browser_nav_state`,
-    /// then frames as they paint. Attaching again replaces what this
-    /// connection was viewing.
+    /// `tab` is the tab to drive; `None` is the asking seat's current tab,
+    /// else its profile's first. The answer is a `browser_view` naming the
+    /// profile's wire id and the tab, then a `browser_nav_state`, then frames
+    /// as they paint. Attaching again replaces what this connection was
+    /// viewing.
     BrowserView {
         seat: SessionSlot,
-        profile: Option<String>,
-        /// Answers the attach: `{"ok": true, "profile": <the one attached>}`,
-        /// or `{"ok": false, "why": ...}` with the server's own words. **A
-        /// raise that cannot be answered is a dark surface**, so a client that
-        /// can wait sends one; the profile is what the page's Done lowers.
+        tab: Option<u16>,
+        /// Answers the attach: `{"ok": true, "profile": <the one attached>,
+        /// "tab": <the tab>}`, or `{"ok": false, "why": ...}` with the
+        /// server's own words. **A raise that cannot be answered is a dark
+        /// surface**, so a client that can wait sends one; the profile and tab
+        /// are what the page's Done lowers.
         reply_to: Option<u64>,
     },
     /// The files a person chose for a page's dialog, or none for a dismiss.
@@ -304,24 +305,12 @@ pub enum ClientMessage {
         height: u32,
         scale: f64,
     },
-    /// The profiles this server holds, for a client's strip. Answered
-    /// through `reply_to` with `{"ok": true, "rows": [...]}`.
-    BrowserProfiles {
+    /// The tabs of this seat's profile, for a client's strip. Answered
+    /// through `reply_to` with `{"ok": true, "tabs": {
+    /// "profile", "id", "up", "connected", "closing_at_ms", "rows" }}`, and
+    /// then pushed as a `browser_tabs` whenever they change.
+    BrowserTabs {
         seat: SessionSlot,
-        reply_to: Option<u64>,
-    },
-    /// Close a named profile's browser, keeping its logins. Answered through
-    /// `reply_to` with `{"ok": ...}`.
-    BrowserProfileClose {
-        seat: SessionSlot,
-        name: String,
-        reply_to: Option<u64>,
-    },
-    /// Delete a named profile and its logins. Answered through `reply_to`
-    /// with `{"ok": ...}`; a name that is not this seat's is refused.
-    BrowserProfileDelete {
-        seat: SessionSlot,
-        name: String,
         reply_to: Option<u64>,
     },
     /// One document, read out of a seat's own tree for a viewer's route.
@@ -457,34 +446,51 @@ pub enum ServerMessage {
         reply_to: u64,
         body: serde_json::Value,
     },
-    /// A profile's viewer state: which viewer controls it, and how many are
+    /// One tab's viewer state: which viewer controls it, and how many are
     /// attached.
     ///
     /// Sent on attach and whenever either changes, so every viewer draws the
     /// same truth about who is driving. `id` is the profile's wire id, the
-    /// same one the binary frames carry, and `viewer` is THIS connection's
-    /// own - the number `controller` names when this viewer holds the role,
-    /// so a bar can say "Take control" rather than guessing.
+    /// same one the binary frames carry; `tab` is the tab this state is for;
+    /// and `viewer` is THIS connection's own - the number `controller` names
+    /// when this viewer holds the role, so a bar can say "Take control"
+    /// rather than guessing.
     BrowserView {
         id: u16,
         profile: String,
+        tab: u16,
         controller: Option<u64>,
         viewers: u32,
         viewer: u64,
     },
-    /// Where the viewed page's history sits: what the bar's arrows may do.
+    /// Where the viewed tab's history sits: what the bar's arrows may do.
     BrowserNavState {
         id: u16,
+        tab: u16,
         can_back: bool,
         can_forward: bool,
     },
-    /// The viewed profile's browser stopped.
+    /// The viewed tab's browser stopped.
     ///
     /// A host that died under a viewer is said out loud: a frozen last frame
     /// reads as a slow page, and the person has no way to tell the two apart.
     BrowserSurfaceFailed {
         id: u16,
+        tab: u16,
         reason: String,
+    },
+    /// The tabs of the viewer's profile, as a client's strip draws them.
+    ///
+    /// Pushed to a connection that asked with `browser_tabs`, once per change:
+    /// `up` is the host process, `connected` is a driver attached to it, and
+    /// `closing_at_ms` is the idle clock's deadline.
+    BrowserTabs {
+        id: u16,
+        profile: String,
+        up: bool,
+        connected: bool,
+        closing_at_ms: Option<u64>,
+        rows: Vec<forge_primitives::browser::BrowserTabRow>,
     },
     /// A page asked for a file: the shell opens its picker and answers
     /// [`ClientMessage::BrowserFileAnswer`] under the same id.
@@ -723,42 +729,45 @@ mod tests {
 
     /// **A viewer's attach, its state, and the input it sends.**
     ///
-    /// The profile id is what pairs the state with the binary frames; the
-    /// input carries the person's gesture and its own sequence, never a CDP
-    /// method - the server is what maps one to the other.
+    /// The profile id is what pairs the state with the binary frames, and the
+    /// tab is which of them the viewer is on; the input carries the person's
+    /// gesture and its own sequence, never a CDP method - the server is what
+    /// maps one to the other.
     #[test]
     fn a_browser_view_and_its_input_round_trip() {
         let attached = ClientMessage::BrowserView {
             seat: SessionSlot::lead("TestOrg", "proj"),
-            profile: Some("hunt".to_owned()),
+            tab: Some(3),
             reply_to: Some(41),
         };
         let json = serde_json::to_string(&attached).expect("encode");
         assert!(json.contains("\"kind\":\"browser_view\""), "{json}");
-        let ClientMessage::BrowserView { seat, profile, reply_to } =
+        let ClientMessage::BrowserView { seat, tab, reply_to } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
         assert_eq!(seat, SessionSlot::lead("TestOrg", "proj"), "the seat crosses");
-        assert_eq!(profile.as_deref(), Some("hunt"), "and the profile it named");
+        assert_eq!(tab, Some(3), "and the tab it named");
         assert_eq!(reply_to, Some(41), "and the answer the asker waits on");
 
         let view = ServerMessage::BrowserView {
             id: 3,
             profile: "shared".to_owned(),
+            tab: 2,
             controller: Some(9),
             viewers: 2,
             viewer: 9,
         };
         let json = serde_json::to_string(&view).expect("encode");
         assert!(json.contains("\"kind\":\"browser_view\""), "{json}");
-        let ServerMessage::BrowserView { id, controller, viewers, viewer, .. } =
+        let ServerMessage::BrowserView { id, tab, controller, viewers, viewer, .. } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
         assert_eq!(id, 3, "the id the frames carry");
+        assert_eq!(tab, 2, "the tab the state is for");
         assert_eq!(controller, Some(9), "who holds the role");
         assert_eq!(viewers, 2, "and how many are attached");
         assert_eq!(viewer, 9, "and this connection's own number");
@@ -787,10 +796,53 @@ mod tests {
 
         let failed = ServerMessage::BrowserSurfaceFailed {
             id: 3,
+            tab: 2,
             reason: "the browser host exited".to_owned(),
         };
         let json = serde_json::to_string(&failed).expect("encode");
         assert!(json.contains("\"kind\":\"browser_surface_failed\""), "{json}");
+        assert!(json.contains("\"tab\":2"), "the failure names the tab that stopped: {json}");
+    }
+
+    /// **The strip's whole read crosses as one list**, so a client draws the
+    /// tabs, the host's health and the idle deadline from one frame rather
+    /// than a read per field. The rows carry the owning session, which is what
+    /// the strip groups by.
+    #[test]
+    fn a_browser_tabs_list_carries_its_rows_and_the_profile_state() {
+        let asked = ClientMessage::BrowserTabs {
+            seat: SessionSlot::lead("TestOrg", "proj"),
+            reply_to: Some(7),
+        };
+        let json = serde_json::to_string(&asked).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_tabs\""), "{json}");
+
+        let list = ServerMessage::BrowserTabs {
+            id: 4,
+            profile: "TestOrg/default".to_owned(),
+            up: true,
+            connected: false,
+            closing_at_ms: Some(1_760_000_000_000),
+            rows: vec![forge_primitives::browser::BrowserTabRow {
+                number: 2,
+                title: "portal".to_owned(),
+                url: "https://x/".to_owned(),
+                owner: SessionSlot::worker("TestOrg", "proj", "w"),
+                state: forge_primitives::browser::BrowserTabState::InUse,
+            }],
+        };
+        let json = serde_json::to_string(&list).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_tabs\""), "{json}");
+        let ServerMessage::BrowserTabs { id, up, connected, closing_at_ms, rows, .. } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(id, 4, "the id the binary frames carry");
+        assert!(up && !connected, "the host and the driver are two facts");
+        assert_eq!(closing_at_ms, Some(1_760_000_000_000));
+        assert_eq!(rows.len(), 1, "and the rows the strip draws");
+        assert_eq!(rows[0].owner, SessionSlot::worker("TestOrg", "proj", "w"));
     }
 
     /// A subscribe that says nothing about answering reads as one that cannot

@@ -296,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn a_frame_crosses_the_transport_seam_whole() {
         let mut transport = Memory { frames: Vec::new(), audio: Vec::new() };
-        let frame = BrowserFrame { profile: 5, seq: 3, encoded: vec![9, 8, 7] };
+        let frame = BrowserFrame { profile: 5, tab: 2, seq: 3, encoded: vec![9, 8, 7] };
         transport.deliver(&frame).await.expect("a memory transport never fails");
         assert_eq!(
             transport.frames,

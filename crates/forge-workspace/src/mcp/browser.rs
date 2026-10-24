@@ -6,7 +6,7 @@
 //! `target` ref, so the tools register unprefixed, with upstream's own
 //! descriptions and argument schemas - transcribed from `@playwright/mcp`
 //! 0.0.83's `tools/list`, the capture preserved with the V1 spec. Anything
-//! this family added on top (a `profile` name, a forced click) would be a
+//! this family added on top (a hand-off `tab`, a forced click) would be a
 //! shape upstream does not have and a prompt that means something else
 //! here.
 //!
@@ -126,12 +126,15 @@ impl BrowserTool {
         let Some(reason) = args.get("reason").and_then(Value::as_str) else {
             return Err("browser_hand_off needs `reason`: what the person should do".to_owned());
         };
-        let profile = match args.get("profile") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(name)) => Some(name.as_str()),
-            Some(other) => return Err(format!("`profile` is the name of a profile, not {other}")),
+        let Some(tab) = args.get("tab").and_then(Value::as_u64) else {
+            return Err(
+                "browser_hand_off needs `tab`: the number of one of this session's tabs".to_owned()
+            );
         };
-        match self.facade.hand_off(&self.slot, reason, profile).await? {
+        let Ok(tab) = u16::try_from(tab) else {
+            return Err(format!("`tab` is a tab's number, not {tab}"));
+        };
+        match self.facade.hand_off(&self.slot, reason, tab).await? {
             HandOffEnding::Done => Ok(vec![BrowserPart::Text {
                 text: "The person is done in the browser; carry on from where you left off."
                     .to_owned(),
@@ -251,9 +254,6 @@ mod tests {
                 .expect("a schema describes an object")
                 .keys()
                 .map(String::as_str)
-                // `profile` is on every tool, ours rather than the capture's,
-                // and pinned per-tool by the specs tests.
-                .filter(|name| *name != "profile")
                 .collect();
             got.sort_unstable();
             let mut want: Vec<&str> = properties.to_vec();
@@ -435,9 +435,7 @@ mod tests {
         };
 
         let out = tool
-            .call(ToolInput {
-                value: json!({ "reason": "solve the CAPTCHA", "profile": "job-hunt" }),
-            })
+            .call(ToolInput { value: json!({ "reason": "solve the CAPTCHA", "tab": 3 }) })
             .await;
 
         assert!(!out.is_error, "{:?}", out.blocks);
@@ -447,8 +445,8 @@ mod tests {
         );
         assert_eq!(
             mock.hand_offs.lock().as_slice(),
-            [("solve the CAPTCHA".to_owned(), Some("job-hunt".to_owned()))],
-            "the reason and the profile cross to the park verbatim",
+            [("solve the CAPTCHA".to_owned(), 3)],
+            "the reason and the tab cross to the park verbatim",
         );
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("carry on"), "Done tells the model to carry on: {text}");
@@ -466,11 +464,30 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in" }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("declined"), "{text}");
+    }
+
+    /// No tab is the call's own mistake too: the person is asked to look at
+    /// one tab, and a hand-off that named none would raise the wrong page.
+    #[tokio::test]
+    async fn a_hand_off_without_a_tab_is_refused() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in" }) }).await;
+
+        assert!(out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("`tab`"), "{text}");
+        assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
     }
 
     /// No reason is the call's own mistake, answered before anything parks.
@@ -504,7 +521,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in" }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);

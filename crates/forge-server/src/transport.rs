@@ -111,7 +111,14 @@ pub mod wire;
 /// `browser_answer` to a server that never asks, and the two would sit
 /// across the socket unable to drive a browser at all.
 /// `baselines/socket/9/` is the record a v9 server emitted.
-pub const PROTOCOL_VERSION: u32 = 10;
+///
+/// **v11 is a bump for the browser's tabs.** A viewer attaches to a tab
+/// rather than a profile, the profile verbs are gone, and a strip reads a
+/// `browser_tabs` list instead of `browser_profiles`. A v10 client would
+/// send `browser_profiles` and a `profile` name a v11 server no longer
+/// answers, and would pair every surface state against the wrong tab.
+/// `baselines/socket/10/` is the record a v10 server emitted.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

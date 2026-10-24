@@ -7782,10 +7782,10 @@ struct StubBrowser {
     files: tokio::sync::watch::Sender<Option<forge_primitives::browser::BrowserFileAsk>>,
     downloads: tokio::sync::broadcast::Sender<forge_primitives::browser::BrowserDownload>,
     audio: tokio::sync::broadcast::Sender<forge_primitives::browser::BrowserAudio>,
+    /// The seat's tab rows, which a strip follows.
+    tabs: tokio::sync::watch::Sender<forge_primitives::browser::BrowserTabList>,
     /// Every file answer the server handed the fleet: id and file count.
     answers: Mutex<Vec<(u64, usize)>>,
-    closed: Mutex<Vec<String>>,
-    deleted: Mutex<Vec<String>>,
     detached: Mutex<Vec<u64>>,
 }
 
@@ -7806,9 +7806,16 @@ impl StubBrowser {
             files: tokio::sync::watch::channel(None).0,
             downloads: tokio::sync::broadcast::channel(4).0,
             audio: tokio::sync::broadcast::channel(4).0,
+            tabs: tokio::sync::watch::channel(forge_primitives::browser::BrowserTabList {
+                profile: "TestOrg/default".to_owned(),
+                id: 5,
+                up: true,
+                connected: true,
+                closing_at_ms: None,
+                rows: Vec::new(),
+            })
+            .0,
             answers: Mutex::new(Vec::new()),
-            closed: Mutex::new(Vec::new()),
-            deleted: Mutex::new(Vec::new()),
             detached: Mutex::new(Vec::new()),
         })
     }
@@ -7821,8 +7828,9 @@ impl StubBrowser {
     }
 }
 
-/// One resize the stub was asked for: profile, viewer, device pixels, ratio.
-type Resize = (String, u64, u32, u32, f64);
+/// One resize the stub was asked for: profile, tab, viewer, device pixels,
+/// ratio.
+type Resize = (String, u16, u64, u32, u32, f64);
 
 #[async_trait::async_trait]
 impl forge_workspace::browser::BrowserHost for StubBrowser {
@@ -7837,27 +7845,27 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
 
     async fn attach(
         &self,
-        _viewer: u64,
+        viewer: u64,
         _seat: &SessionSlot,
-        _profile: Option<&str>,
+        tab: Option<u16>,
     ) -> Result<forge_workspace::browser::BrowserAttachment, String> {
-        // One name is the refusal's own: a profile the server cannot attach.
-        if _profile == Some("held") {
-            return Err("the profile 'held' belongs to another seat".to_owned());
+        // One number is the refusal's own: a tab the server cannot attach.
+        if tab == Some(9) {
+            return Err("tab 9 is not open".to_owned());
         }
         // The real service counts its viewers; the stub does the same so a
         // detach can be seen in the state push.
-        self.viewers.lock().expect("the stub's viewers").insert(_viewer);
+        self.viewers.lock().expect("the stub's viewers").insert(viewer);
         self.publish();
         Ok(forge_workspace::browser::BrowserAttachment {
-            // **The stub resolves the default the way the service does**: an
-            // omitted profile is the seat's own, and the shared browser is
-            // named `@shared`. The stub has no seat-naming, so it answers the
-            // shared key for an omitted name.
-            key: _profile.unwrap_or("@shared").to_owned(),
+            // **The stub resolves an omitted tab the way the service does**:
+            // to a tab the profile has open.
+            key: "TestOrg/default".to_owned(),
             id: 5,
+            tab: tab.unwrap_or(2),
             frames: self.frames.subscribe(),
             view: self.view.subscribe(),
+            tabs: self.tabs.subscribe(),
             nav: self.nav.subscribe(),
             failures: self.failures.subscribe(),
             files: self.files.subscribe(),
@@ -7869,6 +7877,7 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
     async fn answer_files(
         &self,
         _profile: &str,
+        _tab: u16,
         id: u64,
         files: Vec<forge_primitives::browser::BrowserUpload>,
     ) -> Result<(), String> {
@@ -7890,6 +7899,7 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
     async fn input(
         &self,
         _profile: &str,
+        _tab: u16,
         viewer: u64,
         seq: u64,
         _event: &forge_primitives::browser::BrowserInputEvent,
@@ -7901,13 +7911,13 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
         Ok(())
     }
 
-    async fn take_control(&self, _profile: &str, viewer: u64) -> Result<(), String> {
+    async fn take_control(&self, _profile: &str, _tab: u16, viewer: u64) -> Result<(), String> {
         *self.controller.lock().expect("the stub's controller") = Some(viewer);
         self.publish();
         Ok(())
     }
 
-    async fn release_control(&self, _profile: &str, viewer: u64) {
+    async fn release_control(&self, _profile: &str, _tab: u16, viewer: u64) {
         let mut controller = self.controller.lock().expect("the stub's controller");
         if *controller == Some(viewer) {
             *controller = None;
@@ -7919,6 +7929,7 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
     async fn nav(
         &self,
         _profile: &str,
+        _tab: u16,
         viewer: u64,
         _back: bool,
     ) -> Result<forge_primitives::browser::BrowserNavState, String> {
@@ -7933,13 +7944,23 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
     async fn nav_state(
         &self,
         _profile: &str,
+        _tab: u16,
     ) -> Option<forge_primitives::browser::BrowserNavState> {
         Some(forge_primitives::browser::BrowserNavState::default())
     }
 
-    async fn resize(&self, profile: &str, viewer: u64, width: u32, height: u32, scale: f64) {
+    async fn resize(
+        &self,
+        profile: &str,
+        tab: u16,
+        viewer: u64,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) {
         self.resizes.lock().expect("the stub's resizes").push((
             profile.to_owned(),
+            tab,
             viewer,
             width,
             height,
@@ -7947,46 +7968,30 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
         ));
     }
 
-    async fn profiles(
+    async fn tabs(
         &self,
-        seat: &SessionSlot,
-    ) -> Result<Vec<forge_primitives::browser::BrowserProfileRow>, String> {
-        Ok(vec![
-            forge_primitives::browser::BrowserProfileRow {
-                name: "@shared".to_owned(),
-                owner: None,
-                up: true,
-                windowed: true,
-                busy: true,
-                closed: false,
-                unreadable: false,
-            },
-            forge_primitives::browser::BrowserProfileRow {
-                name: "hunt".to_owned(),
-                owner: Some(seat.clone()),
-                up: false,
-                windowed: false,
-                busy: false,
-                closed: true,
-                unreadable: false,
-            },
-        ])
+        _seat: &SessionSlot,
+    ) -> Result<forge_primitives::browser::BrowserTabList, String> {
+        Ok(self.tabs.borrow().clone())
     }
 
-    async fn close_profile(&self, _seat: &SessionSlot, name: &str) -> Result<(), String> {
-        self.closed.lock().expect("the stub's closes").push(name.to_owned());
-        Ok(())
+    async fn tab_stream(
+        &self,
+        _seat: &SessionSlot,
+    ) -> Result<tokio::sync::watch::Receiver<forge_primitives::browser::BrowserTabList>, String>
+    {
+        Ok(self.tabs.subscribe())
     }
 
-    async fn delete_profile(&self, _seat: &SessionSlot, name: &str) -> Result<(), String> {
-        if name == "held" {
-            return Err("the profile 'held' belongs to another seat".to_owned());
-        }
-        self.deleted.lock().expect("the stub's deletes").push(name.to_owned());
-        Ok(())
-    }
+    async fn sweep_sessions(&self, _seats: &[SessionSlot]) {}
 
-    async fn sweep_seats(&self, _seats: &[SessionSlot]) {}
+    async fn replace_seat(&self, _seat: &SessionSlot) {}
+
+    async fn hand_off_started(&self, _seat: &SessionSlot, _tab: u16) {}
+
+    async fn hand_off_finished(&self, _seat: &SessionSlot, _tab: u16) {}
+
+    async fn warm(&self, _seat: &SessionSlot) {}
 
     async fn stop(&self) -> Vec<String> {
         Vec::new()
@@ -8009,11 +8014,7 @@ async fn a_refused_attach_answers_its_reply() {
 
     send(
         &mut socket,
-        ClientMessage::BrowserView {
-            seat: lead_seat(),
-            profile: Some("held".to_owned()),
-            reply_to: Some(41),
-        },
+        ClientMessage::BrowserView { seat: lead_seat(), tab: Some(9), reply_to: Some(41) },
     )
     .await;
 
@@ -8023,7 +8024,7 @@ async fn a_refused_attach_answers_its_reply() {
     assert_eq!(reply_to, 41, "under the id the asker minted");
     assert_eq!(body["ok"], false, "and it says the attach did not happen");
     let why = body["why"].as_str().expect("the server's own words");
-    assert!(why.contains("held") && why.contains("another seat"), "{why}");
+    assert!(why.contains("tab 9") && why.contains("not open"), "{why}");
 }
 
 /// **Lowering the takeover detaches the viewer, and its role with it.** An
@@ -8040,11 +8041,8 @@ async fn lowering_detaches_the_viewer_and_releases_its_role() {
     let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
     let mut socket = connect(&url).await;
 
-    send(
-        &mut socket,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let ServerMessage::BrowserView { id, viewer, .. } = next_server(&mut socket).await else {
         panic!("an attach is answered with the viewer state")
     };
@@ -8060,11 +8058,8 @@ async fn lowering_detaches_the_viewer_and_releases_its_role() {
     send(&mut socket, ClientMessage::BrowserDetach).await;
 
     // A fresh attach starts from zero, not from a phantom count.
-    send(
-        &mut socket,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let ServerMessage::BrowserView { id: again, viewers, controller, .. } =
         next_server(&mut socket).await
     else {
@@ -8086,11 +8081,8 @@ async fn a_resize_reaches_the_browser_it_is_watching() {
     let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
     let mut socket = connect(&url).await;
 
-    send(
-        &mut socket,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let ServerMessage::BrowserView { viewer, .. } = next_server(&mut socket).await else {
         panic!("an attach is answered with the viewer state")
     };
@@ -8104,63 +8096,9 @@ async fn a_resize_reaches_the_browser_it_is_watching() {
     let resizes = stub.resizes.lock().expect("the stub's resizes").clone();
     assert_eq!(
         resizes,
-        vec![("@shared".to_owned(), viewer, 1600, 1200, 2.0)],
-        "the surface size reached the viewed profile, under this viewer"
+        vec![("TestOrg/default".to_owned(), 2, viewer, 1600, 1200, 2.0)],
+        "the surface size reached the viewed tab, under this viewer"
     );
-}
-
-/// **A profile's close and delete answer through their reply.** They carry
-/// a verdict sender the wire deliberately omits, so a generic command form
-/// that listed neither hung its caller or got the subscription's answer
-/// instead.
-#[tokio::test]
-async fn a_profile_close_and_delete_answer_through_their_reply() {
-    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-    let stub = StubBrowser::new();
-    fleet
-        .workspace()
-        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
-    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
-    let mut socket = connect(&url).await;
-
-    send(
-        &mut socket,
-        ClientMessage::Command {
-            command: Box::new(Command::BrowserProfileClose {
-                seat: lead_seat(),
-                name: "hunt".to_owned(),
-                verdict: None,
-            }),
-            reply_to: Some(51),
-        },
-    )
-    .await;
-    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
-        panic!("a close answers its asker")
-    };
-    assert_eq!(reply_to, 51, "under the id the asker minted");
-    assert_eq!(body, serde_json::json!({ "Ok": null }), "an ok close answers the unit result");
-    assert_eq!(stub.closed.lock().expect("the stub's closes").as_slice(), ["hunt"]);
-
-    send(
-        &mut socket,
-        ClientMessage::Command {
-            command: Box::new(Command::BrowserProfileDelete {
-                seat: lead_seat(),
-                name: "held".to_owned(),
-                verdict: None,
-            }),
-            reply_to: Some(52),
-        },
-    )
-    .await;
-    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
-        panic!("a refused delete answers its asker")
-    };
-    assert_eq!(reply_to, 52, "under the id the asker minted");
-    let why =
-        body.get("Err").and_then(serde_json::Value::as_str).expect("the refusal's own sentence");
-    assert!(why.contains("belongs to another seat"), "{why}");
 }
 
 /// **Only the controller moves the page.** The history arrows are drawn on
@@ -8178,7 +8116,7 @@ async fn a_watcher_cannot_move_the_page() {
     let mut controller = connect(&url).await;
     send(
         &mut controller,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
+        ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None },
     )
     .await;
     let ServerMessage::BrowserView { viewer: holder, .. } = next_server(&mut controller).await
@@ -8194,11 +8132,8 @@ async fn a_watcher_cannot_move_the_page() {
     assert_eq!(who, Some(holder), "the first viewer holds the role");
 
     let mut watcher = connect(&url).await;
-    send(
-        &mut watcher,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut watcher, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let ServerMessage::BrowserView { viewer: second, controller: who, .. } =
         next_server(&mut watcher).await
     else {
@@ -8240,25 +8175,23 @@ async fn a_host_death_fails_the_surface_and_drops_the_viewer() {
     let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
     let mut socket = connect(&url).await;
 
-    send(
-        &mut socket,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let ServerMessage::BrowserView { id, viewer, .. } = next_server(&mut socket).await else {
         panic!("an attach is answered with the viewer state")
     };
     let _ = next_server(&mut socket).await; // the nav state behind it
 
     stub.failures.send_replace(Some("the host died".to_owned()));
-    let ServerMessage::BrowserSurfaceFailed { id: failed, reason } = next_server(&mut socket).await
+    let ServerMessage::BrowserSurfaceFailed { id: failed, tab: failed_tab, reason } =
+        next_server(&mut socket).await
     else {
         panic!("the failure is said, not left as a frozen frame")
     };
     assert_eq!(
-        (failed, reason.as_str()),
-        (id, "the host died"),
-        "the failed profile and its reason"
+        (failed, failed_tab, reason.as_str()),
+        (id, 2, "the host died"),
+        "the failed profile, the tab and the reason"
     );
     assert!(
         !stub.viewers.lock().expect("the stub's viewers").contains(&viewer),
@@ -8293,15 +8226,13 @@ async fn an_attaching_viewer_is_sent_the_kept_frame() {
     let encoded = vec![5_u8, 4, 3, 2];
     stub.frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
         profile: 5,
+        tab: 2,
         seq: 3,
         encoded: encoded.clone(),
     }));
 
-    send(
-        &mut socket,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let ServerMessage::BrowserView { id, .. } = next_server(&mut socket).await else {
         panic!("an attach is answered with the viewer state")
     };
@@ -8319,10 +8250,11 @@ async fn an_attaching_viewer_is_sent_the_kept_frame() {
     assert_eq!((nav_id, id), (5, 5), "all three name the viewed profile");
 }
 
-/// **The strip's read answers through its reply**, with the rows the host
-/// serves for this seat: the shared browser and the seat's own profiles.
+/// **One profile's frame watch carries every tab, and a viewer draws only its
+/// own.** Another tab's paint reaching this surface would swap the picture
+/// under the page the person is on.
 #[tokio::test]
-async fn a_strip_read_answers_the_profiles_it_may_see() {
+async fn a_frame_for_another_tab_is_not_drawn() {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
     let stub = StubBrowser::new();
     fleet
@@ -8331,81 +8263,91 @@ async fn a_strip_read_answers_the_profiles_it_may_see() {
     let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
     let mut socket = connect(&url).await;
 
-    send(&mut socket, ClientMessage::BrowserProfiles { seat: lead_seat(), reply_to: Some(9) })
-        .await;
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), tab: Some(2), reply_to: None },
+    )
+    .await;
+    let _ = next_server(&mut socket).await; // the viewer state
+    let _ = next_server(&mut socket).await; // the nav state
+
+    stub.frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
+        profile: 5,
+        tab: 3,
+        seq: 1,
+        encoded: vec![1, 2, 3],
+    }));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), socket.next()).await.is_err(),
+        "another tab's frame is not drawn on this surface",
+    );
+
+    stub.frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
+        profile: 5,
+        tab: 2,
+        seq: 1,
+        encoded: vec![4, 5, 6],
+    }));
+    let bytes = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .expect("this tab's frame reaches the socket")
+            .expect("a message")
+            .expect("no error");
+        if let Message::Binary(bytes) = msg {
+            break bytes;
+        }
+    };
+    assert_eq!(&bytes[1..], &[4, 5, 6], "the viewer's own tab is the one it draws");
+}
+
+/// **The strip's read answers through its reply, and then follows the same
+/// rows.** The reply carries the profile's health and its tabs as they stand;
+/// a tab that opens afterwards is pushed as the whole list rather than
+/// waiting for the client to ask again.
+#[tokio::test]
+async fn a_strip_read_answers_the_tabs_and_then_follows_them() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(&mut socket, ClientMessage::BrowserTabs { seat: lead_seat(), reply_to: Some(9) }).await;
 
     let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
         panic!("the strip's read answers its reply")
     };
     assert_eq!(reply_to, 9);
     assert_eq!(body["ok"], true);
-    let rows = body["rows"].as_array().expect("the rows");
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["name"], "@shared");
-    assert_eq!(rows[0]["up"], true);
-    assert_eq!(rows[1]["name"], "hunt");
-    assert_eq!(rows[1]["closed"], true, "a profile only on disk is a closed row");
-    assert_eq!(rows[1]["owner"]["label"], "lead", "owned by the seat that asked");
-}
+    let tabs = &body["tabs"];
+    assert_eq!(tabs["profile"], "TestOrg/default", "the profile the seat resolves to");
+    assert_eq!((tabs["id"].clone(), tabs["up"].clone()), (serde_json::json!(5), true.into()));
+    assert!(tabs["rows"].as_array().is_some_and(Vec::is_empty), "no tabs yet");
 
-/// **Close and delete answer through their reply**, and a refusal carries
-/// the server's own words so the row that stayed can draw them.
-#[tokio::test]
-async fn a_strip_close_and_delete_answer_and_a_refusal_carries_its_why() {
-    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-    let stub = StubBrowser::new();
-    fleet
-        .workspace()
-        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
-    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
-    let mut socket = connect(&url).await;
-
-    send(
-        &mut socket,
-        ClientMessage::BrowserProfileClose {
-            seat: lead_seat(),
-            name: "hunt".to_owned(),
-            reply_to: Some(3),
-        },
-    )
-    .await;
-    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
-        panic!("a close answers its reply")
+    // A tab opens: the same connection is pushed the new list without asking.
+    stub.tabs.send_replace(forge_primitives::browser::BrowserTabList {
+        profile: "TestOrg/default".to_owned(),
+        id: 5,
+        up: true,
+        connected: true,
+        closing_at_ms: None,
+        rows: vec![forge_primitives::browser::BrowserTabRow {
+            number: 2,
+            title: "portal".to_owned(),
+            url: "https://x/".to_owned(),
+            owner: lead_seat(),
+            state: forge_primitives::browser::BrowserTabState::Idle,
+        }],
+    });
+    let ServerMessage::BrowserTabs { profile, rows, .. } = next_server(&mut socket).await else {
+        panic!("a tab change is pushed to the strip that asked")
     };
-    assert_eq!((reply_to, body["ok"].clone()), (3, serde_json::json!(true)));
-    assert_eq!(stub.closed.lock().expect("the stub's closes").as_slice(), ["hunt"]);
-
-    send(
-        &mut socket,
-        ClientMessage::BrowserProfileDelete {
-            seat: lead_seat(),
-            name: "held".to_owned(),
-            reply_to: Some(4),
-        },
-    )
-    .await;
-    let ServerMessage::Reply { reply_to, body } = next_server(&mut socket).await else {
-        panic!("a refused delete answers its reply")
-    };
-    assert_eq!((reply_to, body["ok"].clone()), (4, serde_json::json!(false)));
-    let why = body["why"].as_str().expect("the server's words");
-    assert!(why.contains("belongs to"), "{why}");
-    assert!(stub.deleted.lock().expect("the stub's deletes").is_empty());
-
-    send(
-        &mut socket,
-        ClientMessage::BrowserProfileDelete {
-            seat: lead_seat(),
-            name: "hunt".to_owned(),
-            reply_to: Some(5),
-        },
-    )
-    .await;
-    let ServerMessage::Reply { body, .. } = next_server(&mut socket).await else {
-        panic!("a delete answers its reply")
-    };
-    assert_eq!(body["ok"], true);
-    assert_eq!(stub.deleted.lock().expect("the stub's deletes").as_slice(), ["hunt"]);
+    assert_eq!(profile, "TestOrg/default");
+    assert_eq!(rows.len(), 1, "the strip draws the tab that opened");
+    assert_eq!(rows[0].owner, lead_seat());
 }
 
 /// **Two viewers see one controller, and only that viewer's input lands.**
@@ -8421,21 +8363,15 @@ async fn two_viewers_see_one_controller_and_only_its_input_lands() {
     let mut first = connect(&url).await;
     let mut second = connect(&url).await;
 
-    send(
-        &mut first,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut first, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let ServerMessage::BrowserView { viewer: one, viewers: 1, .. } = next_server(&mut first).await
     else {
         panic!("the first viewer attaches")
     };
     let _ = next_server(&mut first).await; // its nav state
-    send(
-        &mut second,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut second, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let ServerMessage::BrowserView { viewer: two, viewers: 2, .. } = next_server(&mut second).await
     else {
         panic!("the second viewer attaches")
@@ -8500,11 +8436,8 @@ async fn a_watcher_does_not_cancel_the_controllers_file_chooser() {
     let mut controller = connect(&url).await;
     let mut watcher = connect(&url).await;
     for socket in [&mut controller, &mut watcher] {
-        send(
-            socket,
-            ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-        )
-        .await;
+        send(socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+            .await;
         let _ = next_server(socket).await; // its view state
         let _ = next_server(socket).await; // its nav state
     }
@@ -8547,11 +8480,8 @@ async fn a_file_answer_is_bound_to_the_controller_and_the_ask() {
     let mut controller = connect(&url).await;
     let mut watcher = connect(&url).await;
     for socket in [&mut controller, &mut watcher] {
-        send(
-            socket,
-            ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-        )
-        .await;
+        send(socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+            .await;
         let _ = next_server(socket).await;
         let _ = next_server(socket).await;
     }
@@ -8600,11 +8530,8 @@ async fn a_chooser_with_no_controller_is_cancelled() {
         .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
     let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
     let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let _ = next_server(&mut socket).await;
     let _ = next_server(&mut socket).await;
 
@@ -8625,10 +8552,11 @@ async fn a_chooser_with_no_controller_is_cancelled() {
     );
 }
 
-/// **Re-attaching to another profile detaches the first.** A switch that
-/// left the old viewer attached kept its profile warm and its count wrong.
+/// **Re-attaching to another tab detaches the first.** A switch that left the
+/// old viewer attached kept that tab's viewer count wrong and its role held
+/// by a surface that moved away.
 #[tokio::test]
-async fn a_reattach_to_another_profile_detaches_the_first() {
+async fn a_reattach_to_another_tab_detaches_the_first() {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
     let stub = StubBrowser::new();
     fleet
@@ -8639,36 +8567,28 @@ async fn a_reattach_to_another_profile_detaches_the_first() {
 
     send(
         &mut socket,
-        ClientMessage::BrowserView {
-            seat: lead_seat(),
-            profile: Some("a".to_owned()),
-            reply_to: None,
-        },
+        ClientMessage::BrowserView { seat: lead_seat(), tab: Some(2), reply_to: None },
     )
     .await;
-    let ServerMessage::BrowserView { viewer, profile, .. } = next_server(&mut socket).await else {
+    let ServerMessage::BrowserView { viewer, tab, .. } = next_server(&mut socket).await else {
         panic!("the first attach answers")
     };
-    assert_eq!(profile, "a");
+    assert_eq!(tab, 2);
     let _ = next_server(&mut socket).await; // its nav state
     send(
         &mut socket,
-        ClientMessage::BrowserView {
-            seat: lead_seat(),
-            profile: Some("b".to_owned()),
-            reply_to: None,
-        },
+        ClientMessage::BrowserView { seat: lead_seat(), tab: Some(3), reply_to: None },
     )
     .await;
-    let ServerMessage::BrowserView { profile, .. } = next_server(&mut socket).await else {
+    let ServerMessage::BrowserView { tab, .. } = next_server(&mut socket).await else {
         panic!("the re-attach answers")
     };
-    assert_eq!(profile, "b", "the connection views the new profile");
+    assert_eq!(tab, 3, "the connection views the new tab");
     let _ = next_server(&mut socket).await; // its nav state
     assert_eq!(
         stub.detached.lock().expect("the stub's detaches").as_slice(),
         [viewer],
-        "the old profile gave its viewer up"
+        "the old tab gave its viewer up"
     );
 }
 
@@ -8685,11 +8605,8 @@ async fn a_page_driven_navigation_pushes_the_history_to_the_viewer() {
     let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
     let mut socket = connect(&url).await;
 
-    send(
-        &mut socket,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: None },
-    )
-    .await;
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
     let ServerMessage::BrowserView { id, .. } = next_server(&mut socket).await else {
         panic!("an attach is answered with the viewer state")
     };
@@ -8700,12 +8617,12 @@ async fn a_page_driven_navigation_pushes_the_history_to_the_viewer() {
         can_forward: false,
     }));
 
-    let ServerMessage::BrowserNavState { id: moved, can_back, can_forward } =
+    let ServerMessage::BrowserNavState { id: moved, tab, can_back, can_forward } =
         next_server(&mut socket).await
     else {
         panic!("a page-driven navigation is pushed to the viewer")
     };
-    assert_eq!((moved, can_back, can_forward), (id, true, false), "under the viewed profile");
+    assert_eq!((moved, tab, can_back, can_forward), (id, 2, true, false), "under the viewed tab");
 }
 
 /// **A viewer attaches, is sent frames as the server's own binary kind, and
@@ -8724,16 +8641,17 @@ async fn the_viewer_wire_attaches_relays_frames_and_guards_input() {
 
     send(
         &mut socket,
-        ClientMessage::BrowserView { seat: lead_seat(), profile: None, reply_to: Some(42) },
+        ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: Some(42) },
     )
     .await;
-    let ServerMessage::BrowserView { id, profile, controller, viewers, viewer } =
+    let ServerMessage::BrowserView { id, profile, tab, controller, viewers, viewer } =
         next_server(&mut socket).await
     else {
         panic!("an attach is answered with the viewer state")
     };
     assert_eq!(id, 5, "the profile's wire id");
-    assert_eq!(profile, "@shared");
+    assert_eq!(profile, "TestOrg/default");
+    assert_eq!(tab, 2, "the tab the attach resolved");
     assert_eq!(controller, None, "a surface starts controller-less");
     assert_eq!(viewers, 1);
     assert!(viewer > 0, "and this connection's own number, which a take makes the controller");
@@ -8748,12 +8666,14 @@ async fn the_viewer_wire_attaches_relays_frames_and_guards_input() {
         panic!("the attach answers its reply")
     };
     assert_eq!(reply_to, 42);
-    assert_eq!(body["profile"], "@shared");
+    assert_eq!(body["profile"], "TestOrg/default");
+    assert_eq!(body["tab"], 2, "and the tab it attached to");
 
     // A frame reaches the socket as the browser kind, its bytes untouched.
     let encoded = vec![9_u8, 8, 7, 6];
     stub.frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
         profile: 5,
+        tab: 2,
         seq: 1,
         encoded: encoded.clone(),
     }));

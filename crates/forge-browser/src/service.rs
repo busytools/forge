@@ -5737,6 +5737,26 @@ mod tests {
         assert_eq!(rows[1].owner, worker);
     }
 
+    /// **Warming a profile opens its host without a tab.** A seat's first call
+    /// is still what opens one, so a spawn that warms pays the launch early
+    /// without leaving an empty tab in the strip.
+    #[tokio::test]
+    async fn warming_a_profile_opens_its_host_without_a_tab() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        // The test host is stubbed as in the other service tests.
+        service.install_fake(&seat, FakeDriver::default()).await;
+
+        service.warm(&seat).await;
+
+        let profile = service.find("O/default").await.expect("the entry exists");
+        assert!(
+            profile.tabs.lock().expect("the tabs").numbers().is_empty(),
+            "warming starts the profile, never a tab",
+        );
+    }
+
     /// **A session that goes takes its tabs with it, except a parked hand-off's.**
     #[tokio::test]
     async fn a_sweep_closes_a_gone_session_tabs_but_not_a_held_one() {

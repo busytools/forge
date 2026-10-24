@@ -843,23 +843,6 @@ pub enum Command {
         #[serde(skip)]
         verdict: Option<oneshot::Sender<IdleVerdict>>,
     },
-    /// **Close a named profile's browser**, keeping its logins: the strip's
-    /// row, acted on by the seat that owns the name. App-level command
-    /// (`key()` returns `None`): the profile map and the hosts are the
-    /// workspace's. The answer is the server's own sentence on a refusal.
-    BrowserProfileClose {
-        seat: SessionSlot,
-        name: String,
-        #[serde(skip)]
-        verdict: Option<oneshot::Sender<Result<(), String>>>,
-    },
-    /// **Delete a named profile and its logins**, for the seat that owns it.
-    BrowserProfileDelete {
-        seat: SessionSlot,
-        name: String,
-        #[serde(skip)]
-        verdict: Option<oneshot::Sender<Result<(), String>>>,
-    },
 }
 
 /// Outcome of a [`Command::BrowserIdleWarning`], sent back to the asking
@@ -929,8 +912,6 @@ impl Command {
             | Self::AnswerDocumentHandOff { .. }
             | Self::SubmitReview { .. }
             | Self::BrowserIdleWarning { .. }
-            | Self::BrowserProfileClose { .. }
-            | Self::BrowserProfileDelete { .. }
             | Self::TaskVerdict { .. }
             | Self::TaskAnswer { .. }
             | Self::TaskRank { .. }
@@ -1223,16 +1204,6 @@ impl std::fmt::Debug for Command {
             Self::MarketplaceRepair { name } => {
                 f.debug_struct("MarketplaceRepair").field("name", name).finish()
             }
-            Self::BrowserProfileClose { seat, name, .. } => f
-                .debug_struct("BrowserProfileClose")
-                .field("seat", seat)
-                .field("name", name)
-                .finish(),
-            Self::BrowserProfileDelete { seat, name, .. } => f
-                .debug_struct("BrowserProfileDelete")
-                .field("seat", seat)
-                .field("name", name)
-                .finish(),
         }
     }
 }
@@ -2477,7 +2448,7 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("BrowserHandOffPending")
                 .field("key", key)
                 .field("id", &handoff.id)
-                .field("profile", &handoff.profile)
+                .field("tab", &handoff.tab)
                 .finish_non_exhaustive(),
             Self::BrowserHandOffResolved { key, id, ending } => f
                 .debug_struct("BrowserHandOffResolved")

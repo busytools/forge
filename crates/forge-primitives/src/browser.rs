@@ -92,14 +92,14 @@ fn segment_refusal(segment: &str, what: &str) -> Result<(), String> {
 ///
 /// The parked shape crosses the socket as `BrowserHandOffPending` and the
 /// dock draws it; `id` is what the answer comes back under, the same id the
-/// registry is keyed by.
+/// registry is keyed by, and `tab` is the tab the person is asked to look at.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandOff {
     pub id: uuid::Uuid,
     /// What the session needs done, in its own words.
     pub reason: String,
-    /// The named profile to raise, when the session named one.
-    pub profile: Option<String>,
+    /// The tab the person should see, from the asking session's own tabs.
+    pub tab: u16,
 }
 
 /// The modifier keys a person held for one input event.
@@ -216,40 +216,12 @@ pub struct BrowserTabList {
     pub rows: Vec<BrowserTabRow>,
 }
 
-/// One profile as a client's browser strip draws it.
-///
-/// **The server owns every browser**, so the strip's rows are the server's
-/// answer: a profile it holds open in memory and one it knows only from its
-/// directory are both rows, told apart by [`BrowserProfileRow::closed`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BrowserProfileRow {
-    /// The profile's key: its name, or `@shared` for the browser's own.
-    pub name: String,
-    /// The seat that opened it; `None` for the shared browser and an
-    /// ownerless legacy directory.
-    pub owner: Option<crate::SessionSlot>,
-    /// Whether its browser host is up.
-    pub up: bool,
-    /// Whether a client has it open as the takeover.
-    pub windowed: bool,
-    /// Whether a browser call is running on it now.
-    pub busy: bool,
-    /// Whether it is known only on disk: no browser is open for it.
-    pub closed: bool,
-    /// Whether its ownership record could not be read. **The row is still
-    /// drawn**: the profile and its logins exist, and hiding it made them
-    /// unreachable from the strip; but no verb can name an owner it could
-    /// not read, so the row is inert.
-    #[serde(default)]
-    pub unreadable: bool,
-}
-
-/// A profile's viewer state, as every attached client sees it.
+/// One tab's viewer state, as every attached client sees it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserViewState {
-    /// The controller's viewer id, when one holds the role.
+    /// The controller's viewer id, when one holds the role on this tab.
     pub controller: Option<u64>,
-    /// How many clients are attached to this profile.
+    /// How many clients are attached to this tab.
     pub viewers: u32,
 }
 
@@ -324,6 +296,7 @@ pub enum HandOffEnding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SessionSlot;
 
     fn key_of_default() -> ProfileKey {
         ProfileKey::of("Busytools", "default").expect("a key")
@@ -355,41 +328,35 @@ mod tests {
         );
     }
 
-    /// A hand-off crosses as its own words plus the profile it named - and
-    /// one that named no profile carries none, rather than an empty string a
-    /// dock would have to read as "the default".
+    /// A hand-off crosses as its own words plus the tab the person should
+    /// look at.
     #[test]
-    fn a_hand_off_crosses_with_what_it_asked_for() {
-        let handoff = HandOff {
-            id: uuid::Uuid::from_u128(7),
-            reason: "the sign-in page wants a CAPTCHA".to_owned(),
-            profile: Some("job-hunt".to_owned()),
-        };
+    fn a_hand_off_names_the_tab_the_person_should_see() {
+        let handoff =
+            HandOff { id: uuid::Uuid::from_u128(7), reason: "CAPTCHA".to_owned(), tab: 3 };
         let encoded = serde_json::to_value(&handoff).expect("a hand-off encodes");
         assert_eq!(
             encoded,
-            serde_json::json!({
-                "id": "00000000-0000-0000-0000-000000000007",
-                "reason": "the sign-in page wants a CAPTCHA",
-                "profile": "job-hunt",
-            }),
+            serde_json::json!({ "id": "00000000-0000-0000-0000-000000000007", "reason": "CAPTCHA", "tab": 3 }),
         );
-        assert_eq!(
-            serde_json::from_value::<HandOff>(encoded).expect("a hand-off decodes"),
-            handoff,
-        );
+        assert_eq!(serde_json::from_value::<HandOff>(encoded).expect("decodes"), handoff);
+    }
 
-        let bare = HandOff {
-            id: uuid::Uuid::from_u128(8),
-            reason: "look at it".to_owned(),
-            profile: None,
+    /// A tab row crosses with the session that drives it and what it is
+    /// doing, so a strip can mark a held tab without a second read.
+    #[test]
+    fn a_tab_row_crosses_with_its_owner_and_state() {
+        let row = BrowserTabRow {
+            number: 2,
+            title: "portal".to_owned(),
+            url: "https://x/".to_owned(),
+            owner: SessionSlot::worker("O", "p", "w"),
+            state: BrowserTabState::Held,
         };
-        let encoded = serde_json::to_value(&bare).expect("a bare hand-off encodes");
-        assert_eq!(
-            serde_json::from_value::<HandOff>(encoded).expect("a bare hand-off decodes"),
-            bare,
-            "a hand-off that named no profile decodes as one that named none",
-        );
+        let encoded = serde_json::to_value(&row).expect("a row encodes");
+        assert_eq!(encoded["number"], 2);
+        assert_eq!(encoded["state"], "held");
+        assert_eq!(serde_json::from_value::<BrowserTabRow>(encoded).expect("decodes"), row);
     }
 
     /// An ending crosses as its tag: the resolved update carries it, and the

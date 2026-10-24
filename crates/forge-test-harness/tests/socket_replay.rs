@@ -255,6 +255,7 @@ census!(ServerMessage,
         SeatFrames struct,
         CommitDiff struct, FileContent struct, Reply struct,
         BrowserView struct, BrowserNavState struct, BrowserSurfaceFailed struct,
+        BrowserTabs struct,
         BrowserFileDialog struct, BrowserDownload struct,
         Error struct,
         DocumentRead struct,
@@ -328,7 +329,6 @@ census!(Command,
         SetReviewThreadStatus struct,
         CloseSession struct, UpsertReviewThread struct, DeleteReviewThread struct,
         SubmitReview struct, BrowserIdleWarning struct,
-        BrowserProfileClose struct, BrowserProfileDelete struct,
     ],
     command_census, COMMAND_VARIANTS);
 
@@ -346,9 +346,7 @@ census!(ClientMessage,
         BrowserControl struct,
         BrowserNav struct,
         BrowserResize struct,
-        BrowserProfiles struct,
-        BrowserProfileClose struct,
-        BrowserProfileDelete struct,
+        BrowserTabs struct,
         DocumentRead struct,
         FileContent struct,
     ],
@@ -784,12 +782,25 @@ fn frames_record() -> Value {
         ServerMessage::BrowserView {
             id: 1,
             profile: "shared".to_owned(),
+            tab: 2,
             controller: Some(9),
             viewers: 2,
             viewer: 9,
         },
-        ServerMessage::BrowserNavState { id: 1, can_back: true, can_forward: false },
-        ServerMessage::BrowserSurfaceFailed { id: 1, reason: "the browser host exited".to_owned() },
+        ServerMessage::BrowserNavState { id: 1, tab: 2, can_back: true, can_forward: false },
+        ServerMessage::BrowserSurfaceFailed {
+            id: 1,
+            tab: 2,
+            reason: "the browser host exited".to_owned(),
+        },
+        ServerMessage::BrowserTabs {
+            id: 1,
+            profile: "TestOrg/default".to_owned(),
+            up: true,
+            connected: true,
+            closing_at_ms: None,
+            rows: Vec::new(),
+        },
         ServerMessage::DocumentRead {
             session: seat.clone(),
             path: "/proj/docs/readme.md".to_owned(),
@@ -850,11 +861,7 @@ fn frames_record() -> Value {
             reply_to: None,
         },
         ClientMessage::More { conversation: seat.clone(), before: None, turns: 1 },
-        ClientMessage::BrowserView {
-            seat: seat.clone(),
-            profile: Some("hunt".to_owned()),
-            reply_to: None,
-        },
+        ClientMessage::BrowserView { seat: seat.clone(), tab: Some(3), reply_to: None },
         ClientMessage::BrowserInput {
             seq: 1,
             event: forge_primitives::browser::BrowserInputEvent::Text { text: "hi".to_owned() },
@@ -959,6 +966,7 @@ fn frames_record() -> Value {
         shape_of(&ServerMessage::BrowserView {
             id: 1,
             profile: "shared".to_owned(),
+            tab: 2,
             controller: Some(9),
             viewers: 2,
             viewer: 9,
@@ -967,16 +975,42 @@ fn frames_record() -> Value {
     // The history frame the bar's arrows read.
     payload_sampled.insert(
         "BrowserNavState".to_owned(),
-        shape_of(&ServerMessage::BrowserNavState { id: 1, can_back: true, can_forward: false }),
+        shape_of(&ServerMessage::BrowserNavState {
+            id: 1,
+            tab: 2,
+            can_back: true,
+            can_forward: false,
+        }),
     );
-    // **The failure the surface draws**: the id picks which profile's page
+    // **The failure the surface draws**: the id and tab pick which page
     // stopped, and the reason is the sentence under it. A rename here fails
     // nothing in the census while a dead browser leaves no words.
     payload_sampled.insert(
         "BrowserSurfaceFailed".to_owned(),
         shape_of(&ServerMessage::BrowserSurfaceFailed {
             id: 1,
+            tab: 2,
             reason: "the browser host exited (pid 42); the next call brings it back".to_owned(),
+        }),
+    );
+    // **The strip's whole read**: the host's health, the idle deadline and
+    // the rows, with each row's owner and state. A rename inside the list
+    // fails no census line while the strip draws an unowned, unstated tab.
+    payload_sampled.insert(
+        "BrowserTabs".to_owned(),
+        shape_of(&ServerMessage::BrowserTabs {
+            id: 1,
+            profile: "TestOrg/default".to_owned(),
+            up: true,
+            connected: true,
+            closing_at_ms: Some(1_760_000_000_000),
+            rows: vec![forge_primitives::browser::BrowserTabRow {
+                number: 2,
+                title: "portal".to_owned(),
+                url: "https://x/".to_owned(),
+                owner: seat.clone(),
+                state: forge_primitives::browser::BrowserTabState::InUse,
+            }],
         }),
     );
     // **The document read's answer, where a rename would leave the viewer
@@ -1097,7 +1131,7 @@ fn frames_record() -> Value {
             handoff: forge_primitives::browser::HandOff {
                 id: uuid::Uuid::from_u128(7),
                 reason: "solve the CAPTCHA".to_owned(),
-                profile: Some("job-hunt".to_owned()),
+                tab: 3,
             },
         })),
     );
@@ -1571,7 +1605,7 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
         "BrowserView".to_owned(),
         sample(ClientMessage::BrowserView {
             seat: SessionSlot::lead("TestOrg", "proj"),
-            profile: Some("hunt".to_owned()),
+            tab: Some(3),
             reply_to: Some(1),
         }),
     );
@@ -1585,26 +1619,10 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
     // The strip's asks: the page writes these fields by hand through the
     // shell, so a rename fails nothing until a row never lists.
     sampled.insert(
-        "BrowserProfiles".to_owned(),
-        sample(ClientMessage::BrowserProfiles {
+        "BrowserTabs".to_owned(),
+        sample(ClientMessage::BrowserTabs {
             seat: SessionSlot::lead("TestOrg", "proj"),
             reply_to: Some(2),
-        }),
-    );
-    sampled.insert(
-        "BrowserProfileClose".to_owned(),
-        sample(ClientMessage::BrowserProfileClose {
-            seat: SessionSlot::lead("TestOrg", "proj"),
-            name: "hunt".to_owned(),
-            reply_to: Some(3),
-        }),
-    );
-    sampled.insert(
-        "BrowserProfileDelete".to_owned(),
-        sample(ClientMessage::BrowserProfileDelete {
-            seat: SessionSlot::lead("TestOrg", "proj"),
-            name: "hunt".to_owned(),
-            reply_to: Some(4),
         }),
     );
     sampled.insert(

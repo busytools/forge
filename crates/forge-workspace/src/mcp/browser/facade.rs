@@ -27,8 +27,8 @@ pub trait BrowserFacade: Send + Sync {
         args: Value,
     ) -> Result<Vec<BrowserPart>, String>;
 
-    /// Ask the person at a client to act in a browser tab, and wait for their
-    /// word.
+    /// Ask the person at a client to act in one of the seat's browser tabs,
+    /// and wait for their word.
     ///
     /// **No timeout.** The ask dock's own timelines say a held prompt sits for
     /// hours, and the session is meant to wait as long as it takes; the one
@@ -39,7 +39,7 @@ pub trait BrowserFacade: Send + Sync {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        profile: Option<&str>,
+        tab: u16,
     ) -> Result<HandOffEnding, String>;
 }
 
@@ -76,16 +76,12 @@ impl BrowserFacade for ProdBrowserFacade {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        profile: Option<&str>,
+        tab: u16,
     ) -> Result<HandOffEnding, String> {
         let Some(workspace) = self.workspace.upgrade() else {
             return Err("the workspace went away before the hand-off was staged".to_owned());
         };
-        let handoff = HandOff {
-            id: uuid::Uuid::new_v4(),
-            reason: reason.to_owned(),
-            profile: profile.map(str::to_owned),
-        };
+        let handoff = HandOff { id: uuid::Uuid::new_v4(), reason: reason.to_owned(), tab };
         let (id, answer) = workspace.register_browser_hand_off(seat, handoff);
         let guard =
             ResolveHandOffOnDrop { workspace: Arc::clone(&workspace), id, caller: seat.clone() };
@@ -128,7 +124,7 @@ pub struct MockBrowserFacade {
     pub answer: parking_lot::Mutex<Result<Vec<BrowserPart>, String>>,
     /// What `hand_off` answers with, and what it was asked.
     pub hand_off_answer: parking_lot::Mutex<Result<HandOffEnding, String>>,
-    pub hand_offs: parking_lot::Mutex<Vec<(String, Option<String>)>>,
+    pub hand_offs: parking_lot::Mutex<Vec<(String, u16)>>,
 }
 
 #[cfg(test)]
@@ -168,10 +164,10 @@ impl BrowserFacade for MockBrowserFacade {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        profile: Option<&str>,
+        tab: u16,
     ) -> Result<HandOffEnding, String> {
         self.seats.lock().push(seat.clone());
-        self.hand_offs.lock().push((reason.to_owned(), profile.map(str::to_owned)));
+        self.hand_offs.lock().push((reason.to_owned(), tab));
         self.hand_off_answer.lock().clone()
     }
 }
@@ -215,7 +211,7 @@ mod tests {
         let task = tokio::spawn({
             let facade = Arc::clone(&facade);
             let seat = seat.clone();
-            async move { facade.hand_off(&seat, "solve the CAPTCHA", None).await }
+            async move { facade.hand_off(&seat, "solve the CAPTCHA", 2).await }
         });
         // The hand-off lands in the registry, which is what the blocked call
         // just did.

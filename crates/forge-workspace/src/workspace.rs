@@ -1920,6 +1920,31 @@ impl Workspace {
         self.config.browser
     }
 
+    /// The profile names `forge.toml` resolved: each org's, and each
+    /// project's override keyed by `(org, project)`. **Project names are
+    /// unique inside an org**, so the pair is the key the fleet resolves a
+    /// seat against.
+    pub fn browser_profile_config(
+        &self,
+    ) -> (
+        std::collections::HashMap<String, String>,
+        std::collections::HashMap<(String, String), String>,
+    ) {
+        let orgs = self.config.org_browser_profiles.clone();
+        let projects = self
+            .config
+            .projects
+            .iter()
+            .map(|project| {
+                (
+                    (project.org.clone(), project.name.clone()),
+                    project.browser_profile.name().to_owned(),
+                )
+            })
+            .collect();
+        (orgs, projects)
+    }
+
     /// The ceiling on one handed document, in bytes: `[documents]
     /// max_size_mib` over the crate's own default. Read by the document
     /// read, which refuses a document over it.
@@ -4712,6 +4737,9 @@ impl Workspace {
         let command = match prompt {
             ForgePrompt::NewSession => {
                 let (cwd, launch_settings) = self.spawn_inputs(key);
+                // **A replacement is not a sweep**: the slot stays and the
+                // previous occupant's tabs close before the new one starts.
+                self.replace_browser_seat(key);
                 Command::NewSession { key: key.clone(), cwd, launch_settings, session_id: None }
             }
             // The brief is asked of the session: the same process the
@@ -4719,6 +4747,7 @@ impl Workspace {
             ForgePrompt::Handoff => Command::Handoff { key: key.clone(), brief: None },
             ForgePrompt::ResumeSession { session_id } => {
                 let (cwd, launch_settings) = self.spawn_inputs(key);
+                self.replace_browser_seat(key);
                 Command::ResumeSession {
                     key: key.clone(),
                     session_id: session_id.clone(),
@@ -4739,6 +4768,19 @@ impl Workspace {
             ForgePrompt::SetEffort { level } => return self.set_effort(key, level),
         };
         (self.route(command), None)
+    }
+
+    /// Tell the fleet a `/new` or `/resume` kept the slot and swapped the
+    /// occupant, so the previous occupant's tabs close. **Best-effort**, like
+    /// the spawn's own warm: a workspace with no fleet has no tabs to replace.
+    fn replace_browser_seat(&self, seat: &SessionSlot) {
+        let (Some(host), Ok(runtime)) =
+            (self.browser_host(), tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        let seat = seat.clone();
+        runtime.spawn(async move { host.replace_seat(&seat).await });
     }
 
     /// The cwd and settings a re-spawn on `key` carries.
@@ -5634,15 +5676,12 @@ impl Workspace {
                         at_close,
                     );
                     let _enter = span.enter();
-                    // **A parked hand-off holds the profile, whoever asked
-                    // it**: the shared browser's warned seat can be any
-                    // caller, so the hold is the profile's and never the
-                    // seat's - nothing is delivered and the answer says why.
-                    // `at_close` asks the verdict alone: the warning has
-                    // landed, and a close must never re-nudge.
-                    let verdict_value = if self.browser_handoff_holds(&profile) {
-                        IdleVerdict::Held
-                    } else if at_close {
+                    // **A parked hand-off's hold is the fleet's**, keyed to
+                    // the seat and tab that parked it, so this warning has no
+                    // hold to consult: the idle clock itself skips a held
+                    // profile. `at_close` asks the verdict alone: the warning
+                    // has landed, and a close must never re-nudge.
+                    let verdict_value = if at_close {
                         IdleVerdict::Clear
                     } else {
                         match key {
@@ -5672,34 +5711,6 @@ impl Workspace {
                     if let Some(verdict) = verdict {
                         let _ = verdict.send(verdict_value);
                     }
-                }
-                // **The strip's close and delete are the user's own
-                // moves**, and they reach the fleet through this bus like
-                // every other: the host is the workspace's, the answer is
-                // its sentence.
-                Command::BrowserProfileClose { seat, name, verdict } => {
-                    let host = self.browser_host();
-                    tokio::spawn(async move {
-                        let outcome = match host {
-                            Some(host) => host.close_profile(&seat, &name).await,
-                            None => Err("this server has no browser to close".to_owned()),
-                        };
-                        if let Some(verdict) = verdict {
-                            let _ = verdict.send(outcome);
-                        }
-                    });
-                }
-                Command::BrowserProfileDelete { seat, name, verdict } => {
-                    let host = self.browser_host();
-                    tokio::spawn(async move {
-                        let outcome = match host {
-                            Some(host) => host.delete_profile(&seat, &name).await,
-                            None => Err("this server has no browser to delete".to_owned()),
-                        };
-                        if let Some(verdict) = verdict {
-                            let _ = verdict.send(outcome);
-                        }
-                    });
                 }
                 // The board's edits are the user's own moves: stamped
                 // `By::User` in the history, and no session routes them -
@@ -12215,17 +12226,12 @@ provider = "anthropic"
         rx.await.expect("the arm answers")
     }
 
-    /// **A parked hand-off holds the profile**: the idle warning answers
-    /// `Held` and draws no turn - and once the hand-off resolves, the
-    /// warning delivers like any other. The hold is the PROFILE's, never the
-    /// asking seat's: the shared browser's warned seat can be any caller,
-    /// and a hand-off parked by one of them must hold it against every
-    /// seat's close, including the keyless one. A hand-off that named no
-    /// profile holds every browser.
+    /// **The idle warning is the authored sentence, drawn as a turn**, with
+    /// the machinery's own id that a reloaded row keys on. A parked hand-off's
+    /// hold is the fleet's now, keyed to its seat and tab, so this command
+    /// consults none: the idle clock itself skips a held profile.
     #[tokio::test]
-    async fn a_parked_hand_off_holds_the_idle_warning() {
-        use forge_primitives::browser::{HandOff, HandOffEnding};
-
+    async fn the_browser_idle_warning_delivers_its_authored_sentence() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let key = SessionSlot::lead("TestOrg", "proj");
@@ -12233,38 +12239,11 @@ provider = "anthropic"
         // needs to land (the chase's own delivery machinery, unchanged).
         let _stub = ws.install_testing_stub(&key);
         ws.mark_session_connected_for_test(&key, "lead");
-        // A second live seat, for the shared browser's warned-seat case.
-        let other = SessionSlot::worker("TestOrg", "proj", "other");
-        let _other_stub = ws.install_testing_stub(&other);
-        ws.mark_session_connected_for_test(&other, "other");
 
-        let handoff = HandOff {
-            id: uuid::Uuid::new_v4(),
-            reason: "sign in".to_owned(),
-            profile: Some("shared".to_owned()),
-        };
-        let (id, _ending) = ws.register_browser_hand_off(&key, handoff);
-
-        assert_eq!(
-            warn(&ws, Some(&key), "shared", false).await,
-            IdleVerdict::Held,
-            "the hand-off holds the profile it named",
-        );
-        assert_eq!(
-            warn(&ws, Some(&other), "shared", false).await,
-            IdleVerdict::Held,
-            "and it holds it against ANOTHER seat's warning - the shared browser's last \
-             caller is not the hand-off's owner",
-        );
-        assert_eq!(
-            warn(&ws, None, "shared", true).await,
-            IdleVerdict::Held,
-            "the close's keyless question is still held",
-        );
         assert_eq!(
             warn(&ws, Some(&key), "printables", false).await,
             IdleVerdict::Delivered,
-            "another profile is not held by it",
+            "a live seat is warned",
         );
         // **The delivered warning is the authored sentence, drawn as a
         // turn**: the verdict alone would pass with any text at all.
@@ -12290,12 +12269,6 @@ provider = "anthropic"
             "the warning's id is the machinery's own, which is what a reloaded row keys on: \
              {warned}",
         );
-        assert!(ws.resolve_browser_hand_off(id, &key, HandOffEnding::NotNow), "it resolves");
-        assert_eq!(
-            warn(&ws, Some(&key), "shared", false).await,
-            IdleVerdict::Delivered,
-            "and the profile is free to warn again",
-        );
         assert_eq!(
             warn(&ws, Some(&key), "hunt", true).await,
             IdleVerdict::Clear,
@@ -12308,14 +12281,24 @@ provider = "anthropic"
             IdleVerdict::NoSession,
             "a seat with no live session has nobody to tell",
         );
+    }
 
-        let unnamed =
-            HandOff { id: uuid::Uuid::new_v4(), reason: "anything".to_owned(), profile: None };
-        let (_id, _ending) = ws.register_browser_hand_off(&key, unnamed);
+    /// **A `/new` is a replacement, not a sweep.** The slot stays and the
+    /// previous occupant's tabs close; a sweep would ask about every seat
+    /// that is not live, which is the wrong question for a respawn.
+    #[tokio::test]
+    async fn a_new_session_replaces_the_seats_tabs_in_the_fleet() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        ws.install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+
+        let _ = ws.run_forge_prompt(&seat, &crate::prompt::ForgePrompt::NewSession);
+
         assert_eq!(
-            warn(&ws, Some(&key), "hunt", false).await,
-            IdleVerdict::Held,
-            "a hand-off that named no profile holds every browser",
+            heard.recv().await,
+            Some(("replace_seat".to_owned(), serde_json::json!(seat))),
+            "the fleet is told whose tabs the respawn replaces",
         );
     }
 
@@ -15236,7 +15219,7 @@ mod worker_activity_tests {
         let handoff = forge_primitives::browser::HandOff {
             id: uuid::Uuid::new_v4(),
             reason: "solve the CAPTCHA".to_owned(),
-            profile: None,
+            tab: 2,
         };
         let id = handoff.id;
         let (_asked, _answer) = ws.register_browser_hand_off(&key, handoff);
@@ -15704,7 +15687,7 @@ mod worker_activity_tests {
         let handoff = forge_primitives::browser::HandOff {
             id: uuid::Uuid::new_v4(),
             reason: "solve the CAPTCHA".to_owned(),
-            profile: None,
+            tab: 2,
         };
         let (_id, _answer) = ws.register_browser_hand_off(&seat, handoff);
 

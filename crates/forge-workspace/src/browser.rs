@@ -14,17 +14,21 @@ use tokio::sync::oneshot;
 
 use crate::workspace::Workspace;
 
-/// A viewer's handle on one profile, as the transport keeps it.
+/// A viewer's handle on one tab, as the transport keeps it.
 pub struct BrowserAttachment {
     /// The profile's key, for the calls that follow (input, control, nav).
     pub key: String,
     /// The id the binary frames carry.
     pub id: u16,
+    /// The tab this viewer is on, for every call that follows.
+    pub tab: u16,
     /// The newest frame, and a way to follow it.
     pub frames: tokio::sync::watch::Receiver<Option<forge_primitives::browser::BrowserFrame>>,
-    /// The controller and the viewer count, as they change.
+    /// The tab's controller and the viewer count, as they change.
     pub view: tokio::sync::watch::Receiver<forge_primitives::browser::BrowserViewState>,
-    /// Where the page's history sits, as it moves - the bar's arrows read
+    /// The profile's tabs, as they change.
+    pub tabs: tokio::sync::watch::Receiver<forge_primitives::browser::BrowserTabList>,
+    /// Where the tab's history sits, as it moves - the bar's arrows read
     /// this rather than asking after every click.
     pub nav: tokio::sync::watch::Receiver<Option<forge_primitives::browser::BrowserNavState>>,
     /// Why the profile's browser stopped, when it did.
@@ -40,7 +44,7 @@ pub struct BrowserAttachment {
 /// The server's browser fleet, as the workspace calls it.
 #[async_trait::async_trait]
 pub trait BrowserHost: Send + Sync {
-    /// Run one browser tool through the profile the call names.
+    /// Run one browser tool through the tab the calling session drives.
     async fn call(
         &self,
         seat: &SessionSlot,
@@ -48,21 +52,23 @@ pub trait BrowserHost: Send + Sync {
         args: Value,
     ) -> Result<Vec<forge_primitives::browser::BrowserPart>, String>;
 
-    /// Attach a viewer: the profile's newest frame and its viewer state.
+    /// Attach a viewer to one of the seat's tabs. `tab` is `None` for the
+    /// seat's current tab, else its profile's first.
     async fn attach(
         &self,
         viewer: u64,
         seat: &SessionSlot,
-        profile: Option<&str>,
+        tab: Option<u16>,
     ) -> Result<BrowserAttachment, String>;
 
     /// A viewer's connection ended.
     async fn detach(&self, viewer: u64);
 
-    /// One input event, only from the viewer that holds the role.
+    /// One input event, only from the viewer that holds the role on that tab.
     async fn input(
         &self,
         profile: &str,
+        tab: u16,
         viewer: u64,
         seq: u64,
         event: &forge_primitives::browser::BrowserInputEvent,
@@ -72,51 +78,79 @@ pub trait BrowserHost: Send + Sync {
     async fn answer_files(
         &self,
         profile: &str,
+        tab: u16,
         id: u64,
         files: Vec<forge_primitives::browser::BrowserUpload>,
     ) -> Result<(), String>;
 
-    /// Give `viewer` the controller role.
-    async fn take_control(&self, profile: &str, viewer: u64) -> Result<(), String>;
+    /// Give `viewer` the controller role on one tab.
+    async fn take_control(&self, profile: &str, tab: u16, viewer: u64) -> Result<(), String>;
 
-    /// Lay the page out to the controller's surface: device pixels and the
+    /// Lay one tab out to the controller's surface: device pixels and the
     /// ratio they draw at. **Only the controller's size applies**; a
     /// watcher's window does not move the page under the person driving it.
-    async fn resize(&self, profile: &str, viewer: u64, width: u32, height: u32, scale: f64);
+    async fn resize(
+        &self,
+        profile: &str,
+        tab: u16,
+        viewer: u64,
+        width: u32,
+        height: u32,
+        scale: f64,
+    );
 
-    /// Release the role, when this viewer still holds it.
-    async fn release_control(&self, profile: &str, viewer: u64);
+    /// Release the role, when this viewer still holds it on that tab.
+    async fn release_control(&self, profile: &str, tab: u16, viewer: u64);
 
-    /// Move through the page's history, answering where it now sits. **Only
+    /// Move one tab through its history, answering where it now sits. **Only
     /// the controller moves the page**: a watcher's move would move it under
     /// the person driving it.
     async fn nav(
         &self,
         profile: &str,
+        tab: u16,
         viewer: u64,
         back: bool,
     ) -> Result<forge_primitives::browser::BrowserNavState, String>;
 
-    /// Where the page's history sits, when the browser can answer.
-    async fn nav_state(&self, profile: &str) -> Option<forge_primitives::browser::BrowserNavState>;
+    /// Where one tab's history sits, when the browser can answer.
+    async fn nav_state(
+        &self,
+        profile: &str,
+        tab: u16,
+    ) -> Option<forge_primitives::browser::BrowserNavState>;
 
-    /// The profiles this seat may see, for a client's strip: its own named
-    /// profiles, the ownerless ones, and the shared browser.
-    async fn profiles(
+    /// A seat's tabs as its strip draws them.
+    async fn tabs(
         &self,
         seat: &SessionSlot,
-    ) -> Result<Vec<forge_primitives::browser::BrowserProfileRow>, String>;
+    ) -> Result<forge_primitives::browser::BrowserTabList, String>;
 
-    /// Close a named profile's browser, keeping its logins. The seat must own
-    /// the name; the shared browser is not a profile to close.
-    async fn close_profile(&self, seat: &SessionSlot, name: &str) -> Result<(), String>;
+    /// A stream of a seat's tab rows, for a strip that follows them.
+    async fn tab_stream(
+        &self,
+        seat: &SessionSlot,
+    ) -> Result<tokio::sync::watch::Receiver<forge_primitives::browser::BrowserTabList>, String>;
 
-    /// Delete a named profile and its logins. The seat must own the name.
-    async fn delete_profile(&self, seat: &SessionSlot, name: &str) -> Result<(), String>;
+    /// The seats that remain: a tab whose session is gone is closed, except a
+    /// tab a parked hand-off holds. Called when a seat is torn down.
+    async fn sweep_sessions(&self, seats: &[SessionSlot]);
 
-    /// The seats that remain: a named profile whose seat is gone is ended and
-    /// its directory removed. Called when a seat is torn down.
-    async fn sweep_seats(&self, seats: &[SessionSlot]);
+    /// A `/new` or `/resume`: the slot stays and the previous occupant's tabs
+    /// close, except a tab a parked hand-off holds.
+    async fn replace_seat(&self, seat: &SessionSlot);
+
+    /// A hand-off parked on one of the seat's tabs: the tab is held against
+    /// the sweep and the idle clock until it resolves.
+    async fn hand_off_started(&self, seat: &SessionSlot, tab: u16);
+
+    /// A hand-off left the registry: the tab is released, and a session that
+    /// went while it was held takes its tab with it.
+    async fn hand_off_finished(&self, seat: &SessionSlot, tab: u16);
+
+    /// Create the seat's profile entry and start its host, with no tab. The
+    /// first seat of a profile calls it at spawn; later seats reuse the host.
+    async fn warm(&self, seat: &SessionSlot);
 
     /// End every open browser and its driver, keeping the profiles on disk.
     /// **The hosts are the server's children**, so a clean stop ends them; a
@@ -145,16 +179,49 @@ impl Workspace {
     ) -> (uuid::Uuid, oneshot::Receiver<HandOffEnding>) {
         let (sender, receiver) = oneshot::channel();
         let id = handoff.id;
+        let tab = handoff.tab;
+        // **The hold is the service's**, and it is taken before the ask is
+        // parked: a sweep that ran between the two would see the tab as an
+        // orphan and close it under the person. The call is off the request's
+        // own path, like every other fleet call the workspace fires.
+        self.tell_browser_hand_off_started(caller, tab);
         self.browser_handoffs.lock().insert(id, (caller.clone(), handoff.clone(), sender));
         let answerable = self.update_sender().send_answering(
             crate::protocol::SessionUpdate::BrowserHandOffPending { key: caller.clone(), handoff },
         );
         if !answerable {
             self.browser_handoffs.lock().remove(&id);
+            // **A raise no view can show has no ask to resolve**, so the hold
+            // it took is given back here rather than left on the tab forever.
+            self.tell_browser_hand_off_finished(caller, tab);
             let (_ignored_sender, dead_receiver) = oneshot::channel();
             return (id, dead_receiver);
         }
         (id, receiver)
+    }
+
+    /// Tell the fleet a hand-off took its tab, when one is installed and a
+    /// runtime is up to carry the call.
+    pub(crate) fn tell_browser_hand_off_started(&self, caller: &SessionSlot, tab: u16) {
+        let (Some(host), Ok(runtime)) =
+            (self.browser_host(), tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        let seat = caller.clone();
+        runtime.spawn(async move { host.hand_off_started(&seat, tab).await });
+    }
+
+    /// Tell the fleet a hand-off left its tab: the service acts on a tab that
+    /// is still held, and a resolution for anything else touches nothing.
+    pub(crate) fn tell_browser_hand_off_finished(&self, caller: &SessionSlot, tab: u16) {
+        let (Some(host), Ok(runtime)) =
+            (self.browser_host(), tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        let seat = caller.clone();
+        runtime.spawn(async move { host.hand_off_finished(&seat, tab).await });
     }
 
     /// Whether a hand-off with this id is still registered to `caller`,
@@ -162,19 +229,6 @@ impl Workspace {
     /// answer.
     pub(crate) fn browser_handoff_waiting(&self, id: uuid::Uuid, caller: &SessionSlot) -> bool {
         self.browser_handoffs.lock().get(&id).is_some_and(|(owner, _, _)| owner == caller)
-    }
-
-    /// Whether a parked hand-off holds this profile: one that named it, or -
-    /// a hand-off that named none - any browser. **Keyed to the profile and
-    /// never to the seat**: the shared browser's last caller can be any seat,
-    /// and a hand-off parked by one of them must hold the profile against
-    /// every seat's close. The read the idle warning makes before anything is
-    /// delivered or closed.
-    pub(crate) fn browser_handoff_holds(&self, profile: &str) -> bool {
-        self.browser_handoffs
-            .lock()
-            .values()
-            .any(|(_, handoff, _)| handoff.profile.as_deref().is_none_or(|named| named == profile))
     }
 
     /// Remove a parked hand-off, answer its waiter, and tell every view it is
@@ -189,8 +243,11 @@ impl Workspace {
         if !parked.get(&id).is_some_and(|(owner, _, _)| owner == caller) {
             return false;
         }
-        let Some((owner, _, sender)) = parked.remove(&id) else { return false };
+        let Some((owner, handoff, sender)) = parked.remove(&id) else { return false };
         drop(parked);
+        // **The tab is released with the answer**, whichever ending it
+        // carried: a resolved hand-off holds nothing.
+        self.tell_browser_hand_off_finished(&owner, handoff.tab);
         // **The ending is what tells an answer from an abandonment**, and
         // hand-offs were seen resolving by themselves in a live round
         // (2026-10-07) with nothing naming the hand that sent it.
@@ -222,6 +279,12 @@ pub(crate) mod testing {
         pub(crate) calls: mpsc::UnboundedSender<(String, Value)>,
     }
 
+    impl StubHost {
+        fn heard(&self, what: &str, args: Value) {
+            let _ = self.calls.send((what.to_owned(), args));
+        }
+    }
+
     #[async_trait::async_trait]
     impl BrowserHost for StubHost {
         async fn call(
@@ -230,7 +293,7 @@ pub(crate) mod testing {
             tool: &str,
             args: Value,
         ) -> Result<Vec<BrowserPart>, String> {
-            let _ = self.calls.send((tool.to_owned(), args));
+            self.heard(tool, args);
             Ok(vec![BrowserPart::Text { text: "clicked".to_owned() }])
         }
 
@@ -238,7 +301,7 @@ pub(crate) mod testing {
             &self,
             _viewer: u64,
             _seat: &SessionSlot,
-            _profile: Option<&str>,
+            _tab: Option<u16>,
         ) -> Result<BrowserAttachment, String> {
             Err("no viewers here".to_owned())
         }
@@ -248,6 +311,7 @@ pub(crate) mod testing {
         async fn input(
             &self,
             _profile: &str,
+            _tab: u16,
             _viewer: u64,
             _seq: u64,
             _event: &BrowserInputEvent,
@@ -258,19 +322,26 @@ pub(crate) mod testing {
         async fn answer_files(
             &self,
             _profile: &str,
+            _tab: u16,
             _id: u64,
             _files: Vec<forge_primitives::browser::BrowserUpload>,
         ) -> Result<(), String> {
             Err("no viewers here".to_owned())
         }
 
-        async fn take_control(&self, _profile: &str, _viewer: u64) -> Result<(), String> {
+        async fn take_control(
+            &self,
+            _profile: &str,
+            _tab: u16,
+            _viewer: u64,
+        ) -> Result<(), String> {
             Err("no viewers here".to_owned())
         }
 
         async fn resize(
             &self,
             _profile: &str,
+            _tab: u16,
             _viewer: u64,
             _width: u32,
             _height: u32,
@@ -278,38 +349,55 @@ pub(crate) mod testing {
         ) {
         }
 
-        async fn release_control(&self, _profile: &str, _viewer: u64) {}
+        async fn release_control(&self, _profile: &str, _tab: u16, _viewer: u64) {}
 
         async fn nav(
             &self,
             _profile: &str,
+            _tab: u16,
             _viewer: u64,
             _back: bool,
         ) -> Result<BrowserNavState, String> {
             Err("no viewers here".to_owned())
         }
 
-        async fn nav_state(&self, _profile: &str) -> Option<BrowserNavState> {
+        async fn nav_state(&self, _profile: &str, _tab: u16) -> Option<BrowserNavState> {
             None
         }
 
-        async fn profiles(
+        async fn tabs(
             &self,
             _seat: &SessionSlot,
-        ) -> Result<Vec<forge_primitives::browser::BrowserProfileRow>, String> {
+        ) -> Result<forge_primitives::browser::BrowserTabList, String> {
             Err("no viewers here".to_owned())
         }
 
-        async fn close_profile(&self, _seat: &SessionSlot, _name: &str) -> Result<(), String> {
+        async fn tab_stream(
+            &self,
+            _seat: &SessionSlot,
+        ) -> Result<tokio::sync::watch::Receiver<forge_primitives::browser::BrowserTabList>, String>
+        {
             Err("no viewers here".to_owned())
         }
 
-        async fn delete_profile(&self, _seat: &SessionSlot, _name: &str) -> Result<(), String> {
-            Err("no viewers here".to_owned())
+        async fn sweep_sessions(&self, seats: &[SessionSlot]) {
+            self.heard("sweep_sessions", serde_json::json!(seats));
         }
 
-        async fn sweep_seats(&self, seats: &[SessionSlot]) {
-            let _ = self.calls.send(("sweep_seats".to_owned(), serde_json::json!(seats)));
+        async fn replace_seat(&self, seat: &SessionSlot) {
+            self.heard("replace_seat", serde_json::json!(seat));
+        }
+
+        async fn hand_off_started(&self, seat: &SessionSlot, tab: u16) {
+            self.heard("hand_off_started", serde_json::json!({ "seat": seat, "tab": tab }));
+        }
+
+        async fn hand_off_finished(&self, seat: &SessionSlot, tab: u16) {
+            self.heard("hand_off_finished", serde_json::json!({ "seat": seat, "tab": tab }));
+        }
+
+        async fn warm(&self, seat: &SessionSlot) {
+            self.heard("warm", serde_json::json!(seat));
         }
 
         async fn stop(&self) -> Vec<String> {
@@ -321,13 +409,10 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::testing::StubHost;
 
     fn handoff(reason: &str) -> HandOff {
-        HandOff {
-            id: uuid::Uuid::new_v4(),
-            reason: reason.to_owned(),
-            profile: Some("hunt".to_owned()),
-        }
+        HandOff { id: uuid::Uuid::new_v4(), reason: reason.to_owned(), tab: 2 }
     }
 
     /// **A hand-off is addressed to the session that asked**, so the dock the
@@ -347,6 +432,71 @@ mod tests {
             }
         }
         assert_eq!(addressed, vec![caller], "the hand-off is addressed to the asker");
+    }
+
+    /// **A parked hand-off holds its tab in the fleet before the ask is
+    /// parked.** A sweep that ran between the two would read the tab as an
+    /// orphan and close it under the person.
+    #[tokio::test]
+    async fn registering_a_hand_off_holds_its_tab_in_the_fleet() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        ws.install_browser_host(std::sync::Arc::new(StubHost { calls }));
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+
+        let (_id, _answer) = ws.register_browser_hand_off(&caller, handoff("solve the CAPTCHA"));
+
+        let (what, args) = heard.recv().await.expect("the fleet hears the hold");
+        assert_eq!(what, "hand_off_started", "the fleet is told which tab is held");
+        assert_eq!(args, serde_json::json!({ "seat": caller, "tab": 2 }));
+    }
+
+    /// **The answer releases the tab.** A resolved hand-off holds nothing, so
+    /// the sweep and the idle clock see it like any other tab again.
+    #[tokio::test]
+    async fn resolving_a_hand_off_releases_its_tab() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        ws.install_browser_host(std::sync::Arc::new(StubHost { calls }));
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        let handoff = handoff("solve the CAPTCHA");
+        let id = handoff.id;
+        let (_id, _answer) = ws.register_browser_hand_off(&caller, handoff);
+        let started = heard.recv().await.map(|(what, _)| what);
+        assert_eq!(started, Some("hand_off_started".to_owned()));
+
+        assert!(ws.resolve_browser_hand_off(id, &caller, HandOffEnding::Done));
+
+        let (what, args) = heard.recv().await.expect("the fleet hears the release");
+        assert_eq!(what, "hand_off_finished", "the ending releases the tab it held");
+        assert_eq!(args, serde_json::json!({ "seat": caller, "tab": 2 }));
+    }
+
+    /// A raise no view can show still took its hold, so that hold is given
+    /// back rather than left on the tab forever.
+    #[tokio::test]
+    async fn a_hand_off_no_view_can_show_releases_its_tab() {
+        let (ws, rx) = Workspace::testing_stub();
+        drop(rx);
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        ws.install_browser_host(std::sync::Arc::new(StubHost { calls }));
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+
+        let (_id, answer) = ws.register_browser_hand_off(&caller, handoff("solve the CAPTCHA"));
+        assert!(answer.await.is_err(), "the fail-closed read");
+
+        let mut calls = Vec::new();
+        while let Some((what, _)) = heard.recv().await {
+            calls.push(what);
+            if calls.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(
+            calls,
+            vec!["hand_off_started".to_owned(), "hand_off_finished".to_owned()],
+            "the hold taken for an unanswerable raise is released",
+        );
     }
 
     /// Answering a hand-off nobody parked is refused rather than answered

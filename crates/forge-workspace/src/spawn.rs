@@ -301,6 +301,9 @@ pub(crate) fn handle_spawn_project(
                 // per-subprocess signal.
                 "spawn dispatched for project"
             );
+            // The lead's profile comes up with the session rather than
+            // paying the launch on its first browser call.
+            warm_browser_seat(workspace, &session_key);
         }
         Err(err) => {
             tracing::error!(
@@ -1700,6 +1703,9 @@ pub(crate) fn handle_spawn_worker(
                 slot = %slot.display(),
                 "spawn dispatched for worker"
             );
+            // Best-effort, like the lead's: the profile is up before the
+            // worker's first browser call rather than because of it.
+            warm_browser_seat(workspace, &slot);
             // The walk lands on a saturated or bailed account only when
             // nothing else in the pin declares the project's model, so
             // the lead hears about it at spawn rather than when the
@@ -1879,14 +1885,23 @@ pub(crate) fn handle_close_worker(
 }
 
 /// Tell the browser fleet which seats remain: **the seat is down, so its
-/// named profiles go with it**. The sweep runs off the teardown path, which
-/// is reaping a child and can take minutes; a fleet that is not installed is
-/// a workspace with no browsers to sweep.
+/// tabs go with it**, except any a parked hand-off holds. The sweep runs off
+/// the teardown path, which is reaping a child and can take minutes; a fleet
+/// that is not installed is a workspace with no browsers to sweep.
 fn sweep_browser_seats(workspace: &Arc<Workspace>) {
     let (Some(host), Some(seats)) = (workspace.browser_host(), workspace.live_seats()) else {
         return;
     };
-    tokio::spawn(async move { host.sweep_seats(&seats).await });
+    tokio::spawn(async move { host.sweep_sessions(&seats).await });
+}
+
+/// Warm the seat's browser profile: create the entry and start its host, with
+/// no tab. **Best-effort**, off the spawn's own path: a profile whose host
+/// cannot start is logged by the fleet rather than failing the spawn.
+fn warm_browser_seat(workspace: &Arc<Workspace>, seat: &forge_primitives::SessionSlot) {
+    let Some(host) = workspace.browser_host() else { return };
+    let seat = seat.clone();
+    tokio::spawn(async move { host.warm(&seat).await });
 }
 
 /// Handle a `Command::DespawnWorker` (the `agents__despawn` MCP
@@ -6560,8 +6575,7 @@ provider = "anthropic"
 
     /// **A despawn sweeps the browsers to the seats that remain.** The seat
     /// that went is not in the set and the project's lead is, which is the
-    /// whole of what the fleet needs to delete exactly the down seat's named
-    /// profiles.
+    /// whole of what the fleet needs to close exactly the down seat's tabs.
     #[tokio::test]
     async fn a_despawn_sweeps_the_browsers_to_the_remaining_seats() {
         let (workspace, _rx) = Workspace::testing_stub();
@@ -6583,7 +6597,7 @@ provider = "anthropic"
             .await
             .expect("the sweep is asked")
             .expect("the channel is fed");
-        assert_eq!(what, "sweep_seats", "the fleet is told the seats that remain");
+        assert_eq!(what, "sweep_sessions", "the fleet is told the seats that remain");
         let labels: Vec<&str> = seats
             .as_array()
             .expect("a seat set")
