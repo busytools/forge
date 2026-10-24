@@ -1,18 +1,18 @@
 /**
- * The bound on a subscription's first read: a subject that is still loading
- * when the bound runs out is asked again, and the bound re-arms until an
- * answer lands.
+ * The bound on a subscription's first read: a subject still loading when the
+ * bound runs out is asked again, once on the bound's own cadence and then on
+ * the slow beat, until an answer lands.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Stores } from './stores';
-import { READ_BOUND_MS, ReadBounds } from './read-bound';
+import { READ_BOUND_MS, ReadBounds, SLOW_RETRY_MS } from './read-bound';
 import type { Subject } from './protocol';
 
 const HOME: Subject = 'home';
 
 /** A `Stores` plus the bound over it, with the re-ask recorded. */
-function bounded(boundMs = READ_BOUND_MS) {
+function bounded(boundMs = READ_BOUND_MS, slowMs = SLOW_RETRY_MS) {
   const stores = new Stores();
   const asked: Subject[] = [];
   const bounds = new ReadBounds(
@@ -22,6 +22,7 @@ function bounded(boundMs = READ_BOUND_MS) {
       return true;
     },
     boundMs,
+    slowMs,
   );
   return { stores, bounds, asked };
 }
@@ -31,19 +32,55 @@ afterEach(() => {
 });
 
 describe('a read that is not answered', () => {
-  it('is asked again when the bound runs out, and the bound re-arms', () => {
+  /**
+   * **A slow answer buys one retry, not one per cadence** (#2561). A whole
+   * record on a slow link takes longer than the bound; a fixed beat then sent a
+   * fresh subscribe every cadence, each answered with another whole record
+   * queued behind the one already in flight. The figures are the shipping ones
+   * and the clock is driven, so the claim is about the cadence itself.
+   */
+  it('re-asks a slow answer once at five seconds, then leaves it alone', () => {
     vi.useFakeTimers();
-    const { stores, bounds, asked } = bounded(1_000);
+    const { stores, bounds, asked } = bounded();
+    const store = stores.open(HOME);
+    bounds.arm(HOME);
+
+    vi.advanceTimersByTime(5_000);
+    expect(asked, 'the read is owed and nothing else would ask it').toEqual([HOME]);
+
+    // Eighteen seconds is the slowest whole-record answer measured on the
+    // link behind #2561. No further pass may stack another record behind it.
+    vi.advanceTimersByTime(13_000);
+    expect(asked, 'a slow answer bought a second whole re-read').toEqual([HOME]);
+
+    // The answer lands, and the read is over: nothing is owed past it.
+    store.set({ fleet: [] });
+    bounds.clear(HOME);
+    vi.advanceTimersByTime(120_000);
+    expect(asked, 'an answered read was asked for again').toEqual([HOME]);
+  });
+
+  /**
+   * **A lost answer still recovers.** The cadence pass is not the end of the
+   * bound: a read nothing answers goes on being checked at the slow beat, so
+   * a snapshot lost twice is not a store loading for the life of the page.
+   */
+  it('recovers a genuinely lost answer on the slow beat', () => {
+    vi.useFakeTimers();
+    const { stores, bounds, asked } = bounded();
     stores.open(HOME);
     bounds.arm(HOME);
 
-    vi.advanceTimersByTime(1_000);
-    expect(asked, 'the read is owed and nothing else would ask it').toEqual([HOME]);
+    vi.advanceTimersByTime(5_000);
+    expect(asked, 'the lost answer was not retried').toEqual([HOME]);
 
-    // A second loss is the same loss: the re-arm means the ask is bounded
-    // too, rather than one retry that leaves the store loading forever.
-    vi.advanceTimersByTime(1_000);
-    expect(asked, 'the re-ask is bounded like the first read').toEqual([HOME, HOME]);
+    vi.advanceTimersByTime(60_000);
+    expect(asked, 'the read was never checked again after its cadence pass').toEqual([HOME, HOME]);
+
+    vi.advanceTimersByTime(60_000);
+    expect(asked, 'the slow beat stopped asking').toEqual([HOME, HOME, HOME]);
+
+    bounds.stop();
   });
 
   it('stops once an answer lands', () => {
