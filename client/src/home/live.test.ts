@@ -287,7 +287,14 @@ describe('the home over a connection', () => {
       update: {
         tasks_changed: {
           key: LEAD,
-          tasks: [{ id: 't1', project_name: 'proj', subject: 'a row', status: 'pending' } as unknown as Task],
+          tasks: [
+            {
+              id: 't1',
+              project_name: 'proj',
+              subject: 'a row',
+              status: 'pending',
+            } as unknown as Task,
+          ],
         },
       },
     };

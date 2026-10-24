@@ -120,9 +120,11 @@ export interface Task {
  * tells an empty-to-empty sweep from a deletion that emptied the project.
  */
 export function tasksChanged(update: SessionUpdate): { project: string; digest: string } | null {
-  const payload = (update as {
-    tasks_changed?: { key?: { project?: unknown }; tasks?: unknown };
-  }).tasks_changed;
+  const payload = (
+    update as {
+      tasks_changed?: { key?: { project?: unknown }; tasks?: unknown };
+    }
+  ).tasks_changed;
   if (payload === undefined) return null;
   const tasks = payload.tasks;
   if (!Array.isArray(tasks)) return null;
