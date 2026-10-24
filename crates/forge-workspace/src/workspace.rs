@@ -3345,7 +3345,9 @@ impl Workspace {
         snapshot: forge_primitives::usage::UsageSnapshot,
     ) {
         use forge_gateway::LoadingState;
-        let healed = self.accounts.loading_state(key) == LoadingState::Bailed;
+        let previous = self.accounts.usage(&key.0);
+        let was_loading = self.accounts.loading_state(key);
+        let healed = was_loading == LoadingState::Bailed;
         // A window at the cap with a reset ahead is proven exhaustion:
         // the gateway cools the account until that reset and every
         // bound session re-selects. Read off the incoming snapshot -
@@ -3367,7 +3369,19 @@ impl Workspace {
                 "Bailed -> Ready on a clean usage poll; the walk serves it for new sessions",
             );
         }
-        self.announce_accounts_changed();
+        // A poll that found the figures already held is no news, and
+        // announcing it costs every home subscriber a full read for an
+        // answer that cannot differ. `fetched_at` alone always moves, so
+        // the comparison is the usage's, not the snapshot's.
+        let moved = was_loading != self.accounts.loading_state(key)
+            || match (&previous, &self.accounts.usage(&key.0)) {
+                (Some(before), Some(after)) => !before.same_usage(after),
+                (None, None) => false,
+                _ => true,
+            };
+        if moved {
+            self.announce_accounts_changed();
+        }
     }
 
     /// Read the cached usage snapshot for an account by display
@@ -20831,6 +20845,40 @@ provider = "anthropic"
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
             .any(|frame| matches!(frame.update, SessionUpdate::AccountsChanged));
         assert!(announced, "a probe that wrote the pool announced nothing");
+    }
+
+    /// A poll that found the pool as it already stood announces nothing.
+    ///
+    /// **`fetched_at` moves on every probe**, so a comparison against the
+    /// whole snapshot makes every poll news: six idle accounts then buy six
+    /// full home reads a minute for figures nobody changed. What is news is
+    /// the pool's loading state or its usage, and a probe that moved either
+    /// still announces.
+    #[tokio::test]
+    async fn a_probe_announces_only_a_pool_that_moved() {
+        fn announced(updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>) -> usize {
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged))
+                .count()
+        }
+
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut updates = workspace.subscribe();
+        while updates.try_recv().is_ok() {}
+
+        let key = AccountKey("Stargate".to_owned());
+        let first = usage_at(10.0);
+        workspace.record_usage_success(&key, first.clone());
+        assert_eq!(announced(&mut updates), 1, "the loading transition is news");
+
+        let mut later = first.clone();
+        later.fetched_at = first.fetched_at + std::time::Duration::from_secs(60);
+        workspace.record_usage_success(&key, later);
+        assert_eq!(announced(&mut updates), 0, "an unchanged pool is no news");
+
+        workspace.record_usage_success(&key, usage_at(11.0));
+        assert_eq!(announced(&mut updates), 1, "a window that moved is news");
     }
 
     /// An org whose primaries cannot serve the project's model and whose
