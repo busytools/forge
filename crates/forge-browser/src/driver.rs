@@ -49,7 +49,6 @@ const DISCOVER_BOUND: Duration = Duration::from_secs(1);
 /// idle on its stdin while the parent never wrote the handshake - and the
 /// start has no bound of its own, so the session's call parked with it, past
 /// even [`CALL_TIMEOUT`]. A start that cannot answer names it instead.
-#[cfg(desktop)]
 pub(super) const START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// What is left of a call's budget - at least enough to send the call, so a
