@@ -347,8 +347,10 @@ describe('what one update asks of the fleet', () => {
    * slot-less update belongs to no seat, so home is the only subscription
    * that could have carried it - but only the ones whose data the snapshot
    * carries are worth a read. Gating a reader on `fleetNews` alone throws
-   * the service status, the fatal error and the account pool away, and the
-   * page keeps what it read at subscribe for the life of the connection.
+   * the service status and the fatal error away, and the page keeps what it
+   * read at subscribe for the life of the connection. The account pool is
+   * the exception on the other side: it is a fleet redraw, so the region's
+   * own table already carries it.
    */
   it('counts a slot-less update as one the home is sent when the snapshot carries it', () => {
     expect(coversHome({ service_status: { state: 'ok' } })).toBe(true);
@@ -720,10 +722,18 @@ describe('the home variant census', () => {
    * are named for the snapshot's history rather than for the keyless arm.
    */
   it('decides every keyless variant, in exactly one home table', () => {
-    const seatless = new Set(serverSlots().seatless.map((name) => snake(name)));
+    const { keyed, seatless: seatlessNames } = serverSlots();
+    const seatless = new Set(seatlessNames.map((name) => snake(name)));
     const keyedByDesign = new Set(['cron_schedules_changed', 'connector_subscriptions_changed']);
 
     expect(seatless.size, 'the seat-less arm was not read out of protocol.rs').toBeGreaterThan(3);
+    // The two arms' own denominator. A conditional `slot()` arm belongs to
+    // neither list, and every variant it names would then reach a subscription
+    // this test never asks about.
+    expect(
+      keyed.length + seatlessNames.length,
+      'a variant is in neither `slot()` arm, so neither this census nor the reader can place it',
+    ).toBe(serverVariantNames().names.length);
 
     const wrong = [...HOME_WAKES.keys(), ...HOME_IGNORES.keys()].filter(
       (name) => !seatless.has(name) && !keyedByDesign.has(name),

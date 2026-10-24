@@ -491,9 +491,13 @@ describe('the home over a connection', () => {
 
     // The read the frame above would have owed is answered before the next
     // one is asked for, so the second assertion is the predicate's and not
-    // the in-flight guard's.
+    // the in-flight guard's. The positive control is the other keyless
+    // family the home carries, not a fleet redraw.
     forge.arrive({ kind: 'snapshot', subject: HOME, data: null });
-    forge.arrive({ kind: 'update', update: 'accounts_changed' });
+    forge.arrive({
+      kind: 'update',
+      update: { service_status: { severity: 'warning', message: 'a notice' } },
+    } as unknown as ServerMessage);
     await settle();
     expect(
       forge.refreshed,
