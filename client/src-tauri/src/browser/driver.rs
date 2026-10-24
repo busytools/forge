@@ -51,6 +51,7 @@ fn left(deadline: tokio::time::Instant) -> Duration {
 /// idle on its stdin while the parent never wrote the handshake - and the
 /// start has no bound of its own, so the session's call parked with it, past
 /// even [`CALL_TIMEOUT`]. A start that cannot answer names it instead.
+#[cfg(desktop)]
 pub(super) const START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The phone's bounds, its own, and the ACCEPT-ONWARD segment must fit the
@@ -117,25 +118,18 @@ pub struct Driver {
 }
 
 impl Driver {
-    /// Start the driver against a browser's CDP endpoint.
+    /// Start the driver against a browser's CDP endpoint, with the
+    /// handshake's budget given.
     ///
     /// The driver always attaches to the browser's own profile - the
     /// profile's, which outlives everything. **Isolation comes from the
     /// BROWSER the endpoint belongs to**: one browser per profile means one
     /// Chromium profile per name, no `--isolated` contexts and no storage
     /// files.
-    pub async fn start(
-        node: &Path,
-        cli: &Path,
-        cdp_endpoint: &str,
-        output_dir: &Path,
-    ) -> Result<Self, String> {
-        Self::start_within(node, cli, cdp_endpoint, output_dir, START_TIMEOUT).await
-    }
-
-    /// [`Self::start`] with the handshake's budget given. **A seam for
-    /// tests**: a test that spawns a real child must not race the production
-    /// wall-clock constant for a reason unrelated to what it checks.
+    ///
+    /// **The budget is a seam for tests**: a test that spawns a real child
+    /// must not race the production wall-clock constant for a reason
+    /// unrelated to what it checks.
     pub async fn start_within(
         node: &Path,
         cli: &Path,

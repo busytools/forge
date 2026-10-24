@@ -72,8 +72,8 @@ just check
 ```
 
 That runs four independent groups concurrently: the fast checks
-(`cargo fmt --check`, the Unicode punctuation gate, and the release
-scripts' tests with the client-dependency bootstrap's, `script-tests`),
+(`cargo fmt --check`, the Unicode punctuation gate, and the scripts' own
+tests, `script-tests`),
 the Rust workspace (`cargo clippy --all-targets --workspace -- -D warnings`
 once per feature set, with and without `--all-features`,
 `cargo nextest run --workspace --all-features`,
@@ -95,7 +95,9 @@ defaults to 4, so a machine with fewer cores sets it lower
 (`FORGE_CHECK_JOBS=2 just check`). Every group runs to its own first
 failure, each failing group's log tail is printed, and the verdict names
 the first failing step in the gate's order, so a concurrent group cannot
-hide one. The full per-step logs stay in `target/check-logs/`.
+hide one. Each run's per-step logs stay in their own
+`target/check-logs/run.XXXXXX/` directory, printed as `logs: ...` before
+the verdict.
 `just check-serial` is the same gate one step at a time, for debugging a
 step or running on a machine that should not carry the groups together.
 
@@ -116,13 +118,15 @@ client's steps are in here too, so the client and the server are not
 separate commands, and a failure on either side lands on the same verdict
 line.
 
-CI runs each build and test job only for the paths it serves, so a
-docs-only pull request does not wait for the Rust or client jobs and a
-Rust-only one does not wait for the client's CEF job. One job,
-`ci-required`, always runs, depends on every other, and fails when a job
-that ran failed or when a job whose paths changed was skipped. It is the
-single check the ruleset requires: a skipped job means its paths did not
-move, never that the gate passed without looking.
+CI runs each build and test job in `ci.yml` only for the paths it serves,
+so a docs-only pull request does not wait for the Rust or client jobs, and
+a Rust-only one does not wait for the client's CEF job unless it touches
+`crates/forge-capture`, which the shell links. One job, `ci-required`,
+always runs, depends on every job in that workflow, and fails when a job
+that ran failed or when a job whose paths changed was skipped. The ruleset
+requires two checks: `ci-required` there, and `build site` from the docs
+workflow, which runs on every pull request. A skipped job means its paths
+did not move, never that the gate passed without looking.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
 workspace's cargo steps do not reach it; in CI its clippy and tests are
@@ -154,8 +158,9 @@ a sentence naming the missing framework rather than a timeout.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
 or `[ERROR] check: <step> failed`. A failing group stops at its own first
-failure and names the steps it did not reach; the other groups still run,
-and every failing group's log tail is printed before the verdict. That
+failure; the other groups still run; every failing group's log tail is
+printed before the verdict; and the verdict names the first failing step
+and the later steps in that group that did not run. That
 line is deliberately the last one written: piping the output through
 `tail` reports tail's exit status rather than the recipe's, so a red gate
 reads green to whoever ran it unless the result travels in the text.

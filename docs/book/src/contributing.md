@@ -12,8 +12,8 @@ just check
 just check-feature-configs
 ```
 
-`cargo fmt --check`, the Unicode punctuation gate, the release scripts'
-tests and the client-dependency bootstrap's, the shell crate's rustfmt
+`cargo fmt --check`, the Unicode punctuation gate, the scripts' own tests,
+the shell crate's rustfmt
 check (`client-tauri-fmt`), the client's
 Prettier check, ESLint, `svelte-check` and
 `tsc --noEmit` and then its vitest run, the shell crate's clippy and tests
@@ -33,7 +33,9 @@ concurrently - the fast checks, the Rust workspace, the client web steps
 and the shell crate's steps - capped by `FORGE_CHECK_JOBS` (default 4; set
 it lower on a smaller machine). Every group runs to its own first failure,
 a failing group's log tail is printed, and the verdict names the first
-failing step; the per-step logs stay in `target/check-logs/`.
+failing step; each run's per-step logs stay in their own
+`target/check-logs/run.XXXXXX/` directory, printed as `logs: ...` before
+the verdict.
 `just check-serial` is the same gate one step at a time, for debugging.
 When `sccache` is on `PATH`, the recipes export `RUSTC_WRAPPER=sccache` so
 compiled objects are shared across worktrees and branches; without it they
@@ -45,10 +47,11 @@ clippy feature sets and nextest, plus the client's steps or the shell
 crate's clippy and tests when `client` or `client-tauri` is named. It does
 not replace the gate; the final head runs the full two commands.
 
-CI runs each build and test job only for the paths it serves, and one job,
-`ci-required`, always runs, depends on every other, and fails when a job
-that ran failed or when a job whose paths changed was skipped. That
-aggregate is the single check the ruleset requires.
+CI runs each build and test job in `ci.yml` only for the paths it serves,
+and one job, `ci-required`, always runs, depends on every job in that
+workflow, and fails when a job that ran failed or when a job whose paths
+changed was skipped. The ruleset requires two checks: that aggregate and
+`build site`, the docs workflow's build, which runs on every pull request.
 
 A fresh worktree has no `client/node_modules`; each client step installs it
 first when it is missing or older than `package-lock.json`, so the first
@@ -71,11 +74,12 @@ compiles the Kotlin half and runs its unit tests, because nothing else
 reaches that code; it needs the Android SDK and a JDK.
 
 The last line it prints is its verdict, `[OK] check: ...` or
-`[ERROR] check: <step> failed`, the latter with a `; not run: <later
-steps>` clause when the step that failed was not the last one. The run
-stops at the first failing step. Read that line rather than a pipeline's
-exit status: piping `just check` through `tail` reports tail's status,
-not the recipe's.
+`[ERROR] check: <step> failed`. A failing group stops at its own first
+failure; the other groups still run; every failing group's log tail is
+printed before the verdict; and the verdict names the first failing step
+and the later steps in that group that did not run. Read that line rather
+than a pipeline's exit status: piping `just check` through `tail` reports
+tail's status, not the recipe's.
 
 ## The book's own gate
 

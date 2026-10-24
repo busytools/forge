@@ -24,16 +24,18 @@ fmt-check:
 unicode-punct-check:
     ./scripts/check_no_unicode_punctuation.sh
 
-# The release scripts' own tests. `update_manifest.py` writes the one file
-# every installed client reads for updates, and nothing else in the gate
-# exercises it: a hash taken from the wrong archive, or a block dropped
-# outright, would otherwise ship silently. Stdlib python, like the Unicode
+# The scripts' own tests. `update_manifest.py` writes the one file every
+# installed client reads for updates, and nothing else in the gate exercises
+# it: a hash taken from the wrong archive, or a block dropped outright, would
+# otherwise ship silently. `check_groups.sh` decides what a red gate says and
+# whether a dead group counts as a pass. Stdlib python, like the Unicode
 # gate's own script.
 #
-# Run the release scripts' tests and the client-dependency bootstrap's.
+# Run the scripts' own tests.
 script-tests:
     python3 scripts/test_update_manifest.py
     python3 scripts/test_client_deps.py
+    python3 scripts/test_check_groups.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -987,14 +989,18 @@ check_groups := "fast|fmt-check unicode-punct-check script-tests;rust|clippy tes
 #
 # A script rather than a recipe with these as dependencies, because a
 # failing dependency aborts just before any recipe body runs, and the
-# verdict is printed by the body.
+# verdict is printed by the body. The orchestrator is
+# `scripts/check_groups.sh`, so its parity guard, verdict and dead-worker
+# handling are covered by `script-tests`.
 #
 # **Parallel groups cannot turn a red gate green.** Every group runs to its
 # own first failure while the others keep going, each failing group's log
 # tail is printed, and the verdict names the first failing step in
 # `check_steps` order and the steps its group did not reach. The exit status
-# is the failing step's. A step list and group list that disagree are a
-# refusal before anything runs: a step in no group would never run at all.
+# is the failing step's. A group that dies before writing its report is a
+# failure, not a pass: the report file exists before its worker starts. A
+# step list and group list that disagree are a refusal before anything
+# runs: a step in no group would never run at all.
 #
 # The verdict line is the point. A caller piping this through `tail -N`
 # reads the pipe's exit status, not this recipe's, so a red gate can read
@@ -1005,7 +1011,9 @@ check_groups := "fast|fmt-check unicode-punct-check script-tests;rust|clippy tes
 # status: bash's EXIT trap sees 0 for a signal death, where the process's
 # real status is 128 plus the signal.
 #
-# Every step's output lands in `target/check-logs/<step>.log`.
+# Every run gets its own `target/check-logs/run.XXXXXX/` directory, printed
+# as `logs: ...` before the verdict, so two runs in one checkout never
+# delete each other's reports.
 #
 # The steps are re-invoked through just's own executable, not a bare
 # `just`, which a caller who invoked it by absolute path does not have on
@@ -1017,145 +1025,11 @@ check:
     #!/usr/bin/env bash
     set -uo pipefail
 
-    read -ra steps <<< "{{check_steps}}"
-    IFS=';' read -ra specs <<< "{{check_groups}}"
-
-    group_names=()
-    group_steps=()
-    grouped=" "
-    for spec in "${specs[@]}"; do
-        group_names+=("${spec%%|*}")
-        group_steps+=("${spec#*|}")
-        for step in ${spec#*|}; do
-            grouped="$grouped$step "
-        done
-    done
-
-    expected="$(printf '%s\n' "${steps[@]}" | sort)"
-    actual="$(printf '%s\n' $grouped | sort)"
-    if [ "$expected" != "$actual" ]; then
-        echo "[ERROR] check: check_steps and check_groups disagree" >&2
-        exit 2
-    fi
-
-    max="${FORGE_CHECK_JOBS:-4}"
-    case "$max" in
-        ''|*[!0-9]*)
-            echo "[ERROR] check: FORGE_CHECK_JOBS must be a positive integer" >&2
-            exit 2
-            ;;
-    esac
-    if [ "$max" -lt 1 ]; then
-        echo "[ERROR] check: FORGE_CHECK_JOBS must be a positive integer" >&2
-        exit 2
-    fi
-
-    logdir="target/check-logs"
-    if ! rm -rf "$logdir" || ! mkdir -p "$logdir"; then
-        echo "[ERROR] check: cannot write $logdir" >&2
-        exit 2
-    fi
-
-    verdict=""
-
-    on_exit() {
-        if [ -z "$verdict" ]; then
-            echo "[ERROR] check: no verdict, the run ended early"
-        fi
-    }
-    trap on_exit EXIT
-
-    run_group() {
-        trap - EXIT
-        local name="$1" steps="$2" step status failed=""
-        for step in $steps; do
-            echo "[..] check: $step"
-            status=0
-            "{{just_executable()}}" --justfile "{{justfile()}}" "$step" >"$logdir/$step.log" 2>&1 || status=$?
-            if [ "$status" -ne 0 ]; then
-                failed="$step"
-                printf '%s' "$status" > "$logdir/$name.status"
-                break
-            fi
-        done
-        printf '%s' "$failed" > "$logdir/$name.failed"
-    }
-
-    pids=()
-    for i in "${!group_names[@]}"; do
-        while [ "${#pids[@]}" -ge "$max" ]; do
-            wait "${pids[0]}" || true
-            pids=("${pids[@]:1}")
-        done
-        run_group "${group_names[$i]}" "${group_steps[$i]}" &
-        pids+=("$!")
-    done
-    wait
-
-    failed_steps=" "
-    failed_any=0
-    for i in "${!group_names[@]}"; do
-        failed="$(cat "$logdir/${group_names[$i]}.failed" 2>/dev/null || true)"
-        [ -n "$failed" ] || continue
-        failed_any=1
-        failed_steps="$failed_steps$failed "
-    done
-
-    if [ "$failed_any" -eq 0 ]; then
-        verdict="[OK] check: all green (${steps[*]})"
-        echo "$verdict"
-        exit 0
-    fi
-
-    for i in "${!group_names[@]}"; do
-        name="${group_names[$i]}"
-        failed="$(cat "$logdir/$name.failed" 2>/dev/null || true)"
-        [ -n "$failed" ] || continue
-        echo "[ERROR] check: $name group failed at $failed"
-        echo "---- $failed (last 25 lines; full log: $logdir/$failed.log)"
-        tail -n 25 "$logdir/$failed.log"
-        echo "----"
-    done
-
-    first_failed=""
-    for step in "${steps[@]}"; do
-        case "$failed_steps" in
-            *" $step "*)
-                first_failed="$step"
-                break
-                ;;
-        esac
-    done
-
-    first_group=""
-    for i in "${!group_names[@]}"; do
-        failed="$(cat "$logdir/${group_names[$i]}.failed" 2>/dev/null || true)"
-        if [ "$failed" = "$first_failed" ]; then
-            first_group="$i"
-            break
-        fi
-    done
-
-    later=""
-    seen=0
-    for step in ${group_steps[$first_group]}; do
-        if [ "$seen" -eq 1 ]; then
-            later="$later $step"
-        fi
-        if [ "$step" = "$first_failed" ]; then
-            seen=1
-        fi
-    done
-
-    status="$(cat "$logdir/${group_names[$first_group]}.status" 2>/dev/null || true)"
-    later="${later# }"
-    if [ -n "$later" ]; then
-        verdict="[ERROR] check: $first_failed failed; not run: $later"
-    else
-        verdict="[ERROR] check: $first_failed failed"
-    fi
-    echo "$verdict"
-    exit "${status:-1}"
+    root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
+    export CHECK_LOG_ROOT="$root/target/check-logs"
+    exec "$root/scripts/check_groups.sh" \
+        "{{just_executable()}}" "{{justfile()}}" \
+        "{{check_steps}}" "{{check_groups}}"
 
 # The same gate one step at a time, in `check_steps` order. `check` runs the
 # four groups concurrently; this is the recipe for debugging a step or
@@ -1217,10 +1091,14 @@ check-serial:
 #   just check-delta client
 #   just check-delta client-tauri
 #
+# Ends on `[OK] check-delta: ...` or `[ERROR] check-delta: <step> failed` as
+# its last line.
+#
 # Delta gate for one review round; the final head runs the full `just check`.
+[no-exit-message]
 check-delta *packages:
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -uo pipefail
 
     # just does not hand a shebang recipe's arguments to the script, so the
     # variadic parameter is substituted here instead of read from `$@`.
@@ -1230,6 +1108,35 @@ check-delta *packages:
         exit 1
     fi
 
+    verdict=""
+
+    on_exit() {
+        if [ -z "$verdict" ]; then
+            echo "[ERROR] check-delta: no verdict, the run ended early"
+        fi
+    }
+    trap on_exit EXIT
+
+    run_just() {
+        "{{just_executable()}}" --justfile "{{justfile()}}" "$@"
+    }
+
+    # One failing step stops the run and its name lands on the last line, so
+    # a caller piping this through `tail` reads the verdict, not tail's
+    # status.
+    run_step() {
+        local label="$1"
+        shift
+        echo "[..] check-delta: $label"
+        local status=0
+        "$@" || status=$?
+        if [ "$status" -ne 0 ]; then
+            verdict="[ERROR] check-delta: $label failed"
+            echo "$verdict"
+            exit "$status"
+        fi
+    }
+
     for package in "${packages[@]}"; do
         case "$package" in
             client) echo "[..] check-delta: client/ (format, lint, typecheck, test)" ;;
@@ -1238,39 +1145,38 @@ check-delta *packages:
         esac
     done
 
-    run_just() {
-        "{{just_executable()}}" --justfile "{{justfile()}}" "$@"
-    }
-
     for package in "${packages[@]}"; do
         case "$package" in
             client) ;;
-            client-tauri) run_just client-tauri-fmt ;;
-            *) cargo fmt -p "$package" --check ;;
+            client-tauri) run_step "client-tauri-fmt" run_just client-tauri-fmt ;;
+            *) run_step "fmt $package" cargo fmt -p "$package" --check ;;
         esac
     done
 
-    run_just unicode-punct-check
+    run_step "unicode-punct-check" run_just unicode-punct-check
 
     for package in "${packages[@]}"; do
         case "$package" in
             client)
-                run_just client-format
-                run_just client-lint
-                run_just client-typecheck
-                run_just client-test
+                run_step "client-format" run_just client-format
+                run_step "client-lint" run_just client-lint
+                run_step "client-typecheck" run_just client-typecheck
+                run_step "client-test" run_just client-test
                 ;;
             client-tauri)
-                run_just client-tauri-clippy
-                run_just client-tauri-test
+                run_step "client-tauri-clippy" run_just client-tauri-clippy
+                run_step "client-tauri-test" run_just client-tauri-test
                 ;;
             *)
-                RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets -- -D warnings
-                RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets --all-features -- -D warnings
-                RUSTFLAGS="-D warnings" cargo nextest run -p "$package" --all-features
+                run_step "clippy $package" env RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets -- -D warnings
+                run_step "clippy $package (all features)" env RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets --all-features -- -D warnings
+                run_step "nextest $package" env RUSTFLAGS="-D warnings" cargo nextest run -p "$package" --all-features
                 ;;
         esac
     done
+
+    verdict="[OK] check-delta: all green (${packages[*]})"
+    echo "$verdict"
 
 # Deliberately not a bare `gh run watch`. Piping it masks the exit code
 # AND truncates the log, losing both signals to one pipe - the failure

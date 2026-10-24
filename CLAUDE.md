@@ -396,8 +396,13 @@ inspected.
    independent groups run concurrently, capped by `FORGE_CHECK_JOBS`
    (default 4); `just check-serial` runs the same steps one at a time,
    for debugging. When `sccache` is on `PATH` the recipes export
-   `RUSTC_WRAPPER=sccache`; without it they build normally. It must
-   be green before a PR, and so must `just check-feature-configs`, which
+   `RUSTC_WRAPPER=sccache`; without it they build normally.
+   `just check-delta <crate>...` is the review-round slice - fmt, the
+   Unicode gate, both clippy feature sets and nextest for the named
+   crates, plus the client's steps or the shell crate's when named - and
+   the final head still runs the full `just check` and
+   `just check-feature-configs`. `just check` must be green before a PR,
+   and so must `just check-feature-configs`, which
    compiles the configuration `install.sh` builds: `just check` runs
    with `--all-features`, so it turns every feature on regardless and
    never exercises which configuration enables what. Read that line, not
@@ -738,9 +743,12 @@ inspected.
     `client-tauri-fmt`, `client-tauri-clippy`, `client-tauri-test` and
     `client-android-warnings` reach it, and the Unicode punctuation gate
     and the client's Prettier step reach it too. **CI runs each build and
-    test job only when the paths it serves change**, and its single
-    required check is the `ci-required` aggregate, which fails when a job
-    whose paths changed was skipped.
+    test job in `ci.yml` only when the paths it serves change**, and the
+    ruleset requires two checks: the `ci-required` aggregate, which fails
+    when a job whose paths changed was skipped, and the docs workflow's
+    `build site`, which runs on every pull request. `just check-delta
+    <crate>...` is the review-round slice; the final head still runs the
+    full `just check` and `just check-feature-configs`.
     `just client-tauri-check` builds it in the shipping configuration
     and `just client-tauri-bundle` adds the bundles. **Denied as errors**, the
     analogue of the denied Rust lints: `any`, non-null assertion,

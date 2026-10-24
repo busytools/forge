@@ -182,12 +182,12 @@ impl StackPaths {
 #[cfg(desktop)]
 const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(75);
 
-/// The driver handshake budget under test: a test that spawns a real child
-/// must not race the production wall-clock constant for a reason unrelated
-/// to what it checks.
+/// The driver handshake budget under test: four times the production bound,
+/// because a loaded machine's scheduling of the child is not what any of
+/// these tests checks.
 #[cfg(all(desktop, any(test, feature = "testing")))]
 fn driver_handshake() -> std::time::Duration {
-    std::time::Duration::from_secs(60)
+    driver::START_TIMEOUT * 4
 }
 
 #[cfg(all(desktop, not(any(test, feature = "testing"))))]

@@ -30,12 +30,16 @@ jobs:
   # each job is conditional on its own group, and `ci-required` always runs,
   # depends on every job, and fails when a job that ran failed or when a job
   # whose paths changed was skipped. A skipped job therefore means "nothing it
-  # covers moved", never "the gate passed without looking". Only the Unicode
-  # gate and the aggregate itself are unfiltered: the gate scans every file
-  # type, and the aggregate is what reports when everything else skipped.
+  # covers moved", never "the gate passed without looking". Only the `changes`
+  # job, the Unicode gate and the aggregate itself are unfiltered: the first
+  # names the paths, the gate scans every file type, and the aggregate reports
+  # when everything else skipped.
   #
   # `gate` is the fail-safe group: a change to the gate's own definition
   # (this file, the composite action, the justfile) runs everything.
+  #
+  # **A new job is invisible to the aggregate unless it is also listed in
+  # `ci-required`'s `needs`**: that check reads only what it depends on.
   changes:
     name: changed paths
     runs-on: ubuntu-latest
@@ -69,12 +73,17 @@ jobs:
               - 'rustfmt.toml'
               - 'clippy.toml'
               - '.config/nextest.toml'
+              - 'scripts/install.sh'
             client:
               - 'client/**'
               - '!client/src-tauri/**'
             client_tauri:
               - 'client/src-tauri/**'
               - 'crates/forge-capture/**'
+              # The shell's clippy reads the repo-root config, and
+              # forge-capture inherits its workspace fields from here.
+              - 'clippy.toml'
+              - 'Cargo.toml'
               - 'rust-toolchain.toml'
             scripts:
               - 'scripts/**'
@@ -341,10 +350,11 @@ jobs:
       - run: just client-tauri-clippy
       - run: just client-tauri-test
 
-  # **The gate's single required check.** GitHub treats a skipped job as a
-  # passing required check, which is the hole a path filter opens: a typo in
-  # a filter, a renamed job or a pattern that stopped matching would report
-  # green having run nothing. This job always runs, reads every job's result
+  # **This workflow's required check**, beside the docs workflow's
+  # `build site`. GitHub treats a skipped job as a passing required check,
+  # which is the hole a path filter opens: a typo in a filter, a renamed job
+  # or a pattern that stopped matching would report green having run nothing.
+  # This job always runs, reads every job's result
   # and the paths its group covers, and fails unless each job either passed
   # or was skipped with its paths unchanged. That is what makes a skip a
   # statement about paths rather than about the job.
