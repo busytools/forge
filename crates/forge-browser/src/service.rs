@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::{
     BrowserAudio, BrowserDownload, BrowserFileAsk, BrowserFrame, BrowserInputEvent,
-    BrowserNavState, BrowserPart, BrowserProfileRow, BrowserUpload, BrowserViewState,
-    MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES,
+    BrowserNavState, BrowserPart, BrowserUpload, BrowserViewState, MAX_UPLOAD_BYTES,
+    MAX_UPLOAD_FILES, ProfileKey,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, watch};
@@ -29,7 +29,7 @@ use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, watch};
 use crate::driver::{self, Driver};
 use crate::idle::{self, IdleWarn, Step, Touch, Verdict};
 use crate::input;
-use crate::profiles::{self, SHARED_PROFILE, Store};
+use crate::profiles::Store;
 use crate::spawn::{self, ActiveHost};
 use crate::window::Cdp;
 use crate::{channel, engine, host, osr, veto};
@@ -38,9 +38,6 @@ use crate::{channel, engine, host, osr, veto};
 struct Candidate {
     /// The profile's key, which names it in the calls that follow.
     key: String,
-    /// Whether it is a named profile rather than the shared browser.
-    named: bool,
-    owner: SessionSlot,
     touch: Touch,
     /// Whether a viewer is attached: **a viewer is a use**.
     viewed: bool,
@@ -64,6 +61,9 @@ pub struct BrowserService {
     /// The vendored node and Playwright package the driver runs from.
     stack: PathBuf,
     store: Store,
+    /// The config's profile names, by org and by (org, project). Empty until
+    /// the boot installs them; resolution then falls back to `default`.
+    profiles_config: Mutex<ProfilesConfig>,
     profiles: AsyncMutex<HashMap<String, Arc<Profile>>>,
     /// One gate per profile key, held across a name's open and its teardown.
     ///
@@ -96,6 +96,13 @@ struct Idle {
     warn: Arc<dyn IdleWarn>,
 }
 
+/// The `browser_profile` names the config resolved, by org and by project.
+#[derive(Default)]
+struct ProfilesConfig {
+    orgs: HashMap<String, String>,
+    projects: HashMap<(String, String), String>,
+}
+
 impl BrowserService {
     /// A service at `root`, with the vendored driver stack read from `stack`.
     pub fn at(root: PathBuf, stack: PathBuf) -> Self {
@@ -103,6 +110,7 @@ impl BrowserService {
             store: Store::at(&root),
             root,
             stack,
+            profiles_config: Mutex::new(ProfilesConfig::default()),
             profiles: AsyncMutex::new(HashMap::new()),
             gates: Mutex::new(HashMap::new()),
             ids: AtomicU16::new(1),
@@ -148,64 +156,57 @@ impl BrowserService {
         });
     }
 
-    /// The service the server runs: profiles under forge's app-support tree,
-    /// the vendored stack installed beside them, and the client's own
-    /// profiles taken over on the first boot that finds none.
+    /// The service the server runs: profiles under forge's app-support tree
+    /// and the vendored stack installed beside them.
     pub fn installed() -> Result<Self, String> {
         let root = crate::host_bundle::app_support()?.join("browser");
         let store = Store::at(&root);
-        match store.migrate(Store::client_source().as_deref()) {
-            Ok(migrated) if migrated.ran => tracing::info!(
-                "the client's browser profiles are the server's (event_name \
-                 browser_profiles_migrated, copied {}, kept {})",
-                migrated.copied,
-                migrated.kept,
+        match store.delete_legacy() {
+            Ok(legacy) if legacy.ran => tracing::info!(
+                "the legacy browser profiles are deleted (event_name \
+                 browser_profiles_legacy_deleted, removed {})",
+                legacy.removed,
             ),
             Ok(_) => {}
-            // **A copy that could not finish is not a boot failure.** The
-            // server runs; the logins it could not take over are named, and
-            // the marker stays absent so the next boot tries the rest.
             Err(why) => tracing::warn!(
-                "the client's browser profiles could not be copied (event_name \
-                 browser_profiles_migration_failed): {why}"
+                "the legacy browser profiles could not be deleted (event_name \
+                 browser_profiles_legacy_delete_failed): {why}"
             ),
         }
         Ok(Self::at(root.clone(), root.join("stack")))
     }
 
-    /// Where a profile's cache root sits: `<root>/profiles/<name>/cef`, and
-    /// `<root>/shared/cef` for the browser every seat drives.
-    pub fn profile_dir(&self, name: &str) -> PathBuf {
-        if name == SHARED_PROFILE {
-            self.store.shared().join("cef")
-        } else {
-            self.store.named(name).join("cef")
-        }
+    /// Set the config's profile names, by org and by (org, project).
+    pub fn configure_profiles(
+        &self,
+        orgs: HashMap<String, String>,
+        projects: HashMap<(String, String), String>,
+    ) {
+        *self.profiles_config.lock().unwrap_or_else(PoisonError::into_inner) =
+            ProfilesConfig { orgs, projects };
     }
 
-    /// **An omitted profile is the asking seat's own, never the shared
-    /// browser.** The shared browser's tabs are whatever the person or
-    /// another seat left there, so it is reachable only by naming it
-    /// `@shared`; the profile charset keeps `@` out of every real name.
-    fn target(seat: &SessionSlot, name: Option<&str>) -> String {
-        match name {
-            Some(SHARED_PROFILE) => SHARED_PROFILE.to_owned(),
-            Some(name) => name.to_owned(),
-            None => profiles::auto_name(seat),
-        }
+    /// The profile a seat drives: the project's override, else its org's,
+    /// else `<org>/default`. **A bad key is a refusal, never a fallback**:
+    /// the config validates names at load, so this can only fail for a seat
+    /// naming an org that is not a path segment, and that call should say so.
+    pub fn profile_for(&self, seat: &SessionSlot) -> Result<ProfileKey, String> {
+        let config = self.profiles_config.lock().unwrap_or_else(PoisonError::into_inner);
+        let name = config
+            .projects
+            .get(&(seat.org().to_owned(), seat.project().to_owned()))
+            .or_else(|| config.orgs.get(seat.org()))
+            .map_or("default", String::as_str);
+        ProfileKey::of(seat.org(), name)
     }
 
-    /// The key a call, an attach or a raise drives, with a name that cannot
-    /// be a profile refused by the rule rather than reaching for a directory
-    /// it names.
-    fn checked_target(seat: &SessionSlot, name: Option<&str>) -> Result<String, String> {
-        let key = Self::target(seat, name);
-        if key != SHARED_PROFILE
-            && let Some(refusal) = profiles::name_refusal(&key)
-        {
-            return Err(refusal);
-        }
-        Ok(key)
+    fn target(&self, seat: &SessionSlot) -> Result<ProfileKey, String> {
+        self.profile_for(seat)
+    }
+
+    /// Where a profile's cache root sits: `<root>/profiles/<org>/<name>/cef`.
+    pub fn profile_dir(&self, key: &ProfileKey) -> PathBuf {
+        self.store.org_profile(key).join("cef")
     }
 
     /// The gate for one profile key, held across its open and its teardown.
@@ -218,71 +219,43 @@ impl BrowserService {
             .clone()
     }
 
-    /// Open a profile, or answer the one already open. **The name's gate is
-    /// held across the entry and the launch**, so a same-name close waits
-    /// for the launch rather than deleting the directory under it.
-    pub async fn open(
-        &self,
-        seat: &SessionSlot,
-        name: Option<&str>,
-    ) -> Result<Arc<Profile>, String> {
-        let key = Self::checked_target(seat, name)?;
-        let gate = self.gate(&key);
+    /// Open the asking seat's profile, or answer the one already open. **The
+    /// profile's gate is held across the entry and the launch**, so a close
+    /// waits for the launch rather than tearing the directory down under it.
+    pub async fn open(&self, seat: &SessionSlot) -> Result<Arc<Profile>, String> {
+        let key = self.target(seat)?;
+        let gate = self.gate(key.as_str());
         let _held = gate.lock().await;
-        let profile = self.entry_locked(seat, name).await?;
+        let profile = self.entry_locked(seat).await?;
         profile.ensure(&self.root, self.stack()).await?;
         Ok(profile)
     }
 
     /// The profile's map entry, created on first use and left alone after.
-    ///
-    /// **A named profile carries its owner**, read from the record beside its
-    /// directory - written on the first open and restored after a restart -
-    /// and another seat naming it is refused here, before any browser starts.
     #[cfg(test)]
-    async fn entry(&self, seat: &SessionSlot, name: Option<&str>) -> Result<Arc<Profile>, String> {
-        let key = Self::checked_target(seat, name)?;
-        let gate = self.gate(&key);
+    async fn entry(&self, seat: &SessionSlot) -> Result<Arc<Profile>, String> {
+        let key = self.target(seat)?;
+        let gate = self.gate(key.as_str());
         let _held = gate.lock().await;
-        self.entry_locked(seat, name).await
+        self.entry_locked(seat).await
     }
 
     /// The entry itself, with the key's gate already held.
-    async fn entry_locked(
-        &self,
-        seat: &SessionSlot,
-        name: Option<&str>,
-    ) -> Result<Arc<Profile>, String> {
-        let key = Self::checked_target(seat, name)?;
+    async fn entry_locked(&self, seat: &SessionSlot) -> Result<Arc<Profile>, String> {
+        let key = self.target(seat)?;
         let dir = self.profile_dir(&key);
         let mut profiles = self.profiles.lock().await;
-        if let Some(profile) = profiles.get(&key) {
-            if key != SHARED_PROFILE && &profile.owner != seat {
-                return Err(owner_refusal(&key, &profile.owner));
-            }
+        if let Some(profile) = profiles.get(key.as_str()) {
             // **Every call and every raise is a use**: the idle clock starts
             // again here, and the warning that stood over the streak goes
             // with it.
             profile.touch.lock().unwrap_or_else(PoisonError::into_inner).touched();
             return Ok(Arc::clone(profile));
         }
-        let owner = if key == SHARED_PROFILE {
-            seat.clone()
-        } else {
-            match profiles::owner_of(&self.store.named(&key))? {
-                Some(owner) if &owner != seat => return Err(owner_refusal(&key, &owner)),
-                Some(owner) => owner,
-                None => {
-                    profiles::record_owner(&self.store.named(&key), seat)?;
-                    seat.clone()
-                }
-            }
-        };
         std::fs::create_dir_all(&dir)
             .map_err(|why| format!("the profile's directory cannot be made: {why}"))?;
         let profile = Arc::new(Profile {
-            key: key.clone(),
-            owner,
+            key: key.as_str().to_owned(),
             id: self.ids.fetch_add(1, Ordering::Relaxed),
             dir,
             frames: watch::channel(None).0,
@@ -312,17 +285,15 @@ impl BrowserService {
             up: AtomicBool::new(false),
             busy: AtomicU32::new(0),
         });
-        profiles.insert(key, Arc::clone(&profile));
+        profiles.insert(key.as_str().to_owned(), Arc::clone(&profile));
         Ok(profile)
     }
 
-    /// One idle pass: every open profile's clock, and the warnings the
+    /// One idle pass: every open profile's clock, and the questions the
     /// workspace answers.
     ///
     /// **A viewer attached is a use**, so a surface the person is looking at
-    /// is never warned or closed. **The shared browser is never announced**:
-    /// its warn step arms the grace silently, and the close's own question is
-    /// its only crossing.
+    /// is never asked about or closed.
     async fn idle_pass(&self) {
         let Some(settings) = self.idle_settings() else { return };
         let idle = Duration::from_secs(settings.minutes.saturating_mul(60));
@@ -333,8 +304,6 @@ impl BrowserService {
                 .iter()
                 .map(|(key, profile)| Candidate {
                     key: key.clone(),
-                    named: key != SHARED_PROFILE,
-                    owner: profile.owner.clone(),
                     touch: *profile.touch.lock().unwrap_or_else(PoisonError::into_inner),
                     viewed: !profile
                         .viewers
@@ -356,16 +325,10 @@ impl BrowserService {
                 grace,
             ) {
                 Step::Nothing => {}
-                Step::Warn if candidate.named => {
+                Step::Warn => {
                     let verdict = settings
                         .warn
-                        .warn(
-                            Some(&candidate.owner),
-                            &candidate.key,
-                            settings.minutes,
-                            settings.grace,
-                            false,
-                        )
+                        .warn(None, &candidate.key, settings.minutes, settings.grace, false)
                         .await;
                     match verdict {
                         // **A warning that never went is never armed**: a
@@ -378,14 +341,10 @@ impl BrowserService {
                         Verdict::Clear | Verdict::Unanswered => {}
                     }
                 }
-                // The shared browser's warn is an arm in silence.
-                Step::Warn => self.note_warned(&candidate.key),
                 Step::Close => {
-                    let name = candidate.key.as_str();
-                    let seat = candidate.named.then_some(&candidate.owner);
                     match settings
                         .warn
-                        .warn(seat, name, settings.minutes, settings.grace, true)
+                        .warn(None, &candidate.key, settings.minutes, settings.grace, true)
                         .await
                     {
                         Verdict::Clear => self.close_idle(&candidate.key, false).await,
@@ -485,11 +444,18 @@ impl BrowserService {
         // **Serialised with launches**: the boot reap runs detached, and an
         // attach that starts a host while it walks must not be handed to it.
         let _launch = self.launch.lock().await;
-        let mut profiles = vec![self.store.shared().join("cef")];
-        if let Ok(entries) = std::fs::read_dir(self.store.profiles()) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    profiles.push(entry.path().join("cef"));
+        let mut profiles = Vec::new();
+        if let Ok(orgs) = std::fs::read_dir(self.store.profiles()) {
+            for org in orgs.flatten() {
+                if !org.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    continue;
+                }
+                if let Ok(entries) = std::fs::read_dir(org.path()) {
+                    for entry in entries.flatten() {
+                        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                            profiles.push(entry.path().join("cef"));
+                        }
+                    }
                 }
             }
         }
@@ -498,52 +464,10 @@ impl BrowserService {
         }
     }
 
-    /// **A seat that is down takes its named profiles with it.** Called with
-    /// the seats that remain: an owned profile whose seat is not among them
-    /// is ended and its directory removed, and the shared browser is never
-    /// touched. An ownerless directory is a leftover and goes the same way.
-    pub async fn sweep_seats(&self, seats: &[SessionSlot]) {
-        let names = match std::fs::read_dir(self.store.profiles()) {
-            Ok(entries) => entries
-                .filter_map(Result::ok)
-                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            Err(_) => return,
-        };
-        for name in names {
-            let dir = self.store.named(&name);
-            let owner = match profiles::owner_of(&dir) {
-                Ok(None) => None,
-                Ok(Some(owner)) => Some(owner),
-                // A record that cannot be read is not this sweep's: removing
-                // a profile because its owner file is corrupt takes logins
-                // nobody asked it to take.
-                Err(_) => continue,
-            };
-            if owner.as_ref().is_some_and(|owner| seats.contains(owner)) {
-                continue;
-            }
-            // **The key is the directory's own name, with no omitted-profile
-            // default**: a sweep acts on a profile that exists, never on the
-            // shared browser.
-            let key = name.clone();
-            if let Some(profile) = self.profiles.lock().await.remove(&key) {
-                profile.end().await;
-            }
-            if let Err(why) = std::fs::remove_dir_all(&dir) {
-                tracing::warn!(
-                    "the '{name}' profile could not be removed (event_name \
-                     browser_profile_sweep_failed): {why}"
-                );
-            } else {
-                tracing::debug!(
-                    "a down seat's browsers went with it (event_name browser_profile_swept, \
-                     profile {name})"
-                );
-            }
-        }
-    }
+    /// A no-op until the tab registry exists: a seat's tabs, not its profile,
+    /// are what a sweep will close.
+    #[expect(clippy::unused_async, reason = "the port awaits it, and the tab sweep will too")]
+    pub async fn sweep_seats(&self, _seats: &[SessionSlot]) {}
 
     /// Run one browser tool through the profile the call names.
     pub async fn call(
@@ -552,12 +476,11 @@ impl BrowserService {
         tool: &str,
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
-        let (name, args) = take_profile(args)?;
+        let (_, args) = take_profile(args)?;
         // The fleet's own doors: these never reach a driver.
         match tool {
-            "browser_profile_delete" => return self.delete(seat, args).await,
-            "browser_record_start" => return self.record_start(seat, name.as_deref()).await,
-            "browser_record_stop" => return self.record_stop(seat, name.as_deref()).await,
+            "browser_record_start" => return self.record_start(seat).await,
+            "browser_record_stop" => return self.record_stop(seat).await,
             _ => {}
         }
         // **An agent's upload is bounded before a browser is opened for it.**
@@ -567,7 +490,7 @@ impl BrowserService {
         // the person's own answer carries.
         let upload =
             if tool == "browser_file_upload" { Some(upload_request(&args)?) } else { None };
-        let profile = self.open(seat, name.as_deref()).await?;
+        let profile = self.open(seat).await?;
         // **Every `browser_file_upload` is a chooser decision**, including
         // its cancel form with no paths: both answer the MCP's captured
         // chooser, so both take the lock, the refusal and the ledger. The
@@ -836,13 +759,8 @@ impl BrowserService {
     ///
     /// Attaching also asks the host for a full-quality frame, so a viewer
     /// joining mid-run draws a crisp page first.
-    pub async fn attach(
-        &self,
-        viewer: u64,
-        seat: &SessionSlot,
-        name: Option<&str>,
-    ) -> Result<Attachment, String> {
-        let profile = self.open(seat, name).await?;
+    pub async fn attach(&self, viewer: u64, seat: &SessionSlot) -> Result<Attachment, String> {
+        let profile = self.open(seat).await?;
         let frames = profile.frames.subscribe();
         let view = profile.view.subscribe();
         let nav = profile.nav.subscribe();
@@ -930,95 +848,22 @@ impl BrowserService {
         }
     }
 
-    /// End a profile's browser and forget it. The next call relaunches it
-    /// over the same directory, so a close ends the run and never the logins.
-    ///
-    /// **A named profile is its owner's to close**: the seat is checked
-    /// against the open entry or, for one only on disk, its record.
-    pub async fn close(&self, seat: &SessionSlot, name: Option<&str>) -> Result<(), String> {
-        let key = Self::checked_target(seat, name)?;
-        if key != SHARED_PROFILE {
-            let open = self.profiles.lock().await.get(&key).map(|profile| profile.owner.clone());
-            let owner = match open {
-                Some(owner) => Some(owner),
-                None => profiles::owner_of(&self.store.named(&key))?,
-            };
-            if let Some(owner) = owner
-                && &owner != seat
-            {
-                return Err(owner_refusal(&key, &owner));
-            }
-        }
+    /// End the seat's browser and forget it. The next call relaunches it over
+    /// the same directory, so a close ends the run and never the logins.
+    pub async fn close(&self, seat: &SessionSlot) -> Result<(), String> {
+        let key = self.target(seat)?;
         // **The entry leaves the map before its host is ended, and the
-        // map lock is released with it**: a same-name call waits on the
+        // map lock is released with it**: a same-key call waits on the
         // key's own gate, while every other profile keeps being served
         // through the whole teardown.
-        let gate = self.gate(&key);
+        let gate = self.gate(key.as_str());
         let _held = gate.lock().await;
-        let profile = self.profiles.lock().await.remove(&key);
+        let profile = self.profiles.lock().await.remove(key.as_str());
         let Some(profile) = profile else {
-            return Err(format!("no browser profile is open under '{key}'"));
+            return Err(format!("no browser profile is open under '{}'", key.as_str()));
         };
         profile.end().await;
         Ok(())
-    }
-
-    /// The profiles this seat may see, for a client's strip: the shared
-    /// browser, its own named profiles, and the ownerless ones a legacy tree
-    /// left behind. **A name whose record cannot be read is drawn ownerless
-    /// and marked unreadable**, not guessed at and not hidden: the profile
-    /// and its logins exist, and the row is the only door to them.
-    pub async fn profiles(&self, seat: &SessionSlot) -> Result<Vec<BrowserProfileRow>, String> {
-        let open: HashMap<String, Arc<Profile>> = self
-            .profiles
-            .lock()
-            .await
-            .iter()
-            .map(|(key, profile)| (key.clone(), Arc::clone(profile)))
-            .collect();
-        let mut rows = vec![row_of(SHARED_PROFILE, None, open.get(SHARED_PROFILE))];
-        let mut names = Vec::new();
-        match std::fs::read_dir(self.store.profiles()) {
-            Ok(entries) => {
-                for entry in entries.flatten() {
-                    if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                        names.push(entry.file_name().to_string_lossy().into_owned());
-                    }
-                }
-            }
-            Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
-            Err(why) => return Err(format!("the profiles cannot be listed: {why}")),
-        }
-        names.sort();
-        for name in names {
-            // **An unreadable owner record is drawn, not skipped.** The
-            // profile and its logins exist on disk; hiding the row made them
-            // unreachable from the strip, and rule 25's default is to draw
-            // what arrived.
-            let (owner, unreadable) = match profiles::owner_of(&self.store.named(&name)) {
-                Ok(owner) => (owner, false),
-                Err(why) => {
-                    tracing::debug!(
-                        event_name = "browser_profile_owner_unreadable",
-                        profile = %name,
-                        "a profile's owner record cannot be read; its row is drawn ownerless: {why}"
-                    );
-                    (None, true)
-                }
-            };
-            if owner.as_ref().is_some_and(|owner| owner != seat) {
-                continue;
-            }
-            let mut row = row_of(&name, owner.as_ref(), open.get(&name));
-            row.unreadable = unreadable;
-            rows.push(row);
-        }
-        Ok(rows)
-    }
-
-    /// Delete a named profile and its logins, for a seat that owns it.
-    pub async fn delete_profile(&self, seat: &SessionSlot, name: &str) -> Result<(), String> {
-        self.delete_named(seat, name).await
     }
 
     /// Give `viewer` the controller role for a profile.
@@ -1240,17 +1085,13 @@ impl BrowserService {
     /// [`crate::record::HEIGHT`]**, so the file holds the layout the page had
     /// at that size rather than a scaled copy of the controller's surface.
     /// Stopping puts the controller's own view back.
-    pub async fn record_start(
-        &self,
-        seat: &SessionSlot,
-        name: Option<&str>,
-    ) -> Result<Vec<BrowserPart>, String> {
+    pub async fn record_start(&self, seat: &SessionSlot) -> Result<Vec<BrowserPart>, String> {
         /// Recordings kept beside the takes: the newest ten, this one
         /// included.
         const KEEP: usize = 10;
         /// A take refuses to start below this much free space.
         const FLOOR: u64 = 512 * 1024 * 1024;
-        let profile = self.open(seat, name).await?;
+        let profile = self.open(seat).await?;
         if profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
             return Err(format!(
                 "a recording is already running for '{}'; stop it first",
@@ -1324,16 +1165,12 @@ impl BrowserService {
 
     /// Finish the running recording, answer what was written, and put the
     /// controller's view back.
-    pub async fn record_stop(
-        &self,
-        seat: &SessionSlot,
-        name: Option<&str>,
-    ) -> Result<Vec<BrowserPart>, String> {
+    pub async fn record_stop(&self, seat: &SessionSlot) -> Result<Vec<BrowserPart>, String> {
         // **A stop never starts a browser.** The take lives in the host that
         // was recording, so a profile that is not open has no take to end.
-        let key = Self::checked_target(seat, name)?;
-        let Ok(profile) = self.find(&key).await else {
-            return Err(format!("no recording is running for '{key}'"));
+        let key = self.target(seat)?;
+        let Ok(profile) = self.find(key.as_str()).await else {
+            return Err(format!("no recording is running for '{}'", key.as_str()));
         };
         let taken = profile.recording.lock().unwrap_or_else(PoisonError::into_inner).take();
         let Some(path) = taken else {
@@ -1439,50 +1276,6 @@ impl BrowserService {
         Ok(nav)
     }
 
-    /// A named profile is deleted by the seat that owns it; the shared
-    /// browser is not a profile.
-    async fn delete(&self, seat: &SessionSlot, args: Value) -> Result<Vec<BrowserPart>, String> {
-        let name = args
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "browser_profile_delete needs the profile's `name`".to_owned())?;
-        self.delete_named(seat, name).await?;
-        Ok(vec![BrowserPart::Text { text: format!("deleted the '{name}' profile") }])
-    }
-
-    /// Delete one named profile and everything under its directory.
-    async fn delete_named(&self, seat: &SessionSlot, name: &str) -> Result<(), String> {
-        if name == SHARED_PROFILE {
-            return Err(
-                "the shared browser is not a profile, so there is nothing to delete".to_owned()
-            );
-        }
-        // **The name becomes a path, so it is checked before any path use.**
-        // A delete that skipped this joined a traversal onto the profile
-        // root and removed a directory outside it.
-        let name = checked_name(Some(name))?.unwrap_or_default();
-        let key = name.clone();
-        // **Ownership is read from the record, not the map**: a profile that
-        // is not open is still its owner's to delete.
-        match profiles::owner_of(&self.store.named(&name))? {
-            Some(owner) if &owner != seat => {
-                return Err(owner_refusal(&name, &owner));
-            }
-            _ => {}
-        }
-        // **The key's gate covers the end and the removal**, while the map
-        // lock is released before either: a same-name call waits, then opens
-        // a fresh directory, and every other profile is served throughout.
-        let gate = self.gate(&key);
-        let _held = gate.lock().await;
-        let profile = self.profiles.lock().await.remove(&key);
-        if let Some(profile) = profile {
-            profile.end().await;
-        }
-        std::fs::remove_dir_all(self.store.named(&name))
-            .map_err(|why| format!("the '{name}' profile could not be removed: {why}"))
-    }
-
     fn stack(&self) -> &Path {
         &self.stack
     }
@@ -1547,7 +1340,6 @@ impl ChooserAnswer for Driver {
 /// One open profile: its identity, its hot state and its frames.
 pub struct Profile {
     key: String,
-    owner: SessionSlot,
     /// The id the frames and the wire carry for this profile.
     id: u16,
     /// The profile's CEF cache root: cookies, storage and the carried page.
@@ -1604,7 +1396,7 @@ pub struct Profile {
     state: AsyncMutex<State>,
     /// The controller: its viewer id, and the last input sequence it sent.
     control: Mutex<Option<(u64, u64)>>,
-    /// When a seat last used this profile, and when its owner was warned.
+    /// When a seat last used this profile, and when the idle bound asked.
     touch: Mutex<Touch>,
     /// Whether this entry has been closed: **a caller that kept the handle
     /// from before the close is refused**, rather than starting a second
@@ -1615,27 +1407,6 @@ pub struct Profile {
     up: AtomicBool,
     /// Browser calls running on this profile now: the strip's work ring.
     busy: AtomicU32,
-}
-
-/// One profile as the strip draws it.
-fn row_of(
-    key: &str,
-    owner: Option<&SessionSlot>,
-    profile: Option<&Arc<Profile>>,
-) -> BrowserProfileRow {
-    BrowserProfileRow {
-        name: key.to_owned(),
-        owner: owner.cloned(),
-        up: profile.is_some_and(|profile| profile.up.load(Ordering::Acquire)),
-        windowed: profile.is_some_and(|profile| {
-            !profile.viewers.lock().unwrap_or_else(PoisonError::into_inner).is_empty()
-        }),
-        busy: profile.is_some_and(|profile| profile.busy.load(Ordering::Acquire) > 0),
-        // **The shared browser is never a closed row**: it is not a profile
-        // to delete, and the strip's bulk door takes closed rows.
-        closed: key != SHARED_PROFILE && profile.is_none(),
-        unreadable: false,
-    }
 }
 
 /// The most a finished download may carry to a viewer.
@@ -1929,10 +1700,6 @@ impl Profile {
 
     pub fn id(&self) -> u16 {
         self.id
-    }
-
-    pub fn owner(&self) -> &SessionSlot {
-        &self.owner
     }
 
     /// The controller, when one holds the role.
@@ -2250,10 +2017,9 @@ impl Profile {
     /// passkey veto.
     async fn start_host(self: &Arc<Self>) -> Result<ActiveHost, String> {
         let _launch = self.launch.lock().await;
-        // **The frame socket is a short path outside the profile**: a name
-        // under app-support exceeds a Unix socket's address, and an omitted
-        // profile is the seat's own now, whose folded name is longer than
-        // `shared` ever was.
+        // **The frame socket is a short path outside the profile**: a key
+        // under app-support exceeds a Unix socket's address, and an org
+        // profile is two segments deep.
         let socket = channel::frame_socket_path(&self.dir, self.id)?;
         let frames = self.frames.clone();
         let audio = self.audio.clone();
@@ -2932,12 +2698,9 @@ fn chooser_socket_path(profile_dir: &Path, profile: u16) -> Result<PathBuf, Stri
 
 /// Take the `profile` argument off a call.
 ///
-/// It chooses the profile and no driver's schema declares it, so it never
-/// reaches a tool. A `profile` that is not a name is the call's own mistake,
-/// answered rather than guessed at. **`context` is read as the same thing**:
-/// an older schema names the argument that way, and an argument left in the
-/// call would reach the driver as an unknown key while the SHARED profile
-/// drove - the wrong browser, silently.
+/// No driver's schema declares it, so it never reaches a tool. **`context` is
+/// read as the same thing**: an older schema names the argument that way, and
+/// an argument left in the call would reach the driver as an unknown key.
 pub fn take_profile(mut args: Value) -> Result<(Option<String>, Value), String> {
     let Some(fields) = args.as_object_mut() else {
         return Ok((None, args));
@@ -2950,16 +2713,6 @@ pub fn take_profile(mut args: Value) -> Result<(Option<String>, Value), String> 
         Value::String(name) => Ok((Some(name), args)),
         other => Err(format!("`profile` is the name of a profile, not {other}")),
     }
-}
-
-/// A seat as a person reads it: `org/project/label`.
-fn seat_text(seat: &SessionSlot) -> String {
-    format!("{}/{}/{}", seat.org(), seat.project(), seat.label())
-}
-
-/// The refusal a seat naming another seat's profile gets.
-fn owner_refusal(name: &str, owner: &SessionSlot) -> String {
-    format!("the profile '{name}' belongs to {}; another seat cannot use it", seat_text(owner))
 }
 
 /// The view a resize asks for, when the caller holds the role: the role as a
@@ -2978,36 +2731,19 @@ fn controller_size(
     Some((width.max(1), height.max(1), scale))
 }
 
-/// A profile name for a door that only acts on named profiles: the reserved
-/// shared name is refused with its own sentence, and any other name by the
-/// registry's rule.
-fn checked_name(name: Option<&str>) -> Result<Option<String>, String> {
-    let Some(name) = name else {
-        return Ok(None);
-    };
-    if name == SHARED_PROFILE {
-        return Err(
-            "the shared browser is not a named profile, so it has no row to act on".to_owned()
-        );
-    }
-    if let Some(refusal) = profiles::name_refusal(name) {
-        return Err(refusal);
-    }
-    Ok(Some(name.to_owned()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadPageOutcome,
-        SHARED_PROFILE, State, UploadRequest, agent_upload_paths, agent_upload_refused,
-        attach_failure, begin_upload, captured_generation, checked_name, clear_if_dead,
-        controller_size, dead_page_answer, death_cause, file_name, installed_generation,
-        note_agent_answered, note_surfaced_opened, note_upload_finished, row_of,
-        stage_agent_uploads, take_profile, upload_request, write_uploads,
+        BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadPageOutcome, State,
+        UploadRequest, agent_upload_paths, agent_upload_refused, attach_failure, begin_upload,
+        captured_generation, clear_if_dead, controller_size, dead_page_answer, death_cause,
+        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        note_upload_finished, stage_agent_uploads, take_profile, upload_request, write_uploads,
     };
     use forge_primitives::SessionSlot;
+    use forge_primitives::browser::ProfileKey;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::time::Duration;
     use tokio::sync::Notify;
 
@@ -3090,16 +2826,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.files.send_replace(Some(BrowserFileAsk { id: 4, multiple: false }));
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         assert!(profile.files.borrow().is_none(), "the ask is cancelled with the take");
 
         profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
-        service.release_control(SHARED_PROFILE, 7).await;
+        service.release_control("TestOrg/default", 7).await;
         assert!(profile.files.borrow().is_none(), "and with the release");
 
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves back");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves back");
         profile.files.send_replace(Some(BrowserFileAsk { id: 6, multiple: false }));
         service.detach(7).await;
         assert!(profile.files.borrow().is_none(), "and when the controller detaches");
@@ -3115,7 +2851,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
 
         profile
@@ -3134,7 +2870,7 @@ mod tests {
             "and no person is asked",
         );
 
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3155,7 +2891,7 @@ mod tests {
             Some(ask.id),
         );
 
-        service.release_control(SHARED_PROFILE, 7).await;
+        service.release_control("TestOrg/default", 7).await;
         assert!(profile.files.borrow().is_none(), "the ask leaves with the role it was asked for");
         assert!(
             profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner).is_none(),
@@ -3175,9 +2911,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
 
         profile
             .file_chooser(FileChooser {
@@ -3199,7 +2935,7 @@ mod tests {
 
         let refused = service
             .answer_files(
-                SHARED_PROFILE,
+                "TestOrg/default",
                 first.id,
                 vec![BrowserUpload { name: "old.txt".to_owned(), bytes: b"old".to_vec() }],
             )
@@ -3229,9 +2965,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3241,7 +2977,7 @@ mod tests {
             .await;
 
         assert!(agent_upload_refused(&profile), "the person's picker is open");
-        service.release_control(SHARED_PROFILE, 7).await;
+        service.release_control("TestOrg/default", 7).await;
         assert!(!agent_upload_refused(&profile), "the release closes the refusal");
     }
 
@@ -3256,9 +2992,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
 
         note_agent_answered(&profile);
         profile
@@ -3294,7 +3030,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
 
         // No controller: the chooser is surfaced and held for the agent.
@@ -3315,7 +3051,7 @@ mod tests {
             assert_eq!((ledger.surfaced, ledger.pre_answered), (0, 0), "the surface is consumed");
         }
 
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3353,9 +3089,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3368,7 +3104,7 @@ mod tests {
             .await
             .expect_err("the cancel form is refused too");
         assert!(refused.contains("picker"), "{refused}");
-        service.release_control(SHARED_PROFILE, 7).await;
+        service.release_control("TestOrg/default", 7).await;
         let guard = begin_upload(&profile, Some(&UploadRequest::Cancel))
             .await
             .expect("the cancel form is allowed")
@@ -3395,12 +3131,12 @@ mod tests {
         let service =
             Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
         let gate = Arc::new(GatedAnswer { entered: Notify::new(), release: Notify::new() });
         let calls: Arc<dyn ChooserAnswer> = gate.clone();
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3428,9 +3164,9 @@ mod tests {
 
         let mut answering = {
             let service = Arc::clone(&service);
-            tokio::spawn(
-                async move { service.answer_files(SHARED_PROFILE, first.id, Vec::new()).await },
-            )
+            tokio::spawn(async move {
+                service.answer_files("TestOrg/default", first.id, Vec::new()).await
+            })
         };
         tokio::task::yield_now().await;
         assert!(
@@ -3459,12 +3195,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
         let gate = Arc::new(GatedAnswer { entered: Notify::new(), release: Notify::new() });
         let calls: Arc<dyn ChooserAnswer> = gate.clone();
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3512,11 +3248,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3529,13 +3265,13 @@ mod tests {
         // constant one would leave them behind and fail the assertion below.
         note_surfaced_opened(&profile, 2);
 
-        service.release_control(SHARED_PROFILE, 7).await;
+        service.release_control("TestOrg/default", 7).await;
         {
             let ledger = profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner);
             assert_eq!((ledger.surfaced, ledger.pre_answered), (0, 0), "the drain consumed it");
         }
 
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves back");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves back");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3558,7 +3294,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
 
         // The reader is one behind: a capacity-one channel, two sends and one
@@ -3594,11 +3330,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3608,7 +3344,10 @@ mod tests {
             .await;
         let ask = profile.files.borrow().as_ref().copied().expect("the ask");
 
-        service.answer_files(SHARED_PROFILE, ask.id, Vec::new()).await.expect("the answer lands");
+        service
+            .answer_files("TestOrg/default", ask.id, Vec::new())
+            .await
+            .expect("the answer lands");
 
         let ledger = profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner);
         assert_eq!((ledger.surfaced, ledger.pre_answered), (0, 0), "the answer consumed it");
@@ -3624,7 +3363,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
 
         note_surfaced_opened(&profile, 1);
         note_upload_finished(&profile, &UploadRequest::Cancel, false);
@@ -3648,7 +3387,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
         *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -3687,7 +3426,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
         *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -3739,7 +3478,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
         profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
@@ -3794,7 +3533,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
         profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
@@ -3841,7 +3580,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
@@ -3868,9 +3607,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
             ChooserLedger { surfaced: 0, pre_answered: 1 };
 
@@ -3914,9 +3653,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -3956,9 +3695,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
 
         profile
             .file_chooser(FileChooser {
@@ -3995,9 +3734,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        service.take_control(SHARED_PROFILE, 7).await.expect("the role moves");
+        service.take_control("TestOrg/default", 7).await.expect("the role moves");
         profile
             .file_chooser(FileChooser {
                 multiple: false,
@@ -4009,7 +3748,7 @@ mod tests {
 
         let refused = service
             .answer_files(
-                SHARED_PROFILE,
+                "TestOrg/default",
                 ask.id,
                 vec![BrowserUpload { name: "cv.pdf".to_owned(), bytes: b"hi".to_vec() }],
             )
@@ -4030,7 +3769,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
         *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -4055,7 +3794,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let refused = service.record_stop(&seat, None).await.expect_err("no take is running");
+        let refused = service.record_stop(&seat).await.expect_err("no take is running");
         assert!(
             refused.contains("no recording is running"),
             "the stop names the missing take: {refused}"
@@ -4135,7 +3874,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         let uploads = profile.dir.join("uploads");
         std::fs::create_dir_all(&uploads).expect("the uploads dir");
         let kept = uploads.join("kept.txt");
@@ -4144,7 +3883,7 @@ mod tests {
 
         let refused = service
             .answer_files(
-                SHARED_PROFILE,
+                "TestOrg/default",
                 8,
                 vec![BrowserUpload { name: "other.txt".to_owned(), bytes: b"x".to_vec() }],
             )
@@ -4187,13 +3926,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("a profile entry");
+        let profile = service.entry(&seat).await.expect("a profile entry");
         let uploads = profile.dir.join("uploads");
         std::fs::create_dir_all(&uploads).expect("the uploads dir");
         std::fs::write(uploads.join("stale.txt"), b"stale").expect("a staged file");
         profile.files.send_replace(Some(BrowserFileAsk { id: 3, multiple: false }));
 
-        service.close(&seat, Some(SHARED_PROFILE)).await.expect("the profile closes");
+        service.close(&seat).await.expect("the profile closes");
         assert!(profile.files.borrow().is_none(), "the chooser is gone with the profile");
         assert!(!uploads.exists(), "and so are its staged files");
     }
@@ -4281,8 +4020,8 @@ mod tests {
         let root = dir.path().join("browser");
         let service = BrowserService::at(root.clone(), root.join("no-stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let open = service.open(&seat, None).await;
-        let profile = service.entry(&seat, None).await.expect("the profile entry");
+        let open = service.open(&seat).await;
+        let profile = service.entry(&seat).await.expect("the profile entry");
         let mut failures = profile.failures.subscribe();
         // **A dead host takes its chooser and its staged uploads with it.**
         let uploads = profile.dir.join("uploads");
@@ -4317,7 +4056,7 @@ mod tests {
             "and its chooser is cancelled rather than left waiting on a callback that cannot run",
         );
 
-        let _ = service.open(&seat, None).await;
+        let _ = service.open(&seat).await;
         let (next_pid, next_port) = {
             let state = profile.state.lock().await;
             let host = state.host.as_ref().expect("a fresh host is up");
@@ -4400,61 +4139,23 @@ mod tests {
         assert!(left.contains("its log is empty"), "{left}");
     }
 
-    /// **An omitted profile is the asking seat's own, never the shared
-    /// browser** (#2539). The shared browser's tabs are whatever the person
-    /// or another seat left there, so it is reachable only by naming it
-    /// `@shared`, which cannot collide with a real profile.
+    /// **A seat's entry is its org's profile**: two seats of one org share a
+    /// browser, and another org's seat gets one of its own.
     #[tokio::test]
-    async fn an_omitted_profile_is_the_seats_own_and_the_shared_browser_is_named() {
+    async fn a_seat_enters_its_org_profile_and_two_orgs_do_not_share_one() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
         let service = BrowserService::at(root.clone(), root.join("stack"));
-        let seat = SessionSlot::lead("TestOrg", "proj");
+        let one = SessionSlot::lead("TestOrg", "proj");
+        let same_org = SessionSlot::worker("TestOrg", "proj", "runner");
+        let other_org = SessionSlot::lead("OtherOrg", "proj");
 
-        let mine = service.entry(&seat, None).await.expect("the seat's own");
-        assert_eq!(mine.key, "proj-lead", "the seat's own profile, by its folded name");
-        assert_eq!(&mine.owner, &seat);
-
-        let shared = service.entry(&seat, Some(SHARED_PROFILE)).await.expect("the shared browser");
-        assert_eq!(shared.key, SHARED_PROFILE);
-        assert_ne!(mine.id, shared.id, "two browsers, not one");
-        assert_eq!(service.entry(&seat, Some("hunt")).await.expect("a named one").key, "hunt");
-    }
-
-    /// **The fold is lossy, and a collision is a refusal, never a share.**
-    /// Two seats whose project and label fold to one name are refused by the
-    /// owner's name rather than silently driving each other's logins.
-    #[tokio::test]
-    async fn a_taken_auto_name_refuses_the_second_seat_by_its_owner() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let service = BrowserService::at(root.clone(), root.join("stack"));
-        let one = SessionSlot::lead("TestOrg", "my app");
-        let two = SessionSlot::lead("OtherOrg", "my-app");
-
-        service.entry(&one, None).await.expect("the first seat's own");
-        let refused =
-            service.entry(&two, None).await.err().expect("the folded collision is refused");
-        assert!(refused.contains("belongs to"), "{refused}");
-        assert!(refused.contains("my-app-lead"), "{refused}");
-    }
-
-    /// **A name is one path segment.** A separator or a dot-dot would let a
-    /// session choose a directory outside the profile tree.
-    #[test]
-    fn a_profile_name_is_one_path_segment() {
-        assert_eq!(checked_name(Some("job-hunt")), Ok(Some("job-hunt".to_owned())));
-        assert_eq!(checked_name(Some("a.b_c-1")), Ok(Some("a.b_c-1".to_owned())));
-        assert!(checked_name(Some("../escape")).is_err());
-        assert!(checked_name(Some("a/b")).is_err());
-        assert!(checked_name(Some("..")).is_err());
-        assert!(checked_name(Some("")).is_err());
-        assert!(
-            checked_name(Some(SHARED_PROFILE)).is_err(),
-            "the shared browser is not a named profile"
-        );
-        assert_eq!(checked_name(None), Ok(None));
-        assert!(checked_name(Some(&"a".repeat(65))).is_err(), "a name has a bound");
+        let mine = service.entry(&one).await.expect("the seat's own");
+        assert_eq!(mine.key, "TestOrg/default", "the seat's org profile");
+        let shared = service.entry(&same_org).await.expect("the same org's");
+        assert_eq!(shared.id, mine.id, "one org, one browser");
+        let other = service.entry(&other_org).await.expect("another org's");
+        assert_ne!(other.id, mine.id, "two orgs, two browsers");
     }
 
     /// **Only the controller's surface moves the page.** A watcher's window,
@@ -4477,20 +4178,25 @@ mod tests {
         assert_eq!(controller_size(Some(7), 7, 0, 0, 99.0), Some((1, 1, 8.0)), "bounded both ways");
     }
 
-    /// **Two profiles share nothing**: their wire ids differ (what a frame
-    /// is keyed by), their cache roots differ, and one profile's frame never
+    /// **Two orgs share nothing**: their wire ids differ (what a frame is
+    /// keyed by), their cache roots differ, and one profile's frame never
     /// reaches the other's stream.
     #[tokio::test]
     async fn two_profiles_share_no_id_root_or_frame_stream() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
         let service = BrowserService::at(root.clone(), root.join("stack"));
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        let first = service.entry(&seat, Some("a")).await.expect("the first profile");
-        let second = service.entry(&seat, Some("b")).await.expect("the second profile");
+        let one = SessionSlot::lead("TestOrg", "proj");
+        let two = SessionSlot::lead("OtherOrg", "proj");
+        let first = service.entry(&one).await.expect("the first profile");
+        let second = service.entry(&two).await.expect("the second profile");
 
         assert_ne!(first.id(), second.id(), "a frame is keyed by the profile's id");
-        assert_ne!(service.profile_dir("a"), service.profile_dir("b"), "and each has its own root");
+        assert_ne!(
+            service.profile_dir(&ProfileKey::parse(&first.key).expect("a key")),
+            service.profile_dir(&ProfileKey::parse(&second.key).expect("a key")),
+            "and each has its own root",
+        );
         first.frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
             profile: first.id(),
             seq: 1,
@@ -4498,57 +4204,6 @@ mod tests {
         }));
         assert!(first.frames.borrow().is_some(), "the first profile's stream carries its frame");
         assert!(second.frames.borrow().is_none(), "and the second's does not");
-    }
-
-    /// **The strip's rows are the seat's own**: the shared browser, its named
-    /// profiles and the ownerless ones a legacy tree left - never another
-    /// seat's name, and a profile only on disk reads closed.
-    #[tokio::test]
-    async fn the_strip_lists_only_the_seats_profiles() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let service = BrowserService::at(root.clone(), root.join("stack"));
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        let other = SessionSlot::worker("TestOrg", "proj", "runner");
-        service.entry(&seat, Some("hunt")).await.expect("the seat's profile");
-        service.entry(&other, Some("scout")).await.expect("another seat's");
-        std::fs::create_dir_all(root.join("profiles/legacy/cef")).expect("an ownerless tree");
-
-        let rows = service.profiles(&seat).await.expect("the list");
-
-        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [SHARED_PROFILE, "hunt", "legacy"],
-            "this seat's rows, and the shared one"
-        );
-        let hunt = rows.iter().find(|row| row.name == "hunt").expect("hunt's row");
-        assert_eq!(hunt.owner.as_ref(), Some(&seat));
-        assert!(!hunt.closed, "an open entry is not a closed row");
-        assert!(!hunt.up, "no host is up here");
-        let legacy = rows.iter().find(|row| row.name == "legacy").expect("legacy's row");
-        assert!(legacy.closed, "a profile only on disk is closed");
-        assert_eq!(legacy.owner, None, "and ownerless");
-    }
-
-    /// **A profile whose owner record is unreadable is drawn, marked and
-    /// ownerless.** The files exist; hiding the row made them unreachable
-    /// from the strip, and the mark is what tells a client not to offer a
-    /// verb it could not attribute.
-    #[tokio::test]
-    async fn an_unreadable_owner_record_is_drawn_and_marked() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let service = BrowserService::at(root.clone(), root.join("stack"));
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        let named = root.join("profiles/broken");
-        std::fs::create_dir_all(named.join("cef")).expect("the profile tree");
-        std::fs::write(named.join("owner.json"), b"{ not json").expect("a corrupt record");
-
-        let rows = service.profiles(&seat).await.expect("the list");
-        let row = rows.iter().find(|row| row.name == "broken").expect("the broken row is drawn");
-        assert!(row.unreadable, "the row carries the server's unreadable mark");
-        assert_eq!(row.owner, None, "and is drawn ownerless");
     }
 
     /// **Only the controller moves the page, checked in the service before
@@ -4560,63 +4215,49 @@ mod tests {
         let root = dir.path().join("browser");
         let service = BrowserService::at(root.clone(), root.join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some("hunt")).await.expect("the profile");
+        let profile = service.entry(&seat).await.expect("the profile");
         service.take_control(&profile.key, 7).await.expect("the take");
 
         let why = service.nav(&profile.key, 8, true).await.expect_err("a watcher is refused");
         assert!(why.contains("not the browser's controller"), "{why}");
     }
 
-    /// **A close is the owner's**, and a name that is a path is refused
-    /// before it is used as one.
+    /// **A close ends the seat's own profile**, and the entry leaves the map.
     #[tokio::test]
-    async fn a_close_is_the_owners_and_a_traversal_name_is_refused() {
+    async fn a_close_ends_the_seats_profile() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
         let service = BrowserService::at(root.clone(), root.join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let other = SessionSlot::worker("TestOrg", "proj", "runner");
-        service.entry(&seat, Some("hunt")).await.expect("the seat's profile");
+        service.entry(&seat).await.expect("the seat's profile");
 
-        let why = service.close(&other, Some("hunt")).await.expect_err("another seat's close");
-        assert!(why.contains("belongs to"), "{why}");
-        let why = service.close(&seat, Some("../escape")).await.expect_err("a traversal name");
-        assert!(why.contains("cannot be a profile name"), "{why}");
-        service.close(&seat, Some("hunt")).await.expect("the owner closes it");
-        assert!(!service.profiles.lock().await.contains_key("hunt"), "and the entry is gone");
+        service.close(&seat).await.expect("the close");
+        assert!(
+            !service.profiles.lock().await.contains_key("TestOrg/default"),
+            "and the entry is gone",
+        );
     }
 
-    /// **An omitted profile has no key of its own**: it resolves to the
-    /// asking seat's own at the door, while `@shared` is the explicit key for
-    /// the browser every seat shares.
+    /// **A seat resolves the project's override, else its org's, else
+    /// `default`.** An empty map is every org's `default`.
     #[test]
-    fn an_omitted_profile_resolves_to_the_seats_own() {
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        assert_eq!(BrowserService::target(&seat, None), "proj-lead");
-        assert_eq!(BrowserService::target(&seat, Some(SHARED_PROFILE)), SHARED_PROFILE);
-        assert_eq!(BrowserService::target(&seat, Some("hunt")), "hunt");
-    }
-
-    /// **A name carries its owner across a restart**: the record beside the
-    /// directory refuses another seat, and a fresh service reads it back
-    /// rather than handing the name to whoever opens it first.
-    #[tokio::test]
-    async fn a_named_profile_refuses_another_seat_across_a_restart() {
+    fn a_seat_resolves_the_project_override_then_the_org_then_default() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let owner = SessionSlot::lead("TestOrg", "proj");
-        let other = SessionSlot::worker("TestOrg", "proj", "runner");
-
-        let service = BrowserService::at(root.clone(), root.join("stack"));
-        service.entry(&owner, Some("hunt")).await.expect("the first open records its owner");
-
-        let again = BrowserService::at(root.clone(), root.join("stack"));
-        let Err(refused) = again.entry(&other, Some("hunt")).await else {
-            panic!("another seat's name is refused");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        service.configure_profiles(
+            HashMap::from([("Busytools".to_owned(), "work".to_owned())]),
+            HashMap::from([(("Busytools".to_owned(), "apply".to_owned()), "job".to_owned())]),
+        );
+        let key = |org: &str, project: &str| {
+            service
+                .profile_for(&SessionSlot::lead(org, project))
+                .expect("the key resolves")
+                .as_str()
+                .to_owned()
         };
-        assert!(refused.contains("belongs to"), "the refusal says whose it is: {refused}");
-        let same = again.entry(&owner, Some("hunt")).await.expect("the owner still drives it");
-        assert_eq!(same.owner(), &owner, "and it is the same profile's");
+        assert_eq!(key("Busytools", "forge"), "Busytools/work", "the org's profile");
+        assert_eq!(key("Busytools", "apply"), "Busytools/job", "the project's override");
+        assert_eq!(key("Personal", "forge"), "Personal/default", "no config is default");
     }
 
     /// The workspace, as one idle pass asks it: a scripted verdict per call,
@@ -4666,61 +4307,69 @@ mod tests {
         (service, rx)
     }
 
-    /// **An idle named profile's owner is warned once, and the browser closes
-    /// when the grace is over.** The close asks its own question first, so a
-    /// hand-off parked after the warning still holds it.
+    /// **An idle profile is asked about, and the browser closes when the
+    /// grace is over.** The close asks its own question first, so a parked
+    /// hand-off still holds it.
     #[tokio::test]
-    async fn an_idle_profile_warns_its_owner_and_closes_after_the_grace() {
+    async fn an_idle_profile_is_asked_about_and_closes_after_the_grace() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
         let (service, mut heard) =
             idle_service(&root, vec![crate::idle::Verdict::Delivered, crate::idle::Verdict::Clear]);
         let seat = SessionSlot::lead("TestOrg", "proj");
-        service.entry(&seat, Some("hunt")).await.expect("owner records");
+        service.entry(&seat).await.expect("the profile opens");
 
         service.idle_pass().await;
         assert_eq!(
             heard.try_recv(),
-            Ok((Some(seat.clone()), "hunt".to_owned(), false)),
-            "the owner is told, and the grace arms",
+            Ok((None, "TestOrg/default".to_owned(), false)),
+            "the pass asks, and the grace arms",
         );
         assert!(
-            service.profiles.lock().await.contains_key("hunt"),
+            service.profiles.lock().await.contains_key("TestOrg/default"),
             "the browser lives through its grace",
         );
 
         service.idle_pass().await;
         assert_eq!(
             heard.try_recv(),
-            Ok((Some(seat), "hunt".to_owned(), true)),
+            Ok((None, "TestOrg/default".to_owned(), true)),
             "the close asks whether anything holds it",
         );
-        assert!(!service.profiles.lock().await.contains_key("hunt"), "and closes at the end of it");
-        assert!(service.store.named("hunt").exists(), "the profile's logins stay on disk");
+        assert!(
+            !service.profiles.lock().await.contains_key("TestOrg/default"),
+            "and closes at the end of it",
+        );
+        assert!(
+            root.join("profiles/TestOrg/default").exists(),
+            "the profile's logins stay on disk",
+        );
     }
 
-    /// **A profile whose owner has no live session closes quietly.** There is
-    /// nobody to warn, so no grace is owed: the warning step itself learns
-    /// there is no seat and the browser closes at the idle bound.
+    /// **A profile whose warning learns there is no session closes quietly**:
+    /// no grace is owed, so the browser closes at the idle bound.
     #[tokio::test]
     async fn an_idle_profile_with_no_live_session_closes_quietly() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
         let (service, mut heard) = idle_service(&root, vec![crate::idle::Verdict::NoSession]);
         let seat = SessionSlot::lead("TestOrg", "proj");
-        service.entry(&seat, Some("hunt")).await.expect("owner records");
+        service.entry(&seat).await.expect("the profile opens");
 
         service.idle_pass().await;
         assert_eq!(
             heard.try_recv(),
-            Ok((Some(seat), "hunt".to_owned(), false)),
+            Ok((None, "TestOrg/default".to_owned(), false)),
             "the warning is what learns there is no one to tell",
         );
         assert!(
-            !service.profiles.lock().await.contains_key("hunt"),
+            !service.profiles.lock().await.contains_key("TestOrg/default"),
             "and the browser closes without a grace",
         );
-        assert!(service.store.named("hunt").exists(), "the profile's logins stay on disk");
+        assert!(
+            root.join("profiles/TestOrg/default").exists(),
+            "the profile's logins stay on disk",
+        );
         service.idle_pass().await;
         assert!(heard.try_recv().is_err(), "a closed profile is not asked about again");
     }
@@ -4734,13 +4383,13 @@ mod tests {
         let root = dir.path().join("browser");
         let service = BrowserService::at(root.clone(), root.join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some("hunt")).await.expect("the entry");
-        service.close(&seat, Some("hunt")).await.expect("the close");
+        let profile = service.entry(&seat).await.expect("the entry");
+        service.close(&seat).await.expect("the close");
 
         let why =
             profile.ensure(&service.root, service.stack()).await.expect_err("the ended entry");
         assert!(why.contains("closed"), "the caller is told to open it again: {why}");
-        let again = service.entry(&seat, Some("hunt")).await.expect("a fresh entry");
+        let again = service.entry(&seat).await.expect("a fresh entry");
         assert!(!Arc::ptr_eq(&profile, &again), "the next call answers a new entry");
     }
 
@@ -4758,172 +4407,102 @@ mod tests {
                 crate::idle::Verdict::Clear,
             ],
         );
-        service.entry(&SessionSlot::lead("TestOrg", "proj"), Some("hunt")).await.expect("owner");
+        service.entry(&SessionSlot::lead("TestOrg", "proj")).await.expect("the profile opens");
 
         service.idle_pass().await;
-        assert!(heard.try_recv().is_ok(), "the owner is warned");
+        assert!(heard.try_recv().is_ok(), "the profile is asked about");
         service.idle_pass().await;
         assert_eq!(
             heard.try_recv().map(|(_, _, at_close)| at_close),
             Ok(true),
             "the first close question",
         );
-        assert!(service.profiles.lock().await.contains_key("hunt"), "a held profile is not closed");
+        assert!(
+            service.profiles.lock().await.contains_key("TestOrg/default"),
+            "a held profile is not closed",
+        );
         service.idle_pass().await;
         assert_eq!(
             heard.try_recv().map(|(_, _, at_close)| at_close),
             Ok(true),
             "and the pass after the hold lifts asks again",
         );
-        assert!(!service.profiles.lock().await.contains_key("hunt"), "then closes it");
+        let closed = !service.profiles.lock().await.contains_key("TestOrg/default");
+        assert!(closed, "then closes it");
     }
 
     /// **A viewer attached is a use**: the surface the person is looking at
-    /// is never warned and never closed, however long it stays up.
+    /// is never asked about and never closed, however long it stays up.
     #[tokio::test]
     async fn a_viewed_profile_is_never_idle() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
         let (service, mut heard) = idle_service(&root, Vec::new());
-        let profile = service
-            .entry(&SessionSlot::lead("TestOrg", "proj"), Some(SHARED_PROFILE))
-            .await
-            .expect("the shared browser");
+        let profile =
+            service.entry(&SessionSlot::lead("TestOrg", "proj")).await.expect("the profile opens");
         profile.viewers.lock().unwrap_or_else(PoisonError::into_inner).insert(9);
 
         service.idle_pass().await;
 
         assert!(heard.try_recv().is_err(), "no question is asked about a viewed browser");
-        assert!(service.profiles.lock().await.contains_key(SHARED_PROFILE));
+        assert!(service.profiles.lock().await.contains_key("TestOrg/default"));
     }
 
-    /// **The shared browser is never announced**: its warn is a silent arm,
-    /// and the close's own keyless question is its only crossing.
-    #[tokio::test]
-    async fn the_shared_browsers_warning_is_a_silent_arm() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let (service, mut heard) = idle_service(&root, vec![crate::idle::Verdict::Clear]);
-        service
-            .entry(&SessionSlot::lead("TestOrg", "proj"), Some(SHARED_PROFILE))
-            .await
-            .expect("the shared browser");
-
-        service.idle_pass().await;
-        assert!(heard.try_recv().is_err(), "nothing is delivered for the shared browser");
-
-        service.idle_pass().await;
-        assert_eq!(
-            heard.try_recv(),
-            Ok((None, SHARED_PROFILE.to_owned(), true)),
-            "only the close's keyless question crosses",
-        );
-        assert!(!service.profiles.lock().await.contains_key(SHARED_PROFILE), "and it closes");
-    }
-
-    /// **A delete's name is checked before it becomes a path.** This name
-    /// climbs out of the profiles directory and the browser root both, so a
-    /// delete that trusted it removed a directory nobody named.
-    #[tokio::test]
-    async fn a_delete_refuses_a_traversal_name_before_touching_disk() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let outside = dir.path().join("outside");
-        std::fs::create_dir_all(&outside).expect("a directory outside the root");
-        std::fs::write(outside.join("keep"), "keep").expect("a file");
-        let service = BrowserService::at(root.clone(), root.join("stack"));
-
-        let refused = service
-            .delete(
-                &SessionSlot::lead("TestOrg", "proj"),
-                serde_json::json!({ "name": "../../outside" }),
-            )
-            .await
-            .expect_err("a traversal name is refused");
-
-        assert!(refused.contains("cannot be a profile name"), "{refused}");
-        assert!(outside.join("keep").exists(), "nothing outside the root was removed");
-    }
-
-    /// **The strip's row reads the profile's live marks.** A call in flight
-    /// is the work ring, an attached viewer is the window mark, and a profile
-    /// known only on disk is the closed row the bulk delete acts on.
-    #[tokio::test]
-    async fn a_row_reads_the_profiles_live_marks() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let service = BrowserService::at(root.clone(), root.join("stack"));
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        let profile = service.entry(&seat, Some("hunt")).await.expect("the profile");
-
-        profile.busy.fetch_add(1, Ordering::AcqRel);
-        profile.viewers.lock().unwrap_or_else(PoisonError::into_inner).insert(9);
-        let row = row_of("hunt", Some(&seat), Some(&profile));
-        assert!(row.busy, "a call in flight is the work ring");
-        assert!(row.windowed, "an attached viewer is the window mark");
-        assert!(!row.closed, "an open profile is not a closed row");
-
-        let on_disk = row_of("old", None, None);
-        assert!(on_disk.closed, "a profile known only on disk is a closed row");
-        assert!(!on_disk.busy && !on_disk.windowed, "with no live marks");
-    }
-
-    /// **Another profile is served while one is torn down.** The map lock
-    /// used to be held across the end (up to the kill bound) and a recursive
-    /// delete, so every profile's entry waited on one teardown.
+    /// **Another profile is served while one is torn down.** The map lock is
+    /// released before the end (up to the kill bound), so every other
+    /// profile's entry keeps being served.
     #[tokio::test]
     async fn another_profile_is_served_while_one_is_torn_down() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
         let service = Arc::new(BrowserService::at(root.clone(), root.join("stack")));
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        let a = service.entry(&seat, Some("a")).await.expect("the first profile");
-        service.entry(&seat, Some("b")).await.expect("the second profile");
+        let one = SessionSlot::lead("TestOrg", "proj");
+        let two = SessionSlot::lead("OtherOrg", "proj");
+        let a = service.entry(&one).await.expect("the first profile");
+        service.entry(&two).await.expect("the second profile");
 
-        // **Hold A's state lock**: the delete takes A out of the map, then
+        // **Hold A's state lock**: the close takes A out of the map, then
         // its end parks here - the teardown window the other profile must
         // not wait on.
         let blocked = a.state.lock().await;
-        let deleting = tokio::spawn({
+        let closing = tokio::spawn({
             let service = Arc::clone(&service);
-            let seat = seat.clone();
-            async move { service.delete_profile(&seat, "a").await }
+            let one = one.clone();
+            async move { service.close(&one).await }
         });
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if !service.profiles.lock().await.contains_key("a") {
+                if !service.profiles.lock().await.contains_key("TestOrg/default") {
                     break;
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("the delete took its entry before the teardown");
+        .expect("the close took its entry before the teardown");
 
-        let b = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            service.entry(&seat, Some("b")),
-        )
-        .await
-        .expect("another profile is served during the teardown")
-        .expect("the entry answers");
-        assert_eq!(b.key, "b", "the untouched profile");
+        let b = tokio::time::timeout(std::time::Duration::from_secs(2), service.entry(&two))
+            .await
+            .expect("another profile is served during the teardown")
+            .expect("the entry answers");
+        assert_eq!(b.key, "OtherOrg/default", "the untouched profile");
 
         drop(blocked);
-        deleting.await.expect("the delete task joins").expect("the delete completes");
+        closing.await.expect("the close task joins").expect("the close completes");
     }
 
     /// **An idle close releases the fleet's map before it tears its host
-    /// down**, the same rule the close and the delete follow: another
-    /// profile's entry is served while the teardown runs.
+    /// down**, the same rule the close follows: another profile's entry is
+    /// served while the teardown runs.
     #[tokio::test]
     async fn another_profile_is_served_while_an_idle_close_tears_one_down() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
         let (service, _heard) = idle_service(&root, Vec::new());
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        let a = service.entry(&seat, Some("a")).await.expect("the first profile");
-        service.entry(&seat, Some("b")).await.expect("the second profile");
+        let one = SessionSlot::lead("TestOrg", "proj");
+        let two = SessionSlot::lead("OtherOrg", "proj");
+        let a = service.entry(&one).await.expect("the first profile");
+        service.entry(&two).await.expect("the second profile");
 
         // **Hold A's state lock**: the idle close takes A out of the map and
         // then parks in its teardown, which the other profile must not wait
@@ -4931,11 +4510,11 @@ mod tests {
         let blocked = a.state.lock().await;
         let closing = tokio::spawn({
             let service = Arc::clone(&service);
-            async move { service.close_idle("a", true).await }
+            async move { service.close_idle("TestOrg/default", true).await }
         });
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if !service.profiles.lock().await.contains_key("a") {
+                if !service.profiles.lock().await.contains_key("TestOrg/default") {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -4944,36 +4523,14 @@ mod tests {
         .await
         .expect("the idle close took its entry before the teardown");
 
-        let b = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            service.entry(&seat, Some("b")),
-        )
-        .await
-        .expect("another profile is served during the teardown")
-        .expect("the entry answers");
-        assert_eq!(b.key, "b", "the untouched profile");
+        let b = tokio::time::timeout(std::time::Duration::from_secs(2), service.entry(&two))
+            .await
+            .expect("another profile is served during the teardown")
+            .expect("the entry answers");
+        assert_eq!(b.key, "OtherOrg/default", "the untouched profile");
 
         drop(blocked);
         closing.await.expect("the close task joins");
-    }
-
-    /// **Another seat's profile is not this seat's to delete**, open or not.
-    #[tokio::test]
-    async fn a_delete_refuses_another_seats_profile() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let service = BrowserService::at(root.clone(), root.join("stack"));
-        let owner = SessionSlot::lead("TestOrg", "proj");
-        let other = SessionSlot::worker("TestOrg", "proj", "runner");
-        service.entry(&owner, Some("hunt")).await.expect("owner records");
-
-        let refused = service
-            .delete(&other, serde_json::json!({ "name": "hunt" }))
-            .await
-            .expect_err("another seat's name is refused");
-
-        assert!(refused.contains("belongs to"), "{refused}");
-        assert!(service.store.named("hunt").exists(), "the profile stays");
     }
 
     /// **A stop forgets every open profile and keeps its files.** This test
@@ -4985,51 +4542,27 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
         let service = BrowserService::at(root.clone(), root.join("stack"));
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        service.entry(&seat, Some("hunt")).await.expect("owner records");
-        service.entry(&seat, Some(SHARED_PROFILE)).await.expect("the shared browser");
+        let one = SessionSlot::lead("TestOrg", "proj");
+        let two = SessionSlot::lead("OtherOrg", "proj");
+        service.entry(&one).await.expect("the first profile");
+        service.entry(&two).await.expect("the second profile");
 
         let left = service.stop_all().await;
 
         assert!(left.is_empty(), "no host outlived its teardown: {left:?}");
         assert!(service.profiles.lock().await.is_empty(), "nothing is left open");
-        assert!(service.store.named("hunt").exists(), "the profile's logins stay");
-    }
-
-    /// **A seat that is down takes its named profiles with it.** The sweep is
-    /// given the seats that remain: a live seat's profile and the shared
-    /// browser stay, and the down seat's directory goes.
-    #[tokio::test]
-    async fn a_sweep_removes_a_down_seats_profiles_only() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let root = dir.path().join("browser");
-        let service = BrowserService::at(root.clone(), root.join("stack"));
-        let alive = SessionSlot::lead("TestOrg", "proj");
-        let gone = SessionSlot::worker("TestOrg", "proj", "runner");
-        service.entry(&alive, Some("kept")).await.expect("owner records");
-        service.entry(&gone, Some("gone")).await.expect("owner records");
-        service.entry(&alive, Some(SHARED_PROFILE)).await.expect("the shared browser opens");
-
-        service.sweep_seats(std::slice::from_ref(&alive)).await;
-
-        assert!(service.store.named("kept").exists(), "a live seat's profile stays");
-        assert!(!service.store.named("gone").exists(), "the down seat's goes");
-        assert!(service.store.shared().exists(), "the shared browser is never swept");
-        assert!(
-            service.profiles.lock().await.get("gone").is_none(),
-            "and its open entry goes with it",
-        );
+        assert!(root.join("profiles/TestOrg/default").exists(), "the profile's logins stay");
+        assert!(root.join("profiles/OtherOrg/default").exists(), "both of them");
     }
 
     /// The profile's cache root is under the service's root, never a launch
-    /// directory, and the shared browser has a directory of its own.
+    /// directory, and its key is the org and the name.
     #[test]
     fn a_profile_dir_hangs_off_the_service_root() {
         let service = BrowserService::at("/browser".into(), "/browser/stack".into());
-        assert_eq!(service.profile_dir("hunt"), std::path::Path::new("/browser/profiles/hunt/cef"));
         assert_eq!(
-            service.profile_dir(SHARED_PROFILE),
-            std::path::Path::new("/browser/shared/cef")
+            service.profile_dir(&ProfileKey::of("Busytools", "work").expect("a key")),
+            std::path::Path::new("/browser/profiles/Busytools/work/cef"),
         );
     }
 }

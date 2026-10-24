@@ -3,9 +3,8 @@
 //!
 //! **The clock is the server's**, because the browser and the profiles are:
 //! every call, every raise and every close touches the profile, and a sweep
-//! reads the clocks. A named profile's owner is warned once at the idle
-//! bound; **the shared browser is never announced** - its only crossing is
-//! the close itself.
+//! reads the clocks. A profile is asked about once at the idle bound, and
+//! closed when the grace is over unless something holds it.
 //!
 //! The warning is not this crate's to deliver: the workspace phrases it and
 //! puts it in the seat's session, and answers whether it landed, whether a
@@ -53,8 +52,8 @@ impl Touch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Nothing,
-    /// Idle past the bound and not warned: tell the owner, or arm the grace
-    /// silently for the shared browser.
+    /// Idle past the bound and not warned: ask whether it may close, and arm
+    /// the grace.
     Warn,
     /// Warned and past the grace: ask whether anything holds it, and close
     /// unless something does.
