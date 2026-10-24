@@ -3263,6 +3263,44 @@ describe('one turn folded into the units a view draws', () => {
     });
   });
 
+  it('does not let a quoting read take a task whose launch is out of the page', () => {
+    // The real launch is paged out and a Read quotes its sentence. First write
+    // wins alone would hand the task to the Read, paint it with a false stop
+    // and drop the stop row; only a launching tool's answer may claim one.
+    const READ = 'call_read_quote';
+    const STOP = 'call_stop_quote';
+    const TASK = 'bwhz36mlt';
+    const frames = [
+      said([use(READ, 'Read', { file_path: '/tmp/gate.log' })]),
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: READ,
+          content: `Command running in background with ID: ${TASK}.`,
+        },
+      ]),
+      said([use(STOP, 'TaskStop', { task_id: TASK })]),
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: STOP,
+          content: JSON.stringify({ message: `Successfully stopped task: ${TASK}`, task_id: TASK }),
+        },
+      ]),
+    ];
+
+    const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+    const calls = callsOf(group).map((row) => row.leaf);
+    expect(calls, 'the read keeps its row and the stop draws its own').toHaveLength(2);
+    expect(
+      calls.find((leaf) => leaf.id === READ)?.stop,
+      'the quoting read takes nothing',
+    ).toBeNull();
+    expect(calls.find((leaf) => leaf.id === STOP)?.title, 'the stop row names the task').toContain(
+      TASK,
+    );
+  });
+
   it('draws a stop whose launch came from a dispatched agent, which the fold skips', () => {
     // A sub-agent's frames belong to the dispatch timeline and the fold skips
     // them whole. A parent's TaskStop of a task the sub-agent launched has no

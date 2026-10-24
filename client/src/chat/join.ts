@@ -28,6 +28,8 @@ export interface TaskJoin {
   strong: Set<string>;
   /** The calls whose `tool_use` the page holds. */
   held: Set<string>;
+  /** What each held call is, by its id: what a launch sentence may come from. */
+  names: Map<string, string>;
   /** The `TaskStop` calls the page holds, by the task each names. */
   asks: Map<string, string>;
   /** Whether each stop's own answer reported success, by the stop's call. */
@@ -42,11 +44,22 @@ export function seedJoin(): TaskJoin {
     owners: new Map(),
     strong: new Set(),
     held: new Set(),
+    names: new Map(),
     asks: new Map(),
     answers: new Map(),
     calls: new Map(),
   };
 }
+
+/**
+ * The tools whose own result may name an opened task.
+ *
+ * **The gate on a launch sentence**, so a result that merely QUOTES the
+ * sentence - a `Read` of a log, a command echoing one - cannot take a task
+ * whose real launch is paged out. Only a call that starts work answers with
+ * one.
+ */
+const LAUNCHING = new Set(['Bash', 'Monitor', 'Task']);
 
 /** Whether a frame came from a dispatched agent rather than the session's own. */
 export function isDispatched(frame: unknown): boolean {
@@ -79,6 +92,7 @@ export function addJoinFrame(join: TaskJoin, frame: unknown): void {
     for (const block of blocksOf(held.message?.content)) {
       if (block.type === 'tool_use' && typeof block.id === 'string') {
         join.held.add(block.id);
+        if (typeof block.name === 'string') join.names.set(block.id, block.name);
         if (block.name === 'TaskStop') {
           const task = (block.input as { task_id?: unknown } | null)?.task_id;
           if (typeof task === 'string') join.asks.set(block.id, task);
@@ -86,10 +100,17 @@ export function addJoinFrame(join: TaskJoin, frame: unknown): void {
       }
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
         const task = launchedTask(block.content);
-        // **First write wins.** Any result may quote the sentence (a `Read` of
-        // a log, a `Bash` echoing one), and a later copy must not steal the
-        // task from the call that launched it.
-        if (task !== null && !join.owners.has(task)) join.owners.set(task, block.tool_use_id);
+        // **A launching tool's result, first write wins.** Any result may
+        // quote the sentence (a `Read` of a log, a `Bash` echoing one), and a
+        // later copy must not steal the task from the call that launched it -
+        // nor may a quote stand in for a launch that is paged out.
+        if (
+          task !== null &&
+          !join.owners.has(task) &&
+          LAUNCHING.has(join.names.get(block.tool_use_id) ?? '')
+        ) {
+          join.owners.set(task, block.tool_use_id);
+        }
         if (join.asks.has(block.tool_use_id)) {
           join.answers.set(block.tool_use_id, stopSucceeded(block));
         }
