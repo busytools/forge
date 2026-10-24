@@ -71,27 +71,37 @@ CEF bridge, which no Linux runner sees - but one thing behaves differently:
 just check
 ```
 
-That runs, in order: `cargo fmt --check`, the Unicode punctuation gate,
-the release scripts' tests and the client-dependency bootstrap's
-(`script-tests`), the shell crate's rustfmt
-check (`client-tauri-fmt`: `cargo fmt --check` against the shell's own
-workspace root), the client's Prettier check,
-its ESLint, `svelte-check` and `tsc --noEmit`
-and then its vitest run,
-the shell crate's clippy and its own nextest run
-(`client-tauri-clippy`, `client-tauri-test`), its android warnings check
-(`client-android-warnings`:
-`cargo check --target aarch64-linux-android` with warnings denied),
-`cargo clippy --all-targets --workspace -- -D warnings` once per feature
-set (with and without `--all-features`),
+That runs four independent groups concurrently: the fast checks
+(`cargo fmt --check`, the Unicode punctuation gate, and the release
+scripts' tests with the client-dependency bootstrap's, `script-tests`),
+the Rust workspace (`cargo clippy --all-targets --workspace -- -D warnings`
+once per feature set, with and without `--all-features`,
 `cargo nextest run --workspace --all-features`,
-`cargo test --doc --workspace --all-features`, and
-`cargo doc --workspace --no-deps --all-features
---document-private-items`. The clippy, test,
+`cargo test --doc --workspace --all-features` and
+`cargo doc --workspace --no-deps --all-features --document-private-items`),
+the client web steps (the client's Prettier check, ESLint, `svelte-check`,
+`tsc --noEmit` and then its vitest run), and the shell crate's steps (its
+rustfmt check `client-tauri-fmt`, its clippy and nextest run
+`client-tauri-clippy` and `client-tauri-test`, and its android warnings
+check `client-android-warnings`: `cargo check --target
+aarch64-linux-android` with warnings denied). The clippy, test,
 doctest and doc steps each set `RUSTFLAGS=-D warnings` so a warning CI
 would reject fails locally too; CI sets it once at workflow level
 instead. It covers the build each step drives, and rustdoc compiles a
 doctest on its own, so it does not deny warnings inside one.
+
+`FORGE_CHECK_JOBS` caps how many of the four groups run at once; it
+defaults to 4, so a machine with fewer cores sets it lower
+(`FORGE_CHECK_JOBS=2 just check`). Every group runs to its own first
+failure, each failing group's log tail is printed, and the verdict names
+the first failing step in the gate's order, so a concurrent group cannot
+hide one. The full per-step logs stay in `target/check-logs/`.
+`just check-serial` is the same gate one step at a time, for debugging a
+step or running on a machine that should not carry the groups together.
+
+When `sccache` is on `PATH`, `just` exports `RUSTC_WRAPPER=sccache`, so
+compiled objects are shared across worktrees and branches; without it the
+recipes build normally. It is never required.
 
 The gate is two commands: run this one before opening a pull request, and
 `just check-feature-configs` with it. `just check` runs with
@@ -105,6 +115,14 @@ as an enhancement and tracked in #2258). The
 client's steps are in here too, so the client and the server are not
 separate commands, and a failure on either side lands on the same verdict
 line.
+
+CI runs each build and test job only for the paths it serves, so a
+docs-only pull request does not wait for the Rust or client jobs and a
+Rust-only one does not wait for the client's CEF job. One job,
+`ci-required`, always runs, depends on every other, and fails when a job
+that ran failed or when a job whose paths changed was skipped. It is the
+single check the ruleset requires: a skipped job means its paths did not
+move, never that the gate passed without looking.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
 workspace's cargo steps do not reach it; in CI its clippy and tests are
@@ -135,11 +153,12 @@ in the bundle, and a client built without it answers the browser doors with
 a sentence naming the missing framework rather than a timeout.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
-or `[ERROR] check: <step> failed`, and stops at the first failing step,
-naming the ones it did not reach. That line is deliberately the last one
-written: piping the output through `tail` reports tail's exit status
-rather than the recipe's, so a red gate reads green to whoever ran it
-unless the result travels in the text.
+or `[ERROR] check: <step> failed`. A failing group stops at its own first
+failure and names the steps it did not reach; the other groups still run,
+and every failing group's log tail is printed before the verdict. That
+line is deliberately the last one written: piping the output through
+`tail` reports tail's exit status rather than the recipe's, so a red gate
+reads green to whoever ran it unless the result travels in the text.
 
 Individual pieces, if you want a faster loop:
 
@@ -151,12 +170,21 @@ just test             # forge-sdk only
 just conformance      # replay every committed wire baseline
 just doctest          # compile the workspace's doctests
 just doc              # rustdoc with warnings denied
+just check-delta <crate>   # fmt, clippy and nextest for the named crates
+just check-serial     # the whole gate, one step at a time
 just client-tauri-clippy   # the shell crate's lints
 just client-tauri-test     # the shell crate's tests
 just client-tauri-check    # the client shell, in the shipping configuration
 just client-android-check  # the Kotlin half and its unit tests
 just web-image-check       # the web image's poller and serving tests
 ```
+
+`just check-delta <crate>...` is the fast slice for a review round: each
+named workspace crate's rustfmt check, both clippy feature sets and its
+nextest run, the Unicode gate, and the client's steps or the shell crate's
+clippy and tests when `client` or `client-tauri` is named. It is not the
+pre-merge gate: the final head still runs the full `just check` and
+`just check-feature-configs` whole.
 
 `just check-release` compiles the workspace in release mode. It is
 deliberately not part of `just check`, because a second full compile is

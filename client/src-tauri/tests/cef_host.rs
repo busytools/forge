@@ -13,6 +13,12 @@ use std::time::Duration;
 use forge_client::browser::cef::{osr, spawn};
 use forge_client::browser::{BrowserHost, StackPaths};
 
+/// How long a spawned stub gets to write its arguments. The wait spends the
+/// machine scheduling the child, which a loaded gate can stretch well past a
+/// production-shaped bound; what this test pins is the spawn line, not the
+/// scheduler.
+const STUB_WRITE_BUDGET: Duration = Duration::from_secs(60);
+
 fn paths(dir: &Path) -> StackPaths {
     StackPaths {
         stack: dir.join("stack"),
@@ -168,7 +174,7 @@ async fn a_spawned_host_is_ended_by_its_pid() {
     }
     let mut stops = Stops { pid, armed: true };
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + STUB_WRITE_BUDGET;
     while !wrote.is_file() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }

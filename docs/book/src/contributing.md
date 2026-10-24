@@ -28,7 +28,27 @@ tracked in #2258).
 
 The gate is two commands: `just check`, and `just check-feature-configs`,
 which compiles the configuration `install.sh` builds. Both green before
-you open a pull request.
+you open a pull request. `just check` runs its four independent groups
+concurrently - the fast checks, the Rust workspace, the client web steps
+and the shell crate's steps - capped by `FORGE_CHECK_JOBS` (default 4; set
+it lower on a smaller machine). Every group runs to its own first failure,
+a failing group's log tail is printed, and the verdict names the first
+failing step; the per-step logs stay in `target/check-logs/`.
+`just check-serial` is the same gate one step at a time, for debugging.
+When `sccache` is on `PATH`, the recipes export `RUSTC_WRAPPER=sccache` so
+compiled objects are shared across worktrees and branches; without it they
+build normally.
+
+For a review round, `just check-delta <crate>...` runs the fast slice on
+the crates a change touches: their rustfmt check, the Unicode gate, both
+clippy feature sets and nextest, plus the client's steps or the shell
+crate's clippy and tests when `client` or `client-tauri` is named. It does
+not replace the gate; the final head runs the full two commands.
+
+CI runs each build and test job only for the paths it serves, and one job,
+`ci-required`, always runs, depends on every other, and fails when a job
+that ran failed or when a job whose paths changed was skipped. That
+aggregate is the single check the ruleset requires.
 
 A fresh worktree has no `client/node_modules`; each client step installs it
 first when it is missing or older than `package-lock.json`, so the first

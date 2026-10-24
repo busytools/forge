@@ -321,12 +321,18 @@ the shell crate's clippy and tests (`client-tauri-clippy` and
 crate compiled for `aarch64-linux-android` with warnings denied, which is
 what catches desktop-only code going dead on Android),
 so one command decides both stacks and its verdict line names the first
-failing step whichever side it is on.
+failing step whichever side it is on. Its four independent groups run
+concurrently, capped by `FORGE_CHECK_JOBS` (default 4), and
+`just check-serial` runs the same steps one at a time.
 
 The shell under `client/src-tauri/` is its own workspace root, so
 `just check`'s workspace-side steps never reach it; CI compiles it in the
 `client-tauri` job (its clippy and tests), and the `cargo fmt --check`
-job's second invocation carries its rustfmt check.
+job's second invocation carries its rustfmt check. Both jobs run when the
+shell, `crates/forge-capture` or the toolchain changes. Every build and
+test job is path-filtered, and the single check the ruleset requires is
+`ci-required`, which always runs and fails if a job whose paths changed
+was skipped.
 `client-tauri-fmt`, `client-tauri-clippy`, `client-tauri-test`
 and `client-android-warnings` are the steps of `just check` that do, and
 the shipping build is still outside both gates. The Unicode punctuation

@@ -1,6 +1,12 @@
 # forge workspace task runner.
 # Most recipes are thin wrappers over cargo; see CLAUDE.md for policy.
 
+# sccache, when installed, shares compiled objects across worktrees and
+# branches. Empty is what cargo treats as no wrapper, so a machine without
+# it builds normally.
+sccache := `command -v sccache || true`
+export RUSTC_WRAPPER := sccache
+
 # Default: show the available recipes.
 default:
     @just --list
@@ -968,34 +974,204 @@ check-feature-configs:
     RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-server --bin forge
     RUSTFLAGS="-D warnings" cargo check --locked -p forge-server --features testing
 
-# Full pre-commit / pre-PR verification loop.
+# The gate's steps, in the order a verdict reports them, and the four
+# independent groups `check` runs concurrently. Every step belongs to
+# exactly one group; `check` refuses to start if the two disagree.
+check_steps := "fmt-check unicode-punct-check script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-tauri-clippy client-tauri-test client-android-warnings clippy test-all doctest doc"
+check_groups := "fast|fmt-check unicode-punct-check script-tests;rust|clippy test-all doctest doc;client|client-format client-lint client-typecheck client-test;shell|client-tauri-fmt client-tauri-clippy client-tauri-test client-android-warnings"
+
+# Full pre-commit / pre-PR verification loop, in four independent groups run
+# concurrently: the fast checks, the Rust workspace, the client web steps
+# and the shell crate's steps. `FORGE_CHECK_JOBS` caps how many run at once
+# (default 4); a smaller machine sets it lower.
 #
-# A script rather than a recipe with these as dependencies, because
-# a failing dependency aborts just before any recipe body runs, and the
+# A script rather than a recipe with these as dependencies, because a
+# failing dependency aborts just before any recipe body runs, and the
 # verdict is printed by the body.
+#
+# **Parallel groups cannot turn a red gate green.** Every group runs to its
+# own first failure while the others keep going, each failing group's log
+# tail is printed, and the verdict names the first failing step in
+# `check_steps` order and the steps its group did not reach. The exit status
+# is the failing step's. A step list and group list that disagree are a
+# refusal before anything runs: a step in no group would never run at all.
 #
 # The verdict line is the point. A caller piping this through `tail -N`
 # reads the pipe's exit status, not this recipe's, so a red gate can read
 # green; leaving the result on the last line means a truncated read still
-# carries it. `[no-exit-message]` keeps just's own error line from
-# landing after the verdict, and the EXIT trap covers an interrupted run,
-# so the last line is a verdict on that path too. That line carries no
-# exit status: bash's EXIT trap sees 0 for a signal death, where the
-# process's real status is 128 plus the signal.
+# carries it. `[no-exit-message]` keeps just's own error line from landing
+# after the verdict, and the EXIT trap covers an interrupted run, so the
+# last line is a verdict on that path too. That line carries no exit
+# status: bash's EXIT trap sees 0 for a signal death, where the process's
+# real status is 128 plus the signal.
 #
-# Fail-fast and exit-code preserving, as the dependency form was: the
-# failing step's own status is what this recipe exits with. Both verdict
-# lines are built from `steps`, so the list of them has one home.
+# Every step's output lands in `target/check-logs/<step>.log`.
 #
 # The steps are re-invoked through just's own executable, not a bare
 # `just`, which a caller who invoked it by absolute path does not have on
 # PATH.
+#
+# The full gate, four groups at once; `FORGE_CHECK_JOBS` caps how many.
 [no-exit-message]
 check:
     #!/usr/bin/env bash
+    set -uo pipefail
+
+    read -ra steps <<< "{{check_steps}}"
+    IFS=';' read -ra specs <<< "{{check_groups}}"
+
+    group_names=()
+    group_steps=()
+    grouped=" "
+    for spec in "${specs[@]}"; do
+        group_names+=("${spec%%|*}")
+        group_steps+=("${spec#*|}")
+        for step in ${spec#*|}; do
+            grouped="$grouped$step "
+        done
+    done
+
+    expected="$(printf '%s\n' "${steps[@]}" | sort)"
+    actual="$(printf '%s\n' $grouped | sort)"
+    if [ "$expected" != "$actual" ]; then
+        echo "[ERROR] check: check_steps and check_groups disagree" >&2
+        exit 2
+    fi
+
+    max="${FORGE_CHECK_JOBS:-4}"
+    case "$max" in
+        ''|*[!0-9]*)
+            echo "[ERROR] check: FORGE_CHECK_JOBS must be a positive integer" >&2
+            exit 2
+            ;;
+    esac
+    if [ "$max" -lt 1 ]; then
+        echo "[ERROR] check: FORGE_CHECK_JOBS must be a positive integer" >&2
+        exit 2
+    fi
+
+    logdir="target/check-logs"
+    if ! rm -rf "$logdir" || ! mkdir -p "$logdir"; then
+        echo "[ERROR] check: cannot write $logdir" >&2
+        exit 2
+    fi
+
+    verdict=""
+
+    on_exit() {
+        if [ -z "$verdict" ]; then
+            echo "[ERROR] check: no verdict, the run ended early"
+        fi
+    }
+    trap on_exit EXIT
+
+    run_group() {
+        trap - EXIT
+        local name="$1" steps="$2" step status failed=""
+        for step in $steps; do
+            echo "[..] check: $step"
+            status=0
+            "{{just_executable()}}" --justfile "{{justfile()}}" "$step" >"$logdir/$step.log" 2>&1 || status=$?
+            if [ "$status" -ne 0 ]; then
+                failed="$step"
+                printf '%s' "$status" > "$logdir/$name.status"
+                break
+            fi
+        done
+        printf '%s' "$failed" > "$logdir/$name.failed"
+    }
+
+    pids=()
+    for i in "${!group_names[@]}"; do
+        while [ "${#pids[@]}" -ge "$max" ]; do
+            wait "${pids[0]}" || true
+            pids=("${pids[@]:1}")
+        done
+        run_group "${group_names[$i]}" "${group_steps[$i]}" &
+        pids+=("$!")
+    done
+    wait
+
+    failed_steps=" "
+    failed_any=0
+    for i in "${!group_names[@]}"; do
+        failed="$(cat "$logdir/${group_names[$i]}.failed" 2>/dev/null || true)"
+        [ -n "$failed" ] || continue
+        failed_any=1
+        failed_steps="$failed_steps$failed "
+    done
+
+    if [ "$failed_any" -eq 0 ]; then
+        verdict="[OK] check: all green (${steps[*]})"
+        echo "$verdict"
+        exit 0
+    fi
+
+    for i in "${!group_names[@]}"; do
+        name="${group_names[$i]}"
+        failed="$(cat "$logdir/$name.failed" 2>/dev/null || true)"
+        [ -n "$failed" ] || continue
+        echo "[ERROR] check: $name group failed at $failed"
+        echo "---- $failed (last 25 lines; full log: $logdir/$failed.log)"
+        tail -n 25 "$logdir/$failed.log"
+        echo "----"
+    done
+
+    first_failed=""
+    for step in "${steps[@]}"; do
+        case "$failed_steps" in
+            *" $step "*)
+                first_failed="$step"
+                break
+                ;;
+        esac
+    done
+
+    first_group=""
+    for i in "${!group_names[@]}"; do
+        failed="$(cat "$logdir/${group_names[$i]}.failed" 2>/dev/null || true)"
+        if [ "$failed" = "$first_failed" ]; then
+            first_group="$i"
+            break
+        fi
+    done
+
+    later=""
+    seen=0
+    for step in ${group_steps[$first_group]}; do
+        if [ "$seen" -eq 1 ]; then
+            later="$later $step"
+        fi
+        if [ "$step" = "$first_failed" ]; then
+            seen=1
+        fi
+    done
+
+    status="$(cat "$logdir/${group_names[$first_group]}.status" 2>/dev/null || true)"
+    later="${later# }"
+    if [ -n "$later" ]; then
+        verdict="[ERROR] check: $first_failed failed; not run: $later"
+    else
+        verdict="[ERROR] check: $first_failed failed"
+    fi
+    echo "$verdict"
+    exit "${status:-1}"
+
+# The same gate one step at a time, in `check_steps` order. `check` runs the
+# four groups concurrently; this is the recipe for debugging a step or
+# running on a machine that should not carry them together.
+#
+# Fail-fast and exit-code preserving: the failing step's own status is what
+# this recipe exits with, and the verdict names the failing step and the
+# steps after it that it did not reach.
+#
+# The full gate one step at a time, for debugging.
+[no-exit-message]
+check-serial:
+    #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-tauri-clippy client-tauri-test client-android-warnings clippy test-all doctest doc)
+    read -ra steps <<< "{{check_steps}}"
     verdict=""
 
     on_exit() {
@@ -1024,6 +1200,77 @@ check:
 
     verdict="[OK] check: all green (${steps[*]})"
     echo "$verdict"
+
+# A fast slice of the gate for one review round, on the packages a change
+# touches. Each named workspace crate gets its rustfmt check, both clippy
+# feature sets and its own nextest run; `client` adds the client's format,
+# lint, typecheck and test steps, and `client-tauri` adds the shell crate's
+# rustfmt check, clippy and tests. The Unicode gate runs once either way.
+#
+# **Not the pre-merge gate.** The final head still runs `just check` and
+# `just check-feature-configs` whole: this skips every crate the change did
+# not name, the doctests and the rustdoc, and nothing here stands in for
+# them.
+#
+#   just check-delta forge-gateway
+#   just check-delta forge-workspace forge-primitives
+#   just check-delta client
+#   just check-delta client-tauri
+#
+# Delta gate for one review round; the final head runs the full `just check`.
+check-delta *packages:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # just does not hand a shebang recipe's arguments to the script, so the
+    # variadic parameter is substituted here instead of read from `$@`.
+    read -ra packages <<< "{{packages}}" || true
+    if [ "${#packages[@]}" -eq 0 ]; then
+        echo "[ERROR] check-delta: name at least one crate, client or client-tauri" >&2
+        exit 1
+    fi
+
+    for package in "${packages[@]}"; do
+        case "$package" in
+            client) echo "[..] check-delta: client/ (format, lint, typecheck, test)" ;;
+            client-tauri) echo "[..] check-delta: client/src-tauri/ (fmt, clippy, test)" ;;
+            *) echo "[..] check-delta: $package (fmt, clippy, nextest)" ;;
+        esac
+    done
+
+    run_just() {
+        "{{just_executable()}}" --justfile "{{justfile()}}" "$@"
+    }
+
+    for package in "${packages[@]}"; do
+        case "$package" in
+            client) ;;
+            client-tauri) run_just client-tauri-fmt ;;
+            *) cargo fmt -p "$package" --check ;;
+        esac
+    done
+
+    run_just unicode-punct-check
+
+    for package in "${packages[@]}"; do
+        case "$package" in
+            client)
+                run_just client-format
+                run_just client-lint
+                run_just client-typecheck
+                run_just client-test
+                ;;
+            client-tauri)
+                run_just client-tauri-clippy
+                run_just client-tauri-test
+                ;;
+            *)
+                RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets -- -D warnings
+                RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets --all-features -- -D warnings
+                RUSTFLAGS="-D warnings" cargo nextest run -p "$package" --all-features
+                ;;
+        esac
+    done
 
 # Deliberately not a bare `gh run watch`. Piping it masks the exit code
 # AND truncates the log, losing both signals to one pipe - the failure

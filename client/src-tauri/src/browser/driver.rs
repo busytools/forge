@@ -51,7 +51,7 @@ fn left(deadline: tokio::time::Instant) -> Duration {
 /// idle on its stdin while the parent never wrote the handshake - and the
 /// start has no bound of its own, so the session's call parked with it, past
 /// even [`CALL_TIMEOUT`]. A start that cannot answer names it instead.
-const START_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The phone's bounds, its own, and the ACCEPT-ONWARD segment must fit the
 /// server's ask budget: `ASK_TIMEOUT` (200 s) covers the desktop's launch,
