@@ -329,6 +329,16 @@ impl Gateway {
         self.rotation.lock().cool_down(&account, until);
     }
 
+    /// Whether the rotation is holding `account` out of selection right now -
+    /// the cooldown a probe at a window's cap writes.
+    ///
+    /// A view reads it to state the selection signal without stating the
+    /// usage: a probe landing at the cap moves this and nothing on the
+    /// account's loading row.
+    pub fn is_cooling(&self, account: &AccountKey) -> bool {
+        self.rotation.lock().is_cooling_down(account, SystemTime::now())
+    }
+
     /// The usage probe's verdict: a snapshot with any window at the
     /// cap and a reset ahead proves exhaustion until that reset. Every
     /// session bound to the account rotates.

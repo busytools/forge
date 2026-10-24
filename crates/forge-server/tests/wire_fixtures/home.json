@@ -70,7 +70,9 @@
         "state": "loading",
         "last_error": null,
         "retry_after": null,
-        "auth": "token"
+        "auth": "token",
+        "at_cap": false,
+        "cooling": false
       }
     ],
     "all_loaded": false,

@@ -56,10 +56,10 @@ const NOTHING: FleetNews = { kind: 'nothing' };
 export const REDRAWS = new Set([
   'catalog_loaded',
   'cli_version_changed',
-  // The account pool, which the band's own card draws and no row does. It is
-  // the one of these nothing else in the stream mentions, so a quiet forge
-  // emits no other update and the card would keep whatever it read at
-  // subscribe.
+  // The account pool, which the band's own card draws and no row does. Its
+  // frame carries the pool's own state, so a usage-only move is applied
+  // without a re-read (`home/live.ts`); a move in what a project row binds on
+  // still reads. It stays in this set because it is news the home draws.
   'accounts_changed',
   'dictate_availability',
   'connection_failed',
@@ -156,6 +156,13 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
  * card counts `HomeWire.dictate.snapshot.models`, while the catalogue the
  * update carries is the models page's own read.
  *
+ * **`AccountsChanged` is the one of these that carries its state**, so the
+ * home applies a usage-only move without a read (`home/live.ts`) - while a
+ * move in the loading rows, the selection signal or a probe failure still
+ * reads. It is listed here because the field it moves is the snapshot's, and
+ * a frame from a server older than the payload is still the wake-up this
+ * table names.
+ *
  * `fleet.test.ts` enumerates every declared variant and holds this table and
  * `HOME_IGNORES` to the enum, so a new variant is a red build rather than a
  * page that quietly stops following something.
@@ -163,7 +170,7 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
 export const HOME_WAKES: ReadonlyMap<string, string> = new Map([
   ['catalog_loaded', 'HomeWire.projects, the roster the catalog scan fills'],
   ['cli_version_changed', 'HomeWire.cli_version'],
-  ['accounts_changed', 'HomeWire.accounts'],
+  ['accounts_changed', 'HomeWire.accounts, folded from the frame when it carries one'],
   [
     'worker_status_changed',
     'HomeWire.fleet, whose live-worker count and unaccounted miss it moves',

@@ -323,8 +323,8 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
 
     let (subject, data, _) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home);
-    // `Roster`'s field is `projects`, not `orgs` - `orgs` belongs to `AccountsView`,
-    // which is the gateway's subject and a different record entirely. Asserting the
+    // `Roster`'s field is `projects`, not `orgs` - the gateway's org walk is its
+    // own record, and the home's account pool carries none of it. Asserting the
     // wrong key here would fail for a reason that looks like the encoder's fault.
     assert!(data.get("projects").is_some(), "the home snapshot carries its projects: {data}");
 }

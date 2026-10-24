@@ -1311,6 +1311,8 @@ const withPool = (snapshot: unknown): HomeWire =>
           last_error: null,
           retry_after: null,
           auth: 'token',
+          at_cap: false,
+          cooling: false,
         },
       ],
       usage: [{ display_name: 'Acct', snapshot }],

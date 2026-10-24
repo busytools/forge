@@ -1069,6 +1069,8 @@ describe('the band', () => {
       last_error: null,
       retry_after: null,
       auth: 'token',
+      at_cap: false,
+      cooling: false,
     });
 
     expect(accounts([row('ready'), row('ready')], true)).toEqual({
