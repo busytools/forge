@@ -144,6 +144,35 @@ describe('what a call body draws', () => {
     });
   });
 
+  /**
+   * **The caption counts the rows that draw.** A fallback change keeps its
+   * shared lines as context, so counting the raw sides said `+3 -3` under a
+   * panel drawing one removal and one addition.
+   */
+  it('counts a two-sided change the way its rows draw, not the raw sides', () => {
+    const leaf = leafOf(
+      't1',
+      'Edit',
+      {
+        file_path: '/x/a.css',
+        old_string: 'one\ntwo\nthree\nfour',
+        new_string: 'one\nTWO\nthree\nfour',
+      },
+      answered('The file /x/a.css has been updated.'),
+    );
+
+    const [diff] = leaf.body;
+    expect(diff?.kind, 'the call draws a fallback diff').toBe('diff');
+    expect(leaf.mutation, 'one line removed and one added, the shared ones not counted').toEqual({
+      hunks: 1,
+      added: 1,
+      removed: 1,
+      all: false,
+      outside: false,
+      omitted: null,
+    });
+  });
+
   it('draws a mutation as its diff, without the note the CLI writes to the model', () => {
     const path = '/Users/x/project/a.rs';
     const leaf = leafOf(
@@ -378,8 +407,20 @@ describe('what a call body draws', () => {
 });
 
 describe('what opens without being asked', () => {
-  /** A mutation whose two sides carry `lines` lines each. */
+  /** A mutation whose two sides carry `lines` lines each, every line changed. */
   const edit = (lines: number) => {
+    const side = Array.from({ length: lines }, (_, n) => `line ${n}`).join('\n');
+    const changed = Array.from({ length: lines }, (_, n) => `line ${n} changed`).join('\n');
+    return leafOf(
+      't1',
+      'Edit',
+      { file_path: '/x/a.rs', old_string: side, new_string: changed },
+      answered('The file /x/a.rs has been updated.'),
+    );
+  };
+
+  /** A mutation whose two sides are identical, so every line draws as context. */
+  const unchanged = (lines: number) => {
     const side = Array.from({ length: lines }, (_, n) => `line ${n}`).join('\n');
     return leafOf(
       't1',
@@ -405,6 +446,15 @@ describe('what opens without being asked', () => {
       opensByDefault(huge.name, huge.body, null),
       'a mutation over the bound starts closed, and one click still opens it',
     ).toBe(false);
+
+    // The bound counts the rows the drawing would make, and a two-sided
+    // change whose lines all match draws one context row per line, not two.
+    // Raw sides would read this as 3,000 and close it.
+    const shared = unchanged(1500);
+    expect(
+      opensByDefault(shared.name, shared.body, null),
+      'a change that is mostly shared lines draws fewer rows than its sides hold',
+    ).toBe(true);
 
     // The unit is rows, not newlines: a real diff carried a 441,094-character
     // line, which a newline count reads as one line and the drawing wraps into

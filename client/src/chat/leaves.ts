@@ -10,6 +10,7 @@
  * the call, and everything else is in the result that answers it.
  */
 
+import { lineDiff } from '../format/diff';
 import { decisionOf, decisionTitle, decisionWord, type Decision } from './decisions';
 import {
   browserVerb,
@@ -212,7 +213,8 @@ function drawnDiffLines(body: CallBody[]): number {
   let lines = 0;
   for (const piece of body) {
     if (piece.kind === 'diff') {
-      lines += wrappedRows(piece.old) + wrappedRows(piece.new);
+      // The two sides draw as a line diff, so the context rows count too.
+      for (const line of lineDiff(piece.old, piece.new)) lines += wrappedRows(line.text);
     } else if (piece.kind === 'hunk') {
       for (const line of piece.lines) lines += wrappedRows(line.text);
     }
@@ -535,8 +537,13 @@ function marksOf(
       }
     } else if (part.kind === 'diff') {
       hunks += 1;
-      if (part.new !== '') added += part.new.split('\n').length;
-      if (part.old !== '') removed += part.old.split('\n').length;
+      // Count the rows the drawing marks, not the raw sides: a two-sided
+      // change keeps its shared lines as context and only the differing
+      // lines are removals and additions.
+      for (const line of lineDiff(part.old, part.new)) {
+        if (line.kind === 'add') added += 1;
+        else if (line.kind === 'del') removed += 1;
+      }
     }
   }
   const all = (input as { replace_all?: unknown } | null)?.replace_all === true;

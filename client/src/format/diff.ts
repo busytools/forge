@@ -26,6 +26,104 @@ export interface DiffOp {
   text: string;
 }
 
+/**
+ * Two sides of an edit, as a line diff.
+ *
+ * **A mutation's own input carries the replaced text, not a hunk**, so the
+ * CLI's empty `structuredPatch` fallback used to draw every old line as a
+ * removal and every new one as an addition even when they shared all but a
+ * word. This is the line-level read the fallback and a hunk may both use:
+ * common prefix and suffix become context, and the middle is walked for the
+ * longest common subsequence so an unchanged line between two changes stays
+ * context too.
+ *
+ * Past the cap the middle is drawn as one removed run and one added run:
+ * the quadratic table is the reader's cost, and an edit block large enough
+ * to need it is a replacement rather than a line edit.
+ */
+export function lineDiff(oldText: string, newText: string): SourceLine[] {
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
+
+  let prefix = 0;
+  while (
+    prefix < oldLines.length &&
+    prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]
+  ) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const oldMid = oldLines.slice(prefix, oldLines.length - suffix);
+  const newMid = newLines.slice(prefix, newLines.length - suffix);
+  const out: SourceLine[] = [];
+  for (const text of oldLines.slice(0, prefix)) out.push({ kind: 'ctx', text });
+
+  const cells = oldMid.length * newMid.length;
+  if (cells === 0 || cells > MAX_LINE_CELLS) {
+    for (const text of oldMid) out.push({ kind: 'del', text });
+    for (const text of newMid) out.push({ kind: 'add', text });
+  } else {
+    // The table is filled from the end, so the forward walk can read the
+    // next cell's score without carrying a path of its own.
+    const table: number[][] = Array.from({ length: oldMid.length + 1 }, () =>
+      new Array<number>(newMid.length + 1).fill(0),
+    );
+    for (let a = oldMid.length - 1; a >= 0; a -= 1) {
+      const row = table[a];
+      const below = table[a + 1];
+      if (row === undefined || below === undefined) continue;
+      for (let b = newMid.length - 1; b >= 0; b -= 1) {
+        row[b] =
+          oldMid[a] === newMid[b]
+            ? (below[b + 1] ?? 0) + 1
+            : Math.max(below[b] ?? 0, row[b + 1] ?? 0);
+      }
+    }
+    let a = 0;
+    let b = 0;
+    while (a < oldMid.length || b < newMid.length) {
+      if (a < oldMid.length && b < newMid.length && oldMid[a] === newMid[b]) {
+        out.push({ kind: 'ctx', text: oldMid[a] ?? '' });
+        a += 1;
+        b += 1;
+        continue;
+      }
+      const down = table[a + 1]?.[b] ?? 0;
+      const right = table[a]?.[b + 1] ?? 0;
+      if (b < newMid.length && (a >= oldMid.length || right > down)) {
+        out.push({ kind: 'add', text: newMid[b] ?? '' });
+        b += 1;
+      } else {
+        out.push({ kind: 'del', text: oldMid[a] ?? '' });
+        a += 1;
+      }
+    }
+  }
+
+  for (const text of oldLines.slice(oldLines.length - suffix)) out.push({ kind: 'ctx', text });
+  return out;
+}
+
+/** A trailing newline ends the last line rather than starting an empty one. */
+function splitLines(text: string): string[] {
+  if (text === '') return [];
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+/** Past this many line pairs the fallback draws the middle as one run. */
+const MAX_LINE_CELLS = 250_000;
+
 interface Word {
   text: string;
   start: number;
@@ -171,16 +269,25 @@ export function wordOps(oldText: string, newText: string): DiffOp[] {
   return ops;
 }
 
-/** The changed character spans of one side, from the operations. */
-function spansOf(ops: DiffOp[], side: 'old' | 'new'): Span[] {
+/**
+ * The changed character spans of one side, from the operations.
+ *
+ * **A run broken only by space or punctuation is one span.** The words on
+ * either side changed, so a tint that stops at each word leaves the space and
+ * the punctuation between them untinted - a highlight with holes. A shared
+ * word between two changes is a different thing and keeps them apart.
+ */
+function spansOf(ops: DiffOp[], side: 'old' | 'new', text: string): Span[] {
   const spans: Span[] = [];
   let at = 0;
   for (const op of ops) {
     if (op.kind === 'equal' || (side === 'old' ? op.kind === 'del' : op.kind === 'ins')) {
       if (op.kind !== 'equal') {
         const last = spans.at(-1);
-        if (last !== undefined && last.end === at) last.end = at + op.text.length;
-        else spans.push({ start: at, end: at + op.text.length });
+        const gap = last === undefined ? '' : text.slice(last.end, at);
+        if (last !== undefined && (last.end === at || /^[^A-Za-z0-9_]*$/.test(gap))) {
+          last.end = at + op.text.length;
+        } else spans.push({ start: at, end: at + op.text.length });
       }
       at += op.text.length;
     }
@@ -191,7 +298,7 @@ function spansOf(ops: DiffOp[], side: 'old' | 'new'): Span[] {
 /** The changed spans of a paired removed and added line. */
 export function wordSpans(oldText: string, newText: string): { old: Span[]; new: Span[] } {
   const ops = wordOps(oldText, newText);
-  return { old: spansOf(ops, 'old'), new: spansOf(ops, 'new') };
+  return { old: spansOf(ops, 'old', oldText), new: spansOf(ops, 'new', newText) };
 }
 
 /**
@@ -312,24 +419,4 @@ export function diffLineHtml(
       .join('');
   }
   return html;
-}
-
-/** The word tint per line of a call's own two sides, paired by position. */
-export function pairedLineTints(
-  oldText: string,
-  newText: string,
-): { old: Span[][]; new: Span[][] } {
-  const oldLines = oldText.split('\n');
-  const newLines = newText.split('\n');
-  const oldTints = oldLines.map(() => [] as Span[]);
-  const newTints = newLines.map(() => [] as Span[]);
-  for (let i = 0; i < Math.min(oldLines.length, newLines.length); i += 1) {
-    const oldLine = oldLines[i];
-    const newLine = newLines[i];
-    if (oldLine === undefined || newLine === undefined) continue;
-    const spans = wordSpans(oldLine, newLine);
-    oldTints[i] = spans.old;
-    newTints[i] = spans.new;
-  }
-  return { old: oldTints, new: newTints };
 }

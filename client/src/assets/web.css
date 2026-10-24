@@ -2102,6 +2102,10 @@ details.leaf.running > summary { color: var(--text); }
    already owns the border, ground and strip. */
 .code-diff { padding: 8px 12px 10px; color: var(--muted); font-size: var(--fs-base); }
 .code-diff .prose p + p { margin-top: 9px; }
+/* The panel owns its own padding, so the prose's block margins inside it read
+   as dead space around the one block a rendered diff holds. */
+.code-diff .prose > :first-child { margin-top: 0; }
+.code-diff .prose > :last-child { margin-bottom: 0; }
 .code-diff .code { border: 0; border-radius: 0; background: transparent; }
 .code-diff .code .lang { display: none; }
 /* Inline code keeps the values the old prose lane gave it: the panel is a

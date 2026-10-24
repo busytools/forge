@@ -1,13 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
 
-  import {
-    diffLineHtml,
-    pairedLineTints,
-    pairedTints,
-    type ColourToken,
-    type Span,
-  } from '../format/diff';
+  import { diffLineHtml, lineDiff, pairedTints, type ColourToken, type Span } from '../format/diff';
   import { formatOf } from '../format/policy';
   import type { CallBody } from './leaves';
 
@@ -74,23 +68,23 @@
         });
         continue;
       }
-      const tints = pairedLineTints(piece.old, piece.new);
-      const rows: Row[] = [];
-      const oldRows: number[] = [];
-      const newRows: number[] = [];
-      if (piece.old !== '') {
-        for (const [at, text] of piece.old.split('\n').entries()) {
-          oldRows.push(rows.length);
-          rows.push({ kind: 'del', text, old: '', next: '', tints: tints.old[at] ?? [] });
-        }
-      }
-      if (piece.new !== '') {
-        for (const [at, text] of piece.new.split('\n').entries()) {
-          newRows.push(rows.length);
-          rows.push({ kind: 'add', text, old: '', next: '', tints: tints.new[at] ?? [] });
-        }
-      }
-      out.push({ header: null, rows, oldRows, newRows });
+      // A fallback carries two sides and no hunk, so the line diff is taken
+      // here: only the lines that actually differ are removals and additions.
+      const lines = lineDiff(piece.old, piece.new);
+      const tints = pairedTints(lines);
+      const rows = lines.map((line, at): Row => ({
+        kind: line.kind,
+        text: line.text,
+        old: '',
+        next: '',
+        tints: tints[at] ?? [],
+      }));
+      out.push({
+        header: null,
+        rows,
+        oldRows: rows.flatMap((row, at) => (row.kind === 'add' ? [] : [at])),
+        newRows: rows.flatMap((row, at) => (row.kind === 'del' ? [] : [at])),
+      });
     }
     return out;
   });
