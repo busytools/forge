@@ -13,7 +13,8 @@
 #   FORGE_BROWSER_BIN       the built host executable
 #                           (default: <target>/release/forge-browser)
 #   CEF_DIR                 the unpacked CEF distribution
-#                           (default: discovered under the cargo target dir)
+#                           (default: discovered under the cargo target dir,
+#                           then under CEF_PATH when that is set)
 #   CARGO_TARGET_DIR        the cargo target dir to discover CEF under
 #   FORGE_BROWSER_HOST_DIR  where the bundle is installed
 #                           (default: ~/Library/Application Support/forge/browser-host)
@@ -28,6 +29,12 @@ TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
 INSTALL_DIR="${FORGE_BROWSER_HOST_DIR:-$HOME/Library/Application Support/forge/browser-host}"
 BIN="${FORGE_BROWSER_BIN:-$TARGET/release/forge-browser}"
 CEF_DIR="${CEF_DIR:-$(find "$TARGET" -type d -path '*/out/cef_macos_aarch64' -print -quit 2>/dev/null)}"
+# **CI keeps the distribution in its download cache, not under target**:
+# cef-dll-sys unpacks under CEF_PATH/<version> when that is set, and a build
+# restored from the cache links it there without a copy under target.
+if [ -z "$CEF_DIR" ] && [ -n "${CEF_PATH:-}" ]; then
+    CEF_DIR="$(find "$CEF_PATH" -type d -name 'cef_macos_aarch64' -print -quit 2>/dev/null)"
+fi
 VERSION="$(grep -m1 '^version = ' "$ROOT/Cargo.toml" | cut -d'"' -f2)"
 
 # CEF derives every helper's name from the main bundle's executable, so this
@@ -36,7 +43,7 @@ MAIN="Forge Browser"
 IDENTIFIER="dev.vedhavyas.forge.browser-host"
 
 if [ -z "$CEF_DIR" ] || [ ! -d "$CEF_DIR/Chromium Embedded Framework.framework" ]; then
-    echo "[ERROR] the CEF distribution is not unpacked under $TARGET - build forge-browser first" >&2
+    echo "[ERROR] the CEF distribution is not unpacked under $TARGET${CEF_PATH:+ or $CEF_PATH} - build forge-browser first" >&2
     exit 1
 fi
 if [ ! -x "$BIN" ]; then
