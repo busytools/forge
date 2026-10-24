@@ -277,6 +277,10 @@ describe('one turn, as the page draws it', () => {
     expect(start, 'closed on what fired and how many it carried').toContain(
       'session start \u{b7} 1 hook',
     );
+    expect(
+      start.match(/class="leaf hookrow"/g),
+      'and no row of its own for the hook the start gathered',
+    ).toBeNull();
   });
 
   it('draws a running row for a turn the frames built and no result has settled', () => {
