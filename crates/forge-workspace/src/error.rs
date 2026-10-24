@@ -87,6 +87,20 @@ pub enum WorkspaceError {
     ModelAutoCompactWindowInvalid { path: PathBuf, model: String, value: i64 },
 
     #[error(
+        "the handoff table at {scope} in forge.toml at {} sets at_percent = {value}, which is not usable; it must name a share of the context window between 1 and 100, so remove the key for the {}% default",
+        path.display(),
+        crate::config::DEFAULT_HANDOFF_AT_PERCENT
+    )]
+    HandoffAtPercentInvalid { path: PathBuf, scope: String, value: u8 },
+
+    #[error(
+        "the handoff table at {scope} in forge.toml at {} sets after_compactions = 0, which is not usable; it must name a count of at least 1, so remove the key for the {} default",
+        path.display(),
+        crate::config::DEFAULT_HANDOFF_AFTER_COMPACTIONS
+    )]
+    HandoffAfterCompactionsInvalid { path: PathBuf, scope: String },
+
+    #[error(
         "documents max_size_mib = {value} in forge.toml at {} is not usable; it must name a positive ceiling in MiB, so remove the key for the {} MiB default",
         path.display(),
         crate::config::DEFAULT_DOCUMENT_MAX_MIB

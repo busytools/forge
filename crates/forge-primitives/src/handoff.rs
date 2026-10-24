@@ -139,10 +139,8 @@ mod tests {
     #[test]
     fn the_record_round_trips_with_an_unmeasured_successor() {
         let json = serde_json::to_value(record()).expect("the record serializes");
-        assert!(
-            json.get("successor").is_none(),
-            "an unmeasured successor is not written: {json}",
-        );
+        let successor = json.get("successor");
+        assert!(successor.is_none(), "an unmeasured successor is not written");
         let back: HandoffRecord = serde_json::from_value(json).expect("and reads back");
         assert_eq!(back, record(), "the record survives the trip unchanged");
     }

@@ -583,6 +583,7 @@ impl Workspace {
             max_workers,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
             vault_roots: Vec::new(),
+            handoff: None,
         });
     }
 

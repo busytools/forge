@@ -9214,6 +9214,7 @@ mod account_stamp_tests {
             max_workers: None,
             permission_mode,
             vault_roots: Vec::new(),
+            handoff: None,
         }
     }
 
