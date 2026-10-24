@@ -203,6 +203,18 @@ const figure = (chat: Chat): number | null => {
   return report?.info.thinking_tokens ?? null;
 };
 
+/**
+ * Every held turn's running figure, in drawing order.
+ *
+ * A landing that fails to pair a row draws the same exchange twice, and the
+ * first turn's figure alone cannot see it.
+ */
+const totals = (chat: Chat): Array<number | null> =>
+  get(chat.value).turns.map((held) => {
+    const report = fold(held.messages, null, true, false).find((unit) => unit.kind === 'report');
+    return report?.info.thinking_tokens ?? null;
+  });
+
 /** Another `system` subtype, which the fold draws nothing for either. */
 const progressed = (): unknown => ({
   type: 'system',
@@ -614,25 +626,26 @@ describe('the conversation the chat draws', () => {
    * the page's growth above its end is added - never the page's copy of the
    * counters the held fold already counts, and never a lost head.
    */
-  it('a page whose front moved inside one run keeps the held fold whole', () => {
+  it('a front-cut page pairs with the held run and keeps its head', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
-    server.send(page([{ key: 't1', messages: [promptRow('work'), folded(0, 9, 100)] }], 'above'));
-    expect(figure(chat), 'the first landing carries the whole run').toBe(100);
+    // The first landing is the running turn as the record serves it: no
+    // result yet, so no key, and the run folded from the turn's own prompt.
+    server.send(page([{ key: null, messages: [promptRow('work'), folded(0, 9, 100)] }], 'above'));
+    expect(totals(chat), 'the first landing carries one running turn').toEqual([100]);
 
+    // The reconnect's page opened on the turn's suffix: the window's front cut
+    // inside it, so there is no prompt, no result, and the run's first
+    // counters are raw. Its name is the first counter's, which matches nothing
+    // held - the ranges are the only identity the two copies share.
     const suffix: unknown[] = [];
     for (let at = 4; at <= 12; at += 1) suffix.push(clocked(at, 10));
-    server.send(page([{ key: 't1', messages: [promptRow('work'), ...suffix] }], 'above'));
+    server.reach('closed');
+    server.reach('open');
+    server.send(page([{ key: null, messages: suffix }], 'above'));
 
-    expect(figure(chat), 'the unfolded sum: the held run plus the page growth above it').toBe(130);
-    expect(names(chat), 'the covered page counters are not added beside the held fold').toEqual([
-      'u-work',
-      'thinking-9',
-      'thinking-10',
-      'thinking-11',
-      'thinking-12',
-    ]);
+    expect(totals(chat), 'one row: the held run plus the page growth above it').toEqual([130]);
     stop();
   });
 
