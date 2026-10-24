@@ -172,12 +172,14 @@ describe('a diff panel the reader has not reached', () => {
       expect(highlighter.lines, 'a hunk nobody sees is not tokenised').not.toHaveBeenCalled();
 
       watching(drawn).fire(drawn, true);
-      await vi.waitFor(() => expect(highlighter.lines).toHaveBeenCalled(), { timeout: 10_000 });
+      await vi.waitFor(() => expect(highlighter.lines).toHaveBeenCalledTimes(2), {
+        timeout: 10_000,
+      });
       await settled();
       expect(
-        highlighter.lines.mock.calls.length,
+        highlighter.lines,
         'both sides of the hunk are tokenised once seen',
-      ).toBeGreaterThan(0);
+      ).toHaveBeenCalledTimes(2);
     } finally {
       void unmount(app);
     }
