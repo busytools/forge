@@ -334,9 +334,7 @@ fn eval_js(app: &tauri::AppHandle, js: &str) -> Value {
                 } else if value.is_null() {
                     Value::Null
                 } else {
-                    let text = &*(value.cast::<NSString>());
-                    let text = text.to_string();
-                    serde_json::from_str(&text).unwrap_or(Value::String(text))
+                    js_value(&*value)
                 };
                 let _ = done.send(answer);
             });
@@ -348,6 +346,44 @@ fn eval_js(app: &tauri::AppHandle, js: &str) -> Value {
     }
     rx.recv_timeout(std::time::Duration::from_secs(10))
         .unwrap_or_else(|_| json!({ "error": "the page did not answer within ten seconds" }))
+}
+
+/// One JavaScript result as JSON, narrowed by its Objective-C type.
+///
+/// **The completion handler hands over an `AnyObject`, never a string.** A
+/// number, a boolean and NSNull each arrive as their own class, and casting
+/// a number to `NSString` aborted the process in `UTF8String` (SIGABRT,
+/// 2026-10-24). A string keeps the old route: JSON text answers as JSON, any
+/// other string as itself. A class this does not know is printed by name
+/// rather than guessed at.
+fn js_value(value: &objc2::runtime::AnyObject) -> Value {
+    use objc2_foundation::{NSNumber, NSString};
+    use std::ffi::CStr;
+
+    if let Some(text) = value.downcast_ref::<NSString>() {
+        let text = text.to_string();
+        return serde_json::from_str(&text).unwrap_or(Value::String(text));
+    }
+    if let Some(number) = value.downcast_ref::<NSNumber>() {
+        // SAFETY: `objCType` returns a NUL-terminated type encoding that
+        // lives as long as the number.
+        let encoded = unsafe { CStr::from_ptr(number.objCType().as_ptr()) };
+        // **A boolean is an NSNumber too.** `c` and `B` are a C and a C++
+        // bool's encodings; a JS number is `d` or an integer type.
+        if matches!(encoded.to_bytes(), b"c" | b"B") {
+            return Value::Bool(number.boolValue());
+        }
+        let number = number.doubleValue();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "an integral double inside the JS safe-integer range"
+        )]
+        if number.fract() == 0.0 && number.abs() <= 9_007_199_254_740_991.0 {
+            return Value::from(number as i64);
+        }
+        return serde_json::Number::from_f64(number).map_or(Value::Null, Value::Number);
+    }
+    Value::String(format!("<{}>", value.class().name().to_string_lossy()))
 }
 
 /// One screenshot of this app's own window, written as PNG.
@@ -470,4 +506,27 @@ fn compose(webview_image: &objc2_app_kit::NSImage, path: &str) -> Value {
         return json!({ "error": format!("the PNG did not write to {path}") });
     }
     json!({ "ok": true, "path": path })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::js_value;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSNumber, NSString};
+
+    /// **A JS number is a number, not a string.** The completion handler
+    /// hands over an `NSNumber`, and formatting one as an `NSString` aborted
+    /// the app in `UTF8String` (SIGABRT, 2026-10-24); each type keeps itself.
+    #[test]
+    fn a_number_bool_and_string_keep_their_types() {
+        let number = NSNumber::numberWithDouble(42.0);
+        let number: &AnyObject = &number;
+        assert_eq!(js_value(number), serde_json::json!(42));
+        let boolean = NSNumber::numberWithBool(true);
+        let boolean: &AnyObject = &boolean;
+        assert_eq!(js_value(boolean), serde_json::json!(true));
+        let text = NSString::from_str("hi");
+        let text: &AnyObject = &text;
+        assert_eq!(js_value(text), serde_json::json!("hi"));
+    }
 }
