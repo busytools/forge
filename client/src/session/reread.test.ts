@@ -72,6 +72,8 @@ async function slowLink(answerMs: number, frameMs: number) {
   const subscribes: Subject[] = [];
   /** Every frame this forge emitted, for a repair ask to answer from. */
   const sent = new Map<number, SessionUpdate>();
+  /** The row each frame carries, for a snapshot to include what it has sent. */
+  const rows = new Map<number, unknown>();
   let seq = 0;
 
   server.on('connection', (socket) => {
@@ -117,11 +119,29 @@ async function slowLink(answerMs: number, frameMs: number) {
       subscribes.push(what);
       const reach = seq;
       const answer = setTimeout(() => {
+        // **The answer carries the rows this forge had streamed by its encode
+        // point**, as the real record does. Without them a taken answer would
+        // drop rows the client had already drawn.
+        const carried: unknown[] = [];
+        for (let at = 1; at <= reach; at += 1) {
+          const row = rows.get(at);
+          if (row !== undefined) carried.push(row);
+        }
         const body =
           subjectKey(what) === subjectKey({ session: LEAD })
             ? {
                 ...sessionFixture,
                 slot: LEAD,
+                conversation: {
+                  ...sessionFixture.conversation,
+                  turns:
+                    carried.length > 0
+                      ? [
+                          ...sessionFixture.conversation.turns,
+                          { key: 'streamed', messages: carried },
+                        ]
+                      : sessionFixture.conversation.turns,
+                },
                 header: { ...sessionFixture.header, session_id: 'occ-1', seq: reach + 1 },
               }
             : {};
@@ -140,7 +160,9 @@ async function slowLink(answerMs: number, frameMs: number) {
   // The seat keeps streaming while its answer is on the way.
   const beat = setInterval(() => {
     seq += 1;
-    const update: SessionUpdate = { chat_appended: { key: LEAD, msg: spoke(`u${seq}`) } };
+    const msg = spoke(`u${seq}`);
+    rows.set(seq, msg);
+    const update: SessionUpdate = { chat_appended: { key: LEAD, msg } };
     sent.set(seq, update);
     for (const socket of sockets) {
       socket.send(JSON.stringify({ kind: 'update', update, seq, span: 1 } satisfies ServerMessage));
@@ -204,22 +226,30 @@ describe('a whole-record answer slower than the bound', () => {
     try {
       // The first answer lands and the seat draws its record.
       await until(() => get(view).wire !== null);
-      // And the retry's own answer, and any frames after it, have had their
-      // window: nothing more is owed.
+      // The frames that crossed while it travelled reach the record: the
+      // answer carries the rows it had streamed, and the repair the hole asks
+      // for fills the rest.
+      await until(() => spoken(get(view)).includes('u1'));
+      const streamed = spoken(get(view)).filter((word) => /^u\d+$/.test(word));
+      expect(streamed, 'the repaired stretch has a hole or arrived out of order').toEqual(
+        Array.from({ length: streamed.length }, (_, at) => `u${at + 1}`),
+      );
+
+      // And any pass the outrun path still owes has had its window.
       await wait(QUIET_MS);
 
-      // **The ceiling is the one-shot paths, not the cadence**: the read
-      // itself, its one bound retry, and the outrun path's few re-asks for an
-      // answer that lands behind the frames. The cadence amplifier measured
-      // thirteen within this window.
+      // **The bound's one retry went, and the ceiling holds.** The lower bound
+      // is the retry at five seconds (a bound that never fired would leave the
+      // one subscribe the page made). The ceiling allows the read, its retry,
+      // and the outrun path's up to three re-asks for an answer that lands
+      // behind the frames; the cadence amplifier measured thirteen in this
+      // window.
+      const asked = server.seatSubscribes().length;
+      expect(asked, 'the bound never retried the unanswered read').toBeGreaterThanOrEqual(2);
       expect(
-        server.seatSubscribes().length,
+        asked,
         'a slow answer bought a whole re-read on every bound cadence',
       ).toBeLessThanOrEqual(5);
-      expect(
-        spoken(get(view)),
-        'the frames that streamed while the answer travelled were dropped',
-      ).toContain('u1');
     } finally {
       stop();
       connection.close();

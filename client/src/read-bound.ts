@@ -13,17 +13,16 @@
  * re-ask is the `refresh` shape - an unsubscribe and a subscribe - which is
  * what the server counts evenly, so a retry leaves no surplus watch behind.
  *
- * **A pass costs the whole subject again, so the bound is a budget, not a
+ * **A pass costs the whole subject again, so the bound is one pass, not a
  * beat.** A re-ask is a fresh subscribe, so the server re-reads, re-encodes
  * and re-sends the subject - 2.4-3.7 MB on a busy seat - and the new answer
  * queues behind the one already on its way. A fixed cadence therefore makes a
  * slow link slower in proportion to how slow it already is: measured on a
  * WireGuard client (#2561), a 5 s beat against answers taking 2-18 s sent 7-8
  * whole re-subscribes per busy seat visit and held the tunnel at
- * 0.13-0.34 MB/s. So a read gets one pass on the cadence and past it is
- * presumed slow rather than lost, checked at [`SLOW_RETRY_MS`]. A lost answer
- * is still found by the retry at five seconds; only a lost retry waits the
- * beat.
+ * 0.13-0.34 MB/s. So a read gets one pass at [`READ_BOUND_MS`] and every check
+ * after it waits [`SLOW_RETRY_MS`]: a lost answer is still found by the pass
+ * at five seconds, and only a lost pass waits the beat.
  *
  * **The store is the state the bound reads**, so nothing else has to track
  * it: `ready` and `refused` are answers and only `loading` is a read still
@@ -48,35 +47,26 @@ import type { Stores } from './stores';
 export const READ_BOUND_MS = 5_000;
 
 /**
- * How many passes one unanswered read gets on the bound's own cadence.
+ * How long an unanswered read waits between checks after its one pass.
  *
- * One. A snapshot lost on a live socket is found by that pass. Every pass
- * after it costs the whole subject again and stacks behind the answer already
- * on its way, which is how a slow link was made slower (#2561) - so past the
- * first, a read that is still unanswered is presumed slow.
- */
-const CADENCE_PASSES = 1;
-
-/**
- * How long an unanswered read waits between passes once its cadence passes
- * are spent.
+ * Sixty is more than three times the slowest whole-record answer measured on
+ * the link behind #2561 (2-18 s), so a real answer is never beaten by a retry,
+ * and a read that is genuinely wedged costs one whole record a minute - a
+ * rounding error beside the storm it replaces.
  *
- * Sixty is three times the slowest whole-record answer measured on the link
- * behind #2561 (2-18 s), so a real answer is never beaten by a retry, and a
- * read that is genuinely wedged costs one whole record a minute - a rounding
- * error beside the storm it replaces. A reconnect or a new reader heals it
- * sooner.
+ * **The trade is recovery time for a lost pass.** A lost answer is still found
+ * by the pass at five seconds; if that pass is lost too, the next check is up
+ * to 65 s away, where the fixed cadence asked at ten.
  *
- * **The trade is recovery time for a lost retry.** A lost answer is still
- * found by the pass at five seconds; if that retry is lost too, the next check
- * is up to 65 s away, where the fixed cadence asked at ten.
+ * **A reopen, not this beat, is the ordinary recovery.** The desktop drops
+ * every timer on each `closed`, so a drop that reaches the page arms a fresh
+ * pass on open. A transition it reads as `open` without ever reading `closed`
+ * leaves a held timer standing, and a loading page then waits up to it.
  */
 export const SLOW_RETRY_MS = 60_000;
 
 export class ReadBounds {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** Cadence passes already spent on each subject's unanswered read. */
-  private readonly spent = new Map<string, number>();
 
   /**
    * `reask` is the connection's own refresh: the pair that asks for a
@@ -94,10 +84,9 @@ export class ReadBounds {
   /**
    * A read just went out for `what`: bound it.
    *
-   * **The budget is NOT reset here.** Every ask passes through this - a page's
-   * own subscribe, a reconnect's re-ask, and the bound's own retry - so a
-   * reset here would refill the budget on every pass and the cadence would run
-   * forever, which is the loop this bound exists to end.
+   * **This arms the read's one pass at [`READ_BOUND_MS`].** Every check after
+   * it waits [`SLOW_RETRY_MS`], which is the whole policy: an answer ends the
+   * bound, and a read still unanswered after its pass is presumed slow.
    */
   arm(what: Subject): void {
     this.schedule(what, this.boundMs);
@@ -111,25 +100,28 @@ export class ReadBounds {
   /** The same, for a caller holding the key a refusal arrives under. */
   clearKey(key: string): void {
     this.clearTimer(key);
-    // The read is over, so the next one starts with its cadence passes whole.
-    this.spent.delete(key);
   }
 
   /**
-   * Re-arm the bound for every subject still waiting for its first answer.
+   * Re-arm the bound for every subject still waiting for its first answer and
+   * holding no timer.
    *
    * **A connection that opens after the bound fired has nothing owed on it.**
    * The subscribe was queued while the socket was down and goes out when it
    * opens; if that first snapshot is lost, no timer remains to ask again. So
-   * the connection calls this on open: a subject still `loading` gets its
-   * read bounded again, and a subject already answered is left alone.
+   * the connection calls this on open: a loading subject with no timer gets
+   * the pass, and a subject already answered is left alone.
+   *
+   * **A timer that survived the transition is not shortened.** The desktop
+   * drops every timer on each `closed`, so a reopen that reads `closed` then
+   * `open` arms a fresh pass. A transition read as `open` alone leaves a held
+   * timer standing, and a loading page can wait up to the beat; asking sooner
+   * would buy an extra whole record per reconnect on exactly the slow link
+   * this bound stopped feeding.
    */
   rearmLoading(): void {
     for (const subject of this.stores.subjects()) {
       const key = subjectKey(subject);
-      // **A reconnect's re-subscribe is a fresh ask**, so a loading read
-      // starts its cadence passes whole again.
-      this.spent.delete(key);
       if (this.timers.has(key)) continue;
       if (this.stores.get(subject)?.state().kind === 'loading') {
         this.arm(subject);
@@ -137,11 +129,15 @@ export class ReadBounds {
     }
   }
 
-  /** The connection is closed for good: nothing is owed on it any more. */
+  /**
+   * Drop every timer: the connection this bound was made for is gone.
+   *
+   * The desktop calls this on each `closed`, which a transient drop reports
+   * too, so the next open arms its subjects afresh.
+   */
   stop(): void {
     for (const held of this.timers.values()) clearTimeout(held);
     this.timers.clear();
-    this.spent.clear();
   }
 
   /** Arm one pass for `what`, `after` ms from now, replacing any timer held. */
@@ -171,11 +167,9 @@ export class ReadBounds {
     // and a closed connection's re-ask is exactly that case - which is what
     // keeps the chain from outliving its `stop` without a flag to say so.
     if (!this.reask(what)) return;
-    const spent = (this.spent.get(key) ?? 0) + 1;
-    this.spent.set(key, spent);
-    // **A read past its cadence passes is slow rather than lost**, and another
-    // whole record queued behind the answer already on its way would only
-    // make it later (#2561).
-    this.schedule(what, spent < CADENCE_PASSES ? this.boundMs : this.slowMs);
+    // **A read still unanswered after its pass is slow rather than lost**, and
+    // another whole record queued behind the answer already on its way would
+    // only make it later (#2561).
+    this.schedule(what, this.slowMs);
   }
 }
