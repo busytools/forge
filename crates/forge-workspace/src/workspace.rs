@@ -20881,6 +20881,37 @@ provider = "anthropic"
         assert_eq!(announced(&mut updates), 1, "a window that moved is news");
     }
 
+    /// A probe that moves only the pool's loading state is news, even when
+    /// its figures match the ones already held.
+    ///
+    /// This is the cold boot: the cache restores the last snapshot while the
+    /// account is still `Loading`, so the first clean probe finds the same
+    /// figures and the only thing it changes is `Ready`. Without the loading
+    /// clause the card keeps `0 ready, probing` until something else moves.
+    #[tokio::test]
+    async fn a_probe_that_only_settles_the_loading_state_is_news() {
+        use forge_gateway::LoadingState;
+
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut updates = workspace.subscribe();
+        while updates.try_recv().is_ok() {}
+        let key = AccountKey("Stargate".to_owned());
+
+        let cached = usage_at(10.0);
+        workspace.accounts.set_usage(&key, cached.clone());
+        workspace.accounts.set_loading(&key, LoadingState::Loading);
+
+        let mut same = cached;
+        same.fetched_at += std::time::Duration::from_secs(60);
+        workspace.record_usage_success(&key, same);
+
+        let announced = std::iter::from_fn(|| updates.try_recv().ok())
+            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged))
+            .count();
+        assert_eq!(announced, 1, "the Loading -> Ready move was not announced");
+    }
+
     /// An org whose primaries cannot serve the project's model and whose
     /// fallback can: the walk reaches the fallback because the primaries
     /// declare nothing it serves.
