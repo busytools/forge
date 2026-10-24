@@ -188,7 +188,7 @@ impl UsageSnapshot {
     pub fn same_usage(&self, other: &Self) -> bool {
         // Destructured without `..` on purpose: a field added to the
         // snapshot is a compile error here rather than a comparison that
-        // silently ignores it, which would make every poll news again.
+        // silently ignores it and reads a changed pool as unchanged.
         let Self {
             source,
             fetched_at: _,
@@ -304,8 +304,9 @@ mod tests {
     /// clock, so a quiet account bought a full home read every poll.
     #[test]
     fn same_usage_ignores_when_the_reading_was_taken() {
-        // Every field populated, so deleting a comparison below is a red
-        // test rather than a line no case reaches.
+        // Every field populated, and one mutant per compared field below, so
+        // deleting any single comparison is a red test rather than a line no
+        // case reaches.
         let snapshot = |fetched_at: SystemTime| UsageSnapshot {
             source: UsageSourceKind::Oauth,
             fetched_at,
@@ -331,15 +332,55 @@ mod tests {
             balance: Some(7.5),
         };
         let at = SystemTime::UNIX_EPOCH;
+        let later = at + Duration::from_secs(60);
 
         assert!(
-            snapshot(at).same_usage(&snapshot(at + Duration::from_secs(60))),
+            snapshot(at).same_usage(&snapshot(later)),
             "a later probe that found the same figures is the same usage",
         );
-        let mut moved = snapshot(at + Duration::from_secs(60));
-        moved.seven_day_opus = Some(window(46.0, None));
-        assert!(!snapshot(at).same_usage(&moved), "a moved window is news");
-        let mut moved = snapshot(at + Duration::from_secs(60));
+
+        let mut moved = snapshot(later);
+        moved.source = UsageSourceKind::OpenRouterKey;
+        assert!(!snapshot(at).same_usage(&moved), "a moved source is news");
+
+        let mut moved = snapshot(later);
+        moved.five_hour = Some(window(42.5, None));
+        assert!(!snapshot(at).same_usage(&moved), "a moved five-hour window is news");
+
+        let mut moved = snapshot(later);
+        moved.seven_day = Some(window(43.5, None));
+        assert!(!snapshot(at).same_usage(&moved), "a moved seven-day window is news");
+
+        let mut moved = snapshot(later);
+        moved.seven_day_opus = Some(window(44.5, None));
+        assert!(!snapshot(at).same_usage(&moved), "a moved opus window is news");
+
+        let mut moved = snapshot(later);
+        moved.seven_day_sonnet = Some(window(45.5, None));
+        assert!(!snapshot(at).same_usage(&moved), "a moved sonnet window is news");
+
+        let mut moved = snapshot(later);
+        moved.extra_usage = Some(ExtraUsage {
+            monthly_limit: Some(11.0),
+            used_credits: Some(1.0),
+            utilization: Some(10.0),
+            currency: Some("USD".to_owned()),
+        });
+        assert!(!snapshot(at).same_usage(&moved), "moved extra usage is news");
+
+        let mut moved = snapshot(later);
+        moved.spend = Some(ApiSpend {
+            daily: 1.5,
+            weekly: 2.0,
+            monthly: 3.0,
+            limit: Some(5.0),
+            limit_remaining: Some(2.0),
+            limit_reset: Some("monthly".to_owned()),
+            expires_at: None,
+        });
+        assert!(!snapshot(at).same_usage(&moved), "a moved spend is news");
+
+        let mut moved = snapshot(later);
         moved.balance = Some(7.25);
         assert!(!snapshot(at).same_usage(&moved), "a moved balance is news");
     }
