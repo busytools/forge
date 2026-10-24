@@ -3367,4 +3367,27 @@ describe('a page seam that re-serves a result', () => {
     const stray = fold([heard([result('tu_elsewhere', 'answering a call in another row')])]);
     expect(kinds(stray), 'an unpaired result is drawn nowhere at all').toEqual([]);
   });
+
+  it('folds a handoff frame into the row that joins two sessions', () => {
+    const units = fold([
+      said([{ type: 'text', text: 'the work so far' }]),
+      {
+        type: 'forge_handoff',
+        handoff: {
+          from: 'old-session-id',
+          to: 'new-session-id',
+          reason: 'fill',
+          fill_percent: 85,
+          brief: { ground_truth: [], judgment: [] },
+        },
+      },
+      said([{ type: 'text', text: 'picked up' }]),
+    ]);
+    expect(kinds(units), 'prose, the row, then the successor').toEqual(['text', 'handoff', 'text']);
+    const row = units.find((unit) => unit.kind === 'handoff');
+    expect(
+      row?.kind === 'handoff' ? row.handoff.to : null,
+      'the row names the session that continues',
+    ).toBe('new-session-id');
+  });
 });
